@@ -15,6 +15,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y libudev-dev
+
       - name: Install Solana CLI
         run: |
           sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
@@ -38,6 +41,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -60,6 +65,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y libudev-dev
+
       - name: Write deploy keypair
         run: |
           mkdir -p ~/.config/solana
@@ -71,6 +79,17 @@ jobs:
           echo '${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}' > target/deploy/coordination-keypair.json
 
       - run: anchor build
+
+      - name: Update SDK types
+        run: cp target/types/coordination.ts sdk/coordination.ts
+
+      - name: Commit SDK types
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sdk/coordination.ts
+          git diff --staged --quiet || git commit -m "chore: update SDK types from build"
+          git push
 
       - name: Deploy to devnet
         run: anchor deploy --provider.cluster devnet
