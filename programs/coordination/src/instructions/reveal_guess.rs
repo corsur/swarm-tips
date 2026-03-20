@@ -5,14 +5,10 @@ use crate::state::{Game, GameState, PlayerProfile, Tournament, GUESS_UNREVEALED}
 use anchor_lang::prelude::*;
 use solana_sha256_hasher::hashv;
 
-pub fn reveal_guess(ctx: Context<RevealGuess>, guess: u8, salt: [u8; 32]) -> Result<()> {
+pub fn reveal_guess(ctx: Context<RevealGuess>, r: [u8; 32]) -> Result<()> {
     require!(
         ctx.accounts.game.state == GameState::Revealing,
         CoordinationError::InvalidGameState,
-    );
-    require!(
-        guess == 0 || guess == 1,
-        CoordinationError::InvalidGuessValue,
     );
 
     let player_key = ctx.accounts.player.key();
@@ -33,14 +29,13 @@ pub fn reveal_guess(ctx: Context<RevealGuess>, guess: u8, salt: [u8; 32]) -> Res
         );
     }
 
-    // Verify commitment: SHA-256(guess_byte || salt) via sol_sha256 syscall
-    let computed: [u8; 32] = hashv(&[&[guess], salt.as_ref()]).to_bytes();
-    let stored = if is_p1 {
-        game.p1_commit
-    } else {
-        game.p2_commit
-    };
+    // Verify commitment: SHA-256(r) via sol_sha256 syscall
+    let computed: [u8; 32] = hashv(&[r.as_ref()]).to_bytes();
+    let stored = if is_p1 { game.p1_commit } else { game.p2_commit };
     require!(computed == stored, CoordinationError::CommitmentMismatch);
+
+    // Extract guess from the last bit of r — always in {0, 1} by construction
+    let guess = r[31] & 1;
 
     let game = &mut ctx.accounts.game;
     if is_p1 {
@@ -77,8 +72,8 @@ fn finalize_game(ctx: Context<RevealGuess>) -> Result<()> {
 
     let p1_won = p1_return > p2_return;
     let p2_won = p2_return > p1_return;
-    update_profile(&mut ctx.accounts.p1_profile, p1_won, tournament_id)?;
-    update_profile(&mut ctx.accounts.p2_profile, p2_won, tournament_id)?;
+    ctx.accounts.p1_profile.update_after_game(p1_won, tournament_id)?;
+    ctx.accounts.p2_profile.update_after_game(p2_won, tournament_id)?;
 
     let game = &mut ctx.accounts.game;
     game.state = GameState::Resolved;
@@ -161,25 +156,6 @@ fn apply_tournament_update(tournament: &mut Tournament, tournament_gain: u64) ->
         tournament.prize_lamports >= tournament_gain,
         CoordinationError::ArithmeticOverflow,
     );
-    Ok(())
-}
-
-fn update_profile(profile: &mut PlayerProfile, won: bool, tournament_id: u64) -> Result<()> {
-    require!(
-        profile.tournament_id == tournament_id,
-        CoordinationError::ProfileTournamentMismatch,
-    );
-    if won {
-        profile.wins = profile
-            .wins
-            .checked_add(1)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-    }
-    profile.total_games = profile
-        .total_games
-        .checked_add(1)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    profile.score = PlayerProfile::compute_score(profile.wins, profile.total_games)?;
     Ok(())
 }
 

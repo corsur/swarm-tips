@@ -5,15 +5,3 @@ target
 node_modules
 test-ledger
 
-# Circuit intermediate files — not needed after setup
-circuits/bool_range/*.r1cs
-circuits/bool_range/*.sym
-circuits/bool_range/circuit_0000.zkey
-circuits/bool_range/powersOfTau28_hez_final_08.ptau
-circuits/bool_range/powersOfTau28_hez_final_16.ptau
-
-# Circuit artifacts that SHOULD be committed (needed to build and test):
-#   circuits/bool_range/verifying_key.rs
-#   circuits/bool_range/verifying_key.json
-#   circuits/bool_range/circuit_final.zkey
-#   circuits/bool_range/bool_range_js/

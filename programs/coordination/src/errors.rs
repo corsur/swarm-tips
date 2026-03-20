@@ -30,10 +30,6 @@ pub enum CoordinationError {
     #[msg("Revealed guess is not a valid value (must be 0 or 1)")]
     InvalidGuessValue,
 
-    // ZK proof
-    #[msg("ZK range proof verification failed")]
-    InvalidRangeProof,
-
     // Timeout
     #[msg("Timeout has not elapsed yet")]
     TimeoutNotElapsed,

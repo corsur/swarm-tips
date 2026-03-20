@@ -9,7 +9,6 @@ pub mod events;
 pub mod instructions;
 pub mod payoff;
 pub mod state;
-pub mod zk;
 
 use instructions::*;
 
@@ -40,18 +39,12 @@ pub mod coordination {
         instructions::join_game::join_game(ctx)
     }
 
-    pub fn commit_guess(
-        ctx: Context<CommitGuess>,
-        commitment: [u8; 32],
-        proof_a: [u8; 64],
-        proof_b: [u8; 128],
-        proof_c: [u8; 64],
-    ) -> Result<()> {
-        instructions::commit_guess::commit_guess(ctx, commitment, proof_a, proof_b, proof_c)
+    pub fn commit_guess(ctx: Context<CommitGuess>, commitment: [u8; 32]) -> Result<()> {
+        instructions::commit_guess::commit_guess(ctx, commitment)
     }
 
-    pub fn reveal_guess(ctx: Context<RevealGuess>, guess: u8, salt: [u8; 32]) -> Result<()> {
-        instructions::reveal_guess::reveal_guess(ctx, guess, salt)
+    pub fn reveal_guess(ctx: Context<RevealGuess>, r: [u8; 32]) -> Result<()> {
+        instructions::reveal_guess::reveal_guess(ctx, r)
     }
 
     pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {

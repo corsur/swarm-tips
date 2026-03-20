@@ -12,34 +12,24 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
 
     let current_slot = Clock::get()?.slot;
     let now = Clock::get()?.unix_timestamp;
-
     let outcome = find_timeout(game, current_slot)?;
 
-    let (tournament_gain, slashed_player) = match outcome {
-        TimeoutOutcome::OneWinner {
-            slashed_player,
-            winner_is_p1,
-        } => {
+    let tournament_id = ctx.accounts.tournament.tournament_id;
+    let game_info = ctx.accounts.game.to_account_info();
+    let tournament_info = ctx.accounts.tournament.to_account_info();
+
+    // Distribute lamports and record which players won/lost
+    let (tournament_gain, slashed_player, p1_won, p2_won) = match outcome {
+        TimeoutOutcome::OneWinner { slashed_player, winner_is_p1 } => {
             // Slash the non-participating player; return the winner's stake
-            transfer_from_game(
-                &ctx.accounts.game.to_account_info(),
-                &ctx.accounts.tournament.to_account_info(),
-                game.stake_lamports,
-            )?;
-            let winner_account = if winner_is_p1 {
+            transfer_from_game(&game_info, &tournament_info, game.stake_lamports)?;
+            let winner_wallet = if winner_is_p1 {
                 ctx.accounts.player_one_wallet.to_account_info()
             } else {
                 ctx.accounts.player_two_wallet.to_account_info()
             };
-            transfer_from_game(
-                &ctx.accounts.game.to_account_info(),
-                &winner_account,
-                game.stake_lamports,
-            )?;
-            let tournament_id = ctx.accounts.tournament.tournament_id;
-            update_profile(&mut ctx.accounts.p1_profile, winner_is_p1, tournament_id)?;
-            update_profile(&mut ctx.accounts.p2_profile, !winner_is_p1, tournament_id)?;
-            (game.stake_lamports, slashed_player)
+            transfer_from_game(&game_info, &winner_wallet, game.stake_lamports)?;
+            (game.stake_lamports, slashed_player, winner_is_p1, !winner_is_p1)
         }
         TimeoutOutcome::BothForfeited => {
             // Neither player revealed — both stakes go to tournament, no winner
@@ -47,21 +37,15 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
                 .stake_lamports
                 .checked_mul(2)
                 .ok_or(CoordinationError::ArithmeticOverflow)?;
-            transfer_from_game(
-                &ctx.accounts.game.to_account_info(),
-                &ctx.accounts.tournament.to_account_info(),
-                both_stakes,
-            )?;
-            let tournament_id = ctx.accounts.tournament.tournament_id;
-            update_profile(&mut ctx.accounts.p1_profile, false, tournament_id)?;
-            update_profile(&mut ctx.accounts.p2_profile, false, tournament_id)?;
-            // Report player_one as the canonical slashed address in the event;
-            // both were slashed but the event only carries one field.
-            (both_stakes, game.player_one)
+            transfer_from_game(&game_info, &tournament_info, both_stakes)?;
+            // Report player_one as canonical slashed address; both were slashed
+            (both_stakes, game.player_one, false, false)
         }
     };
 
-    // Update tournament
+    ctx.accounts.p1_profile.update_after_game(p1_won, tournament_id)?;
+    ctx.accounts.p2_profile.update_after_game(p2_won, tournament_id)?;
+
     let tournament = &mut ctx.accounts.tournament;
     tournament.prize_lamports = tournament
         .prize_lamports
@@ -76,11 +60,8 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
     game.state = GameState::Resolved;
     game.resolved_at = now;
 
-    // Postcondition: game must be resolved and timestamped
-    require!(
-        game.state == GameState::Resolved,
-        CoordinationError::InvalidGameState
-    );
+    // Postconditions: game must be resolved and timestamped
+    require!(game.state == GameState::Resolved, CoordinationError::InvalidGameState);
     require!(game.resolved_at == now, CoordinationError::InvalidGameState);
 
     emit!(TimeoutSlash {
@@ -164,30 +145,6 @@ fn find_timeout(game: &Game, current_slot: u64) -> Result<TimeoutOutcome> {
         }
         _ => err!(CoordinationError::InvalidGameState),
     }
-}
-
-fn update_profile(profile: &mut PlayerProfile, won: bool, tournament_id: u64) -> Result<()> {
-    require!(
-        profile.tournament_id == tournament_id,
-        CoordinationError::ProfileTournamentMismatch,
-    );
-    if won {
-        profile.wins = profile
-            .wins
-            .checked_add(1)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-    }
-    profile.total_games = profile
-        .total_games
-        .checked_add(1)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    profile.score = PlayerProfile::compute_score(profile.wins, profile.total_games)?;
-    // Postcondition: wins must never exceed total_games
-    require!(
-        profile.wins <= profile.total_games,
-        CoordinationError::ArithmeticOverflow,
-    );
-    Ok(())
 }
 
 fn transfer_from_game(from: &AccountInfo, to: &AccountInfo, lamports: u64) -> Result<()> {

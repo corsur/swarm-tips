@@ -1,8 +1,0 @@
-{
-  "name": "bool_range",
-  "version": "1.0.0",
-  "private": true,
-  "dependencies": {
-    "circomlib": "^2.0.5"
-  }
-}

@@ -37,14 +37,14 @@ jobs:
 
       - run: cargo clippy --all-targets -- -D warnings
 
-      - run: npm run lint
-
       - name: Generate throwaway keypair for local validator
         run: |
           mkdir -p ~/.config/solana
           solana-keygen new --no-bip39-passphrase --silent -o ~/.config/solana/id.json
 
       - run: anchor build
+
+      - run: npm run lint
 
       - run: anchor test
 
@@ -70,6 +70,9 @@ jobs:
           sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y libudev-dev
+
       - name: Install Anchor CLI
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
 
@@ -79,9 +82,6 @@ jobs:
           cache: 'npm'
 
       - run: npm ci
-
-      - name: Install system dependencies
-        run: sudo apt-get install -y libudev-dev
 
       - name: Write deploy keypair
         run: |

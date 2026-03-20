@@ -1,16 +1,9 @@
 use crate::errors::CoordinationError;
 use crate::events::GuessCommitted;
 use crate::state::{Game, GameState};
-use crate::zk;
 use anchor_lang::prelude::*;
 
-pub fn commit_guess(
-    ctx: Context<CommitGuess>,
-    commitment: [u8; 32],
-    proof_a: [u8; 64],
-    proof_b: [u8; 128],
-    proof_c: [u8; 64],
-) -> Result<()> {
+pub fn commit_guess(ctx: Context<CommitGuess>, commitment: [u8; 32]) -> Result<()> {
     let game = &ctx.accounts.game;
     require!(
         game.state == GameState::Active || game.state == GameState::Committing,
@@ -22,7 +15,6 @@ pub fn commit_guess(
     let is_p2 = player_key == game.player_two;
     require!(is_p1 || is_p2, CoordinationError::NotAParticipant);
 
-    // Check not already committed
     if is_p1 {
         require!(
             game.p1_commit == [0u8; 32],
@@ -34,9 +26,6 @@ pub fn commit_guess(
             CoordinationError::AlreadyCommitted
         );
     }
-
-    // Verify the ZK range proof that commitment encodes a valid guess ∈ {0, 1}
-    zk::verify_bool_range_proof(&proof_a, &proof_b, &proof_c, &commitment)?;
 
     let slot = Clock::get()?.slot;
     let game = &mut ctx.accounts.game;
@@ -61,11 +50,13 @@ pub fn commit_guess(
         GameState::Committing
     };
 
-    // Postcondition: state must have advanced to Committing or Revealing
+    // Postconditions: state advanced, caller's commitment is stored
     require!(
         game.state == GameState::Revealing || game.state == GameState::Committing,
         CoordinationError::InvalidGameState,
     );
+    let stored = if is_p1 { game.p1_commit } else { game.p2_commit };
+    require!(stored == commitment, CoordinationError::InvalidGameState);
 
     emit!(GuessCommitted {
         game_id: game.game_id,

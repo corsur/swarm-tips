@@ -58,9 +58,13 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64) -> Result<()> 
         CoordinationError::ProfileTournamentMismatch,
     );
 
-    // Postcondition: game must be in Pending state awaiting player two
+    // Postconditions: game must be Pending with player one correctly recorded
     require!(
         game.state == GameState::Pending,
+        CoordinationError::InvalidGameState
+    );
+    require!(
+        game.player_one == ctx.accounts.player.key(),
         CoordinationError::InvalidGameState
     );
 

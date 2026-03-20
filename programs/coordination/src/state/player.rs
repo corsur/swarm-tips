@@ -36,9 +36,38 @@ impl PlayerProfile {
         let wins_sq = wins
             .checked_mul(wins)
             .ok_or(CoordinationError::ArithmeticOverflow)?;
-        wins_sq
+        let score = wins_sq
             .checked_div(total_games)
-            .ok_or_else(|| error!(CoordinationError::ArithmeticOverflow))
+            .ok_or_else(|| error!(CoordinationError::ArithmeticOverflow))?;
+        // Postcondition: integer division cannot exceed the dividend
+        require!(score <= wins_sq, CoordinationError::ArithmeticOverflow);
+        Ok(score)
+    }
+
+    /// Updates wins, total_games, and score after a resolved game.
+    /// Shared by reveal_guess and resolve_timeout to keep logic in one place.
+    pub fn update_after_game(&mut self, won: bool, tournament_id: u64) -> Result<()> {
+        require!(
+            self.tournament_id == tournament_id,
+            CoordinationError::ProfileTournamentMismatch,
+        );
+        if won {
+            self.wins = self
+                .wins
+                .checked_add(1)
+                .ok_or(CoordinationError::ArithmeticOverflow)?;
+        }
+        self.total_games = self
+            .total_games
+            .checked_add(1)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+        self.score = PlayerProfile::compute_score(self.wins, self.total_games)?;
+        // Postcondition: wins must never exceed total_games
+        require!(
+            self.wins <= self.total_games,
+            CoordinationError::ArithmeticOverflow,
+        );
+        Ok(())
     }
 }
 
