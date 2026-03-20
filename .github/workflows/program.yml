@@ -33,6 +33,11 @@ jobs:
 
       - run: npm ci
 
+      - name: Generate throwaway keypair for local validator
+        run: |
+          mkdir -p ~/.config/solana
+          solana-keygen new --no-bip39-passphrase --silent -o ~/.config/solana/id.json
+
       - run: anchor build
 
       - run: anchor test
