@@ -4,6 +4,10 @@ use crate::errors::CoordinationError;
 use crate::events::TournamentFinalized;
 use crate::state::{PlayerProfile, Tournament};
 
+/// Maximum number of PlayerProfile accounts accepted per call.
+/// Solana transaction size limits practical use to ~30 accounts.
+const MAX_FINALIZE_ACCOUNTS: usize = 30;
+
 /// Snapshots the prize pool and total player score after tournament end.
 /// Permissionless — any wallet can call.
 ///
@@ -11,63 +15,32 @@ use crate::state::{PlayerProfile, Tournament};
 /// remaining_accounts. Each is verified as a valid PDA before its score
 /// is included in the total.
 ///
-/// Limitation: capped at ~30 profiles per transaction due to Solana
-/// account limits. Redesign required for larger tournaments.
+/// Limitation: capped at MAX_FINALIZE_ACCOUNTS profiles per transaction.
+/// Redesign required for larger tournaments (see open questions).
 pub fn finalize_tournament(ctx: Context<FinalizeTournament>) -> Result<()> {
     let tournament = &ctx.accounts.tournament;
     require!(
         Clock::get()?.unix_timestamp > tournament.end_time,
         CoordinationError::TournamentNotEnded,
     );
-    require!(!tournament.finalized, CoordinationError::TournamentNotFinalized);
+    require!(!tournament.finalized, CoordinationError::InvalidGameState);
+    require!(
+        ctx.remaining_accounts.len() <= MAX_FINALIZE_ACCOUNTS,
+        CoordinationError::TooManyAccounts,
+    );
 
     let prize_snapshot = tournament.prize_lamports;
     let tournament_id = tournament.tournament_id;
     let program_id = ctx.program_id;
 
-    // Sum scores across all provided PlayerProfile accounts.
-    // Read raw account data to avoid lifetime conflicts with the mutable
-    // borrow of tournament that follows.
-    let mut total_score: u64 = 0;
-    for account_info in ctx.remaining_accounts.iter() {
-        require!(
-            account_info.owner == program_id,
-            CoordinationError::ProfileTournamentMismatch,
-        );
-
-        let data = account_info.try_borrow_data()?;
-        // Verify discriminator matches PlayerProfile (first 8 bytes)
-        require!(
-            data.len() >= PlayerProfile::SPACE
-                && data[..8] == *PlayerProfile::DISCRIMINATOR,
-            CoordinationError::ProfileTournamentMismatch,
-        );
-
-        // Deserialize score from the account data.
-        // PlayerProfile layout after discriminator:
-        //   wallet: Pubkey (32), tournament_id: u64 (8), wins: u64 (8),
-        //   total_games: u64 (8), score: u64 (8), claimed: bool (1), bump: u8 (1)
-        let profile_tournament_id = u64::from_le_bytes(
-            data[8 + 32..8 + 32 + 8].try_into().unwrap()
-        );
-        require!(
-            profile_tournament_id == tournament_id,
-            CoordinationError::ProfileTournamentMismatch,
-        );
-
-        let score = u64::from_le_bytes(
-            data[8 + 32 + 8 + 8 + 8..8 + 32 + 8 + 8 + 8 + 8].try_into().unwrap()
-        );
-
-        total_score = total_score
-            .checked_add(score)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-    }
+    let total_score = sum_scores(ctx.remaining_accounts, tournament_id, program_id)?;
 
     let tournament = &mut ctx.accounts.tournament;
     tournament.finalized = true;
     tournament.prize_snapshot = prize_snapshot;
     tournament.total_score_snapshot = total_score;
+
+    require!(tournament.finalized, CoordinationError::InvalidGameState);
 
     emit!(TournamentFinalized {
         tournament_id,
@@ -75,6 +48,59 @@ pub fn finalize_tournament(ctx: Context<FinalizeTournament>) -> Result<()> {
         total_score_snapshot: total_score,
     });
     Ok(())
+}
+
+/// Sum scores across all provided PlayerProfile accounts.
+///
+/// Reads raw account data to avoid borrow conflicts with the mutable
+/// tournament account that follows. Layout is stable and documented below.
+fn sum_scores(
+    accounts: &[AccountInfo],
+    tournament_id: u64,
+    program_id: &Pubkey,
+) -> Result<u64> {
+    let mut total: u64 = 0;
+
+    for account_info in accounts.iter() {
+        require!(
+            account_info.owner == program_id,
+            CoordinationError::ProfileTournamentMismatch,
+        );
+
+        let data = account_info.try_borrow_data()?;
+
+        // Verify discriminator matches PlayerProfile (first 8 bytes).
+        require!(
+            data.len() >= PlayerProfile::SPACE
+                && data[..8] == *PlayerProfile::DISCRIMINATOR,
+            CoordinationError::ProfileTournamentMismatch,
+        );
+
+        // PlayerProfile layout after discriminator:
+        //   wallet: Pubkey (32), tournament_id: u64 (8), wins: u64 (8),
+        //   total_games: u64 (8), score: u64 (8), claimed: bool (1), bump: u8 (1)
+        let profile_tournament_id = u64::from_le_bytes(
+            data[8 + 32..8 + 32 + 8]
+                .try_into()
+                .map_err(|_| error!(CoordinationError::ArithmeticOverflow))?,
+        );
+        require!(
+            profile_tournament_id == tournament_id,
+            CoordinationError::ProfileTournamentMismatch,
+        );
+
+        let score = u64::from_le_bytes(
+            data[8 + 32 + 8 + 8 + 8..8 + 32 + 8 + 8 + 8 + 8]
+                .try_into()
+                .map_err(|_| error!(CoordinationError::ArithmeticOverflow))?,
+        );
+
+        total = total
+            .checked_add(score)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+    }
+
+    Ok(total)
 }
 
 #[derive(Accounts)]

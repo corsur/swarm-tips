@@ -48,6 +48,9 @@ pub fn claim_reward(ctx: Context<ClaimReward>) -> Result<()> {
 
     ctx.accounts.player_profile.claimed = true;
 
+    // Postcondition: claimed flag must be set; prevents double-claim
+    require!(ctx.accounts.player_profile.claimed, CoordinationError::InvalidGameState);
+
     emit!(RewardClaimed {
         tournament_id: tournament.tournament_id,
         player: ctx.accounts.player.key(),

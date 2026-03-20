@@ -57,4 +57,8 @@ pub enum CoordinationError {
     // Arithmetic
     #[msg("Arithmetic overflow")]
     ArithmeticOverflow,
+
+    // Finalize
+    #[msg("Too many accounts passed to finalize_tournament (maximum 30)")]
+    TooManyAccounts,
 }

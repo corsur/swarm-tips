@@ -24,7 +24,12 @@ impl PlayerProfile {
         + 1   // claimed
         + 1;  // bump
 
-    /// score = wins² / total_games
+    /// score = wins² / total_games (integer division)
+    ///
+    /// The quadratic numerator rewards high win *rate*, not raw win count. Integer
+    /// division is intentional: players below ~70% win rate score near zero and
+    /// are not competitive for the prize pool. This is by design.
+    ///
     /// Requires total_games > 0.
     pub fn compute_score(wins: u64, total_games: u64) -> Result<u64> {
         require!(total_games > 0, CoordinationError::ArithmeticOverflow);

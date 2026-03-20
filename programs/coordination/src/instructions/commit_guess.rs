@@ -56,6 +56,12 @@ pub fn commit_guess(
         GameState::Committing
     };
 
+    // Postcondition: state must have advanced to Committing or Revealing
+    require!(
+        game.state == GameState::Revealing || game.state == GameState::Committing,
+        CoordinationError::InvalidGameState,
+    );
+
     emit!(GuessCommitted {
         game_id: game.game_id,
         player: player_key,

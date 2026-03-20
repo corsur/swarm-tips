@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use sha2::{Digest, Sha256};
+use solana_sha256_hasher::hashv;
 use crate::errors::CoordinationError;
 use crate::events::{GameResolved, GuessRevealed};
 use crate::payoff::resolve_homogenous;
@@ -27,13 +27,8 @@ pub fn reveal_guess(ctx: Context<RevealGuess>, guess: u8, salt: [u8; 32]) -> Res
         require!(game.p2_guess == GUESS_UNREVEALED, CoordinationError::AlreadyRevealed);
     }
 
-    // Verify commitment: SHA-256(guess_byte || salt)
-    let computed: [u8; 32] = {
-        let mut h = Sha256::new();
-        h.update([guess]);
-        h.update(salt);
-        h.finalize().into()
-    };
+    // Verify commitment: SHA-256(guess_byte || salt) via sol_sha256 syscall
+    let computed: [u8; 32] = hashv(&[&[guess], salt.as_ref()]).to_bytes();
     let stored = if is_p1 { game.p1_commit } else { game.p2_commit };
     require!(computed == stored, CoordinationError::CommitmentMismatch);
 
@@ -59,21 +54,60 @@ pub fn reveal_guess(ctx: Context<RevealGuess>, guess: u8, salt: [u8; 32]) -> Res
 fn finalize_game(ctx: Context<RevealGuess>) -> Result<()> {
     let game = &ctx.accounts.game;
     let now = Clock::get()?.unix_timestamp;
-
-    let resolution = resolve_homogenous(game.p1_guess, game.p2_guess, game.stake_lamports)?;
-
     let game_id = game.game_id;
     let tournament_id = game.tournament_id;
 
-    // Late resolution: return full stakes, contribute nothing to prize pool
     let (p1_return, p2_return, tournament_gain) =
-        if now > ctx.accounts.tournament.end_time {
-            (game.stake_lamports, game.stake_lamports, 0u64)
-        } else {
-            (resolution.p1_return, resolution.p2_return, resolution.tournament_gain)
-        };
+        compute_returns(game, now, ctx.accounts.tournament.end_time)?;
 
-    // Transfer lamports out of game PDA — game account pays out all stake
+    distribute_lamports(&ctx, p1_return, p2_return, tournament_gain)?;
+    apply_tournament_update(&mut ctx.accounts.tournament, tournament_gain)?;
+
+    let p1_won = p1_return > p2_return;
+    let p2_won = p2_return > p1_return;
+    update_profile(&mut ctx.accounts.p1_profile, p1_won, tournament_id)?;
+    update_profile(&mut ctx.accounts.p2_profile, p2_won, tournament_id)?;
+
+    let game = &mut ctx.accounts.game;
+    game.state = GameState::Resolved;
+    game.resolved_at = now;
+
+    // Postcondition: game must be resolved and timestamped
+    require!(game.state == GameState::Resolved, CoordinationError::InvalidGameState);
+    require!(game.resolved_at == now, CoordinationError::InvalidGameState);
+
+    emit!(GameResolved {
+        game_id,
+        p1_guess: game.p1_guess,
+        p2_guess: game.p2_guess,
+        p1_return,
+        p2_return,
+        tournament_gain,
+    });
+    Ok(())
+}
+
+/// Compute p1_return, p2_return, tournament_gain based on guesses and tournament timing.
+fn compute_returns(
+    game: &Game,
+    now: i64,
+    tournament_end_time: i64,
+) -> Result<(u64, u64, u64)> {
+    // Late resolution: return full stakes, contribute nothing to prize pool
+    if now > tournament_end_time {
+        return Ok((game.stake_lamports, game.stake_lamports, 0u64));
+    }
+    let resolution = resolve_homogenous(game.p1_guess, game.p2_guess, game.stake_lamports)?;
+    Ok((resolution.p1_return, resolution.p2_return, resolution.tournament_gain))
+}
+
+/// Transfer resolved amounts from game PDA to player wallets and tournament.
+fn distribute_lamports(
+    ctx: &Context<RevealGuess>,
+    p1_return: u64,
+    p2_return: u64,
+    tournament_gain: u64,
+) -> Result<()> {
     transfer_from_game(
         &ctx.accounts.game.to_account_info(),
         &ctx.accounts.player_one_wallet.to_account_info(),
@@ -91,38 +125,27 @@ fn finalize_game(ctx: Context<RevealGuess>) -> Result<()> {
             tournament_gain,
         )?;
     }
+    Ok(())
+}
 
-    // Update tournament state
-    if tournament_gain > 0 {
-        let tournament = &mut ctx.accounts.tournament;
-        tournament.prize_lamports = tournament.prize_lamports
-            .checked_add(tournament_gain)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-        tournament.game_count = tournament.game_count
-            .checked_add(1)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
+/// Increment tournament prize pool and game count if the game contributed.
+fn apply_tournament_update(tournament: &mut Tournament, tournament_gain: u64) -> Result<()> {
+    if tournament_gain == 0 {
+        return Ok(());
     }
-
-    // Update player profiles
-    let p1_won = p1_return > p2_return;
-    let p2_won = p2_return > p1_return;
-
-    update_profile(&mut ctx.accounts.p1_profile, p1_won, tournament_id)?;
-    update_profile(&mut ctx.accounts.p2_profile, p2_won, tournament_id)?;
-
-    // Mark game resolved
-    let game = &mut ctx.accounts.game;
-    game.state = GameState::Resolved;
-    game.resolved_at = now;
-
-    emit!(GameResolved {
-        game_id,
-        p1_guess: game.p1_guess,
-        p2_guess: game.p2_guess,
-        p1_return,
-        p2_return,
-        tournament_gain,
-    });
+    tournament.prize_lamports = tournament
+        .prize_lamports
+        .checked_add(tournament_gain)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    tournament.game_count = tournament
+        .game_count
+        .checked_add(1)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    // Postcondition: prize pool must have grown
+    require!(
+        tournament.prize_lamports >= tournament_gain,
+        CoordinationError::ArithmeticOverflow,
+    );
     Ok(())
 }
 

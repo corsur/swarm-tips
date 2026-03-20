@@ -10,8 +10,8 @@ pub fn create_tournament(
     end_time: i64,
 ) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
-    require!(start_time >= now, CoordinationError::OutsideTournamentWindow);
     require!(end_time > start_time, CoordinationError::OutsideTournamentWindow);
+    require!(end_time > now, CoordinationError::TournamentNotEnded);
 
     let t = &mut ctx.accounts.tournament;
     t.tournament_id = tournament_id;
@@ -24,6 +24,10 @@ pub fn create_tournament(
     t.prize_snapshot = 0;
     t.total_score_snapshot = 0;
     t.bump = ctx.bumps.tournament;
+
+    // Postconditions: verify tournament was initialized correctly
+    require!(!t.finalized, CoordinationError::InvalidGameState);
+    require!(t.end_time > t.start_time, CoordinationError::OutsideTournamentWindow);
 
     emit!(TournamentCreated { tournament_id, start_time, end_time });
     Ok(())

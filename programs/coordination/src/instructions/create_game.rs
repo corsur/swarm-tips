@@ -58,6 +58,9 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64) -> Result<()> 
         CoordinationError::ProfileTournamentMismatch,
     );
 
+    // Postcondition: game must be in Pending state awaiting player two
+    require!(game.state == GameState::Pending, CoordinationError::InvalidGameState);
+
     // Transfer stake from player to game PDA
     system_program::transfer(
         CpiContext::new(

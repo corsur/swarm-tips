@@ -52,6 +52,10 @@ pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
     game.player_two = ctx.accounts.player.key();
     game.state = GameState::Active;
 
+    // Postcondition: game must now be Active with both players set
+    require!(game.state == GameState::Active, CoordinationError::InvalidGameState);
+    require!(game.player_two != Pubkey::default(), CoordinationError::InvalidGameState);
+
     emit!(GameStarted {
         game_id: game.game_id,
         tournament_id: game.tournament_id,

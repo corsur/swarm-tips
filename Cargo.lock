@@ -670,7 +670,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "groth16-solana",
- "sha2",
+ "solana-sha256-hasher",
 ]
 
 [[package]]
