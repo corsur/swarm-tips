@@ -488,6 +488,79 @@ describe("coordination", () => {
     }
   });
 
+  it("rejects create_tournament with end_time before start_time", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const [badTournamentPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("tournament"), new BN(998).toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+    try {
+      await program.methods
+        .createTournament(new BN(998), new BN(now + 100), new BN(now + 50))
+        .accountsPartial({
+          tournament: badTournamentPda,
+          authority: provider.wallet.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+      assert.fail("Expected InvalidTournamentTimes error");
+    } catch (e: any) {
+      assert.include(e.toString(), "InvalidTournamentTimes");
+    }
+  });
+
+  it("rejects create_game with zero stake", async () => {
+    const counter = await program.account.gameCounter.fetch(gameCounterPda);
+    const [zeroGamePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("game"), (counter.count as BN).toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+    const [zeroProfilePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("player"), tournamentIdBuf(), player1.publicKey.toBuffer()],
+      program.programId
+    );
+    try {
+      await program.methods
+        .createGame(new BN(0))
+        .accountsPartial({
+          game: zeroGamePda,
+          gameCounter: gameCounterPda,
+          playerProfile: zeroProfilePda,
+          tournament: tournamentPda,
+          player: player1.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([player1])
+        .rpc();
+      assert.fail("Expected StakeMismatch error");
+    } catch (e: any) {
+      assert.include(e.toString(), "StakeMismatch");
+    }
+  });
+
+  it("rejects commit from non-participant", async () => {
+    // Use the timeout game (still in Committing state — only p1 committed)
+    const counter = await program.account.gameCounter.fetch(gameCounterPda);
+    // The timeout game was game_id = counter - 1 (created in a prior test)
+    const timeoutGameId = (counter.count as BN).subn(1);
+    const [tGamePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("game"), timeoutGameId.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+    const outsider = Keypair.generate();
+    const { commitment } = generateCommit(GUESS_HUMAN);
+    try {
+      await program.methods
+        .commitGuess(commitment as any)
+        .accountsPartial({ game: tGamePda, player: outsider.publicKey })
+        .signers([outsider])
+        .rpc();
+      assert.fail("Expected NotAParticipant error");
+    } catch (e: any) {
+      assert.include(e.toString(), "NotAParticipant");
+    }
+  });
+
   it("rejects finalize_tournament before end time", async () => {
     try {
       await program.methods

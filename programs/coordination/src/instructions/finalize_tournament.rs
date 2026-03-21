@@ -8,6 +8,13 @@ use anchor_lang::Discriminator;
 /// Solana transaction size limits practical use to ~30 accounts.
 const MAX_FINALIZE_ACCOUNTS: usize = 30;
 
+// Byte offsets within a serialized PlayerProfile account (including the
+// 8-byte Anchor discriminator prefix).
+// Layout: discriminator(8) | wallet(32) | tournament_id(8) | wins(8) | total_games(8) | score(8) | ...
+const TOURNAMENT_ID_OFFSET: usize = 8 + 32; // 40
+const SCORE_OFFSET: usize = 8 + 32 + 8 + 8 + 8; // 64
+const SCORE_END: usize = SCORE_OFFSET + 8; // 72
+
 /// Snapshots the prize pool and total player score after tournament end.
 /// Permissionless — any wallet can call.
 ///
@@ -79,7 +86,7 @@ fn sum_scores(accounts: &[AccountInfo], tournament_id: u64, program_id: &Pubkey)
         //   wallet: Pubkey (32), tournament_id: u64 (8), wins: u64 (8),
         //   total_games: u64 (8), score: u64 (8), claimed: bool (1), bump: u8 (1)
         let profile_tournament_id = u64::from_le_bytes(
-            data[8 + 32..8 + 32 + 8]
+            data[TOURNAMENT_ID_OFFSET..TOURNAMENT_ID_OFFSET + 8]
                 .try_into()
                 .map_err(|_| error!(CoordinationError::ArithmeticOverflow))?,
         );
@@ -89,7 +96,7 @@ fn sum_scores(accounts: &[AccountInfo], tournament_id: u64, program_id: &Pubkey)
         );
 
         let score = u64::from_le_bytes(
-            data[8 + 32 + 8 + 8 + 8..8 + 32 + 8 + 8 + 8 + 8]
+            data[SCORE_OFFSET..SCORE_END]
                 .try_into()
                 .map_err(|_| error!(CoordinationError::ArithmeticOverflow))?,
         );
@@ -100,6 +107,34 @@ fn sum_scores(accounts: &[AccountInfo], tournament_id: u64, program_id: &Pubkey)
     }
 
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::PlayerProfile;
+
+    #[test]
+    fn score_offset_within_player_profile_space() {
+        // SCORE_END must not exceed PlayerProfile::SPACE, or sum_scores will
+        // read out of bounds on a correctly-sized account.
+        assert!(
+            SCORE_END <= PlayerProfile::SPACE,
+            "SCORE_END ({}) exceeds PlayerProfile::SPACE ({}); update offset constants",
+            SCORE_END,
+            PlayerProfile::SPACE,
+        );
+    }
+
+    #[test]
+    fn tournament_id_offset_within_player_profile_space() {
+        assert!(
+            TOURNAMENT_ID_OFFSET + 8 <= PlayerProfile::SPACE,
+            "TOURNAMENT_ID_OFFSET ({}) exceeds PlayerProfile::SPACE ({}); update offset constants",
+            TOURNAMENT_ID_OFFSET + 8,
+            PlayerProfile::SPACE,
+        );
+    }
 }
 
 #[derive(Accounts)]

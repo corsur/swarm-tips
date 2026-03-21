@@ -102,6 +102,13 @@ jobs:
       - name: Publish SDK to GitHub Packages
         run: |
           cp target/types/coordination.ts sdk/coordination.ts
+          node -e "
+            const idl = require('./target/idl/coordination.json');
+            const fs = require('fs');
+            fs.appendFileSync('sdk/coordination.ts',
+              '\nexport const IDL: Coordination = ' + JSON.stringify(idl, null, 2) + ' as unknown as Coordination;\n'
+            );
+          "
           cd sdk
           npm version 0.0.0-$(git rev-parse --short HEAD) --no-git-tag-version
           npm publish
