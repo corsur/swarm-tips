@@ -12,7 +12,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("2mqqXnhRtqEYUM9ycyL7mLjkCfjjutMXSfYWuXWxEJac");
+declare_id!("2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P");
 
 #[program]
 pub mod coordination {

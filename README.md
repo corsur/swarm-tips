@@ -59,4 +59,4 @@ Guesses are submitted in two phases to prevent Player 2 from copying Player 1's 
 
 The CI pipeline (`deploy` job in `.github/workflows/program.yml`) deploys to devnet on every merge to `main`, after all tests pass. Deployment requires `SOLANA_DEPLOY_KEYPAIR` and `ANCHOR_PROGRAM_KEYPAIR` GitHub secrets.
 
-Program ID: `2mqqXnhRtqEYUM9ycyL7mLjkCfjjutMXSfYWuXWxEJac`
+Program ID: `2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P`
