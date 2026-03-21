@@ -6,8 +6,9 @@ use crate::state::{
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64) -> Result<()> {
+pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: u8) -> Result<()> {
     require!(stake_lamports > 0, CoordinationError::StakeMismatch);
+    require!(matchup_type <= 1, CoordinationError::InvalidGameState);
 
     let now = Clock::get()?.unix_timestamp;
     require!(
@@ -40,7 +41,7 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64) -> Result<()> 
     game.commit_timeout_slots = COMMIT_TIMEOUT_SLOTS;
     game.created_at = now;
     game.resolved_at = 0;
-    game.matchup_type = 0;
+    game.matchup_type = matchup_type;
     game.bump = ctx.bumps.game;
 
     // Init player profile if needed — player pays for their own account
@@ -87,7 +88,7 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64) -> Result<()> 
 }
 
 #[derive(Accounts)]
-#[instruction(stake_lamports: u64)]
+#[instruction(stake_lamports: u64, matchup_type: u8)]
 pub struct CreateGame<'info> {
     #[account(
         init,

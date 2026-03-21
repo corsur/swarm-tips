@@ -1,6 +1,6 @@
 use crate::errors::CoordinationError;
 use crate::events::{GameResolved, GuessRevealed};
-use crate::payoff::resolve_homogenous;
+use crate::payoff::resolve_game;
 use crate::state::{Game, GameState, PlayerProfile, Tournament, GUESS_UNREVEALED};
 use anchor_lang::prelude::*;
 use solana_sha256_hasher::hashv;
@@ -112,7 +112,13 @@ fn compute_returns(game: &Game, now: i64, tournament_end_time: i64) -> Result<(u
     if now > tournament_end_time {
         return Ok((game.stake_lamports, game.stake_lamports, 0u64));
     }
-    let resolution = resolve_homogenous(game.p1_guess, game.p2_guess, game.stake_lamports)?;
+    let resolution = resolve_game(
+        game.matchup_type,
+        game.p1_guess,
+        game.p2_guess,
+        game.stake_lamports,
+        game.first_committer,
+    )?;
     Ok((
         resolution.p1_return,
         resolution.p2_return,

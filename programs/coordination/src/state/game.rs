@@ -3,8 +3,8 @@ use anchor_lang::prelude::*;
 pub const COMMIT_TIMEOUT_SLOTS: u64 = 7_200;
 pub const REVEAL_TIMEOUT_SLOTS: u64 = 14_400;
 
-pub const GUESS_HUMAN: u8 = 0;
-pub const GUESS_AI: u8 = 1;
+pub const GUESS_SAME_TEAM: u8 = 0;
+pub const GUESS_DIFF_TEAM: u8 = 1;
 pub const GUESS_UNREVEALED: u8 = 255;
 
 #[account]
@@ -35,7 +35,7 @@ pub struct Game {
     pub commit_timeout_slots: u64,
     pub created_at: i64,
     pub resolved_at: i64,
-    /// Always 0 in v1 (homogenous only). Reserved for future heterogeneous matchups.
+    /// 0 = same team (homogenous), 1 = different teams (heterogeneous).
     pub matchup_type: u8,
     pub bump: u8,
 }
@@ -81,9 +81,9 @@ mod tests {
 
     #[test]
     fn guess_constants_are_distinct() {
-        assert_ne!(GUESS_HUMAN, GUESS_AI);
-        assert_ne!(GUESS_HUMAN, GUESS_UNREVEALED);
-        assert_ne!(GUESS_AI, GUESS_UNREVEALED);
+        assert_ne!(GUESS_SAME_TEAM, GUESS_DIFF_TEAM);
+        assert_ne!(GUESS_SAME_TEAM, GUESS_UNREVEALED);
+        assert_ne!(GUESS_DIFF_TEAM, GUESS_UNREVEALED);
     }
 
     #[test]

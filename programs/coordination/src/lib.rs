@@ -31,8 +31,12 @@ pub mod coordination {
         instructions::create_tournament::create_tournament(ctx, tournament_id, start_time, end_time)
     }
 
-    pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64) -> Result<()> {
-        instructions::create_game::create_game(ctx, stake_lamports)
+    pub fn create_game(
+        ctx: Context<CreateGame>,
+        stake_lamports: u64,
+        matchup_type: u8,
+    ) -> Result<()> {
+        instructions::create_game::create_game(ctx, stake_lamports, matchup_type)
     }
 
     pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {

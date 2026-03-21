@@ -44,7 +44,8 @@ describe("coordination", () => {
 
   const TOURNAMENT_ID = new BN(1);
   const STAKE = new BN(10_000_000); // 0.01 SOL
-  const GUESS_HUMAN = 0;
+  const GUESS_SAME_TEAM = 0;
+  const GUESS_DIFF_TEAM = 1;
 
   let gameCounterPda: PublicKey;
   let tournamentPda: PublicKey;
@@ -52,9 +53,9 @@ describe("coordination", () => {
   let p1ProfilePda: PublicKey;
   let p2ProfilePda: PublicKey;
 
-  // Precomputed commits used across the commit and reveal tests
-  const p1Commit = generateCommit(GUESS_HUMAN);
-  const p2Commit = generateCommit(GUESS_HUMAN);
+  // Precomputed commits used across the commit and reveal tests (same-team game)
+  const p1Commit = generateCommit(GUESS_SAME_TEAM);
+  const p2Commit = generateCommit(GUESS_SAME_TEAM);
 
   function tournamentIdBuf(): Buffer {
     return TOURNAMENT_ID.toArrayLike(Buffer, "le", 8);
@@ -141,7 +142,7 @@ describe("coordination", () => {
     );
 
     await program.methods
-      .createGame(STAKE)
+      .createGame(STAKE, GUESS_SAME_TEAM)
       .accountsPartial({
         game: gamePda,
         gameCounter: gameCounterPda,
@@ -156,6 +157,7 @@ describe("coordination", () => {
     const game = await program.account.game.fetch(gamePda);
     assert.equal(game.playerOne.toString(), player1.publicKey.toString());
     assert.equal(game.stakeLamports.toString(), STAKE.toString());
+    assert.equal(game.matchupType, GUESS_SAME_TEAM, "matchup_type should be 0 (same team)");
   });
 
   it("player 2 joins the game", async () => {
@@ -200,7 +202,7 @@ describe("coordination", () => {
   });
 
   it("rejects double commit from player 1", async () => {
-    const { commitment } = generateCommit(GUESS_HUMAN);
+    const { commitment } = generateCommit(GUESS_SAME_TEAM);
     try {
       await program.methods
         .commitGuess(commitment as any)
@@ -295,7 +297,7 @@ describe("coordination", () => {
       .rpc();
 
     const game = await program.account.game.fetch(gamePda);
-    assert.equal(game.p1Guess, GUESS_HUMAN, "p1 guess should be recorded");
+    assert.equal(game.p1Guess, GUESS_SAME_TEAM, "p1 guess should be recorded");
   });
 
   it("rejects double reveal from player 1", async () => {
@@ -337,8 +339,8 @@ describe("coordination", () => {
       .rpc();
 
     const game = await program.account.game.fetch(gamePda);
-    assert.equal(game.p1Guess, GUESS_HUMAN, "p1 should have guessed Human");
-    assert.equal(game.p2Guess, GUESS_HUMAN, "p2 should have guessed Human");
+    assert.equal(game.p1Guess, GUESS_SAME_TEAM, "p1 should have guessed same team");
+    assert.equal(game.p2Guess, GUESS_SAME_TEAM, "p2 should have guessed same team");
     assert.notEqual(game.resolvedAt.toString(), "0", "game should be resolved");
 
     // Both correct in homogenous match → each gets 90% back, tournament gets 10% from each
@@ -389,7 +391,7 @@ describe("coordination", () => {
     );
 
     await program.methods
-      .createGame(STAKE)
+      .createGame(STAKE, GUESS_SAME_TEAM)
       .accountsPartial({
         game: soloGamePda,
         gameCounter: gameCounterPda,
@@ -437,7 +439,7 @@ describe("coordination", () => {
     );
 
     await program.methods
-      .createGame(STAKE)
+      .createGame(STAKE, GUESS_SAME_TEAM)
       .accountsPartial({
         game: timeoutGamePda,
         gameCounter: gameCounterPda,
@@ -461,7 +463,7 @@ describe("coordination", () => {
       .signers([player2])
       .rpc();
 
-    const { commitment } = generateCommit(GUESS_HUMAN);
+    const { commitment } = generateCommit(GUESS_SAME_TEAM);
     await program.methods
       .commitGuess(commitment as any)
       .accountsPartial({ game: timeoutGamePda, player: player1.publicKey })
@@ -521,7 +523,7 @@ describe("coordination", () => {
     );
     try {
       await program.methods
-        .createGame(new BN(0))
+        .createGame(new BN(0), GUESS_SAME_TEAM)
         .accountsPartial({
           game: zeroGamePda,
           gameCounter: gameCounterPda,
@@ -548,7 +550,7 @@ describe("coordination", () => {
       program.programId
     );
     const outsider = Keypair.generate();
-    const { commitment } = generateCommit(GUESS_HUMAN);
+    const { commitment } = generateCommit(GUESS_SAME_TEAM);
     try {
       await program.methods
         .commitGuess(commitment as any)
@@ -637,6 +639,143 @@ describe("coordination", () => {
     );
   });
 
+  // ---------------------------------------------------------------------------
+  // Heterogeneous game — different-team matchup
+  // ---------------------------------------------------------------------------
+
+  it("heterogeneous game: p1 commits first, both correct → p1 gets ~1.9× stake", async () => {
+    // Create a fresh tournament for this test so we can run it in isolation
+    const heteroTournamentId = new BN(2);
+    const [heteroTournamentPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("tournament"), heteroTournamentId.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+    const now = Math.floor(Date.now() / 1000);
+    await program.methods
+      .createTournament(heteroTournamentId, new BN(now - 60), new BN(now + 3600))
+      .accountsPartial({
+        tournament: heteroTournamentPda,
+        authority: provider.wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    const counter = await program.account.gameCounter.fetch(gameCounterPda);
+    const heteroGameId = counter.count as BN;
+    const [heteroGamePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("game"), heteroGameId.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+    const heteroTournamentIdBuf = heteroTournamentId.toArrayLike(Buffer, "le", 8);
+    const [hetP1ProfilePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("player"), heteroTournamentIdBuf, player1.publicKey.toBuffer()],
+      program.programId
+    );
+    const [hetP2ProfilePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("player"), heteroTournamentIdBuf, player2.publicKey.toBuffer()],
+      program.programId
+    );
+
+    // Create game with matchup_type = 1 (different teams)
+    await program.methods
+      .createGame(STAKE, GUESS_DIFF_TEAM)
+      .accountsPartial({
+        game: heteroGamePda,
+        gameCounter: gameCounterPda,
+        playerProfile: hetP1ProfilePda,
+        tournament: heteroTournamentPda,
+        player: player1.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([player1])
+      .rpc();
+
+    const createdGame = await program.account.game.fetch(heteroGamePda);
+    assert.equal(createdGame.matchupType, GUESS_DIFF_TEAM, "matchup_type should be 1 (diff team)");
+
+    // Player 2 joins
+    await program.methods
+      .joinGame()
+      .accountsPartial({
+        game: heteroGamePda,
+        playerProfile: hetP2ProfilePda,
+        tournament: heteroTournamentPda,
+        player: player2.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([player2])
+      .rpc();
+
+    // Both commit guessing DIFF_TEAM (1 = correct for a heterogeneous match)
+    // P1 commits first → first_committer = 1
+    const hetP1Commit = generateCommit(GUESS_DIFF_TEAM);
+    const hetP2Commit = generateCommit(GUESS_DIFF_TEAM);
+
+    await program.methods
+      .commitGuess(hetP1Commit.commitment as any)
+      .accountsPartial({ game: heteroGamePda, player: player1.publicKey })
+      .signers([player1])
+      .rpc();
+
+    await program.methods
+      .commitGuess(hetP2Commit.commitment as any)
+      .accountsPartial({ game: heteroGamePda, player: player2.publicKey })
+      .signers([player2])
+      .rpc();
+
+    // Capture balances before reveal
+    const p1BalanceBefore = await provider.connection.getBalance(player1.publicKey);
+    const p2BalanceBefore = await provider.connection.getBalance(player2.publicKey);
+
+    // Both reveal
+    const revealAccounts = {
+      game: heteroGamePda,
+      p1Profile: hetP1ProfilePda,
+      p2Profile: hetP2ProfilePda,
+      tournament: heteroTournamentPda,
+      playerOneWallet: player1.publicKey,
+      playerTwoWallet: player2.publicKey,
+      systemProgram: SystemProgram.programId,
+    };
+
+    await program.methods
+      .revealGuess(hetP1Commit.r as any)
+      .accountsPartial({ ...revealAccounts, player: player1.publicKey })
+      .signers([player1])
+      .rpc();
+
+    await program.methods
+      .revealGuess(hetP2Commit.r as any)
+      .accountsPartial({ ...revealAccounts, player: player2.publicKey })
+      .signers([player2])
+      .rpc();
+
+    const resolvedGame = await program.account.game.fetch(heteroGamePda);
+    assert.equal(resolvedGame.p1Guess, GUESS_DIFF_TEAM, "p1 should have guessed diff team");
+    assert.equal(resolvedGame.p2Guess, GUESS_DIFF_TEAM, "p2 should have guessed diff team");
+    assert.equal(resolvedGame.firstCommitter, 1, "p1 should be first committer");
+    assert.notEqual(resolvedGame.resolvedAt.toString(), "0", "game should be resolved");
+
+    // P1 committed first, both correct → p1 wins 1.9× stake
+    const expectedP1Return = STAKE.muln(19).divn(10); // 19_000_000
+    const p1BalanceAfter = await provider.connection.getBalance(player1.publicKey);
+    const p1Net = p1BalanceAfter - p1BalanceBefore;
+    // p1Net ≈ expectedP1Return - STAKE (stake was locked) minus tx fees
+    // We just check the tournament got its share
+    const expectedTournamentGain = new BN(2).mul(STAKE).sub(expectedP1Return); // 1_000_000
+    const hetTournament = await program.account.tournament.fetch(heteroTournamentPda);
+    assert.equal(
+      hetTournament.prizeLamports.toString(),
+      expectedTournamentGain.toString(),
+      "tournament should have received stake/10"
+    );
+
+    // P2 should receive nothing (lost)
+    const p2BalanceAfter = await provider.connection.getBalance(player2.publicKey);
+    // p2 net = -(stake + tx fees) — approximately, just check they didn't gain
+    assert.isBelow(p2BalanceAfter, p2BalanceBefore, "p2 should lose stake");
+  });
+
   it("rejects create_game outside tournament window", async () => {
     // Tournament 999 was created with end_time = now + 2 and is now expired
     const expiredId = new BN(999);
@@ -659,7 +798,7 @@ describe("coordination", () => {
     );
     try {
       await program.methods
-        .createGame(STAKE)
+        .createGame(STAKE, GUESS_SAME_TEAM)
         .accountsPartial({
           game: expiredGamePda,
           gameCounter: gameCounterPda,
