@@ -57,7 +57,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -80,6 +80,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+          registry-url: 'https://npm.pkg.github.com'
 
       - run: npm ci
 
@@ -95,16 +96,14 @@ jobs:
 
       - run: anchor build
 
-      - name: Update SDK types
-        run: cp target/types/coordination.ts sdk/coordination.ts
-
-      - name: Commit SDK types
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sdk/coordination.ts
-          git diff --staged --quiet || git commit -m "chore: update SDK types from build"
-          git push
-
       - name: Deploy to devnet
         run: anchor deploy --provider.cluster devnet
+
+      - name: Publish SDK to GitHub Packages
+        run: |
+          cp target/types/coordination.ts sdk/coordination.ts
+          cd sdk
+          npm version 0.0.0-$(git rev-parse --short HEAD) --no-git-tag-version
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

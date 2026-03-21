@@ -1,0 +1,12 @@
+{
+  "name": "@corsur/coordination-sdk",
+  "version": "0.0.0",
+  "description": "Anchor-generated TypeScript types for the Coordination program",
+  "types": "./coordination.ts",
+  "files": [
+    "coordination.ts"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}
