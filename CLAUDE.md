@@ -67,7 +67,7 @@ Singleton PDA. Seeds: `["game_counter"]`
 
 ```
 discriminator:    8 bytes
-count:            u64      incremented on each join_game (first call); used as game_id
+count:            u64      incremented on each create_game; used as game_id
 bump:             u8
 ```
 
@@ -119,15 +119,15 @@ state:                    u8        GameState enum
 stake_lamports:           u64       per-player stake; set at creation, must match exactly at join
 p1_commit:                [u8; 32]  SHA-256 commitment, zeroed until set
 p2_commit:                [u8; 32]
-p1_guess:                 u8        0 = Human, 1 = AI, 255 = unrevealed
-p2_guess:                 u8        0 = Human, 1 = AI, 255 = unrevealed
+p1_guess:                 u8        0 = same team, 1 = different team, 255 = unrevealed
+p2_guess:                 u8        0 = same team, 1 = different team, 255 = unrevealed
 first_committer:          u8        0 = neither, 1 = p1, 2 = p2
 p1_commit_slot:           u64       Solana slot at commit time
 p2_commit_slot:           u64       Solana slot at commit time
 commit_timeout_slots:     u64       set at creation (see Timeouts)
 created_at:               i64       Unix timestamp
 resolved_at:              i64       0 until resolved
-matchup_type:             u8        always 0 in v1 (homogenous); reserved for future heterogeneous matches
+matchup_type:             u8        0 = same team (homogenous), 1 = different teams (heterogeneous); randomly assigned by matchmaker
 bump:                     u8
 ```
 
@@ -249,16 +249,27 @@ Signers: `player`
 
 ## Payoff Logic (`resolve_game` pure function)
 
-Called from `reveal_guess` when both guesses are in. In v1 all matchups are Homogenous (human vs. human).
+Called from `reveal_guess` when both guesses are in. Routes to `resolve_homogenous` or `resolve_heterogeneous` based on `game.matchup_type`.
 
-Let `S = stake_lamports`.
+Let `S = stake_lamports`. A correct guess means guessing the actual `matchup_type` value (0 for same team, 1 for different team).
+
+**Same team (matchup_type = 0) — cooperative:**
 
 | Outcome | P1 return | P2 return | Tournament receives |
 |---|---|---|---|
-| Both guess correctly | `S * 9 / 10` | `S * 9 / 10` | `S * 2 / 10` |
+| Both guess correctly (both guess 0) | `S * 9 / 10` | `S * 9 / 10` | `S * 2 / 10` |
 | At least one wrong | `0` | `0` | `2 * S` |
 
-For v1 (Homogenous only), "correct" means guessing "Human" (0). All arithmetic uses `checked_mul` / `checked_div`. The 0.1 fee is computed as `S - (S * 9 / 10)` to avoid rounding loss.
+**Different teams (matchup_type = 1) — adversarial:**
+
+Winner rule: if exactly one player is wrong, the wrong player loses. If both correct or both wrong, the first committer wins.
+
+| Outcome | Winner return | Loser return | Tournament receives |
+|---|---|---|---|
+| One correct, one wrong | correct player: `S * 19 / 10` | `0` | `2*S - S*19/10` |
+| Both correct or both wrong | first committer: `S * 19 / 10` | `0` | `2*S - S*19/10` |
+
+All arithmetic uses `checked_mul` / `checked_div`. Lamport conservation is asserted as an invariant after each resolution.
 
 After resolving:
 - Transfer return amounts to player wallets

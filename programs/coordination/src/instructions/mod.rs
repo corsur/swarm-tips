@@ -8,6 +8,7 @@ pub mod initialize;
 pub mod join_game;
 pub mod resolve_timeout;
 pub mod reveal_guess;
+pub mod utils;
 
 pub use claim_reward::*;
 pub use close_game::*;

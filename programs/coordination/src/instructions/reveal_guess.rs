@@ -1,5 +1,6 @@
 use crate::errors::CoordinationError;
 use crate::events::{GameResolved, GuessRevealed};
+use crate::instructions::utils::transfer_lamports;
 use crate::payoff::resolve_game;
 use crate::state::{Game, GameState, PlayerProfile, Tournament, GUESS_UNREVEALED};
 use anchor_lang::prelude::*;
@@ -133,18 +134,18 @@ fn distribute_lamports(
     p2_return: u64,
     tournament_gain: u64,
 ) -> Result<()> {
-    transfer_from_game(
+    transfer_lamports(
         &ctx.accounts.game.to_account_info(),
         &ctx.accounts.player_one_wallet.to_account_info(),
         p1_return,
     )?;
-    transfer_from_game(
+    transfer_lamports(
         &ctx.accounts.game.to_account_info(),
         &ctx.accounts.player_two_wallet.to_account_info(),
         p2_return,
     )?;
     if tournament_gain > 0 {
-        transfer_from_game(
+        transfer_lamports(
             &ctx.accounts.game.to_account_info(),
             &ctx.accounts.tournament.to_account_info(),
             tournament_gain,
@@ -171,23 +172,6 @@ fn apply_tournament_update(tournament: &mut Tournament, tournament_gain: u64) ->
         tournament.prize_lamports >= tournament_gain,
         CoordinationError::ArithmeticOverflow,
     );
-    Ok(())
-}
-
-/// Transfer lamports directly from game PDA (program-owned) to a destination.
-/// Safe because the game account is owned by this program.
-fn transfer_from_game(from: &AccountInfo, to: &AccountInfo, lamports: u64) -> Result<()> {
-    if lamports == 0 {
-        return Ok(());
-    }
-    **from.try_borrow_mut_lamports()? = from
-        .lamports()
-        .checked_sub(lamports)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    **to.try_borrow_mut_lamports()? = to
-        .lamports()
-        .checked_add(lamports)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
     Ok(())
 }
 

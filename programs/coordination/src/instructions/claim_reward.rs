@@ -1,5 +1,6 @@
 use crate::errors::CoordinationError;
 use crate::events::RewardClaimed;
+use crate::instructions::utils::transfer_lamports;
 use crate::state::{PlayerProfile, Tournament, MIN_GAMES_FOR_PAYOUT};
 use anchor_lang::prelude::*;
 
@@ -41,16 +42,11 @@ pub fn claim_reward(ctx: Context<ClaimReward>) -> Result<()> {
     require!(entitlement > 0, CoordinationError::EmptyPrizePool);
 
     // Transfer entitlement from tournament PDA to player wallet
-    let tournament_info = ctx.accounts.tournament.to_account_info();
-    let player_info = ctx.accounts.player.to_account_info();
-    **tournament_info.try_borrow_mut_lamports()? = tournament_info
-        .lamports()
-        .checked_sub(entitlement)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    **player_info.try_borrow_mut_lamports()? = player_info
-        .lamports()
-        .checked_add(entitlement)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    transfer_lamports(
+        &ctx.accounts.tournament.to_account_info(),
+        &ctx.accounts.player.to_account_info(),
+        entitlement,
+    )?;
 
     ctx.accounts.player_profile.claimed = true;
 

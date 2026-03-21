@@ -1,5 +1,6 @@
 use crate::errors::CoordinationError;
 use crate::events::TimeoutSlash;
+use crate::instructions::utils::transfer_lamports;
 use crate::state::{Game, GameState, PlayerProfile, Tournament, REVEAL_TIMEOUT_SLOTS};
 use anchor_lang::prelude::*;
 
@@ -25,13 +26,13 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
             winner_is_p1,
         } => {
             // Slash the non-participating player; return the winner's stake
-            transfer_from_game(&game_info, &tournament_info, game.stake_lamports)?;
+            transfer_lamports(&game_info, &tournament_info, game.stake_lamports)?;
             let winner_wallet = if winner_is_p1 {
                 ctx.accounts.player_one_wallet.to_account_info()
             } else {
                 ctx.accounts.player_two_wallet.to_account_info()
             };
-            transfer_from_game(&game_info, &winner_wallet, game.stake_lamports)?;
+            transfer_lamports(&game_info, &winner_wallet, game.stake_lamports)?;
             (
                 game.stake_lamports,
                 slashed_player,
@@ -45,7 +46,7 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
                 .stake_lamports
                 .checked_mul(2)
                 .ok_or(CoordinationError::ArithmeticOverflow)?;
-            transfer_from_game(&game_info, &tournament_info, both_stakes)?;
+            transfer_lamports(&game_info, &tournament_info, both_stakes)?;
             // Report player_one as canonical slashed address; both were slashed
             (both_stakes, game.player_one, false, false)
         }
@@ -160,21 +161,6 @@ fn find_timeout(game: &Game, current_slot: u64) -> Result<TimeoutOutcome> {
         }
         _ => err!(CoordinationError::InvalidGameState),
     }
-}
-
-fn transfer_from_game(from: &AccountInfo, to: &AccountInfo, lamports: u64) -> Result<()> {
-    if lamports == 0 {
-        return Ok(());
-    }
-    **from.try_borrow_mut_lamports()? = from
-        .lamports()
-        .checked_sub(lamports)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    **to.try_borrow_mut_lamports()? = to
-        .lamports()
-        .checked_add(lamports)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    Ok(())
 }
 
 #[derive(Accounts)]
