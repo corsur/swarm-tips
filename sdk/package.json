@@ -1,6 +1,6 @@
 {
   "name": "@corsur/coordination-sdk",
-  "version": "0.0.0-78d4c88-4",
+  "version": "0.0.0-78d4c88-5",
   "description": "Anchor-generated TypeScript types for the Coordination program",
   "types": "./coordination.ts",
   "files": [
