@@ -111,6 +111,7 @@ jobs:
           "
           cd sdk
           npm version 0.0.0-$(git rev-parse --short HEAD) --no-git-tag-version
-          npm publish
+          npm publish --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

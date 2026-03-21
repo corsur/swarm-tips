@@ -636,4 +636,43 @@ describe("coordination", () => {
       "score snapshot should be zero"
     );
   });
+
+  it("rejects create_game outside tournament window", async () => {
+    // Tournament 999 was created with end_time = now + 2 and is now expired
+    const expiredId = new BN(999);
+    const [expiredTournamentPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("tournament"), expiredId.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+    const counter = await program.account.gameCounter.fetch(gameCounterPda);
+    const [expiredGamePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("game"), (counter.count as BN).toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+    const [expiredProfilePda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("player"),
+        expiredId.toArrayLike(Buffer, "le", 8),
+        player1.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+    try {
+      await program.methods
+        .createGame(STAKE)
+        .accountsPartial({
+          game: expiredGamePda,
+          gameCounter: gameCounterPda,
+          playerProfile: expiredProfilePda,
+          tournament: expiredTournamentPda,
+          player: player1.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([player1])
+        .rpc();
+      assert.fail("Expected OutsideTournamentWindow error");
+    } catch (e: any) {
+      assert.include(e.toString(), "OutsideTournamentWindow");
+    }
+  });
 });

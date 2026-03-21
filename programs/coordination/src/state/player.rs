@@ -44,6 +44,21 @@ impl PlayerProfile {
         Ok(score)
     }
 
+    /// Initializes a freshly created profile. Called from create_game and join_game
+    /// via init_if_needed — the account is zeroed on creation, so the condition
+    /// guards against re-initializing an existing profile.
+    pub fn init_if_new(&mut self, wallet: Pubkey, tournament_id: u64, bump: u8) {
+        if self.total_games == 0 && !self.claimed {
+            self.wallet = wallet;
+            self.tournament_id = tournament_id;
+            self.wins = 0;
+            self.total_games = 0;
+            self.score = 0;
+            self.claimed = false;
+            self.bump = bump;
+        }
+    }
+
     /// Updates wins, total_games, and score after a resolved game.
     /// Shared by reveal_guess and resolve_timeout to keep logic in one place.
     pub fn update_after_game(&mut self, won: bool, tournament_id: u64) -> Result<()> {

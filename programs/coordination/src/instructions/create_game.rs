@@ -44,18 +44,14 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64) -> Result<()> 
     game.bump = ctx.bumps.game;
 
     // Init player profile if needed — player pays for their own account
-    let profile = &mut ctx.accounts.player_profile;
-    if profile.total_games == 0 && !profile.claimed {
-        profile.wallet = ctx.accounts.player.key();
-        profile.tournament_id = ctx.accounts.tournament.tournament_id;
-        profile.wins = 0;
-        profile.total_games = 0;
-        profile.score = 0;
-        profile.claimed = false;
-        profile.bump = ctx.bumps.player_profile;
-    }
+    let tournament_id = ctx.accounts.tournament.tournament_id;
+    ctx.accounts.player_profile.init_if_new(
+        ctx.accounts.player.key(),
+        tournament_id,
+        ctx.bumps.player_profile,
+    );
     require!(
-        profile.tournament_id == ctx.accounts.tournament.tournament_id,
+        ctx.accounts.player_profile.tournament_id == tournament_id,
         CoordinationError::ProfileTournamentMismatch,
     );
 
