@@ -109,33 +109,10 @@ fn sum_scores(accounts: &[AccountInfo], tournament_id: u64, program_id: &Pubkey)
     Ok(total)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::state::PlayerProfile;
-
-    #[test]
-    fn score_offset_within_player_profile_space() {
-        // SCORE_END must not exceed PlayerProfile::SPACE, or sum_scores will
-        // read out of bounds on a correctly-sized account.
-        assert!(
-            SCORE_END <= PlayerProfile::SPACE,
-            "SCORE_END ({}) exceeds PlayerProfile::SPACE ({}); update offset constants",
-            SCORE_END,
-            PlayerProfile::SPACE,
-        );
-    }
-
-    #[test]
-    fn tournament_id_offset_within_player_profile_space() {
-        assert!(
-            TOURNAMENT_ID_OFFSET + 8 <= PlayerProfile::SPACE,
-            "TOURNAMENT_ID_OFFSET ({}) exceeds PlayerProfile::SPACE ({}); update offset constants",
-            TOURNAMENT_ID_OFFSET + 8,
-            PlayerProfile::SPACE,
-        );
-    }
-}
+// Compile-time assertions: offsets must stay within the account's allocated space.
+// If PlayerProfile gains or loses fields, these will fail at compile time.
+const _: () = assert!(SCORE_END <= PlayerProfile::SPACE);
+const _: () = assert!(TOURNAMENT_ID_OFFSET + 8 <= PlayerProfile::SPACE);
 
 #[derive(Accounts)]
 pub struct FinalizeTournament<'info> {
