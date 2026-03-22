@@ -551,6 +551,38 @@ describe("coordination", () => {
     }
   });
 
+  it("rejects create_game with wrong stake (0.1 SOL instead of 0.01 SOL)", async () => {
+    // This is the exact case the grok-agent ran into: it tried to create a game
+    // with 100_000_000 lamports (0.1 SOL) instead of the fixed 10_000_000 (0.01 SOL).
+    const WRONG_STAKE = new BN(100_000_000); // 0.1 SOL
+    const counter = await program.account.gameCounter.fetch(gameCounterPda);
+    const [wrongGamePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("game"), (counter.count as BN).toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+    const [wrongProfilePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("player"), tournamentIdBuf(), player1.publicKey.toBuffer()],
+      program.programId
+    );
+    try {
+      await program.methods
+        .createGame(WRONG_STAKE, GUESS_SAME_TEAM)
+        .accountsPartial({
+          game: wrongGamePda,
+          gameCounter: gameCounterPda,
+          playerProfile: wrongProfilePda,
+          tournament: tournamentPda,
+          player: player1.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([player1])
+        .rpc();
+      assert.fail("Expected StakeMismatch error");
+    } catch (e: any) {
+      assert.include(e.toString(), "StakeMismatch");
+    }
+  });
+
   it("rejects commit from non-participant", async () => {
     // Use the timeout game (still in Committing state — only p1 committed)
     const counter = await program.account.gameCounter.fetch(gameCounterPda);

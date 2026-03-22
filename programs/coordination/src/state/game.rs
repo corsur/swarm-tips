@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 
 pub const COMMIT_TIMEOUT_SLOTS: u64 = 7_200;
 pub const REVEAL_TIMEOUT_SLOTS: u64 = 14_400;
+pub const FIXED_STAKE_LAMPORTS: u64 = 10_000_000; // 0.01 SOL
 
 pub const GUESS_SAME_TEAM: u8 = 0;
 pub const GUESS_DIFF_TEAM: u8 = 1;

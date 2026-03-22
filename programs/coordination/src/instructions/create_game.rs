@@ -1,13 +1,17 @@
 use crate::errors::CoordinationError;
 use crate::events::GameCreated;
 use crate::state::{
-    Game, GameCounter, GameState, PlayerProfile, Tournament, COMMIT_TIMEOUT_SLOTS, GUESS_UNREVEALED,
+    Game, GameCounter, GameState, PlayerProfile, Tournament, COMMIT_TIMEOUT_SLOTS,
+    FIXED_STAKE_LAMPORTS, GUESS_UNREVEALED,
 };
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
 pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: u8) -> Result<()> {
-    require!(stake_lamports > 0, CoordinationError::StakeMismatch);
+    require!(
+        stake_lamports == FIXED_STAKE_LAMPORTS,
+        CoordinationError::StakeMismatch
+    );
     require!(matchup_type <= 1, CoordinationError::InvalidGameState);
 
     let now = Clock::get()?.unix_timestamp;
