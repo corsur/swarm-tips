@@ -65,13 +65,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y libudev-dev
+
       - name: Install Solana CLI
         run: |
           sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
-
-      - name: Install system dependencies
-        run: sudo apt-get install -y libudev-dev
 
       - name: Install Anchor CLI
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
@@ -95,17 +95,6 @@ jobs:
           echo '${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}' > target/deploy/coordination-keypair.json
 
       - run: anchor build
-
-      - name: Fund deploy wallet on devnet
-        run: |
-          WALLET=$(solana-keygen pubkey ~/.config/solana/id.json)
-          # Request enough to cover the upgrade buffer (~3 SOL), retry on rate limiting.
-          # The buffer cost is refunded after each successful deploy so the wallet
-          # stays funded across runs; this is just a safety net.
-          for i in 1 2; do
-            solana airdrop 2 "$WALLET" --url devnet || true
-            sleep 2
-          done
 
       - name: Close orphaned buffer accounts
         run: |

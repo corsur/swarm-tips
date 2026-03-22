@@ -76,7 +76,13 @@ fn sum_scores(accounts: &[AccountInfo], tournament_id: u64, program_id: &Pubkey)
 
         let data = account_info.try_borrow_data()?;
 
-        // Verify discriminator matches PlayerProfile (first 8 bytes).
+        // Safety: the two require! checks below establish that this account's data
+        // has the exact layout of a PlayerProfile before any field is read.
+        // Invariant 1: owner == program_id (checked above) — only this program writes these accounts.
+        // Invariant 2: data.len() >= PlayerProfile::SPACE — sufficient bytes exist for all fields.
+        // Invariant 3: discriminator matches — Anchor's 8-byte prefix confirms the account type.
+        // Invariant 4: compile-time assertions (bottom of file) guarantee SCORE_END and
+        //   TOURNAMENT_ID_OFFSET + 8 are both <= PlayerProfile::SPACE, so slices never panic.
         require!(
             data.len() >= PlayerProfile::SPACE && data[..8] == *PlayerProfile::DISCRIMINATOR,
             CoordinationError::ProfileTournamentMismatch,
@@ -85,6 +91,7 @@ fn sum_scores(accounts: &[AccountInfo], tournament_id: u64, program_id: &Pubkey)
         // PlayerProfile layout after discriminator:
         //   wallet: Pubkey (32), tournament_id: u64 (8), wins: u64 (8),
         //   total_games: u64 (8), score: u64 (8), claimed: bool (1), bump: u8 (1)
+        // All offsets are defined as constants above and verified by compile-time assertions.
         let profile_tournament_id = u64::from_le_bytes(
             data[TOURNAMENT_ID_OFFSET..TOURNAMENT_ID_OFFSET + 8]
                 .try_into()

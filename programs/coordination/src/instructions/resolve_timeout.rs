@@ -100,66 +100,70 @@ enum TimeoutOutcome {
 
 fn find_timeout(game: &Game, current_slot: u64) -> Result<TimeoutOutcome> {
     match game.state {
-        GameState::Committing => {
-            // One player committed, the other hasn't — the non-committer timed out
-            let p1_committed = game.p1_commit != [0u8; 32];
-            let commit_slot = if p1_committed {
-                game.p1_commit_slot
-            } else {
-                game.p2_commit_slot
-            };
-            require!(
-                current_slot
-                    >= commit_slot
-                        .checked_add(game.commit_timeout_slots)
-                        .ok_or(CoordinationError::ArithmeticOverflow)?,
-                CoordinationError::TimeoutNotElapsed,
-            );
-            if p1_committed {
-                Ok(TimeoutOutcome::OneWinner {
-                    slashed_player: game.player_two,
-                    winner_is_p1: true,
-                })
-            } else {
-                Ok(TimeoutOutcome::OneWinner {
-                    slashed_player: game.player_one,
-                    winner_is_p1: false,
-                })
-            }
-        }
-        GameState::Revealing => {
-            // Both committed; one or both haven't revealed within REVEAL_TIMEOUT_SLOTS
-            let p1_revealed = game.p1_guess != crate::state::GUESS_UNREVEALED;
-            let p2_revealed = game.p2_guess != crate::state::GUESS_UNREVEALED;
-
-            // Use the later commit slot as the timeout anchor — both had to commit
-            // before revealing, so the clock starts from the last commit
-            let anchor_slot = game.p1_commit_slot.max(game.p2_commit_slot);
-            let deadline = anchor_slot
-                .checked_add(REVEAL_TIMEOUT_SLOTS)
-                .ok_or(CoordinationError::ArithmeticOverflow)?;
-            require!(
-                current_slot >= deadline,
-                CoordinationError::TimeoutNotElapsed
-            );
-
-            match (p1_revealed, p2_revealed) {
-                (true, false) => Ok(TimeoutOutcome::OneWinner {
-                    slashed_player: game.player_two,
-                    winner_is_p1: true,
-                }),
-                (false, true) => Ok(TimeoutOutcome::OneWinner {
-                    slashed_player: game.player_one,
-                    winner_is_p1: false,
-                }),
-                (false, false) => Ok(TimeoutOutcome::BothForfeited),
-                (true, true) => {
-                    // Both revealed — should have been resolved already
-                    err!(CoordinationError::InvalidGameState)
-                }
-            }
-        }
+        GameState::Committing => find_committing_timeout(game, current_slot),
+        GameState::Revealing => find_revealing_timeout(game, current_slot),
         _ => err!(CoordinationError::InvalidGameState),
+    }
+}
+
+/// One player committed; the other hasn't within the commit window.
+/// The non-committer is slashed; the committer wins.
+fn find_committing_timeout(game: &Game, current_slot: u64) -> Result<TimeoutOutcome> {
+    let p1_committed = game.p1_commit != [0u8; 32];
+    let commit_slot = if p1_committed {
+        game.p1_commit_slot
+    } else {
+        game.p2_commit_slot
+    };
+    require!(
+        current_slot
+            >= commit_slot
+                .checked_add(game.commit_timeout_slots)
+                .ok_or(CoordinationError::ArithmeticOverflow)?,
+        CoordinationError::TimeoutNotElapsed,
+    );
+    if p1_committed {
+        Ok(TimeoutOutcome::OneWinner {
+            slashed_player: game.player_two,
+            winner_is_p1: true,
+        })
+    } else {
+        Ok(TimeoutOutcome::OneWinner {
+            slashed_player: game.player_one,
+            winner_is_p1: false,
+        })
+    }
+}
+
+/// Both players committed; one or both failed to reveal within the reveal window.
+/// The clock starts from the later of the two commit slots.
+fn find_revealing_timeout(game: &Game, current_slot: u64) -> Result<TimeoutOutcome> {
+    let p1_revealed = game.p1_guess != crate::state::GUESS_UNREVEALED;
+    let p2_revealed = game.p2_guess != crate::state::GUESS_UNREVEALED;
+
+    let anchor_slot = game.p1_commit_slot.max(game.p2_commit_slot);
+    let deadline = anchor_slot
+        .checked_add(REVEAL_TIMEOUT_SLOTS)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    require!(
+        current_slot >= deadline,
+        CoordinationError::TimeoutNotElapsed
+    );
+
+    match (p1_revealed, p2_revealed) {
+        (true, false) => Ok(TimeoutOutcome::OneWinner {
+            slashed_player: game.player_two,
+            winner_is_p1: true,
+        }),
+        (false, true) => Ok(TimeoutOutcome::OneWinner {
+            slashed_player: game.player_one,
+            winner_is_p1: false,
+        }),
+        (false, false) => Ok(TimeoutOutcome::BothForfeited),
+        (true, true) => {
+            // Both revealed — reveal_guess should have resolved this already
+            err!(CoordinationError::InvalidGameState)
+        }
     }
 }
 
