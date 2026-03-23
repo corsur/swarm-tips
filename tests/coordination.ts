@@ -967,6 +967,16 @@ describe("coordination", () => {
       })
       .rpc();
 
+    // Capture balances before deposit so the full cost (deposit tx + game txs)
+    // is visible. The refund returns stake to the player wallet, not the escrow,
+    // so capturing after deposit would make p1BalanceAfter > p1BalanceBefore.
+    const p1BalanceBefore = await provider.connection.getBalance(
+      player1.publicKey
+    );
+    const p2BalanceBefore = await provider.connection.getBalance(
+      player2.publicKey
+    );
+
     // Deposit escrows
     await depositStake(bothWrongTournamentId, bothWrongTournamentPda, player1);
     await depositStake(bothWrongTournamentId, bothWrongTournamentPda, player2);
@@ -1000,14 +1010,6 @@ describe("coordination", () => {
     );
     const [bwP1Escrow] = escrowPda(bothWrongTournamentId, player1.publicKey);
     const [bwP2Escrow] = escrowPda(bothWrongTournamentId, player2.publicKey);
-
-    // Capture balances before stake is locked
-    const p1BalanceBefore = await provider.connection.getBalance(
-      player1.publicKey
-    );
-    const p2BalanceBefore = await provider.connection.getBalance(
-      player2.publicKey
-    );
 
     // Create game with matchup_type = 1 (different teams)
     await program.methods

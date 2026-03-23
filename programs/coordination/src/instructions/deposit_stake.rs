@@ -18,11 +18,22 @@ pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
     );
 
     let escrow = &mut ctx.accounts.escrow;
-    require!(!escrow.consumed, CoordinationError::EscrowAlreadyConsumed);
 
-    // If the escrow already has the correct amount (re-deposit after a game
-    // consumed the previous one), this is a no-op — just reset consumed.
-    // Otherwise, initialize and transfer.
+    // Idempotent: if the escrow already has an unconsumed funded deposit, no-op.
+    // This lets callers always call deposit_stake before each game without
+    // worrying about whether a prior deposit is still active.
+    if !escrow.consumed && escrow.amount > 0 {
+        require!(
+            escrow.player == ctx.accounts.player.key(),
+            CoordinationError::InvalidGameState,
+        );
+        require!(
+            escrow.amount == FIXED_STAKE_LAMPORTS,
+            CoordinationError::StakeMismatch,
+        );
+        msg!("deposit_stake: escrow already active, no-op");
+        return Ok(());
+    }
     escrow.player = ctx.accounts.player.key();
     escrow.tournament_id = ctx.accounts.tournament.tournament_id;
     escrow.amount = FIXED_STAKE_LAMPORTS;
