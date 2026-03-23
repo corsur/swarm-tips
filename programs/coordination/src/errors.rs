@@ -57,4 +57,10 @@ pub enum CoordinationError {
     // Finalize
     #[msg("Too many accounts passed to finalize_tournament (maximum 30)")]
     TooManyAccounts,
+
+    // Escrow
+    #[msg("Escrow has already been consumed by a game")]
+    EscrowAlreadyConsumed,
+    #[msg("Escrow is not valid for this game (wrong player, tournament, or amount)")]
+    EscrowInvalid,
 }

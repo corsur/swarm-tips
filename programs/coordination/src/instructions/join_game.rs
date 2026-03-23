@@ -1,8 +1,8 @@
 use crate::errors::CoordinationError;
 use crate::events::GameStarted;
-use crate::state::{Game, GameState, PlayerProfile, Tournament};
+use crate::instructions::utils::transfer_lamports;
+use crate::state::{Game, GameState, PlayerProfile, StakeEscrow, Tournament};
 use anchor_lang::prelude::*;
-use anchor_lang::system_program;
 
 pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
     let game = &ctx.accounts.game;
@@ -21,8 +21,16 @@ pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
         CoordinationError::OutsideTournamentWindow,
     );
 
-    // Init player profile if needed
+    // Validate the player's escrow has an unconsumed deposit
     let tournament_id = ctx.accounts.tournament.tournament_id;
+    require!(
+        ctx.accounts
+            .escrow
+            .validate_for_game(&ctx.accounts.player.key(), tournament_id),
+        CoordinationError::EscrowInvalid,
+    );
+
+    // Init player profile if needed
     ctx.accounts.player_profile.init_if_new(
         ctx.accounts.player.key(),
         tournament_id,
@@ -36,9 +44,10 @@ pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
     let stake_lamports = ctx.accounts.game.stake_lamports;
     let player_key = ctx.accounts.player.key();
 
-    // Effects: commit state before the CPI transfer
+    // Effects: commit state before the transfer
     ctx.accounts.game.player_two = player_key;
     ctx.accounts.game.state = GameState::Active;
+    ctx.accounts.escrow.consumed = true;
 
     // Postcondition: game must now be Active with both players set
     require!(
@@ -50,20 +59,14 @@ pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
         CoordinationError::InvalidGameState
     );
 
-    // Capture values needed for the event before the CPI borrows accounts
+    // Capture values needed for the event before transfer borrows accounts
     let game_id = ctx.accounts.game.game_id;
-    let tournament_id = ctx.accounts.game.tournament_id;
     let player_one = ctx.accounts.game.player_one;
 
-    // Interactions: transfer player 2 stake into the game PDA
-    system_program::transfer(
-        CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            system_program::Transfer {
-                from: ctx.accounts.player.to_account_info(),
-                to: ctx.accounts.game.to_account_info(),
-            },
-        ),
+    // Interactions: transfer player 2 stake from escrow into the game PDA
+    transfer_lamports(
+        &ctx.accounts.escrow.to_account_info(),
+        &ctx.accounts.game.to_account_info(),
         stake_lamports,
     )?;
 
@@ -96,6 +99,16 @@ pub struct JoinGame<'info> {
         bump,
     )]
     pub player_profile: Account<'info, PlayerProfile>,
+    #[account(
+        mut,
+        seeds = [
+            b"escrow",
+            tournament.tournament_id.to_le_bytes().as_ref(),
+            player.key().as_ref(),
+        ],
+        bump = escrow.bump,
+    )]
+    pub escrow: Account<'info, StakeEscrow>,
     #[account(
         seeds = [b"tournament", game.tournament_id.to_le_bytes().as_ref()],
         bump = tournament.bump,

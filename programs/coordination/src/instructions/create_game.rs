@@ -1,11 +1,11 @@
 use crate::errors::CoordinationError;
 use crate::events::GameCreated;
+use crate::instructions::utils::transfer_lamports;
 use crate::state::{
-    Game, GameCounter, GameState, PlayerProfile, Tournament, COMMIT_TIMEOUT_SLOTS,
+    Game, GameCounter, GameState, PlayerProfile, StakeEscrow, Tournament, COMMIT_TIMEOUT_SLOTS,
     FIXED_STAKE_LAMPORTS, GUESS_UNREVEALED,
 };
 use anchor_lang::prelude::*;
-use anchor_lang::system_program;
 
 pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: u8) -> Result<()> {
     require!(
@@ -18,6 +18,16 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
     require!(
         ctx.accounts.tournament.is_active(now),
         CoordinationError::OutsideTournamentWindow,
+    );
+
+    // Validate the player's escrow has an unconsumed deposit
+    let escrow = &ctx.accounts.escrow;
+    require!(
+        escrow.validate_for_game(
+            &ctx.accounts.player.key(),
+            ctx.accounts.tournament.tournament_id
+        ),
+        CoordinationError::EscrowInvalid,
     );
 
     // Assign game_id from counter, then increment
@@ -60,7 +70,10 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
         CoordinationError::ProfileTournamentMismatch,
     );
 
-    // Postconditions: game must be Pending with player one correctly recorded
+    // Mark escrow as consumed before transferring (CEI)
+    ctx.accounts.escrow.consumed = true;
+
+    // Postconditions
     require!(
         game.state == GameState::Pending,
         CoordinationError::InvalidGameState
@@ -70,15 +83,10 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
         CoordinationError::InvalidGameState
     );
 
-    // Transfer stake from player to game PDA
-    system_program::transfer(
-        CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            system_program::Transfer {
-                from: ctx.accounts.player.to_account_info(),
-                to: ctx.accounts.game.to_account_info(),
-            },
-        ),
+    // Transfer stake from escrow PDA to game PDA
+    transfer_lamports(
+        &ctx.accounts.escrow.to_account_info(),
+        &ctx.accounts.game.to_account_info(),
         stake_lamports,
     )?;
 
@@ -120,6 +128,16 @@ pub struct CreateGame<'info> {
         bump,
     )]
     pub player_profile: Account<'info, PlayerProfile>,
+    #[account(
+        mut,
+        seeds = [
+            b"escrow",
+            tournament.tournament_id.to_le_bytes().as_ref(),
+            player.key().as_ref(),
+        ],
+        bump = escrow.bump,
+    )]
+    pub escrow: Account<'info, StakeEscrow>,
     pub tournament: Account<'info, Tournament>,
     #[account(mut)]
     pub player: Signer<'info>,

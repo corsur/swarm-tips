@@ -66,3 +66,10 @@ pub struct RewardClaimed {
     pub player: Pubkey,
     pub amount: u64,
 }
+
+#[event]
+pub struct StakeDeposited {
+    pub player: Pubkey,
+    pub tournament_id: u64,
+    pub amount: u64,
+}

@@ -31,6 +31,10 @@ pub mod coordination {
         instructions::create_tournament::create_tournament(ctx, tournament_id, start_time, end_time)
     }
 
+    pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
+        instructions::deposit_stake::deposit_stake(ctx)
+    }
+
     pub fn create_game(
         ctx: Context<CreateGame>,
         stake_lamports: u64,
