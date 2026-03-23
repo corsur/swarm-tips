@@ -61,6 +61,39 @@ describe("coordination", () => {
     return TOURNAMENT_ID.toArrayLike(Buffer, "le", 8);
   }
 
+  function escrowPda(
+    tournamentId: BN,
+    player: PublicKey
+  ): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("escrow"),
+        tournamentId.toArrayLike(Buffer, "le", 8),
+        player.toBuffer(),
+      ],
+      program.programId
+    );
+  }
+
+  /** Deposit stake into escrow for a player in a given tournament. */
+  async function depositStake(
+    tournamentId: BN,
+    tournamentPdaKey: PublicKey,
+    player: Keypair
+  ): Promise<void> {
+    const [escrow] = escrowPda(tournamentId, player.publicKey);
+    await program.methods
+      .depositStake()
+      .accountsPartial({
+        escrow,
+        tournament: tournamentPdaKey,
+        player: player.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([player])
+      .rpc();
+  }
+
   // ---------------------------------------------------------------------------
   // Setup
   // ---------------------------------------------------------------------------
@@ -124,10 +157,18 @@ describe("coordination", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Game setup
+  // Escrow + Game setup
   // ---------------------------------------------------------------------------
 
-  it("player 1 creates a game", async () => {
+  it("player 1 deposits stake and creates a game", async () => {
+    await depositStake(TOURNAMENT_ID, tournamentPda, player1);
+
+    const [escrow] = escrowPda(TOURNAMENT_ID, player1.publicKey);
+    const escrowAccount = await program.account.stakeEscrow.fetch(escrow);
+    assert.equal(escrowAccount.player.toString(), player1.publicKey.toString());
+    assert.equal(escrowAccount.amount.toString(), STAKE.toString());
+    assert.isFalse(escrowAccount.consumed);
+
     const counter = await program.account.gameCounter.fetch(gameCounterPda);
     const gameId = counter.count;
 
@@ -147,6 +188,7 @@ describe("coordination", () => {
         game: gamePda,
         gameCounter: gameCounterPda,
         playerProfile: p1ProfilePda,
+        escrow,
         tournament: tournamentPda,
         player: player1.publicKey,
         systemProgram: SystemProgram.programId,
@@ -162,9 +204,17 @@ describe("coordination", () => {
       GUESS_SAME_TEAM,
       "matchup_type should be 0 (same team)"
     );
+
+    // Escrow should be consumed after create_game
+    const escrowAfter = await program.account.stakeEscrow.fetch(escrow);
+    assert.isTrue(escrowAfter.consumed);
   });
 
-  it("player 2 joins the game", async () => {
+  it("player 2 deposits stake and joins the game", async () => {
+    await depositStake(TOURNAMENT_ID, tournamentPda, player2);
+
+    const [escrow] = escrowPda(TOURNAMENT_ID, player2.publicKey);
+
     [p2ProfilePda] = PublicKey.findProgramAddressSync(
       [Buffer.from("player"), tournamentIdBuf(), player2.publicKey.toBuffer()],
       program.programId
@@ -175,6 +225,7 @@ describe("coordination", () => {
       .accountsPartial({
         game: gamePda,
         playerProfile: p2ProfilePda,
+        escrow,
         tournament: tournamentPda,
         player: player2.publicKey,
         systemProgram: SystemProgram.programId,
@@ -390,6 +441,8 @@ describe("coordination", () => {
   // ---------------------------------------------------------------------------
 
   it("rejects joining own game", async () => {
+    await depositStake(TOURNAMENT_ID, tournamentPda, player1);
+
     const counter = await program.account.gameCounter.fetch(gameCounterPda);
     const soloGameId = counter.count as BN;
     const [soloGamePda] = PublicKey.findProgramAddressSync(
@@ -400,6 +453,7 @@ describe("coordination", () => {
       [Buffer.from("player"), tournamentIdBuf(), player1.publicKey.toBuffer()],
       program.programId
     );
+    const [soloEscrow] = escrowPda(TOURNAMENT_ID, player1.publicKey);
 
     await program.methods
       .createGame(STAKE, GUESS_SAME_TEAM)
@@ -407,6 +461,7 @@ describe("coordination", () => {
         game: soloGamePda,
         gameCounter: gameCounterPda,
         playerProfile: soloProfilePda,
+        escrow: soloEscrow,
         tournament: tournamentPda,
         player: player1.publicKey,
         systemProgram: SystemProgram.programId,
@@ -414,12 +469,16 @@ describe("coordination", () => {
       .signers([player1])
       .rpc();
 
+    // Need a fresh escrow for the join attempt (previous was consumed by create)
+    await depositStake(TOURNAMENT_ID, tournamentPda, player1);
+
     try {
       await program.methods
         .joinGame()
         .accountsPartial({
           game: soloGamePda,
           playerProfile: soloProfilePda,
+          escrow: soloEscrow,
           tournament: tournamentPda,
           player: player1.publicKey,
           systemProgram: SystemProgram.programId,
@@ -434,6 +493,9 @@ describe("coordination", () => {
 
   it("rejects resolve_timeout before timeout elapses", async () => {
     // Create a fresh game and have p1 commit so the game is in Committing state
+    await depositStake(TOURNAMENT_ID, tournamentPda, player1);
+    await depositStake(TOURNAMENT_ID, tournamentPda, player2);
+
     const counter = await program.account.gameCounter.fetch(gameCounterPda);
     const timeoutGameId = counter.count as BN;
     const [timeoutGamePda] = PublicKey.findProgramAddressSync(
@@ -448,6 +510,8 @@ describe("coordination", () => {
       [Buffer.from("player"), tournamentIdBuf(), player2.publicKey.toBuffer()],
       program.programId
     );
+    const [p1Escrow] = escrowPda(TOURNAMENT_ID, player1.publicKey);
+    const [p2Escrow] = escrowPda(TOURNAMENT_ID, player2.publicKey);
 
     await program.methods
       .createGame(STAKE, GUESS_SAME_TEAM)
@@ -455,6 +519,7 @@ describe("coordination", () => {
         game: timeoutGamePda,
         gameCounter: gameCounterPda,
         playerProfile: tp1ProfilePda,
+        escrow: p1Escrow,
         tournament: tournamentPda,
         player: player1.publicKey,
         systemProgram: SystemProgram.programId,
@@ -467,6 +532,7 @@ describe("coordination", () => {
       .accountsPartial({
         game: timeoutGamePda,
         playerProfile: tp2ProfilePda,
+        escrow: p2Escrow,
         tournament: tournamentPda,
         player: player2.publicKey,
         systemProgram: SystemProgram.programId,
@@ -523,6 +589,9 @@ describe("coordination", () => {
   });
 
   it("rejects create_game with zero stake", async () => {
+    // deposit_stake deposits FIXED_STAKE; create_game with 0 will mismatch
+    await depositStake(TOURNAMENT_ID, tournamentPda, player1);
+
     const counter = await program.account.gameCounter.fetch(gameCounterPda);
     const [zeroGamePda] = PublicKey.findProgramAddressSync(
       [Buffer.from("game"), (counter.count as BN).toArrayLike(Buffer, "le", 8)],
@@ -532,6 +601,7 @@ describe("coordination", () => {
       [Buffer.from("player"), tournamentIdBuf(), player1.publicKey.toBuffer()],
       program.programId
     );
+    const [zeroEscrow] = escrowPda(TOURNAMENT_ID, player1.publicKey);
     try {
       await program.methods
         .createGame(new BN(0), GUESS_SAME_TEAM)
@@ -539,6 +609,7 @@ describe("coordination", () => {
           game: zeroGamePda,
           gameCounter: gameCounterPda,
           playerProfile: zeroProfilePda,
+          escrow: zeroEscrow,
           tournament: tournamentPda,
           player: player1.publicKey,
           systemProgram: SystemProgram.programId,
@@ -552,8 +623,8 @@ describe("coordination", () => {
   });
 
   it("rejects create_game with wrong stake (0.1 SOL instead of 0.01 SOL)", async () => {
-    // This is the exact case the grok-agent ran into: it tried to create a game
-    // with 100_000_000 lamports (0.1 SOL) instead of the fixed 10_000_000 (0.01 SOL).
+    // Escrow has FIXED_STAKE (0.01 SOL); create_game with 0.1 SOL will mismatch
+    // (escrow was deposited in the previous test but create_game failed so it's still valid)
     const WRONG_STAKE = new BN(100_000_000); // 0.1 SOL
     const counter = await program.account.gameCounter.fetch(gameCounterPda);
     const [wrongGamePda] = PublicKey.findProgramAddressSync(
@@ -564,6 +635,7 @@ describe("coordination", () => {
       [Buffer.from("player"), tournamentIdBuf(), player1.publicKey.toBuffer()],
       program.programId
     );
+    const [wrongEscrow] = escrowPda(TOURNAMENT_ID, player1.publicKey);
     try {
       await program.methods
         .createGame(WRONG_STAKE, GUESS_SAME_TEAM)
@@ -571,6 +643,7 @@ describe("coordination", () => {
           game: wrongGamePda,
           gameCounter: gameCounterPda,
           playerProfile: wrongProfilePda,
+          escrow: wrongEscrow,
           tournament: tournamentPda,
           player: player1.publicKey,
           systemProgram: SystemProgram.programId,
@@ -710,6 +783,10 @@ describe("coordination", () => {
       })
       .rpc();
 
+    // Deposit escrows for both players in the new tournament
+    await depositStake(heteroTournamentId, heteroTournamentPda, player1);
+    await depositStake(heteroTournamentId, heteroTournamentPda, player2);
+
     const counter = await program.account.gameCounter.fetch(gameCounterPda);
     const heteroGameId = counter.count as BN;
     const [heteroGamePda] = PublicKey.findProgramAddressSync(
@@ -737,6 +814,8 @@ describe("coordination", () => {
       ],
       program.programId
     );
+    const [hetP1Escrow] = escrowPda(heteroTournamentId, player1.publicKey);
+    const [hetP2Escrow] = escrowPda(heteroTournamentId, player2.publicKey);
 
     // Capture balances before any stake is locked, so the full stake loss is visible.
     const p1BalanceBefore = await provider.connection.getBalance(
@@ -753,6 +832,7 @@ describe("coordination", () => {
         game: heteroGamePda,
         gameCounter: gameCounterPda,
         playerProfile: hetP1ProfilePda,
+        escrow: hetP1Escrow,
         tournament: heteroTournamentPda,
         player: player1.publicKey,
         systemProgram: SystemProgram.programId,
@@ -773,6 +853,7 @@ describe("coordination", () => {
       .accountsPartial({
         game: heteroGamePda,
         playerProfile: hetP2ProfilePda,
+        escrow: hetP2Escrow,
         tournament: heteroTournamentPda,
         player: player2.publicKey,
         systemProgram: SystemProgram.programId,
@@ -843,7 +924,6 @@ describe("coordination", () => {
     );
 
     // P1 committed first, both correct → p1 wins full pot (2× stake), tournament gains nothing
-    const expectedP1Return = STAKE.muln(2); // 20_000_000
     const hetTournament = await program.account.tournament.fetch(
       heteroTournamentPda
     );
@@ -890,6 +970,10 @@ describe("coordination", () => {
       })
       .rpc();
 
+    // Deposit escrows
+    await depositStake(bothWrongTournamentId, bothWrongTournamentPda, player1);
+    await depositStake(bothWrongTournamentId, bothWrongTournamentPda, player2);
+
     const counter = await program.account.gameCounter.fetch(gameCounterPda);
     const bothWrongGameId = counter.count as BN;
     const [bothWrongGamePda] = PublicKey.findProgramAddressSync(
@@ -917,6 +1001,8 @@ describe("coordination", () => {
       ],
       program.programId
     );
+    const [bwP1Escrow] = escrowPda(bothWrongTournamentId, player1.publicKey);
+    const [bwP2Escrow] = escrowPda(bothWrongTournamentId, player2.publicKey);
 
     // Capture balances before stake is locked
     const p1BalanceBefore = await provider.connection.getBalance(
@@ -933,6 +1019,7 @@ describe("coordination", () => {
         game: bothWrongGamePda,
         gameCounter: gameCounterPda,
         playerProfile: bwP1ProfilePda,
+        escrow: bwP1Escrow,
         tournament: bothWrongTournamentPda,
         player: player1.publicKey,
         systemProgram: SystemProgram.programId,
@@ -945,6 +1032,7 @@ describe("coordination", () => {
       .accountsPartial({
         game: bothWrongGamePda,
         playerProfile: bwP2ProfilePda,
+        escrow: bwP2Escrow,
         tournament: bothWrongTournamentPda,
         player: player2.publicKey,
         systemProgram: SystemProgram.programId,
@@ -1039,32 +1127,10 @@ describe("coordination", () => {
       [Buffer.from("tournament"), expiredId.toArrayLike(Buffer, "le", 8)],
       program.programId
     );
-    const counter = await program.account.gameCounter.fetch(gameCounterPda);
-    const [expiredGamePda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("game"), (counter.count as BN).toArrayLike(Buffer, "le", 8)],
-      program.programId
-    );
-    const [expiredProfilePda] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("player"),
-        expiredId.toArrayLike(Buffer, "le", 8),
-        player1.publicKey.toBuffer(),
-      ],
-      program.programId
-    );
+
+    // deposit_stake also checks tournament window — this should fail
     try {
-      await program.methods
-        .createGame(STAKE, GUESS_SAME_TEAM)
-        .accountsPartial({
-          game: expiredGamePda,
-          gameCounter: gameCounterPda,
-          playerProfile: expiredProfilePda,
-          tournament: expiredTournamentPda,
-          player: player1.publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .signers([player1])
-        .rpc();
+      await depositStake(expiredId, expiredTournamentPda, player1);
       assert.fail("Expected OutsideTournamentWindow error");
     } catch (e: any) {
       assert.include(e.toString(), "OutsideTournamentWindow");
