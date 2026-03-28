@@ -247,33 +247,64 @@ mod tests {
         assert_eq!(bond, 0);
     }
 
-    // --- State machine transition tests ---
+    // --- Additional payment edge case tests ---
 
     #[test]
-    fn valid_state_transitions() {
-        use crate::state::TaskState;
-
-        // Valid transitions per the state diagram
-        let valid = [
-            (TaskState::Open, TaskState::Claimed),
-            (TaskState::Claimed, TaskState::Submitted),
-            (TaskState::Submitted, TaskState::Verified),
-            (TaskState::Verified, TaskState::Finalized),
-            (TaskState::Verified, TaskState::Disputed),
-            (TaskState::Disputed, TaskState::Resolved),
-        ];
-        for (from, to) in valid {
-            assert_ne!(from, to, "transition from {:?} to {:?} should be between different states", from, to);
-        }
+    fn payment_max_fee_bps() {
+        // Max protocol fee = 2500 bps (25%)
+        let (payment, fee) = compute_payment(1_000_000, 200_000, 1_000_000, 2500).unwrap();
+        // gross = 1_000_000
+        // fee = 1_000_000 * 2500 / 10_000 = 250_000
+        // payment = 750_000
+        assert_eq!(fee, 250_000);
+        assert_eq!(payment, 750_000);
+        assert!(payment.checked_add(fee).unwrap() <= 1_000_000);
     }
 
     #[test]
-    fn invalid_backwards_transitions() {
-        use crate::state::TaskState;
+    fn payment_min_fee_bps() {
+        // Min protocol fee = 100 bps (1%)
+        let (payment, fee) = compute_payment(1_000_000, 200_000, 1_000_000, 100).unwrap();
+        // gross = 1_000_000
+        // fee = 1_000_000 * 100 / 10_000 = 10_000
+        // payment = 990_000
+        assert_eq!(fee, 10_000);
+        assert_eq!(payment, 990_000);
+    }
 
-        // These transitions should never happen
-        assert_ne!(TaskState::Claimed as u8, TaskState::Open as u8);
-        assert_ne!(TaskState::Submitted as u8, TaskState::Claimed as u8);
-        assert_ne!(TaskState::Verified as u8, TaskState::Submitted as u8);
+    #[test]
+    fn payment_threshold_zero_full_range() {
+        // threshold = 0 means any positive score gets paid
+        let (payment, fee) = compute_payment(1, 0, 1_000_000_000, 1000).unwrap();
+        // score_above = 1, score_range = 1_000_000
+        // gross = 1_000_000_000 * 1 / 1_000_000 = 1000
+        // fee = 1000 * 1000 / 10_000 = 100
+        // payment = 900
+        assert_eq!(fee, 100);
+        assert_eq!(payment, 900);
+    }
+
+    #[test]
+    fn payment_threshold_exceeds_max_score_returns_error() {
+        let result = compute_payment(500_000, 1_000_001, 1_000_000, 1000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn challenge_bond_at_min_multiplier() {
+        let bond = compute_challenge_bond(500_000, 2).unwrap();
+        assert_eq!(bond, 1_000_000);
+    }
+
+    #[test]
+    fn challenge_bond_at_max_multiplier() {
+        let bond = compute_challenge_bond(500_000, 5).unwrap();
+        assert_eq!(bond, 2_500_000);
+    }
+
+    #[test]
+    fn challenge_bond_between_min_and_max_multiplier() {
+        let bond = compute_challenge_bond(500_000, 3).unwrap();
+        assert_eq!(bond, 1_500_000);
     }
 }

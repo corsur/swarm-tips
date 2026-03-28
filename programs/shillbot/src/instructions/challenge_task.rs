@@ -68,7 +68,8 @@ pub fn challenge_task(
     // Effects: update task
     let task = &mut ctx.accounts.task;
     task.state = TaskState::Disputed;
-    if is_client_challenge {
+    // Only increment the free challenge counter when the client actually used a free challenge
+    if is_client_challenge && bond_lamports == 0 {
         task.client_challenges = task
             .client_challenges
             .checked_add(1)

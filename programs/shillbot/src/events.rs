@@ -64,6 +64,13 @@ pub struct EmergencyReturn {
 }
 
 #[event]
+pub struct SessionCreated {
+    pub agent: Pubkey,
+    pub delegate: Pubkey,
+    pub allowed_instructions: u8,
+}
+
+#[event]
 pub struct SessionRevoked {
     pub agent: Pubkey,
     pub delegate: Pubkey,

@@ -37,10 +37,9 @@ pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {
 
     let escrow = task.escrow_lamports;
 
-    // Effects
+    // Effects: no meaningful state change needed — account will be closed.
+    // We do not set a new state since the account is about to be zeroed by `close`.
     let task = &mut ctx.accounts.task;
-    // State is set before close, though the account will be closed
-    task.state = TaskState::Open; // will be closed immediately
 
     // Interactions: return escrow to client via lamport transfer
     let task_info = task.to_account_info();

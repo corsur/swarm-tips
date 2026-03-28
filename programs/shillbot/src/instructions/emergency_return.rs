@@ -71,25 +71,27 @@ pub fn emergency_return(ctx: Context<EmergencyReturnAccounts>) -> Result<()> {
                         ShillbotError::NotTaskClient
                     );
 
-                    let escrow = task.escrow_lamports;
                     task_ids.push(task.task_id);
 
-                    // Must drop borrow before mutating lamports
+                    // Must drop borrow before mutating lamports and data
                     drop(data);
 
-                    // Transfer escrow to client
-                    let task_lamports = task_info.lamports();
+                    // Close the task account: transfer ALL lamports (escrow + rent)
+                    // to the client and zero the account data.
+                    let all_lamports = task_info.lamports();
                     let client_lamports = client_info.lamports();
 
-                    let new_task = task_lamports
-                        .checked_sub(escrow)
-                        .ok_or(ShillbotError::ArithmeticOverflow)?;
                     let new_client = client_lamports
-                        .checked_add(escrow)
+                        .checked_add(all_lamports)
                         .ok_or(ShillbotError::ArithmeticOverflow)?;
 
-                    **task_info.try_borrow_mut_lamports()? = new_task;
+                    **task_info.try_borrow_mut_lamports()? = 0;
                     **client_info.try_borrow_mut_lamports()? = new_client;
+
+                    // Zero account data to mark it as closed
+                    task_info.assign(&anchor_lang::system_program::ID);
+                    let mut task_data = task_info.try_borrow_mut_data()?;
+                    task_data.fill(0);
                 } else {
                     drop(data);
                 }

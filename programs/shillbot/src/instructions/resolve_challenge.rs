@@ -49,9 +49,7 @@ pub fn resolve_challenge(
     let task_info = task.to_account_info();
     let challenge_info = challenge.to_account_info();
 
-    let bond_slashed: u64;
-
-    if challenger_won {
+    let bond_slashed: u64 = if challenger_won {
         // Return escrow to client
         transfer_lamports(&task_info, &ctx.accounts.client.to_account_info(), escrow)?;
         // Return bond to challenger
@@ -62,7 +60,7 @@ pub fn resolve_challenge(
                 bond,
             )?;
         }
-        bond_slashed = 0;
+        0
     } else {
         // Agent won: release payment to agent
         let payment = task.payment_amount;
@@ -99,8 +97,8 @@ pub fn resolve_challenge(
                 other_half,
             )?;
         }
-        bond_slashed = bond;
-    }
+        bond
+    };
 
     emit!(ChallengeResolved {
         task_id: task.task_id,
@@ -161,7 +159,7 @@ pub struct ResolveChallenge<'info> {
     /// CHECK: Validated as challenge.challenger.
     #[account(
         mut,
-        constraint = challenger.key() == challenge.challenger @ ShillbotError::ArithmeticOverflow,
+        constraint = challenger.key() == challenge.challenger @ ShillbotError::InvalidTaskState,
     )]
     pub challenger: AccountInfo<'info>,
     /// CHECK: Treasury account for slashed bond portion.

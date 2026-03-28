@@ -91,6 +91,13 @@ pub mod shillbot {
         instructions::emergency_return::emergency_return(ctx)
     }
 
+    pub fn create_session(
+        ctx: Context<CreateSession>,
+        allowed_instructions: u8,
+    ) -> Result<()> {
+        instructions::create_session::create_session(ctx, allowed_instructions)
+    }
+
     pub fn revoke_session(ctx: Context<RevokeSession>) -> Result<()> {
         instructions::revoke_session::revoke_session(ctx)
     }
