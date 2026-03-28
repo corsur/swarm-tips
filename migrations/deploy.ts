@@ -11,7 +11,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import { BN, Program } from "@coral-xyz/anchor";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
-import { Coordination } from "../target/types/coordination";
+import { CoordinationGame } from "../target/types/coordination_game";
 
 const TOURNAMENT_ID = new BN(1);
 // 10 years out so the tournament never needs to be recreated between deploys.
@@ -21,7 +21,8 @@ const TOURNAMENT_END = new BN(
 
 module.exports = async function (provider: anchor.AnchorProvider) {
   anchor.setProvider(provider);
-  const program = anchor.workspace.coordination as Program<Coordination>;
+  const program = anchor.workspace
+    .coordinationGame as Program<CoordinationGame>;
 
   // ------------------------------------------------------------------
   // Step 1: initialize (GameCounter PDA)
