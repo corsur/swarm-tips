@@ -387,7 +387,10 @@ describe("shillbot", () => {
         otherAgent.publicKey,
         LAMPORTS_PER_SOL
       );
-      const [otherAgentPda] = agentStatePda(otherAgent.publicKey, program.programId);
+      const [otherAgentPda] = agentStatePda(
+        otherAgent.publicKey,
+        program.programId
+      );
 
       try {
         await program.methods
@@ -529,7 +532,10 @@ describe("shillbot", () => {
         .signers([agent])
         .rpc();
 
-      const [imposterAgentPda] = agentStatePda(imposter.publicKey, program.programId);
+      const [imposterAgentPda] = agentStatePda(
+        imposter.publicKey,
+        program.programId
+      );
 
       try {
         await program.methods
@@ -1046,7 +1052,10 @@ describe("shillbot", () => {
 
     it("allows up to 4 concurrent claims (below limit of 5)", async () => {
       const now = await getClockTimestamp(provider.connection);
-      const [claimAgentPda] = agentStatePda(claimAgent.publicKey, program.programId);
+      const [claimAgentPda] = agentStatePda(
+        claimAgent.publicKey,
+        program.programId
+      );
 
       // Create and claim 4 tasks
       for (let i = 0; i < 4; i++) {
@@ -1104,7 +1113,10 @@ describe("shillbot", () => {
         client.publicKey,
         program.programId
       );
-      const [claimAgentPda] = agentStatePda(claimAgent.publicKey, program.programId);
+      const [claimAgentPda] = agentStatePda(
+        claimAgent.publicKey,
+        program.programId
+      );
 
       await program.methods
         .createTask(
@@ -1153,7 +1165,10 @@ describe("shillbot", () => {
         client.publicKey,
         program.programId
       );
-      const [claimAgentPda] = agentStatePda(claimAgent.publicKey, program.programId);
+      const [claimAgentPda] = agentStatePda(
+        claimAgent.publicKey,
+        program.programId
+      );
 
       await program.methods
         .createTask(
@@ -1652,7 +1667,10 @@ describe("shillbot", () => {
         client.publicKey,
         program.programId
       );
-      const [emergencyAgentPda] = agentStatePda(emergencyAgent.publicKey, program.programId);
+      const [emergencyAgentPda] = agentStatePda(
+        emergencyAgent.publicKey,
+        program.programId
+      );
 
       await program.methods
         .createTask(
@@ -1890,11 +1908,7 @@ describe("shillbot", () => {
 
     it("rejects non-authority caller", async () => {
       const impostor = Keypair.generate();
-      await airdrop(
-        provider.connection,
-        impostor.publicKey,
-        LAMPORTS_PER_SOL
-      );
+      await airdrop(provider.connection, impostor.publicKey, LAMPORTS_PER_SOL);
 
       try {
         await program.methods
