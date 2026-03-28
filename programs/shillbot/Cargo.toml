@@ -21,7 +21,7 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = "0.32.1"
-shared = { path = "../shared" }
+shared = { path = "../../crates/shared" }
 solana-sha256-hasher = "2"
 
 [lints.rust]
