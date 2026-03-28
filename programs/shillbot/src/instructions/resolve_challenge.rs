@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::ChallengeResolved;
+use crate::scoring::compute_payment;
 use crate::state::{Challenge, GlobalState, Task, TaskState};
 
 /// Squads multisig resolves a dispute.
@@ -59,14 +60,25 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
         }
         0
     } else {
-        // Agent won: release payment to agent
-        let payment = task.payment_amount;
+        // Agent won: recompute payment to get fee breakdown
+        let (payment, fee) = compute_payment(
+            task.composite_score,
+            global.quality_threshold,
+            escrow,
+            global.protocol_fee_bps,
+        )?;
         if payment > 0 {
             transfer_lamports(&task_info, &ctx.accounts.agent.to_account_info(), payment)?;
         }
+        if fee > 0 {
+            transfer_lamports(&task_info, &ctx.accounts.treasury.to_account_info(), fee)?;
+        }
         // Return remainder escrow to client
+        let total_out = payment
+            .checked_add(fee)
+            .ok_or(ShillbotError::ArithmeticOverflow)?;
         let remainder = escrow
-            .checked_sub(payment)
+            .checked_sub(total_out)
             .ok_or(ShillbotError::ArithmeticOverflow)?;
         if remainder > 0 {
             transfer_lamports(
@@ -159,7 +171,10 @@ pub struct ResolveChallenge<'info> {
         constraint = challenger.key() == challenge.challenger @ ShillbotError::InvalidTaskState,
     )]
     pub challenger: AccountInfo<'info>,
-    /// CHECK: Treasury account for slashed bond portion.
-    #[account(mut)]
+    /// CHECK: Treasury account for slashed bond portion. Validated against GlobalState.treasury.
+    #[account(
+        mut,
+        constraint = treasury.key() == global_state.treasury @ ShillbotError::NotAuthority,
+    )]
     pub treasury: AccountInfo<'info>,
 }

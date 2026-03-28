@@ -9,6 +9,7 @@ pub mod initialize;
 pub mod resolve_challenge;
 pub mod revoke_session;
 pub mod submit_work;
+pub mod update_params;
 pub mod verify_task;
 
 pub use challenge_task::*;
@@ -22,4 +23,5 @@ pub use initialize::*;
 pub use resolve_challenge::*;
 pub use revoke_session::*;
 pub use submit_work::*;
+pub use update_params::*;
 pub use verify_task::*;

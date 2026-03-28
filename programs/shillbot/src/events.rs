@@ -75,3 +75,9 @@ pub struct SessionRevoked {
     pub agent: Pubkey,
     pub delegate: Pubkey,
 }
+
+#[event]
+pub struct ParamsUpdated {
+    pub protocol_fee_bps: u16,
+    pub quality_threshold: u64,
+}

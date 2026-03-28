@@ -35,6 +35,14 @@ pub mod shillbot {
         instructions::initialize::initialize(ctx, protocol_fee_bps, quality_threshold)
     }
 
+    pub fn update_params(
+        ctx: Context<UpdateParams>,
+        protocol_fee_bps: u16,
+        quality_threshold: u64,
+    ) -> Result<()> {
+        instructions::update_params::update_params(ctx, protocol_fee_bps, quality_threshold)
+    }
+
     pub fn create_task(
         ctx: Context<CreateTask>,
         escrow_lamports: u64,

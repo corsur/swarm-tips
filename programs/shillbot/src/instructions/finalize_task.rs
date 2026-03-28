@@ -134,7 +134,10 @@ pub struct FinalizeTask<'info> {
         constraint = client.key() == task.client @ ShillbotError::NotTaskClient,
     )]
     pub client: AccountInfo<'info>,
-    /// CHECK: Treasury account for protocol fees. Should be the DAO treasury.
-    #[account(mut)]
+    /// CHECK: Treasury account for protocol fees. Validated against GlobalState.treasury.
+    #[account(
+        mut,
+        constraint = treasury.key() == global_state.treasury @ ShillbotError::NotAuthority,
+    )]
     pub treasury: AccountInfo<'info>,
 }
