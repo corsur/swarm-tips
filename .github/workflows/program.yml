@@ -92,10 +92,11 @@ jobs:
           mkdir -p ~/.config/solana
           echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
 
-      - name: Write program keypair
+      - name: Write program keypairs
         run: |
           mkdir -p target/deploy
           echo '${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}' > target/deploy/coordination-keypair.json
+          echo '${{ secrets.SHILLBOT_PROGRAM_KEYPAIR }}' > target/deploy/shillbot-keypair.json
 
       - name: Build programs individually
         run: |
@@ -108,17 +109,29 @@ jobs:
           # the wallet. Close them before deploying to recover those lamports.
           solana program close --buffers --url devnet --keypair ~/.config/solana/id.json || true
 
-      - name: Deploy to devnet
-        run: anchor deploy --provider.cluster devnet
+      - name: Deploy programs to devnet
+        run: |
+          anchor deploy -p coordination --provider.cluster devnet
+          anchor deploy -p shillbot --provider.cluster devnet
 
       - name: Publish SDK to GitHub Packages
         run: |
+          # Coordination SDK
           cp target/types/coordination.ts sdk/coordination.ts
           node -e "
             const idl = require('./target/idl/coordination.json');
             const fs = require('fs');
             fs.appendFileSync('sdk/coordination.ts',
               '\nexport const IDL: Coordination = ' + JSON.stringify(idl, null, 2) + ' as unknown as Coordination;\n'
+            );
+          "
+          # Shillbot SDK
+          cp target/types/shillbot.ts sdk/shillbot.ts
+          node -e "
+            const idl = require('./target/idl/shillbot.json');
+            const fs = require('fs');
+            fs.appendFileSync('sdk/shillbot.ts',
+              '\nexport const IDL: Shillbot = ' + JSON.stringify(idl, null, 2) + ' as unknown as Shillbot;\n'
             );
           "
           cd sdk
