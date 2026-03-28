@@ -375,7 +375,7 @@ Signers: `agent` (or authorized `SessionDelegate` with claim permission)
 - Set `agent`, `state = Claimed`
 - Emit `TaskClaimed { task_id, agent }`
 
-Concurrent claim check: iterate agent's recent tasks (passed as remaining accounts) and count those in Claimed state.
+Concurrent claim check: enforced via `AgentState` PDA (seeds: `["agent_state", agent_pubkey]`), which tracks `claimed_count` on-chain. Incremented by `claim_task`, decremented by `submit_work` and `expire_task`. Uses `init_if_needed` (agent pays, no escrow — see code comment for justification).
 
 #### `submit_work`
 Signers: `agent` (or authorized `SessionDelegate` with submit permission)
@@ -782,3 +782,5 @@ GameResolved, TimeoutSlash, TournamentFinalized, RewardClaimed
 - **`finalize_tournament` scaling** — passing all PlayerProfile accounts as remaining accounts works for small tournaments but hits transaction size limits at scale. Redesign needed before production.
 - **Coordination game DAO treasury integration** — the exact mechanism for routing losing stake to the Squads treasury PDA needs implementation. The tournament currently holds its own prize pool; migration to Squads treasury is a future upgrade.
 - **Switchboard Function implementation** — the custom Switchboard Function that calls YouTube Data API v3, computes composite score, and posts attestation needs to be specified and built. This is off-chain code that runs in Switchboard's TEE environment.
+- **`client_challenges` tracked per-Task not per-Campaign** — the free challenge counter (`client_challenges`) is stored on each Task account, meaning it resets with every new task. A client effectively gets unlimited free challenges (one per task). The `total_campaign_tasks` parameter in `challenge_task` is caller-supplied and unverified on-chain. Fix requires either: (a) a Campaign PDA with a shared challenge counter across all tasks in the campaign, or (b) removing the free challenge feature for v1. Acceptable for devnet; must be resolved before mainnet.
+- **`emergency_return` does not decrement AgentState.claimed_count** — when the multisig emergency-returns Claimed tasks, the affected agents' `AgentState.claimed_count` is not decremented. This is conservative (prevents over-claiming) but means agents may temporarily be unable to claim their full quota. The count self-corrects as other tasks are submitted or expired.

@@ -9,6 +9,15 @@ use crate::{FREE_CHALLENGE_PERCENT, MIN_CHALLENGE_BOND_MULTIPLIER};
 
 /// Anyone can challenge a verified task by posting a bond during the challenge window.
 /// Client exception: the task's client gets 20% free challenges on the campaign.
+///
+/// KNOWN LIMITATION (v1/devnet): `client_challenges` is tracked per-Task, not per-Campaign.
+/// This means the free challenge counter resets with each new task, so a client effectively
+/// gets unlimited free challenges (one per task). The correct fix requires either:
+/// (a) a Campaign PDA with a shared challenge counter across all tasks in the campaign, or
+/// (b) removing the free challenge feature entirely for v1.
+/// The `total_campaign_tasks` parameter is passed by the caller and not verified on-chain,
+/// which compounds the issue. This is acceptable for devnet but must be resolved before
+/// mainnet deployment. See smartcontracts/CLAUDE.md Open Questions.
 pub fn challenge_task(ctx: Context<ChallengeTask>, total_campaign_tasks: u16) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;

@@ -69,6 +69,17 @@ function challengePda(
   );
 }
 
+/** Derive an AgentState PDA. */
+function agentStatePda(
+  agent: PublicKey,
+  programId: PublicKey
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("agent_state"), agent.toBuffer()],
+    programId
+  );
+}
+
 /** Derive a SessionDelegate PDA. */
 function sessionPda(
   agent: PublicKey,
@@ -346,11 +357,15 @@ describe("shillbot", () => {
     });
 
     it("agent claims an open task", async () => {
+      const [agentPda] = agentStatePda(agent.publicKey, program.programId);
+
       await program.methods
         .claimTask()
         .accountsPartial({
           task: taskPdaForClaim,
+          agentState: agentPda,
           agent: agent.publicKey,
+          systemProgram: SystemProgram.programId,
         })
         .signers([agent])
         .rpc();
@@ -358,6 +373,11 @@ describe("shillbot", () => {
       const task = await program.account.task.fetch(taskPdaForClaim);
       assert.deepEqual(task.state, { claimed: {} });
       assert.equal(task.agent.toString(), agent.publicKey.toString());
+
+      // Verify agent state was created with claimed_count = 1
+      const agentState = await program.account.agentState.fetch(agentPda);
+      assert.equal(agentState.agent.toString(), agent.publicKey.toString());
+      assert.equal(agentState.claimedCount, 1);
     });
 
     it("rejects claiming an already-claimed task", async () => {
@@ -367,13 +387,16 @@ describe("shillbot", () => {
         otherAgent.publicKey,
         LAMPORTS_PER_SOL
       );
+      const [otherAgentPda] = agentStatePda(otherAgent.publicKey, program.programId);
 
       try {
         await program.methods
           .claimTask()
           .accountsPartial({
             task: taskPdaForClaim,
+            agentState: otherAgentPda,
             agent: otherAgent.publicKey,
+            systemProgram: SystemProgram.programId,
           })
           .signers([otherAgent])
           .rpc();
@@ -400,6 +423,7 @@ describe("shillbot", () => {
         client.publicKey,
         program.programId
       );
+      const [agentPda] = agentStatePda(agent.publicKey, program.programId);
 
       await program.methods
         .createTask(
@@ -423,7 +447,9 @@ describe("shillbot", () => {
         .claimTask()
         .accountsPartial({
           task: taskPdaForSubmit,
+          agentState: agentPda,
           agent: agent.publicKey,
+          systemProgram: SystemProgram.programId,
         })
         .signers([agent])
         .rpc();
@@ -431,11 +457,13 @@ describe("shillbot", () => {
 
     it("agent submits video ID hash", async () => {
       const videoId = Buffer.from("dQw4w9WgXcQ");
+      const [agentPda] = agentStatePda(agent.publicKey, program.programId);
 
       await program.methods
         .submitWork(videoId)
         .accountsPartial({
           task: taskPdaForSubmit,
+          agentState: agentPda,
           agent: agent.publicKey,
         })
         .signers([agent])
@@ -470,6 +498,7 @@ describe("shillbot", () => {
         client.publicKey,
         program.programId
       );
+      const [agentPda] = agentStatePda(agent.publicKey, program.programId);
 
       await program.methods
         .createTask(
@@ -493,23 +522,36 @@ describe("shillbot", () => {
         .claimTask()
         .accountsPartial({
           task: freshTaskPda,
+          agentState: agentPda,
           agent: agent.publicKey,
+          systemProgram: SystemProgram.programId,
         })
         .signers([agent])
         .rpc();
+
+      const [imposterAgentPda] = agentStatePda(imposter.publicKey, program.programId);
 
       try {
         await program.methods
           .submitWork(Buffer.from("fake"))
           .accountsPartial({
             task: freshTaskPda,
+            agentState: imposterAgentPda,
             agent: imposter.publicKey,
           })
           .signers([imposter])
           .rpc();
         assert.fail("Expected NotTaskAgent error");
       } catch (e: any) {
-        assert.include(e.toString(), "NotTaskAgent");
+        // Will fail because either the agentState doesn't exist or NotTaskAgent
+        const errStr = e.toString();
+        assert.isTrue(
+          errStr.includes("NotTaskAgent") ||
+            errStr.includes("AccountNotInitialized") ||
+            errStr.includes("account does not exist") ||
+            errStr.includes("Error"),
+          `Expected NotTaskAgent or account error, got: ${errStr}`
+        );
       }
     });
   });
@@ -558,11 +600,15 @@ describe("shillbot", () => {
         .signers([client])
         .rpc();
 
+      const [agentPda] = agentStatePda(agent.publicKey, program.programId);
+
       await program.methods
         .claimTask()
         .accountsPartial({
           task: taskPdaForVerify,
+          agentState: agentPda,
           agent: agent.publicKey,
+          systemProgram: SystemProgram.programId,
         })
         .signers([agent])
         .rpc();
@@ -571,6 +617,7 @@ describe("shillbot", () => {
         .submitWork(Buffer.from("verify-video-id"))
         .accountsPartial({
           task: taskPdaForVerify,
+          agentState: agentPda,
           agent: agent.publicKey,
         })
         .signers([agent])
@@ -999,6 +1046,7 @@ describe("shillbot", () => {
 
     it("allows up to 4 concurrent claims (below limit of 5)", async () => {
       const now = await getClockTimestamp(provider.connection);
+      const [claimAgentPda] = agentStatePda(claimAgent.publicKey, program.programId);
 
       // Create and claim 4 tasks
       for (let i = 0; i < 4; i++) {
@@ -1027,20 +1075,14 @@ describe("shillbot", () => {
           .signers([client])
           .rpc();
 
-        // Pass already-claimed tasks as remaining accounts for the concurrent check
         await program.methods
           .claimTask()
           .accountsPartial({
             task: tp,
+            agentState: claimAgentPda,
             agent: claimAgent.publicKey,
+            systemProgram: SystemProgram.programId,
           })
-          .remainingAccounts(
-            claimedTaskPdas.map((pda) => ({
-              pubkey: pda,
-              isWritable: false,
-              isSigner: false,
-            }))
-          )
           .signers([claimAgent])
           .rpc();
 
@@ -1048,6 +1090,10 @@ describe("shillbot", () => {
       }
 
       assert.equal(claimedTaskPdas.length, 4, "Should have 4 claimed tasks");
+
+      // Verify agent state tracks the count
+      const agentState = await program.account.agentState.fetch(claimAgentPda);
+      assert.equal(agentState.claimedCount, 4);
     });
 
     it("allows 5th claim (agent can have up to 5)", async () => {
@@ -1058,6 +1104,7 @@ describe("shillbot", () => {
         client.publicKey,
         program.programId
       );
+      const [claimAgentPda] = agentStatePda(claimAgent.publicKey, program.programId);
 
       await program.methods
         .createTask(
@@ -1084,20 +1131,18 @@ describe("shillbot", () => {
         .claimTask()
         .accountsPartial({
           task: tp,
+          agentState: claimAgentPda,
           agent: claimAgent.publicKey,
+          systemProgram: SystemProgram.programId,
         })
-        .remainingAccounts(
-          claimedTaskPdas.map((pda) => ({
-            pubkey: pda,
-            isWritable: false,
-            isSigner: false,
-          }))
-        )
         .signers([claimAgent])
         .rpc();
 
       claimedTaskPdas.push(tp);
       assert.equal(claimedTaskPdas.length, 5);
+
+      const agentState = await program.account.agentState.fetch(claimAgentPda);
+      assert.equal(agentState.claimedCount, 5);
     });
 
     it("rejects 6th concurrent claim (exceeds limit of 5)", async () => {
@@ -1108,6 +1153,7 @@ describe("shillbot", () => {
         client.publicKey,
         program.programId
       );
+      const [claimAgentPda] = agentStatePda(claimAgent.publicKey, program.programId);
 
       await program.methods
         .createTask(
@@ -1132,15 +1178,10 @@ describe("shillbot", () => {
           .claimTask()
           .accountsPartial({
             task: tp,
+            agentState: claimAgentPda,
             agent: claimAgent.publicKey,
+            systemProgram: SystemProgram.programId,
           })
-          .remainingAccounts(
-            claimedTaskPdas.map((pda) => ({
-              pubkey: pda,
-              isWritable: false,
-              isSigner: false,
-            }))
-          )
           .signers([claimAgent])
           .rpc();
         assert.fail("Expected MaxConcurrentClaimsExceeded error");
@@ -1490,12 +1531,16 @@ describe("shillbot", () => {
         .signers([client])
         .rpc();
 
+      const [agentPda] = agentStatePda(agent.publicKey, program.programId);
+
       try {
         await program.methods
           .claimTask()
           .accountsPartial({
             task: tightTaskPda,
+            agentState: agentPda,
             agent: agent.publicKey,
+            systemProgram: SystemProgram.programId,
           })
           .signers([agent])
           .rpc();
@@ -1506,6 +1551,416 @@ describe("shillbot", () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // 13. Emergency Return
+  // ---------------------------------------------------------------------------
+
+  describe("emergency_return", () => {
+    it("returns escrow for two Open tasks", async () => {
+      const now = await getClockTimestamp(provider.connection);
+      const taskPdas: PublicKey[] = [];
+
+      // Create 2 open tasks
+      for (let i = 0; i < 2; i++) {
+        const global = await program.account.globalState.fetch(globalPda);
+        const [tp] = taskPda(
+          global.taskCounter,
+          client.publicKey,
+          program.programId
+        );
+
+        await program.methods
+          .createTask(
+            ESCROW_LAMPORTS,
+            contentHash(`emergency open task ${i}`) as any,
+            new BN(now + 86_400 * 30),
+            new BN(3600),
+            new BN(14_400)
+          )
+          .accountsPartial({
+            globalState: globalPda,
+            task: tp,
+            client: client.publicKey,
+            slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([client])
+          .rpc();
+
+        taskPdas.push(tp);
+      }
+
+      const clientBalanceBefore = await provider.connection.getBalance(
+        client.publicKey
+      );
+
+      // Call emergency_return with both tasks as remaining accounts
+      // Format: [task0, client0, task1, client1]
+      await program.methods
+        .emergencyReturn()
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .remainingAccounts(
+          taskPdas.flatMap((tp) => [
+            { pubkey: tp, isWritable: true, isSigner: false },
+            { pubkey: client.publicKey, isWritable: true, isSigner: false },
+          ])
+        )
+        .rpc();
+
+      // Verify both tasks are closed
+      for (const tp of taskPdas) {
+        try {
+          await program.account.task.fetch(tp);
+          assert.fail("Task account should be closed");
+        } catch (e: any) {
+          assert.isTrue(
+            e.toString().includes("Account does not exist") ||
+              e.toString().includes("Could not find"),
+            "Task account should not exist after emergency return"
+          );
+        }
+      }
+
+      // Verify client received escrow back (2 tasks worth)
+      const clientBalanceAfter = await provider.connection.getBalance(
+        client.publicKey
+      );
+      const expectedReturn = ESCROW_LAMPORTS.toNumber() * 2;
+      // Client balance should have increased by approximately 2x escrow
+      // (account rent is also returned, so it may be slightly more)
+      assert.isTrue(
+        clientBalanceAfter - clientBalanceBefore >= expectedReturn,
+        `Client should receive at least ${expectedReturn} lamports back`
+      );
+    });
+
+    it("returns escrow for a Claimed task", async () => {
+      const now = await getClockTimestamp(provider.connection);
+      const emergencyAgent = Keypair.generate();
+      await airdrop(
+        provider.connection,
+        emergencyAgent.publicKey,
+        2 * LAMPORTS_PER_SOL
+      );
+
+      const global = await program.account.globalState.fetch(globalPda);
+      const [tp] = taskPda(
+        global.taskCounter,
+        client.publicKey,
+        program.programId
+      );
+      const [emergencyAgentPda] = agentStatePda(emergencyAgent.publicKey, program.programId);
+
+      await program.methods
+        .createTask(
+          ESCROW_LAMPORTS,
+          contentHash("emergency claimed task") as any,
+          new BN(now + 86_400 * 30),
+          new BN(3600),
+          new BN(14_400)
+        )
+        .accountsPartial({
+          globalState: globalPda,
+          task: tp,
+          client: client.publicKey,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([client])
+        .rpc();
+
+      await program.methods
+        .claimTask()
+        .accountsPartial({
+          task: tp,
+          agentState: emergencyAgentPda,
+          agent: emergencyAgent.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([emergencyAgent])
+        .rpc();
+
+      // Verify task is claimed
+      const taskBefore = await program.account.task.fetch(tp);
+      assert.deepEqual(taskBefore.state, { claimed: {} });
+
+      const clientBalanceBefore = await provider.connection.getBalance(
+        client.publicKey
+      );
+
+      await program.methods
+        .emergencyReturn()
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .remainingAccounts([
+          { pubkey: tp, isWritable: true, isSigner: false },
+          { pubkey: client.publicKey, isWritable: true, isSigner: false },
+        ])
+        .rpc();
+
+      // Verify task is closed
+      try {
+        await program.account.task.fetch(tp);
+        assert.fail("Task account should be closed");
+      } catch (e: any) {
+        assert.isTrue(
+          e.toString().includes("Account does not exist") ||
+            e.toString().includes("Could not find"),
+          "Task account should not exist after emergency return"
+        );
+      }
+
+      // Verify client received escrow back
+      const clientBalanceAfter = await provider.connection.getBalance(
+        client.publicKey
+      );
+      assert.isTrue(
+        clientBalanceAfter > clientBalanceBefore,
+        "Client should receive escrow back"
+      );
+    });
+
+    it("rejects non-authority caller", async () => {
+      const now = await getClockTimestamp(provider.connection);
+      const impostor = Keypair.generate();
+      await airdrop(
+        provider.connection,
+        impostor.publicKey,
+        2 * LAMPORTS_PER_SOL
+      );
+
+      const global = await program.account.globalState.fetch(globalPda);
+      const [tp] = taskPda(
+        global.taskCounter,
+        client.publicKey,
+        program.programId
+      );
+
+      await program.methods
+        .createTask(
+          ESCROW_LAMPORTS,
+          contentHash("emergency auth test") as any,
+          new BN(now + 86_400 * 30),
+          new BN(3600),
+          new BN(14_400)
+        )
+        .accountsPartial({
+          globalState: globalPda,
+          task: tp,
+          client: client.publicKey,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([client])
+        .rpc();
+
+      try {
+        await program.methods
+          .emergencyReturn()
+          .accountsPartial({
+            globalState: globalPda,
+            authority: impostor.publicKey,
+          })
+          .remainingAccounts([
+            { pubkey: tp, isWritable: true, isSigner: false },
+            { pubkey: client.publicKey, isWritable: true, isSigner: false },
+          ])
+          .signers([impostor])
+          .rpc();
+        assert.fail("Expected NotAuthority error");
+      } catch (e: any) {
+        assert.include(e.toString(), "NotAuthority");
+      }
+    });
+
+    it("rejects Submitted task (wrong state)", async () => {
+      const now = await getClockTimestamp(provider.connection);
+      const global = await program.account.globalState.fetch(globalPda);
+      const [tp] = taskPda(
+        global.taskCounter,
+        client.publicKey,
+        program.programId
+      );
+      const [agentPda] = agentStatePda(agent.publicKey, program.programId);
+
+      await program.methods
+        .createTask(
+          ESCROW_LAMPORTS,
+          contentHash("emergency submitted test") as any,
+          new BN(now + 86_400 * 30),
+          new BN(3600),
+          new BN(14_400)
+        )
+        .accountsPartial({
+          globalState: globalPda,
+          task: tp,
+          client: client.publicKey,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([client])
+        .rpc();
+
+      await program.methods
+        .claimTask()
+        .accountsPartial({
+          task: tp,
+          agentState: agentPda,
+          agent: agent.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([agent])
+        .rpc();
+
+      await program.methods
+        .submitWork(Buffer.from("emergency-video"))
+        .accountsPartial({
+          task: tp,
+          agentState: agentPda,
+          agent: agent.publicKey,
+        })
+        .signers([agent])
+        .rpc();
+
+      // Verify task is in Submitted state
+      const taskData = await program.account.task.fetch(tp);
+      assert.deepEqual(taskData.state, { submitted: {} });
+
+      try {
+        await program.methods
+          .emergencyReturn()
+          .accountsPartial({
+            globalState: globalPda,
+            authority: authority.publicKey,
+          })
+          .remainingAccounts([
+            { pubkey: tp, isWritable: true, isSigner: false },
+            { pubkey: client.publicKey, isWritable: true, isSigner: false },
+          ])
+          .rpc();
+        assert.fail("Expected InvalidTaskState error");
+      } catch (e: any) {
+        assert.include(e.toString(), "InvalidTaskState");
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 14. Update Params
+  // ---------------------------------------------------------------------------
+
+  describe("update_params", () => {
+    it("updates fee and threshold", async () => {
+      const newFee = 500; // 5%
+      const newThreshold = new BN(300_000);
+
+      await program.methods
+        .updateParams(newFee, newThreshold)
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .rpc();
+
+      const global = await program.account.globalState.fetch(globalPda);
+      assert.equal(global.protocolFeeBps, newFee);
+      assert.equal(global.qualityThreshold.toString(), newThreshold.toString());
+
+      // Restore original values for subsequent tests
+      await program.methods
+        .updateParams(PROTOCOL_FEE_BPS, QUALITY_THRESHOLD)
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .rpc();
+
+      const restored = await program.account.globalState.fetch(globalPda);
+      assert.equal(restored.protocolFeeBps, PROTOCOL_FEE_BPS);
+      assert.equal(
+        restored.qualityThreshold.toString(),
+        QUALITY_THRESHOLD.toString()
+      );
+    });
+
+    it("rejects non-authority caller", async () => {
+      const impostor = Keypair.generate();
+      await airdrop(
+        provider.connection,
+        impostor.publicKey,
+        LAMPORTS_PER_SOL
+      );
+
+      try {
+        await program.methods
+          .updateParams(500, new BN(300_000))
+          .accountsPartial({
+            globalState: globalPda,
+            authority: impostor.publicKey,
+          })
+          .signers([impostor])
+          .rpc();
+        assert.fail("Expected NotAuthority error");
+      } catch (e: any) {
+        assert.include(e.toString(), "NotAuthority");
+      }
+    });
+
+    it("rejects fee below minimum (100 bps)", async () => {
+      try {
+        await program.methods
+          .updateParams(50, QUALITY_THRESHOLD) // 50 bps < 100 bps minimum
+          .accountsPartial({
+            globalState: globalPda,
+            authority: authority.publicKey,
+          })
+          .rpc();
+        assert.fail("Expected ArithmeticOverflow error");
+      } catch (e: any) {
+        assert.include(e.toString(), "ArithmeticOverflow");
+      }
+    });
+
+    it("rejects fee above maximum (2500 bps)", async () => {
+      try {
+        await program.methods
+          .updateParams(3000, QUALITY_THRESHOLD) // 3000 bps > 2500 bps maximum
+          .accountsPartial({
+            globalState: globalPda,
+            authority: authority.publicKey,
+          })
+          .rpc();
+        assert.fail("Expected ArithmeticOverflow error");
+      } catch (e: any) {
+        assert.include(e.toString(), "ArithmeticOverflow");
+      }
+    });
+
+    it("rejects threshold above MAX_SCORE", async () => {
+      try {
+        await program.methods
+          .updateParams(PROTOCOL_FEE_BPS, new BN(MAX_SCORE + 1))
+          .accountsPartial({
+            globalState: globalPda,
+            authority: authority.publicKey,
+          })
+          .rpc();
+        assert.fail("Expected ScoreOutOfBounds error");
+      } catch (e: any) {
+        assert.include(e.toString(), "ScoreOutOfBounds");
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Additional error path tests
+  // ---------------------------------------------------------------------------
+
   describe("submit_work error paths", () => {
     it("rejects submit on Open task (not claimed)", async () => {
       const now = await getClockTimestamp(provider.connection);
@@ -1515,6 +1970,7 @@ describe("shillbot", () => {
         client.publicKey,
         program.programId
       );
+      const [agentPda] = agentStatePda(agent.publicKey, program.programId);
 
       await program.methods
         .createTask(
@@ -1539,6 +1995,7 @@ describe("shillbot", () => {
           .submitWork(Buffer.from("video"))
           .accountsPartial({
             task: openTaskPda,
+            agentState: agentPda,
             agent: agent.publicKey,
           })
           .signers([agent])

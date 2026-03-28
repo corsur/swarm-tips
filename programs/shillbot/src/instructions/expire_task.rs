@@ -2,11 +2,15 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::TaskExpired;
-use crate::state::{Task, TaskState};
+use crate::state::{AgentState, Task, TaskState};
 use crate::VERIFICATION_TIMEOUT_SECONDS;
 
 /// Permissionless crank: anyone can call after deadline (Open/Claimed) or
 /// T+14d verification timeout (Submitted). Returns escrow to client.
+///
+/// When expiring a Claimed task, the agent's AgentState.claimed_count is
+/// decremented. The agent_state account is optional — it is only required
+/// when the task is in Claimed state.
 pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
@@ -33,6 +37,41 @@ pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {
         _ => {
             return Err(error!(ShillbotError::InvalidTaskState));
         }
+    }
+
+    // Effects: if task was Claimed, decrement the agent's claim count.
+    // The agent_state is passed as the first remaining_account for Claimed tasks.
+    if state_at_expiry == TaskState::Claimed {
+        require!(
+            !ctx.remaining_accounts.is_empty(),
+            ShillbotError::ArithmeticOverflow
+        );
+        let agent_state_info = &ctx.remaining_accounts[0];
+
+        // Verify the account is owned by this program
+        require!(
+            agent_state_info.owner == ctx.program_id,
+            ShillbotError::InvalidTaskState
+        );
+
+        // Deserialize and validate
+        let mut data = agent_state_info.try_borrow_mut_data()?;
+        let mut agent_state = AgentState::try_deserialize(&mut &data[..])?;
+
+        // Verify this is the correct agent_state for the task's agent
+        require!(agent_state.agent == task.agent, ShillbotError::NotTaskAgent);
+        require!(
+            agent_state.claimed_count > 0,
+            ShillbotError::ArithmeticOverflow
+        );
+
+        agent_state.claimed_count = agent_state
+            .claimed_count
+            .checked_sub(1)
+            .ok_or(ShillbotError::ArithmeticOverflow)?;
+
+        // Write back
+        agent_state.try_serialize(&mut &mut data[..])?;
     }
 
     let escrow = task.escrow_lamports;
@@ -79,4 +118,6 @@ pub struct ExpireTask<'info> {
         constraint = client.key() == task.client @ ShillbotError::NotTaskClient,
     )]
     pub client: AccountInfo<'info>,
+    // For Claimed tasks, the agent's AgentState account must be passed
+    // as the first remaining_account (mut) so claimed_count can be decremented.
 }

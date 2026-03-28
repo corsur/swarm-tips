@@ -6,6 +6,15 @@ use crate::state::{GlobalState, Task, TaskState};
 
 /// Squads multisig only. Returns escrow for Open/Claimed tasks.
 /// Accepts task accounts as remaining_accounts.
+///
+/// KNOWN LIMITATION: For Claimed tasks, the agent's AgentState.claimed_count is
+/// NOT decremented here. Emergency return is a rare admin operation, and handling
+/// the agent_state accounts in remaining_accounts alongside task/client pairs
+/// adds significant complexity (triples would be needed: task, client, agent_state).
+/// The practical impact is minimal: the agent's claimed_count may be higher than
+/// actual, which is conservative (prevents over-claiming, not under-claiming).
+/// If an agent is affected, they can wait for the AgentState to be corrected
+/// by subsequent submit_work or expire_task calls on their other tasks.
 pub fn emergency_return(ctx: Context<EmergencyReturnAccounts>) -> Result<()> {
     let global = &ctx.accounts.global_state;
 

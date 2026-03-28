@@ -33,7 +33,12 @@ pub mod shillbot {
         quality_threshold: u64,
         starting_counter: u64,
     ) -> Result<()> {
-        instructions::initialize::initialize(ctx, protocol_fee_bps, quality_threshold, starting_counter)
+        instructions::initialize::initialize(
+            ctx,
+            protocol_fee_bps,
+            quality_threshold,
+            starting_counter,
+        )
     }
 
     /// One-time migration: close old GlobalState for re-init. Remove after devnet migration.

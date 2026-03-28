@@ -2,17 +2,18 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::TaskClaimed;
-use crate::state::{Task, TaskState};
+use crate::state::{AgentState, Task, TaskState};
 use crate::MAX_CONCURRENT_CLAIMS;
 
 /// Agent claims an open task. Enforces minimum time buffer and concurrent claim limit.
 ///
-/// Concurrent claim check: the caller passes agent's other Task accounts as
-/// remaining_accounts. The handler counts those in Claimed state and rejects
-/// if the limit is reached.
+/// The concurrent claim limit is enforced via the `AgentState` PDA, which tracks
+/// how many tasks the agent currently has in Claimed state. This is tamper-proof
+/// because the count is maintained on-chain by claim_task, submit_work, and expire_task.
 pub fn claim_task(ctx: Context<ClaimTask>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
+    let agent_state = &ctx.accounts.agent_state;
 
     // Checks: state
     require!(
@@ -30,43 +31,23 @@ pub fn claim_task(ctx: Context<ClaimTask>) -> Result<()> {
         ShillbotError::ClaimBufferInsufficient
     );
 
-    // Checks: concurrent claim limit via remaining accounts
-    let agent_key = ctx.accounts.agent.key();
-    let mut claimed_count: u8 = 0;
+    // Checks: concurrent claim limit via AgentState counter
     require!(
-        ctx.remaining_accounts.len() <= 20,
-        ShillbotError::ArithmeticOverflow
-    );
-    for account_info in ctx.remaining_accounts.iter() {
-        // Attempt to deserialize as Task; skip accounts that don't parse.
-        // Only count tasks owned by this program, assigned to this agent, in Claimed state.
-        if account_info.owner != ctx.program_id {
-            continue;
-        }
-        let data = account_info.try_borrow_data()?;
-        if data.len() < Task::SPACE {
-            continue;
-        }
-        // Anchor discriminator check: first 8 bytes
-        let disc = &data[..8];
-        let expected_disc = Task::DISCRIMINATOR;
-        if disc != expected_disc {
-            continue;
-        }
-        if let Ok(other_task) = Task::try_deserialize(&mut &data[..]) {
-            if other_task.agent == agent_key && other_task.state == TaskState::Claimed {
-                claimed_count = claimed_count
-                    .checked_add(1)
-                    .ok_or(ShillbotError::ArithmeticOverflow)?;
-            }
-        }
-    }
-    require!(
-        claimed_count < MAX_CONCURRENT_CLAIMS,
+        agent_state.claimed_count < MAX_CONCURRENT_CLAIMS,
         ShillbotError::MaxConcurrentClaimsExceeded
     );
 
-    // Effects
+    // Effects: update agent state
+    let agent_state = &mut ctx.accounts.agent_state;
+    let agent_key = ctx.accounts.agent.key();
+    agent_state.agent = agent_key;
+    agent_state.claimed_count = agent_state
+        .claimed_count
+        .checked_add(1)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    agent_state.bump = ctx.bumps.agent_state;
+
+    // Effects: update task
     let task = &mut ctx.accounts.task;
     task.agent = agent_key;
     task.state = TaskState::Claimed;
@@ -84,5 +65,22 @@ pub fn claim_task(ctx: Context<ClaimTask>) -> Result<()> {
 pub struct ClaimTask<'info> {
     #[account(mut)]
     pub task: Account<'info, Task>,
+    /// AgentState PDA tracks the agent's concurrent claim count.
+    ///
+    /// Using `init_if_needed` is acceptable here because:
+    /// (a) the agent pays for creation — no cost to the protocol,
+    /// (b) AgentState does not hold escrow funds,
+    /// (c) the "no init_if_needed for escrow accounts" rule does not apply.
+    /// The account is initialized on the agent's first claim and reused thereafter.
+    #[account(
+        init_if_needed,
+        payer = agent,
+        space = AgentState::SPACE,
+        seeds = [b"agent_state", agent.key().as_ref()],
+        bump,
+    )]
+    pub agent_state: Account<'info, AgentState>,
+    #[account(mut)]
     pub agent: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
