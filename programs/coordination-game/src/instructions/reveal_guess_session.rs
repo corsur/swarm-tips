@@ -4,13 +4,19 @@ use crate::instructions::utils::{compute_treasury_split, transfer_lamports};
 use crate::payoff::resolve_game;
 use crate::state::{
     Game, GameState, GlobalConfig, PlayerProfile, SessionAuthority, Tournament, GUESS_UNREVEALED,
+    MATCHUP_TYPE_UNSET,
 };
 use anchor_lang::prelude::*;
 use solana_sha256_hasher::hashv;
 
 /// Session-delegated variant of `reveal_guess`. The session key signs instead
-/// of the player wallet.
-pub fn reveal_guess_session(ctx: Context<RevealGuessSession>, r: [u8; 32]) -> Result<()> {
+/// of the player wallet. The first revealer must also provide `r_matchup` to
+/// reveal the matchup type (if still unset).
+pub fn reveal_guess_session(
+    ctx: Context<RevealGuessSession>,
+    r: [u8; 32],
+    r_matchup: Option<[u8; 32]>,
+) -> Result<()> {
     crate::instructions::session_utils::validate_session_authority(
         &ctx.accounts.session_authority,
         &ctx.accounts.player.key(),
@@ -58,6 +64,19 @@ pub fn reveal_guess_session(ctx: Context<RevealGuessSession>, r: [u8; 32]) -> Re
         game.p1_guess = guess;
     } else {
         game.p2_guess = guess;
+    }
+
+    // Reveal matchup type if still unset (first revealer provides r_matchup)
+    if game.matchup_type == MATCHUP_TYPE_UNSET {
+        let r_mu = r_matchup.ok_or(error!(CoordinationError::InvalidGameState))?;
+        let computed_commitment: [u8; 32] = hashv(&[r_mu.as_ref()]).to_bytes();
+        require!(
+            computed_commitment == game.matchup_commitment,
+            CoordinationError::CommitmentMismatch
+        );
+        let matchup_type = r_mu[31] & 1;
+        require!(matchup_type <= 1, CoordinationError::InvalidGameState);
+        game.matchup_type = matchup_type;
     }
 
     emit!(GuessRevealed {

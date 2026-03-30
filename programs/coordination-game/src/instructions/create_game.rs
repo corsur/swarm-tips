@@ -3,21 +3,41 @@ use crate::events::GameCreated;
 use crate::instructions::utils::transfer_lamports;
 use crate::state::{
     Game, GameCounter, GameState, GlobalConfig, PlayerProfile, StakeEscrow, Tournament,
-    COMMIT_TIMEOUT_SLOTS, FIXED_STAKE_LAMPORTS, GUESS_UNREVEALED, REVEAL_TIMEOUT_SLOTS,
+    COMMIT_TIMEOUT_SLOTS, FIXED_STAKE_LAMPORTS, GUESS_UNREVEALED, MATCHUP_TYPE_UNSET,
+    REVEAL_TIMEOUT_SLOTS,
 };
 use anchor_lang::prelude::*;
 
-pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: u8) -> Result<()> {
+/// Player creates a game with a matchmaker-attested matchup commitment.
+///
+/// The matchmaker co-signs to prove the commitment is legitimate (prevents players
+/// from forging their own commitment and knowing the matchup type). The player
+/// pays all gas. The matchmaker never pays.
+///
+/// The matchup_commitment is SHA-256(R_matchup) where R_matchup[31] & 1 encodes
+/// the matchup type (0 = same team, 1 = different teams). The actual matchup_type
+/// is revealed during the first guess reveal, after both players have committed
+/// their guesses (so neither can change their guess based on matchup knowledge).
+pub fn create_game(
+    ctx: Context<CreateGame>,
+    stake_lamports: u64,
+    matchup_commitment: [u8; 32],
+) -> Result<()> {
     require!(
         stake_lamports == FIXED_STAKE_LAMPORTS,
         CoordinationError::StakeMismatch
     );
-    require!(matchup_type <= 1, CoordinationError::InvalidGameState);
 
-    // Checks: matchmaker authority
+    // Checks: matchmaker co-signer is the authorized matchmaker
     require!(
         ctx.accounts.matchmaker.key() == ctx.accounts.global_config.matchmaker,
         CoordinationError::NotMatchmaker
+    );
+
+    // Checks: commitment is not all zeros (would be trivially forgeable)
+    require!(
+        matchup_commitment != [0u8; 32],
+        CoordinationError::InvalidGameState
     );
 
     let clock = Clock::get()?;
@@ -31,7 +51,7 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
     let cutoff_slots = COMMIT_TIMEOUT_SLOTS
         .checked_add(REVEAL_TIMEOUT_SLOTS)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
-    let slots_per_second: u64 = 2; // ~2.5 slots/sec, conservative
+    let slots_per_second: u64 = 2;
     let cutoff_seconds = cutoff_slots
         .checked_div(slots_per_second)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
@@ -43,7 +63,7 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
         CoordinationError::OutsideTournamentWindow,
     );
 
-    // Validate the player's escrow has an unconsumed deposit
+    // Validate the player's escrow
     let escrow = &ctx.accounts.escrow;
     require!(
         escrow.validate_for_game(
@@ -79,10 +99,11 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
     game.created_at = now;
     game.resolved_at = 0;
     game.activated_at_slot = 0;
-    game.matchup_type = matchup_type;
+    game.matchup_commitment = matchup_commitment;
+    game.matchup_type = MATCHUP_TYPE_UNSET;
     game.bump = ctx.bumps.game;
 
-    // Init player profile if needed — player pays for their own account
+    // Init player profile if needed
     let tournament_id = ctx.accounts.tournament.tournament_id;
     ctx.accounts.player_profile.init_if_new(
         ctx.accounts.player.key(),
@@ -94,7 +115,7 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
         CoordinationError::ProfileTournamentMismatch,
     );
 
-    // Mark escrow as consumed before transferring (CEI)
+    // Mark escrow as consumed (CEI)
     ctx.accounts.escrow.consumed = true;
 
     // Postconditions
@@ -103,11 +124,11 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
         CoordinationError::InvalidGameState
     );
     require!(
-        game.player_one == ctx.accounts.player.key(),
+        game.matchup_type == MATCHUP_TYPE_UNSET,
         CoordinationError::InvalidGameState
     );
 
-    // Transfer stake from escrow PDA to game PDA
+    // Transfer stake from escrow to game PDA
     transfer_lamports(
         &ctx.accounts.escrow.to_account_info(),
         &ctx.accounts.game.to_account_info(),
@@ -124,7 +145,7 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
 }
 
 #[derive(Accounts)]
-#[instruction(stake_lamports: u64, matchup_type: u8)]
+#[instruction(stake_lamports: u64, matchup_commitment: [u8; 32])]
 pub struct CreateGame<'info> {
     #[account(
         init,
@@ -168,6 +189,8 @@ pub struct CreateGame<'info> {
         bump = global_config.bump,
     )]
     pub global_config: Account<'info, GlobalConfig>,
+    /// Matchmaker co-signs to attest the commitment is legitimate.
+    /// Verified against GlobalConfig.matchmaker. Does not pay gas.
     pub matchmaker: Signer<'info>,
     #[account(mut)]
     pub player: Signer<'info>,

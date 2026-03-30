@@ -2,11 +2,19 @@ use crate::errors::CoordinationError;
 use crate::events::{GameResolved, GuessRevealed};
 use crate::instructions::utils::{compute_treasury_split, transfer_lamports};
 use crate::payoff::resolve_game;
-use crate::state::{Game, GameState, GlobalConfig, PlayerProfile, Tournament, GUESS_UNREVEALED};
+use crate::state::{
+    Game, GameState, GlobalConfig, PlayerProfile, Tournament, GUESS_UNREVEALED, MATCHUP_TYPE_UNSET,
+};
 use anchor_lang::prelude::*;
 use solana_sha256_hasher::hashv;
 
-pub fn reveal_guess(ctx: Context<RevealGuess>, r: [u8; 32]) -> Result<()> {
+/// Reveal a guess. The first revealer must also provide `r_matchup` to reveal
+/// the matchup type (if still unset). The second revealer can pass None.
+pub fn reveal_guess(
+    ctx: Context<RevealGuess>,
+    r: [u8; 32],
+    r_matchup: Option<[u8; 32]>,
+) -> Result<()> {
     require!(
         ctx.accounts.game.state == GameState::Revealing,
         CoordinationError::InvalidGameState,
@@ -48,6 +56,19 @@ pub fn reveal_guess(ctx: Context<RevealGuess>, r: [u8; 32]) -> Result<()> {
         game.p1_guess = guess;
     } else {
         game.p2_guess = guess;
+    }
+
+    // Reveal matchup type if still unset (first revealer provides r_matchup)
+    if game.matchup_type == MATCHUP_TYPE_UNSET {
+        let r_mu = r_matchup.ok_or(error!(CoordinationError::InvalidGameState))?;
+        let computed_commitment: [u8; 32] = hashv(&[r_mu.as_ref()]).to_bytes();
+        require!(
+            computed_commitment == game.matchup_commitment,
+            CoordinationError::CommitmentMismatch
+        );
+        let matchup_type = r_mu[31] & 1;
+        require!(matchup_type <= 1, CoordinationError::InvalidGameState);
+        game.matchup_type = matchup_type;
     }
 
     emit!(GuessRevealed {

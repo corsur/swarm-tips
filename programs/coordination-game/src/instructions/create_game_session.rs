@@ -4,20 +4,22 @@ use crate::instructions::session_utils::validate_session_authority;
 use crate::instructions::utils::transfer_lamports;
 use crate::state::{
     Game, GameCounter, GameState, GlobalConfig, PlayerProfile, SessionAuthority, StakeEscrow,
-    Tournament, COMMIT_TIMEOUT_SLOTS, FIXED_STAKE_LAMPORTS, GUESS_UNREVEALED, REVEAL_TIMEOUT_SLOTS,
+    Tournament, COMMIT_TIMEOUT_SLOTS, FIXED_STAKE_LAMPORTS, GUESS_UNREVEALED, MATCHUP_TYPE_UNSET,
+    REVEAL_TIMEOUT_SLOTS,
 };
 use anchor_lang::prelude::*;
 
-/// Session-delegated variant of `create_game`. The session key signs instead
-/// of the player wallet. Matchmaker authority still required.
+/// Session-delegated variant of `create_game`. Player creates the game via a
+/// session key; the matchmaker wallet is verified against GlobalConfig but does
+/// not need to sign (session authority proves matchmaker delegation).
 pub fn create_game_session(
     ctx: Context<CreateGameSession>,
     stake_lamports: u64,
-    matchup_type: u8,
+    matchup_commitment: [u8; 32],
 ) -> Result<()> {
     validate_session_authority(
         &ctx.accounts.session_authority,
-        &ctx.accounts.player.key(),
+        &ctx.accounts.matchmaker_wallet.key(),
         &ctx.accounts.session_signer.key(),
     )?;
 
@@ -25,12 +27,17 @@ pub fn create_game_session(
         stake_lamports == FIXED_STAKE_LAMPORTS,
         CoordinationError::StakeMismatch
     );
-    require!(matchup_type <= 1, CoordinationError::InvalidGameState);
 
-    // Checks: matchmaker authority
+    // Checks: matchmaker wallet is the authorized matchmaker
     require!(
-        ctx.accounts.matchmaker.key() == ctx.accounts.global_config.matchmaker,
+        ctx.accounts.matchmaker_wallet.key() == ctx.accounts.global_config.matchmaker,
         CoordinationError::NotMatchmaker
+    );
+
+    // Checks: commitment is not all zeros (would be trivially forgeable)
+    require!(
+        matchup_commitment != [0u8; 32],
+        CoordinationError::InvalidGameState
     );
 
     let clock = Clock::get()?;
@@ -40,7 +47,7 @@ pub fn create_game_session(
         CoordinationError::OutsideTournamentWindow,
     );
 
-    // Checks: end-of-tournament cutoff
+    // Checks: end-of-tournament cutoff — no games within final ~3 hours
     let cutoff_slots = COMMIT_TIMEOUT_SLOTS
         .checked_add(REVEAL_TIMEOUT_SLOTS)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
@@ -56,13 +63,11 @@ pub fn create_game_session(
         CoordinationError::OutsideTournamentWindow,
     );
 
-    // Validate the player's escrow has an unconsumed deposit
+    // Validate the player's escrow
+    let player_key = ctx.accounts.player.key();
     let escrow = &ctx.accounts.escrow;
     require!(
-        escrow.validate_for_game(
-            &ctx.accounts.player.key(),
-            ctx.accounts.tournament.tournament_id
-        ),
+        escrow.validate_for_game(&player_key, ctx.accounts.tournament.tournament_id),
         CoordinationError::EscrowInvalid,
     );
 
@@ -77,7 +82,7 @@ pub fn create_game_session(
     let game = &mut ctx.accounts.game;
     game.game_id = game_id;
     game.tournament_id = ctx.accounts.tournament.tournament_id;
-    game.player_one = ctx.accounts.player.key();
+    game.player_one = player_key;
     game.player_two = Pubkey::default();
     game.state = GameState::Pending;
     game.stake_lamports = stake_lamports;
@@ -92,22 +97,21 @@ pub fn create_game_session(
     game.created_at = now;
     game.resolved_at = 0;
     game.activated_at_slot = 0;
-    game.matchup_type = matchup_type;
+    game.matchup_commitment = matchup_commitment;
+    game.matchup_type = MATCHUP_TYPE_UNSET;
     game.bump = ctx.bumps.game;
 
     // Init player profile if needed
     let tournament_id = ctx.accounts.tournament.tournament_id;
-    ctx.accounts.player_profile.init_if_new(
-        ctx.accounts.player.key(),
-        tournament_id,
-        ctx.bumps.player_profile,
-    );
+    ctx.accounts
+        .player_profile
+        .init_if_new(player_key, tournament_id, ctx.bumps.player_profile);
     require!(
         ctx.accounts.player_profile.tournament_id == tournament_id,
         CoordinationError::ProfileTournamentMismatch,
     );
 
-    // Mark escrow as consumed before transferring (CEI)
+    // Mark escrow as consumed (CEI)
     ctx.accounts.escrow.consumed = true;
 
     // Postconditions
@@ -116,11 +120,11 @@ pub fn create_game_session(
         CoordinationError::InvalidGameState
     );
     require!(
-        game.player_one == ctx.accounts.player.key(),
+        game.matchup_type == MATCHUP_TYPE_UNSET,
         CoordinationError::InvalidGameState
     );
 
-    // Transfer stake from escrow PDA to game PDA
+    // Transfer stake from escrow to game PDA
     transfer_lamports(
         &ctx.accounts.escrow.to_account_info(),
         &ctx.accounts.game.to_account_info(),
@@ -130,14 +134,14 @@ pub fn create_game_session(
     emit!(GameCreated {
         game_id,
         tournament_id: ctx.accounts.tournament.tournament_id,
-        player_one: ctx.accounts.player.key(),
+        player_one: player_key,
         stake_lamports,
     });
     Ok(())
 }
 
 #[derive(Accounts)]
-#[instruction(stake_lamports: u64, matchup_type: u8)]
+#[instruction(stake_lamports: u64, matchup_commitment: [u8; 32])]
 pub struct CreateGameSession<'info> {
     #[account(
         init,
@@ -181,14 +185,15 @@ pub struct CreateGameSession<'info> {
         bump = global_config.bump,
     )]
     pub global_config: Account<'info, GlobalConfig>,
-    pub matchmaker: Signer<'info>,
     /// CHECK: The player wallet. Not a signer — the session key signs instead.
-    /// Verified against session_authority.player in the handler.
+    /// Verified via escrow seeds and session_authority.
     pub player: UncheckedAccount<'info>,
+    /// CHECK: The matchmaker wallet. Verified against global_config.matchmaker.
+    pub matchmaker_wallet: UncheckedAccount<'info>,
     #[account(
         seeds = [
             b"game_session",
-            player.key().as_ref(),
+            matchmaker_wallet.key().as_ref(),
             session_signer.key().as_ref(),
         ],
         bump = session_authority.bump,

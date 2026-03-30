@@ -49,9 +49,9 @@ pub mod coordination_game {
     pub fn create_game(
         ctx: Context<CreateGame>,
         stake_lamports: u64,
-        matchup_type: u8,
+        matchup_commitment: [u8; 32],
     ) -> Result<()> {
-        instructions::create_game::create_game(ctx, stake_lamports, matchup_type)
+        instructions::create_game::create_game(ctx, stake_lamports, matchup_commitment)
     }
 
     pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
@@ -62,8 +62,12 @@ pub mod coordination_game {
         instructions::commit_guess::commit_guess(ctx, commitment)
     }
 
-    pub fn reveal_guess(ctx: Context<RevealGuess>, r: [u8; 32]) -> Result<()> {
-        instructions::reveal_guess::reveal_guess(ctx, r)
+    pub fn reveal_guess(
+        ctx: Context<RevealGuess>,
+        r: [u8; 32],
+        r_matchup: Option<[u8; 32]>,
+    ) -> Result<()> {
+        instructions::reveal_guess::reveal_guess(ctx, r, r_matchup)
     }
 
     pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
@@ -110,9 +114,13 @@ pub mod coordination_game {
     pub fn create_game_session(
         ctx: Context<CreateGameSession>,
         stake_lamports: u64,
-        matchup_type: u8,
+        matchup_commitment: [u8; 32],
     ) -> Result<()> {
-        instructions::create_game_session::create_game_session(ctx, stake_lamports, matchup_type)
+        instructions::create_game_session::create_game_session(
+            ctx,
+            stake_lamports,
+            matchup_commitment,
+        )
     }
 
     pub fn join_game_session(ctx: Context<JoinGameSession>) -> Result<()> {
@@ -126,7 +134,11 @@ pub mod coordination_game {
         instructions::commit_guess_session::commit_guess_session(ctx, commitment)
     }
 
-    pub fn reveal_guess_session(ctx: Context<RevealGuessSession>, r: [u8; 32]) -> Result<()> {
-        instructions::reveal_guess_session::reveal_guess_session(ctx, r)
+    pub fn reveal_guess_session(
+        ctx: Context<RevealGuessSession>,
+        r: [u8; 32],
+        r_matchup: Option<[u8; 32]>,
+    ) -> Result<()> {
+        instructions::reveal_guess_session::reveal_guess_session(ctx, r, r_matchup)
     }
 }

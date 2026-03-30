@@ -39,10 +39,17 @@ pub struct Game {
     /// Solana slot at which the game entered Active state (set by join_game).
     /// Used for Active-state commit timeout (neither player commits).
     pub activated_at_slot: u64,
-    /// 0 = same team (homogenous), 1 = different teams (heterogeneous).
+    /// SHA-256 commitment of the matchup type preimage (set at create_game by matchmaker co-sign).
+    /// Verified during the first reveal to extract the actual matchup_type.
+    pub matchup_commitment: [u8; 32],
+    /// 0 = same team (homogenous), 1 = different teams (heterogeneous), 255 = unset.
+    /// Set to 255 at creation, resolved during first reveal via matchup_commitment verification.
     pub matchup_type: u8,
     pub bump: u8,
 }
+
+/// Sentinel value for matchup_type before the matchup commitment is revealed.
+pub const MATCHUP_TYPE_UNSET: u8 = 255;
 
 impl Game {
     // discriminator + all fields
@@ -64,6 +71,7 @@ impl Game {
         + 8   // created_at
         + 8   // resolved_at
         + 8   // activated_at_slot
+        + 32  // matchup_commitment
         + 1   // matchup_type
         + 1; // bump
 }

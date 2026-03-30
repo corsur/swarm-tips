@@ -4,21 +4,25 @@ use crate::instructions::utils::transfer_lamports;
 use crate::state::{Game, GameState, PlayerProfile, StakeEscrow, Tournament};
 use anchor_lang::prelude::*;
 
+/// Player 2 joins an existing game. P1 is set at create_game time, so this
+/// instruction is P2-only. Transitions the game from Pending to Active.
 pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
     let game = &ctx.accounts.game;
     require!(
         game.state == GameState::Pending,
         CoordinationError::InvalidGameState
     );
-    require!(
-        ctx.accounts.player.key() != game.player_one,
-        CoordinationError::CannotJoinOwnGame,
-    );
 
     let now = Clock::get()?.unix_timestamp;
     require!(
         ctx.accounts.tournament.is_active(now),
         CoordinationError::OutsideTournamentWindow,
+    );
+
+    // Cannot join your own game
+    require!(
+        ctx.accounts.player.key() != game.player_one,
+        CoordinationError::CannotJoinOwnGame,
     );
 
     // Validate the player's escrow has an unconsumed deposit
@@ -45,7 +49,7 @@ pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
     let player_key = ctx.accounts.player.key();
     let current_slot = Clock::get()?.slot;
 
-    // Effects: commit state before the transfer
+    // Effects: set P2, transition to Active
     ctx.accounts.game.player_two = player_key;
     ctx.accounts.game.state = GameState::Active;
     ctx.accounts.game.activated_at_slot = current_slot;
@@ -61,11 +65,10 @@ pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
         CoordinationError::InvalidGameState
     );
 
-    // Capture values needed for the event before transfer borrows accounts
     let game_id = ctx.accounts.game.game_id;
     let player_one = ctx.accounts.game.player_one;
 
-    // Interactions: transfer player 2 stake from escrow into the game PDA
+    // Transfer P2 stake from escrow to game PDA
     transfer_lamports(
         &ctx.accounts.escrow.to_account_info(),
         &ctx.accounts.game.to_account_info(),
@@ -78,6 +81,7 @@ pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
         player_one,
         player_two: player_key,
     });
+
     Ok(())
 }
 
