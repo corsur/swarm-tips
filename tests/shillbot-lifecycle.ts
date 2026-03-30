@@ -129,9 +129,7 @@ function computeExpectedPayment(
     return [0, 0, escrowLamports];
   }
   const scoreAbove = compositeScore - qualityThreshold;
-  const grossPayment = Math.floor(
-    (escrowLamports * scoreAbove) / scoreRange
-  );
+  const grossPayment = Math.floor((escrowLamports * scoreAbove) / scoreRange);
   const fee = Math.floor((grossPayment * protocolFeeBps) / 10_000);
   const payment = grossPayment - fee;
   const remainder = escrowLamports - payment - fee;
@@ -189,8 +187,14 @@ async function createTask(
   deadline: BN
 ): Promise<TaskSetup> {
   const global = await program.account.globalState.fetch(globalPda);
-  const [tPda] = taskPda(global.taskCounter, client.publicKey, program.programId);
-  const content = contentHash("lifecycle test task " + global.taskCounter.toString());
+  const [tPda] = taskPda(
+    global.taskCounter,
+    client.publicKey,
+    program.programId
+  );
+  const content = contentHash(
+    "lifecycle test task " + global.taskCounter.toString()
+  );
 
   await program.methods
     .createTask(
@@ -350,7 +354,10 @@ describe("shillbot-lifecycle (bankrun)", () => {
         PROTOCOL_FEE_BPS
       );
       assert.equal(task.paymentAmount.toString(), expectedPayment.toString());
-      assert.isTrue(task.challengeDeadline.toNumber() > 0, "challenge_deadline should be set");
+      assert.isTrue(
+        task.challengeDeadline.toNumber() > 0,
+        "challenge_deadline should be set"
+      );
     });
 
     it("warps past challenge deadline and finalizes", async () => {
@@ -376,7 +383,10 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       // Task account should be closed (rent returned to client)
       const taskAccount = await context.banksClient.getAccount(setup.taskPda);
-      assert.isNull(taskAccount, "Task account should be closed after finalize");
+      assert.isNull(
+        taskAccount,
+        "Task account should be closed after finalize"
+      );
 
       // Check balance changes
       const agentBalAfter = await getBalance(context, agent.publicKey);
@@ -393,10 +403,15 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       // Agent should receive payment_amount
       const agentDelta = Number(agentBalAfter) - Number(agentBalBefore);
-      assert.equal(agentDelta, expectedPayment, "Agent should receive payment_amount");
+      assert.equal(
+        agentDelta,
+        expectedPayment,
+        "Agent should receive payment_amount"
+      );
 
       // Treasury should receive fee
-      const treasuryDelta = Number(treasuryBalAfter) - Number(treasuryBalBefore);
+      const treasuryDelta =
+        Number(treasuryBalAfter) - Number(treasuryBalBefore);
       assert.equal(treasuryDelta, expectedFee, "Treasury should receive fee");
 
       // Client should receive remainder + rent (from account closure)
@@ -430,7 +445,13 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       // Warp to T+7d for verification
       await warpToTimestamp(context, submittedAt + SEVEN_DAYS_SECONDS);
-      await verifyTask(program, authority, setup.taskPda, globalPda, new BN(800_000));
+      await verifyTask(
+        program,
+        authority,
+        setup.taskPda,
+        globalPda,
+        new BN(800_000)
+      );
 
       const verified = await program.account.task.fetch(setup.taskPda);
       assert.deepEqual(verified.state, { verified: {} });
@@ -459,7 +480,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       const challenge = await program.account.challenge.fetch(challPda);
       // Bond = MIN_CHALLENGE_BOND_MULTIPLIER * escrow = 2 * 1 SOL = 2 SOL
-      const expectedBond = ESCROW_LAMPORTS.toNumber() * MIN_CHALLENGE_BOND_MULTIPLIER;
+      const expectedBond =
+        ESCROW_LAMPORTS.toNumber() * MIN_CHALLENGE_BOND_MULTIPLIER;
       assert.equal(
         challenge.bondLamports.toString(),
         expectedBond.toString(),
@@ -475,7 +497,10 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
 
       const clientBalBefore = await getBalance(context, client.publicKey);
-      const challengerBalBefore = await getBalance(context, challenger.publicKey);
+      const challengerBalBefore = await getBalance(
+        context,
+        challenger.publicKey
+      );
       const agentBalBefore = await getBalance(context, agent.publicKey);
 
       await program.methods
@@ -508,9 +533,14 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
 
       // Challenger gets bond back + challenge rent
-      const challengerBalAfter = await getBalance(context, challenger.publicKey);
-      const challengerDelta = Number(challengerBalAfter) - Number(challengerBalBefore);
-      const expectedBond = ESCROW_LAMPORTS.toNumber() * MIN_CHALLENGE_BOND_MULTIPLIER;
+      const challengerBalAfter = await getBalance(
+        context,
+        challenger.publicKey
+      );
+      const challengerDelta =
+        Number(challengerBalAfter) - Number(challengerBalBefore);
+      const expectedBond =
+        ESCROW_LAMPORTS.toNumber() * MIN_CHALLENGE_BOND_MULTIPLIER;
       assert.isTrue(
         challengerDelta >= expectedBond,
         "Challenger should receive at least the bond back"
@@ -519,7 +549,11 @@ describe("shillbot-lifecycle (bankrun)", () => {
       // Agent gets nothing (balance unchanged)
       const agentBalAfter = await getBalance(context, agent.publicKey);
       const agentDelta = Number(agentBalAfter) - Number(agentBalBefore);
-      assert.equal(agentDelta, 0, "Agent should receive nothing when challenger wins");
+      assert.equal(
+        agentDelta,
+        0,
+        "Agent should receive nothing when challenger wins"
+      );
     });
   });
 
@@ -545,7 +579,13 @@ describe("shillbot-lifecycle (bankrun)", () => {
       submittedAt = task.submittedAt.toNumber();
 
       await warpToTimestamp(context, submittedAt + SEVEN_DAYS_SECONDS);
-      await verifyTask(program, authority, setup.taskPda, globalPda, new BN(score));
+      await verifyTask(
+        program,
+        authority,
+        setup.taskPda,
+        globalPda,
+        new BN(score)
+      );
 
       const verified = await program.account.task.fetch(setup.taskPda);
       assert.deepEqual(verified.state, { verified: {} });
@@ -583,7 +623,10 @@ describe("shillbot-lifecycle (bankrun)", () => {
       const agentBalBefore = await getBalance(context, agent.publicKey);
       const treasuryBalBefore = await getBalance(context, treasury.publicKey);
       const clientBalBefore = await getBalance(context, client.publicKey);
-      const challengerBalBefore = await getBalance(context, challenger.publicKey);
+      const challengerBalBefore = await getBalance(
+        context,
+        challenger.publicKey
+      );
 
       await program.methods
         .resolveChallenge(false) // challenger_won = false => agent wins
@@ -616,7 +659,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
         );
 
       // Bond = 2 * escrow
-      const bondLamports = ESCROW_LAMPORTS.toNumber() * MIN_CHALLENGE_BOND_MULTIPLIER;
+      const bondLamports =
+        ESCROW_LAMPORTS.toNumber() * MIN_CHALLENGE_BOND_MULTIPLIER;
       const bondHalf = Math.floor(bondLamports / 2);
       const bondOtherHalf = bondLamports - bondHalf;
 
@@ -631,7 +675,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       // Treasury receives: protocol fee from escrow + other half of slashed bond
       const treasuryBalAfter = await getBalance(context, treasury.publicKey);
-      const treasuryDelta = Number(treasuryBalAfter) - Number(treasuryBalBefore);
+      const treasuryDelta =
+        Number(treasuryBalAfter) - Number(treasuryBalBefore);
       assert.equal(
         treasuryDelta,
         expectedFee + bondOtherHalf,
@@ -647,8 +692,12 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
 
       // Challenger gets nothing from escrow; challenge account rent returned by close
-      const challengerBalAfter = await getBalance(context, challenger.publicKey);
-      const challengerDelta = Number(challengerBalAfter) - Number(challengerBalBefore);
+      const challengerBalAfter = await getBalance(
+        context,
+        challenger.publicKey
+      );
+      const challengerDelta =
+        Number(challengerBalAfter) - Number(challengerBalBefore);
       // Challenger only gets back the challenge account rent (from `close = challenger`)
       // but the bond itself is slashed. So delta should be small (just rent).
       assert.isTrue(
@@ -719,8 +768,13 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       // Treasury gets nothing (fee=0 when payment=0)
       const treasuryBalAfter = await getBalance(context, treasury.publicKey);
-      const treasuryDelta = Number(treasuryBalAfter) - Number(treasuryBalBefore);
-      assert.equal(treasuryDelta, 0, "Treasury should receive nothing on zero score");
+      const treasuryDelta =
+        Number(treasuryBalAfter) - Number(treasuryBalBefore);
+      assert.equal(
+        treasuryDelta,
+        0,
+        "Treasury should receive nothing on zero score"
+      );
 
       // Client gets full escrow back + rent from closure
       const clientBalAfter = await getBalance(context, client.publicKey);
@@ -749,17 +803,28 @@ describe("shillbot-lifecycle (bankrun)", () => {
       const setup = await createTask(program, client, globalPda, deadline);
       await claimTask(program, closeAgent, setup.taskPda);
 
-      const [closeAgentPda] = agentStatePda(closeAgent.publicKey, program.programId);
+      const [closeAgentPda] = agentStatePda(
+        closeAgent.publicKey,
+        program.programId
+      );
 
       // Verify claimed_count = 1
       let agentState = await program.account.agentState.fetch(closeAgentPda);
-      assert.equal(agentState.claimedCount, 1, "claimed_count should be 1 after claim");
+      assert.equal(
+        agentState.claimedCount,
+        1,
+        "claimed_count should be 1 after claim"
+      );
 
       // Submit work (decrements claimed_count to 0)
       await submitWork(program, closeAgent, setup.taskPda, "close-agent-video");
 
       agentState = await program.account.agentState.fetch(closeAgentPda);
-      assert.equal(agentState.claimedCount, 0, "claimed_count should be 0 after submit");
+      assert.equal(
+        agentState.claimedCount,
+        0,
+        "claimed_count should be 0 after submit"
+      );
 
       // Record agent balance before closing
       const agentBalBefore = await getBalance(context, closeAgent.publicKey);
