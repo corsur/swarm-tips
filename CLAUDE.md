@@ -683,7 +683,9 @@ p2_commit_slot:           u64       Solana slot at commit time
 commit_timeout_slots:     u64       set at creation
 created_at:               i64       Unix timestamp
 resolved_at:              i64       0 until resolved
-matchup_type:             u8        0 = same team, 1 = different teams
+activated_at_slot:        u64       Solana slot when game entered Active (set by join_game)
+matchup_commitment:       [u8; 32]  SHA-256 commitment of matchup type preimage (set at create_game)
+matchup_type:             u8        0 = same team, 1 = different teams, 255 = unset (resolved at first reveal)
 bump:                     u8
 ```
 
@@ -718,16 +720,16 @@ Signers: `authority` (must match `global_config.authority`). Updates treasury, t
 Signers: any wallet. Validate `end_time > start_time` and `end_time > Clock::now()`. Initialize Tournament PDA.
 
 #### `create_game`
-Signers: `matchmaker` (must match `global_config.matchmaker`). The matchmaker (game-api) is the sole caller — players never call this directly and never see `matchup_type`. Assert within tournament window. Assert `now + COMMIT_TIMEOUT_SLOTS + REVEAL_TIMEOUT_SLOTS < tournament.end_time` (end-of-tournament cutoff). Assign game_id from counter. Init Game PDA.
+Signers: `player` (payer) + `matchmaker` (co-signer, must match `global_config.matchmaker`). Player calls this with a `matchup_commitment` (SHA-256 hash of the matchup type preimage) provided by the backend. The matchmaker co-signs to attest the commitment is legitimate — player pays all gas, matchmaker pays nothing. Rejects all-zero commitments. Assert within tournament window. Assert end-of-tournament cutoff (`now + COMMIT_TIMEOUT_SLOTS + REVEAL_TIMEOUT_SLOTS < tournament.end_time`). Validate and consume player escrow. Init Game PDA with `matchup_type = 255` (unset).
 
 #### `join_game`
-Signers: player (becomes player one or two). Assert `state == Pending`, player != player_one, within tournament window. Transfer stake from player's escrow to Game PDA.
+Signers: player (becomes player two). Assert `state == Pending`, player != player_one, within tournament window. Transfer stake from player's escrow to Game PDA. Transition to Active.
 
 #### `commit_guess`
 Signers: participant. Assert Active or Committing. Store commitment hash. Record commit slot and first_committer.
 
 #### `reveal_guess`
-Signers: participant. Assert Revealing. Verify `SHA-256(R) == commitment`. Extract `guess = R[31] & 1`. If both revealed, resolve game. Split `tournament_gain` between treasury (treasury_split_bps share) and tournament prize pool (remainder). Increment `game_count` for ALL resolved games. Award wins based on correct guesses (not return amounts).
+Signers: participant. Parameters: `r: [u8; 32]` (guess preimage), `r_matchup: Option<[u8; 32]>` (matchup preimage). Assert Revealing. Verify `SHA-256(r) == commitment`. Extract `guess = r[31] & 1`. If `matchup_type == 255` (unset), require `r_matchup`, verify `SHA-256(r_matchup) == matchup_commitment`, extract `matchup_type = r_matchup[31] & 1`. If both revealed, resolve game. Split `tournament_gain` between treasury and prize pool. Increment `game_count` for ALL resolved games. Award wins based on correct guesses.
 
 #### `resolve_timeout`
 Permissionless. Handles three states:
