@@ -1,8 +1,8 @@
 use crate::errors::CoordinationError;
 use crate::events::{GameResolved, GuessRevealed};
-use crate::instructions::utils::transfer_lamports;
+use crate::instructions::utils::{compute_treasury_split, transfer_lamports};
 use crate::payoff::resolve_game;
-use crate::state::{Game, GameState, PlayerProfile, Tournament, GUESS_UNREVEALED};
+use crate::state::{Game, GameState, GlobalConfig, PlayerProfile, Tournament, GUESS_UNREVEALED};
 use anchor_lang::prelude::*;
 use solana_sha256_hasher::hashv;
 
@@ -72,7 +72,6 @@ fn finalize_game(ctx: Context<RevealGuess>) -> Result<()> {
 
     let (p1_return, p2_return, tournament_gain) =
         compute_returns(game, now, ctx.accounts.tournament.end_time)?;
-    // `game` borrow ends here (NLL — last use above)
 
     // Win = guessed correctly. In homogeneous both-correct, BOTH players win.
     let correct_guess = if game.matchup_type == 0 {
@@ -83,8 +82,19 @@ fn finalize_game(ctx: Context<RevealGuess>) -> Result<()> {
     let p1_won = game.p1_guess == correct_guess;
     let p2_won = game.p2_guess == correct_guess;
 
+    // Compute tournament share (after treasury split) for state update
+    let tournament_share = if tournament_gain > 0 {
+        compute_treasury_split(
+            tournament_gain,
+            ctx.accounts.global_config.treasury_split_bps,
+        )?
+        .tournament_share
+    } else {
+        0
+    };
+
     // Effects: apply all state mutations before any lamport transfers
-    apply_tournament_update(&mut ctx.accounts.tournament, tournament_gain)?;
+    apply_tournament_update(&mut ctx.accounts.tournament, tournament_share)?;
     ctx.accounts
         .p1_profile
         .update_after_game(p1_won, tournament_id)?;
@@ -105,7 +115,7 @@ fn finalize_game(ctx: Context<RevealGuess>) -> Result<()> {
     );
 
     // Interactions: lamport transfers after all state is committed
-    distribute_lamports(&ctx, p1_return, p2_return, tournament_gain)?;
+    let treasury_gain = distribute_lamports(&ctx, p1_return, p2_return, tournament_gain)?;
 
     emit!(GameResolved {
         game_id,
@@ -114,6 +124,7 @@ fn finalize_game(ctx: Context<RevealGuess>) -> Result<()> {
         p1_return,
         p2_return,
         tournament_gain,
+        treasury_gain,
     });
     Ok(())
 }
@@ -138,49 +149,71 @@ fn compute_returns(game: &Game, now: i64, tournament_end_time: i64) -> Result<(u
     ))
 }
 
-/// Transfer resolved amounts from game PDA to player wallets and tournament.
+/// Transfer resolved amounts from game PDA to player wallets, treasury, and tournament.
+///
+/// When tournament_gain > 0, splits it between treasury and tournament
+/// according to global_config.treasury_split_bps.
+/// Returns the treasury_share for event emission.
 fn distribute_lamports(
     ctx: &Context<RevealGuess>,
     p1_return: u64,
     p2_return: u64,
     tournament_gain: u64,
-) -> Result<()> {
+) -> Result<u64> {
+    let game_info = ctx.accounts.game.to_account_info();
+
     transfer_lamports(
-        &ctx.accounts.game.to_account_info(),
+        &game_info,
         &ctx.accounts.player_one_wallet.to_account_info(),
         p1_return,
     )?;
     transfer_lamports(
-        &ctx.accounts.game.to_account_info(),
+        &game_info,
         &ctx.accounts.player_two_wallet.to_account_info(),
         p2_return,
     )?;
+
     if tournament_gain > 0 {
-        transfer_lamports(
-            &ctx.accounts.game.to_account_info(),
-            &ctx.accounts.tournament.to_account_info(),
+        let split = compute_treasury_split(
             tournament_gain,
+            ctx.accounts.global_config.treasury_split_bps,
         )?;
+
+        transfer_lamports(
+            &game_info,
+            &ctx.accounts.treasury.to_account_info(),
+            split.treasury_share,
+        )?;
+        transfer_lamports(
+            &game_info,
+            &ctx.accounts.tournament.to_account_info(),
+            split.tournament_share,
+        )?;
+
+        Ok(split.treasury_share)
+    } else {
+        Ok(0)
     }
-    Ok(())
 }
 
-/// Increment tournament prize pool and game count if the game contributed.
-fn apply_tournament_update(tournament: &mut Tournament, tournament_gain: u64) -> Result<()> {
-    if tournament_gain == 0 {
-        return Ok(());
-    }
-    tournament.prize_lamports = tournament
-        .prize_lamports
-        .checked_add(tournament_gain)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
+/// Increment tournament game count and prize pool for every resolved game.
+fn apply_tournament_update(tournament: &mut Tournament, tournament_share: u64) -> Result<()> {
+    // Always increment game_count for ALL resolved games
     tournament.game_count = tournament
         .game_count
         .checked_add(1)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
-    // Postcondition: prize pool must have grown
+
+    if tournament_share > 0 {
+        tournament.prize_lamports = tournament
+            .prize_lamports
+            .checked_add(tournament_share)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+    }
+
+    // Postcondition: game_count must have advanced
     require!(
-        tournament.prize_lamports >= tournament_gain,
+        tournament.game_count >= 1,
         CoordinationError::ArithmeticOverflow,
     );
     Ok(())
@@ -223,6 +256,14 @@ pub struct RevealGuess<'info> {
         bump = tournament.bump,
     )]
     pub tournament: Account<'info, Tournament>,
+    #[account(
+        seeds = [b"global_config"],
+        bump = global_config.bump,
+    )]
+    pub global_config: Account<'info, GlobalConfig>,
+    /// CHECK: DAO treasury — validated against global_config.treasury
+    #[account(mut, address = global_config.treasury)]
+    pub treasury: UncheckedAccount<'info>,
     /// CHECK: Destination for player one's stake return — verified by game.player_one
     #[account(mut, address = game.player_one)]
     pub player_one_wallet: UncheckedAccount<'info>,

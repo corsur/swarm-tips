@@ -1,13 +1,17 @@
 use crate::errors::CoordinationError;
 use crate::events::TimeoutSlash;
-use crate::instructions::utils::transfer_lamports;
-use crate::state::{Game, GameState, PlayerProfile, Tournament, REVEAL_TIMEOUT_SLOTS};
+use crate::instructions::utils::{compute_treasury_split, transfer_lamports};
+use crate::state::{
+    Game, GameState, GlobalConfig, PlayerProfile, Tournament, REVEAL_TIMEOUT_SLOTS,
+};
 use anchor_lang::prelude::*;
 
 pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
     let game = &ctx.accounts.game;
     require!(
-        game.state == GameState::Committing || game.state == GameState::Revealing,
+        game.state == GameState::Active
+            || game.state == GameState::Committing
+            || game.state == GameState::Revealing,
         CoordinationError::InvalidGameState,
     );
 
@@ -16,10 +20,23 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
     let outcome = find_timeout(game, current_slot)?;
 
     let tournament_id = ctx.accounts.tournament.tournament_id;
+    let treasury_split_bps = ctx.accounts.global_config.treasury_split_bps;
 
     // Compute outcome values and capture AccountInfo handles before mutable borrows
     let stake_lamports = game.stake_lamports;
-    let (tournament_gain, slashed_player, p1_won, p2_won, winner_wallet) = match outcome {
+    let both_stakes = stake_lamports
+        .checked_mul(2)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+
+    //  ┌──────────────────────────────────────────────────────────────────┐
+    //  │ OneWinner: winner gets full pot (2S), tournament gets 0.        │
+    //  │   Anti-griefing: non-participant forfeits, revealer/committer   │
+    //  │   is fully compensated.                                        │
+    //  │                                                                │
+    //  │ BothForfeited: both lose. Pool gain = 2S split via treasury    │
+    //  │   split bps between treasury and tournament.                   │
+    //  └──────────────────────────────────────────────────────────────────┘
+    let (pool_gain, slashed_player, p1_won, p2_won, winner_wallet) = match outcome {
         TimeoutOutcome::OneWinner {
             slashed_player,
             winner_is_p1,
@@ -29,8 +46,9 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
             } else {
                 Some(ctx.accounts.player_two_wallet.to_account_info())
             };
+            // Winner gets full pot (2S); tournament/treasury get 0
             (
-                stake_lamports,
+                0u64,
                 slashed_player,
                 winner_is_p1,
                 !winner_is_p1,
@@ -39,9 +57,6 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
         }
         TimeoutOutcome::BothForfeited => {
             // Report player_one as canonical slashed address; both were slashed
-            let both_stakes = stake_lamports
-                .checked_mul(2)
-                .ok_or(CoordinationError::ArithmeticOverflow)?;
             (both_stakes, game.player_one, false, false, None)
         }
     };
@@ -49,6 +64,15 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
 
     let game_info = ctx.accounts.game.to_account_info();
     let tournament_info = ctx.accounts.tournament.to_account_info();
+    let treasury_info = ctx.accounts.treasury.to_account_info();
+
+    // Compute treasury/tournament split for pool gain
+    let (treasury_share, tournament_share) = if pool_gain > 0 {
+        let split = compute_treasury_split(pool_gain, treasury_split_bps)?;
+        (split.treasury_share, split.tournament_share)
+    } else {
+        (0u64, 0u64)
+    };
 
     // Effects: apply all state mutations before any lamport transfers
     ctx.accounts
@@ -57,18 +81,24 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
     ctx.accounts
         .p2_profile
         .update_after_game(p2_won, tournament_id)?;
-    ctx.accounts.tournament.prize_lamports = ctx
-        .accounts
-        .tournament
-        .prize_lamports
-        .checked_add(tournament_gain)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
+
+    // Always increment game_count for ALL resolved games
     ctx.accounts.tournament.game_count = ctx
         .accounts
         .tournament
         .game_count
         .checked_add(1)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
+
+    if tournament_share > 0 {
+        ctx.accounts.tournament.prize_lamports = ctx
+            .accounts
+            .tournament
+            .prize_lamports
+            .checked_add(tournament_share)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+    }
+
     let game_id = ctx.accounts.game.game_id;
     ctx.accounts.game.state = GameState::Resolved;
     ctx.accounts.game.resolved_at = now;
@@ -84,15 +114,21 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
     );
 
     // Interactions: lamport transfers after all state is committed
-    transfer_lamports(&game_info, &tournament_info, tournament_gain)?;
     if let Some(winner) = winner_wallet {
-        transfer_lamports(&game_info, &winner, stake_lamports)?;
+        // Winner gets the full pot (2S)
+        transfer_lamports(&game_info, &winner, both_stakes)?;
+    }
+    if treasury_share > 0 {
+        transfer_lamports(&game_info, &treasury_info, treasury_share)?;
+    }
+    if tournament_share > 0 {
+        transfer_lamports(&game_info, &tournament_info, tournament_share)?;
     }
 
     emit!(TimeoutSlash {
         game_id,
         slashed_player,
-        slash_amount: tournament_gain,
+        slash_amount: pool_gain,
     });
     Ok(())
 }
@@ -109,10 +145,32 @@ enum TimeoutOutcome {
 
 fn find_timeout(game: &Game, current_slot: u64) -> Result<TimeoutOutcome> {
     match game.state {
+        GameState::Active => find_active_timeout(game, current_slot),
         GameState::Committing => find_committing_timeout(game, current_slot),
         GameState::Revealing => find_revealing_timeout(game, current_slot),
         _ => err!(CoordinationError::InvalidGameState),
     }
+}
+
+/// Neither player has committed within the commit window after game activation.
+/// Both players forfeit — both stakes go to pool/treasury split.
+fn find_active_timeout(game: &Game, current_slot: u64) -> Result<TimeoutOutcome> {
+    // Precondition: game is Active (neither player committed)
+    require!(
+        game.p1_commit == [0u8; 32] && game.p2_commit == [0u8; 32],
+        CoordinationError::InvalidGameState,
+    );
+
+    let deadline = game
+        .activated_at_slot
+        .checked_add(game.commit_timeout_slots)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    require!(
+        current_slot >= deadline,
+        CoordinationError::TimeoutNotElapsed
+    );
+
+    Ok(TimeoutOutcome::BothForfeited)
 }
 
 /// One player committed; the other hasn't within the commit window.
@@ -212,6 +270,14 @@ pub struct ResolveTimeout<'info> {
         bump = tournament.bump,
     )]
     pub tournament: Account<'info, Tournament>,
+    #[account(
+        seeds = [b"global_config"],
+        bump = global_config.bump,
+    )]
+    pub global_config: Account<'info, GlobalConfig>,
+    /// CHECK: DAO treasury — validated against global_config.treasury
+    #[account(mut, address = global_config.treasury)]
+    pub treasury: UncheckedAccount<'info>,
     /// CHECK: Verified by address constraint against game.player_one
     #[account(mut, address = game.player_one)]
     pub player_one_wallet: UncheckedAccount<'info>,

@@ -78,6 +78,7 @@ pub fn create_game(ctx: Context<CreateGame>, stake_lamports: u64, matchup_type: 
     game.commit_timeout_slots = COMMIT_TIMEOUT_SLOTS;
     game.created_at = now;
     game.resolved_at = 0;
+    game.activated_at_slot = 0;
     game.matchup_type = matchup_type;
     game.bump = ctx.bumps.game;
 

@@ -56,6 +56,7 @@ describe("coordination-game", () => {
   let p2ProfilePda: PublicKey;
   // The provider wallet acts as both authority and matchmaker in tests
   const matchmaker = provider.wallet;
+  const treasury = Keypair.generate();
 
   // Precomputed commits used across the commit and reveal tests (same-team game)
   const p1Commit = generateCommit(GUESS_SAME_TEAM);
@@ -143,8 +144,7 @@ describe("coordination-game", () => {
   });
 
   it("initializes global config", async () => {
-    // Use a separate treasury keypair for testing
-    const treasury = Keypair.generate();
+    // Treasury keypair is declared at suite level so reveal tests can reference it
     await program.methods
       .initializeConfig(5000) // 50/50 treasury/prize split
       .accountsPartial({
@@ -332,6 +332,8 @@ describe("coordination-game", () => {
       tournament: tournamentPda,
       playerOneWallet: player1.publicKey,
       playerTwoWallet: player2.publicKey,
+      globalConfig: globalConfigPda,
+      treasury: treasury.publicKey,
       systemProgram: SystemProgram.programId,
     };
     try {
@@ -355,6 +357,8 @@ describe("coordination-game", () => {
       tournament: tournamentPda,
       playerOneWallet: player1.publicKey,
       playerTwoWallet: player2.publicKey,
+      globalConfig: globalConfigPda,
+      treasury: treasury.publicKey,
       systemProgram: SystemProgram.programId,
     };
     try {
@@ -377,6 +381,8 @@ describe("coordination-game", () => {
       tournament: tournamentPda,
       playerOneWallet: player1.publicKey,
       playerTwoWallet: player2.publicKey,
+      globalConfig: globalConfigPda,
+      treasury: treasury.publicKey,
       systemProgram: SystemProgram.programId,
     };
     await program.methods
@@ -397,6 +403,8 @@ describe("coordination-game", () => {
       tournament: tournamentPda,
       playerOneWallet: player1.publicKey,
       playerTwoWallet: player2.publicKey,
+      globalConfig: globalConfigPda,
+      treasury: treasury.publicKey,
       systemProgram: SystemProgram.programId,
     };
     try {
@@ -419,6 +427,8 @@ describe("coordination-game", () => {
       tournament: tournamentPda,
       playerOneWallet: player1.publicKey,
       playerTwoWallet: player2.publicKey,
+      globalConfig: globalConfigPda,
+      treasury: treasury.publicKey,
       systemProgram: SystemProgram.programId,
     };
     await program.methods
@@ -594,6 +604,8 @@ describe("coordination-game", () => {
           p1Profile: tp1ProfilePda,
           p2Profile: tp2ProfilePda,
           tournament: tournamentPda,
+          globalConfig: globalConfigPda,
+          treasury: treasury.publicKey,
           playerOneWallet: player1.publicKey,
           playerTwoWallet: player2.publicKey,
           caller: provider.wallet.publicKey,
@@ -930,6 +942,8 @@ describe("coordination-game", () => {
       tournament: heteroTournamentPda,
       playerOneWallet: player1.publicKey,
       playerTwoWallet: player2.publicKey,
+      globalConfig: globalConfigPda,
+      treasury: treasury.publicKey,
       systemProgram: SystemProgram.programId,
     };
 
@@ -1112,6 +1126,8 @@ describe("coordination-game", () => {
       tournament: bothWrongTournamentPda,
       playerOneWallet: player1.publicKey,
       playerTwoWallet: player2.publicKey,
+      globalConfig: globalConfigPda,
+      treasury: treasury.publicKey,
       systemProgram: SystemProgram.programId,
     };
 
@@ -1127,15 +1143,17 @@ describe("coordination-game", () => {
       .signers([player2])
       .rpc();
 
-    // Both wrong → full forfeiture: tournament gains 2× stake
+    // Both wrong → full forfeiture: 2× stake split between treasury (50%) and tournament (50%)
     const bwTournament = await program.account.tournament.fetch(
       bothWrongTournamentPda
     );
     const twoStakes = STAKE.toNumber() * 2;
+    // At 5000 bps (50/50 split), tournament gets half of 2S
+    const expectedTournamentShare = Math.floor(twoStakes / 2);
     assert.equal(
       bwTournament.prizeLamports.toString(),
-      twoStakes.toString(),
-      "tournament should gain 2× stake when both players guess wrong in hetero match"
+      expectedTournamentShare.toString(),
+      "tournament should gain half of 2× stake (treasury gets the other half)"
     );
 
     // Both players should lose their full stake

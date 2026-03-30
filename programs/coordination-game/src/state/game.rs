@@ -36,6 +36,9 @@ pub struct Game {
     pub commit_timeout_slots: u64,
     pub created_at: i64,
     pub resolved_at: i64,
+    /// Solana slot at which the game entered Active state (set by join_game).
+    /// Used for Active-state commit timeout (neither player commits).
+    pub activated_at_slot: u64,
     /// 0 = same team (homogenous), 1 = different teams (heterogeneous).
     pub matchup_type: u8,
     pub bump: u8,
@@ -60,6 +63,7 @@ impl Game {
         + 8   // commit_timeout_slots
         + 8   // created_at
         + 8   // resolved_at
+        + 8   // activated_at_slot
         + 1   // matchup_type
         + 1; // bump
 }

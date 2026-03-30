@@ -43,10 +43,12 @@ pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
 
     let stake_lamports = ctx.accounts.game.stake_lamports;
     let player_key = ctx.accounts.player.key();
+    let current_slot = Clock::get()?.slot;
 
     // Effects: commit state before the transfer
     ctx.accounts.game.player_two = player_key;
     ctx.accounts.game.state = GameState::Active;
+    ctx.accounts.game.activated_at_slot = current_slot;
     ctx.accounts.escrow.consumed = true;
 
     // Postcondition: game must now be Active with both players set

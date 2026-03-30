@@ -44,6 +44,7 @@ pub struct GameResolved {
     pub p1_return: u64,
     pub p2_return: u64,
     pub tournament_gain: u64,
+    pub treasury_gain: u64,
 }
 
 #[event]
