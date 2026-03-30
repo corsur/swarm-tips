@@ -25,7 +25,7 @@ pub fn create_tournament(
     t.game_count = 0;
     t.finalized = false;
     t.prize_snapshot = 0;
-    t.total_score_snapshot = 0;
+    t.merkle_root = [0u8; 32];
     t.bump = ctx.bumps.tournament;
 
     // Postconditions: verify tournament was initialized correctly

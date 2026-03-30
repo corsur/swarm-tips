@@ -10,7 +10,7 @@ pub struct Tournament {
     pub game_count: u64,
     pub finalized: bool,
     pub prize_snapshot: u64,
-    pub total_score_snapshot: u64,
+    pub merkle_root: [u8; 32],
     pub bump: u8,
 }
 
@@ -24,7 +24,7 @@ impl Tournament {
         + 8   // game_count
         + 1   // finalized
         + 8   // prize_snapshot
-        + 8   // total_score_snapshot
+        + 32  // merkle_root
         + 1; // bump
 
     pub fn is_active(&self, now: i64) -> bool {
@@ -47,7 +47,7 @@ mod tests {
             game_count: 0,
             finalized: false,
             prize_snapshot: 0,
-            total_score_snapshot: 0,
+            merkle_root: [0u8; 32],
             bump: 255,
         };
         assert!(t.is_active(100));

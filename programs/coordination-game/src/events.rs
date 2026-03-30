@@ -58,7 +58,7 @@ pub struct TimeoutSlash {
 pub struct TournamentFinalized {
     pub tournament_id: u64,
     pub prize_snapshot: u64,
-    pub total_score_snapshot: u64,
+    pub merkle_root: [u8; 32],
 }
 
 #[event]

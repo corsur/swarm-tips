@@ -70,12 +70,19 @@ pub mod coordination_game {
         instructions::resolve_timeout::resolve_timeout(ctx)
     }
 
-    pub fn finalize_tournament(ctx: Context<FinalizeTournament>) -> Result<()> {
-        instructions::finalize_tournament::finalize_tournament(ctx)
+    pub fn finalize_tournament(
+        ctx: Context<FinalizeTournament>,
+        merkle_root: [u8; 32],
+    ) -> Result<()> {
+        instructions::finalize_tournament::finalize_tournament(ctx, merkle_root)
     }
 
-    pub fn claim_reward(ctx: Context<ClaimReward>) -> Result<()> {
-        instructions::claim_reward::claim_reward(ctx)
+    pub fn claim_reward(
+        ctx: Context<ClaimReward>,
+        amount: u64,
+        proof: Vec<[u8; 32]>,
+    ) -> Result<()> {
+        instructions::claim_reward::claim_reward(ctx, amount, proof)
     }
 
     pub fn close_game(ctx: Context<CloseGame>) -> Result<()> {

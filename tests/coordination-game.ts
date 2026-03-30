@@ -734,14 +734,15 @@ describe("coordination-game", () => {
   });
 
   it("rejects finalize_tournament before end time", async () => {
+    const dummyRoot = Array(32).fill(0);
     try {
       await program.methods
-        .finalizeTournament()
+        .finalizeTournament(dummyRoot as any)
         .accountsPartial({
           tournament: tournamentPda,
-          caller: provider.wallet.publicKey,
+          globalConfig: globalConfigPda,
+          authority: provider.wallet.publicKey,
         })
-        .remainingAccounts([])
         .rpc();
       assert.fail("Expected TournamentNotEnded error");
     } catch (e: any) {
@@ -752,7 +753,7 @@ describe("coordination-game", () => {
   it("rejects claim_reward on unfinalized tournament", async () => {
     try {
       await program.methods
-        .claimReward()
+        .claimReward(new BN(0), [])
         .accountsPartial({
           tournament: tournamentPda,
           playerProfile: p1ProfilePda,
@@ -790,22 +791,24 @@ describe("coordination-game", () => {
     // Wait for tournament window to close — local validator clock can lag wall time
     await new Promise((r) => setTimeout(r, 10000));
 
+    // Empty tournament — no players, no prizes. Use a zero merkle root.
+    const emptyRoot = Array(32).fill(0);
     await program.methods
-      .finalizeTournament()
+      .finalizeTournament(emptyRoot as any)
       .accountsPartial({
         tournament: shortTournamentPda,
-        caller: provider.wallet.publicKey,
+        globalConfig: globalConfigPda,
+        authority: provider.wallet.publicKey,
       })
-      .remainingAccounts([])
       .rpc();
 
     const t = await program.account.tournament.fetch(shortTournamentPda);
     assert.isTrue(t.finalized, "tournament should be finalized");
     assert.equal(t.prizeSnapshot.toString(), "0", "prize should be zero");
-    assert.equal(
-      t.totalScoreSnapshot.toString(),
-      "0",
-      "score snapshot should be zero"
+    assert.deepEqual(
+      Array.from(t.merkleRoot as any),
+      emptyRoot,
+      "merkle root should match"
     );
   });
 

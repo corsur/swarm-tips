@@ -79,4 +79,10 @@ pub enum CoordinationError {
     NotMatchmaker,
     #[msg("Treasury split basis points out of bounds [2000, 8000]")]
     InvalidTreasurySplitBps,
+
+    // Merkle
+    #[msg("Merkle proof verification failed")]
+    InvalidMerkleProof,
+    #[msg("Merkle proof exceeds maximum depth (20 levels)")]
+    MerkleProofTooLong,
 }

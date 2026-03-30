@@ -22,6 +22,7 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+solana-keccak-hasher = "2"
 solana-sha256-hasher = "2"
 
 [lints.rust]
