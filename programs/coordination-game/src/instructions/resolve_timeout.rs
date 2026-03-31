@@ -287,3 +287,311 @@ pub struct ResolveTimeout<'info> {
     /// Caller receives no prize but pays the transaction fee; rent reclaim via close_game
     pub caller: Signer<'info>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{GameState, COMMIT_TIMEOUT_SLOTS, GUESS_UNREVEALED, REVEAL_TIMEOUT_SLOTS};
+    use anchor_lang::prelude::Pubkey;
+
+    /// Build a Game with sensible defaults; tests override the fields they care about.
+    fn base_game() -> Game {
+        Game {
+            game_id: 1,
+            tournament_id: 1,
+            player_one: Pubkey::new_unique(),
+            player_two: Pubkey::new_unique(),
+            state: GameState::Active,
+            stake_lamports: 50_000_000,
+            p1_commit: [0u8; 32],
+            p2_commit: [0u8; 32],
+            p1_guess: GUESS_UNREVEALED,
+            p2_guess: GUESS_UNREVEALED,
+            first_committer: 0,
+            p1_commit_slot: 0,
+            p2_commit_slot: 0,
+            commit_timeout_slots: COMMIT_TIMEOUT_SLOTS,
+            created_at: 0,
+            resolved_at: 0,
+            activated_at_slot: 100,
+            matchup_commitment: [0u8; 32],
+            matchup_type: 255,
+            bump: 0,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Active timeout: neither player committed
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn active_timeout_elapsed_both_forfeit() {
+        let game = base_game();
+        // Deadline = activated_at_slot + commit_timeout_slots = 100 + 7200 = 7300
+        let current_slot = game.activated_at_slot + game.commit_timeout_slots;
+        let result = find_active_timeout(&game, current_slot).unwrap();
+        assert!(
+            matches!(result, TimeoutOutcome::BothForfeited),
+            "both players should forfeit when neither committed and timeout elapsed"
+        );
+    }
+
+    #[test]
+    fn active_timeout_well_past_deadline() {
+        let game = base_game();
+        let current_slot = game.activated_at_slot + game.commit_timeout_slots + 10_000;
+        let result = find_active_timeout(&game, current_slot).unwrap();
+        assert!(matches!(result, TimeoutOutcome::BothForfeited));
+    }
+
+    #[test]
+    fn active_timeout_not_elapsed_errors() {
+        let game = base_game();
+        // One slot before the deadline
+        let current_slot = game.activated_at_slot + game.commit_timeout_slots - 1;
+        let result = find_active_timeout(&game, current_slot);
+        assert!(result.is_err(), "should error when timeout has not elapsed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Committing timeout: one player committed, the other has not
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn committing_timeout_p1_committed_elapsed_p1_wins() {
+        let mut game = base_game();
+        game.state = GameState::Committing;
+        game.p1_commit = [1u8; 32]; // p1 committed
+        game.p1_commit_slot = 200;
+        // Deadline = p1_commit_slot + commit_timeout_slots = 200 + 7200 = 7400
+        let current_slot = game.p1_commit_slot + game.commit_timeout_slots;
+        let result = find_committing_timeout(&game, current_slot).unwrap();
+        match result {
+            TimeoutOutcome::OneWinner {
+                slashed_player,
+                winner_is_p1,
+            } => {
+                assert!(winner_is_p1, "p1 should win (p1 committed)");
+                assert_eq!(slashed_player, game.player_two, "p2 should be slashed");
+            }
+            TimeoutOutcome::BothForfeited => {
+                panic!("expected OneWinner, got BothForfeited");
+            }
+        }
+    }
+
+    #[test]
+    fn committing_timeout_p2_committed_elapsed_p2_wins() {
+        let mut game = base_game();
+        game.state = GameState::Committing;
+        game.p2_commit = [2u8; 32]; // p2 committed
+        game.p2_commit_slot = 300;
+        let current_slot = game.p2_commit_slot + game.commit_timeout_slots;
+        let result = find_committing_timeout(&game, current_slot).unwrap();
+        match result {
+            TimeoutOutcome::OneWinner {
+                slashed_player,
+                winner_is_p1,
+            } => {
+                assert!(!winner_is_p1, "p2 should win (p2 committed)");
+                assert_eq!(slashed_player, game.player_one, "p1 should be slashed");
+            }
+            TimeoutOutcome::BothForfeited => {
+                panic!("expected OneWinner, got BothForfeited");
+            }
+        }
+    }
+
+    #[test]
+    fn committing_timeout_not_elapsed_errors() {
+        let mut game = base_game();
+        game.state = GameState::Committing;
+        game.p1_commit = [1u8; 32];
+        game.p1_commit_slot = 200;
+        // One slot before deadline
+        let current_slot = game.p1_commit_slot + game.commit_timeout_slots - 1;
+        let result = find_committing_timeout(&game, current_slot);
+        assert!(
+            result.is_err(),
+            "should error when committing timeout has not elapsed"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Revealing timeout: both committed, one or neither revealed
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn revealing_timeout_p1_revealed_elapsed_p1_wins() {
+        let mut game = base_game();
+        game.state = GameState::Revealing;
+        game.p1_commit = [1u8; 32];
+        game.p2_commit = [2u8; 32];
+        game.p1_commit_slot = 200;
+        game.p2_commit_slot = 250;
+        game.p1_guess = 0; // p1 revealed
+                           // p2_guess stays GUESS_UNREVEALED
+                           // anchor_slot = max(200, 250) = 250; deadline = 250 + REVEAL_TIMEOUT_SLOTS
+        let current_slot = 250 + REVEAL_TIMEOUT_SLOTS;
+        let result = find_revealing_timeout(&game, current_slot).unwrap();
+        match result {
+            TimeoutOutcome::OneWinner {
+                slashed_player,
+                winner_is_p1,
+            } => {
+                assert!(winner_is_p1, "p1 should win (p1 revealed)");
+                assert_eq!(slashed_player, game.player_two, "p2 should be slashed");
+            }
+            TimeoutOutcome::BothForfeited => {
+                panic!("expected OneWinner, got BothForfeited");
+            }
+        }
+    }
+
+    #[test]
+    fn revealing_timeout_p2_revealed_elapsed_p2_wins() {
+        let mut game = base_game();
+        game.state = GameState::Revealing;
+        game.p1_commit = [1u8; 32];
+        game.p2_commit = [2u8; 32];
+        game.p1_commit_slot = 300;
+        game.p2_commit_slot = 280;
+        // p1_guess stays GUESS_UNREVEALED
+        game.p2_guess = 1; // p2 revealed
+                           // anchor_slot = max(300, 280) = 300; deadline = 300 + REVEAL_TIMEOUT_SLOTS
+        let current_slot = 300 + REVEAL_TIMEOUT_SLOTS;
+        let result = find_revealing_timeout(&game, current_slot).unwrap();
+        match result {
+            TimeoutOutcome::OneWinner {
+                slashed_player,
+                winner_is_p1,
+            } => {
+                assert!(!winner_is_p1, "p2 should win (p2 revealed)");
+                assert_eq!(slashed_player, game.player_one, "p1 should be slashed");
+            }
+            TimeoutOutcome::BothForfeited => {
+                panic!("expected OneWinner, got BothForfeited");
+            }
+        }
+    }
+
+    #[test]
+    fn revealing_timeout_neither_revealed_elapsed_both_forfeit() {
+        let mut game = base_game();
+        game.state = GameState::Revealing;
+        game.p1_commit = [1u8; 32];
+        game.p2_commit = [2u8; 32];
+        game.p1_commit_slot = 100;
+        game.p2_commit_slot = 150;
+        // Neither revealed — both guesses stay at GUESS_UNREVEALED
+        // anchor_slot = max(100, 150) = 150; deadline = 150 + REVEAL_TIMEOUT_SLOTS
+        let current_slot = 150 + REVEAL_TIMEOUT_SLOTS;
+        let result = find_revealing_timeout(&game, current_slot).unwrap();
+        assert!(
+            matches!(result, TimeoutOutcome::BothForfeited),
+            "both should forfeit when neither revealed and timeout elapsed"
+        );
+    }
+
+    #[test]
+    fn revealing_timeout_not_elapsed_errors() {
+        let mut game = base_game();
+        game.state = GameState::Revealing;
+        game.p1_commit = [1u8; 32];
+        game.p2_commit = [2u8; 32];
+        game.p1_commit_slot = 100;
+        game.p2_commit_slot = 150;
+        game.p1_guess = 0; // p1 revealed
+                           // One slot before deadline
+        let current_slot = 150 + REVEAL_TIMEOUT_SLOTS - 1;
+        let result = find_revealing_timeout(&game, current_slot);
+        assert!(
+            result.is_err(),
+            "should error when reveal timeout has not elapsed"
+        );
+    }
+
+    #[test]
+    fn revealing_timeout_both_revealed_errors() {
+        // Both revealed should have been resolved by reveal_guess already.
+        let mut game = base_game();
+        game.state = GameState::Revealing;
+        game.p1_commit = [1u8; 32];
+        game.p2_commit = [2u8; 32];
+        game.p1_commit_slot = 100;
+        game.p2_commit_slot = 150;
+        game.p1_guess = 0;
+        game.p2_guess = 1;
+        let current_slot = 150 + REVEAL_TIMEOUT_SLOTS;
+        let result = find_revealing_timeout(&game, current_slot);
+        assert!(
+            result.is_err(),
+            "should error when both players have already revealed"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // find_timeout router
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_timeout_routes_active() {
+        let game = base_game();
+        let current_slot = game.activated_at_slot + game.commit_timeout_slots;
+        let result = find_timeout(&game, current_slot).unwrap();
+        assert!(matches!(result, TimeoutOutcome::BothForfeited));
+    }
+
+    #[test]
+    fn find_timeout_routes_committing() {
+        let mut game = base_game();
+        game.state = GameState::Committing;
+        game.p1_commit = [1u8; 32];
+        game.p1_commit_slot = 200;
+        let current_slot = game.p1_commit_slot + game.commit_timeout_slots;
+        let result = find_timeout(&game, current_slot).unwrap();
+        assert!(matches!(
+            result,
+            TimeoutOutcome::OneWinner {
+                winner_is_p1: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn find_timeout_routes_revealing() {
+        let mut game = base_game();
+        game.state = GameState::Revealing;
+        game.p1_commit = [1u8; 32];
+        game.p2_commit = [2u8; 32];
+        game.p1_commit_slot = 100;
+        game.p2_commit_slot = 150;
+        game.p1_guess = 0; // only p1 revealed
+        let current_slot = 150 + REVEAL_TIMEOUT_SLOTS;
+        let result = find_timeout(&game, current_slot).unwrap();
+        assert!(matches!(
+            result,
+            TimeoutOutcome::OneWinner {
+                winner_is_p1: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn find_timeout_rejects_resolved_state() {
+        let mut game = base_game();
+        game.state = GameState::Resolved;
+        let result = find_timeout(&game, 99999);
+        assert!(result.is_err(), "should error for Resolved state");
+    }
+
+    #[test]
+    fn find_timeout_rejects_pending_state() {
+        let mut game = base_game();
+        game.state = GameState::Pending;
+        let result = find_timeout(&game, 99999);
+        assert!(result.is_err(), "should error for Pending state");
+    }
+}
