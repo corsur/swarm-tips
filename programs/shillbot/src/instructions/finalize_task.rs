@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::TaskFinalized;
-use crate::state::{GlobalState, Task, TaskState};
+use crate::state::{AgentState, GlobalState, Task, TaskState};
 use crate::transfers::transfer_lamports;
 
 /// Permissionless crank: anyone can call after the challenge deadline passes.
@@ -60,6 +60,16 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
         remainder,
     )?;
 
+    // If AgentState is passed as remaining_account, update stats
+    if payment_amount > 0 {
+        update_agent_stats(
+            ctx.remaining_accounts,
+            ctx.program_id,
+            &task.agent,
+            payment_amount,
+        )?;
+    }
+
     emit!(TaskFinalized {
         task_id: task.task_id,
         agent: task.agent,
@@ -67,6 +77,49 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
         fee_amount,
     });
 
+    Ok(())
+}
+
+/// If an AgentState account is passed as the first remaining_account, increment
+/// total_completed and total_earned. This is optional — callers that don't care
+/// about agent stats can omit it.
+fn update_agent_stats(
+    remaining_accounts: &[AccountInfo],
+    program_id: &Pubkey,
+    expected_agent: &Pubkey,
+    payment_amount: u64,
+) -> Result<()> {
+    if remaining_accounts.is_empty() {
+        return Ok(());
+    }
+    let agent_state_info = &remaining_accounts[0];
+
+    // Validate ownership
+    if agent_state_info.owner != program_id {
+        return Ok(());
+    }
+
+    let mut data = agent_state_info.try_borrow_mut_data()?;
+    let mut agent_state = match AgentState::try_deserialize(&mut &data[..]) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+
+    // Validate agent matches
+    if agent_state.agent != *expected_agent {
+        return Ok(());
+    }
+
+    agent_state.total_completed = agent_state
+        .total_completed
+        .checked_add(1)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    agent_state.total_earned = agent_state
+        .total_earned
+        .checked_add(payment_amount)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+
+    agent_state.try_serialize(&mut &mut data[..])?;
     Ok(())
 }
 

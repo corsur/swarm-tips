@@ -35,13 +35,15 @@ pub struct Task {
     /// Zero-key until claimed.
     pub agent: Pubkey,
     pub state: TaskState,
+    /// Platform this task targets (PlatformType discriminant).
+    pub platform: u8,
     /// Client's escrowed payment (lamports).
     pub escrow_lamports: u64,
     /// SHA-256 of the off-chain campaign brief.
     pub content_hash: [u8; 32],
-    /// SHA-256 of submitted YouTube video ID (zeroed until submitted).
-    pub video_id_hash: [u8; 32],
-    /// Random nonce the agent must include in the video description.
+    /// SHA-256 of submitted content ID (zeroed until submitted).
+    pub content_id_hash: [u8; 32],
+    /// Random nonce the agent must include in the content.
     pub task_nonce: [u8; 16],
     /// Fixed-point score from oracle attestation (0 until verified).
     pub composite_score: u64,
@@ -63,35 +65,45 @@ pub struct Task {
     pub verified_at: i64,
     /// 0 until challenge window starts.
     pub challenge_deadline: i64,
+    /// Reserved space for future fields without reallocation.
+    pub _reserved: [u8; 64],
     pub bump: u8,
 }
 
 impl Task {
-    pub const SPACE: usize = 8  // discriminator
-        + 8   // task_id
-        + 32  // client
-        + 32  // agent
-        + 1   // state (enum tag)
-        + 8   // escrow_lamports
-        + 32  // content_hash
-        + 32  // video_id_hash
-        + 16  // task_nonce
-        + 8   // composite_score
-        + 8   // payment_amount
-        + 8   // fee_amount
-        + 8   // deadline
-        + 8   // submit_margin
-        + 8   // claim_buffer
-        + 8   // created_at
-        + 8   // submitted_at
-        + 8   // verified_at
-        + 8   // challenge_deadline
+    // 8 + 8 + 32 + 32 + 1 + 1 + 8 + 32 + 32 + 16 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 64 + 1 = 315
+    pub const SPACE: usize = 8   // discriminator
+        + 8    // task_id
+        + 32   // client
+        + 32   // agent
+        + 1    // state (enum tag)
+        + 1    // platform
+        + 8    // escrow_lamports
+        + 32   // content_hash
+        + 32   // content_id_hash
+        + 16   // task_nonce
+        + 8    // composite_score
+        + 8    // payment_amount
+        + 8    // fee_amount
+        + 8    // deadline
+        + 8    // submit_margin
+        + 8    // claim_buffer
+        + 8    // created_at
+        + 8    // submitted_at
+        + 8    // verified_at
+        + 8    // challenge_deadline
+        + 64   // _reserved
         + 1; // bump
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_space_is_315() {
+        assert_eq!(Task::SPACE, 315);
+    }
 
     #[test]
     fn task_state_values_are_distinct() {

@@ -2,11 +2,10 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::TaskExpired;
-use crate::state::{AgentState, Task, TaskState};
-use crate::VERIFICATION_TIMEOUT_SECONDS;
+use crate::state::{AgentState, GlobalState, Task, TaskState};
 
 /// Permissionless crank: anyone can call after deadline (Open/Claimed) or
-/// T+14d verification timeout (Submitted). Returns escrow to client.
+/// T+verification_timeout verification timeout (Submitted). Returns escrow to client.
 ///
 /// When expiring a Claimed task, the agent's AgentState.claimed_count is
 /// decremented. The agent_state account is optional — it is only required
@@ -14,6 +13,7 @@ use crate::VERIFICATION_TIMEOUT_SECONDS;
 pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
+    let global = &ctx.accounts.global_state;
 
     // Checks: valid expiry conditions
     let state_at_expiry = task.state;
@@ -27,7 +27,7 @@ pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {
         TaskState::Submitted => {
             let verification_deadline = task
                 .submitted_at
-                .checked_add(VERIFICATION_TIMEOUT_SECONDS)
+                .checked_add(global.verification_timeout_seconds)
                 .ok_or(ShillbotError::ArithmeticOverflow)?;
             require!(
                 clock.unix_timestamp > verification_deadline,
@@ -70,6 +70,7 @@ pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {
     emit!(TaskExpired {
         task_id: task.task_id,
         state_at_expiry: state_at_expiry as u8,
+        platform: task.platform,
     });
 
     Ok(())
@@ -88,6 +89,11 @@ pub struct ExpireTask<'info> {
         bump = task.bump,
     )]
     pub task: Account<'info, Task>,
+    #[account(
+        seeds = [b"shillbot_global"],
+        bump = global_state.bump,
+    )]
+    pub global_state: Account<'info, GlobalState>,
     /// CHECK: Validated as task.client.
     #[account(
         mut,

@@ -82,12 +82,13 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
                 remainder,
             )?;
         }
-        // Slash bond: 50% to agent, 50% to treasury
+        // Slash bond: split between agent and treasury per bond_slash_treasury_bps
         slash_bond(
             &challenge_info,
             &ctx.accounts.agent,
             &ctx.accounts.treasury,
             bond,
+            global.bond_slash_treasury_bps,
         )?;
         bond
     };
@@ -101,32 +102,39 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
     Ok(())
 }
 
-/// Slash bond 50/50 between agent and treasury.
+/// Slash bond between agent and treasury based on treasury_bps.
+/// treasury_bps is in basis points (e.g. 5000 = 50%).
 /// Precondition: bond > 0 (caller must verify before calling).
 fn slash_bond(
     challenge_info: &AccountInfo,
     agent: &AccountInfo,
     treasury: &AccountInfo,
     bond: u64,
+    treasury_bps: u16,
 ) -> Result<()> {
     // Precondition: bond must be positive — caller should not call with zero bond
     require!(bond > 0, ShillbotError::InsufficientBond);
 
-    let half = bond
-        .checked_div(2)
+    // Treasury share = bond * treasury_bps / 10_000 (u128 intermediate)
+    let treasury_share_128 = (bond as u128)
+        .checked_mul(treasury_bps as u128)
+        .ok_or(ShillbotError::ArithmeticOverflow)?
+        .checked_div(10_000u128)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-    let other_half = bond
-        .checked_sub(half)
+    let treasury_share =
+        u64::try_from(treasury_share_128).map_err(|_| error!(ShillbotError::ArithmeticOverflow))?;
+    let agent_share = bond
+        .checked_sub(treasury_share)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
 
-    // Postcondition: half + other_half == bond (no lamports lost or created)
-    let total = half
-        .checked_add(other_half)
+    // Postcondition: agent_share + treasury_share == bond (no lamports lost or created)
+    let total = agent_share
+        .checked_add(treasury_share)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     require!(total == bond, ShillbotError::PaymentExceedsEscrow);
 
-    transfer_lamports(challenge_info, agent, half)?;
-    transfer_lamports(challenge_info, treasury, other_half)?;
+    transfer_lamports(challenge_info, agent, agent_share)?;
+    transfer_lamports(challenge_info, treasury, treasury_share)?;
     Ok(())
 }
 

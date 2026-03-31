@@ -2,16 +2,22 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::WorkSubmitted;
-use crate::state::{AgentState, SessionDelegate, Task, TaskState};
-use crate::MAX_VIDEO_ID_LENGTH;
+use crate::state::{AgentState, GlobalState, SessionDelegate, Task, TaskState};
+use crate::MAX_CONTENT_ID_LENGTH;
 
 /// Session-delegated variant of submit_work. The delegate (MCP session key)
 /// signs instead of the agent. The SessionDelegate PDA must have the
 /// submit_work permission bit (0x02) set.
-pub fn submit_work_session(ctx: Context<SubmitWorkSession>, video_id: Vec<u8>) -> Result<()> {
+pub fn submit_work_session(ctx: Context<SubmitWorkSession>, content_id: Vec<u8>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
     let session = &ctx.accounts.session_delegate;
+
+    // Checks: protocol not paused
+    require!(
+        !ctx.accounts.global_state.paused,
+        ShillbotError::ProtocolPaused
+    );
 
     // Checks: session has submit_work permission (bit 1)
     require!(
@@ -19,10 +25,18 @@ pub fn submit_work_session(ctx: Context<SubmitWorkSession>, video_id: Vec<u8>) -
         ShillbotError::InvalidSessionDelegate
     );
 
-    // Checks: video_id length bound (instruction input validation)
+    // Checks: session not expired (expires_at == 0 means no expiry)
+    if session.expires_at > 0 {
+        require!(
+            clock.unix_timestamp < session.expires_at,
+            ShillbotError::SessionExpired
+        );
+    }
+
+    // Checks: content_id length bound (instruction input validation)
     require!(
-        video_id.len() <= MAX_VIDEO_ID_LENGTH,
-        ShillbotError::VideoIdTooLong
+        content_id.len() <= MAX_CONTENT_ID_LENGTH,
+        ShillbotError::ContentIdTooLong
     );
 
     // Checks: state
@@ -56,8 +70,8 @@ pub fn submit_work_session(ctx: Context<SubmitWorkSession>, video_id: Vec<u8>) -
         ShillbotError::ArithmeticOverflow
     );
 
-    // Compute video ID hash
-    let video_id_hash: [u8; 32] = solana_sha256_hasher::hash(&video_id).to_bytes();
+    // Compute content ID hash
+    let content_id_hash: [u8; 32] = solana_sha256_hasher::hash(&content_id).to_bytes();
 
     // Effects: decrement agent's concurrent claim count
     let agent_state = &mut ctx.accounts.agent_state;
@@ -68,7 +82,7 @@ pub fn submit_work_session(ctx: Context<SubmitWorkSession>, video_id: Vec<u8>) -
 
     // Effects: update task
     let task = &mut ctx.accounts.task;
-    task.video_id_hash = video_id_hash;
+    task.content_id_hash = content_id_hash;
     task.submitted_at = clock.unix_timestamp;
     task.state = TaskState::Submitted;
 
@@ -76,7 +90,7 @@ pub fn submit_work_session(ctx: Context<SubmitWorkSession>, video_id: Vec<u8>) -
     emit!(WorkSubmitted {
         task_id: task.task_id,
         agent: session.agent,
-        video_id_hash,
+        content_id_hash,
     });
 
     Ok(())
@@ -94,6 +108,11 @@ pub struct SubmitWorkSession<'info> {
         bump = task.bump,
     )]
     pub task: Account<'info, Task>,
+    #[account(
+        seeds = [b"shillbot_global"],
+        bump = global_state.bump,
+    )]
+    pub global_state: Account<'info, GlobalState>,
     #[account(
         mut,
         seeds = [b"agent_state", session_delegate.agent.as_ref()],

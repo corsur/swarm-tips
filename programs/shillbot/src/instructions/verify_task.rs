@@ -4,13 +4,12 @@ use crate::errors::ShillbotError;
 use crate::events::TaskVerified;
 use crate::scoring::compute_payment;
 use crate::state::{GlobalState, Task, TaskState};
-use crate::{CHALLENGE_WINDOW_SECONDS, SEVEN_DAYS_SECONDS, STALENESS_WINDOW_SECONDS};
 
 /// Oracle attestation records the composite score and computes payment.
 ///
 /// The authority account represents the Switchboard feed attestation signer.
 /// Immutable invariant: the feed PDA must be derived from fixed seeds and owned
-/// by the Switchboard program. For devnet, the authority in GlobalState signs directly.
+/// by the Switchboard program. For devnet, the oracle_authority in GlobalState signs directly.
 pub fn verify_task(ctx: Context<VerifyTask>, composite_score: u64) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
@@ -22,10 +21,10 @@ pub fn verify_task(ctx: Context<VerifyTask>, composite_score: u64) -> Result<()>
         ShillbotError::InvalidTaskState
     );
 
-    // Checks: authority (devnet: EOA authority; mainnet: Switchboard feed signer)
+    // Checks: oracle authority (separate from protocol authority)
     require!(
-        ctx.accounts.authority.key() == global.authority,
-        ShillbotError::InvalidAttestation
+        ctx.accounts.authority.key() == global.oracle_authority,
+        ShillbotError::OracleAuthorityMismatch
     );
 
     // Checks: score bounds
@@ -34,17 +33,17 @@ pub fn verify_task(ctx: Context<VerifyTask>, composite_score: u64) -> Result<()>
         ShillbotError::ScoreOutOfBounds
     );
 
-    // Checks: staleness — attestation within STALENESS_WINDOW of submitted_at + 7 days
-    // (the oracle should attest around T+7d, but we allow a window)
+    // Checks: staleness — attestation within staleness_window of submitted_at + attestation_delay
+    // (the oracle should attest around T+attestation_delay, but we allow a window)
     let expected_attestation_time = task
         .submitted_at
-        .checked_add(SEVEN_DAYS_SECONDS)
+        .checked_add(global.attestation_delay_seconds)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     let earliest = expected_attestation_time
-        .checked_sub(STALENESS_WINDOW_SECONDS)
+        .checked_sub(global.staleness_window_seconds)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     let latest = expected_attestation_time
-        .checked_add(STALENESS_WINDOW_SECONDS)
+        .checked_add(global.staleness_window_seconds)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     require!(
         clock.unix_timestamp >= earliest && clock.unix_timestamp <= latest,
@@ -68,7 +67,7 @@ pub fn verify_task(ctx: Context<VerifyTask>, composite_score: u64) -> Result<()>
     task.verified_at = clock.unix_timestamp;
     task.challenge_deadline = clock
         .unix_timestamp
-        .checked_add(CHALLENGE_WINDOW_SECONDS)
+        .checked_add(global.challenge_window_seconds)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     task.state = TaskState::Verified;
 
@@ -77,6 +76,7 @@ pub fn verify_task(ctx: Context<VerifyTask>, composite_score: u64) -> Result<()>
         task_id: task.task_id,
         composite_score,
         payment_amount,
+        fee_amount,
     });
 
     Ok(())

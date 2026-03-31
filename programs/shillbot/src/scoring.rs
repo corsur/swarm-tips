@@ -227,6 +227,12 @@ mod tests {
     }
 
     #[test]
+    fn challenge_bond_10x() {
+        let bond = compute_challenge_bond(1_000_000, 10).unwrap();
+        assert_eq!(bond, 10_000_000);
+    }
+
+    #[test]
     fn challenge_bond_below_min_multiplier_fails() {
         let result = compute_challenge_bond(1_000_000, 1);
         assert!(result.is_err());
@@ -234,7 +240,7 @@ mod tests {
 
     #[test]
     fn challenge_bond_above_max_multiplier_fails() {
-        let result = compute_challenge_bond(1_000_000, 6);
+        let result = compute_challenge_bond(1_000_000, 11);
         assert!(result.is_err());
     }
 

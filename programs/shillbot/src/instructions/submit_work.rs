@@ -2,20 +2,26 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::WorkSubmitted;
-use crate::state::{AgentState, Task, TaskState};
-use crate::MAX_VIDEO_ID_LENGTH;
+use crate::state::{AgentState, GlobalState, Task, TaskState};
+use crate::MAX_CONTENT_ID_LENGTH;
 
-/// Agent submits proof of work (YouTube video ID hash).
+/// Agent submits proof of work (content ID hash).
 /// Must be called before deadline minus submit_margin.
 /// Decrements the agent's concurrent claim count.
-pub fn submit_work(ctx: Context<SubmitWork>, video_id: Vec<u8>) -> Result<()> {
+pub fn submit_work(ctx: Context<SubmitWork>, content_id: Vec<u8>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
 
-    // Checks: video_id length bound (instruction input validation)
+    // Checks: protocol not paused
     require!(
-        video_id.len() <= MAX_VIDEO_ID_LENGTH,
-        ShillbotError::VideoIdTooLong
+        !ctx.accounts.global_state.paused,
+        ShillbotError::ProtocolPaused
+    );
+
+    // Checks: content_id length bound (instruction input validation)
+    require!(
+        content_id.len() <= MAX_CONTENT_ID_LENGTH,
+        ShillbotError::ContentIdTooLong
     );
 
     // Checks: state
@@ -52,8 +58,8 @@ pub fn submit_work(ctx: Context<SubmitWork>, video_id: Vec<u8>) -> Result<()> {
         ShillbotError::ArithmeticOverflow
     );
 
-    // Compute video ID hash
-    let video_id_hash: [u8; 32] = solana_sha256_hasher::hash(&video_id).to_bytes();
+    // Compute content ID hash
+    let content_id_hash: [u8; 32] = solana_sha256_hasher::hash(&content_id).to_bytes();
 
     // Effects: decrement agent's concurrent claim count
     let agent_state = &mut ctx.accounts.agent_state;
@@ -64,7 +70,7 @@ pub fn submit_work(ctx: Context<SubmitWork>, video_id: Vec<u8>) -> Result<()> {
 
     // Effects: update task
     let task = &mut ctx.accounts.task;
-    task.video_id_hash = video_id_hash;
+    task.content_id_hash = content_id_hash;
     task.submitted_at = clock.unix_timestamp;
     task.state = TaskState::Submitted;
 
@@ -72,7 +78,7 @@ pub fn submit_work(ctx: Context<SubmitWork>, video_id: Vec<u8>) -> Result<()> {
     emit!(WorkSubmitted {
         task_id: task.task_id,
         agent: ctx.accounts.agent.key(),
-        video_id_hash,
+        content_id_hash,
     });
 
     Ok(())
@@ -90,6 +96,11 @@ pub struct SubmitWork<'info> {
         bump = task.bump,
     )]
     pub task: Account<'info, Task>,
+    #[account(
+        seeds = [b"shillbot_global"],
+        bump = global_state.bump,
+    )]
+    pub global_state: Account<'info, GlobalState>,
     #[account(
         mut,
         seeds = [b"agent_state", agent.key().as_ref()],

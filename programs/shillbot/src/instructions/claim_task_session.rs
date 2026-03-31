@@ -2,8 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::TaskClaimed;
-use crate::state::{AgentState, SessionDelegate, Task, TaskState};
-use crate::MAX_CONCURRENT_CLAIMS;
+use crate::state::{AgentState, GlobalState, SessionDelegate, Task, TaskState};
 
 /// Session-delegated variant of claim_task. The delegate (MCP session key)
 /// signs instead of the agent. The SessionDelegate PDA must have the
@@ -13,12 +12,24 @@ pub fn claim_task_session(ctx: Context<ClaimTaskSession>) -> Result<()> {
     let task = &ctx.accounts.task;
     let agent_state = &ctx.accounts.agent_state;
     let session = &ctx.accounts.session_delegate;
+    let global = &ctx.accounts.global_state;
+
+    // Checks: protocol not paused
+    require!(!global.paused, ShillbotError::ProtocolPaused);
 
     // Checks: session has claim_task permission (bit 0)
     require!(
         session.allowed_instructions & 0x01 != 0,
         ShillbotError::InvalidSessionDelegate
     );
+
+    // Checks: session not expired (expires_at == 0 means no expiry)
+    if session.expires_at > 0 {
+        require!(
+            clock.unix_timestamp < session.expires_at,
+            ShillbotError::SessionExpired
+        );
+    }
 
     // Checks: state
     require!(
@@ -36,9 +47,9 @@ pub fn claim_task_session(ctx: Context<ClaimTaskSession>) -> Result<()> {
         ShillbotError::ClaimBufferInsufficient
     );
 
-    // Checks: concurrent claim limit via AgentState counter
+    // Checks: concurrent claim limit via AgentState counter (read from GlobalState)
     require!(
-        agent_state.claimed_count < MAX_CONCURRENT_CLAIMS,
+        agent_state.claimed_count < global.max_concurrent_claims,
         ShillbotError::MaxConcurrentClaimsExceeded
     );
 
@@ -81,6 +92,11 @@ pub struct ClaimTaskSession<'info> {
         bump = task.bump,
     )]
     pub task: Account<'info, Task>,
+    #[account(
+        seeds = [b"shillbot_global"],
+        bump = global_state.bump,
+    )]
+    pub global_state: Account<'info, GlobalState>,
     /// AgentState PDA tracks the agent's concurrent claim count.
     /// Uses `init_if_needed` — see claim_task.rs for justification.
     #[account(

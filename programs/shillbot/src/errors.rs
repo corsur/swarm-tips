@@ -56,8 +56,8 @@ pub enum ShillbotError {
     #[msg("Computed payment + fee exceeds escrowed lamports")]
     PaymentExceedsEscrow,
 
-    #[msg("Video ID exceeds maximum allowed length")]
-    VideoIdTooLong,
+    #[msg("Content ID exceeds maximum allowed length")]
+    ContentIdTooLong,
 
     #[msg("Protocol fee basis points outside allowed bounds")]
     ProtocolFeeBoundsExceeded,
@@ -70,4 +70,19 @@ pub enum ShillbotError {
 
     #[msg("remaining_accounts count must be even (task/client pairs)")]
     InvalidAccountPairs,
+
+    #[msg("Protocol is paused")]
+    ProtocolPaused,
+
+    #[msg("Platform is paused")]
+    PlatformPaused,
+
+    #[msg("Invalid platform type")]
+    InvalidPlatform,
+
+    #[msg("Oracle authority mismatch")]
+    OracleAuthorityMismatch,
+
+    #[msg("Session delegation has expired")]
+    SessionExpired,
 }

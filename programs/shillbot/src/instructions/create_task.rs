@@ -13,10 +13,26 @@ pub fn create_task(
     deadline: i64,
     submit_margin: i64,
     claim_buffer: i64,
+    platform: u8,
 ) -> Result<()> {
     let clock = Clock::get()?;
+    let global = &ctx.accounts.global_state;
 
-    // Checks
+    // Checks: protocol not paused
+    require!(!global.paused, ShillbotError::ProtocolPaused);
+
+    // Checks: platform is valid (must be a known PlatformType)
+    require!(platform <= 2, ShillbotError::InvalidPlatform);
+
+    // Checks: platform not paused (bit N corresponds to PlatformType with value N)
+    let platform_bit = 1u16
+        .checked_shl(platform as u32)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    require!(
+        global.paused_platforms & platform_bit == 0,
+        ShillbotError::PlatformPaused
+    );
+
     require!(
         deadline > clock.unix_timestamp,
         ShillbotError::DeadlineExpired
@@ -55,12 +71,14 @@ pub fn create_task(
     task.client = ctx.accounts.client.key();
     task.agent = Pubkey::default();
     task.state = TaskState::Open;
+    task.platform = platform;
     task.escrow_lamports = escrow_lamports;
     task.content_hash = content_hash;
-    task.video_id_hash = [0u8; 32];
+    task.content_id_hash = [0u8; 32];
     task.task_nonce = task_nonce;
     task.composite_score = 0;
     task.payment_amount = 0;
+    task.fee_amount = 0;
     task.deadline = deadline;
     task.submit_margin = submit_margin;
     task.claim_buffer = claim_buffer;
@@ -68,6 +86,7 @@ pub fn create_task(
     task.submitted_at = 0;
     task.verified_at = 0;
     task.challenge_deadline = 0;
+    task._reserved = [0u8; 64];
     task.bump = ctx.bumps.task;
 
     // Interactions: transfer escrow from client to task PDA
@@ -88,6 +107,7 @@ pub fn create_task(
         escrow_lamports,
         deadline,
         task_nonce,
+        platform,
     });
 
     Ok(())

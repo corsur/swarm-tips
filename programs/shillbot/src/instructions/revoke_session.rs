@@ -14,10 +14,10 @@ pub fn revoke_session(ctx: Context<RevokeSession>) -> Result<()> {
         ShillbotError::InvalidSessionDelegate
     );
 
-    // Checks: allowed_instructions is valid (nonzero, within 0x03) — sanity check
+    // Checks: allowed_instructions is valid (nonzero) — sanity check
     // that the session was properly initialized
     require!(
-        session.allowed_instructions > 0 && session.allowed_instructions <= 0x03,
+        session.allowed_instructions > 0,
         ShillbotError::InvalidSessionDelegate
     );
 

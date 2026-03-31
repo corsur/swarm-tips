@@ -9,6 +9,12 @@ pub enum PlatformType {
     YouTube = 0,
     Farcaster = 1,
     TikTok = 2,
+    Twitter = 3,
+    Instagram = 4,
+    LinkedIn = 5,
+    Reddit = 6,
+    Podcast = 7,
+    Blog = 8,
 }
 
 impl PlatformType {
@@ -18,6 +24,12 @@ impl PlatformType {
             0 => Some(Self::YouTube),
             1 => Some(Self::Farcaster),
             2 => Some(Self::TikTok),
+            3 => Some(Self::Twitter),
+            4 => Some(Self::Instagram),
+            5 => Some(Self::LinkedIn),
+            6 => Some(Self::Reddit),
+            7 => Some(Self::Podcast),
+            8 => Some(Self::Blog),
             _ => None,
         }
     }
@@ -114,11 +126,17 @@ mod tests {
         assert_eq!(PlatformType::from_u8(0), Some(PlatformType::YouTube));
         assert_eq!(PlatformType::from_u8(1), Some(PlatformType::Farcaster));
         assert_eq!(PlatformType::from_u8(2), Some(PlatformType::TikTok));
+        assert_eq!(PlatformType::from_u8(3), Some(PlatformType::Twitter));
+        assert_eq!(PlatformType::from_u8(4), Some(PlatformType::Instagram));
+        assert_eq!(PlatformType::from_u8(5), Some(PlatformType::LinkedIn));
+        assert_eq!(PlatformType::from_u8(6), Some(PlatformType::Reddit));
+        assert_eq!(PlatformType::from_u8(7), Some(PlatformType::Podcast));
+        assert_eq!(PlatformType::from_u8(8), Some(PlatformType::Blog));
     }
 
     #[test]
     fn platform_type_from_u8_invalid() {
-        assert_eq!(PlatformType::from_u8(3), None);
+        assert_eq!(PlatformType::from_u8(9), None);
         assert_eq!(PlatformType::from_u8(255), None);
     }
 
@@ -128,6 +146,12 @@ mod tests {
             PlatformType::YouTube,
             PlatformType::Farcaster,
             PlatformType::TikTok,
+            PlatformType::Twitter,
+            PlatformType::Instagram,
+            PlatformType::LinkedIn,
+            PlatformType::Reddit,
+            PlatformType::Podcast,
+            PlatformType::Blog,
         ] {
             let bytes = borsh::to_vec(&variant).expect("serialize");
             let deserialized = PlatformType::try_from_slice(&bytes).expect("deserialize");

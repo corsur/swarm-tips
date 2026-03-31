@@ -7,6 +7,7 @@ pub struct TaskCreated {
     pub escrow_lamports: u64,
     pub deadline: i64,
     pub task_nonce: [u8; 16],
+    pub platform: u8,
 }
 
 #[event]
@@ -19,7 +20,7 @@ pub struct TaskClaimed {
 pub struct WorkSubmitted {
     pub task_id: u64,
     pub agent: Pubkey,
-    pub video_id_hash: [u8; 32],
+    pub content_id_hash: [u8; 32],
 }
 
 #[event]
@@ -27,6 +28,7 @@ pub struct TaskVerified {
     pub task_id: u64,
     pub composite_score: u64,
     pub payment_amount: u64,
+    pub fee_amount: u64,
 }
 
 #[event]
@@ -56,6 +58,7 @@ pub struct ChallengeResolved {
 pub struct TaskExpired {
     pub task_id: u64,
     pub state_at_expiry: u8,
+    pub platform: u8,
 }
 
 #[event]
@@ -85,4 +88,22 @@ pub struct ParamsUpdated {
 #[event]
 pub struct AgentStateClosed {
     pub agent: Pubkey,
+}
+
+#[event]
+pub struct AuthorityTransferred {
+    pub old_authority: Pubkey,
+    pub new_authority: Pubkey,
+}
+
+#[event]
+pub struct TreasuryUpdated {
+    pub old_treasury: Pubkey,
+    pub new_treasury: Pubkey,
+}
+
+#[event]
+pub struct OracleAuthorityUpdated {
+    pub old_oracle_authority: Pubkey,
+    pub new_oracle_authority: Pubkey,
 }
