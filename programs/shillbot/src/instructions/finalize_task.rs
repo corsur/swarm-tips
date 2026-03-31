@@ -2,16 +2,19 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::TaskFinalized;
-use crate::scoring::compute_payment;
 use crate::state::{GlobalState, Task, TaskState};
 use crate::transfers::transfer_lamports;
 
 /// Permissionless crank: anyone can call after the challenge deadline passes.
 /// Releases payment to agent, fee to treasury, remainder to client.
+///
+/// Uses the payment and fee amounts stored on the task at verification time,
+/// rather than recomputing from current GlobalState parameters. This prevents
+/// parameter-change bricking (S-03): if protocol_fee_bps or quality_threshold
+/// change between verify and finalize, the stored values are still valid.
 pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
-    let global = &ctx.accounts.global_state;
 
     // Checks: state
     require!(
@@ -25,19 +28,8 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
         ShillbotError::ChallengeWindowOpen
     );
 
-    // Recompute payment to get fee breakdown
-    let (payment_amount, fee_amount) = compute_payment(
-        task.composite_score,
-        global.quality_threshold,
-        task.escrow_lamports,
-        global.protocol_fee_bps,
-    )?;
-
-    // Postcondition: payment matches stored value
-    require!(
-        payment_amount == task.payment_amount,
-        ShillbotError::ArithmeticOverflow
-    );
+    let payment_amount = task.payment_amount;
+    let fee_amount = task.fee_amount;
 
     // Postcondition: payment + fee <= escrow
     let total_out = payment_amount
@@ -79,6 +71,7 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
 }
 
 /// Transfer payment to agent, fee to treasury, remainder to client.
+/// Asserts that total distributed does not exceed the task account's lamport balance.
 fn distribute_finalized_payment(
     task_info: &AccountInfo,
     agent_info: &AccountInfo,
@@ -88,6 +81,17 @@ fn distribute_finalized_payment(
     fee: u64,
     remainder: u64,
 ) -> Result<()> {
+    // Precondition: total distributed <= task account lamports
+    let total_distributed = payment
+        .checked_add(fee)
+        .ok_or(ShillbotError::ArithmeticOverflow)?
+        .checked_add(remainder)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    require!(
+        total_distributed <= task_info.lamports(),
+        ShillbotError::PaymentExceedsEscrow
+    );
+
     if payment > 0 {
         transfer_lamports(task_info, agent_info, payment)?;
     }

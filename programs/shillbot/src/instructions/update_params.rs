@@ -21,17 +21,17 @@ pub fn update_params(
     // Checks: fee within bounds [100, 2500] bps
     require!(
         protocol_fee_bps >= shared::MIN_PROTOCOL_FEE_BPS,
-        ShillbotError::ArithmeticOverflow
+        ShillbotError::ProtocolFeeBoundsExceeded
     );
     require!(
         protocol_fee_bps <= shared::MAX_PROTOCOL_FEE_BPS,
-        ShillbotError::ArithmeticOverflow
+        ShillbotError::ProtocolFeeBoundsExceeded
     );
 
     // Checks: threshold within bounds
     require!(
         quality_threshold <= shared::MAX_SCORE,
-        ShillbotError::ScoreOutOfBounds
+        ShillbotError::QualityThresholdBoundsExceeded
     );
 
     // Effects

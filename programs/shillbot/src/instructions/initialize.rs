@@ -13,15 +13,15 @@ pub fn initialize(
     // Checks
     require!(
         protocol_fee_bps >= shared::MIN_PROTOCOL_FEE_BPS,
-        ShillbotError::ArithmeticOverflow
+        ShillbotError::ProtocolFeeBoundsExceeded
     );
     require!(
         protocol_fee_bps <= shared::MAX_PROTOCOL_FEE_BPS,
-        ShillbotError::ArithmeticOverflow
+        ShillbotError::ProtocolFeeBoundsExceeded
     );
     require!(
         quality_threshold <= shared::MAX_SCORE,
-        ShillbotError::ScoreOutOfBounds
+        ShillbotError::QualityThresholdBoundsExceeded
     );
 
     // Effects

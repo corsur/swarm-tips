@@ -1,5 +1,6 @@
 pub mod challenge_task;
 pub mod claim_task;
+pub mod claim_task_session;
 pub mod close_agent_state;
 pub mod create_session;
 pub mod create_task;
@@ -10,11 +11,13 @@ pub mod initialize;
 pub mod resolve_challenge;
 pub mod revoke_session;
 pub mod submit_work;
+pub mod submit_work_session;
 pub mod update_params;
 pub mod verify_task;
 
 pub use challenge_task::*;
 pub use claim_task::*;
+pub use claim_task_session::*;
 pub use close_agent_state::*;
 pub use create_session::*;
 pub use create_task::*;
@@ -25,5 +28,6 @@ pub use initialize::*;
 pub use resolve_challenge::*;
 pub use revoke_session::*;
 pub use submit_work::*;
+pub use submit_work_session::*;
 pub use update_params::*;
 pub use verify_task::*;

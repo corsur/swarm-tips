@@ -28,7 +28,7 @@ pub fn emergency_return(ctx: Context<EmergencyReturnAccounts>) -> Result<()> {
     // Bounded iteration: limit remaining accounts
     require!(
         ctx.remaining_accounts.len() <= MAX_EMERGENCY_RETURN_ACCOUNTS,
-        ShillbotError::ArithmeticOverflow
+        ShillbotError::InvalidAccountPairs
     );
 
     // Process each task account in remaining_accounts.
@@ -38,7 +38,7 @@ pub fn emergency_return(ctx: Context<EmergencyReturnAccounts>) -> Result<()> {
         .len()
         .checked_div(2)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-    require!(accounts.len() % 2 == 0, ShillbotError::ArithmeticOverflow);
+    require!(accounts.len() % 2 == 0, ShillbotError::InvalidAccountPairs);
 
     let mut task_ids: Vec<u64> = Vec::with_capacity(pair_count);
 

@@ -114,4 +114,12 @@ pub mod shillbot {
     pub fn revoke_session(ctx: Context<RevokeSession>) -> Result<()> {
         instructions::revoke_session::revoke_session(ctx)
     }
+
+    pub fn claim_task_session(ctx: Context<ClaimTaskSession>) -> Result<()> {
+        instructions::claim_task_session::claim_task_session(ctx)
+    }
+
+    pub fn submit_work_session(ctx: Context<SubmitWorkSession>, video_id: Vec<u8>) -> Result<()> {
+        instructions::submit_work_session::submit_work_session(ctx, video_id)
+    }
 }

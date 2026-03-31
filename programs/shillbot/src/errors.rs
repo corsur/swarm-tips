@@ -58,4 +58,16 @@ pub enum ShillbotError {
 
     #[msg("Video ID exceeds maximum allowed length")]
     VideoIdTooLong,
+
+    #[msg("Protocol fee basis points outside allowed bounds")]
+    ProtocolFeeBoundsExceeded,
+
+    #[msg("Quality threshold outside allowed bounds")]
+    QualityThresholdBoundsExceeded,
+
+    #[msg("AgentState account required but not provided in remaining_accounts")]
+    MissingAgentState,
+
+    #[msg("remaining_accounts count must be even (task/client pairs)")]
+    InvalidAccountPairs,
 }

@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 
+use crate::errors::ShillbotError;
 use crate::events::SessionRevoked;
 use crate::state::SessionDelegate;
 
@@ -7,8 +8,18 @@ use crate::state::SessionDelegate;
 pub fn revoke_session(ctx: Context<RevokeSession>) -> Result<()> {
     let session = &ctx.accounts.session_delegate;
 
-    // Checks: the agent is the delegator (enforced by constraint below)
-    // Checks: session account exists (enforced by Anchor deserialization)
+    // Checks: session belongs to the signing agent (defense-in-depth alongside has_one)
+    require!(
+        session.agent == ctx.accounts.agent.key(),
+        ShillbotError::InvalidSessionDelegate
+    );
+
+    // Checks: allowed_instructions is valid (nonzero, within 0x03) — sanity check
+    // that the session was properly initialized
+    require!(
+        session.allowed_instructions > 0 && session.allowed_instructions <= 0x03,
+        ShillbotError::InvalidSessionDelegate
+    );
 
     let agent_key = session.agent;
     let delegate_key = session.delegate;

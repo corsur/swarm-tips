@@ -8,10 +8,20 @@ use crate::state::SessionDelegate;
 pub fn create_session(ctx: Context<CreateSession>, allowed_instructions: u8) -> Result<()> {
     let clock = Clock::get()?;
 
-    // Checks: allowed_instructions is a valid bitmask (only bits 0 and 1 used)
-    // 0x01 = claim_task, 0x02 = submit_work
+    // Checks: allowed_instructions is a valid bitmask — must be nonzero and only
+    // use defined permission bits (0x01 = claim_task, 0x02 = submit_work)
     require!(
-        allowed_instructions > 0 && allowed_instructions <= 0x03,
+        allowed_instructions > 0,
+        crate::errors::ShillbotError::InvalidSessionDelegate
+    );
+    require!(
+        allowed_instructions <= 0x03,
+        crate::errors::ShillbotError::InvalidSessionDelegate
+    );
+
+    // Checks: delegate must not be the agent itself (no self-delegation)
+    require!(
+        ctx.accounts.agent.key() != ctx.accounts.delegate.key(),
         crate::errors::ShillbotError::InvalidSessionDelegate
     );
 
@@ -22,6 +32,16 @@ pub fn create_session(ctx: Context<CreateSession>, allowed_instructions: u8) -> 
     session.allowed_instructions = allowed_instructions;
     session.created_at = clock.unix_timestamp;
     session.bump = ctx.bumps.session_delegate;
+
+    // Postcondition: session fields are correctly set
+    require!(
+        session.agent == ctx.accounts.agent.key(),
+        crate::errors::ShillbotError::InvalidSessionDelegate
+    );
+    require!(
+        session.delegate == ctx.accounts.delegate.key(),
+        crate::errors::ShillbotError::InvalidSessionDelegate
+    );
 
     // Interactions: none
     emit!(SessionCreated {

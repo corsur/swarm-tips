@@ -112,7 +112,7 @@ All scoring and payment calculations use integer arithmetic with an explicit sca
 
 ### `init` vs `init_if_needed`
 
-Use `init` exclusively for the shillbot program (prevents PDA account resurrection attacks). The coordination game uses `init_if_needed` for PlayerProfile accounts only (player pays for creation, idempotent). Never use `init_if_needed` for accounts holding escrow funds.
+Use `init` exclusively for the shillbot program (prevents PDA account resurrection attacks), with one exception: `AgentState` uses `init_if_needed` because (a) the agent pays for creation, (b) it holds no escrow funds, and (c) it must be idempotent across the agent's first claim. The coordination game uses `init_if_needed` for PlayerProfile accounts only (player pays for creation, idempotent). Never use `init_if_needed` for accounts holding escrow funds.
 
 ### Crate-Level Requirements
 
@@ -200,7 +200,9 @@ smartcontracts/
 │   │       │   ├── resolve_challenge.rs # multisig resolves dispute
 │   │       │   ├── expire_task.rs      # permissionless crank, returns escrow
 │   │       │   ├── emergency_return.rs # multisig returns Open/Claimed escrow
-│   │       │   └── revoke_session.rs   # agent revokes MCP session delegation
+│   │       │   ├── revoke_session.rs   # agent revokes MCP session delegation
+│   │       │   ├── claim_task_session.rs  # session-delegated claim_task
+│   │       │   └── submit_work_session.rs # session-delegated submit_work
 │   │       ├── scoring.rs              # composite score computation (fixed-point)
 │   │       ├── errors.rs
 │   │       └── events.rs
@@ -260,7 +262,7 @@ switchboard-on-demand = "..."   # Switchboard oracle integration
 shared = { path = "../shared" } # shared platform-agnostic types
 ```
 
-Note: does NOT use `init-if-needed`. All accounts use `init` exclusively.
+Note: uses `init` exclusively for all accounts except `AgentState`, which uses `init_if_needed` (agent pays, no escrow funds, idempotent across first claim).
 
 ### Account Structures
 
@@ -272,6 +274,7 @@ Singleton PDA. Seeds: `["shillbot_global"]`
 discriminator:        8 bytes
 task_counter:         u64       monotonic counter, incremented on each create_task
 authority:            Pubkey    Squads multisig (mainnet) or EOA (devnet)
+treasury:             Pubkey    treasury account for protocol fee collection
 protocol_fee_bps:     u16       protocol fee in basis points (100 = 1%)
 quality_threshold:    u64       minimum composite score for payment (fixed-point)
 bump:                 u8
@@ -291,7 +294,8 @@ content_hash:         [u8; 32]    SHA-256 of the off-chain campaign brief
 video_id_hash:        [u8; 32]    SHA-256 of submitted YouTube video ID (zeroed until submitted)
 task_nonce:           [u8; 16]    random nonce agent must include in video description
 composite_score:      u64         fixed-point score from oracle attestation (0 until verified)
-payment_amount:       u64         computed payment (0 until finalized)
+payment_amount:       u64         computed payment (0 until verified)
+fee_amount:           u64         computed protocol fee (0 until verified, stored at verify time to prevent parameter-change bricking)
 deadline:             i64         Unix timestamp
 submit_margin:        i64         seconds before deadline that submission must occur
 claim_buffer:         i64         minimum seconds remaining to claim

@@ -45,8 +45,12 @@ pub struct Task {
     pub task_nonce: [u8; 16],
     /// Fixed-point score from oracle attestation (0 until verified).
     pub composite_score: u64,
-    /// Computed payment amount (0 until finalized).
+    /// Computed payment amount (0 until verified).
     pub payment_amount: u64,
+    /// Computed protocol fee amount (0 until verified). Stored at verification time
+    /// so finalize_task and resolve_challenge use the fee that was in effect when
+    /// the oracle attested, preventing parameter-change bricking (S-03).
+    pub fee_amount: u64,
     pub deadline: i64,
     /// Seconds before deadline that submission must occur.
     pub submit_margin: i64,
@@ -74,6 +78,7 @@ impl Task {
         + 16  // task_nonce
         + 8   // composite_score
         + 8   // payment_amount
+        + 8   // fee_amount
         + 8   // deadline
         + 8   // submit_margin
         + 8   // claim_buffer

@@ -51,8 +51,9 @@ pub fn verify_task(ctx: Context<VerifyTask>, composite_score: u64) -> Result<()>
         ShillbotError::AttestationStale
     );
 
-    // Compute payment
-    let (payment_amount, _fee) = compute_payment(
+    // Compute payment and fee — stored on the task so finalize/resolve use the
+    // fee that was in effect at verification time, not the current GlobalState fee.
+    let (payment_amount, fee_amount) = compute_payment(
         composite_score,
         global.quality_threshold,
         task.escrow_lamports,
@@ -63,6 +64,7 @@ pub fn verify_task(ctx: Context<VerifyTask>, composite_score: u64) -> Result<()>
     let task = &mut ctx.accounts.task;
     task.composite_score = composite_score;
     task.payment_amount = payment_amount;
+    task.fee_amount = fee_amount;
     task.verified_at = clock.unix_timestamp;
     task.challenge_deadline = clock
         .unix_timestamp

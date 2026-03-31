@@ -2,7 +2,6 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::ChallengeResolved;
-use crate::scoring::compute_payment;
 use crate::state::{Challenge, GlobalState, Task, TaskState};
 use crate::transfers::transfer_lamports;
 
@@ -60,12 +59,9 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
         }
         0
     } else {
-        let (payment, fee) = compute_payment(
-            task.composite_score,
-            global.quality_threshold,
-            escrow,
-            global.protocol_fee_bps,
-        )?;
+        // Use stored payment and fee from verification time (S-03 fix).
+        let payment = task.payment_amount;
+        let fee = task.fee_amount;
         // Distribute escrow: payment to agent, fee to treasury, remainder to client
         if payment > 0 {
             transfer_lamports(&task_info, &ctx.accounts.agent.to_account_info(), payment)?;
@@ -106,22 +102,31 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
 }
 
 /// Slash bond 50/50 between agent and treasury.
+/// Precondition: bond > 0 (caller must verify before calling).
 fn slash_bond(
     challenge_info: &AccountInfo,
     agent: &AccountInfo,
     treasury: &AccountInfo,
     bond: u64,
 ) -> Result<()> {
-    if bond > 0 {
-        let half = bond
-            .checked_div(2)
-            .ok_or(ShillbotError::ArithmeticOverflow)?;
-        let other_half = bond
-            .checked_sub(half)
-            .ok_or(ShillbotError::ArithmeticOverflow)?;
-        transfer_lamports(challenge_info, agent, half)?;
-        transfer_lamports(challenge_info, treasury, other_half)?;
-    }
+    // Precondition: bond must be positive — caller should not call with zero bond
+    require!(bond > 0, ShillbotError::InsufficientBond);
+
+    let half = bond
+        .checked_div(2)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    let other_half = bond
+        .checked_sub(half)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+
+    // Postcondition: half + other_half == bond (no lamports lost or created)
+    let total = half
+        .checked_add(other_half)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    require!(total == bond, ShillbotError::PaymentExceedsEscrow);
+
+    transfer_lamports(challenge_info, agent, half)?;
+    transfer_lamports(challenge_info, treasury, other_half)?;
     Ok(())
 }
 

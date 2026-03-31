@@ -107,7 +107,7 @@ fn decrement_agent_claim_count(
 ) -> Result<()> {
     require!(
         !remaining_accounts.is_empty(),
-        ShillbotError::ArithmeticOverflow
+        ShillbotError::MissingAgentState
     );
     let agent_state_info = &remaining_accounts[0];
 
