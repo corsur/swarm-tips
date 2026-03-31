@@ -13,7 +13,7 @@ import { BN, Program } from "@coral-xyz/anchor";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { CoordinationGame } from "../target/types/coordination_game";
 
-const TOURNAMENT_ID = new BN(1);
+const TOURNAMENT_ID = new BN(2);
 // 10 years out so the tournament never needs to be recreated between deploys.
 const TOURNAMENT_END = new BN(
   Math.floor(Date.now() / 1000) + 10 * 365 * 24 * 3600
