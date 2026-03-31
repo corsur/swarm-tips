@@ -117,6 +117,11 @@ jobs:
           # the wallet. Close them before deploying to recover those lamports.
           solana program close --buffers --url devnet --keypair ~/.config/solana/id.json || true
 
+      - name: Close IDL accounts (required when IDL size increases)
+        run: |
+          anchor idl close --provider.cluster devnet 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P || true
+          anchor idl close --provider.cluster devnet 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi || true
+
       - name: Deploy programs to devnet
         run: |
           anchor deploy -p coordination_game --provider.cluster devnet
