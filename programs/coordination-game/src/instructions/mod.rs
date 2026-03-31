@@ -21,6 +21,7 @@ pub mod reveal_guess_session;
 pub mod session_utils;
 pub mod update_config;
 pub mod utils;
+pub mod withdraw_stake;
 
 pub use claim_reward::*;
 pub use close_game::*;
@@ -43,3 +44,4 @@ pub use resolve_timeout::*;
 pub use reveal_guess::*;
 pub use reveal_guess_session::*;
 pub use update_config::*;
+pub use withdraw_stake::*;

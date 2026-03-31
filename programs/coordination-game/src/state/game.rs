@@ -76,6 +76,19 @@ impl Game {
         + 1; // bump
 }
 
+/// Game lifecycle state machine.
+///
+/// ```text
+///          --(create_game)--> Pending
+/// Pending --(join_game)--> Active
+/// Active  --(commit_guess: first)--> Committing
+/// Active  --(resolve_timeout: neither commits)--> Resolved
+/// Committing --(commit_guess: second)--> Revealing
+/// Committing --(resolve_timeout)--> Resolved
+/// Revealing  --(reveal_guess: both)--> Resolved
+/// Revealing  --(resolve_timeout)--> Resolved
+/// Resolved   --(close_game)--> [account closed]
+/// ```
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, Debug)]
 pub enum GameState {
     Pending,

@@ -85,4 +85,8 @@ pub enum CoordinationError {
     InvalidMerkleProof,
     #[msg("Merkle proof exceeds maximum depth (20 levels)")]
     MerkleProofTooLong,
+
+    // Transfer
+    #[msg("Source account has insufficient lamports for transfer")]
+    InsufficientLamports,
 }

@@ -29,8 +29,20 @@ pub mod coordination_game {
         instructions::initialize_config::initialize_config(ctx, treasury_split_bps)
     }
 
-    pub fn update_config(ctx: Context<UpdateConfig>, treasury_split_bps: u16) -> Result<()> {
-        instructions::update_config::update_config(ctx, treasury_split_bps)
+    pub fn update_config(
+        ctx: Context<UpdateConfig>,
+        treasury_split_bps: u16,
+        treasury: Pubkey,
+        matchmaker: Pubkey,
+        new_authority: Pubkey,
+    ) -> Result<()> {
+        instructions::update_config::update_config(
+            ctx,
+            treasury_split_bps,
+            treasury,
+            matchmaker,
+            new_authority,
+        )
     }
 
     pub fn create_tournament(
@@ -44,6 +56,10 @@ pub mod coordination_game {
 
     pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
         instructions::deposit_stake::deposit_stake(ctx)
+    }
+
+    pub fn withdraw_stake(ctx: Context<WithdrawStake>) -> Result<()> {
+        instructions::withdraw_stake::withdraw_stake(ctx)
     }
 
     pub fn create_game(

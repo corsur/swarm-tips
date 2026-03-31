@@ -40,9 +40,9 @@ pub fn claim_reward(ctx: Context<ClaimReward>, amount: u64, proof: Vec<[u8; 32]>
 
     // Verify merkle proof
     let player_wallet = ctx.accounts.player.key();
-    let leaf = compute_leaf(&player_wallet, amount);
+    let leaf = compute_leaf(&player_wallet, amount)?;
     require!(
-        verify_proof(&leaf, &proof, &tournament.merkle_root),
+        verify_proof(&leaf, &proof, &tournament.merkle_root)?,
         CoordinationError::InvalidMerkleProof,
     );
     require!(amount > 0, CoordinationError::EmptyPrizePool);
@@ -72,22 +72,30 @@ pub fn claim_reward(ctx: Context<ClaimReward>, amount: u64, proof: Vec<[u8; 32]>
 }
 
 /// Compute a merkle leaf: `keccak256(0x00 || player_wallet || amount_le_bytes)`
-fn compute_leaf(player_wallet: &Pubkey, amount: u64) -> [u8; 32] {
+fn compute_leaf(player_wallet: &Pubkey, amount: u64) -> Result<[u8; 32]> {
     let wallet_bytes = player_wallet.to_bytes();
     let amount_bytes = amount.to_le_bytes();
-    keccak::hashv(&[&[0x00], wallet_bytes.as_ref(), amount_bytes.as_ref()]).0
+    let result = keccak::hashv(&[&[0x00], wallet_bytes.as_ref(), amount_bytes.as_ref()]).0;
+    // Postcondition: a valid keccak256 hash should never be all zeros
+    require!(result != [0u8; 32], CoordinationError::InvalidMerkleProof);
+    Ok(result)
 }
 
 /// Walk the merkle proof from leaf to root, using sorted children and
 /// domain-separated hashing for internal nodes.
 ///
 /// Returns true if the computed root matches the expected root.
-fn verify_proof(leaf: &[u8; 32], proof: &[[u8; 32]], root: &[u8; 32]) -> bool {
+fn verify_proof(leaf: &[u8; 32], proof: &[[u8; 32]], root: &[u8; 32]) -> Result<bool> {
+    // Precondition: proof depth must not exceed maximum
+    require!(
+        proof.len() <= MAX_PROOF_LEN,
+        CoordinationError::MerkleProofTooLong
+    );
     let mut current = *leaf;
     for sibling in proof.iter() {
         current = hash_internal_node(&current, sibling);
     }
-    current == *root
+    Ok(current == *root)
 }
 
 /// Hash an internal node: `keccak256(0x01 || min(left, right) || max(left, right))`
@@ -129,11 +137,11 @@ mod tests {
     fn compute_leaf_deterministic() {
         let wallet = Pubkey::new_unique();
         let amount: u64 = 1_000_000;
-        let leaf1 = compute_leaf(&wallet, amount);
-        let leaf2 = compute_leaf(&wallet, amount);
+        let leaf1 = compute_leaf(&wallet, amount).unwrap();
+        let leaf2 = compute_leaf(&wallet, amount).unwrap();
         assert_eq!(leaf1, leaf2, "same inputs must produce same leaf");
         // Different amount must produce different leaf
-        let leaf3 = compute_leaf(&wallet, 999_999);
+        let leaf3 = compute_leaf(&wallet, 999_999).unwrap();
         assert_ne!(
             leaf1, leaf3,
             "different amounts must produce different leaves"
@@ -145,8 +153,8 @@ mod tests {
         let wallet_a = Pubkey::new_unique();
         let wallet_b = Pubkey::new_unique();
         let amount: u64 = 500_000;
-        let leaf_a = compute_leaf(&wallet_a, amount);
-        let leaf_b = compute_leaf(&wallet_b, amount);
+        let leaf_a = compute_leaf(&wallet_a, amount).unwrap();
+        let leaf_b = compute_leaf(&wallet_b, amount).unwrap();
         assert_ne!(
             leaf_a, leaf_b,
             "different wallets must produce different leaves"
@@ -158,9 +166,9 @@ mod tests {
         // A tree with one leaf: the root IS the leaf
         let wallet = Pubkey::new_unique();
         let amount: u64 = 1_000_000;
-        let leaf = compute_leaf(&wallet, amount);
+        let leaf = compute_leaf(&wallet, amount).unwrap();
         // Empty proof: leaf should equal root
-        assert!(verify_proof(&leaf, &[], &leaf));
+        assert!(verify_proof(&leaf, &[], &leaf).unwrap());
     }
 
     #[test]
@@ -170,16 +178,16 @@ mod tests {
         let amount_a: u64 = 1_000_000;
         let amount_b: u64 = 2_000_000;
 
-        let leaf_a = compute_leaf(&wallet_a, amount_a);
-        let leaf_b = compute_leaf(&wallet_b, amount_b);
+        let leaf_a = compute_leaf(&wallet_a, amount_a).unwrap();
+        let leaf_b = compute_leaf(&wallet_b, amount_b).unwrap();
 
         // Root = hash_internal_node(leaf_a, leaf_b)
         let root = hash_internal_node(&leaf_a, &leaf_b);
 
         // Player A proves with sibling = leaf_b
-        assert!(verify_proof(&leaf_a, &[leaf_b], &root));
+        assert!(verify_proof(&leaf_a, &[leaf_b], &root).unwrap());
         // Player B proves with sibling = leaf_a
-        assert!(verify_proof(&leaf_b, &[leaf_a], &root));
+        assert!(verify_proof(&leaf_b, &[leaf_a], &root).unwrap());
     }
 
     #[test]
@@ -199,10 +207,10 @@ mod tests {
     fn verify_proof_rejects_wrong_root() {
         let wallet = Pubkey::new_unique();
         let amount: u64 = 1_000_000;
-        let leaf = compute_leaf(&wallet, amount);
+        let leaf = compute_leaf(&wallet, amount).unwrap();
         let wrong_root = [0xFFu8; 32];
         assert!(
-            !verify_proof(&leaf, &[], &wrong_root),
+            !verify_proof(&leaf, &[], &wrong_root).unwrap(),
             "must reject proof against wrong root"
         );
     }
@@ -214,14 +222,14 @@ mod tests {
         let amount_a: u64 = 1_000_000;
         let amount_b: u64 = 2_000_000;
 
-        let leaf_a = compute_leaf(&wallet_a, amount_a);
-        let leaf_b = compute_leaf(&wallet_b, amount_b);
+        let leaf_a = compute_leaf(&wallet_a, amount_a).unwrap();
+        let leaf_b = compute_leaf(&wallet_b, amount_b).unwrap();
         let root = hash_internal_node(&leaf_a, &leaf_b);
 
         // Player A tries to claim with wrong amount
-        let fake_leaf = compute_leaf(&wallet_a, 9_999_999);
+        let fake_leaf = compute_leaf(&wallet_a, 9_999_999).unwrap();
         assert!(
-            !verify_proof(&fake_leaf, &[leaf_b], &root),
+            !verify_proof(&fake_leaf, &[leaf_b], &root).unwrap(),
             "must reject proof with wrong entitlement amount"
         );
     }
@@ -235,7 +243,7 @@ mod tests {
         let leaves: Vec<[u8; 32]> = wallets
             .iter()
             .zip(amounts.iter())
-            .map(|(w, a)| compute_leaf(w, *a))
+            .map(|(w, a)| compute_leaf(w, *a).unwrap())
             .collect();
 
         // Level 1: pair leaves
@@ -245,13 +253,13 @@ mod tests {
         let root = hash_internal_node(&node_01, &node_23);
 
         // Verify leaf 0: proof = [leaf_1, node_23]
-        assert!(verify_proof(&leaves[0], &[leaves[1], node_23], &root));
+        assert!(verify_proof(&leaves[0], &[leaves[1], node_23], &root).unwrap());
         // Verify leaf 1: proof = [leaf_0, node_23]
-        assert!(verify_proof(&leaves[1], &[leaves[0], node_23], &root));
+        assert!(verify_proof(&leaves[1], &[leaves[0], node_23], &root).unwrap());
         // Verify leaf 2: proof = [leaf_3, node_01]
-        assert!(verify_proof(&leaves[2], &[leaves[3], node_01], &root));
+        assert!(verify_proof(&leaves[2], &[leaves[3], node_01], &root).unwrap());
         // Verify leaf 3: proof = [leaf_2, node_01]
-        assert!(verify_proof(&leaves[3], &[leaves[2], node_01], &root));
+        assert!(verify_proof(&leaves[3], &[leaves[2], node_01], &root).unwrap());
     }
 
     #[test]

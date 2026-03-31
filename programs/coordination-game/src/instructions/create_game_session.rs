@@ -55,8 +55,10 @@ pub fn create_game_session(
     let cutoff_seconds = cutoff_slots
         .checked_div(slots_per_second)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let cutoff_seconds_i64 =
+        i64::try_from(cutoff_seconds).map_err(|_| CoordinationError::ArithmeticOverflow)?;
     let cutoff_timestamp = now
-        .checked_add(cutoff_seconds as i64)
+        .checked_add(cutoff_seconds_i64)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
     require!(
         cutoff_timestamp < ctx.accounts.tournament.end_time,
@@ -179,6 +181,10 @@ pub struct CreateGameSession<'info> {
         bump = escrow.bump,
     )]
     pub escrow: Account<'info, StakeEscrow>,
+    #[account(
+        seeds = [b"tournament", tournament.tournament_id.to_le_bytes().as_ref()],
+        bump = tournament.bump,
+    )]
     pub tournament: Account<'info, Tournament>,
     #[account(
         seeds = [b"global_config"],

@@ -99,17 +99,29 @@ fn finalize_game_session(ctx: Context<RevealGuessSession>) -> Result<()> {
     let game_id = game.game_id;
     let tournament_id = game.tournament_id;
 
+    let is_late_resolution = now > ctx.accounts.tournament.end_time;
     let (p1_return, p2_return, tournament_gain) =
         compute_returns(game, now, ctx.accounts.tournament.end_time)?;
 
-    // Win = guessed correctly. In homogeneous both-correct, BOTH players win.
-    let correct_guess = if game.matchup_type == 0 {
-        crate::state::GUESS_SAME_TEAM
+    // Determine wins. Late-resolved games don't count (refund with no scoring).
+    let (p1_won, p2_won) = if is_late_resolution {
+        (false, false)
     } else {
-        crate::state::GUESS_DIFF_TEAM
+        let correct_guess = if game.matchup_type == 0 {
+            crate::state::GUESS_SAME_TEAM
+        } else {
+            crate::state::GUESS_DIFF_TEAM
+        };
+        let p1_correct = game.p1_guess == correct_guess;
+        let p2_correct = game.p2_guess == correct_guess;
+
+        if game.matchup_type == 1 && p1_correct && p2_correct {
+            // Heterogeneous both-correct: only pot-winner earns a win
+            (p1_return > p2_return, p2_return > p1_return)
+        } else {
+            (p1_correct, p2_correct)
+        }
     };
-    let p1_won = game.p1_guess == correct_guess;
-    let p2_won = game.p2_guess == correct_guess;
 
     // Compute tournament share (after treasury split) for state update
     let tournament_share = if tournament_gain > 0 {
@@ -123,13 +135,15 @@ fn finalize_game_session(ctx: Context<RevealGuessSession>) -> Result<()> {
     };
 
     // Effects: apply all state mutations before any lamport transfers
-    apply_tournament_update(&mut ctx.accounts.tournament, tournament_share)?;
-    ctx.accounts
-        .p1_profile
-        .update_after_game(p1_won, tournament_id)?;
-    ctx.accounts
-        .p2_profile
-        .update_after_game(p2_won, tournament_id)?;
+    if !is_late_resolution {
+        apply_tournament_update(&mut ctx.accounts.tournament, tournament_share)?;
+        ctx.accounts
+            .p1_profile
+            .update_after_game(p1_won, tournament_id)?;
+        ctx.accounts
+            .p2_profile
+            .update_after_game(p2_won, tournament_id)?;
+    }
     ctx.accounts.game.state = GameState::Resolved;
     ctx.accounts.game.resolved_at = now;
 

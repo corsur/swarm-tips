@@ -4,12 +4,16 @@ use anchor_lang::prelude::*;
 /// Transfer lamports directly between two program-owned or system accounts.
 ///
 /// Used by reveal_guess, resolve_timeout, and claim_reward to move lamports
-/// out of PDAs. The caller is responsible for ensuring `from` has sufficient
-/// balance; this function only performs the checked arithmetic and borrow.
+/// out of PDAs. Validates that `from` has sufficient balance before mutating.
 pub fn transfer_lamports(from: &AccountInfo, to: &AccountInfo, lamports: u64) -> Result<()> {
     if lamports == 0 {
         return Ok(());
     }
+    // Precondition: source account must have enough lamports
+    require!(
+        from.lamports() >= lamports,
+        CoordinationError::InsufficientLamports
+    );
     **from.try_borrow_mut_lamports()? = from
         .lamports()
         .checked_sub(lamports)

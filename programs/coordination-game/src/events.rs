@@ -87,3 +87,16 @@ pub struct SessionClosed {
     pub player: Pubkey,
     pub session_key: Pubkey,
 }
+
+#[event]
+pub struct StakeWithdrawn {
+    pub wallet: Pubkey,
+    pub tournament_id: u64,
+    pub amount: u64,
+}
+
+#[event]
+pub struct ConfigUpdated {
+    pub authority: Pubkey,
+    pub treasury_split_bps: u16,
+}
