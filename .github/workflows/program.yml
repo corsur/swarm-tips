@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:  # Manual trigger for mainnet deploy
 
 jobs:
   test:
@@ -59,7 +60,7 @@ jobs:
         if: always()
         run: pkill -f solana-test-validator || true
 
-  deploy:
+  deploy-devnet:
     if: github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
@@ -163,3 +164,50 @@ jobs:
           npm publish --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-mainnet:
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    environment: mainnet  # Requires approval via GitHub environment protection rules
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
+
+      - name: Write deploy keypair
+        run: |
+          mkdir -p ~/.config/solana
+          echo '${{ secrets.MAINNET_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
+
+      - name: Write program keypairs
+        run: |
+          mkdir -p target/deploy
+          echo '${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}' > target/deploy/coordination_game-keypair.json
+
+      - name: Build coordination game only
+        run: anchor build -p coordination-game
+
+      - name: Deploy coordination game to mainnet
+        run: anchor deploy -p coordination_game --provider.cluster mainnet
+
+      - name: Verify upgrade authority (mainnet)
+        run: |
+          bash scripts/check-upgrade-authority.sh \
+            --cluster mainnet-beta \
+            --program-id 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P
+        env:
+          EXPECTED_MULTISIG_PUBKEY: ${{ vars.SQUADS_MULTISIG_PUBKEY }}
