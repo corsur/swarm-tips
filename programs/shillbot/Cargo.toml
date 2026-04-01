@@ -23,6 +23,7 @@ custom-panic = []
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 shared = { path = "../../crates/shared" }
 solana-sha256-hasher = "2"
+switchboard-on-demand = "0.11"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

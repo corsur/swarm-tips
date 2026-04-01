@@ -32,13 +32,15 @@ pub struct GlobalState {
     pub paused: bool,
     /// Bitmask of paused platforms (bit N = PlatformType with value N).
     pub paused_platforms: u16,
+    /// Switchboard pull feed account that provides oracle-attested composite scores.
+    pub switchboard_feed: Pubkey,
     /// Reserved space for future fields without reallocation.
-    pub _reserved: [u8; 64],
+    pub _reserved: [u8; 32],
     pub bump: u8,
 }
 
 impl GlobalState {
-    // 8 + 8 + 32 + 32 + 2 + 8 + 8 + 8 + 8 + 8 + 1 + 2 + 2 + 32 + 1 + 2 + 64 + 1 = 227
+    // 8 + 8 + 32 + 32 + 2 + 8 + 8 + 8 + 8 + 8 + 1 + 2 + 2 + 32 + 1 + 2 + 32 + 32 + 1 = 227
     pub const SPACE: usize = 8   // discriminator
         + 8    // task_counter
         + 32   // authority
@@ -55,7 +57,8 @@ impl GlobalState {
         + 32   // oracle_authority
         + 1    // paused
         + 2    // paused_platforms
-        + 64   // _reserved
+        + 32   // switchboard_feed
+        + 32   // _reserved
         + 1; // bump
 }
 

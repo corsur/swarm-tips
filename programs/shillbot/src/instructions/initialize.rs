@@ -47,7 +47,8 @@ pub fn initialize(
     global.oracle_authority = ctx.accounts.authority.key();
     global.paused = false;
     global.paused_platforms = 0;
-    global._reserved = [0u8; 64];
+    global.switchboard_feed = Pubkey::default();
+    global._reserved = [0u8; 32];
     global.bump = ctx.bumps.global_state;
 
     Ok(())

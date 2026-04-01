@@ -94,4 +94,19 @@ pub enum ShillbotError {
 
     #[msg("Verification hash must not be zero")]
     InvalidVerificationHash,
+
+    #[msg("Switchboard feed account does not match the configured feed")]
+    SwitchboardFeedMismatch,
+
+    #[msg("Failed to parse Switchboard feed account data")]
+    SwitchboardParseError,
+
+    #[msg("Switchboard feed value does not match the provided composite score")]
+    SwitchboardScoreMismatch,
+
+    #[msg("Switchboard feed value is negative or zero")]
+    SwitchboardInvalidValue,
+
+    #[msg("Switchboard feed not configured in GlobalState")]
+    SwitchboardFeedNotConfigured,
 }
