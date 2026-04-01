@@ -8,12 +8,16 @@ on:
       - 'crates/**'
       - 'tests/coordination-game.ts'
       - 'Anchor.toml'
+      - '.github/workflows/coordination-game.yml'
+      - 'sdk/**'
   pull_request:
     paths:
       - 'programs/coordination-game/**'
       - 'crates/**'
       - 'tests/coordination-game.ts'
       - 'Anchor.toml'
+      - '.github/workflows/coordination-game.yml'
+      - 'sdk/**'
 
 jobs:
   test:
