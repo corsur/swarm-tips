@@ -59,11 +59,15 @@ jobs:
 
       - run: pnpm run lint
 
-      - name: Run coordination-game tests only
-        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/coordination-game.ts"
+      - name: Run coordination-game tests
+        run: |
+          solana-test-validator --reset &
+          sleep 5
+          solana airdrop 100 --url localhost --keypair /home/runner/.config/solana/id.json
+          npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/coordination-game.ts"
         env:
           ANCHOR_PROVIDER_URL: http://localhost:8899
-          ANCHOR_WALLET: ~/.config/solana/id.json
+          ANCHOR_WALLET: /home/runner/.config/solana/id.json
 
       - name: Stop local validator
         if: always()
