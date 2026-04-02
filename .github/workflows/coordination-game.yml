@@ -64,12 +64,18 @@ jobs:
       - name: Lint coordination-game tests
         run: npx prettier "tests/coordination-game.ts" --check
 
-      - name: Run coordination-game tests
+      - name: Start local validator
         run: |
-          anchor localnet --skip-lint &
-          sleep 10
-          solana airdrop 100 --url localhost --keypair /home/runner/.config/solana/id.json
-          npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/coordination-game.ts"
+          solana-test-validator \
+            --bpf-program 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P target/deploy/coordination_game.so \
+            --bpf-program 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi target/deploy/shillbot.so \
+            --reset --quiet &
+          sleep 5
+          solana config set --url localhost --keypair /home/runner/.config/solana/id.json
+          solana airdrop 100
+
+      - name: Run coordination-game tests
+        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/coordination-game.ts"
         env:
           ANCHOR_PROVIDER_URL: http://localhost:8899
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
