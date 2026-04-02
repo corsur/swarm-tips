@@ -60,11 +60,21 @@ jobs:
 
       - run: pnpm run lint
 
+      - name: Start local validator
+        run: |
+          solana-test-validator \
+            --bpf-program 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi target/deploy/shillbot.so \
+            --bpf-program 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P target/deploy/coordination_game.so \
+            --reset --quiet &
+          sleep 5
+          solana config set --url localhost --keypair /home/runner/.config/solana/id.json
+          solana airdrop 100
+
       - name: Run shillbot tests only
         run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/shillbot.ts" "tests/shillbot-lifecycle.ts"
         env:
           ANCHOR_PROVIDER_URL: http://localhost:8899
-          ANCHOR_WALLET: ~/.config/solana/id.json
+          ANCHOR_WALLET: /home/runner/.config/solana/id.json
 
       - name: Stop local validator
         if: always()
