@@ -7,8 +7,8 @@ use crate::events::TaskVerified;
 use crate::scoring::compute_payment;
 use crate::state::{GlobalState, Task, TaskState};
 
-/// Switchboard oracle precision: values are i128 scaled by 10^18.
-const SWITCHBOARD_PRECISION: u32 = 18;
+// Switchboard On-Demand V3: get_value() returns a Decimal in human-readable
+// form (no manual rescaling needed). Old V2 used i128 scaled by 10^18.
 
 /// Oracle attestation records the composite score from a Switchboard pull feed
 /// and computes payment.
@@ -146,15 +146,13 @@ fn validate_attestation_staleness(
 
 /// Parse the Switchboard pull feed account and extract the composite score as a u64.
 ///
-/// The Switchboard feed stores values as i128 scaled by 10^18 (PRECISION = 18).
-/// Our composite scores are u64 values in range [0, MAX_SCORE] (MAX_SCORE = 1_000_000).
-/// The oracle function posts the composite score directly (e.g., score 500_000 is posted
-/// as 500_000 * 10^18 in the feed).
+/// Switchboard On-Demand V3 `get_value()` returns a `Decimal` in human-readable
+/// form (e.g., score 6600 is returned as `Decimal(6600)`). No rescaling needed.
 ///
 /// This function:
 /// 1. Parses the feed account data (validates discriminator)
 /// 2. Reads the latest value with staleness and sample checks
-/// 3. Converts from Decimal (10^18 scale) to u64
+/// 3. Converts the Decimal to u64
 fn read_switchboard_score(feed_account: &AccountInfo, clock_slot: u64) -> Result<u64> {
     let data = feed_account
         .try_borrow_data()
@@ -169,18 +167,9 @@ fn read_switchboard_score(feed_account: &AccountInfo, clock_slot: u64) -> Result
         .get_value(clock_slot, feed.max_staleness as u64, 1, true)
         .map_err(|_| error!(ShillbotError::SwitchboardParseError))?;
 
-    // Rescale from 10^18 precision to integer.
-    // The oracle posts the composite score as an integer value, so after
-    // removing the 10^18 scale we should get a clean integer.
-    let rescaled = value
-        .checked_div(switchboard_on_demand::prelude::rust_decimal::Decimal::from_i128_with_scale(
-            1,
-            SWITCHBOARD_PRECISION,
-        ))
-        .ok_or(ShillbotError::ArithmeticOverflow)?;
-
-    // Convert to u64 — value must be non-negative and fit in u64
-    let score = rescaled
+    // Switchboard On-Demand V3 get_value() returns a Decimal in human-readable
+    // form (e.g., 6600 for composite score 6600). Convert directly to u64.
+    let score = value
         .to_u64()
         .ok_or(ShillbotError::SwitchboardInvalidValue)?;
 
