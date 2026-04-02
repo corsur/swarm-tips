@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'programs/coordination-game/**'
-      - 'crates/**'
+      - 'crates/shared/**'
       - 'tests/coordination-game.ts'
       - 'Anchor.toml'
       - '.github/workflows/coordination-game.yml'
@@ -13,7 +13,7 @@ on:
   pull_request:
     paths:
       - 'programs/coordination-game/**'
-      - 'crates/**'
+      - 'crates/shared/**'
       - 'tests/coordination-game.ts'
       - 'Anchor.toml'
       - '.github/workflows/coordination-game.yml'

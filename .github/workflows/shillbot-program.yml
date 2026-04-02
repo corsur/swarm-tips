@@ -5,14 +5,14 @@ on:
     branches: [main]
     paths:
       - 'programs/shillbot/**'
-      - 'crates/**'
+      - 'crates/shared/**'
       - 'tests/shillbot.ts'
       - 'tests/shillbot-lifecycle.ts'
       - 'Anchor.toml'
   pull_request:
     paths:
       - 'programs/shillbot/**'
-      - 'crates/**'
+      - 'crates/shared/**'
       - 'tests/shillbot*.ts'
       - 'Anchor.toml'
 
