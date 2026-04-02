@@ -16,10 +16,7 @@ pub fn set_switchboard_feed(ctx: Context<SetSwitchboardFeed>, feed: Pubkey) -> R
     );
 
     // Checks: feed must not be the zero key
-    require!(
-        feed != Pubkey::default(),
-        ShillbotError::InvalidAttestation
-    );
+    require!(feed != Pubkey::default(), ShillbotError::InvalidAttestation);
 
     let old_feed = global.switchboard_feed;
 

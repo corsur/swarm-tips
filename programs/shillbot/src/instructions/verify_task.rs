@@ -112,11 +112,7 @@ pub fn verify_task(
 /// around the expected attestation time (submitted_at + attestation_delay).
 ///
 /// Uses per-task override if nonzero, else global default for attestation delay.
-fn validate_attestation_staleness(
-    task: &Task,
-    global: &GlobalState,
-    now: i64,
-) -> Result<()> {
+fn validate_attestation_staleness(task: &Task, global: &GlobalState, now: i64) -> Result<()> {
     let attestation_delay = if task.attestation_delay_override > 0 {
         i64::from(task.attestation_delay_override)
     } else {

@@ -199,5 +199,4 @@ pub mod shillbot {
     pub fn set_switchboard_feed(ctx: Context<SetSwitchboardFeed>, feed: Pubkey) -> Result<()> {
         instructions::set_switchboard_feed::set_switchboard_feed(ctx, feed)
     }
-
 }

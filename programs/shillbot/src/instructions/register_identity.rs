@@ -23,10 +23,7 @@ pub fn register_identity(
     );
 
     // Checks: identity hash is not zero
-    require!(
-        identity_hash != [0u8; 32],
-        ShillbotError::InvalidIdentity
-    );
+    require!(identity_hash != [0u8; 32], ShillbotError::InvalidIdentity);
 
     // Effects
     let identity = &mut ctx.accounts.identity;
