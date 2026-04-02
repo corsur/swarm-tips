@@ -1,6 +1,6 @@
 {
   "name": "@corsur/coordination-game-sdk",
-  "version": "0.0.0-ed2f027-2",
+  "version": "0.1.0",
   "description": "Anchor-generated TypeScript types for the Coordination Game program",
   "main": "./coordination_game.js",
   "types": "./coordination_game.d.ts",
@@ -9,6 +9,11 @@
     "coordination_game.d.ts",
     "coordination_game.ts"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/corsur/swarm-tips.git",
+    "directory": "sdk"
+  },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   }

@@ -179,7 +179,7 @@ jobs:
           # Compile TypeScript to JavaScript for Node.js consumers
           cd sdk
           npx tsc coordination_game.ts --outDir . --declaration --module nodenext --moduleResolution nodenext --target es2020 --esModuleInterop
-          npm version 0.0.0-$(git rev-parse --short HEAD) --no-git-tag-version
+          npm version 0.1.$(git rev-list --count HEAD) --no-git-tag-version
           npm publish --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
