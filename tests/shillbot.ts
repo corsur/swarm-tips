@@ -203,7 +203,10 @@ describe("shillbot", () => {
           deadline,
           submitMargin,
           claimBuffer,
-          0
+          0,
+          0, // attestation_delay_override: use global default
+          0, // challenge_window_override: use global default
+          0 // verification_timeout_override: use global default
         )
         .accountsPartial({
           globalState: globalPda,
@@ -272,7 +275,10 @@ describe("shillbot", () => {
             new BN(now + 86_400),
             new BN(3600),
             new BN(14_400),
-            0
+            0,
+            0,
+            0,
+            0 // timing overrides: use global defaults
           )
           .accountsPartial({
             globalState: globalPda,
@@ -305,7 +311,10 @@ describe("shillbot", () => {
             new BN(1), // Unix timestamp 1 = far in the past
             new BN(3600),
             new BN(14_400),
-            0
+            0,
+            0,
+            0,
+            0 // timing overrides: use global defaults
           )
           .accountsPartial({
             globalState: globalPda,
@@ -347,7 +356,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400), // claim_buffer = 4 hours
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -439,7 +451,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600), // submit_margin = 1 hour
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -515,7 +530,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -601,7 +619,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -641,42 +662,52 @@ describe("shillbot", () => {
       const imposter = Keypair.generate();
       await airdrop(provider.connection, imposter.publicKey, LAMPORTS_PER_SOL);
 
+      const dummyHash = Array.from({ length: 32 }, (_, i) => i + 1);
       try {
         await program.methods
-          .verifyTask(new BN(800_000))
+          .verifyTask(new BN(800_000), dummyHash)
           .accountsPartial({
             task: taskPdaForVerify,
             globalState: globalPda,
-            authority: imposter.publicKey,
+            switchboardFeed: imposter.publicKey, // wrong account — should be rejected
           })
-          .signers([imposter])
           .rpc();
-        assert.fail("Expected InvalidAttestation error");
+        assert.fail("Expected error");
       } catch (e: any) {
-        assert.include(e.toString(), "InvalidAttestation");
+        // Will fail on feed mismatch or attestation staleness
+        const errStr = e.toString();
+        assert.isTrue(
+          errStr.includes("SwitchboardFeedMismatch") ||
+            errStr.includes("AttestationStale") ||
+            errStr.includes("SwitchboardFeedNotConfigured"),
+          `Expected Switchboard-related error, got: ${errStr}`
+        );
       }
     });
 
     it("rejects verify with score exceeding MAX_SCORE", async () => {
       // This will also hit AttestationStale on local validator,
       // but we test the interface is correct.
+      const dummyHash2 = Array.from({ length: 32 }, (_, i) => i + 1);
       try {
         await program.methods
-          .verifyTask(new BN(MAX_SCORE + 1))
+          .verifyTask(new BN(MAX_SCORE + 1), dummyHash2)
           .accountsPartial({
             task: taskPdaForVerify,
             globalState: globalPda,
-            authority: authority.publicKey,
+            switchboardFeed: authority.publicKey, // placeholder
           })
           .rpc();
         assert.fail("Expected error");
       } catch (e: any) {
-        // Either ScoreOutOfBounds or AttestationStale depending on check order
+        // ScoreOutOfBounds, AttestationStale, or Switchboard errors
         const errStr = e.toString();
         assert.isTrue(
           errStr.includes("ScoreOutOfBounds") ||
-            errStr.includes("AttestationStale"),
-          `Expected ScoreOutOfBounds or AttestationStale, got: ${errStr}`
+            errStr.includes("AttestationStale") ||
+            errStr.includes("SwitchboardFeedMismatch") ||
+            errStr.includes("SwitchboardFeedNotConfigured"),
+          `Expected score/staleness/switchboard error, got: ${errStr}`
         );
       }
     });
@@ -687,13 +718,14 @@ describe("shillbot", () => {
       // [submitted_at + 6 days, submitted_at + 8 days].
       // This test documents that the instruction is correctly wired up
       // and the staleness check is enforced.
+      const dummyHash3 = Array.from({ length: 32 }, (_, i) => i + 1);
       try {
         await program.methods
-          .verifyTask(new BN(800_000))
+          .verifyTask(new BN(800_000), dummyHash3)
           .accountsPartial({
             task: taskPdaForVerify,
             globalState: globalPda,
-            authority: authority.publicKey,
+            switchboardFeed: authority.publicKey, // placeholder — no real Switchboard on local validator
           })
           .rpc();
         // If this succeeds (unlikely without clock warp), verify state
@@ -701,11 +733,13 @@ describe("shillbot", () => {
         assert.deepEqual(task.state, { verified: {} });
         assert.equal(task.compositeScore.toString(), "800000");
       } catch (e: any) {
-        // Expected: AttestationStale because we can't warp time forward 6-8 days
-        assert.include(
-          e.toString(),
-          "AttestationStale",
-          "Staleness check should reject on local validator"
+        // Expected: AttestationStale or Switchboard errors on local validator
+        const errStr = e.toString();
+        assert.isTrue(
+          errStr.includes("AttestationStale") ||
+            errStr.includes("SwitchboardFeedMismatch") ||
+            errStr.includes("SwitchboardFeedNotConfigured"),
+          `Expected staleness/switchboard error, got: ${errStr}`
         );
       }
     });
@@ -743,7 +777,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -802,7 +839,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -862,7 +902,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -937,7 +980,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -988,7 +1034,10 @@ describe("shillbot", () => {
           tightDeadline,
           new BN(0), // no submit margin
           new BN(0), // no claim buffer
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1085,7 +1134,10 @@ describe("shillbot", () => {
             new BN(now + 86_400 * 30),
             new BN(3600),
             new BN(14_400),
-            0
+            0,
+            0,
+            0,
+            0 // timing overrides: use global defaults
           )
           .accountsPartial({
             globalState: globalPda,
@@ -1138,7 +1190,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1191,7 +1246,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1496,7 +1554,10 @@ describe("shillbot", () => {
           new BN(now + 100),
           new BN(0),
           new BN(14_400), // 4 hour claim buffer, but deadline is 100s away
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1553,7 +1614,10 @@ describe("shillbot", () => {
             new BN(now + 86_400 * 30),
             new BN(3600),
             new BN(14_400),
-            0
+            0,
+            0,
+            0,
+            0 // timing overrides: use global defaults
           )
           .accountsPartial({
             globalState: globalPda,
@@ -1642,7 +1706,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1730,7 +1797,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1778,7 +1848,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,
@@ -2031,7 +2104,10 @@ describe("shillbot", () => {
           new BN(now + 86_400 * 30),
           new BN(3600),
           new BN(14_400),
-          0
+          0,
+          0,
+          0,
+          0 // timing overrides: use global defaults
         )
         .accountsPartial({
           globalState: globalPda,

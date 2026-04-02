@@ -203,7 +203,10 @@ async function createTask(
       deadline,
       new BN(3600), // submit_margin = 1 hour
       new BN(14_400), // claim_buffer = 4 hours
-      0 // platform = YouTube
+      0, // platform = YouTube
+      0,
+      0,
+      0 // timing overrides: use global defaults
     )
     .accountsPartial({
       globalState: globalPda,
@@ -261,14 +264,14 @@ async function verifyTask(
   globalPda: PublicKey,
   compositeScore: BN
 ): Promise<void> {
+  const verificationHash = Array.from({ length: 32 }, (_, i) => i + 1);
   await program.methods
-    .verifyTask(compositeScore)
+    .verifyTask(compositeScore, verificationHash)
     .accountsPartial({
       task: taskPdaAddr,
       globalState: globalPda,
-      authority: authority.publicKey,
+      switchboardFeed: authority.publicKey, // placeholder — lifecycle tests use bankrun, not real Switchboard
     })
-    .signers([authority])
     .rpc();
 }
 
