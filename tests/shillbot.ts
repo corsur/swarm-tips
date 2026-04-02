@@ -2021,9 +2021,9 @@ describe("shillbot", () => {
             authority: authority.publicKey,
           })
           .rpc();
-        assert.fail("Expected ArithmeticOverflow error");
+        assert.fail("Expected ProtocolFeeBoundsExceeded error");
       } catch (e: any) {
-        assert.include(e.toString(), "ArithmeticOverflow");
+        assert.include(e.toString(), "ProtocolFeeBoundsExceeded");
       }
     });
 
@@ -2048,9 +2048,9 @@ describe("shillbot", () => {
             authority: authority.publicKey,
           })
           .rpc();
-        assert.fail("Expected ArithmeticOverflow error");
+        assert.fail("Expected ProtocolFeeBoundsExceeded error");
       } catch (e: any) {
-        assert.include(e.toString(), "ArithmeticOverflow");
+        assert.include(e.toString(), "ProtocolFeeBoundsExceeded");
       }
     });
 
@@ -2075,9 +2075,9 @@ describe("shillbot", () => {
             authority: authority.publicKey,
           })
           .rpc();
-        assert.fail("Expected ScoreOutOfBounds error");
+        assert.fail("Expected QualityThresholdBoundsExceeded error");
       } catch (e: any) {
-        assert.include(e.toString(), "ScoreOutOfBounds");
+        assert.include(e.toString(), "QualityThresholdBoundsExceeded");
       }
     });
   });
