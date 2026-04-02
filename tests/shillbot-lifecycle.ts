@@ -162,6 +162,11 @@ interface TaskSetup {
   globalPda: PublicKey;
 }
 
+// Dummy Switchboard feed pubkey used in lifecycle tests. The local validator
+// has no real Switchboard program, but verify_task checks that globalState's
+// switchboard_feed is set (non-default) and that the feed account matches.
+const DUMMY_SWITCHBOARD_FEED = Keypair.generate().publicKey;
+
 async function initializeGlobal(
   program: Program<Shillbot>,
   authority: Keypair,
@@ -175,6 +180,17 @@ async function initializeGlobal(
       authority: authority.publicKey,
       treasury: treasury,
       systemProgram: SystemProgram.programId,
+    })
+    .signers([authority])
+    .rpc();
+
+  // Configure switchboard feed so verify_task doesn't reject with
+  // SwitchboardFeedNotConfigured.
+  await program.methods
+    .setSwitchboardFeed(DUMMY_SWITCHBOARD_FEED)
+    .accountsPartial({
+      globalState: globalPda,
+      authority: authority.publicKey,
     })
     .signers([authority])
     .rpc();
@@ -270,7 +286,7 @@ async function verifyTask(
     .accountsPartial({
       task: taskPdaAddr,
       globalState: globalPda,
-      switchboardFeed: authority.publicKey, // placeholder — lifecycle tests use bankrun, not real Switchboard
+      switchboardFeed: DUMMY_SWITCHBOARD_FEED,
     })
     .rpc();
 }
