@@ -67,6 +67,7 @@ pub struct GameSession {
     pub chat_buffer: Vec<String>,
     pub match_found: Option<MatchFoundMsg>,
     pub matchup_commitment: Option<String>,
+    pub commit_preimage: Option<[u8; 32]>,
     pub game_ready: Option<u64>,
     pub reveal_data: Option<String>,
 }
@@ -186,6 +187,7 @@ impl GameSessionManager {
             chat_buffer: Vec::new(),
             match_found: None,
             matchup_commitment: None,
+            commit_preimage: None,
             game_ready: None,
             reveal_data: None,
         }));
@@ -231,6 +233,18 @@ impl GameSessionManager {
             .clone();
 
         let jwt = session.lock().await.jwt.clone();
+
+        // Check balance before staking real SOL.
+        let balance = chain_client
+            .rpc()
+            .get_balance(&chain_client.pubkey())
+            .await
+            .context("failed to check balance")?;
+        anyhow::ensure!(
+            balance >= 70_000_000,
+            "insufficient balance: need at least 0.07 SOL to play, have {} SOL",
+            balance as f64 / 1_000_000_000.0
+        );
 
         // Deposit stake (idempotent if already deposited).
         chain_client.deposit_stake(tournament_id).await?;
@@ -414,11 +428,11 @@ impl GameSessionManager {
         Ok(msgs)
     }
 
-    /// Commit guess on-chain, wait for reveal data, reveal on-chain.
+    /// Commit guess on-chain. Returns immediately after commit.
     ///
-    /// Returns the guess outcome once the game resolves (or after reveal).
-    pub async fn submit_guess(&self, wallet: &str, guess: u8) -> Result<GuessOutcome> {
-        assert!(guess <= 1, "guess must be 0 (same) or 1 (different)");
+    /// Stores the preimage in the session for later use by `try_reveal`.
+    pub async fn commit_guess(&self, wallet: &str, guess: u8) -> Result<u64> {
+        anyhow::ensure!(guess <= 1, "guess must be 0 (same) or 1 (different)");
 
         let session = self
             .sessions
@@ -428,7 +442,7 @@ impl GameSessionManager {
             .context("no session for wallet")?
             .clone();
 
-        let (game_id, tournament_id) = {
+        let (game_id, _tournament_id) = {
             let mut s = session.lock().await;
             let gid = s.game_id.context("no active game")?;
             let tid = s.tournament_id.context("tournament_id not set")?;
@@ -436,45 +450,71 @@ impl GameSessionManager {
             (gid, tid)
         };
 
-        // Commit on-chain.
         let chain = self.chain_clients.read().await;
         let chain_client = chain.get(wallet).context("no chain client")?;
         let preimage = chain_client.submit_commit(game_id, guess).await?;
 
-        tracing::info!(
-            service = "coordination-mcp-server",
-            wallet = %wallet,
-            game_id,
-            guess,
-            "committed guess on-chain"
-        );
+        // Store preimage for reveal step.
+        {
+            let mut s = session.lock().await;
+            s.commit_preimage = Some(preimage);
+        }
 
-        // Wait for reveal_data from the WS listener (up to 5 minutes).
-        let r_matchup_hex = self.poll_reveal_data(wallet, 300).await?;
-        let r_matchup_bytes = hex::decode(&r_matchup_hex).context("invalid hex in r_matchup")?;
+        tracing::info!(wallet = %wallet, game_id, guess, "committed guess on-chain");
+        Ok(game_id)
+    }
+
+    /// Try to reveal the guess on-chain.
+    ///
+    /// Checks if `reveal_data` has arrived via WebSocket. If not, returns
+    /// `status: "waiting"`. If arrived, reveals on-chain and returns the outcome.
+    pub async fn try_reveal(&self, wallet: &str) -> Result<GuessOutcome> {
+        let session = self
+            .sessions
+            .read()
+            .await
+            .get(wallet)
+            .context("no session for wallet")?
+            .clone();
+
+        let s = session.lock().await;
+        let game_id = s.game_id.context("no active game")?;
+        let tournament_id = s.tournament_id.context("tournament_id not set")?;
+        let preimage = s
+            .commit_preimage
+            .context("no commit preimage — call game_commit_guess first")?;
+
+        // Check if reveal_data has arrived.
+        let reveal_hex = match &s.reveal_data {
+            None => {
+                return Ok(GuessOutcome {
+                    status: "waiting".to_string(),
+                    p1_guess: None,
+                    p2_guess: None,
+                });
+            }
+            Some(hex) => hex.clone(),
+        };
+        drop(s);
+
+        let r_matchup_bytes = hex::decode(&reveal_hex).context("invalid hex in r_matchup")?;
         let r_matchup: [u8; 32] = r_matchup_bytes
             .try_into()
             .map_err(|v: Vec<u8>| anyhow::anyhow!("r_matchup must be 32 bytes, got {}", v.len()))?;
 
-        // Reveal on-chain and wait for resolution.
+        let chain = self.chain_clients.read().await;
+        let chain_client = chain.get(wallet).context("no chain client")?;
+
         let (p1_guess, p2_guess) = chain_client
             .wait_and_reveal(game_id, tournament_id, preimage, Some(r_matchup))
             .await?;
 
-        // Update session state.
         {
             let mut s = session.lock().await;
             s.state = GameSessionState::Resolved;
         }
 
-        tracing::info!(
-            service = "coordination-mcp-server",
-            wallet = %wallet,
-            game_id,
-            p1_guess,
-            p2_guess,
-            "game resolved"
-        );
+        tracing::info!(wallet = %wallet, game_id, p1_guess, p2_guess, "game resolved");
 
         Ok(GuessOutcome {
             status: "resolved".to_string(),

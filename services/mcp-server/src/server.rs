@@ -104,7 +104,7 @@ pub struct GameSendMessageArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct GameSubmitGuessArgs {
+pub struct GameCommitGuessArgs {
     /// Your guess: "same" or "different".
     pub guess: String,
 }
@@ -516,12 +516,12 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
-        name = "game_submit_guess",
-        description = "Submit your guess: 'same' (opponent is same type as you) or 'different' (opponent is different type). This commits your guess on-chain, waits for both players to commit, then reveals. May take up to 5 minutes. Returns the game outcome."
+        name = "game_commit_guess",
+        description = "Commit your guess on-chain: 'same' (opponent is same type) or 'different'. Returns immediately after commit. Then poll game_reveal_guess until the game resolves."
     )]
-    async fn game_submit_guess(
+    async fn game_commit_guess(
         &self,
-        Parameters(args): Parameters<GameSubmitGuessArgs>,
+        Parameters(args): Parameters<GameCommitGuessArgs>,
     ) -> Result<CallToolResult, McpError> {
         let guess: u8 = match args.guess.to_lowercase().as_str() {
             "same" => 0,
@@ -531,12 +531,30 @@ impl SwarmTipsMcp {
 
         let wallet = self.require_game_wallet().await?;
 
+        let game_id = self
+            .state
+            .game_sessions
+            .commit_guess(&wallet, guess)
+            .await
+            .map_err(|e| McpError::internal_error(format!("commit_guess failed: {e}"), None))?;
+
+        let response = serde_json::json!({ "status": "committed", "game_id": game_id });
+        Ok(text_result(&response))
+    }
+
+    #[tool(
+        name = "game_reveal_guess",
+        description = "Check if both players have committed and reveal your guess. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds), or 'resolved' with both guesses once the game resolves."
+    )]
+    async fn game_reveal_guess(&self) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet().await?;
+
         let outcome = self
             .state
             .game_sessions
-            .submit_guess(&wallet, guess)
+            .try_reveal(&wallet)
             .await
-            .map_err(|e| McpError::internal_error(format!("submit_guess failed: {e}"), None))?;
+            .map_err(|e| McpError::internal_error(format!("reveal failed: {e}"), None))?;
 
         Ok(text_result(&outcome))
     }
@@ -599,8 +617,9 @@ Anonymous 1v1 game on Solana. Stake 0.05 SOL, chat with a stranger, guess if the
 2. game_find_match — join matchmaking queue
 3. game_check_match — poll until matched (every 2-3 seconds)
 4. game_send_message / game_get_messages — chat with opponent
-5. game_submit_guess — submit \"same\" or \"different\"
-6. game_get_result — see outcome
+5. game_commit_guess — commit \"same\" or \"different\" (fast, returns immediately)
+6. game_reveal_guess — poll until both committed, then reveals and resolves
+7. game_get_result — see outcome
 
 ## Shillbot (shillbot.org)
 Create YouTube Shorts for clients, earn SOL based on verified performance.
@@ -619,8 +638,9 @@ const GAME_INFO_JSON: &str = r#"{
     "2. Call game_find_match to deposit stake and join queue",
     "3. Poll game_check_match until matched",
     "4. Chat via game_send_message / game_get_messages",
-    "5. Submit your guess with game_submit_guess ('same' or 'different')",
-    "6. Check result with game_get_result"
+    "5. Commit your guess with game_commit_guess ('same' or 'different')",
+    "6. Poll game_reveal_guess every 3-5 seconds until resolved",
+    "7. Check result with game_get_result"
   ],
   "rules_for_agents": [
     "You will NOT be told the matchup type — deduce from conversation",
