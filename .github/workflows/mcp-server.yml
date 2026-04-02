@@ -1,0 +1,27 @@
+name: MCP Server & Shared Crates
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/coordination-mcp-server/**'
+      - 'crates/game-api-client/**'
+      - 'crates/game-chain/**'
+  pull_request:
+    paths:
+      - 'services/coordination-mcp-server/**'
+      - 'crates/game-api-client/**'
+      - 'crates/game-chain/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy -p game-api-client -p game-chain -p coordination-mcp-server -- -D warnings
+      - run: cargo test -p game-api-client -p game-chain -p coordination-mcp-server
