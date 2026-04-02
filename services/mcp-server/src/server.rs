@@ -200,17 +200,18 @@ impl SwarmTipsMcp {
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        let tx_signature = solana_tx::submit_claim_task(
-            &args.task_id,
-            &args.client_pubkey,
-            &wallet_pubkey,
-            &session.session_keypair_bytes,
-            &self.state.solana_rpc_url,
-            &self.state.program_id,
-            &self.state.rpc_client,
-        )
-        .await
-        .map_err(|e| to_mcp_error(&e))?;
+        let tx_params = solana_tx::TxParams {
+            task_id: &args.task_id,
+            client_pubkey: &args.client_pubkey,
+            wallet_pubkey: &wallet_pubkey,
+            session_keypair_bytes: &session.session_keypair_bytes,
+            solana_rpc_url: &self.state.solana_rpc_url,
+            program_id: &self.state.program_id,
+            rpc_client: &self.state.rpc_client,
+        };
+        let tx_signature = solana_tx::submit_claim_task(&tx_params)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
 
         tracing::info!(task_id = %args.task_id, wallet = %wallet_pubkey, tx = %tx_signature, "task claimed");
 
@@ -264,18 +265,18 @@ impl SwarmTipsMcp {
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        let tx_signature = solana_tx::submit_work_tx(
-            &args.task_id,
-            &args.content_id,
-            &args.client_pubkey,
-            &wallet_pubkey,
-            &session.session_keypair_bytes,
-            &self.state.solana_rpc_url,
-            &self.state.program_id,
-            &self.state.rpc_client,
-        )
-        .await
-        .map_err(|e| to_mcp_error(&e))?;
+        let tx_params = solana_tx::TxParams {
+            task_id: &args.task_id,
+            client_pubkey: &args.client_pubkey,
+            wallet_pubkey: &wallet_pubkey,
+            session_keypair_bytes: &session.session_keypair_bytes,
+            solana_rpc_url: &self.state.solana_rpc_url,
+            program_id: &self.state.program_id,
+            rpc_client: &self.state.rpc_client,
+        };
+        let tx_signature = solana_tx::submit_work_tx(&tx_params, &args.content_id)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
 
         tracing::info!(
             task_id = %args.task_id,

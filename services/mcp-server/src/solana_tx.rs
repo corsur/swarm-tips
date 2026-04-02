@@ -2,16 +2,26 @@ use crate::errors::McpServiceError;
 use solana_sdk::signer::Signer;
 use std::str::FromStr;
 
+/// Shared parameters for Solana transaction construction.
+pub struct TxParams<'a> {
+    pub task_id: &'a str,
+    pub client_pubkey: &'a str,
+    pub wallet_pubkey: &'a str,
+    pub session_keypair_bytes: &'a [u8],
+    pub solana_rpc_url: &'a str,
+    pub program_id: &'a str,
+    pub rpc_client: &'a reqwest::Client,
+}
+
 /// Construct and submit a claim_task Solana transaction using the session key.
-pub async fn submit_claim_task(
-    task_id: &str,
-    client_pubkey: &str,
-    wallet_pubkey: &str,
-    session_keypair_bytes: &[u8],
-    solana_rpc_url: &str,
-    program_id: &str,
-    rpc_client: &reqwest::Client,
-) -> Result<String, McpServiceError> {
+pub async fn submit_claim_task(params: &TxParams<'_>) -> Result<String, McpServiceError> {
+    let task_id = params.task_id;
+    let client_pubkey = params.client_pubkey;
+    let wallet_pubkey = params.wallet_pubkey;
+    let session_keypair_bytes = params.session_keypair_bytes;
+    let solana_rpc_url = params.solana_rpc_url;
+    let program_id = params.program_id;
+    let rpc_client = params.rpc_client;
     let keypair = solana_sdk::signer::keypair::Keypair::try_from(session_keypair_bytes)
         .map_err(|e| McpServiceError::TransactionError(format!("invalid session keypair: {e}")))?;
 
@@ -57,15 +67,16 @@ pub async fn submit_claim_task(
 
 /// Construct and submit a submit_work Solana transaction using the session key.
 pub async fn submit_work_tx(
-    task_id: &str,
+    params: &TxParams<'_>,
     content_id: &str,
-    client_pubkey: &str,
-    wallet_pubkey: &str,
-    session_keypair_bytes: &[u8],
-    solana_rpc_url: &str,
-    program_id: &str,
-    rpc_client: &reqwest::Client,
 ) -> Result<String, McpServiceError> {
+    let task_id = params.task_id;
+    let client_pubkey = params.client_pubkey;
+    let wallet_pubkey = params.wallet_pubkey;
+    let session_keypair_bytes = params.session_keypair_bytes;
+    let solana_rpc_url = params.solana_rpc_url;
+    let program_id = params.program_id;
+    let rpc_client = params.rpc_client;
     let keypair = solana_sdk::signer::keypair::Keypair::try_from(session_keypair_bytes)
         .map_err(|e| McpServiceError::TransactionError(format!("invalid session keypair: {e}")))?;
 
