@@ -1,0 +1,104 @@
+name: Deploy Service
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: 'Artifact Registry repository name'
+        required: true
+        type: string
+      image_name:
+        description: 'Image name within the repository (defaults to service)'
+        required: false
+        type: string
+        default: ''
+      dockerfile:
+        description: 'Path to Dockerfile relative to repo root'
+        required: true
+        type: string
+      deployment_name:
+        description: 'Kubernetes workload name (Deployment or StatefulSet)'
+        required: true
+        type: string
+      container_name:
+        description: 'Container name within the workload to update'
+        required: true
+        type: string
+      namespace:
+        description: 'Kubernetes namespace'
+        required: false
+        type: string
+        default: 'default'
+      workload_kind:
+        description: 'Kubernetes workload kind: deployment or statefulset'
+        required: false
+        type: string
+        default: 'deployment'
+      k8s_manifests_dir:
+        description: 'Directory of k8s manifests to apply before updating the image (optional)'
+        required: false
+        type: string
+        default: ''
+
+env:
+  REGION: us-central1
+  PROJECT_ID: coordination-game-prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ inputs.service }}/${{ inputs.image_name || inputs.service }}:${{ github.sha }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ inputs.service }}/${{ inputs.image_name || inputs.service }}:latest
+          cache-from: type=gha,scope=${{ inputs.image_name || inputs.service }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.image_name || inputs.service }}
+
+      - name: Set IMAGE env for deploy step
+        run: |
+          IMG="${{ inputs.image_name }}"
+          IMG="${IMG:-${{ inputs.service }}}"
+          echo "IMAGE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ inputs.service }}/${IMG}:${{ github.sha }}" >> "$GITHUB_ENV"
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: coordination
+          location: ${{ env.REGION }}
+
+      - name: Apply k8s manifests
+        if: inputs.k8s_manifests_dir != ''
+        run: kubectl apply -f ${{ inputs.k8s_manifests_dir }} -n ${{ inputs.namespace }}
+
+      - name: Deploy and verify rollout
+        run: |
+          kubectl set image ${{ inputs.workload_kind }}/${{ inputs.deployment_name }} \
+            ${{ inputs.container_name }}="$IMAGE" \
+            -n ${{ inputs.namespace }}
+          kubectl rollout status ${{ inputs.workload_kind }}/${{ inputs.deployment_name }} \
+            -n ${{ inputs.namespace }} \
+            --timeout=900s

@@ -1,0 +1,16 @@
+# Extended timeout for MCP Streamable HTTP connections (server-sent events).
+# The 3600s timeout matches the coordination game's commit timeout window.
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: mcp-server
+  namespace: shillbot
+spec:
+  targetRef:
+    group: ""
+    kind: Service
+    name: mcp-server
+  default:
+    timeoutSec: 3600
+    connectionDraining:
+      drainingTimeoutSec: 60

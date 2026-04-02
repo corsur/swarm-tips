@@ -4,12 +4,13 @@ on:
   push:
     branches: [main]
     paths:
-      - 'services/coordination-mcp-server/**'
+      - 'services/mcp-server/**'
       - 'crates/game-api-client/**'
       - 'crates/game-chain/**'
+      - 'infra/k8s/mcp-server/**'
   pull_request:
     paths:
-      - 'services/coordination-mcp-server/**'
+      - 'services/mcp-server/**'
       - 'crates/game-api-client/**'
       - 'crates/game-chain/**'
 
@@ -23,5 +24,22 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy -p game-api-client -p game-chain -p coordination-mcp-server -- -D warnings
-      - run: cargo test -p game-api-client -p game-chain -p coordination-mcp-server
+      - run: cargo clippy -p game-api-client -p game-chain -p mcp-server -- -D warnings
+      - run: cargo test -p game-api-client -p game-chain -p mcp-server
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_deploy-service.yml
+    with:
+      service: backend
+      image_name: mcp-server
+      dockerfile: services/mcp-server/Dockerfile
+      deployment_name: mcp-server
+      container_name: mcp-server
+      namespace: shillbot
+      k8s_manifests_dir: infra/k8s/mcp-server
+    secrets: inherit

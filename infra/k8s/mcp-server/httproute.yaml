@@ -1,0 +1,22 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-server
+  namespace: shillbot
+spec:
+  parentRefs:
+    - name: shillbot-gateway
+      namespace: shillbot
+  hostnames:
+    - mcp.shill.bot
+    - mcp.shillbot.org
+    - mcp.coordination.game
+    - mcp.swarm.tips
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: mcp-server
+          port: 80
