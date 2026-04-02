@@ -194,11 +194,12 @@ impl GameSessionManager {
 
         let ws_sink = Arc::new(Mutex::new(sink));
 
-        // Spawn background WS listener (needs sink for pong replies).
+        // Spawn background WS listener with reconnect capability.
         let session_clone = Arc::clone(&session);
         let sink_clone = Arc::clone(&ws_sink);
+        let api_url = self.game_api_url.clone();
         tokio::spawn(async move {
-            ws_listener(session_clone, stream, sink_clone).await;
+            ws_listener_with_reconnect(session_clone, stream, sink_clone, api_url).await;
         });
 
         // Store session, sink, and chain client.
@@ -679,31 +680,92 @@ impl GameSessionManager {
 // Background WS listener
 // ---------------------------------------------------------------------------
 
-/// Consumes the WS read stream, dispatching messages to session buffers.
+/// Maximum reconnect attempts before giving up.
+const WS_MAX_RECONNECT_ATTEMPTS: u32 = 3;
+
+/// Initial backoff delay for reconnect (doubles each attempt).
+const WS_RECONNECT_BASE_DELAY_SECS: u64 = 2;
+
+/// Runs the WS read loop with automatic reconnect on disconnect.
 ///
-/// Also handles Ping frames by sending Pong replies through the provided sink.
-/// Without pong responses, the game-api server will disconnect.
-async fn ws_listener(
+/// On disconnect, attempts up to 3 reconnects with exponential backoff
+/// (2s, 4s, 8s). Must reconnect within game-api's 60s grace window or
+/// the session is abandoned.
+async fn ws_listener_with_reconnect(
     session: Arc<Mutex<GameSession>>,
-    mut stream: game_api_client::ws::WsStream,
+    initial_stream: game_api_client::ws::WsStream,
     sink: Arc<Mutex<WsSink>>,
+    game_api_url: String,
+) {
+    let wallet = session.lock().await.wallet.clone();
+    tracing::info!(wallet = %wallet, "ws_listener started");
+
+    let mut stream = initial_stream;
+
+    loop {
+        // Run the read loop until disconnect.
+        run_ws_read_loop(&session, &mut stream, &sink, &wallet).await;
+
+        // Attempt reconnect with exponential backoff.
+        let jwt = session.lock().await.jwt.clone();
+        let mut reconnected = false;
+
+        for attempt in 0..WS_MAX_RECONNECT_ATTEMPTS {
+            let delay = WS_RECONNECT_BASE_DELAY_SECS
+                .checked_shl(attempt)
+                .unwrap_or(WS_RECONNECT_BASE_DELAY_SECS);
+            tracing::info!(wallet = %wallet, attempt, delay_secs = delay, "ws reconnecting");
+            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+
+            match WsConnection::connect(&game_api_url, &jwt).await {
+                Ok(ws) => {
+                    let (new_sink, new_stream) = ws.into_split();
+                    // Swap the sink so send_message uses the new connection.
+                    *sink.lock().await = new_sink;
+                    stream = new_stream;
+                    reconnected = true;
+                    tracing::info!(wallet = %wallet, attempt, "ws reconnected");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(wallet = %wallet, attempt, error = %e, "ws reconnect failed");
+                }
+            }
+        }
+
+        if !reconnected {
+            tracing::error!(
+                wallet = %wallet,
+                max_attempts = WS_MAX_RECONNECT_ATTEMPTS,
+                "ws reconnect exhausted, session lost"
+            );
+            break;
+        }
+    }
+
+    tracing::info!(wallet = %wallet, "ws_listener ended");
+}
+
+/// Inner read loop — processes frames until the stream errors or closes.
+async fn run_ws_read_loop(
+    session: &Arc<Mutex<GameSession>>,
+    stream: &mut game_api_client::ws::WsStream,
+    sink: &Arc<Mutex<WsSink>>,
+    wallet: &str,
 ) {
     use futures_util::StreamExt;
     use game_api_client::ws::WsMessage;
-
-    let wallet = session.lock().await.wallet.clone();
-    tracing::info!(wallet = %wallet, "ws_listener started");
 
     loop {
         let frame = match stream.next().await {
             Some(Ok(frame)) => frame,
             Some(Err(e)) => {
-                tracing::warn!(wallet = %wallet, error = %e, "game WS read error, closing listener");
-                break;
+                tracing::warn!(wallet = %wallet, error = %e, "game WS read error");
+                return;
             }
             None => {
                 tracing::info!(wallet = %wallet, "game WS stream ended");
-                break;
+                return;
             }
         };
 
@@ -744,18 +806,16 @@ async fn ws_listener(
             WsMessage::Ping(data) => {
                 if let Err(e) = sink.lock().await.send(WsMessage::Pong(data)).await {
                     tracing::warn!(wallet = %wallet, error = %e, "pong send failed");
-                    break;
+                    return;
                 }
             }
             WsMessage::Pong(_) | WsMessage::Binary(_) | WsMessage::Frame(_) => {}
             WsMessage::Close(_) => {
                 tracing::info!(wallet = %wallet, "game WS closed by server");
-                break;
+                return;
             }
         }
     }
-
-    tracing::info!(wallet = %wallet, "ws_listener ended");
 }
 
 #[cfg(test)]
