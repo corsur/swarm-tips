@@ -37,6 +37,8 @@ pub type WsStream = futures_util::stream::SplitStream<
 pub struct MatchFoundMsg {
     pub session_id: String,
     pub role: u8,
+    /// SHA-256 matchup commitment (hex). Present for role=0 (Player 1) only.
+    pub matchup_commitment: Option<String>,
 }
 
 pub struct RevealDataMsg {
@@ -48,10 +50,20 @@ pub struct RevealDataMsg {
 /// into per-session buffers without needing the typed `wait_for_*` methods.
 #[derive(Debug, Clone)]
 pub enum ServerMessage {
-    MatchFound { session_id: String, role: u8 },
-    GameReady { game_id: u64 },
-    RevealData { r_matchup: String },
-    Chat { text: String },
+    MatchFound {
+        session_id: String,
+        role: u8,
+        matchup_commitment: Option<String>,
+    },
+    GameReady {
+        game_id: u64,
+    },
+    RevealData {
+        r_matchup: String,
+    },
+    Chat {
+        text: String,
+    },
     Unknown,
 }
 
@@ -83,6 +95,7 @@ pub fn parse_server_message(text: &str) -> ServerMessage {
         MatchFound {
             session_id: String,
             role: u8,
+            matchup_commitment: Option<String>,
         },
         GameReady {
             game_id: u64,
@@ -98,9 +111,15 @@ pub fn parse_server_message(text: &str) -> ServerMessage {
     }
 
     match serde_json::from_str::<RawMsg>(text) {
-        Ok(RawMsg::MatchFound { session_id, role }) => {
-            ServerMessage::MatchFound { session_id, role }
-        }
+        Ok(RawMsg::MatchFound {
+            session_id,
+            role,
+            matchup_commitment,
+        }) => ServerMessage::MatchFound {
+            session_id,
+            role,
+            matchup_commitment,
+        },
         Ok(RawMsg::GameReady { game_id }) => ServerMessage::GameReady { game_id },
         Ok(RawMsg::RevealData { r_matchup }) => ServerMessage::RevealData { r_matchup },
         Ok(RawMsg::Chat { text }) => ServerMessage::Chat { text },
@@ -169,9 +188,18 @@ impl WsConnection {
             let msg = tokio::time::timeout(remaining, self.recv_next())
                 .await
                 .context("timeout waiting for match_found")??;
-            if let ServerMessage::MatchFound { session_id, role } = msg {
+            if let ServerMessage::MatchFound {
+                session_id,
+                role,
+                matchup_commitment,
+            } = msg
+            {
                 anyhow::ensure!(!session_id.is_empty(), "match_found session_id is empty");
-                return Ok(MatchFoundMsg { session_id, role });
+                return Ok(MatchFoundMsg {
+                    session_id,
+                    role,
+                    matchup_commitment,
+                });
             }
         }
     }
@@ -308,9 +336,33 @@ mod tests {
     fn parse_match_found() {
         let msg = parse_server_message(r#"{"type":"match_found","session_id":"abc123","role":1}"#);
         match msg {
-            ServerMessage::MatchFound { session_id, role } => {
+            ServerMessage::MatchFound {
+                session_id,
+                role,
+                matchup_commitment,
+            } => {
                 assert_eq!(session_id, "abc123");
                 assert_eq!(role, 1);
+                assert!(matchup_commitment.is_none());
+            }
+            other => panic!("expected MatchFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_match_found_with_commitment() {
+        let msg = parse_server_message(
+            r#"{"type":"match_found","session_id":"abc123","role":0,"matchup_commitment":"deadbeef"}"#,
+        );
+        match msg {
+            ServerMessage::MatchFound {
+                session_id,
+                role,
+                matchup_commitment,
+            } => {
+                assert_eq!(session_id, "abc123");
+                assert_eq!(role, 0);
+                assert_eq!(matchup_commitment.as_deref(), Some("deadbeef"));
             }
             other => panic!("expected MatchFound, got {other:?}"),
         }

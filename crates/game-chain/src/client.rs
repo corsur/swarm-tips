@@ -285,6 +285,101 @@ impl GameChainClient {
         Ok((resolved.p1_guess, resolved.p2_guess))
     }
 
+    /// Create an on-chain game as Player 1, with matchmaker co-signature.
+    ///
+    /// The `cosign_fn` callback sends the serialized transaction message to the
+    /// game-api `/games/cosign` endpoint and returns the matchmaker's ed25519
+    /// signature. This keeps HTTP concerns out of the chain client.
+    ///
+    /// Returns `(game_id, tx_signature)`.
+    pub async fn create_game<F, Fut>(
+        &self,
+        tournament_id: u64,
+        stake_lamports: u64,
+        matchup_commitment: [u8; 32],
+        matchmaker: &Pubkey,
+        cosign_fn: F,
+    ) -> Result<(u64, Signature)>
+    where
+        F: FnOnce(Vec<u8>) -> Fut,
+        Fut: std::future::Future<Output = Result<Signature>>,
+    {
+        anyhow::ensure!(tournament_id > 0, "tournament_id must be non-zero");
+
+        // Read current game counter to derive the game PDA.
+        let (counter_pda, _) = pda::game_counter_pda();
+        let counter_data = self
+            .rpc
+            .get_account_data(&counter_pda)
+            .await
+            .context("failed to read game_counter")?;
+        // GameCounter layout: 8-byte discriminator + 8-byte count + 1-byte bump
+        anyhow::ensure!(counter_data.len() >= 16, "game_counter data too short");
+        let game_counter_value =
+            u64::from_le_bytes(counter_data[8..16].try_into().context("parse count")?);
+
+        let ix = instructions::build_create_game(
+            stake_lamports,
+            matchup_commitment,
+            tournament_id,
+            game_counter_value,
+            self.keypair.as_ref(),
+            matchmaker,
+        );
+
+        // Build the transaction message (not yet signed).
+        let blockhash = self
+            .rpc
+            .get_latest_blockhash()
+            .await
+            .context("get_latest_blockhash")?;
+        let message = solana_sdk::message::Message::new_with_blockhash(
+            &[ix],
+            Some(&self.keypair.pubkey()),
+            &blockhash,
+        );
+        let message_bytes = message.serialize();
+
+        // Get matchmaker co-signature via callback.
+        let matchmaker_sig = cosign_fn(message_bytes.clone()).await?;
+
+        // Build the fully signed transaction.
+        // Signers order: matchmaker (index in message), player (fee payer).
+        let player_sig = self.keypair.sign_message(&message_bytes);
+        let mut tx = Transaction::new_unsigned(message);
+
+        // The message has two required signers. The fee payer (player) is
+        // always index 0 in the account keys. The matchmaker is another signer.
+        // We need to place signatures in the correct order.
+        let num_signers = tx.message.header.num_required_signatures as usize;
+        tx.signatures = vec![Signature::default(); num_signers];
+
+        // Find the matchmaker's index in the account keys.
+        for (i, key) in tx.message.account_keys.iter().enumerate() {
+            if key == &self.keypair.pubkey() {
+                tx.signatures[i] = player_sig;
+            } else if key == matchmaker {
+                tx.signatures[i] = matchmaker_sig;
+            }
+        }
+
+        let sig = self
+            .rpc
+            .send_and_confirm_transaction(&tx)
+            .await
+            .context("send_and_confirm create_game")?;
+
+        tracing::info!(
+            tournament_id,
+            game_id = game_counter_value,
+            wallet = %self.keypair.pubkey(),
+            %sig,
+            "created game on-chain"
+        );
+
+        Ok((game_counter_value, sig))
+    }
+
     // -- internal helpers -----------------------------------------------------
 
     /// Sign and submit a transaction, returning the signature.

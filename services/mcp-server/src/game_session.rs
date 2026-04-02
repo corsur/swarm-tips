@@ -66,6 +66,7 @@ pub struct GameSession {
     pub role: Option<u8>,
     pub chat_buffer: Vec<String>,
     pub match_found: Option<MatchFoundMsg>,
+    pub matchup_commitment: Option<String>,
     pub game_ready: Option<u64>,
     pub reveal_data: Option<String>,
 }
@@ -184,6 +185,7 @@ impl GameSessionManager {
             role: None,
             chat_buffer: Vec::new(),
             match_found: None,
+            matchup_commitment: None,
             game_ready: None,
             reveal_data: None,
         }));
@@ -267,7 +269,10 @@ impl GameSessionManager {
         Ok(())
     }
 
-    /// Check if match has been found. If matched, join the game on-chain.
+    /// Check if match has been found. Handle game creation or joining based on role.
+    ///
+    /// - **role=0 (Player 1):** Create the game on-chain via cosign, notify game-api.
+    /// - **role=1 (Player 2):** Wait for `game_ready`, then join the game on-chain.
     pub async fn check_match(&self, wallet: &str) -> Result<MatchStatus> {
         let session = self
             .sessions
@@ -279,6 +284,15 @@ impl GameSessionManager {
 
         let mut s = session.lock().await;
 
+        // Already in game — return current state.
+        if s.state == GameSessionState::InGame {
+            return Ok(MatchStatus {
+                status: "in_game".to_string(),
+                game_id: s.game_id,
+                role: s.role,
+            });
+        }
+
         // Still waiting for match.
         if s.match_found.is_none() {
             return Ok(MatchStatus {
@@ -288,7 +302,7 @@ impl GameSessionManager {
             });
         }
 
-        // Match found but not yet joined.
+        // Match found but not yet processed.
         if s.state == GameSessionState::Queued {
             let (sid, role) = {
                 let mf = s.match_found.as_ref().context("match_found missing")?;
@@ -299,60 +313,72 @@ impl GameSessionManager {
             s.state = GameSessionState::Matched;
         }
 
-        // Wait for game_ready if we haven't received it yet.
+        let role = s.role.unwrap_or(1);
+        let tournament_id = s.tournament_id.context("tournament_id not set")?;
+        let session_id = s.session_id.clone().context("session_id not set")?;
+        let jwt = s.jwt.clone();
+
+        if role == 0 {
+            // Player 1: create the game on-chain.
+            let commitment_hex = s
+                .matchup_commitment
+                .clone()
+                .context("role=0 but no matchup_commitment received")?;
+
+            // Drop lock before I/O.
+            drop(s);
+
+            let game_id = self
+                .create_game_as_p1(wallet, tournament_id, &commitment_hex, &jwt, &session_id)
+                .await?;
+
+            let mut s = session.lock().await;
+            s.game_id = Some(game_id);
+            s.state = GameSessionState::InGame;
+
+            return Ok(MatchStatus {
+                status: "in_game".to_string(),
+                game_id: Some(game_id),
+                role: Some(0),
+            });
+        }
+
+        // Player 2: wait for game_ready, then join.
         if s.game_ready.is_none() {
-            // Drop the lock briefly, then re-acquire after a short wait.
             drop(s);
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             s = session.lock().await;
         }
 
-        // If game_ready arrived, join the game on-chain.
         if let Some(game_id) = s.game_ready {
             if s.state == GameSessionState::Matched {
-                let tournament_id = s.tournament_id.context("tournament_id not set")?;
-                let session_id = s.session_id.clone().context("session_id not set")?;
-                let jwt = s.jwt.clone();
-
-                // Drop lock before doing I/O.
                 drop(s);
 
                 let chain = self.chain_clients.read().await;
                 let chain_client = chain.get(wallet).context("no chain client")?;
                 chain_client.join_game(game_id, tournament_id).await?;
 
-                // Notify backend that we joined.
                 let api_client = GameApiClient::new(&self.game_api_url)?;
                 api_client
                     .post_games_joined(&jwt, game_id, &session_id)
                     .await?;
 
-                // Update state.
                 let mut s = session.lock().await;
                 s.game_id = Some(game_id);
                 s.state = GameSessionState::InGame;
 
-                tracing::info!(
-                    service = "coordination-mcp-server",
-                    wallet = %wallet,
-                    game_id,
-                    "joined on-chain game"
-                );
+                tracing::info!(wallet = %wallet, game_id, "joined on-chain game as P2");
 
                 return Ok(MatchStatus {
                     status: "in_game".to_string(),
                     game_id: Some(game_id),
-                    role: s.role,
+                    role: Some(1),
                 });
             }
         }
 
         Ok(MatchStatus {
-            status: match s.state {
-                GameSessionState::InGame => "in_game".to_string(),
-                GameSessionState::Matched => "matched".to_string(),
-                _ => "queued".to_string(),
-            },
+            status: "matched".to_string(),
             game_id: s.game_id,
             role: s.role,
         })
@@ -499,6 +525,83 @@ impl GameSessionManager {
         );
     }
 
+    // -- Player 1 game creation -----------------------------------------------
+
+    /// Create a game on-chain as Player 1, using the matchmaker cosign endpoint.
+    async fn create_game_as_p1(
+        &self,
+        wallet: &str,
+        tournament_id: u64,
+        commitment_hex: &str,
+        jwt: &str,
+        session_id: &str,
+    ) -> Result<u64> {
+        use solana_sdk::signature::Signature;
+
+        let commitment_bytes = hex::decode(commitment_hex).context("invalid hex commitment")?;
+        let matchup_commitment: [u8; 32] = commitment_bytes.try_into().map_err(|v: Vec<u8>| {
+            anyhow::anyhow!("commitment must be 32 bytes, got {}", v.len())
+        })?;
+
+        // Read the matchmaker pubkey from GlobalConfig on-chain.
+        let chain = self.chain_clients.read().await;
+        let chain_client = chain.get(wallet).context("no chain client")?;
+
+        let (global_config_pda, _) = game_chain::pda::global_config_pda();
+        let config_data = chain_client
+            .rpc()
+            .get_account_data(&global_config_pda)
+            .await
+            .context("failed to read global_config")?;
+        // GlobalConfig layout: 8-byte discriminator + 32-byte authority + 32-byte matchmaker + ...
+        anyhow::ensure!(config_data.len() >= 72, "global_config data too short");
+        let matchmaker = solana_sdk::pubkey::Pubkey::try_from(&config_data[40..72])
+            .context("parse matchmaker")?;
+
+        let stake: u64 = 50_000_000; // 0.05 SOL — matches FIXED_STAKE_LAMPORTS on-chain
+        let api_url = self.game_api_url.clone();
+        let jwt_owned = jwt.to_string();
+
+        let (game_id, _sig) = chain_client
+            .create_game(
+                tournament_id,
+                stake,
+                matchup_commitment,
+                &matchmaker,
+                |message_bytes| {
+                    let api_url = api_url.clone();
+                    let jwt = jwt_owned.clone();
+                    async move {
+                        use base64::Engine;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&message_bytes);
+                        let api_client = GameApiClient::new(&api_url)?;
+                        let resp = api_client
+                            .request_cosign(&jwt, &b64)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("cosign request failed: {e}"))?;
+                        let sig_bytes = base64::engine::general_purpose::STANDARD
+                            .decode(&resp.signature)
+                            .map_err(|e| anyhow::anyhow!("invalid base64 signature: {e}"))?;
+                        let sig = Signature::try_from(sig_bytes.as_slice())
+                            .map_err(|e| anyhow::anyhow!("invalid signature bytes: {e}"))?;
+                        Ok(sig)
+                    }
+                },
+            )
+            .await?;
+
+        // Notify game-api that the game was created.
+        let api_client = GameApiClient::new(&self.game_api_url)?;
+        api_client
+            .post_games_started(jwt, game_id, session_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("post_games_started failed: {e}"))?;
+
+        tracing::info!(wallet = %wallet, game_id, "created on-chain game as P1");
+
+        Ok(game_id)
+    }
+
     // -- internal helpers --
 
     /// Poll the session's `reveal_data` buffer until it's populated.
@@ -569,9 +672,18 @@ async fn ws_listener(
                 let msg = game_api_client::ws::parse_server_message(&text);
                 let mut s = session.lock().await;
                 match msg {
-                    ServerMessage::MatchFound { session_id, role } => {
-                        tracing::info!(wallet = %wallet, %session_id, role, "ws: match_found");
-                        s.match_found = Some(MatchFoundMsg { session_id, role });
+                    ServerMessage::MatchFound {
+                        session_id,
+                        role,
+                        matchup_commitment,
+                    } => {
+                        tracing::info!(wallet = %wallet, %session_id, role, has_commitment = matchup_commitment.is_some(), "ws: match_found");
+                        s.matchup_commitment = matchup_commitment.clone();
+                        s.match_found = Some(MatchFoundMsg {
+                            session_id,
+                            role,
+                            matchup_commitment,
+                        });
                     }
                     ServerMessage::GameReady { game_id } => {
                         tracing::info!(wallet = %wallet, game_id, "ws: game_ready");

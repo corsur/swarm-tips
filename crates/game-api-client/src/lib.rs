@@ -76,6 +76,13 @@ pub struct LeaderboardResponse {
     pub tournament_id: u64,
 }
 
+/// Response from `POST /games/cosign`.
+#[derive(Debug, Deserialize)]
+pub struct CosignResponse {
+    /// Base64-encoded matchmaker ed25519 signature.
+    pub signature: String,
+}
+
 /// Response from `GET /games/status/{game_id}`.
 #[derive(Debug, Deserialize)]
 pub struct GameStatusResponse {
@@ -248,6 +255,68 @@ impl GameApiClient {
 
         Self::check_status(resp).await?;
         Ok(())
+    }
+
+    /// `POST /games/started` — notify the backend that P1 created the game on-chain.
+    ///
+    /// Links the session to the on-chain game_id and triggers `game_ready` WS
+    /// notification to Player 2.
+    pub async fn post_games_started(
+        &self,
+        token: &str,
+        game_id: u64,
+        session_id: &str,
+    ) -> Result<(), GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            game_id: u64,
+            session_id: &'a str,
+        }
+
+        let url = format!("{}/games/started", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .bearer_auth(token)
+            .json(&Body {
+                game_id,
+                session_id,
+            })
+            .send()
+            .await?;
+
+        Self::check_status(resp).await?;
+        Ok(())
+    }
+
+    /// `POST /games/cosign` — get matchmaker co-signature for create_game tx.
+    ///
+    /// Sends base64-encoded transaction message bytes. Returns the matchmaker's
+    /// ed25519 signature (base64-encoded) to add to the transaction.
+    pub async fn request_cosign(
+        &self,
+        token: &str,
+        message_b64: &str,
+    ) -> Result<CosignResponse, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            message: &'a str,
+        }
+
+        let url = format!("{}/games/cosign", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .bearer_auth(token)
+            .json(&Body {
+                message: message_b64,
+            })
+            .send()
+            .await?;
+
+        let resp = Self::check_status(resp).await?;
+        let body: CosignResponse = resp.json().await?;
+        Ok(body)
     }
 
     /// `POST /games/resolved` — notify the backend that a game was resolved.

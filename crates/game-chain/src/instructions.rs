@@ -7,7 +7,7 @@
 
 use anchor_lang::InstructionData;
 use coordination::{
-    instruction::{CommitGuess, DepositStake, JoinGame, RevealGuess},
+    instruction::{CommitGuess, CreateGame, DepositStake, JoinGame, RevealGuess},
     ID as PROGRAM_ID,
 };
 use solana_sdk::{
@@ -21,6 +21,56 @@ use crate::pda;
 
 /// System program ID, used in instructions that transfer lamports.
 const SYSTEM_PROGRAM_ID: Pubkey = pubkey!("11111111111111111111111111111111");
+
+/// Build the `CreateGame` instruction.
+///
+/// Player 1 creates a game with the matchmaker-attested matchup commitment.
+/// The matchmaker co-signs (signature added separately via the `/games/cosign`
+/// endpoint). The caller must read `game_counter.count` from on-chain to
+/// derive the correct game PDA seed.
+///
+/// Account order matches `CreateGame<'info>` in the on-chain program.
+pub fn build_create_game(
+    stake_lamports: u64,
+    matchup_commitment: [u8; 32],
+    tournament_id: u64,
+    game_counter_value: u64,
+    player: &dyn Signer,
+    matchmaker: &Pubkey,
+) -> Instruction {
+    assert!(tournament_id > 0, "tournament_id must be non-zero");
+    assert!(
+        matchup_commitment != [0u8; 32],
+        "matchup_commitment must not be all zeros"
+    );
+
+    let (game_pda, _) = pda::game_pda(game_counter_value);
+    let (game_counter_pda, _) = pda::game_counter_pda();
+    let (tournament_pda, _) = pda::tournament_pda(tournament_id);
+    let (profile_pda, _) = pda::player_profile_pda(tournament_id, &player.pubkey());
+    let (escrow_pda, _) = pda::escrow_pda(tournament_id, &player.pubkey());
+    let (global_config_pda, _) = pda::global_config_pda();
+
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(game_pda, false),
+            AccountMeta::new(game_counter_pda, false),
+            AccountMeta::new(profile_pda, false),
+            AccountMeta::new(escrow_pda, false),
+            AccountMeta::new_readonly(tournament_pda, false),
+            AccountMeta::new_readonly(global_config_pda, false),
+            AccountMeta::new_readonly(*matchmaker, true), // signer (cosigned)
+            AccountMeta::new(player.pubkey(), true),      // signer + payer
+            AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+        ],
+        data: CreateGame {
+            stake_lamports,
+            matchup_commitment,
+        }
+        .data(),
+    }
+}
 
 /// Build the `DepositStake` instruction.
 ///
