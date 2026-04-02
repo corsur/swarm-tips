@@ -182,7 +182,7 @@ jobs:
           npm version 0.0.0-$(git rev-parse --short HEAD) --no-git-tag-version
           npm publish --tag latest
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
 
   deploy-mainnet:
     if: github.ref == 'refs/heads/main'
