@@ -20,6 +20,7 @@ use crate::game_session::GameSessionManager;
 use crate::proxy::OrchestratorProxy;
 use crate::server::{SharedState, SwarmTipsMcp};
 use crate::session::SessionManager;
+use anyhow::Context;
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
@@ -49,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     let host = load_env_or("HOST", DEFAULT_HOST);
     let port: u16 = load_env_or("PORT", &DEFAULT_PORT.to_string())
         .parse()
-        .expect("PORT must be a valid u16");
+        .context("PORT must be a valid u16")?;
 
     tracing::info!(
         service = "mcp-server",
@@ -66,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     let rpc_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .expect("reqwest client must build at startup");
+        .context("reqwest client must build")?;
 
     let game_sessions = Arc::new(GameSessionManager::new(
         game_api_url.clone(),
@@ -75,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
 
     let shared = Arc::new(SharedState {
         orchestrator: OrchestratorProxy::new(orchestrator_url),
-        game_api: GameApiProxy::new(game_api_url),
+        game_api: GameApiProxy::new(game_api_url)?,
         sessions,
         solana_rpc_url,
         program_id,

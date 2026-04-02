@@ -13,11 +13,11 @@ pub struct GameApiProxy {
 }
 
 impl GameApiProxy {
-    pub fn new(base_url: String) -> Self {
+    pub fn new(base_url: String) -> anyhow::Result<Self> {
         let client = game_api_client::GameApiClient::new(&base_url)
-            .expect("game-api client must build at startup");
+            .map_err(|e| anyhow::anyhow!("game-api client build failed: {e}"))?;
 
-        Self { client }
+        Ok(Self { client })
     }
 
     /// Request an auth challenge nonce for a wallet.

@@ -51,7 +51,7 @@ impl OrchestratorProxy {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
-            .expect("reqwest client must build at startup");
+            .unwrap_or_default();
 
         Self { client, base_url }
     }
@@ -63,10 +63,6 @@ impl OrchestratorProxy {
         min_price: Option<u64>,
     ) -> Result<TaskListResponse, McpServiceError> {
         let effective_limit = limit.unwrap_or(20).min(MAX_TASK_LIMIT);
-        assert!(
-            effective_limit <= MAX_TASK_LIMIT,
-            "limit must not exceed max"
-        );
 
         let mut url = format!("{}/tasks?limit={effective_limit}", self.base_url);
         if let Some(price) = min_price {
@@ -92,17 +88,24 @@ impl OrchestratorProxy {
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
-        assert!(
-            result.tasks.len() <= MAX_TASK_LIMIT as usize,
-            "response must respect limit"
-        );
+        if result.tasks.len() > MAX_TASK_LIMIT as usize {
+            tracing::warn!(
+                count = result.tasks.len(),
+                limit = MAX_TASK_LIMIT,
+                "orchestrator returned more tasks than requested limit"
+            );
+        }
 
         Ok(result)
     }
 
     /// Get full details for a specific task.
     pub async fn get_task_details(&self, task_id: &str) -> Result<TaskDetails, McpServiceError> {
-        assert!(!task_id.is_empty(), "task_id must not be empty");
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
 
         let url = format!("{}/tasks/{task_id}", self.base_url);
 
@@ -125,7 +128,11 @@ impl OrchestratorProxy {
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
-        assert!(!details.nonce.is_empty(), "task nonce must not be empty");
+        if details.nonce.is_empty() {
+            return Err(McpServiceError::OrchestratorError(
+                "task nonce must not be empty".to_string(),
+            ));
+        }
 
         Ok(details)
     }
@@ -135,7 +142,11 @@ impl OrchestratorProxy {
         &self,
         wallet_pubkey: &str,
     ) -> Result<EarningsResponse, McpServiceError> {
-        assert!(!wallet_pubkey.is_empty(), "wallet_pubkey must not be empty");
+        if wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "wallet_pubkey must not be empty".to_string(),
+            ));
+        }
 
         let url = format!("{}/agent/earnings", self.base_url);
 
@@ -164,11 +175,13 @@ impl OrchestratorProxy {
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
-        // If the agent has never completed a task, average score should be zero
-        assert!(
-            earnings.tasks_completed > 0 || earnings.average_score == 0,
-            "average_score must be zero when no tasks completed"
-        );
+        if earnings.tasks_completed == 0 && earnings.average_score != 0 {
+            tracing::warn!(
+                wallet = %wallet_pubkey,
+                average_score = earnings.average_score,
+                "orchestrator returned non-zero average_score with zero tasks completed"
+            );
+        }
 
         Ok(earnings)
     }
