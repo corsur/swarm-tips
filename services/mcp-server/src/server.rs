@@ -183,10 +183,9 @@ impl SwarmTipsMcp {
 
         // For now, wallet identity comes from the game session (registered via game_register_wallet).
         // When OAuth is wired up, this will come from the authenticated MCP session.
-        let wallet_pubkey = self
-            .resolve_wallet()
-            .await
-            .ok_or_else(|| invalid_input("authentication required: connect your Solana wallet first"))?;
+        let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
+            invalid_input("authentication required: connect your Solana wallet first")
+        })?;
 
         let session = self
             .state
@@ -248,10 +247,9 @@ impl SwarmTipsMcp {
             return Err(invalid_input("client_pubkey is required"));
         }
 
-        let wallet_pubkey = self
-            .resolve_wallet()
-            .await
-            .ok_or_else(|| invalid_input("authentication required: connect your Solana wallet first"))?;
+        let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
+            invalid_input("authentication required: connect your Solana wallet first")
+        })?;
 
         let session = self
             .state
@@ -303,10 +301,9 @@ impl SwarmTipsMcp {
         annotations(read_only_hint = true)
     )]
     async fn check_earnings(&self) -> Result<CallToolResult, McpError> {
-        let wallet_pubkey = self
-            .resolve_wallet()
-            .await
-            .ok_or_else(|| invalid_input("authentication required: connect your Solana wallet first"))?;
+        let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
+            invalid_input("authentication required: connect your Solana wallet first")
+        })?;
 
         let result = self
             .state
@@ -567,13 +564,9 @@ impl SwarmTipsMcp {
 #[tool_handler]
 impl ServerHandler for SwarmTipsMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
-        )
-        .with_server_info(Implementation::from_build_env())
-        .with_instructions(INSTRUCTIONS.to_string())
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::from_build_env())
+            .with_instructions(INSTRUCTIONS.to_string())
     }
 }
 
@@ -651,6 +644,7 @@ fn invalid_input(msg: &str) -> McpError {
 }
 
 fn text_result(value: &impl serde::Serialize) -> CallToolResult {
-    let json = serde_json::to_string_pretty(value).unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {e}\"}}"));
+    let json = serde_json::to_string_pretty(value)
+        .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {e}\"}}"));
     CallToolResult::success(vec![Content::text(json)])
 }
