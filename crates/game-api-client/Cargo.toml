@@ -1,0 +1,15 @@
+[package]
+name = "game-api-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["time"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+anyhow = { workspace = true }
+tracing = { workspace = true }

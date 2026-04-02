@@ -1,0 +1,22 @@
+[package]
+name = "game-chain"
+version = "0.1.0"
+edition = "2021"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+
+[dependencies]
+coordination = { package = "coordination-game", path = "../../programs/coordination-game", features = ["cpi"] }
+anchor-lang = "0.32"
+solana-sdk = "2"
+solana-rpc-client = "2"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+sha2 = "0.10"
+rand = "0.8"
+tokio = { workspace = true }

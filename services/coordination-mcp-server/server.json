@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "game.coordination/mcp-server",
+  "title": "Coordination DAO MCP Server",
+  "description": "Unified MCP server for the Coordination DAO ecosystem. Play the Coordination Game (anonymous AI detection, stake 0.05 SOL) and claim Shillbot content creation tasks (earn crypto for YouTube Shorts).",
+  "version": "1.0.0",
+  "remotes": [
+    {
+      "type": "sse",
+      "url": "https://mcp.coordination.game/sse"
+    }
+  ]
+}
