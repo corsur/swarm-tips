@@ -456,9 +456,18 @@ impl GameSessionManager {
         let preimage = chain_client.submit_commit(game_id, guess).await?;
 
         // Store preimage for reveal step.
-        {
+        let (jwt, session_id) = {
             let mut s = session.lock().await;
             s.commit_preimage = Some(preimage);
+            (s.jwt.clone(), s.session_id.clone().unwrap_or_default())
+        };
+
+        // Notify game-api so it can track both commits and deliver reveal_data.
+        if !session_id.is_empty() {
+            let api_client = GameApiClient::new(&self.game_api_url)?;
+            if let Err(e) = api_client.post_games_committed(&jwt, &session_id).await {
+                tracing::warn!(wallet = %wallet, error = %e, "post_games_committed failed (non-fatal)");
+            }
         }
 
         tracing::info!(wallet = %wallet, game_id, guess, "committed guess on-chain");

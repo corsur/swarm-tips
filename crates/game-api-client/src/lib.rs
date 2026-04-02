@@ -228,6 +228,33 @@ impl GameApiClient {
 
     // -- Games (token required) --------------------------------------------
 
+    /// `POST /games/committed` — notify the backend that this player committed their guess.
+    ///
+    /// When both players have committed, the backend auto-delivers `reveal_data`
+    /// via WebSocket to both players.
+    pub async fn post_games_committed(
+        &self,
+        token: &str,
+        session_id: &str,
+    ) -> Result<(), GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            session_id: &'a str,
+        }
+
+        let url = format!("{}/games/committed", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .bearer_auth(token)
+            .json(&Body { session_id })
+            .send()
+            .await?;
+
+        Self::check_status(resp).await?;
+        Ok(())
+    }
+
     /// `POST /games/joined` — notify the backend that a player joined a game.
     pub async fn post_games_joined(
         &self,
