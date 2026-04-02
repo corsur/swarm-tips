@@ -9,12 +9,14 @@ on:
       - 'tests/shillbot.ts'
       - 'tests/shillbot-lifecycle.ts'
       - 'Anchor.toml'
+      - '.github/workflows/shillbot-program.yml'
   pull_request:
     paths:
       - 'programs/shillbot/**'
       - 'crates/shared/**'
       - 'tests/shillbot*.ts'
       - 'Anchor.toml'
+      - '.github/workflows/shillbot-program.yml'
 
 jobs:
   test:
