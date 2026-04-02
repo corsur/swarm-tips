@@ -188,18 +188,18 @@ impl GameSessionManager {
             reveal_data: None,
         }));
 
-        // Spawn background WS listener.
+        let ws_sink = Arc::new(Mutex::new(sink));
+
+        // Spawn background WS listener (needs sink for pong replies).
         let session_clone = Arc::clone(&session);
+        let sink_clone = Arc::clone(&ws_sink);
         tokio::spawn(async move {
-            ws_listener(session_clone, stream).await;
+            ws_listener(session_clone, stream, sink_clone).await;
         });
 
         // Store session, sink, and chain client.
         self.sessions.write().await.insert(wallet.clone(), session);
-        self.ws_sinks
-            .write()
-            .await
-            .insert(wallet.clone(), Arc::new(Mutex::new(sink)));
+        self.ws_sinks.write().await.insert(wallet.clone(), ws_sink);
         self.chain_clients
             .write()
             .await
@@ -537,22 +537,31 @@ impl GameSessionManager {
 // ---------------------------------------------------------------------------
 
 /// Consumes the WS read stream, dispatching messages to session buffers.
-async fn ws_listener(session: Arc<Mutex<GameSession>>, mut stream: game_api_client::ws::WsStream) {
+///
+/// Also handles Ping frames by sending Pong replies through the provided sink.
+/// Without pong responses, the game-api server will disconnect.
+async fn ws_listener(
+    session: Arc<Mutex<GameSession>>,
+    mut stream: game_api_client::ws::WsStream,
+    sink: Arc<Mutex<WsSink>>,
+) {
     use futures_util::StreamExt;
     use game_api_client::ws::WsMessage;
+
+    let wallet = session.lock().await.wallet.clone();
+    tracing::info!(wallet = %wallet, "ws_listener started");
 
     loop {
         let frame = match stream.next().await {
             Some(Ok(frame)) => frame,
             Some(Err(e)) => {
-                tracing::warn!(
-                    service = "coordination-mcp-server",
-                    error = %e,
-                    "game WS read error, closing listener"
-                );
+                tracing::warn!(wallet = %wallet, error = %e, "game WS read error, closing listener");
                 break;
             }
-            None => break,
+            None => {
+                tracing::info!(wallet = %wallet, "game WS stream ended");
+                break;
+            }
         };
 
         match frame {
@@ -561,32 +570,40 @@ async fn ws_listener(session: Arc<Mutex<GameSession>>, mut stream: game_api_clie
                 let mut s = session.lock().await;
                 match msg {
                     ServerMessage::MatchFound { session_id, role } => {
+                        tracing::info!(wallet = %wallet, %session_id, role, "ws: match_found");
                         s.match_found = Some(MatchFoundMsg { session_id, role });
                     }
                     ServerMessage::GameReady { game_id } => {
+                        tracing::info!(wallet = %wallet, game_id, "ws: game_ready");
                         s.game_ready = Some(game_id);
                     }
                     ServerMessage::RevealData { r_matchup } => {
+                        tracing::info!(wallet = %wallet, "ws: reveal_data");
                         s.reveal_data = Some(r_matchup);
                     }
                     ServerMessage::Chat { text } => {
                         s.chat_buffer.push(text);
                     }
-                    ServerMessage::Unknown => {}
+                    ServerMessage::Unknown => {
+                        tracing::debug!(wallet = %wallet, "ws: unknown message type");
+                    }
                 }
             }
-            WsMessage::Ping(_)
-            | WsMessage::Pong(_)
-            | WsMessage::Binary(_)
-            | WsMessage::Frame(_) => {}
-            WsMessage::Close(_) => break,
+            WsMessage::Ping(data) => {
+                if let Err(e) = sink.lock().await.send(WsMessage::Pong(data)).await {
+                    tracing::warn!(wallet = %wallet, error = %e, "pong send failed");
+                    break;
+                }
+            }
+            WsMessage::Pong(_) | WsMessage::Binary(_) | WsMessage::Frame(_) => {}
+            WsMessage::Close(_) => {
+                tracing::info!(wallet = %wallet, "game WS closed by server");
+                break;
+            }
         }
     }
 
-    tracing::info!(
-        service = "coordination-mcp-server",
-        "game WS listener ended"
-    );
+    tracing::info!(wallet = %wallet, "ws_listener ended");
 }
 
 #[cfg(test)]
