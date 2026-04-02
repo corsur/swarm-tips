@@ -13,9 +13,16 @@ import { Clock } from "solana-bankrun";
 import { assert } from "chai";
 import { createHash } from "crypto";
 
+import { createMockPullFeedData } from "./helpers/mock-switchboard-feed";
+
 // Import the IDL type — anchor-bankrun requires the JSON IDL
 import { Shillbot } from "../target/types/shillbot";
 const IDL = require("../target/idl/shillbot.json");
+
+/// Switchboard On-Demand program ID (owner of feed accounts).
+const SWITCHBOARD_PROGRAM_ID = new PublicKey(
+  "Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2"
+);
 
 // ---------------------------------------------------------------------------
 // Constants matching the on-chain program
@@ -273,20 +280,39 @@ async function submitWork(
     .rpc();
 }
 
-// verify_task requires a real Switchboard feed account with valid
-// PullFeedAccountData. On a local validator there is no Switchboard program,
-// so the feed account cannot be initialized. Tests that depend on verify_task
-// are skipped. Use the devnet E2E test for full Switchboard verification.
 async function verifyTask(
-  _program: Program<Shillbot>,
+  program: Program<Shillbot>,
   _authority: Keypair,
-  _taskPdaAddr: PublicKey,
-  _globalPda: PublicKey,
-  _compositeScore: BN
+  taskPdaAddr: PublicKey,
+  globalPda: PublicKey,
+  compositeScore: BN,
+  bankrunContext: Awaited<ReturnType<typeof startAnchor>>
 ): Promise<void> {
-  throw new Error(
-    "verifyTask is not available on local validator (no Switchboard feed)"
+  // Inject a mock Switchboard feed account with the desired score.
+  // bankrun lets us set arbitrary account data, bypassing the need for
+  // a real Switchboard program on the local validator.
+  const clock = await bankrunContext.banksClient.getClock();
+  const currentSlot = clock.slot;
+  const feedData = createMockPullFeedData(
+    compositeScore.toNumber(),
+    currentSlot
   );
+  bankrunContext.setAccount(DUMMY_SWITCHBOARD_FEED, {
+    lamports: LAMPORTS_PER_SOL,
+    data: feedData,
+    owner: SWITCHBOARD_PROGRAM_ID,
+    executable: false,
+  });
+
+  const verificationHash = Array.from({ length: 32 }, (_, i) => i + 1);
+  await program.methods
+    .verifyTask(compositeScore, verificationHash)
+    .accountsPartial({
+      task: taskPdaAddr,
+      globalState: globalPda,
+      switchboardFeed: DUMMY_SWITCHBOARD_FEED,
+    })
+    .rpc();
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +372,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       assert.isTrue(submittedAt > 0, "submitted_at should be set");
     });
 
-    it.skip("warps clock to T+7d and verifies with max score", async () => {
+    it("warps clock to T+7d and verifies with max score", async () => {
       // Warp to submitted_at + 7 days (within staleness window)
       const verifyTime = submittedAt + SEVEN_DAYS_SECONDS;
       await warpToTimestamp(context, verifyTime);
@@ -356,7 +382,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
         authority,
         setup.taskPda,
         globalPda,
-        new BN(MAX_SCORE)
+        new BN(MAX_SCORE),
+        context
       );
 
       const task = await program.account.task.fetch(setup.taskPda);
@@ -378,7 +405,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
     });
 
-    it.skip("warps past challenge deadline and finalizes", async () => {
+    it("warps past challenge deadline and finalizes", async () => {
       const task = await program.account.task.fetch(setup.taskPda);
       const pastChallenge = task.challengeDeadline.toNumber() + 1;
       await warpToTimestamp(context, pastChallenge);
@@ -449,7 +476,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
     let setup: TaskSetup;
     let submittedAt: number;
 
-    it.skip("drives task to Verified state", async () => {
+    it("drives task to Verified state", async () => {
       const currentClock = await context.banksClient.getClock();
       const now = Number(currentClock.unixTimestamp);
       const deadline = new BN(now + 86_400 * 60);
@@ -468,14 +495,15 @@ describe("shillbot-lifecycle (bankrun)", () => {
         authority,
         setup.taskPda,
         globalPda,
-        new BN(800_000)
+        new BN(800_000),
+        context
       );
 
       const verified = await program.account.task.fetch(setup.taskPda);
       assert.deepEqual(verified.state, { verified: {} });
     });
 
-    it.skip("challenger posts bond and task becomes Disputed", async () => {
+    it("challenger posts bond and task becomes Disputed", async () => {
       const [challPda] = challengePda(
         setup.taskId,
         challenger.publicKey,
@@ -507,7 +535,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
     });
 
-    it.skip("authority resolves: challenger wins — escrow to client, bond returned", async () => {
+    it("authority resolves: challenger wins — escrow to client, bond returned", async () => {
       const [challPda] = challengePda(
         setup.taskId,
         challenger.publicKey,
@@ -584,7 +612,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
     let submittedAt: number;
     const score = 800_000;
 
-    it.skip("drives task to Verified state", async () => {
+    it("drives task to Verified state", async () => {
       const currentClock = await context.banksClient.getClock();
       const now = Number(currentClock.unixTimestamp);
       const deadline = new BN(now + 86_400 * 60);
@@ -602,14 +630,15 @@ describe("shillbot-lifecycle (bankrun)", () => {
         authority,
         setup.taskPda,
         globalPda,
-        new BN(score)
+        new BN(score),
+        context
       );
 
       const verified = await program.account.task.fetch(setup.taskPda);
       assert.deepEqual(verified.state, { verified: {} });
     });
 
-    it.skip("challenger posts bond", async () => {
+    it("challenger posts bond", async () => {
       const [challPda] = challengePda(
         setup.taskId,
         challenger.publicKey,
@@ -631,7 +660,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       assert.deepEqual(task.state, { disputed: {} });
     });
 
-    it.skip("authority resolves: agent wins — payment released, bond slashed 50/50", async () => {
+    it("authority resolves: agent wins — payment released, bond slashed 50/50", async () => {
       const [challPda] = challengePda(
         setup.taskId,
         challenger.publicKey,
@@ -733,7 +762,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
     let setup: TaskSetup;
     let submittedAt: number;
 
-    it.skip("drives task to Submitted, verifies with score=0", async () => {
+    it("drives task to Submitted, verifies with score below threshold", async () => {
       const currentClock = await context.banksClient.getClock();
       const now = Number(currentClock.unixTimestamp);
       const deadline = new BN(now + 86_400 * 60);
@@ -745,17 +774,26 @@ describe("shillbot-lifecycle (bankrun)", () => {
       const task = await program.account.task.fetch(setup.taskPda);
       submittedAt = task.submittedAt.toNumber();
 
-      // Warp to T+7d for verification
+      // Warp to T+7d for verification. Use score=1 (below quality_threshold
+      // of 200k) — Switchboard's get_value() requires positive values, so 0
+      // is not valid. Payment is still $0 because score < threshold.
       await warpToTimestamp(context, submittedAt + SEVEN_DAYS_SECONDS);
-      await verifyTask(program, authority, setup.taskPda, globalPda, new BN(0));
+      await verifyTask(
+        program,
+        authority,
+        setup.taskPda,
+        globalPda,
+        new BN(1),
+        context
+      );
 
       const verified = await program.account.task.fetch(setup.taskPda);
       assert.deepEqual(verified.state, { verified: {} });
-      assert.equal(verified.compositeScore.toString(), "0");
+      assert.equal(verified.compositeScore.toString(), "1");
       assert.equal(verified.paymentAmount.toString(), "0");
     });
 
-    it.skip("finalizes with zero payment — full escrow to client", async () => {
+    it("finalizes with zero payment — full escrow to client", async () => {
       const task = await program.account.task.fetch(setup.taskPda);
       const pastChallenge = task.challengeDeadline.toNumber() + 1;
       await warpToTimestamp(context, pastChallenge);
