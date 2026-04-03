@@ -4,6 +4,8 @@
 
 #[allow(dead_code)]
 mod auth;
+mod botbounty_proxy;
+mod clawtasks_proxy;
 mod errors;
 mod game_proxy;
 #[allow(dead_code)]
@@ -15,6 +17,8 @@ mod session;
 mod solana_tx;
 
 use crate::auth::ChallengeManager;
+use crate::botbounty_proxy::BotBountyProxy;
+use crate::clawtasks_proxy::ClawTasksProxy;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
 use crate::proxy::OrchestratorProxy;
@@ -47,6 +51,8 @@ async fn main() -> anyhow::Result<()> {
     let game_api_url = load_env_or("GAME_API_URL", "http://game-api:8080");
     let solana_rpc_url = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
     let program_id = load_env_or("SHILLBOT_PROGRAM_ID", "11111111111111111111111111111111");
+    let clawtasks_url = load_env_or("CLAWTASKS_API_URL", "https://clawtasks.com/api");
+    let botbounty_url = load_env_or("BOTBOUNTY_API_URL", "https://botbounty-production.up.railway.app/api");
     let host = load_env_or("HOST", DEFAULT_HOST);
     let port: u16 = load_env_or("PORT", &DEFAULT_PORT.to_string())
         .parse()
@@ -77,6 +83,8 @@ async fn main() -> anyhow::Result<()> {
     let shared = Arc::new(SharedState {
         orchestrator: OrchestratorProxy::new(orchestrator_url),
         game_api: GameApiProxy::new(game_api_url)?,
+        clawtasks: ClawTasksProxy::new(clawtasks_url),
+        botbounty: BotBountyProxy::new(botbounty_url),
         sessions,
         solana_rpc_url,
         program_id,

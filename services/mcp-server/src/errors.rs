@@ -28,6 +28,9 @@ pub enum McpServiceError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("external platform error: {0}")]
+    External(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }

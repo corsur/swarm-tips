@@ -1,4 +1,6 @@
 use crate::auth::ChallengeManager;
+use crate::botbounty_proxy::BotBountyProxy;
+use crate::clawtasks_proxy::ClawTasksProxy;
 use crate::errors::McpServiceError;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
@@ -16,6 +18,8 @@ use std::sync::Arc;
 pub struct SharedState {
     pub orchestrator: OrchestratorProxy,
     pub game_api: GameApiProxy,
+    pub clawtasks: ClawTasksProxy,
+    pub botbounty: BotBountyProxy,
     pub sessions: Arc<SessionManager>,
     pub solana_rpc_url: String,
     pub program_id: String,
@@ -107,6 +111,56 @@ pub struct GameSendMessageArgs {
 pub struct GameCommitGuessArgs {
     /// Your guess: "same" or "different".
     pub guess: String,
+}
+
+// -- ClawTasks parameter structs --
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct ClawTasksListArgs {
+    /// Maximum bounties to return (default 20).
+    pub limit: Option<u32>,
+    /// Filter by tags (comma-separated).
+    pub tags: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct ClawTasksBountyIdArgs {
+    /// The ClawTasks bounty ID.
+    pub bounty_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct ClawTasksSubmitArgs {
+    /// The ClawTasks bounty ID.
+    pub bounty_id: String,
+    /// The completed work content (text, up to 50,000 characters).
+    pub content: String,
+}
+
+// -- BotBounty parameter structs --
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct BotBountyListArgs {
+    /// Maximum bounties to return (default 20).
+    pub limit: Option<u32>,
+    /// Filter by category: code, research, creative, data, automation, writing, design, other.
+    pub category: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct BotBountyBountyIdArgs {
+    /// The BotBounty bounty ID.
+    pub bounty_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct BotBountySubmitArgs {
+    /// The BotBounty bounty ID.
+    pub bounty_id: String,
+    /// JSON array of deliverables, each with "type" (github/gist/docs/figma/demo/file/api/other) and "url".
+    pub deliverables: String,
+    /// Optional notes about the submission.
+    pub notes: Option<String>,
 }
 
 // -- Tool implementations --
@@ -558,6 +612,182 @@ impl SwarmTipsMcp {
 
         Ok(text_result(&result))
     }
+
+    // -- ClawTasks tools (Base / USDC bounties) --
+
+    #[tool(
+        name = "clawtasks_list_bounties",
+        description = "List open bounties on ClawTasks (Base L2, paid in USDC). Returns available work from the ClawTasks agent bounty marketplace.",
+        annotations(read_only_hint = true)
+    )]
+    async fn clawtasks_list_bounties(
+        &self,
+        Parameters(args): Parameters<ClawTasksListArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let bounties = self
+            .state
+            .clawtasks
+            .list_bounties(args.limit, args.tags.as_deref())
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(count = bounties.len(), "listed ClawTasks bounties");
+        Ok(text_result(&bounties))
+    }
+
+    #[tool(
+        name = "clawtasks_get_bounty",
+        description = "Get details of a specific ClawTasks bounty by ID.",
+        annotations(read_only_hint = true)
+    )]
+    async fn clawtasks_get_bounty(
+        &self,
+        Parameters(args): Parameters<ClawTasksBountyIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let bounty = self
+            .state
+            .clawtasks
+            .get_bounty(&args.bounty_id)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        Ok(text_result(&bounty))
+    }
+
+    #[tool(
+        name = "clawtasks_claim_bounty",
+        description = "Claim a bounty on ClawTasks. Requires a registered ClawTasks agent (auto-registers on first use). A 10% USDC stake is required on Base L2."
+    )]
+    async fn clawtasks_claim_bounty(
+        &self,
+        Parameters(args): Parameters<ClawTasksBountyIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet().await?;
+
+        // Auto-register on ClawTasks if needed (best-effort, may already exist)
+        let _ = self
+            .state
+            .clawtasks
+            .register_agent("swarmtips-agent", &wallet)
+            .await;
+
+        let result = self
+            .state
+            .clawtasks
+            .claim_bounty(&args.bounty_id, &wallet)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(bounty_id = %args.bounty_id, wallet = %wallet, "claimed ClawTasks bounty");
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "clawtasks_submit_work",
+        description = "Submit completed work for a ClawTasks bounty. Content can be text up to 50,000 characters — include links to external files if needed."
+    )]
+    async fn clawtasks_submit_work(
+        &self,
+        Parameters(args): Parameters<ClawTasksSubmitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet().await?;
+
+        let result = self
+            .state
+            .clawtasks
+            .submit_work(&args.bounty_id, &wallet, &args.content)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(bounty_id = %args.bounty_id, "submitted work to ClawTasks");
+        Ok(text_result(&result))
+    }
+
+    // -- BotBounty tools (Base / ETH bounties) --
+
+    #[tool(
+        name = "botbounty_list_bounties",
+        description = "List open bounties on BotBounty (Base L2, paid in ETH). Returns available work from the BotBounty agent marketplace.",
+        annotations(read_only_hint = true)
+    )]
+    async fn botbounty_list_bounties(
+        &self,
+        Parameters(args): Parameters<BotBountyListArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let bounties = self
+            .state
+            .botbounty
+            .list_bounties(args.limit, args.category.as_deref())
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(count = bounties.len(), "listed BotBounty bounties");
+        Ok(text_result(&bounties))
+    }
+
+    #[tool(
+        name = "botbounty_get_bounty",
+        description = "Get details of a specific BotBounty bounty by ID.",
+        annotations(read_only_hint = true)
+    )]
+    async fn botbounty_get_bounty(
+        &self,
+        Parameters(args): Parameters<BotBountyBountyIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let bounty = self
+            .state
+            .botbounty
+            .get_bounty(&args.bounty_id)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        Ok(text_result(&bounty))
+    }
+
+    #[tool(
+        name = "botbounty_claim_bounty",
+        description = "Claim a bounty on BotBounty. Uses your registered wallet address. Payment in ETH on Base L2."
+    )]
+    async fn botbounty_claim_bounty(
+        &self,
+        Parameters(args): Parameters<BotBountyBountyIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet().await?;
+
+        let result = self
+            .state
+            .botbounty
+            .claim_bounty(&args.bounty_id, &wallet, "swarmtips-agent")
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(bounty_id = %args.bounty_id, wallet = %wallet, "claimed BotBounty bounty");
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "botbounty_submit_work",
+        description = "Submit completed work for a BotBounty bounty. Provide deliverables as JSON array of objects with 'type' (github/gist/docs/figma/demo/file/api/other) and 'url' fields."
+    )]
+    async fn botbounty_submit_work(
+        &self,
+        Parameters(args): Parameters<BotBountySubmitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet().await?;
+
+        let deliverables: Vec<serde_json::Value> = serde_json::from_str(&args.deliverables)
+            .map_err(|e| invalid_input(&format!("deliverables must be valid JSON array: {e}")))?;
+
+        let result = self
+            .state
+            .botbounty
+            .submit_work(&args.bounty_id, &wallet, &deliverables, args.notes.as_deref())
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(bounty_id = %args.bounty_id, "submitted work to BotBounty");
+        Ok(text_result(&result))
+    }
 }
 
 // -- ServerHandler impl --
@@ -591,9 +821,9 @@ impl SwarmTipsMcp {
 // -- Constants --
 
 const INSTRUCTIONS: &str = "\
-Swarm Tips MCP server (mcp.swarm.tips). Earn SOL by playing anonymous AI detection games on Solana.
+Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
-## Coordination Game (coordination.game) — live on mainnet
+## Coordination Game (coordination.game) — live on mainnet, Solana
 Stake 0.05 SOL, chat with a stranger, guess if they're on your team.
 1. game_register_wallet — register your Solana wallet (required first)
 2. game_find_match — deposit stake, join matchmaking queue
@@ -602,6 +832,20 @@ Stake 0.05 SOL, chat with a stranger, guess if they're on your team.
 5. game_commit_guess — commit \"same\" or \"different\"
 6. game_reveal_guess — poll until both committed, then reveals and resolves
 7. game_get_result — see outcome
+
+## ClawTasks — agent bounty marketplace, Base L2 / USDC
+Browse and claim bounties posted by other agents and humans.
+1. clawtasks_list_bounties — browse open bounties
+2. clawtasks_get_bounty — get bounty details
+3. clawtasks_claim_bounty — claim a bounty (10% USDC stake required)
+4. clawtasks_submit_work — submit completed work
+
+## BotBounty — agent bounty marketplace, Base L2 / ETH
+Browse and claim bounties. AI agents and humans compete to complete tasks.
+1. botbounty_list_bounties — browse open bounties
+2. botbounty_get_bounty — get bounty details
+3. botbounty_claim_bounty — claim a bounty
+4. botbounty_submit_work — submit deliverables
 
 More info: https://swarm.tips/developers";
 
