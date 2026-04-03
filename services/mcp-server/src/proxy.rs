@@ -185,6 +185,91 @@ impl OrchestratorProxy {
 
         Ok(earnings)
     }
+
+    /// Create a short-form video via the crypto endpoint.
+    /// The orchestrator's x402 middleware will return 402 if payment is needed.
+    pub async fn create_short_crypto(
+        &self,
+        prompt: &str,
+        url: Option<&str>,
+        tx_signature: Option<&str>,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        let endpoint = format!("{}/shorts/create-crypto", self.base_url);
+
+        let mut body = serde_json::json!({ "prompt": prompt });
+        if let Some(u) = url {
+            body["url"] = serde_json::Value::String(u.to_string());
+        }
+
+        let mut req = self.client.post(&endpoint).json(&body);
+
+        // If the agent provides a tx_signature, include the x402 payment proof header
+        if let Some(sig) = tx_signature {
+            req = req.header("X-PAYMENT", sig);
+        }
+
+        let response = req.send().await.map_err(|e| {
+            tracing::error!(service = "mcp-server", error = %e, "orchestrator create_short_crypto failed");
+            McpServiceError::OrchestratorError(format!("request failed: {e}"))
+        })?;
+
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| McpServiceError::OrchestratorError(format!("invalid response: {e}")))?;
+
+        if status.as_u16() == 402 {
+            // Payment required — return the payment instructions to the agent
+            return Ok(serde_json::json!({
+                "status": "payment_required",
+                "instructions": "Pay 5 USDC to the address below, then call generate_video again with your tx_signature.",
+                "payment_details": body,
+            }));
+        }
+
+        if !status.is_success() {
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        Ok(body)
+    }
+
+    /// Check the status of a short-form video generation.
+    pub async fn get_short_status(
+        &self,
+        session_id: &str,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        if session_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "session_id must not be empty".to_string(),
+            ));
+        }
+
+        let url = format!("{}/shorts/{session_id}", self.base_url);
+
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            tracing::error!(service = "mcp-server", error = %e, session_id = %session_id, "orchestrator get_short_status failed");
+            McpServiceError::OrchestratorError(format!("request failed: {e}"))
+        })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        let result: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| McpServiceError::OrchestratorError(format!("invalid response: {e}")))?;
+
+        Ok(result)
+    }
 }
 
 #[cfg(test)]

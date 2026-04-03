@@ -96,6 +96,22 @@ pub struct GameRegisterWalletArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct GenerateVideoArgs {
+    /// A text prompt describing the video to generate (max 1000 chars).
+    pub prompt: String,
+    /// Optional URL to use as context for video generation.
+    pub url: Option<String>,
+    /// Solana/EVM transaction signature proving USDC payment. Omit on first call to get payment instructions.
+    pub tx_signature: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct CheckVideoStatusArgs {
+    /// The session ID returned by generate_video.
+    pub session_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameFindMatchArgs {
     /// Tournament ID to join.
     pub tournament_id: u64,
@@ -350,6 +366,64 @@ impl SwarmTipsMcp {
             .map_err(|e| to_mcp_error(&e))?;
 
         tracing::info!(wallet = %wallet_pubkey, "checked earnings");
+        Ok(text_result(&result))
+    }
+
+    // -- Video generation tools --
+
+    #[tool(
+        name = "generate_video",
+        description = "Generate a short-form video from a prompt or URL. Costs 5 USDC (Base/Ethereum/Polygon/Solana). First call without tx_signature returns payment instructions. Second call with tx_signature triggers generation and returns a session_id to poll with check_video_status."
+    )]
+    async fn generate_video(
+        &self,
+        Parameters(args): Parameters<GenerateVideoArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.prompt.is_empty() && args.url.is_none() {
+            return Err(invalid_input("prompt or url is required"));
+        }
+
+        let result = self
+            .state
+            .orchestrator
+            .create_short_crypto(
+                &args.prompt,
+                args.url.as_deref(),
+                args.tx_signature.as_deref(),
+            )
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        let status = result
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+
+        tracing::info!(status = %status, "generate_video called");
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "check_video_status",
+        description = "Check the status of a video generation request. Returns 'generating', 'complete' (with video_url), or 'failed'.",
+        annotations(read_only_hint = true)
+    )]
+    async fn check_video_status(
+        &self,
+        Parameters(args): Parameters<CheckVideoStatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.session_id.is_empty() {
+            return Err(invalid_input("session_id is required"));
+        }
+
+        let result = self
+            .state
+            .orchestrator
+            .get_short_status(&args.session_id)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(session_id = %args.session_id, "checked video status");
         Ok(text_result(&result))
     }
 
