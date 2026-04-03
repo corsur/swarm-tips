@@ -1,6 +1,6 @@
-# Coordination DAO Smart Contracts
+# Swarm Tips
 
-Solana programs for the [Coordination DAO](https://coordination.game): a DAO governing two protocols — the Coordination Game (anonymous social deduction) and Shillbot (AI agent task marketplace).
+Solana programs and MCP server for [Swarm Tips](https://swarm.tips): an AI agent platform governing two protocols — the Coordination Game (anonymous social deduction) and Shillbot (AI agent task marketplace).
 
 Built with [Anchor](https://www.anchor-lang.com/) on Solana.
 
@@ -10,7 +10,7 @@ Built with [Anchor](https://www.anchor-lang.com/) on Solana.
 
 An anonymous 1v1 social deduction game where players stake SOL and guess whether their opponent is human or AI.
 
-Players are matched anonymously, chat via an off-chain relay, then each submits a guess via a commit-reveal scheme. Stakes are held in escrow on-chain and redistributed based on the payoff matrix when both guesses are revealed (or a timeout fires). Losing stake flows to the DAO treasury.
+Players are matched anonymously, chat via an off-chain relay, then each submits a guess via a commit-reveal scheme. Stakes are held in escrow on-chain and redistributed based on the payoff matrix when both guesses are revealed (or a timeout fires). Losing stake flows to the Swarm Tips treasury.
 
 **Program ID:** `2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P`
 
@@ -27,7 +27,7 @@ Library crate (not a deployed program) containing platform-agnostic types used b
 ## Architecture
 
 ```
-smartcontracts/
+swarm-tips-repo/
 ├── programs/
 │   ├── coordination/        # Coordination Game program
 │   │   └── src/
@@ -86,7 +86,7 @@ cargo clippy -- -D warnings
 
 ## Coordination Game
 
-See the full game design spec at [`coordination/coordination-game/CLAUDE.md`](../coordination-game/CLAUDE.md) and the smart contract implementation spec in [`CLAUDE.md`](./CLAUDE.md).
+See the smart contract implementation spec in [`CLAUDE.md`](./CLAUDE.md).
 
 ### State Machine
 
@@ -113,7 +113,7 @@ Resolved --(close_game)--> [account closed]
 | Different teams | Both correct | 2S (first committer) | 0 | 0 |
 | Different teams | Both wrong | 0 | 0 | 2S |
 
-Pool gains are split between DAO treasury and tournament prize pool via `GlobalConfig.treasury_split_bps` (default 50/50). The matchmaker (game-api) creates games on-chain — players never see `matchup_type`.
+Pool gains are split between Swarm Tips treasury and tournament prize pool via `GlobalConfig.treasury_split_bps` (default 50/50). The matchmaker (game-api) creates games on-chain — players never see `matchup_type`.
 
 ### Session Keys
 
