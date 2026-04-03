@@ -10,6 +10,7 @@ mod errors;
 mod game_proxy;
 #[allow(dead_code)]
 mod game_session;
+mod listings;
 mod proxy;
 mod server;
 #[allow(dead_code)]
@@ -21,10 +22,12 @@ use crate::botbounty_proxy::BotBountyProxy;
 use crate::clawtasks_proxy::ClawTasksProxy;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
+use crate::listings::ListingsState;
 use crate::proxy::OrchestratorProxy;
 use crate::server::{SharedState, SwarmTipsMcp};
 use crate::session::SessionManager;
 use anyhow::Context;
+use firestore::FirestoreDb;
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
@@ -70,6 +73,8 @@ async fn main() -> anyhow::Result<()> {
         "starting MCP server"
     );
 
+    let gcp_project_id = load_env_or("GCP_PROJECT_ID", "coordination-game-prod");
+
     let sessions = SessionManager::new();
     let challenge_manager = ChallengeManager::new();
 
@@ -77,6 +82,13 @@ async fn main() -> anyhow::Result<()> {
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .context("reqwest client must build")?;
+
+    // Firestore client for listings persistence
+    let db = FirestoreDb::new(&gcp_project_id)
+        .await
+        .expect("Firestore client must initialize at startup");
+
+    let listings_state = Arc::new(ListingsState::new(db, rpc_client.clone()));
 
     let game_sessions = Arc::new(GameSessionManager::new(
         game_api_url.clone(),
@@ -106,6 +118,10 @@ async fn main() -> anyhow::Result<()> {
 
     let router = axum::Router::new()
         .route("/health", axum::routing::get(|| async { "ok" }))
+        .route(
+            "/internal/listings",
+            listings::listings_handler(listings_state),
+        )
         .nest_service("/mcp", service);
     let bind_addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
