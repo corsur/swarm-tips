@@ -406,6 +406,8 @@ impl GameChainClient {
         ixs: &[solana_sdk::instruction::Instruction],
     ) -> Result<Signature> {
         let wallet = self.keypair.pubkey();
+        let balance_before = self.rpc.get_balance(&wallet).await.unwrap_or(0);
+
         let blockhash = self
             .rpc
             .get_latest_blockhash()
@@ -418,7 +420,19 @@ impl GameChainClient {
             blockhash,
         );
         match self.rpc.send_and_confirm_transaction(&tx).await {
-            Ok(sig) => Ok(sig),
+            Ok(sig) => {
+                let balance_after = self.rpc.get_balance(&wallet).await.unwrap_or(0);
+                let cost_lamports = balance_before.saturating_sub(balance_after);
+                tracing::info!(
+                    wallet = %wallet,
+                    %sig,
+                    balance_before,
+                    balance_after,
+                    cost_lamports,
+                    "transaction confirmed"
+                );
+                Ok(sig)
+            }
             Err(e) => {
                 // Log balance and full error for debugging.
                 let balance = self.rpc.get_balance(&wallet).await.unwrap_or(0);
