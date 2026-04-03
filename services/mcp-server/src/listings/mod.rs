@@ -183,10 +183,7 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
         });
     }
 
-    tracing::info!(
-        returned = agent_jobs.len(),
-        "listings ingestion complete"
-    );
+    tracing::info!(returned = agent_jobs.len(), "listings ingestion complete");
 
     Ok(agent_jobs)
 }
@@ -323,9 +320,7 @@ async fn record_source_health(db: &FirestoreDb, source: &str, check: &HealthChec
 }
 
 /// Build the axum handler for GET /internal/listings.
-pub fn listings_handler(
-    state: Arc<ListingsState>,
-) -> axum::routing::MethodRouter {
+pub fn listings_handler(state: Arc<ListingsState>) -> axum::routing::MethodRouter {
     axum::routing::get(move || {
         let state = state.clone();
         async move {

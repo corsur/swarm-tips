@@ -39,7 +39,7 @@ pub async fn fetch_clawtasks(client: &reqwest::Client) -> FetchResult {
         let listings: Vec<RawListing> = bounties
             .iter()
             .take(20)
-            .filter_map(|b| parse_clawtask(b))
+            .filter_map(parse_clawtask)
             .collect();
 
         Ok((listings, status))
@@ -156,7 +156,7 @@ pub async fn fetch_botbounty(client: &reqwest::Client) -> FetchResult {
         let listings: Vec<RawListing> = bounties
             .iter()
             .take(20)
-            .filter_map(|b| parse_botbounty(b))
+            .filter_map(parse_botbounty)
             .collect();
 
         Ok((listings, status))
@@ -269,7 +269,7 @@ pub async fn fetch_bountycaster(client: &reqwest::Client) -> FetchResult {
         let listings: Vec<RawListing> = bounties
             .iter()
             .take(20)
-            .filter_map(|b| parse_bountycaster(b))
+            .filter_map(parse_bountycaster)
             .collect();
 
         Ok((listings, status))
