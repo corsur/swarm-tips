@@ -347,20 +347,30 @@ impl GameApiClient {
     }
 
     /// `POST /games/resolved` — notify the backend that a game was resolved.
+    ///
+    /// Optional `agent_guess_reasoning` and `agent_guess_source` fields allow
+    /// AI agents to report their decision audit trail for A/B analysis.
+    #[allow(clippy::too_many_arguments)]
     pub async fn post_games_resolved(
         &self,
         token: &str,
         game_id: u64,
         p1_guess: u8,
         p2_guess: u8,
+        agent_guess_reasoning: Option<&str>,
+        agent_guess_source: Option<&str>,
     ) -> Result<(), GameApiError> {
         #[derive(Serialize)]
-        struct Body {
+        struct Body<'a> {
             game_id: u64,
             p1_guess: u8,
             p2_guess: u8,
             p1_return: u64,
             p2_return: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            agent_guess_reasoning: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            agent_guess_source: Option<&'a str>,
         }
 
         let url = format!("{}/games/resolved", self.base_url);
@@ -374,6 +384,8 @@ impl GameApiClient {
                 p2_guess,
                 p1_return: 0,
                 p2_return: 0,
+                agent_guess_reasoning,
+                agent_guess_source,
             })
             .send()
             .await?;
