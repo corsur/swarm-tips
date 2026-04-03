@@ -781,7 +781,12 @@ impl SwarmTipsMcp {
         let result = self
             .state
             .botbounty
-            .submit_work(&args.bounty_id, &wallet, &deliverables, args.notes.as_deref())
+            .submit_work(
+                &args.bounty_id,
+                &wallet,
+                &deliverables,
+                args.notes.as_deref(),
+            )
             .await
             .map_err(|e| to_mcp_error(&e))?;
 

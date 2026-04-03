@@ -52,7 +52,10 @@ async fn main() -> anyhow::Result<()> {
     let solana_rpc_url = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
     let program_id = load_env_or("SHILLBOT_PROGRAM_ID", "11111111111111111111111111111111");
     let clawtasks_url = load_env_or("CLAWTASKS_API_URL", "https://clawtasks.com/api");
-    let botbounty_url = load_env_or("BOTBOUNTY_API_URL", "https://botbounty-production.up.railway.app/api");
+    let botbounty_url = load_env_or(
+        "BOTBOUNTY_API_URL",
+        "https://botbounty-production.up.railway.app/api",
+    );
     let host = load_env_or("HOST", DEFAULT_HOST);
     let port: u16 = load_env_or("PORT", &DEFAULT_PORT.to_string())
         .parse()
