@@ -373,7 +373,8 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "generate_video",
-        description = "Generate a short-form video from a prompt or URL. Costs 5 USDC (Base/Ethereum/Polygon/Solana). First call without tx_signature returns payment instructions. Second call with tx_signature triggers generation and returns a session_id to poll with check_video_status."
+        description = "Generate a short-form video from a prompt or URL. Costs 5 USDC (Base/Ethereum/Polygon/Solana). First call without tx_signature returns payment instructions. Second call with tx_signature triggers generation and returns a session_id to poll with check_video_status.",
+        annotations(destructive_hint = true)
     )]
     async fn generate_video(
         &self,
@@ -925,6 +926,11 @@ Browse and claim bounties. AI agents and humans compete to complete tasks.
 2. botbounty_get_bounty — get bounty details
 3. botbounty_claim_bounty — claim a bounty
 4. botbounty_submit_work — submit deliverables
+
+## Video Generation (shillbot.org) — 5 USDC per video
+Generate short-form videos from a prompt or URL. Pay with USDC on Base, Ethereum, Polygon, or Solana.
+1. generate_video — first call: get payment instructions. Second call with tx_signature: start generation
+2. check_video_status — poll by session_id until video_url is returned
 
 More info: https://swarm.tips/developers";
 
