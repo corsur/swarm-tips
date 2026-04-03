@@ -363,11 +363,26 @@ impl GameChainClient {
             }
         }
 
-        let sig = self
-            .rpc
-            .send_and_confirm_transaction(&tx)
-            .await
-            .context("send_and_confirm create_game")?;
+        let sig = match self.rpc.send_and_confirm_transaction(&tx).await {
+            Ok(sig) => sig,
+            Err(e) => {
+                let balance = self
+                    .rpc
+                    .get_balance(&self.keypair.pubkey())
+                    .await
+                    .unwrap_or(0);
+                tracing::error!(
+                    wallet = %self.keypair.pubkey(),
+                    balance_lamports = balance,
+                    game_counter_value,
+                    tournament_id,
+                    error = %e,
+                    error_debug = ?e,
+                    "create_game transaction failed"
+                );
+                return Err(e).context("send_and_confirm create_game");
+            }
+        };
 
         tracing::info!(
             tournament_id,
@@ -383,10 +398,14 @@ impl GameChainClient {
     // -- internal helpers -----------------------------------------------------
 
     /// Sign and submit a transaction, returning the signature.
+    ///
+    /// On failure, logs the full Solana RPC error including program error codes
+    /// and the wallet balance for debugging insufficient-funds issues.
     async fn send_and_confirm(
         &self,
         ixs: &[solana_sdk::instruction::Instruction],
     ) -> Result<Signature> {
+        let wallet = self.keypair.pubkey();
         let blockhash = self
             .rpc
             .get_latest_blockhash()
@@ -394,15 +413,24 @@ impl GameChainClient {
             .context("get_latest_blockhash")?;
         let tx = Transaction::new_signed_with_payer(
             ixs,
-            Some(&self.keypair.pubkey()),
+            Some(&wallet),
             &[self.keypair.as_ref()],
             blockhash,
         );
-        let sig = self
-            .rpc
-            .send_and_confirm_transaction(&tx)
-            .await
-            .context("send_and_confirm_transaction")?;
-        Ok(sig)
+        match self.rpc.send_and_confirm_transaction(&tx).await {
+            Ok(sig) => Ok(sig),
+            Err(e) => {
+                // Log balance and full error for debugging.
+                let balance = self.rpc.get_balance(&wallet).await.unwrap_or(0);
+                tracing::error!(
+                    wallet = %wallet,
+                    balance_lamports = balance,
+                    error = %e,
+                    error_debug = ?e,
+                    "transaction failed"
+                );
+                Err(e).context("send_and_confirm_transaction")
+            }
+        }
     }
 }

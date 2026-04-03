@@ -593,9 +593,18 @@ impl GameSessionManager {
             anyhow::anyhow!("commitment must be 32 bytes, got {}", v.len())
         })?;
 
-        // Read the matchmaker pubkey from GlobalConfig on-chain.
         let chain = self.chain_clients.read().await;
         let chain_client = chain.get(wallet).context("no chain client")?;
+
+        // Log balance before create_game for debugging.
+        let balance = chain_client
+            .rpc()
+            .get_balance(&chain_client.pubkey())
+            .await
+            .unwrap_or(0);
+        tracing::info!(wallet = %wallet, balance_lamports = balance, "creating game as P1");
+
+        // Read the matchmaker pubkey from GlobalConfig on-chain.
 
         let (global_config_pda, _) = game_chain::pda::global_config_pda();
         let config_data = chain_client

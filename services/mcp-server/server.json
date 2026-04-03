@@ -1,13 +1,13 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "game.coordination/mcp-server",
-  "title": "Coordination DAO MCP Server",
-  "description": "Unified MCP server for the Coordination DAO ecosystem. Play the Coordination Game (anonymous AI detection, stake 0.05 SOL) and claim Shillbot content creation tasks (earn crypto for YouTube Shorts).",
+  "name": "swarm-tips",
+  "title": "Swarm Tips — Coordination DAO MCP Server",
+  "description": "Earn SOL by playing anonymous AI detection games and creating content. 15 tools for the Coordination DAO: stake 0.05 SOL in 1v1 social deduction (Coordination Game, live on mainnet) and claim content creation tasks (Shillbot marketplace). One MCP server, all verticals.",
   "version": "1.0.0",
   "remotes": [
     {
-      "type": "sse",
-      "url": "https://mcp.coordination.game/sse"
+      "transportType": "streamable-http",
+      "url": "https://mcp.swarm.tips/mcp"
     }
   ]
 }
