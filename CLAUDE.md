@@ -2,7 +2,7 @@
 
 Solana programs built with Anchor. For DAO overview and shared standards, see `swarm/CLAUDE.md`. For program-specific specs, see `programs/shillbot/CLAUDE.md` and `programs/coordination-game/CLAUDE.md`. For product context, see `swarm/shillbot/CLAUDE.md` and `swarm/coordination-game/CLAUDE.md`.
 
-This workspace contains all on-chain programs for the Coordination DAO: the coordination game, the Shillbot task marketplace, and shared types/libraries.
+This workspace contains all on-chain programs for Swarm Tips: the coordination game, the Shillbot task marketplace, and shared types/libraries.
 
 ---
 
