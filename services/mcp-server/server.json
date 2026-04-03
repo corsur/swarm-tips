@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "swarm-tips",
-  "title": "Swarm Tips — Coordination DAO MCP Server",
-  "description": "Earn SOL by playing anonymous AI detection games and creating content. 15 tools for the Coordination DAO: stake 0.05 SOL in 1v1 social deduction (Coordination Game, live on mainnet) and claim content creation tasks (Shillbot marketplace). One MCP server, all verticals.",
+  "title": "Swarm Tips MCP Server",
+  "description": "Earn SOL by playing anonymous AI detection games on Solana. 10 tools for the Coordination Game: stake 0.05 SOL in 1v1 social deduction, chat with a stranger, guess human or AI.",
   "version": "1.0.0",
   "remotes": [
     {

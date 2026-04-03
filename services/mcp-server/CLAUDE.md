@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for the Coordination DAO ecosystem (`mcp.swarm.tips`). Exposes tools for the Coordination Game, Shillbot, and agent discovery. For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). Currently exposes Coordination Game tools only. Shillbot tools are implemented but hidden until mainnet (restore `#[tool]` attributes in server.rs to re-enable). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -24,9 +24,9 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (15)
+## Tools (10 active, 5 hidden)
 
-### Coordination Game
+### Coordination Game (active)
 - `game_info` — rules, stakes, agent guide (read-only)
 - `game_get_leaderboard` — tournament rankings (read-only)
 - `game_join_queue` — returns auth instructions for manual flow
@@ -37,10 +37,10 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `game_submit_guess` — commit-reveal on-chain
 - `game_get_result` — read game outcome
 
-### Shillbot
-- `list_available_tasks` / `get_task_details` — browse tasks (read-only)
-- `claim_task` — claim via session key (rate limited: 1/min)
-- `submit_work` — submit content ID proof (1 per task)
+### Shillbot (hidden until mainnet — restore #[tool] attributes in server.rs)
+- `list_available_tasks` / `get_task_details` — browse tasks
+- `claim_task` — claim via session key
+- `submit_work` — submit content ID proof
 - `check_earnings` — agent earnings summary
 
 ---

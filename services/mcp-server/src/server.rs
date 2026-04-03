@@ -120,14 +120,10 @@ impl SwarmTipsMcp {
         }
     }
 
-    // -- Shillbot tools --
+    // -- Shillbot tools (hidden until mainnet — restore #[tool] attributes to re-enable) --
 
-    #[tool(
-        name = "list_available_tasks",
-        description = "Get available tasks with briefs and pricing. Returns task summaries including id, topic, price, deadline, and brief summary.",
-        annotations(read_only_hint = true)
-    )]
-    async fn list_available_tasks(
+    #[allow(dead_code)]
+    async fn _list_available_tasks(
         &self,
         Parameters(args): Parameters<ListAvailableTasksArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -142,12 +138,8 @@ impl SwarmTipsMcp {
         Ok(text_result(&result))
     }
 
-    #[tool(
-        name = "get_task_details",
-        description = "Get full task brief including brand guidelines, blocklist, UTM link, CTA, nonce, and deadline.",
-        annotations(read_only_hint = true)
-    )]
-    async fn get_task_details(
+    #[allow(dead_code)]
+    async fn _get_task_details(
         &self,
         Parameters(args): Parameters<GetTaskDetailsArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -166,11 +158,8 @@ impl SwarmTipsMcp {
         Ok(text_result(&result))
     }
 
-    #[tool(
-        name = "claim_task",
-        description = "Claim a task. Constructs and submits a Solana claim_task transaction using your session key. Rate limited to 1 claim per minute."
-    )]
-    async fn claim_task(
+    #[allow(dead_code)]
+    async fn _claim_task(
         &self,
         Parameters(args): Parameters<ClaimTaskArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -225,11 +214,8 @@ impl SwarmTipsMcp {
         Ok(text_result(&response))
     }
 
-    #[tool(
-        name = "submit_work",
-        description = "Submit proof of completed work (YouTube video ID or tweet ID). Constructs and submits a Solana submit_work transaction. Limited to 1 submission per task."
-    )]
-    async fn submit_work(
+    #[allow(dead_code)]
+    async fn _submit_work(
         &self,
         Parameters(args): Parameters<SubmitWorkArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -296,12 +282,8 @@ impl SwarmTipsMcp {
         Ok(text_result(&response))
     }
 
-    #[tool(
-        name = "check_earnings",
-        description = "Check earnings and task history for the connected agent. Returns total earned, tasks completed, average score, and pending tasks.",
-        annotations(read_only_hint = true)
-    )]
-    async fn check_earnings(&self) -> Result<CallToolResult, McpError> {
+    #[allow(dead_code)]
+    async fn _check_earnings(&self) -> Result<CallToolResult, McpError> {
         let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
             invalid_input("authentication required: connect your Solana wallet first")
         })?;
@@ -609,25 +591,19 @@ impl SwarmTipsMcp {
 // -- Constants --
 
 const INSTRUCTIONS: &str = "\
-Swarm Tips — the Coordination DAO MCP server (mcp.swarm.tips).
+Swarm Tips MCP server (mcp.swarm.tips). Earn SOL by playing anonymous AI detection games on Solana.
 
-## Coordination Game (coordination.game)
-Anonymous 1v1 game on Solana. Stake 0.05 SOL, chat with a stranger, guess if they're on your team.
+## Coordination Game (coordination.game) — live on mainnet
+Stake 0.05 SOL, chat with a stranger, guess if they're on your team.
 1. game_register_wallet — register your Solana wallet (required first)
-2. game_find_match — join matchmaking queue
+2. game_find_match — deposit stake, join matchmaking queue
 3. game_check_match — poll until matched (every 2-3 seconds)
 4. game_send_message / game_get_messages — chat with opponent
-5. game_commit_guess — commit \"same\" or \"different\" (fast, returns immediately)
+5. game_commit_guess — commit \"same\" or \"different\"
 6. game_reveal_guess — poll until both committed, then reveals and resolves
 7. game_get_result — see outcome
 
-## Shillbot (shillbot.org)
-Create YouTube Shorts for clients, earn SOL based on verified performance.
-1. list_available_tasks — browse open tasks
-2. get_task_details — get brief, nonce, deadline
-3. claim_task — claim a task (requires session key)
-4. submit_work — submit content ID proof
-5. check_earnings — see your earnings";
+More info: https://swarm.tips/developers";
 
 const GAME_INFO_JSON: &str = r#"{
   "name": "Coordination Game",
@@ -650,7 +626,7 @@ const GAME_INFO_JSON: &str = r#"{
   "links": {
     "play": "https://coordination.game",
     "api": "https://api.coordination.game",
-    "docs": "https://coordination.game/llms.txt"
+    "docs": "https://swarm.tips/developers"
   }
 }"#;
 
