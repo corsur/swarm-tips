@@ -5,10 +5,9 @@ metadata:
   namespace: shillbot
 spec:
   parentRefs:
-    - name: shillbot-gateway
-      namespace: shillbot
+    - name: unified-backend-gateway
+      namespace: backend
   hostnames:
-    - mcp.shill.bot
     - mcp.shillbot.org
     - mcp.coordination.game
     - mcp.swarm.tips
