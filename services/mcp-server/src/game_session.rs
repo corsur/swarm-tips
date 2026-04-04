@@ -237,10 +237,12 @@ impl GameSessionManager {
     ///
     /// After deposit_stake: authenticates with game-api via the tx signature,
     /// connects WebSocket if needed, and joins the matchmaking queue.
+    /// Submit a signed game transaction and handle action-specific post-submission logic.
     pub async fn submit_signed_game_tx(
         &self,
         wallet: &str,
         signed_tx_b64: &str,
+        action: &str,
     ) -> Result<serde_json::Value> {
         let builders = self.tx_builders.read().await;
         let tx_builder = builders.get(wallet).context("no session for wallet")?;
@@ -253,8 +255,6 @@ impl GameSessionManager {
         let sig = tx_builder.submit_signed(&signed_bytes).await?;
         let sig_str = sig.to_string();
 
-        // Authenticate with game-api using the tx signature (stake = auth).
-        // This is the non-custodial auth path — no private key needed.
         let session = self
             .sessions
             .read()
@@ -263,48 +263,97 @@ impl GameSessionManager {
             .context("no session for wallet")?
             .clone();
 
-        let needs_auth = session.lock().await.jwt.is_empty();
+        // Action-specific post-submission logic.
+        match action {
+            "deposit_stake" => {
+                // Authenticate with game-api using the tx signature (stake = auth).
+                let needs_auth = session.lock().await.jwt.is_empty();
+                if needs_auth {
+                    let api_client = GameApiClient::new(&self.game_api_url)?;
+                    let auth_resp = api_client.session_auth(wallet, &sig_str).await?;
+                    let jwt = auth_resp.token.clone();
 
-        if needs_auth {
-            let api_client = GameApiClient::new(&self.game_api_url)?;
-            let auth_resp = api_client.session_auth(wallet, &sig_str).await?;
-            let jwt = auth_resp.token.clone();
+                    let ws = WsConnection::connect(&self.game_api_url, &jwt).await?;
+                    let (sink, stream) = ws.into_split();
+                    let ws_sink = Arc::new(Mutex::new(sink));
 
-            // Connect WebSocket now that we have a JWT.
-            let ws = WsConnection::connect(&self.game_api_url, &jwt).await?;
-            let (sink, stream) = ws.into_split();
-            let ws_sink = Arc::new(Mutex::new(sink));
+                    let session_clone = Arc::clone(&session);
+                    let sink_clone = Arc::clone(&ws_sink);
+                    let api_url = self.game_api_url.clone();
+                    tokio::spawn(async move {
+                        ws_listener_with_reconnect(session_clone, stream, sink_clone, api_url)
+                            .await;
+                    });
 
-            // Spawn background WS listener.
-            let session_clone = Arc::clone(&session);
-            let sink_clone = Arc::clone(&ws_sink);
-            let api_url = self.game_api_url.clone();
-            tokio::spawn(async move {
-                ws_listener_with_reconnect(session_clone, stream, sink_clone, api_url).await;
-            });
+                    self.ws_sinks
+                        .write()
+                        .await
+                        .insert(wallet.to_string(), ws_sink);
+                    session.lock().await.jwt = jwt;
 
-            self.ws_sinks
-                .write()
-                .await
-                .insert(wallet.to_string(), ws_sink);
-            session.lock().await.jwt = jwt;
+                    tracing::info!(wallet = %wallet, "authenticated via deposit_stake tx");
+                }
 
-            tracing::info!(
-                service = "coordination-mcp-server",
-                wallet = %wallet,
-                "authenticated via tx signature (stake-as-auth)"
-            );
-        }
-
-        // Join the queue if we have a pending tournament.
-        let (jwt, tournament_id) = {
-            let s = session.lock().await;
-            (s.jwt.clone(), s.tournament_id)
-        };
-
-        if let Some(tournament_id) = tournament_id {
-            self.join_queue_after_stake(wallet, &jwt, tournament_id)
-                .await?;
+                // Join the queue.
+                let (jwt, tournament_id) = {
+                    let s = session.lock().await;
+                    (s.jwt.clone(), s.tournament_id)
+                };
+                if let Some(tid) = tournament_id {
+                    self.join_queue_after_stake(wallet, &jwt, tid).await?;
+                }
+            }
+            "join_game" => {
+                let (jwt, session_id) = {
+                    let mut s = session.lock().await;
+                    s.state = GameSessionState::InGame;
+                    (s.jwt.clone(), s.session_id.clone().unwrap_or_default())
+                };
+                let game_id = session.lock().await.game_id.unwrap_or(0);
+                if !session_id.is_empty() {
+                    let api_client = GameApiClient::new(&self.game_api_url)?;
+                    api_client
+                        .post_games_joined(&jwt, game_id, &session_id)
+                        .await?;
+                }
+                tracing::info!(wallet = %wallet, game_id, "P2 joined game on-chain");
+            }
+            "commit_guess" => {
+                let mut s = session.lock().await;
+                s.state = GameSessionState::Committed;
+                let jwt = s.jwt.clone();
+                let session_id = s.session_id.clone().unwrap_or_default();
+                drop(s);
+                if !session_id.is_empty() {
+                    let api_client = GameApiClient::new(&self.game_api_url)?;
+                    if let Err(e) = api_client.post_games_committed(&jwt, &session_id).await {
+                        tracing::warn!(wallet = %wallet, error = %e, "post_games_committed failed (non-fatal)");
+                    }
+                }
+                tracing::info!(wallet = %wallet, "committed guess on-chain");
+            }
+            "reveal_guess" => {
+                session.lock().await.state = GameSessionState::Resolved;
+                tracing::info!(wallet = %wallet, "revealed guess on-chain");
+            }
+            "create_game" => {
+                let (jwt, session_id, game_id) = {
+                    let mut s = session.lock().await;
+                    s.state = GameSessionState::InGame;
+                    let gid = s.game_id.unwrap_or(0);
+                    (s.jwt.clone(), s.session_id.clone().unwrap_or_default(), gid)
+                };
+                if !session_id.is_empty() {
+                    let api_client = GameApiClient::new(&self.game_api_url)?;
+                    api_client
+                        .post_games_started(&jwt, game_id, &session_id)
+                        .await?;
+                }
+                tracing::info!(wallet = %wallet, game_id, "P1 created game on-chain");
+            }
+            _ => {
+                tracing::warn!(wallet = %wallet, action, "unknown action for game_submit_tx");
+            }
         }
 
         Ok(serde_json::json!({
@@ -456,11 +505,10 @@ impl GameSessionManager {
                 let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
                 let unsigned = tx_builder.build_join_game(game_id, tournament_id).await?;
 
-                // TODO: return unsigned tx to agent for signing, then submit.
-                // For now, store pending action so game_submit_tx can complete it.
+                // Store game_id but don't transition to InGame yet —
+                // that happens after the agent submits the signed tx.
                 let mut s = session.lock().await;
                 s.game_id = Some(game_id);
-                s.state = GameSessionState::InGame;
 
                 tracing::info!(wallet = %wallet, game_id, "P2 join_game tx built (needs signing)");
 
@@ -517,7 +565,16 @@ impl GameSessionManager {
     /// Commit guess on-chain. Returns immediately after commit.
     ///
     /// Stores the preimage in the session for later use by `try_reveal`.
-    pub async fn commit_guess(&self, wallet: &str, guess: u8) -> Result<u64> {
+    /// Build an unsigned commit_guess transaction. Returns the unsigned tx
+    /// and the preimage hex (needed for the reveal step).
+    ///
+    /// The preimage is also stored in the session for `build_reveal_tx`.
+    /// The agent signs the tx locally and submits via `submit_signed_game_tx`.
+    pub async fn build_commit_tx(
+        &self,
+        wallet: &str,
+        guess: u8,
+    ) -> Result<(game_chain::client::UnsignedTx, String)> {
         anyhow::ensure!(guess <= 1, "guess must be 0 (same) or 1 (different)");
 
         let session = self
@@ -528,47 +585,41 @@ impl GameSessionManager {
             .context("no session for wallet")?
             .clone();
 
-        let (game_id, _tournament_id) = {
-            let mut s = session.lock().await;
-            let gid = s.game_id.context("no active game")?;
-            let tid = s.tournament_id.context("tournament_id not set")?;
-            s.state = GameSessionState::Committed;
-            (gid, tid)
+        let game_id = {
+            let s = session.lock().await;
+            s.game_id.context("no active game")?
         };
 
-        // Generate commitment locally (no signing needed).
+        // Generate commitment locally.
         let (preimage, commitment) =
             game_chain::commit::generate_commit_secret(guess).map_err(|e| anyhow::anyhow!(e))?;
 
         let chain = self.tx_builders.read().await;
         let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
-        let _unsigned = tx_builder.build_commit_guess(game_id, commitment).await?;
-        // TODO: return unsigned tx to agent for signing instead of submitting here
+        let unsigned = tx_builder.build_commit_guess(game_id, commitment).await?;
 
-        // Store preimage for reveal step.
-        let (jwt, session_id) = {
+        // Store preimage for the reveal step.
+        {
             let mut s = session.lock().await;
             s.commit_preimage = Some(preimage);
-            (s.jwt.clone(), s.session_id.clone().unwrap_or_default())
-        };
-
-        // Notify game-api so it can track both commits and deliver reveal_data.
-        if !session_id.is_empty() {
-            let api_client = GameApiClient::new(&self.game_api_url)?;
-            if let Err(e) = api_client.post_games_committed(&jwt, &session_id).await {
-                tracing::warn!(wallet = %wallet, error = %e, "post_games_committed failed (non-fatal)");
-            }
         }
 
-        tracing::info!(wallet = %wallet, game_id, guess, "committed guess on-chain");
-        Ok(game_id)
+        let preimage_hex = hex::encode(preimage);
+        tracing::info!(wallet = %wallet, game_id, guess, "built unsigned commit_guess tx");
+        Ok((unsigned, preimage_hex))
     }
 
     /// Try to reveal the guess on-chain.
     ///
     /// Checks if `reveal_data` has arrived via WebSocket. If not, returns
-    /// `status: "waiting"`. If arrived, reveals on-chain and returns the outcome.
-    pub async fn try_reveal(&self, wallet: &str) -> Result<GuessOutcome> {
+    /// Check if reveal_data has arrived and build an unsigned reveal transaction.
+    ///
+    /// Returns `None` if still waiting for the opponent to commit.
+    /// Returns `Some(UnsignedTx)` when ready — agent signs and submits via `game_submit_tx`.
+    pub async fn build_reveal_tx(
+        &self,
+        wallet: &str,
+    ) -> Result<Option<game_chain::client::UnsignedTx>> {
         let session = self
             .sessions
             .read()
@@ -584,15 +635,9 @@ impl GameSessionManager {
             .commit_preimage
             .context("no commit preimage — call game_commit_guess first")?;
 
-        // Check if reveal_data has arrived.
+        // Check if reveal_data has arrived via WebSocket.
         let reveal_hex = match &s.reveal_data {
-            None => {
-                return Ok(GuessOutcome {
-                    status: "waiting".to_string(),
-                    p1_guess: None,
-                    p2_guess: None,
-                });
-            }
+            None => return Ok(None), // still waiting
             Some(hex) => hex.clone(),
         };
         drop(s);
@@ -605,41 +650,25 @@ impl GameSessionManager {
         let chain = self.tx_builders.read().await;
         let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
 
-        // Wait for both players to commit.
-        let revealing = tx_builder
-            .wait_for_game_state(game_id, game_chain::GameState::Revealing)
-            .await?;
+        // Read the game to get player pubkeys for the reveal instruction.
+        let game = tx_builder
+            .read_game(game_id)
+            .await?
+            .context("game account not found")?;
 
-        // Build unsigned reveal tx.
-        let _unsigned = tx_builder
+        let unsigned = tx_builder
             .build_reveal_guess(
                 game_id,
                 tournament_id,
                 preimage,
                 Some(r_matchup),
-                revealing.player_one,
-                revealing.player_two,
+                game.player_one,
+                game.player_two,
             )
             .await?;
-        // TODO: return unsigned tx to agent for signing instead of submitting here.
-        // For now, assume reveal was submitted and wait for resolution.
 
-        let resolved = tx_builder
-            .wait_for_game_state(game_id, game_chain::GameState::Resolved)
-            .await?;
-
-        {
-            let mut s = session.lock().await;
-            s.state = GameSessionState::Resolved;
-        }
-
-        tracing::info!(wallet = %wallet, game_id, p1_guess = resolved.p1_guess, p2_guess = resolved.p2_guess, "game resolved");
-
-        Ok(GuessOutcome {
-            status: "resolved".to_string(),
-            p1_guess: Some(resolved.p1_guess),
-            p2_guess: Some(resolved.p2_guess),
-        })
+        tracing::info!(wallet = %wallet, game_id, "built unsigned reveal_guess tx");
+        Ok(Some(unsigned))
     }
 
     /// Read on-chain game state.

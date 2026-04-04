@@ -119,8 +119,10 @@ pub struct GameFindMatchArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameSubmitTxArgs {
-    /// Base64-encoded signed Solana transaction. Sign the unsigned_tx from game_find_match or game_check_match locally, then submit here.
+    /// Base64-encoded signed Solana transaction.
     pub signed_transaction: String,
+    /// The action this transaction performs: "deposit_stake", "join_game", "commit_guess", "reveal_guess", "create_game".
+    pub action: String,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -584,7 +586,7 @@ impl SwarmTipsMcp {
         let result = self
             .state
             .game_sessions
-            .submit_signed_game_tx(&wallet, &args.signed_transaction)
+            .submit_signed_game_tx(&wallet, &args.signed_transaction, &args.action)
             .await
             .map_err(|e| McpError::internal_error(format!("submit_tx failed: {e}"), None))?;
 
@@ -676,32 +678,53 @@ impl SwarmTipsMcp {
 
         let wallet = self.require_game_wallet().await?;
 
-        let game_id = self
+        let (unsigned, preimage_hex) = self
             .state
             .game_sessions
-            .commit_guess(&wallet, guess)
+            .build_commit_tx(&wallet, guess)
             .await
             .map_err(|e| McpError::internal_error(format!("commit_guess failed: {e}"), None))?;
 
-        let response = serde_json::json!({ "status": "committed", "game_id": game_id });
+        let response = serde_json::json!({
+            "action": "commit_guess",
+            "unsigned_tx": unsigned.message_b64,
+            "blockhash": unsigned.blockhash,
+            "preimage_hex": preimage_hex,
+            "instructions": "Sign this transaction, then call game_submit_tx with action='commit_guess'. Keep the preimage_hex — you'll need it if you want to verify the reveal.",
+        });
         Ok(text_result(&response))
     }
 
     #[tool(
         name = "game_reveal_guess",
-        description = "Check if both players have committed and reveal your guess. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds), or 'resolved' with both guesses once the game resolves."
+        description = "Check if both players have committed. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds). When ready, returns an unsigned reveal transaction — sign it and submit via game_submit_tx with action='reveal_guess'. Then check game_get_result for the outcome.",
+        annotations(destructive_hint = true)
     )]
     async fn game_reveal_guess(&self) -> Result<CallToolResult, McpError> {
         let wallet = self.require_game_wallet().await?;
 
-        let outcome = self
+        let unsigned_opt = self
             .state
             .game_sessions
-            .try_reveal(&wallet)
+            .build_reveal_tx(&wallet)
             .await
             .map_err(|e| McpError::internal_error(format!("reveal failed: {e}"), None))?;
 
-        Ok(text_result(&outcome))
+        match unsigned_opt {
+            None => {
+                let response = serde_json::json!({ "status": "waiting" });
+                Ok(text_result(&response))
+            }
+            Some(unsigned) => {
+                let response = serde_json::json!({
+                    "action": "reveal_guess",
+                    "unsigned_tx": unsigned.message_b64,
+                    "blockhash": unsigned.blockhash,
+                    "instructions": "Sign this transaction and submit via game_submit_tx with action='reveal_guess'. Then call game_get_result for the outcome.",
+                });
+                Ok(text_result(&response))
+            }
+        }
     }
 
     #[tool(
