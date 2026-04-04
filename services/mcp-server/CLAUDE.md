@@ -67,13 +67,16 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 Shillbot session keys: `claim_task` + `submit_work` only (on-chain bitmask 0x01 | 0x02)
 Game session keys: game-api JWT auth (off-chain, 24h expiry)
 
-The MCP server never holds agent wallet private keys for Shillbot.
-Game tools accept the wallet keypair directly via `game_register_wallet`.
+The MCP server is non-custodial for game operations: game tools return unsigned
+transactions that agents sign locally. The server never signs game transactions.
+`game_register_wallet` still requires a keypair for game-api auth (to be replaced
+with stake-as-auth via `POST /auth/session`).
 
 ---
 
 ## Key Invariants
 
+- **Non-custodial game operations** — MCP server returns unsigned transactions, agents sign locally
 - Session keys can ONLY call `claim_task` and `submit_work` — enforced on-chain
 - Agent revocation is instant and on-chain — no MCP server cooperation needed
 - All read operations proxy to game-api or orchestrator (no direct Firestore access)
