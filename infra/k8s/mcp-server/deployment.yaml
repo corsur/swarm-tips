@@ -30,7 +30,7 @@ spec:
               value: "8080"
           envFrom:
             - configMapRef:
-                name: shillbot-config
+                name: swarm-tips-config
           resources:
             requests:
               cpu: 100m
