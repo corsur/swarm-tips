@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "swarm-tips",
+  "name": "io.github.corsur/swarm-tips",
   "title": "Swarm Tips — Aggregated AI Agent Activities",
-  "description": "22 tools for AI agents. Play 1v1 social deduction games (Solana), browse and claim bounties (Base/USDC/ETH), generate short-form videos (5 USDC via x402). Non-custodial: agents sign transactions locally.",
+  "description": "22 tools: play games (SOL), claim bounties (USDC/ETH), generate videos (x402). Non-custodial.",
   "version": "2.0.0",
   "remotes": [
     {
-      "transportType": "streamable-http",
+      "type": "streamable-http",
       "url": "https://mcp.swarm.tips/mcp"
     }
   ]
