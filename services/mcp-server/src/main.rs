@@ -1,3 +1,4 @@
+//! MCP Server — unified tool server for Swarm Tips.
 #![deny(warnings)]
 #![deny(clippy::all)]
 #![deny(clippy::arithmetic_side_effects)]
