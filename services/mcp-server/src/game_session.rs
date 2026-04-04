@@ -30,8 +30,6 @@ use game_api_client::ws::{MatchFoundMsg, ServerMessage, WsConnection, WsSink};
 use game_api_client::GameApiClient;
 use game_chain::client::GameTxBuilder;
 use serde::Serialize;
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
 use tokio::sync::{Mutex, RwLock};
 
 // ---------------------------------------------------------------------------
@@ -146,46 +144,32 @@ impl GameSessionManager {
         self.sessions.read().await.keys().next().cloned()
     }
 
-    /// Register an agent wallet: authenticate, connect WS, prepare chain client.
+    /// Register an agent wallet by public key only. Non-custodial: no private
+    /// key ever touches the MCP server.
+    ///
+    /// Creates a `GameTxBuilder` and checks the wallet balance. Auth and
+    /// WebSocket connection happen later in `submit_signed_game_tx` when the
+    /// agent submits their signed deposit_stake transaction (stake = auth).
     ///
     /// Returns `(wallet_pubkey, balance_lamports)`.
-    pub async fn register_wallet(&self, keypair_b58: &str) -> Result<(String, u64)> {
-        // Decode the base58 secret key into a Keypair.
-        let secret_bytes = bs58::decode(keypair_b58)
-            .into_vec()
-            .context("invalid base58 keypair")?;
-        let keypair = Keypair::try_from(secret_bytes.as_slice())
-            .map_err(|e| anyhow::anyhow!("keypair must be 64 bytes: {e}"))?;
-        let wallet = keypair.pubkey().to_string();
+    pub async fn register_wallet(&self, pubkey_b58: &str) -> Result<(String, u64)> {
+        let pubkey: solana_sdk::pubkey::Pubkey = pubkey_b58
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid pubkey: {e}"))?;
+        let wallet = pubkey.to_string();
 
-        // Authenticate with game-api: challenge → sign → verify → JWT.
-        let api_client = GameApiClient::new(&self.game_api_url)?;
-        let challenge = api_client.request_challenge(&wallet).await?;
-        let sig = keypair.sign_message(challenge.nonce.as_bytes());
-        let verify_resp = api_client
-            .verify_challenge(&wallet, &challenge.nonce, &sig.to_string())
-            .await?;
-        let jwt = verify_resp.token.clone();
-
-        // Connect WebSocket.
-        let ws = WsConnection::connect(&self.game_api_url, &jwt).await?;
-        let (sink, stream) = ws.into_split();
-
-        // Create transaction builder (pubkey-only — no private key stored).
-        let pubkey = keypair.pubkey();
         let tx_builder = GameTxBuilder::new(&self.solana_rpc_url, pubkey);
 
-        // Check balance.
         let balance = tx_builder
             .rpc()
             .get_balance(&pubkey)
             .await
             .context("failed to check wallet balance")?;
 
-        // Build session.
+        // Build session without JWT — auth happens after deposit_stake.
         let session = Arc::new(Mutex::new(GameSession {
             wallet: wallet.clone(),
-            jwt,
+            jwt: String::new(), // populated after stake-as-auth
             state: GameSessionState::Connected,
             game_id: None,
             tournament_id: None,
@@ -199,19 +183,7 @@ impl GameSessionManager {
             reveal_data: None,
         }));
 
-        let ws_sink = Arc::new(Mutex::new(sink));
-
-        // Spawn background WS listener with reconnect capability.
-        let session_clone = Arc::clone(&session);
-        let sink_clone = Arc::clone(&ws_sink);
-        let api_url = self.game_api_url.clone();
-        tokio::spawn(async move {
-            ws_listener_with_reconnect(session_clone, stream, sink_clone, api_url).await;
-        });
-
-        // Store session, sink, and chain client.
         self.sessions.write().await.insert(wallet.clone(), session);
-        self.ws_sinks.write().await.insert(wallet.clone(), ws_sink);
         self.tx_builders
             .write()
             .await
@@ -221,7 +193,7 @@ impl GameSessionManager {
             service = "coordination-mcp-server",
             wallet = %wallet,
             balance,
-            "game session registered"
+            "wallet registered (pubkey only, non-custodial)"
         );
 
         Ok((wallet, balance))
@@ -279,8 +251,10 @@ impl GameSessionManager {
             .context("invalid base64 signed transaction")?;
 
         let sig = tx_builder.submit_signed(&signed_bytes).await?;
+        let sig_str = sig.to_string();
 
-        // After submission, join the queue if we have a pending tournament.
+        // Authenticate with game-api using the tx signature (stake = auth).
+        // This is the non-custodial auth path — no private key needed.
         let session = self
             .sessions
             .read()
@@ -289,6 +263,40 @@ impl GameSessionManager {
             .context("no session for wallet")?
             .clone();
 
+        let needs_auth = session.lock().await.jwt.is_empty();
+
+        if needs_auth {
+            let api_client = GameApiClient::new(&self.game_api_url)?;
+            let auth_resp = api_client.session_auth(wallet, &sig_str).await?;
+            let jwt = auth_resp.token.clone();
+
+            // Connect WebSocket now that we have a JWT.
+            let ws = WsConnection::connect(&self.game_api_url, &jwt).await?;
+            let (sink, stream) = ws.into_split();
+            let ws_sink = Arc::new(Mutex::new(sink));
+
+            // Spawn background WS listener.
+            let session_clone = Arc::clone(&session);
+            let sink_clone = Arc::clone(&ws_sink);
+            let api_url = self.game_api_url.clone();
+            tokio::spawn(async move {
+                ws_listener_with_reconnect(session_clone, stream, sink_clone, api_url).await;
+            });
+
+            self.ws_sinks
+                .write()
+                .await
+                .insert(wallet.to_string(), ws_sink);
+            session.lock().await.jwt = jwt;
+
+            tracing::info!(
+                service = "coordination-mcp-server",
+                wallet = %wallet,
+                "authenticated via tx signature (stake-as-auth)"
+            );
+        }
+
+        // Join the queue if we have a pending tournament.
         let (jwt, tournament_id) = {
             let s = session.lock().await;
             (s.jwt.clone(), s.tournament_id)
@@ -300,7 +308,7 @@ impl GameSessionManager {
         }
 
         Ok(serde_json::json!({
-            "tx_signature": sig.to_string(),
+            "tx_signature": sig_str,
             "status": "submitted",
         }))
     }

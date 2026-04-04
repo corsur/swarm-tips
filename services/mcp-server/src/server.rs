@@ -91,8 +91,8 @@ pub struct GameGetLeaderboardArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameRegisterWalletArgs {
-    /// Base58-encoded 64-byte Solana keypair secret key.
-    pub keypair: String,
+    /// Base58-encoded Solana public key (32 bytes). Non-custodial: only your public key is needed.
+    pub pubkey: String,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -514,20 +514,20 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_register_wallet",
-        description = "Register your Solana wallet to play the Coordination Game. Provide your base58-encoded secret key (64 bytes). The server authenticates with the game backend, connects WebSocket, and prepares for matchmaking. Returns your wallet public key and SOL balance."
+        description = "Register your Solana wallet to play the Coordination Game. Provide your base58-encoded public key (32 bytes). Non-custodial: your private key never leaves your device. Returns your wallet address and SOL balance."
     )]
     async fn game_register_wallet(
         &self,
         Parameters(args): Parameters<GameRegisterWalletArgs>,
     ) -> Result<CallToolResult, McpError> {
-        if args.keypair.is_empty() {
-            return Err(invalid_input("keypair is required"));
+        if args.pubkey.is_empty() {
+            return Err(invalid_input("pubkey is required"));
         }
 
         let (wallet, balance) = self
             .state
             .game_sessions
-            .register_wallet(&args.keypair)
+            .register_wallet(&args.pubkey)
             .await
             .map_err(|e| McpError::internal_error(format!("registration failed: {e}"), None))?;
 

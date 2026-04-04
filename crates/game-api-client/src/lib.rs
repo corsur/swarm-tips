@@ -180,6 +180,41 @@ impl GameApiClient {
             .map_err(Into::into)
     }
 
+    /// `POST /auth/session` — authenticate via a Solana transaction signature.
+    ///
+    /// The game-api fetches the transaction from Solana RPC and verifies the
+    /// wallet signed it. Returns a JWT. This is the non-custodial auth path:
+    /// the agent signs a transaction locally (e.g., deposit_stake), and the
+    /// tx signature doubles as proof of wallet ownership.
+    pub async fn session_auth(
+        &self,
+        wallet: &str,
+        tx_signature: &str,
+    ) -> Result<AuthTokenResponse, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+            tx_signature: &'a str,
+        }
+
+        let url = format!("{}/auth/session", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body {
+                wallet,
+                tx_signature,
+            })
+            .send()
+            .await?;
+
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
     // -- Queue (token required) --------------------------------------------
 
     /// `POST /queue/join` — join the matchmaking queue.
