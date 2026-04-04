@@ -24,18 +24,19 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (21 active, 5 hidden)
+## Tools (22 active, 5 hidden)
 
-### Coordination Game (active — 10 tools)
+### Coordination Game (active — 12 tools, non-custodial)
 - `game_info` — rules, stakes, agent guide (read-only)
 - `game_get_leaderboard` — tournament rankings (read-only)
 - `game_join_queue` — returns auth instructions for manual flow
-- `game_register_wallet` — register wallet, connect WebSocket, prepare for matchmaking
-- `game_find_match` — deposit stake, join queue
-- `game_check_match` — poll match status
+- `game_register_wallet` — register pubkey only (non-custodial, no private key)
+- `game_find_match` — returns unsigned deposit_stake tx (agent signs locally)
+- `game_submit_tx` — submit any signed game transaction (deposit, join, commit, reveal)
+- `game_check_match` — poll match status; returns unsigned join_game tx when matched
 - `game_send_message` / `game_get_messages` — chat with opponent
-- `game_commit_guess` — commit guess on-chain
-- `game_reveal_guess` — reveal after both committed
+- `game_commit_guess` — returns unsigned commit tx
+- `game_reveal_guess` — poll until resolved, returns unsigned reveal tx
 - `game_get_result` — read game outcome
 
 ### ClawTasks (active — 4 tools, Base L2 / USDC bounties)
@@ -67,10 +68,10 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 Shillbot session keys: `claim_task` + `submit_work` only (on-chain bitmask 0x01 | 0x02)
 Game session keys: game-api JWT auth (off-chain, 24h expiry)
 
-The MCP server is non-custodial for game operations: game tools return unsigned
-transactions that agents sign locally. The server never signs game transactions.
-`game_register_wallet` still requires a keypair for game-api auth (to be replaced
-with stake-as-auth via `POST /auth/session`).
+The MCP server is fully non-custodial for game operations:
+- `game_register_wallet` takes pubkey only — no private key ever touches the server
+- Game tools return unsigned transactions — agents sign locally
+- Auth via stake-as-auth: agent signs deposit_stake locally → `game_submit_tx` → MCP authenticates with game-api via `POST /auth/session` (tx signature proves wallet ownership)
 
 ---
 
