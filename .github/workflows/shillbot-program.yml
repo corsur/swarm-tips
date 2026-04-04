@@ -141,3 +141,49 @@ jobs:
             --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi
         env:
           EXPECTED_MULTISIG_PUBKEY: ${{ vars.SQUADS_MULTISIG_PUBKEY }}
+
+  deploy-mainnet:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
+
+      - name: Write deploy keypair
+        run: |
+          mkdir -p ~/.config/solana
+          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
+
+      - name: Write program keypairs
+        run: |
+          mkdir -p target/deploy
+          echo '${{ secrets.SHILLBOT_PROGRAM_KEYPAIR }}' > target/deploy/shillbot-keypair.json
+
+      - name: Build shillbot only
+        run: anchor build -p shillbot
+
+      - name: Close orphaned buffer accounts
+        run: solana program close --buffers --url mainnet-beta --keypair ~/.config/solana/id.json || true
+
+      - name: Deploy shillbot to mainnet
+        run: anchor deploy -p shillbot --provider.cluster mainnet
+
+      - name: Verify upgrade authority (mainnet)
+        run: |
+          bash scripts/check-upgrade-authority.sh \
+            --cluster mainnet-beta \
+            --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi
+        env:
+          EXPECTED_MULTISIG_PUBKEY: ${{ vars.SQUADS_MULTISIG_PUBKEY }}

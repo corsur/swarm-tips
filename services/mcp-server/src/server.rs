@@ -547,7 +547,7 @@ impl SwarmTipsMcp {
 
         self.state
             .game_sessions
-            .find_match(&wallet, args.tournament_id)
+            .build_find_match_tx(&wallet, args.tournament_id)
             .await
             .map_err(|e| McpError::internal_error(format!("find_match failed: {e}"), None))?;
 

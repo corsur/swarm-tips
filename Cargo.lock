@@ -1566,6 +1566,8 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anyhow",
+ "base64 0.22.1",
+ "bincode",
  "coordination-game",
  "rand 0.8.5",
  "sha2 0.10.9",

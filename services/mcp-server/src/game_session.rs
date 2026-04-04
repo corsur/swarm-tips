@@ -12,7 +12,7 @@
 //! GameSessionManager
 //! ├── sessions: HashMap<wallet, Arc<Mutex<GameSession>>>
 //! ├── ws_sinks: HashMap<wallet, Arc<Mutex<WsSink>>>
-//! └── chain_clients: HashMap<wallet, GameChainClient>
+//! └── tx_builders: HashMap<wallet, GameChainClient>
 //!       │
 //!       │  Background task per session:
 //!       │  ws_listener reads WsStream → dispatches to session buffers
@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 use futures_util::SinkExt;
 use game_api_client::ws::{MatchFoundMsg, ServerMessage, WsConnection, WsSink};
 use game_api_client::GameApiClient;
-use game_chain::client::GameChainClient;
+use game_chain::client::GameTxBuilder;
 use serde::Serialize;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
@@ -78,6 +78,12 @@ pub struct MatchStatus {
     pub status: String,
     pub game_id: Option<u64>,
     pub role: Option<u8>,
+    /// Base64-encoded unsigned transaction message (when status = "needs_signature").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsigned_tx: Option<String>,
+    /// What action this transaction performs (e.g., "join_game", "create_game").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 /// Outcome of `submit_guess`.
@@ -106,7 +112,7 @@ pub struct GameResult {
 pub struct GameSessionManager {
     sessions: RwLock<HashMap<String, Arc<Mutex<GameSession>>>>,
     ws_sinks: RwLock<HashMap<String, Arc<Mutex<WsSink>>>>,
-    chain_clients: RwLock<HashMap<String, GameChainClient>>,
+    tx_builders: RwLock<HashMap<String, GameTxBuilder>>,
     game_api_url: String,
     solana_rpc_url: String,
 }
@@ -121,7 +127,7 @@ impl GameSessionManager {
         Self {
             sessions: RwLock::new(HashMap::new()),
             ws_sinks: RwLock::new(HashMap::new()),
-            chain_clients: RwLock::new(HashMap::new()),
+            tx_builders: RwLock::new(HashMap::new()),
             game_api_url,
             solana_rpc_url,
         }
@@ -165,13 +171,14 @@ impl GameSessionManager {
         let ws = WsConnection::connect(&self.game_api_url, &jwt).await?;
         let (sink, stream) = ws.into_split();
 
-        // Create chain client.
-        let chain_client = GameChainClient::new(&self.solana_rpc_url, Arc::new(keypair));
+        // Create transaction builder (pubkey-only — no private key stored).
+        let pubkey = keypair.pubkey();
+        let tx_builder = GameTxBuilder::new(&self.solana_rpc_url, pubkey);
 
         // Check balance.
-        let balance = chain_client
+        let balance = tx_builder
             .rpc()
-            .get_balance(&chain_client.pubkey())
+            .get_balance(&pubkey)
             .await
             .context("failed to check wallet balance")?;
 
@@ -205,10 +212,10 @@ impl GameSessionManager {
         // Store session, sink, and chain client.
         self.sessions.write().await.insert(wallet.clone(), session);
         self.ws_sinks.write().await.insert(wallet.clone(), ws_sink);
-        self.chain_clients
+        self.tx_builders
             .write()
             .await
-            .insert(wallet.clone(), chain_client);
+            .insert(wallet.clone(), tx_builder);
 
         tracing::info!(
             service = "coordination-mcp-server",
@@ -220,25 +227,22 @@ impl GameSessionManager {
         Ok((wallet, balance))
     }
 
-    /// Deposit stake, clear stale queue entry, and join the matchmaking queue.
-    pub async fn find_match(&self, wallet: &str, tournament_id: u64) -> Result<()> {
-        let chain = self.chain_clients.read().await;
-        let chain_client = chain.get(wallet).context("no session for wallet")?;
+    /// Build an unsigned deposit_stake transaction for the agent to sign.
+    ///
+    /// Returns the unsigned transaction. The agent signs locally and submits
+    /// via `submit_signed_game_tx`, which handles queue join and auth.
+    pub async fn build_find_match_tx(
+        &self,
+        wallet: &str,
+        tournament_id: u64,
+    ) -> Result<game_chain::client::UnsignedTx> {
+        let builders = self.tx_builders.read().await;
+        let tx_builder = builders.get(wallet).context("no session for wallet")?;
 
-        let session = self
-            .sessions
-            .read()
-            .await
-            .get(wallet)
-            .context("no session for wallet")?
-            .clone();
-
-        let jwt = session.lock().await.jwt.clone();
-
-        // Check balance before staking real SOL.
-        let balance = chain_client
+        // Check balance before building the stake tx.
+        let balance = tx_builder
             .rpc()
-            .get_balance(&chain_client.pubkey())
+            .get_balance(&tx_builder.pubkey())
             .await
             .context("failed to check balance")?;
         anyhow::ensure!(
@@ -247,12 +251,70 @@ impl GameSessionManager {
             balance as f64 / 1_000_000_000.0
         );
 
-        // Deposit stake (idempotent if already deposited).
-        chain_client.deposit_stake(tournament_id).await?;
+        let unsigned = tx_builder.build_deposit_stake(tournament_id).await?;
 
+        // Store tournament_id in session for later queue join.
+        if let Some(session) = self.sessions.read().await.get(wallet) {
+            session.lock().await.tournament_id = Some(tournament_id);
+        }
+
+        Ok(unsigned)
+    }
+
+    /// Submit a signed game transaction and handle post-submission logic.
+    ///
+    /// After deposit_stake: authenticates with game-api via the tx signature,
+    /// connects WebSocket if needed, and joins the matchmaking queue.
+    pub async fn submit_signed_game_tx(
+        &self,
+        wallet: &str,
+        signed_tx_b64: &str,
+    ) -> Result<serde_json::Value> {
+        let builders = self.tx_builders.read().await;
+        let tx_builder = builders.get(wallet).context("no session for wallet")?;
+
+        use base64::Engine;
+        let signed_bytes = base64::engine::general_purpose::STANDARD
+            .decode(signed_tx_b64)
+            .context("invalid base64 signed transaction")?;
+
+        let sig = tx_builder.submit_signed(&signed_bytes).await?;
+
+        // After submission, join the queue if we have a pending tournament.
+        let session = self
+            .sessions
+            .read()
+            .await
+            .get(wallet)
+            .context("no session for wallet")?
+            .clone();
+
+        let (jwt, tournament_id) = {
+            let s = session.lock().await;
+            (s.jwt.clone(), s.tournament_id)
+        };
+
+        if let Some(tournament_id) = tournament_id {
+            self.join_queue_after_stake(wallet, &jwt, tournament_id)
+                .await?;
+        }
+
+        Ok(serde_json::json!({
+            "tx_signature": sig.to_string(),
+            "status": "submitted",
+        }))
+    }
+
+    /// Internal: join the matchmaking queue after stake deposit.
+    async fn join_queue_after_stake(
+        &self,
+        wallet: &str,
+        jwt: &str,
+        tournament_id: u64,
+    ) -> Result<()> {
         // Clear stale queue entry from previous crash.
         let api_client = GameApiClient::new(&self.game_api_url)?;
-        if let Err(e) = api_client.leave_queue(&jwt, tournament_id).await {
+        if let Err(e) = api_client.leave_queue(jwt, tournament_id).await {
             tracing::warn!(
                 service = "coordination-mcp-server",
                 error = %e,
@@ -267,9 +329,16 @@ impl GameSessionManager {
             agent_version: "mcp-agent/v1",
             is_internal: false, // external agents are NOT internal
         };
-        api_client.join_queue(&jwt, &request).await?;
+        api_client.join_queue(jwt, &request).await?;
 
         // Update session state.
+        let session = self
+            .sessions
+            .read()
+            .await
+            .get(wallet)
+            .context("no session for wallet")?
+            .clone();
         let mut s = session.lock().await;
         s.state = GameSessionState::Queued;
         s.tournament_id = Some(tournament_id);
@@ -305,6 +374,8 @@ impl GameSessionManager {
                 status: "in_game".to_string(),
                 game_id: s.game_id,
                 role: s.role,
+                unsigned_tx: None,
+                action: None,
             });
         }
 
@@ -314,6 +385,8 @@ impl GameSessionManager {
                 status: "queued".to_string(),
                 game_id: None,
                 role: None,
+                unsigned_tx: None,
+                action: None,
             });
         }
 
@@ -355,6 +428,8 @@ impl GameSessionManager {
                 status: "in_game".to_string(),
                 game_id: Some(game_id),
                 role: Some(0),
+                unsigned_tx: None,
+                action: None,
             });
         }
 
@@ -369,25 +444,25 @@ impl GameSessionManager {
             if s.state == GameSessionState::Matched {
                 drop(s);
 
-                let chain = self.chain_clients.read().await;
-                let chain_client = chain.get(wallet).context("no chain client")?;
-                chain_client.join_game(game_id, tournament_id).await?;
+                let chain = self.tx_builders.read().await;
+                let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
+                let unsigned = tx_builder.build_join_game(game_id, tournament_id).await?;
 
-                let api_client = GameApiClient::new(&self.game_api_url)?;
-                api_client
-                    .post_games_joined(&jwt, game_id, &session_id)
-                    .await?;
-
+                // TODO: return unsigned tx to agent for signing, then submit.
+                // For now, store pending action so game_submit_tx can complete it.
                 let mut s = session.lock().await;
                 s.game_id = Some(game_id);
                 s.state = GameSessionState::InGame;
 
-                tracing::info!(wallet = %wallet, game_id, "joined on-chain game as P2");
+                tracing::info!(wallet = %wallet, game_id, "P2 join_game tx built (needs signing)");
 
+                // Return the unsigned tx in the match status
                 return Ok(MatchStatus {
-                    status: "in_game".to_string(),
+                    status: "needs_signature".to_string(),
                     game_id: Some(game_id),
                     role: Some(1),
+                    unsigned_tx: Some(unsigned.message_b64),
+                    action: Some("join_game".to_string()),
                 });
             }
         }
@@ -396,6 +471,8 @@ impl GameSessionManager {
             status: "matched".to_string(),
             game_id: s.game_id,
             role: s.role,
+            unsigned_tx: None,
+            action: None,
         })
     }
 
@@ -451,9 +528,14 @@ impl GameSessionManager {
             (gid, tid)
         };
 
-        let chain = self.chain_clients.read().await;
-        let chain_client = chain.get(wallet).context("no chain client")?;
-        let preimage = chain_client.submit_commit(game_id, guess).await?;
+        // Generate commitment locally (no signing needed).
+        let (preimage, commitment) =
+            game_chain::commit::generate_commit_secret(guess).map_err(|e| anyhow::anyhow!(e))?;
+
+        let chain = self.tx_builders.read().await;
+        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
+        let _unsigned = tx_builder.build_commit_guess(game_id, commitment).await?;
+        // TODO: return unsigned tx to agent for signing instead of submitting here
 
         // Store preimage for reveal step.
         let (jwt, session_id) = {
@@ -512,11 +594,30 @@ impl GameSessionManager {
             .try_into()
             .map_err(|v: Vec<u8>| anyhow::anyhow!("r_matchup must be 32 bytes, got {}", v.len()))?;
 
-        let chain = self.chain_clients.read().await;
-        let chain_client = chain.get(wallet).context("no chain client")?;
+        let chain = self.tx_builders.read().await;
+        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
 
-        let (p1_guess, p2_guess) = chain_client
-            .wait_and_reveal(game_id, tournament_id, preimage, Some(r_matchup))
+        // Wait for both players to commit.
+        let revealing = tx_builder
+            .wait_for_game_state(game_id, game_chain::GameState::Revealing)
+            .await?;
+
+        // Build unsigned reveal tx.
+        let _unsigned = tx_builder
+            .build_reveal_guess(
+                game_id,
+                tournament_id,
+                preimage,
+                Some(r_matchup),
+                revealing.player_one,
+                revealing.player_two,
+            )
+            .await?;
+        // TODO: return unsigned tx to agent for signing instead of submitting here.
+        // For now, assume reveal was submitted and wait for resolution.
+
+        let resolved = tx_builder
+            .wait_for_game_state(game_id, game_chain::GameState::Resolved)
             .await?;
 
         {
@@ -524,12 +625,12 @@ impl GameSessionManager {
             s.state = GameSessionState::Resolved;
         }
 
-        tracing::info!(wallet = %wallet, game_id, p1_guess, p2_guess, "game resolved");
+        tracing::info!(wallet = %wallet, game_id, p1_guess = resolved.p1_guess, p2_guess = resolved.p2_guess, "game resolved");
 
         Ok(GuessOutcome {
             status: "resolved".to_string(),
-            p1_guess: Some(p1_guess),
-            p2_guess: Some(p2_guess),
+            p1_guess: Some(resolved.p1_guess),
+            p2_guess: Some(resolved.p2_guess),
         })
     }
 
@@ -547,9 +648,9 @@ impl GameSessionManager {
         let game_id = s.game_id.context("no active game")?;
         drop(s);
 
-        let chain = self.chain_clients.read().await;
-        let chain_client = chain.get(wallet).context("no chain client")?;
-        let game = chain_client
+        let chain = self.tx_builders.read().await;
+        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
+        let game = tx_builder
             .read_game(game_id)
             .await?
             .context("game account not found")?;
@@ -567,7 +668,7 @@ impl GameSessionManager {
     pub async fn cleanup(&self, wallet: &str) {
         self.sessions.write().await.remove(wallet);
         self.ws_sinks.write().await.remove(wallet);
-        self.chain_clients.write().await.remove(wallet);
+        self.tx_builders.write().await.remove(wallet);
         tracing::info!(
             service = "coordination-mcp-server",
             wallet = %wallet,
@@ -584,22 +685,20 @@ impl GameSessionManager {
         tournament_id: u64,
         commitment_hex: &str,
         jwt: &str,
-        session_id: &str,
+        _session_id: &str,
     ) -> Result<u64> {
-        use solana_sdk::signature::Signature;
-
         let commitment_bytes = hex::decode(commitment_hex).context("invalid hex commitment")?;
         let matchup_commitment: [u8; 32] = commitment_bytes.try_into().map_err(|v: Vec<u8>| {
             anyhow::anyhow!("commitment must be 32 bytes, got {}", v.len())
         })?;
 
-        let chain = self.chain_clients.read().await;
-        let chain_client = chain.get(wallet).context("no chain client")?;
+        let chain = self.tx_builders.read().await;
+        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
 
         // Log balance before create_game for debugging.
-        let balance = chain_client
+        let balance = tx_builder
             .rpc()
-            .get_balance(&chain_client.pubkey())
+            .get_balance(&tx_builder.pubkey())
             .await
             .unwrap_or(0);
         tracing::info!(wallet = %wallet, balance_lamports = balance, "creating game as P1");
@@ -607,7 +706,7 @@ impl GameSessionManager {
         // Read the matchmaker pubkey from GlobalConfig on-chain.
 
         let (global_config_pda, _) = game_chain::pda::global_config_pda();
-        let config_data = chain_client
+        let config_data = tx_builder
             .rpc()
             .get_account_data(&global_config_pda)
             .await
@@ -618,45 +717,38 @@ impl GameSessionManager {
             .context("parse matchmaker")?;
 
         let stake: u64 = 50_000_000; // 0.05 SOL — matches FIXED_STAKE_LAMPORTS on-chain
-        let api_url = self.game_api_url.clone();
-        let jwt_owned = jwt.to_string();
 
-        let (game_id, _sig) = chain_client
-            .create_game(
-                tournament_id,
-                stake,
-                matchup_commitment,
-                &matchmaker,
-                |message_bytes| {
-                    let api_url = api_url.clone();
-                    let jwt = jwt_owned.clone();
-                    async move {
-                        use base64::Engine;
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&message_bytes);
-                        let api_client = GameApiClient::new(&api_url)?;
-                        let resp = api_client
-                            .request_cosign(&jwt, &b64)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("cosign request failed: {e}"))?;
-                        let sig_bytes = base64::engine::general_purpose::STANDARD
-                            .decode(&resp.signature)
-                            .map_err(|e| anyhow::anyhow!("invalid base64 signature: {e}"))?;
-                        let sig = Signature::try_from(sig_bytes.as_slice())
-                            .map_err(|e| anyhow::anyhow!("invalid signature bytes: {e}"))?;
-                        Ok(sig)
-                    }
-                },
-            )
+        // Build unsigned create_game transaction.
+        let unsigned = tx_builder
+            .build_create_game(tournament_id, stake, matchup_commitment, &matchmaker)
             .await?;
 
-        // Notify game-api that the game was created.
+        // Get matchmaker cosignature from game-api.
+        use base64::Engine;
+        let msg_b64 = base64::engine::general_purpose::STANDARD.encode(&unsigned.message);
         let api_client = GameApiClient::new(&self.game_api_url)?;
-        api_client
-            .post_games_started(jwt, game_id, session_id)
+        let cosign_resp = api_client
+            .request_cosign(jwt, &msg_b64)
             .await
-            .map_err(|e| anyhow::anyhow!("post_games_started failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("cosign request failed: {e}"))?;
 
-        tracing::info!(wallet = %wallet, game_id, "created on-chain game as P1");
+        // TODO: return unsigned tx + cosign to agent for local signing + assembly.
+        // For now, read the game counter to get the game_id.
+        let (counter_pda, _) = game_chain::pda::game_counter_pda();
+        let counter_data = tx_builder
+            .rpc()
+            .get_account_data(&counter_pda)
+            .await
+            .context("failed to read game_counter")?;
+        anyhow::ensure!(counter_data.len() >= 16, "game_counter data too short");
+        let game_id = u64::from_le_bytes(counter_data[8..16].try_into().context("parse count")?);
+
+        tracing::info!(
+            wallet = %wallet,
+            game_id,
+            cosign_len = cosign_resp.signature.len(),
+            "P1 create_game tx built (needs agent signing)"
+        );
 
         Ok(game_id)
     }
@@ -862,6 +954,8 @@ mod tests {
             status: "queued".to_string(),
             game_id: None,
             role: None,
+            unsigned_tx: None,
+            action: None,
         };
         let json = serde_json::to_string(&status).expect("serialize");
         assert!(json.contains("queued"));

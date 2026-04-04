@@ -79,7 +79,7 @@ pub fn build_deposit_stake(tournament_id: u64, payer: &Pubkey) -> Instruction {
     assert!(tournament_id > 0, "tournament_id must be non-zero");
 
     let (tournament_pda, _) = pda::tournament_pda(tournament_id);
-    let (escrow_pda, _) = pda::escrow_pda(tournament_id, &*payer);
+    let (escrow_pda, _) = pda::escrow_pda(tournament_id, payer);
 
     Instruction {
         program_id: PROGRAM_ID,
