@@ -91,9 +91,14 @@ async fn main() -> anyhow::Result<()> {
 
     let listings_state = Arc::new(ListingsState::new(db, rpc_client.clone()));
 
+    // Second Firestore client for game session persistence (cheap client wrapper).
+    let game_db = FirestoreDb::new(&gcp_project_id)
+        .await
+        .expect("Firestore client for game sessions must initialize");
     let game_sessions = Arc::new(GameSessionManager::new(
         game_api_url.clone(),
         solana_rpc_url.clone(),
+        Arc::new(game_db),
     ));
 
     let shared = Arc::new(SharedState {

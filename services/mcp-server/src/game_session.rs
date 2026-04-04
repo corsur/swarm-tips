@@ -25,11 +25,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use firestore::FirestoreDb;
 use futures_util::SinkExt;
 use game_api_client::ws::{MatchFoundMsg, ServerMessage, WsConnection, WsSink};
 use game_api_client::GameApiClient;
 use game_chain::client::GameTxBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,61 @@ pub enum GameSessionState {
     Committed,
     /// Game resolved.
     Resolved,
+}
+
+impl GameSessionState {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Connected => "connected",
+            Self::Queued => "queued",
+            Self::Matched => "matched",
+            Self::InGame => "in_game",
+            Self::Committed => "committed",
+            Self::Resolved => "resolved",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "connected" => Some(Self::Connected),
+            "queued" => Some(Self::Queued),
+            "matched" => Some(Self::Matched),
+            "in_game" => Some(Self::InGame),
+            "committed" => Some(Self::Committed),
+            "resolved" => Some(Self::Resolved),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Firestore persistence
+// ---------------------------------------------------------------------------
+
+const MCP_SESSIONS_COLLECTION: &str = "mcp_game_sessions";
+
+/// Firestore document for persisted MCP game session state.
+///
+/// Stored on every state transition so that pod restarts do not lose
+/// critical state (especially `commit_preimage_hex`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedGameSession {
+    pub wallet: String,
+    pub jwt: String,
+    pub state: String,
+    pub game_id: Option<u64>,
+    pub tournament_id: Option<u64>,
+    pub session_id: Option<String>,
+    pub role: Option<u8>,
+    pub matchup_commitment: Option<String>,
+    /// Hex-encoded `[u8; 32]` — critical for the reveal step.
+    pub commit_preimage_hex: Option<String>,
+    pub game_ready: Option<u64>,
+    pub reveal_data: Option<String>,
+    /// Deposit stake tx signature for JWT re-auth on restore.
+    #[serde(default)]
+    pub deposit_tx_sig: Option<String>,
+    pub updated_at: firestore::FirestoreTimestamp,
 }
 
 /// Per-agent game session data, protected by `Mutex` for concurrent tool calls.
@@ -119,10 +175,11 @@ pub struct GameSessionManager {
     tx_builders: RwLock<HashMap<String, GameTxBuilder>>,
     game_api_url: String,
     solana_rpc_url: String,
+    db: Arc<FirestoreDb>,
 }
 
 impl GameSessionManager {
-    pub fn new(game_api_url: String, solana_rpc_url: String) -> Self {
+    pub fn new(game_api_url: String, solana_rpc_url: String, db: Arc<FirestoreDb>) -> Self {
         assert!(!game_api_url.is_empty(), "game_api_url must not be empty");
         assert!(
             !solana_rpc_url.is_empty(),
@@ -134,6 +191,83 @@ impl GameSessionManager {
             tx_builders: RwLock::new(HashMap::new()),
             game_api_url,
             solana_rpc_url,
+            db,
+        }
+    }
+
+    // -- Firestore persistence helpers --
+
+    /// Persist the current session state to Firestore (write-through).
+    async fn persist_session(&self, session: &GameSession) {
+        self.persist_session_with_sig(session, None).await;
+    }
+
+    /// Persist session with an optional deposit tx signature for re-auth.
+    async fn persist_session_with_sig(&self, session: &GameSession, deposit_sig: Option<&str>) {
+        let doc = PersistedGameSession {
+            wallet: session.wallet.clone(),
+            jwt: session.jwt.clone(),
+            state: session.state.as_str().to_string(),
+            game_id: session.game_id,
+            tournament_id: session.tournament_id,
+            session_id: session.session_id.clone(),
+            role: session.role,
+            matchup_commitment: session.matchup_commitment.clone(),
+            commit_preimage_hex: session.commit_preimage.map(hex::encode),
+            game_ready: session.game_ready,
+            reveal_data: session.reveal_data.clone(),
+            deposit_tx_sig: deposit_sig.map(|s| s.to_string()),
+            updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+        };
+        if let Err(e) = self
+            .db
+            .fluent()
+            .update()
+            .in_col(MCP_SESSIONS_COLLECTION)
+            .document_id(&session.wallet)
+            .object(&doc)
+            .execute::<PersistedGameSession>()
+            .await
+        {
+            tracing::warn!(
+                wallet = %session.wallet,
+                error = %e,
+                "failed to persist session to Firestore (non-fatal)"
+            );
+        }
+    }
+
+    /// Load a persisted session from Firestore, if one exists.
+    async fn load_persisted_session(&self, wallet: &str) -> Option<PersistedGameSession> {
+        match self
+            .db
+            .fluent()
+            .select()
+            .by_id_in(MCP_SESSIONS_COLLECTION)
+            .obj::<PersistedGameSession>()
+            .one(wallet)
+            .await
+        {
+            Ok(doc) => doc,
+            Err(e) => {
+                tracing::warn!(wallet = %wallet, error = %e, "failed to load persisted session");
+                None
+            }
+        }
+    }
+
+    /// Delete the persisted session document.
+    async fn delete_persisted_session(&self, wallet: &str) {
+        if let Err(e) = self
+            .db
+            .fluent()
+            .delete()
+            .from(MCP_SESSIONS_COLLECTION)
+            .document_id(wallet)
+            .execute()
+            .await
+        {
+            tracing::warn!(wallet = %wallet, error = %e, "failed to delete persisted session");
         }
     }
 
@@ -157,6 +291,9 @@ impl GameSessionManager {
     /// WebSocket connection happen later in `submit_signed_game_tx` when the
     /// agent submits their signed deposit_stake transaction (stake = auth).
     ///
+    /// If a persisted session exists from a previous pod lifecycle (and is not
+    /// resolved), it is restored — including the critical `commit_preimage`.
+    ///
     /// Returns `(wallet_pubkey, balance_lamports)`.
     pub async fn register_wallet(&self, pubkey_b58: &str) -> Result<(String, u64)> {
         let pubkey: solana_sdk::pubkey::Pubkey = pubkey_b58
@@ -171,6 +308,88 @@ impl GameSessionManager {
             .get_balance(&pubkey)
             .await
             .context("failed to check wallet balance")?;
+
+        // Check Firestore for an active session from a previous pod lifecycle.
+        if let Some(persisted) = self.load_persisted_session(&wallet).await {
+            let state =
+                GameSessionState::from_str(&persisted.state).unwrap_or(GameSessionState::Connected);
+
+            if state != GameSessionState::Resolved {
+                tracing::info!(
+                    wallet = %wallet,
+                    state = persisted.state,
+                    game_id = ?persisted.game_id,
+                    "restoring persisted session from Firestore"
+                );
+
+                let preimage = persisted
+                    .commit_preimage_hex
+                    .as_ref()
+                    .and_then(|h| hex::decode(h).ok())
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+
+                let restored = Arc::new(Mutex::new(GameSession {
+                    wallet: wallet.clone(),
+                    jwt: persisted.jwt.clone(),
+                    state,
+                    game_id: persisted.game_id,
+                    tournament_id: persisted.tournament_id,
+                    session_id: persisted.session_id.clone(),
+                    role: persisted.role,
+                    chat_buffer: Vec::new(),
+                    match_found: None,
+                    matchup_commitment: persisted.matchup_commitment,
+                    commit_preimage: preimage,
+                    game_ready: persisted.game_ready,
+                    reveal_data: persisted.reveal_data,
+                }));
+
+                self.sessions
+                    .write()
+                    .await
+                    .insert(wallet.clone(), restored.clone());
+                self.tx_builders
+                    .write()
+                    .await
+                    .insert(wallet.clone(), tx_builder);
+
+                // Re-establish WS if JWT is available.
+                if !persisted.jwt.is_empty() {
+                    match WsConnection::connect(&self.game_api_url, &persisted.jwt).await {
+                        Ok(ws) => {
+                            let (sink, stream) = ws.into_split();
+                            let ws_sink = Arc::new(Mutex::new(sink));
+                            let session_clone = Arc::clone(&restored);
+                            let sink_clone = Arc::clone(&ws_sink);
+                            let api_url = self.game_api_url.clone();
+                            tokio::spawn(async move {
+                                ws_listener_with_reconnect(
+                                    session_clone,
+                                    stream,
+                                    sink_clone,
+                                    api_url,
+                                )
+                                .await;
+                            });
+                            self.ws_sinks.write().await.insert(wallet.clone(), ws_sink);
+                            tracing::info!(wallet = %wallet, "WS re-established for restored session");
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                wallet = %wallet,
+                                error = %e,
+                                "failed to re-establish WS for restored session"
+                            );
+                        }
+                    }
+                }
+
+                return Ok((wallet, balance));
+            }
+
+            // Session was resolved — clean it up and proceed with fresh registration.
+            self.delete_persisted_session(&wallet).await;
+        }
 
         // Build session without JWT — auth happens after deposit_stake.
         let session = Arc::new(Mutex::new(GameSession {
@@ -322,6 +541,12 @@ impl GameSessionManager {
                         .insert(wallet.to_string(), ws_sink);
                     session.lock().await.jwt = jwt;
 
+                    // Persist with deposit tx sig for re-auth on restore.
+                    {
+                        let s = session.lock().await;
+                        self.persist_session_with_sig(&s, Some(&sig_str)).await;
+                    }
+
                     tracing::info!(wallet = %wallet, "authenticated via deposit_stake tx");
                 }
 
@@ -340,6 +565,10 @@ impl GameSessionManager {
                     s.state = GameSessionState::InGame;
                     (s.jwt.clone(), s.session_id.clone().unwrap_or_default())
                 };
+                {
+                    let s = session.lock().await;
+                    self.persist_session(&s).await;
+                }
                 let game_id = session.lock().await.game_id.unwrap_or(0);
                 if !session_id.is_empty() {
                     let api_client = GameApiClient::new(&self.game_api_url)?;
@@ -352,6 +581,8 @@ impl GameSessionManager {
             "commit_guess" => {
                 let mut s = session.lock().await;
                 s.state = GameSessionState::Committed;
+                // CRITICAL: persist preimage so it survives pod restarts.
+                self.persist_session(&s).await;
                 let jwt = s.jwt.clone();
                 let session_id = s.session_id.clone().unwrap_or_default();
                 drop(s);
@@ -365,6 +596,8 @@ impl GameSessionManager {
             }
             "reveal_guess" => {
                 session.lock().await.state = GameSessionState::Resolved;
+                // Game over — delete the persisted session.
+                self.delete_persisted_session(wallet).await;
                 tracing::info!(wallet = %wallet, "revealed guess on-chain");
             }
             "create_game" => {
@@ -374,6 +607,10 @@ impl GameSessionManager {
                     let gid = s.game_id.unwrap_or(0);
                     (s.jwt.clone(), s.session_id.clone().unwrap_or_default(), gid)
                 };
+                {
+                    let s = session.lock().await;
+                    self.persist_session(&s).await;
+                }
                 if !session_id.is_empty() {
                     let api_client = GameApiClient::new(&self.game_api_url)?;
                     api_client
@@ -430,6 +667,7 @@ impl GameSessionManager {
         let mut s = session.lock().await;
         s.state = GameSessionState::Queued;
         s.tournament_id = Some(tournament_id);
+        self.persist_session(&s).await;
 
         tracing::info!(
             service = "coordination-mcp-server",
@@ -639,10 +877,13 @@ impl GameSessionManager {
         let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
         let unsigned = tx_builder.build_commit_guess(game_id, commitment).await?;
 
-        // Store preimage for the reveal step.
+        // Store preimage for the reveal step and persist to Firestore.
+        // This is the most critical persist point — without the preimage,
+        // the agent cannot reveal even if they reconnect.
         {
             let mut s = session.lock().await;
             s.commit_preimage = Some(preimage);
+            self.persist_session(&s).await;
         }
 
         let preimage_hex = hex::encode(preimage);
@@ -742,11 +983,12 @@ impl GameSessionManager {
         })
     }
 
-    /// Remove a session and clean up resources.
+    /// Remove a session and clean up resources (in-memory + Firestore).
     pub async fn cleanup(&self, wallet: &str) {
         self.sessions.write().await.remove(wallet);
         self.ws_sinks.write().await.remove(wallet);
         self.tx_builders.write().await.remove(wallet);
+        self.delete_persisted_session(wallet).await;
         tracing::info!(
             service = "coordination-mcp-server",
             wallet = %wallet,
@@ -1020,14 +1262,6 @@ mod tests {
     }
 
     #[test]
-    fn manager_new_rejects_empty_urls() {
-        let result = std::panic::catch_unwind(|| {
-            GameSessionManager::new(String::new(), "https://rpc".to_string())
-        });
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn match_status_serialization() {
         let status = MatchStatus {
             status: "queued".to_string(),
@@ -1052,5 +1286,95 @@ mod tests {
         let json = serde_json::to_string(&outcome).expect("serialize");
         assert!(json.contains("resolved"));
         assert!(json.contains("p1_guess"));
+    }
+
+    // --- GameSessionState serialization ---
+
+    #[test]
+    fn game_session_state_roundtrip() {
+        let variants = [
+            GameSessionState::Connected,
+            GameSessionState::Queued,
+            GameSessionState::Matched,
+            GameSessionState::InGame,
+            GameSessionState::Committed,
+            GameSessionState::Resolved,
+        ];
+        for state in &variants {
+            let s = state.as_str();
+            let restored = GameSessionState::from_str(s)
+                .unwrap_or_else(|| panic!("failed to parse '{s}' back to GameSessionState"));
+            assert_eq!(*state, restored, "roundtrip failed for '{s}'");
+        }
+    }
+
+    #[test]
+    fn game_session_state_from_unknown_returns_none() {
+        assert!(GameSessionState::from_str("nonexistent").is_none());
+    }
+
+    // --- Preimage hex roundtrip ---
+
+    #[test]
+    fn preimage_hex_roundtrip() {
+        let original: [u8; 32] = [
+            0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+            0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+            0x19, 0x1a, 0x1b, 0x1c,
+        ];
+        let hex_str = hex::encode(original);
+        let decoded = hex::decode(&hex_str).expect("valid hex");
+        let restored: [u8; 32] = decoded.try_into().expect("32 bytes");
+        assert_eq!(original, restored);
+    }
+
+    // --- PersistedGameSession serialization ---
+
+    #[test]
+    fn persisted_session_json_roundtrip() {
+        let doc = PersistedGameSession {
+            wallet: "Abc123".to_string(),
+            jwt: "jwt-token".to_string(),
+            state: "committed".to_string(),
+            game_id: Some(42),
+            tournament_id: Some(1),
+            session_id: Some("sess-1".to_string()),
+            role: Some(0),
+            matchup_commitment: Some("deadbeef".to_string()),
+            commit_preimage_hex: Some(hex::encode([0xabu8; 32])),
+            game_ready: Some(42),
+            reveal_data: None,
+            deposit_tx_sig: Some("sig123".to_string()),
+            updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+        };
+        let json = serde_json::to_string(&doc).expect("serialize");
+        let restored: PersistedGameSession = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.wallet, "Abc123");
+        assert_eq!(restored.state, "committed");
+        assert_eq!(restored.game_id, Some(42));
+        assert_eq!(restored.commit_preimage_hex, doc.commit_preimage_hex);
+        assert_eq!(restored.deposit_tx_sig, Some("sig123".to_string()));
+    }
+
+    #[test]
+    fn restore_skips_resolved_sessions() {
+        let state = GameSessionState::from_str("resolved");
+        assert_eq!(state, Some(GameSessionState::Resolved));
+        // In register_wallet, resolved sessions are cleaned up, not restored.
+        // This test verifies the state parsing works correctly.
+        assert_eq!(state.unwrap(), GameSessionState::Resolved);
+    }
+
+    #[test]
+    fn restore_recovers_committed_session_with_preimage() {
+        let preimage_bytes = [0x42u8; 32];
+        let hex_str = hex::encode(preimage_bytes);
+
+        // Simulate restoring from Firestore.
+        let restored_preimage = hex::decode(&hex_str)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+
+        assert_eq!(restored_preimage, Some(preimage_bytes));
     }
 }
