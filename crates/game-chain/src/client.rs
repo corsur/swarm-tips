@@ -73,7 +73,7 @@ impl GameChainClient {
     pub async fn deposit_stake(&self, tournament_id: u64) -> Result<Signature> {
         anyhow::ensure!(tournament_id > 0, "tournament_id must be non-zero");
 
-        let ix = instructions::build_deposit_stake(tournament_id, self.keypair.as_ref());
+        let ix = instructions::build_deposit_stake(tournament_id, &self.keypair.pubkey());
         let sig = self.send_and_confirm(&[ix]).await?;
 
         tracing::info!(
@@ -100,7 +100,7 @@ impl GameChainClient {
         ))
         .await;
 
-        let ix = instructions::build_join_game(game_id, tournament_id, self.keypair.as_ref());
+        let ix = instructions::build_join_game(game_id, tournament_id, &self.keypair.pubkey());
 
         for attempt in 1..=JOIN_GAME_MAX_ATTEMPTS {
             match self.send_and_confirm(std::slice::from_ref(&ix)).await {
@@ -138,7 +138,7 @@ impl GameChainClient {
     pub async fn commit_guess(&self, game_id: u64, commitment: [u8; 32]) -> Result<Signature> {
         anyhow::ensure!(game_id > 0, "game_id must be non-zero");
 
-        let ix = instructions::build_commit_guess(game_id, commitment, self.keypair.as_ref());
+        let ix = instructions::build_commit_guess(game_id, commitment, &self.keypair.pubkey());
         let sig = self.send_and_confirm(&[ix]).await?;
 
         tracing::info!(
@@ -183,7 +183,7 @@ impl GameChainClient {
             tournament_id,
             preimage,
             r_matchup,
-            self.keypair.as_ref(),
+            &self.keypair.pubkey(),
             player_one,
             player_two,
             global_config_pda,
@@ -323,7 +323,7 @@ impl GameChainClient {
             matchup_commitment,
             tournament_id,
             game_counter_value,
-            self.keypair.as_ref(),
+            &self.keypair.pubkey(),
             matchmaker,
         );
 

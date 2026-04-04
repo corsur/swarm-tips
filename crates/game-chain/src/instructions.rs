@@ -14,7 +14,6 @@ use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey,
     pubkey::Pubkey,
-    signer::Signer,
 };
 
 use crate::pda;
@@ -35,7 +34,7 @@ pub fn build_create_game(
     matchup_commitment: [u8; 32],
     tournament_id: u64,
     game_counter_value: u64,
-    player: &dyn Signer,
+    player: &Pubkey,
     matchmaker: &Pubkey,
 ) -> Instruction {
     assert!(tournament_id > 0, "tournament_id must be non-zero");
@@ -47,8 +46,8 @@ pub fn build_create_game(
     let (game_pda, _) = pda::game_pda(game_counter_value);
     let (game_counter_pda, _) = pda::game_counter_pda();
     let (tournament_pda, _) = pda::tournament_pda(tournament_id);
-    let (profile_pda, _) = pda::player_profile_pda(tournament_id, &player.pubkey());
-    let (escrow_pda, _) = pda::escrow_pda(tournament_id, &player.pubkey());
+    let (profile_pda, _) = pda::player_profile_pda(tournament_id, player);
+    let (escrow_pda, _) = pda::escrow_pda(tournament_id, player);
     let (global_config_pda, _) = pda::global_config_pda();
 
     Instruction {
@@ -61,7 +60,7 @@ pub fn build_create_game(
             AccountMeta::new_readonly(tournament_pda, false),
             AccountMeta::new_readonly(global_config_pda, false),
             AccountMeta::new_readonly(*matchmaker, true), // signer (cosigned)
-            AccountMeta::new(player.pubkey(), true),      // signer + payer
+            AccountMeta::new(*player, true),              // signer + payer
             AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
         ],
         data: CreateGame {
@@ -76,18 +75,18 @@ pub fn build_create_game(
 ///
 /// Deposits the fixed stake into the per-player escrow PDA for the
 /// given tournament.
-pub fn build_deposit_stake(tournament_id: u64, payer: &dyn Signer) -> Instruction {
+pub fn build_deposit_stake(tournament_id: u64, payer: &Pubkey) -> Instruction {
     assert!(tournament_id > 0, "tournament_id must be non-zero");
 
     let (tournament_pda, _) = pda::tournament_pda(tournament_id);
-    let (escrow_pda, _) = pda::escrow_pda(tournament_id, &payer.pubkey());
+    let (escrow_pda, _) = pda::escrow_pda(tournament_id, &*payer);
 
     Instruction {
         program_id: PROGRAM_ID,
         accounts: vec![
             AccountMeta::new(escrow_pda, false),
             AccountMeta::new_readonly(tournament_pda, false),
-            AccountMeta::new(payer.pubkey(), true),
+            AccountMeta::new(*payer, true),
             AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
         ],
         data: DepositStake {}.data(),
@@ -98,14 +97,14 @@ pub fn build_deposit_stake(tournament_id: u64, payer: &dyn Signer) -> Instructio
 ///
 /// Joins an existing game as Player 2. The game must already have been
 /// created by the matchmaker.
-pub fn build_join_game(game_id: u64, tournament_id: u64, player: &dyn Signer) -> Instruction {
+pub fn build_join_game(game_id: u64, tournament_id: u64, player: &Pubkey) -> Instruction {
     assert!(game_id > 0, "game_id must be non-zero");
     assert!(tournament_id > 0, "tournament_id must be non-zero");
 
     let (game_pda, _) = pda::game_pda(game_id);
     let (tournament_pda, _) = pda::tournament_pda(tournament_id);
-    let (profile_pda, _) = pda::player_profile_pda(tournament_id, &player.pubkey());
-    let (escrow_pda, _) = pda::escrow_pda(tournament_id, &player.pubkey());
+    let (profile_pda, _) = pda::player_profile_pda(tournament_id, player);
+    let (escrow_pda, _) = pda::escrow_pda(tournament_id, player);
 
     Instruction {
         program_id: PROGRAM_ID,
@@ -114,7 +113,7 @@ pub fn build_join_game(game_id: u64, tournament_id: u64, player: &dyn Signer) ->
             AccountMeta::new(profile_pda, false),
             AccountMeta::new(escrow_pda, false),
             AccountMeta::new_readonly(tournament_pda, false),
-            AccountMeta::new(player.pubkey(), true),
+            AccountMeta::new(*player, true),
             AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
         ],
         data: JoinGame {}.data(),
@@ -125,7 +124,7 @@ pub fn build_join_game(game_id: u64, tournament_id: u64, player: &dyn Signer) ->
 ///
 /// Submits a SHA-256 commitment of the player's guess. The commitment
 /// must later be revealed via `build_reveal_guess`.
-pub fn build_commit_guess(game_id: u64, commitment: [u8; 32], player: &dyn Signer) -> Instruction {
+pub fn build_commit_guess(game_id: u64, commitment: [u8; 32], player: &Pubkey) -> Instruction {
     assert!(game_id > 0, "game_id must be non-zero");
 
     let (game_pda, _) = pda::game_pda(game_id);
@@ -134,7 +133,7 @@ pub fn build_commit_guess(game_id: u64, commitment: [u8; 32], player: &dyn Signe
         program_id: PROGRAM_ID,
         accounts: vec![
             AccountMeta::new(game_pda, false),
-            AccountMeta::new_readonly(player.pubkey(), true),
+            AccountMeta::new_readonly(*player, true),
         ],
         data: CommitGuess { commitment }.data(),
     }
@@ -151,7 +150,7 @@ pub fn build_reveal_guess(
     tournament_id: u64,
     preimage: [u8; 32],
     r_matchup: Option<[u8; 32]>,
-    player: &dyn Signer,
+    player: &Pubkey,
     player_one: Pubkey,
     player_two: Pubkey,
     global_config_pda: Pubkey,
@@ -170,7 +169,7 @@ pub fn build_reveal_guess(
         // Order matches RevealGuess<'info> in the program.
         accounts: vec![
             AccountMeta::new(game_pda, false),
-            AccountMeta::new_readonly(player.pubkey(), true),
+            AccountMeta::new_readonly(*player, true),
             AccountMeta::new(p1_profile, false),
             AccountMeta::new(p2_profile, false),
             AccountMeta::new(tournament_pda, false),
@@ -191,11 +190,12 @@ pub fn build_reveal_guess(
 mod tests {
     use super::*;
     use solana_sdk::signature::Keypair;
+    use solana_sdk::signer::Signer;
 
     #[test]
     fn build_deposit_stake_has_correct_program_id() {
         let kp = Keypair::new();
-        let ix = build_deposit_stake(1, &kp);
+        let ix = build_deposit_stake(1, &kp.pubkey());
         assert_eq!(ix.program_id, PROGRAM_ID);
         // Precondition: 4 accounts (escrow, tournament, payer, system).
         assert_eq!(ix.accounts.len(), 4, "deposit_stake must have 4 accounts");
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn build_deposit_stake_payer_is_signer() {
         let kp = Keypair::new();
-        let ix = build_deposit_stake(1, &kp);
+        let ix = build_deposit_stake(1, &kp.pubkey());
         let payer_meta = &ix.accounts[2];
         assert!(payer_meta.is_signer, "payer must be a signer");
         assert!(payer_meta.is_writable, "payer must be writable");
@@ -214,13 +214,13 @@ mod tests {
     #[should_panic(expected = "tournament_id must be non-zero")]
     fn build_deposit_stake_rejects_zero_tournament() {
         let kp = Keypair::new();
-        let _ = build_deposit_stake(0, &kp);
+        let _ = build_deposit_stake(0, &kp.pubkey());
     }
 
     #[test]
     fn build_join_game_has_correct_accounts() {
         let kp = Keypair::new();
-        let ix = build_join_game(1, 1, &kp);
+        let ix = build_join_game(1, 1, &kp.pubkey());
         assert_eq!(ix.program_id, PROGRAM_ID);
         // 6 accounts: game, profile, escrow, tournament, player, system.
         assert_eq!(ix.accounts.len(), 6, "join_game must have 6 accounts");
@@ -230,13 +230,13 @@ mod tests {
     #[should_panic(expected = "game_id must be non-zero")]
     fn build_join_game_rejects_zero_game_id() {
         let kp = Keypair::new();
-        let _ = build_join_game(0, 1, &kp);
+        let _ = build_join_game(0, 1, &kp.pubkey());
     }
 
     #[test]
     fn build_commit_guess_has_correct_accounts() {
         let kp = Keypair::new();
-        let ix = build_commit_guess(1, [0u8; 32], &kp);
+        let ix = build_commit_guess(1, [0u8; 32], &kp.pubkey());
         assert_eq!(ix.program_id, PROGRAM_ID);
         // 2 accounts: game, player.
         assert_eq!(ix.accounts.len(), 2, "commit_guess must have 2 accounts");
@@ -249,7 +249,7 @@ mod tests {
         let p2 = Pubkey::new_unique();
         let (gc, _) = pda::global_config_pda();
         let treasury = Pubkey::new_unique();
-        let ix = build_reveal_guess(1, 1, [0u8; 32], None, &kp, p1, p2, gc, treasury);
+        let ix = build_reveal_guess(1, 1, [0u8; 32], None, &kp.pubkey(), p1, p2, gc, treasury);
         assert_eq!(ix.program_id, PROGRAM_ID);
         // 9 accounts: game, player, p1_profile, p2_profile, tournament,
         //             global_config, treasury, player_one, player_two.
@@ -260,6 +260,6 @@ mod tests {
     #[should_panic(expected = "game_id must be non-zero")]
     fn build_commit_guess_rejects_zero_game_id() {
         let kp = Keypair::new();
-        let _ = build_commit_guess(0, [0u8; 32], &kp);
+        let _ = build_commit_guess(0, [0u8; 32], &kp.pubkey());
     }
 }
