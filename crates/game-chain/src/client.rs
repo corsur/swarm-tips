@@ -273,3 +273,136 @@ impl GameTxBuilder {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::{
+        hash::Hash,
+        instruction::{AccountMeta, Instruction},
+        pubkey,
+        signature::Keypair,
+        signer::Signer,
+        transaction::Transaction,
+    };
+
+    /// System program ID (avoids deprecated `system_program` module).
+    const SYSTEM_PROGRAM: Pubkey = pubkey!("11111111111111111111111111111111");
+
+    /// Helper: build an UnsignedTx from a simple transfer-like instruction.
+    fn make_unsigned_tx(payer: &Pubkey) -> UnsignedTx {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM,
+            accounts: vec![
+                AccountMeta::new(*payer, true),
+                AccountMeta::new(Pubkey::new_unique(), false),
+            ],
+            data: vec![2, 0, 0, 0, 64, 66, 15, 0, 0, 0, 0, 0], // Transfer 1M lamports
+        };
+
+        let blockhash = Hash::new_unique();
+        let message = Message::new_with_blockhash(&[ix], Some(payer), &blockhash);
+        let message_bytes = message.serialize();
+
+        use base64::Engine;
+        let message_b64 = base64::engine::general_purpose::STANDARD.encode(&message_bytes);
+
+        UnsignedTx {
+            message: message_bytes,
+            message_b64,
+            blockhash: blockhash.to_string(),
+            num_signers: message.header.num_required_signatures,
+        }
+    }
+
+    #[test]
+    fn unsigned_tx_message_b64_round_trips() {
+        let payer = Pubkey::new_unique();
+        let unsigned = make_unsigned_tx(&payer);
+
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&unsigned.message_b64)
+            .expect("base64 decode");
+        assert_eq!(
+            decoded, unsigned.message,
+            "b64 must round-trip to message bytes"
+        );
+    }
+
+    #[test]
+    fn unsigned_tx_message_deserializes_to_valid_message() {
+        let payer = Pubkey::new_unique();
+        let unsigned = make_unsigned_tx(&payer);
+
+        let message: Message =
+            bincode::deserialize(&unsigned.message).expect("message must deserialize");
+        assert_eq!(message.account_keys[0], payer, "first key must be payer");
+        assert_eq!(
+            message.header.num_required_signatures, unsigned.num_signers,
+            "num_signers must match header"
+        );
+    }
+
+    #[test]
+    fn unsigned_tx_blockhash_parses_back() {
+        let payer = Pubkey::new_unique();
+        let unsigned = make_unsigned_tx(&payer);
+
+        let hash: Hash = unsigned
+            .blockhash
+            .parse()
+            .expect("blockhash must parse back to Hash");
+        let message: Message = bincode::deserialize(&unsigned.message).unwrap();
+        assert_eq!(
+            message.recent_blockhash, hash,
+            "parsed blockhash must match message blockhash"
+        );
+    }
+
+    #[test]
+    fn unsigned_tx_can_be_signed_into_valid_transaction() {
+        let keypair = Keypair::new();
+        let unsigned = make_unsigned_tx(&keypair.pubkey());
+
+        let message: Message = bincode::deserialize(&unsigned.message).unwrap();
+        let blockhash: Hash = unsigned.blockhash.parse().unwrap();
+
+        let mut tx = Transaction::new_unsigned(message);
+        tx.sign(&[&keypair], blockhash);
+
+        assert!(
+            tx.verify().is_ok(),
+            "signed transaction must have valid signatures"
+        );
+        assert_eq!(
+            tx.signatures.len(),
+            unsigned.num_signers as usize,
+            "signature count must match num_signers"
+        );
+    }
+
+    #[test]
+    fn unsigned_tx_num_signers_is_one_for_single_signer_tx() {
+        let payer = Pubkey::new_unique();
+        let unsigned = make_unsigned_tx(&payer);
+        assert_eq!(
+            unsigned.num_signers, 1,
+            "single-signer tx must have num_signers=1"
+        );
+    }
+
+    #[test]
+    fn submit_signed_rejects_garbage_bytes() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let builder = GameTxBuilder::new("http://localhost:8899", Pubkey::new_unique());
+
+        let result = rt.block_on(builder.submit_signed(b"not a valid transaction"));
+        assert!(result.is_err(), "garbage bytes must fail deserialization");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("deserialize"),
+            "error must mention deserialization, got: {err}"
+        );
+    }
+}
