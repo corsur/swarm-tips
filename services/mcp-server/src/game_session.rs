@@ -82,6 +82,12 @@ pub struct MatchStatus {
     /// What action this transaction performs (e.g., "join_game", "create_game").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// Matchmaker's cosignature (base64, for create_game multi-sig assembly).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matchmaker_signature: Option<String>,
+    /// Blockhash used for the unsigned transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blockhash: Option<String>,
 }
 
 /// Outcome of `submit_guess`.
@@ -433,6 +439,8 @@ impl GameSessionManager {
                 role: s.role,
                 unsigned_tx: None,
                 action: None,
+                matchmaker_signature: None,
+                blockhash: None,
             });
         }
 
@@ -444,6 +452,8 @@ impl GameSessionManager {
                 role: None,
                 unsigned_tx: None,
                 action: None,
+                matchmaker_signature: None,
+                blockhash: None,
             });
         }
 
@@ -460,7 +470,7 @@ impl GameSessionManager {
 
         let role = s.role.unwrap_or(1);
         let tournament_id = s.tournament_id.context("tournament_id not set")?;
-        let session_id = s.session_id.clone().context("session_id not set")?;
+        let _session_id = s.session_id.clone().context("session_id not set")?;
         let jwt = s.jwt.clone();
 
         if role == 0 {
@@ -473,20 +483,22 @@ impl GameSessionManager {
             // Drop lock before I/O.
             drop(s);
 
-            let game_id = self
-                .create_game_as_p1(wallet, tournament_id, &commitment_hex, &jwt, &session_id)
+            let (unsigned, matchmaker_sig, game_id) = self
+                .build_create_game_tx(wallet, tournament_id, &commitment_hex, &jwt)
                 .await?;
 
+            // Store game_id but don't transition to InGame — that happens after submit.
             let mut s = session.lock().await;
             s.game_id = Some(game_id);
-            s.state = GameSessionState::InGame;
 
             return Ok(MatchStatus {
-                status: "in_game".to_string(),
+                status: "needs_signature".to_string(),
                 game_id: Some(game_id),
                 role: Some(0),
-                unsigned_tx: None,
-                action: None,
+                unsigned_tx: Some(unsigned.message_b64),
+                action: Some("create_game".to_string()),
+                matchmaker_signature: Some(matchmaker_sig),
+                blockhash: Some(unsigned.blockhash),
             });
         }
 
@@ -519,6 +531,8 @@ impl GameSessionManager {
                     role: Some(1),
                     unsigned_tx: Some(unsigned.message_b64),
                     action: Some("join_game".to_string()),
+                    matchmaker_signature: None,
+                    blockhash: Some(unsigned.blockhash),
                 });
             }
         }
@@ -529,6 +543,8 @@ impl GameSessionManager {
             role: s.role,
             unsigned_tx: None,
             action: None,
+            matchmaker_signature: None,
+            blockhash: None,
         })
     }
 
@@ -715,15 +731,18 @@ impl GameSessionManager {
 
     // -- Player 1 game creation -----------------------------------------------
 
-    /// Create a game on-chain as Player 1, using the matchmaker cosign endpoint.
-    async fn create_game_as_p1(
+    /// Build an unsigned create_game transaction as Player 1.
+    ///
+    /// Returns the unsigned tx, matchmaker cosignature, and expected game_id.
+    /// The agent signs their part, assembles the multi-sig tx, and submits
+    /// via `submit_signed_game_tx` with action="create_game".
+    pub async fn build_create_game_tx(
         &self,
         wallet: &str,
         tournament_id: u64,
         commitment_hex: &str,
         jwt: &str,
-        _session_id: &str,
-    ) -> Result<u64> {
+    ) -> Result<(game_chain::client::UnsignedTx, String, u64)> {
         let commitment_bytes = hex::decode(commitment_hex).context("invalid hex commitment")?;
         let matchup_commitment: [u8; 32] = commitment_bytes.try_into().map_err(|v: Vec<u8>| {
             anyhow::anyhow!("commitment must be 32 bytes, got {}", v.len())
@@ -769,8 +788,7 @@ impl GameSessionManager {
             .await
             .map_err(|e| anyhow::anyhow!("cosign request failed: {e}"))?;
 
-        // TODO: return unsigned tx + cosign to agent for local signing + assembly.
-        // For now, read the game counter to get the game_id.
+        // Read the game counter to get the expected game_id.
         let (counter_pda, _) = game_chain::pda::game_counter_pda();
         let counter_data = tx_builder
             .rpc()
@@ -783,11 +801,10 @@ impl GameSessionManager {
         tracing::info!(
             wallet = %wallet,
             game_id,
-            cosign_len = cosign_resp.signature.len(),
-            "P1 create_game tx built (needs agent signing)"
+            "P1 create_game tx built with matchmaker cosign"
         );
 
-        Ok(game_id)
+        Ok((unsigned, cosign_resp.signature, game_id))
     }
 
     // -- internal helpers --
@@ -993,6 +1010,8 @@ mod tests {
             role: None,
             unsigned_tx: None,
             action: None,
+            matchmaker_signature: None,
+            blockhash: None,
         };
         let json = serde_json::to_string(&status).expect("serialize");
         assert!(json.contains("queued"));
