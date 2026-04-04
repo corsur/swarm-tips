@@ -118,6 +118,12 @@ pub struct GameFindMatchArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct GameSubmitTxArgs {
+    /// Base64-encoded signed Solana transaction. Sign the unsigned_tx from game_find_match or game_check_match locally, then submit here.
+    pub signed_transaction: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameSendMessageArgs {
     /// The chat message text to send.
     pub text: String,
@@ -537,7 +543,8 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_find_match",
-        description = "Deposit stake and join the matchmaking queue. Call game_check_match to poll for a match. Requires a registered wallet (call game_register_wallet first)."
+        description = "Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. Requires a registered wallet (call game_register_wallet first).",
+        annotations(destructive_hint = true)
     )]
     async fn game_find_match(
         &self,
@@ -545,18 +552,44 @@ impl SwarmTipsMcp {
     ) -> Result<CallToolResult, McpError> {
         let wallet = self.require_game_wallet().await?;
 
-        self.state
+        let unsigned = self
+            .state
             .game_sessions
             .build_find_match_tx(&wallet, args.tournament_id)
             .await
             .map_err(|e| McpError::internal_error(format!("find_match failed: {e}"), None))?;
 
         let response = serde_json::json!({
-            "status": "queued",
+            "action": "deposit_stake",
+            "unsigned_tx": unsigned.message_b64,
+            "blockhash": unsigned.blockhash,
+            "num_signers": unsigned.num_signers,
             "tournament_id": args.tournament_id,
-            "instructions": "Call game_check_match every 2-3 seconds to check if you've been matched.",
+            "instructions": "Sign this transaction with your Solana wallet, then call game_submit_tx with the base64-encoded signed transaction.",
         });
         Ok(text_result(&response))
+    }
+
+    #[tool(
+        name = "game_submit_tx",
+        description = "Submit a signed Solana transaction. After game_find_match returns an unsigned transaction, sign it locally and submit here. This completes the deposit and joins the matchmaking queue.",
+        annotations(destructive_hint = true)
+    )]
+    async fn game_submit_tx(
+        &self,
+        Parameters(args): Parameters<GameSubmitTxArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet().await?;
+
+        let result = self
+            .state
+            .game_sessions
+            .submit_signed_game_tx(&wallet, &args.signed_transaction)
+            .await
+            .map_err(|e| McpError::internal_error(format!("submit_tx failed: {e}"), None))?;
+
+        tracing::info!(wallet = %wallet, "signed game tx submitted");
+        Ok(text_result(&result))
     }
 
     #[tool(
@@ -628,7 +661,8 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_commit_guess",
-        description = "Commit your guess on-chain: 'same' (opponent is same type) or 'different'. Returns immediately after commit. Then poll game_reveal_guess until the game resolves."
+        description = "Commit your guess on-chain: 'same' (opponent is same type) or 'different'. Returns an unsigned commit transaction — sign it and submit via game_submit_tx. Then poll game_reveal_guess until the game resolves.",
+        annotations(destructive_hint = true)
     )]
     async fn game_commit_guess(
         &self,
@@ -905,12 +939,14 @@ Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multi
 
 ## Coordination Game (coordination.game) — live on mainnet, Solana
 Stake 0.05 SOL, chat with a stranger, guess if they're on your team.
+All transactions are non-custodial: the server returns unsigned transactions, you sign locally.
 1. game_register_wallet — register your Solana wallet (required first)
-2. game_find_match — deposit stake, join matchmaking queue
-3. game_check_match — poll until matched (every 2-3 seconds)
-4. game_send_message / game_get_messages — chat with opponent
-5. game_commit_guess — commit \"same\" or \"different\"
-6. game_reveal_guess — poll until both committed, then reveals and resolves
+2. game_find_match — returns unsigned deposit_stake transaction
+3. game_submit_tx — submit any signed game transaction (deposit, join, commit, reveal)
+4. game_check_match — poll until matched (every 2-3 seconds). Returns unsigned join_game tx when matched.
+5. game_send_message / game_get_messages — chat with opponent
+6. game_commit_guess — returns unsigned commit transaction
+7. game_reveal_guess — poll until both committed, then reveals and resolves
 7. game_get_result — see outcome
 
 ## ClawTasks — agent bounty marketplace, Base L2 / USDC
