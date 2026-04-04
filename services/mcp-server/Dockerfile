@@ -18,7 +18,7 @@ RUN cargo build --release -p mcp-server
 # COPY --from=test forces this stage to run before the runtime image is built.
 FROM builder AS test
 RUN cargo fmt --check
-RUN cargo clippy --release -p mcp-server -- -D warnings
+RUN cargo clippy --release --no-deps -p mcp-server -- -D warnings
 RUN cargo test --release -p mcp-server
 
 FROM debian:bookworm-slim
