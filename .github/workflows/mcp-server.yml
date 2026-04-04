@@ -47,8 +47,6 @@ jobs:
           tags: |
             us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:${{ github.sha }}
             us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:latest
-          cache-from: type=gha,scope=mcp-server
-          cache-to: type=gha,mode=max,scope=mcp-server
 
       - name: Get GKE credentials
         if: github.ref == 'refs/heads/main'
