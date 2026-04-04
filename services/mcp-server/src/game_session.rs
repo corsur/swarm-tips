@@ -258,8 +258,33 @@ impl GameSessionManager {
             .decode(signed_tx_b64)
             .context("invalid base64 signed transaction")?;
 
-        let sig = tx_builder.submit_signed(&signed_bytes).await?;
+        tracing::info!(
+            wallet = %wallet,
+            action = %action,
+            tx_len = signed_bytes.len(),
+            "submitting signed transaction"
+        );
+
+        let sig = match tx_builder.submit_signed(&signed_bytes).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(
+                    wallet = %wallet,
+                    action = %action,
+                    error = %e,
+                    error_debug = ?e,
+                    "signed transaction failed"
+                );
+                return Err(e);
+            }
+        };
         let sig_str = sig.to_string();
+        tracing::info!(
+            wallet = %wallet,
+            action = %action,
+            sig = %sig_str,
+            "signed transaction confirmed"
+        );
 
         let session = self
             .sessions

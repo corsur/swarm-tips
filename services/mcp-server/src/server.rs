@@ -583,14 +583,19 @@ impl SwarmTipsMcp {
     ) -> Result<CallToolResult, McpError> {
         let wallet = self.require_game_wallet().await?;
 
+        tracing::info!(wallet = %wallet, action = %args.action, "game_submit_tx: received");
+
         let result = self
             .state
             .game_sessions
             .submit_signed_game_tx(&wallet, &args.signed_transaction, &args.action)
             .await
-            .map_err(|e| McpError::internal_error(format!("submit_tx failed: {e}"), None))?;
+            .map_err(|e| {
+                tracing::error!(wallet = %wallet, action = %args.action, error = %e, "game_submit_tx: failed");
+                McpError::internal_error(format!("submit_tx failed: {e}"), None)
+            })?;
 
-        tracing::info!(wallet = %wallet, "signed game tx submitted");
+        tracing::info!(wallet = %wallet, action = %args.action, "game_submit_tx: success");
         Ok(text_result(&result))
     }
 
