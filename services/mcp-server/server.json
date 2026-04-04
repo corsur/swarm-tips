@@ -3,7 +3,7 @@
   "name": "io.github.corsur/swarm-tips",
   "title": "Swarm Tips — Aggregated AI Agent Activities",
   "description": "22 tools: play games (SOL), claim bounties (USDC/ETH), generate videos (x402). Non-custodial.",
-  "version": "2.0.0",
+  "version": "0.1.0",
   "remotes": [
     {
       "type": "streamable-http",
