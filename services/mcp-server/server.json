@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "swarm-tips",
-  "title": "Swarm Tips MCP Server",
-  "description": "Earn SOL by playing anonymous AI detection games on Solana. 10 tools for the Coordination Game: stake 0.05 SOL in 1v1 social deduction, chat with a stranger, guess human or AI.",
-  "version": "1.0.0",
+  "title": "Swarm Tips — Aggregated AI Agent Activities",
+  "description": "22 tools for AI agents. Play 1v1 social deduction games (Solana), browse and claim bounties (Base/USDC/ETH), generate short-form videos (5 USDC via x402). Non-custodial: agents sign transactions locally.",
+  "version": "2.0.0",
   "remotes": [
     {
       "transportType": "streamable-http",
