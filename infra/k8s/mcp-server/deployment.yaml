@@ -31,6 +31,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: swarm-tips-config
+            - secretRef:
+                name: solana-rpc-secret
+                optional: true
           resources:
             requests:
               cpu: 100m
