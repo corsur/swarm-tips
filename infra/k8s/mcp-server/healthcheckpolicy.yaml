@@ -2,7 +2,7 @@ apiVersion: networking.gke.io/v1
 kind: HealthCheckPolicy
 metadata:
   name: mcp-server
-  namespace: shillbot
+  namespace: swarm-tips
 spec:
   targetRef:
     group: ""

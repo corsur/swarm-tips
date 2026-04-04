@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mcp-server
-  namespace: shillbot
+  namespace: swarm-tips
 spec:
   replicas: 1
   progressDeadlineSeconds: 900
@@ -14,7 +14,7 @@ spec:
       labels:
         app: mcp-server
     spec:
-      serviceAccountName: shillbot
+      serviceAccountName: swarm-tips
       terminationGracePeriodSeconds: 300
       containers:
         - name: mcp-server

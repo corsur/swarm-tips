@@ -15,31 +15,58 @@ on:
       - 'crates/game-chain/**'
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy -p game-api-client -p game-chain -p mcp-server -- -D warnings
-      - run: cargo test -p game-api-client -p game-chain -p mcp-server
-
-  deploy:
-    if: github.ref == 'refs/heads/main'
-    needs: test
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/_deploy-service.yml
-    with:
-      service: backend
-      image_name: mcp-server
-      dockerfile: services/mcp-server/Dockerfile
-      deployment_name: mcp-server
-      container_name: mcp-server
-      namespace: shillbot
-      k8s_manifests_dir: infra/k8s/mcp-server
-    secrets: inherit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        if: github.ref == 'refs/heads/main'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        if: github.ref == 'refs/heads/main'
+
+      - name: Configure Docker for Artifact Registry
+        if: github.ref == 'refs/heads/main'
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and test
+        uses: docker/build-push-action@v6
+        with:
+          file: services/mcp-server/Dockerfile
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:${{ github.sha }}
+            us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:latest
+          cache-from: type=gha,scope=mcp-server
+          cache-to: type=gha,mode=max,scope=mcp-server
+
+      - name: Get GKE credentials
+        if: github.ref == 'refs/heads/main'
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: coordination
+          location: us-central1
+
+      - name: Apply k8s manifests
+        if: github.ref == 'refs/heads/main'
+        run: kubectl apply -f infra/k8s/mcp-server -n swarm-tips
+
+      - name: Deploy and verify rollout
+        if: github.ref == 'refs/heads/main'
+        run: |
+          kubectl set image deployment/mcp-server \
+            mcp-server="us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:${{ github.sha }}" \
+            -n swarm-tips
+          kubectl rollout status deployment/mcp-server \
+            -n swarm-tips \
+            --timeout=900s
