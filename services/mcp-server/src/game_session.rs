@@ -32,6 +32,7 @@ use game_api_client::GameApiClient;
 use game_chain::client::GameTxBuilder;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -103,9 +104,6 @@ pub struct PersistedGameSession {
     pub commit_preimage_hex: Option<String>,
     pub game_ready: Option<u64>,
     pub reveal_data: Option<String>,
-    /// Deposit stake tx signature for JWT re-auth on restore.
-    #[serde(default)]
-    pub deposit_tx_sig: Option<String>,
     pub updated_at: firestore::FirestoreTimestamp,
 }
 
@@ -146,14 +144,6 @@ pub struct MatchStatus {
     pub blockhash: Option<String>,
 }
 
-/// Outcome of `submit_guess`.
-#[derive(Debug, Serialize)]
-pub struct GuessOutcome {
-    pub status: String,
-    pub p1_guess: Option<u8>,
-    pub p2_guess: Option<u8>,
-}
-
 /// Game result from on-chain state.
 #[derive(Debug, Serialize)]
 pub struct GameResult {
@@ -173,6 +163,9 @@ pub struct GameSessionManager {
     sessions: RwLock<HashMap<String, Arc<Mutex<GameSession>>>>,
     ws_sinks: RwLock<HashMap<String, Arc<Mutex<WsSink>>>>,
     tx_builders: RwLock<HashMap<String, GameTxBuilder>>,
+    /// Cancellation tokens for background WS listener tasks.
+    /// Cancelled in `cleanup()` to stop dangling reconnect loops.
+    ws_cancel_tokens: RwLock<HashMap<String, CancellationToken>>,
     game_api_url: String,
     solana_rpc_url: String,
     db: Arc<FirestoreDb>,
@@ -189,6 +182,7 @@ impl GameSessionManager {
             sessions: RwLock::new(HashMap::new()),
             ws_sinks: RwLock::new(HashMap::new()),
             tx_builders: RwLock::new(HashMap::new()),
+            ws_cancel_tokens: RwLock::new(HashMap::new()),
             game_api_url,
             solana_rpc_url,
             db,
@@ -199,11 +193,6 @@ impl GameSessionManager {
 
     /// Persist the current session state to Firestore (write-through).
     async fn persist_session(&self, session: &GameSession) {
-        self.persist_session_with_sig(session, None).await;
-    }
-
-    /// Persist session with an optional deposit tx signature for re-auth.
-    async fn persist_session_with_sig(&self, session: &GameSession, deposit_sig: Option<&str>) {
         let doc = PersistedGameSession {
             wallet: session.wallet.clone(),
             jwt: session.jwt.clone(),
@@ -216,7 +205,6 @@ impl GameSessionManager {
             commit_preimage_hex: session.commit_preimage.map(hex::encode),
             game_ready: session.game_ready,
             reveal_data: session.reveal_data.clone(),
-            deposit_tx_sig: deposit_sig.map(|s| s.to_string()),
             updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
         };
         if let Err(e) = self
@@ -269,11 +257,6 @@ impl GameSessionManager {
         {
             tracing::warn!(wallet = %wallet, error = %e, "failed to delete persisted session");
         }
-    }
-
-    /// Check whether a session exists for the given wallet.
-    pub async fn has_session(&self, wallet: &str) -> bool {
-        self.sessions.read().await.contains_key(wallet)
     }
 
     /// Return the wallet pubkey of any active game session.
@@ -362,16 +345,23 @@ impl GameSessionManager {
                             let session_clone = Arc::clone(&restored);
                             let sink_clone = Arc::clone(&ws_sink);
                             let api_url = self.game_api_url.clone();
+                            let cancel_token = CancellationToken::new();
+                            let token_clone = cancel_token.clone();
                             tokio::spawn(async move {
                                 ws_listener_with_reconnect(
                                     session_clone,
                                     stream,
                                     sink_clone,
                                     api_url,
+                                    token_clone,
                                 )
                                 .await;
                             });
                             self.ws_sinks.write().await.insert(wallet.clone(), ws_sink);
+                            self.ws_cancel_tokens
+                                .write()
+                                .await
+                                .insert(wallet.clone(), cancel_token);
                             tracing::info!(wallet = %wallet, "WS re-established for restored session");
                         }
                         Err(e) => {
@@ -516,7 +506,8 @@ impl GameSessionManager {
         // Action-specific post-submission logic.
         match action {
             "deposit_stake" => {
-                // Authenticate with game-api using the tx signature (stake = auth).
+                // Authenticate and open WS if not already done.
+                // Cancel any existing WS task before opening a new one.
                 let needs_auth = session.lock().await.jwt.is_empty();
                 if needs_auth {
                     let api_client = GameApiClient::new(&self.game_api_url)?;
@@ -530,21 +521,33 @@ impl GameSessionManager {
                     let session_clone = Arc::clone(&session);
                     let sink_clone = Arc::clone(&ws_sink);
                     let api_url = self.game_api_url.clone();
+                    let cancel_token = CancellationToken::new();
+                    let token_clone = cancel_token.clone();
                     tokio::spawn(async move {
-                        ws_listener_with_reconnect(session_clone, stream, sink_clone, api_url)
-                            .await;
+                        ws_listener_with_reconnect(
+                            session_clone,
+                            stream,
+                            sink_clone,
+                            api_url,
+                            token_clone,
+                        )
+                        .await;
                     });
 
                     self.ws_sinks
                         .write()
                         .await
                         .insert(wallet.to_string(), ws_sink);
+                    self.ws_cancel_tokens
+                        .write()
+                        .await
+                        .insert(wallet.to_string(), cancel_token);
                     session.lock().await.jwt = jwt;
 
-                    // Persist with deposit tx sig for re-auth on restore.
+                    // Persist after auth.
                     {
                         let s = session.lock().await;
-                        self.persist_session_with_sig(&s, Some(&sig_str)).await;
+                        self.persist_session(&s).await;
                     }
 
                     tracing::info!(wallet = %wallet, "authenticated via deposit_stake tx");
@@ -596,9 +599,9 @@ impl GameSessionManager {
             }
             "reveal_guess" => {
                 session.lock().await.state = GameSessionState::Resolved;
-                // Game over — delete the persisted session.
-                self.delete_persisted_session(wallet).await;
-                tracing::info!(wallet = %wallet, "revealed guess on-chain");
+                // Game over — full cleanup (memory, WS task, Firestore).
+                self.cleanup(wallet).await;
+                tracing::info!(wallet = %wallet, "revealed guess on-chain, session cleaned up");
             }
             "create_game" => {
                 let (jwt, session_id, game_id) = {
@@ -932,11 +935,23 @@ impl GameSessionManager {
         let chain = self.tx_builders.read().await;
         let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
 
-        // Read the game to get player pubkeys for the reveal instruction.
+        // Read the game to get player pubkeys and verify state.
         let game = tx_builder
             .read_game(game_id)
             .await?
             .context("game account not found")?;
+
+        // If the game is no longer in Revealing state (opponent revealed first,
+        // or timeout resolved it), skip building a stale transaction.
+        if game.state != game_chain::GameState::Revealing {
+            tracing::info!(
+                wallet = %wallet,
+                game_id,
+                state = ?game.state,
+                "game not in Revealing state, skipping reveal tx"
+            );
+            return Ok(None);
+        }
 
         let unsigned = tx_builder
             .build_reveal_guess(
@@ -983,11 +998,15 @@ impl GameSessionManager {
         })
     }
 
-    /// Remove a session and clean up resources (in-memory + Firestore).
+    /// Remove a session and clean up all resources (in-memory, WS task, Firestore).
     pub async fn cleanup(&self, wallet: &str) {
         self.sessions.write().await.remove(wallet);
         self.ws_sinks.write().await.remove(wallet);
         self.tx_builders.write().await.remove(wallet);
+        // Cancel the background WS listener task so it stops reconnecting.
+        if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
+            token.cancel();
+        }
         self.delete_persisted_session(wallet).await;
         tracing::info!(
             service = "coordination-mcp-server",
@@ -1075,36 +1094,6 @@ impl GameSessionManager {
     }
 
     // -- internal helpers --
-
-    /// Poll the session's `reveal_data` buffer until it's populated.
-    async fn poll_reveal_data(&self, wallet: &str, timeout_secs: u64) -> Result<String> {
-        let session = self
-            .sessions
-            .read()
-            .await
-            .get(wallet)
-            .context("no session for wallet")?
-            .clone();
-
-        let deadline = tokio::time::Instant::now()
-            .checked_add(tokio::time::Duration::from_secs(timeout_secs))
-            .context("deadline overflow")?;
-
-        loop {
-            {
-                let s = session.lock().await;
-                if let Some(ref rd) = s.reveal_data {
-                    return Ok(rd.clone());
-                }
-            }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            anyhow::ensure!(
-                !remaining.is_zero(),
-                "timed out waiting for reveal_data after {timeout_secs}s"
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,12 +1110,14 @@ const WS_RECONNECT_BASE_DELAY_SECS: u64 = 2;
 ///
 /// On disconnect, attempts up to 3 reconnects with exponential backoff
 /// (2s, 4s, 8s). Must reconnect within game-api's 60s grace window or
-/// the session is abandoned.
+/// the session is abandoned. Exits immediately when `cancel` is triggered
+/// (game resolved or session cleaned up).
 async fn ws_listener_with_reconnect(
     session: Arc<Mutex<GameSession>>,
     initial_stream: game_api_client::ws::WsStream,
     sink: Arc<Mutex<WsSink>>,
     game_api_url: String,
+    cancel: CancellationToken,
 ) {
     let wallet = session.lock().await.wallet.clone();
     tracing::info!(wallet = %wallet, "ws_listener started");
@@ -1134,14 +1125,28 @@ async fn ws_listener_with_reconnect(
     let mut stream = initial_stream;
 
     loop {
+        if cancel.is_cancelled() {
+            tracing::info!(wallet = %wallet, "ws_listener cancelled");
+            return;
+        }
+
         // Run the read loop until disconnect.
         run_ws_read_loop(&session, &mut stream, &sink, &wallet).await;
+
+        if cancel.is_cancelled() {
+            tracing::info!(wallet = %wallet, "ws_listener cancelled after disconnect");
+            return;
+        }
 
         // Attempt reconnect with exponential backoff.
         let jwt = session.lock().await.jwt.clone();
         let mut reconnected = false;
 
         for attempt in 0..WS_MAX_RECONNECT_ATTEMPTS {
+            if cancel.is_cancelled() {
+                tracing::info!(wallet = %wallet, "ws_listener cancelled during reconnect");
+                return;
+            }
             let delay = WS_RECONNECT_BASE_DELAY_SECS
                 .checked_shl(attempt)
                 .unwrap_or(WS_RECONNECT_BASE_DELAY_SECS);
@@ -1276,18 +1281,6 @@ mod tests {
         assert!(json.contains("queued"));
     }
 
-    #[test]
-    fn guess_outcome_serialization() {
-        let outcome = GuessOutcome {
-            status: "resolved".to_string(),
-            p1_guess: Some(0),
-            p2_guess: Some(1),
-        };
-        let json = serde_json::to_string(&outcome).expect("serialize");
-        assert!(json.contains("resolved"));
-        assert!(json.contains("p1_guess"));
-    }
-
     // --- GameSessionState serialization ---
 
     #[test]
@@ -1344,7 +1337,6 @@ mod tests {
             commit_preimage_hex: Some(hex::encode([0xabu8; 32])),
             game_ready: Some(42),
             reveal_data: None,
-            deposit_tx_sig: Some("sig123".to_string()),
             updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
         };
         let json = serde_json::to_string(&doc).expect("serialize");
@@ -1353,7 +1345,6 @@ mod tests {
         assert_eq!(restored.state, "committed");
         assert_eq!(restored.game_id, Some(42));
         assert_eq!(restored.commit_preimage_hex, doc.commit_preimage_hex);
-        assert_eq!(restored.deposit_tx_sig, Some("sig123".to_string()));
     }
 
     #[test]

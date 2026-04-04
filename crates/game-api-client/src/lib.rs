@@ -392,6 +392,8 @@ impl GameApiClient {
         game_id: u64,
         p1_guess: u8,
         p2_guess: u8,
+        p1_return: u64,
+        p2_return: u64,
         agent_guess_reasoning: Option<&str>,
         agent_guess_source: Option<&str>,
     ) -> Result<(), GameApiError> {
@@ -417,8 +419,8 @@ impl GameApiClient {
                 game_id,
                 p1_guess,
                 p2_guess,
-                p1_return: 0,
-                p2_return: 0,
+                p1_return,
+                p2_return,
                 agent_guess_reasoning,
                 agent_guess_source,
             })

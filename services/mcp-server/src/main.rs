@@ -3,13 +3,14 @@
 #![deny(clippy::all)]
 #![deny(clippy::arithmetic_side_effects)]
 
+// auth and session modules are used by Shillbot tools (hidden until mainnet).
+// Remove #[allow(dead_code)] when re-enabling #[tool] attributes in server.rs.
 #[allow(dead_code)]
 mod auth;
 mod botbounty_proxy;
 mod clawtasks_proxy;
 mod errors;
 mod game_proxy;
-#[allow(dead_code)]
 mod game_session;
 mod listings;
 mod proxy;
