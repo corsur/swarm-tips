@@ -15,8 +15,13 @@ spec:
         app: mcp-server
     spec:
       serviceAccountName: shillbot
+      terminationGracePeriodSeconds: 300
       containers:
         - name: mcp-server
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           image: us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:latest
           ports:
             - containerPort: 8080
