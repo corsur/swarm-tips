@@ -563,7 +563,7 @@ impl SwarmTipsMcp {
 
         let response = serde_json::json!({
             "action": "deposit_stake",
-            "unsigned_tx": unsigned.message_b64,
+            "unsigned_tx": unsigned.transaction_b64,
             "blockhash": unsigned.blockhash,
             "num_signers": unsigned.num_signers,
             "tournament_id": args.tournament_id,
@@ -692,7 +692,7 @@ impl SwarmTipsMcp {
 
         let response = serde_json::json!({
             "action": "commit_guess",
-            "unsigned_tx": unsigned.message_b64,
+            "unsigned_tx": unsigned.transaction_b64,
             "blockhash": unsigned.blockhash,
             "preimage_hex": preimage_hex,
             "instructions": "Sign this transaction, then call game_submit_tx with action='commit_guess'. Keep the preimage_hex — you'll need it if you want to verify the reveal.",
@@ -723,7 +723,7 @@ impl SwarmTipsMcp {
             Some(unsigned) => {
                 let response = serde_json::json!({
                     "action": "reveal_guess",
-                    "unsigned_tx": unsigned.message_b64,
+                    "unsigned_tx": unsigned.transaction_b64,
                     "blockhash": unsigned.blockhash,
                     "instructions": "Sign this transaction and submit via game_submit_tx with action='reveal_guess'. Then call game_get_result for the outcome.",
                 });

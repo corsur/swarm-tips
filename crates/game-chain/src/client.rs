@@ -25,9 +25,14 @@ const POLL_ATTEMPTS: u32 = 100;
 #[derive(Debug, Clone)]
 pub struct UnsignedTx {
     /// Serialized `Message` bytes — the caller signs these.
+    /// Used by grok-agent (Rust-native signing) which deserializes as Message.
     pub message: Vec<u8>,
     /// Base64-encoded message for transport over MCP/JSON.
     pub message_b64: String,
+    /// Base64-encoded full Transaction (with empty signature slots).
+    /// Used by MCP agents (TypeScript) — `Transaction.from()` preserves exact
+    /// message bytes, avoiding re-serialization that breaks cosign signatures.
+    pub transaction_b64: String,
     /// The blockhash used to build the transaction (for reference).
     pub blockhash: String,
     /// Number of required signatures (index 0 = fee payer).
@@ -325,9 +330,17 @@ impl GameTxBuilder {
         use base64::Engine;
         let message_b64 = base64::engine::general_purpose::STANDARD.encode(&message_bytes);
 
+        // Full Transaction with empty signature slots — used by TypeScript agents
+        // to avoid Message recompilation that breaks cosign signatures.
+        let tx = Transaction::new_unsigned(message.clone());
+        let tx_bytes =
+            bincode::serialize(&tx).context("failed to serialize unsigned transaction")?;
+        let transaction_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
+
         Ok(UnsignedTx {
             message: message_bytes,
             message_b64,
+            transaction_b64,
             blockhash: blockhash.to_string(),
             num_signers: message.header.num_required_signatures,
         })
@@ -367,9 +380,14 @@ mod tests {
         use base64::Engine;
         let message_b64 = base64::engine::general_purpose::STANDARD.encode(&message_bytes);
 
+        let tx = Transaction::new_unsigned(message.clone());
+        let tx_bytes = bincode::serialize(&tx).unwrap();
+        let transaction_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
+
         UnsignedTx {
             message: message_bytes,
             message_b64,
+            transaction_b64,
             blockhash: blockhash.to_string(),
             num_signers: message.header.num_required_signatures,
         }
