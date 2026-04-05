@@ -610,34 +610,8 @@ impl GameSessionManager {
             }
             "reveal_guess" => {
                 session.lock().await.state = GameSessionState::Resolved;
-                // Cancel WS listener immediately so it stops reconnecting.
-                if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
-                    token.cancel();
-                }
-                // Clean up in-memory state synchronously.
-                self.sessions.write().await.remove(wallet);
-                self.ws_sinks.write().await.remove(wallet);
-                self.tx_builders.write().await.remove(wallet);
-                // Delete Firestore doc in background (don't block the response).
-                let db = Arc::clone(&self.db);
-                let wallet_owned = wallet.to_string();
-                tokio::spawn(async move {
-                    if let Err(e) = db
-                        .fluent()
-                        .delete()
-                        .from(MCP_SESSIONS_COLLECTION)
-                        .document_id(&wallet_owned)
-                        .execute()
-                        .await
-                    {
-                        tracing::warn!(
-                            wallet = %wallet_owned,
-                            error = %e,
-                            "failed to delete persisted session"
-                        );
-                    }
-                });
-                tracing::info!(wallet = %wallet, "revealed guess on-chain, session cleaned up");
+                tracing::info!(wallet = %wallet, "revealed guess on-chain");
+                // Cleanup runs after the response is sent — see below.
             }
             "create_game" => {
                 let (jwt, session_id, game_id) = {
