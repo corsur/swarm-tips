@@ -336,10 +336,28 @@ impl GameSessionManager {
                     .await
                     .insert(wallet.clone(), tx_builder);
 
-                // Re-establish WS if JWT is available.
+                // Re-establish WS if JWT is available (with timeout — JWT may be expired).
                 if !persisted.jwt.is_empty() {
-                    match WsConnection::connect(&self.game_api_url, &persisted.jwt).await {
-                        Ok(ws) => {
+                    let ws_result = tokio::time::timeout(
+                        tokio::time::Duration::from_secs(10),
+                        WsConnection::connect(&self.game_api_url, &persisted.jwt),
+                    )
+                    .await;
+                    match ws_result {
+                        Err(_) => {
+                            tracing::warn!(
+                                wallet = %wallet,
+                                "WS connect timed out for restored session (JWT likely expired)"
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                wallet = %wallet,
+                                error = %e,
+                                "failed to re-establish WS for restored session"
+                            );
+                        }
+                        Ok(Ok(ws)) => {
                             let (sink, stream) = ws.into_split();
                             let ws_sink = Arc::new(Mutex::new(sink));
                             let session_clone = Arc::clone(&restored);
@@ -363,13 +381,6 @@ impl GameSessionManager {
                                 .await
                                 .insert(wallet.clone(), cancel_token);
                             tracing::info!(wallet = %wallet, "WS re-established for restored session");
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                wallet = %wallet,
-                                error = %e,
-                                "failed to re-establish WS for restored session"
-                            );
                         }
                     }
                 }
