@@ -10,7 +10,8 @@ use anyhow::{Context, Result};
 use coordination::state::{Game, GameState, GlobalConfig};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    message::Message, pubkey::Pubkey, signature::Signature, transaction::Transaction,
+    commitment_config::CommitmentConfig, message::Message, pubkey::Pubkey, signature::Signature,
+    transaction::Transaction,
 };
 
 use crate::{instructions, pda};
@@ -54,7 +55,7 @@ impl GameTxBuilder {
         assert!(!rpc_url.is_empty(), "rpc_url must not be empty");
 
         Self {
-            rpc: RpcClient::new(rpc_url.to_string()),
+            rpc: RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed()),
             player,
         }
     }
