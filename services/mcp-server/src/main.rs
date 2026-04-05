@@ -54,7 +54,18 @@ async fn main() -> anyhow::Result<()> {
 
     let orchestrator_url = load_env_or("ORCHESTRATOR_URL", "http://shillbot-orchestrator:8080");
     let game_api_url = load_env_or("GAME_API_URL", "http://game-api:8080");
+    // Prefer Helius over public devnet endpoint for reliability + rate limits.
+    // ConfigMap should set SOLANA_RPC_URL; falls back to public devnet only for local dev.
     let solana_rpc_url = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
+    if solana_rpc_url.contains("api.devnet.solana.com")
+        || solana_rpc_url.contains("api.mainnet-beta.solana.com")
+    {
+        tracing::warn!(
+            service = "mcp-server",
+            rpc_url = %solana_rpc_url,
+            "using public Solana RPC — set SOLANA_RPC_URL to Helius for production reliability"
+        );
+    }
     let program_id = load_env_or("SHILLBOT_PROGRAM_ID", "11111111111111111111111111111111");
     let clawtasks_url = load_env_or("CLAWTASKS_API_URL", "https://clawtasks.com/api");
     let botbounty_url = load_env_or(
@@ -123,8 +134,62 @@ async fn main() -> anyhow::Result<()> {
         StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token()),
     );
 
+    let health_rpc_url = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
+    let health_game_url = load_env_or("GAME_API_URL", "http://game-api:8080");
+    let started_at = std::time::Instant::now();
+    let health_handler = move || {
+        let rpc_url = health_rpc_url.clone();
+        let game_url = health_game_url.clone();
+        async move {
+            // 60s grace period for Autopilot WI token warmup
+            if started_at.elapsed() < std::time::Duration::from_secs(60) {
+                return (axum::http::StatusCode::OK, "ok (startup grace)");
+            }
+
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap_or_default();
+
+            // Check game-api
+            let game_ok = client
+                .get(format!("{game_url}/health"))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+
+            // Check Solana RPC
+            let rpc_ok = client
+                .post(&rpc_url)
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getHealth"
+                }))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+
+            if game_ok && rpc_ok {
+                (axum::http::StatusCode::OK, "ok")
+            } else if !game_ok {
+                (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "game-api unreachable",
+                )
+            } else {
+                (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "solana rpc unreachable",
+                )
+            }
+        }
+    };
+
     let router = axum::Router::new()
-        .route("/health", axum::routing::get(|| async { "ok" }))
+        .route("/health", axum::routing::get(health_handler))
         .route(
             "/internal/listings",
             listings::listings_handler(listings_state),

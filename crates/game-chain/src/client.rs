@@ -181,32 +181,92 @@ impl GameTxBuilder {
         let wallet = self.player;
         let balance_before = self.rpc.get_balance(&wallet).await.unwrap_or(0);
 
-        match self.rpc.send_and_confirm_transaction(&tx).await {
-            Ok(sig) => {
-                let balance_after = self.rpc.get_balance(&wallet).await.unwrap_or(0);
-                let cost_lamports = balance_before.saturating_sub(balance_after);
+        // Retry transient failures with exponential backoff (1s, 2s, 4s).
+        let mut last_err = None;
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_secs(1u64 << attempt.saturating_sub(1));
                 tracing::info!(
                     wallet = %wallet,
-                    %sig,
-                    balance_before,
-                    balance_after,
-                    cost_lamports,
-                    "signed transaction confirmed"
+                    attempt = attempt.saturating_add(1),
+                    delay_ms = delay.as_millis() as u64,
+                    "retrying transaction submission"
                 );
-                Ok(sig)
+                tokio::time::sleep(delay).await;
             }
-            Err(e) => {
-                let balance = self.rpc.get_balance(&wallet).await.unwrap_or(0);
-                tracing::error!(
-                    wallet = %wallet,
-                    balance_lamports = balance,
-                    error = %e,
-                    error_debug = ?e,
-                    "signed transaction failed"
-                );
-                Err(e).context("send_and_confirm_transaction")
+
+            match self.rpc.send_and_confirm_transaction(&tx).await {
+                Ok(sig) => {
+                    let balance_after = self.rpc.get_balance(&wallet).await.unwrap_or(0);
+                    let cost_lamports = balance_before.saturating_sub(balance_after);
+                    tracing::info!(
+                        wallet = %wallet,
+                        %sig,
+                        balance_before,
+                        balance_after,
+                        cost_lamports,
+                        attempt = attempt.saturating_add(1),
+                        "signed transaction confirmed"
+                    );
+                    return Ok(sig);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    let is_transient = err_str.contains("timeout")
+                        || err_str.contains("429")
+                        || err_str.contains("502")
+                        || err_str.contains("503")
+                        || err_str.contains("connection")
+                        || err_str.contains("ConnectionRefused");
+
+                    // Classify error for structured logging
+                    let error_kind = if err_str.contains("Blockhash not found") {
+                        "blockhash_expired"
+                    } else if err_str.contains("insufficient lamports") {
+                        "insufficient_funds"
+                    } else if err_str.contains("custom program error") {
+                        "program_error"
+                    } else if is_transient {
+                        "transient"
+                    } else {
+                        "unknown"
+                    };
+
+                    tracing::warn!(
+                        wallet = %wallet,
+                        attempt = attempt.saturating_add(1),
+                        error_kind = error_kind,
+                        error = %e,
+                        "transaction submission failed"
+                    );
+
+                    // Don't retry non-transient errors (program errors, blockhash expired, etc.)
+                    if !is_transient {
+                        let balance = self.rpc.get_balance(&wallet).await.unwrap_or(0);
+                        tracing::error!(
+                            wallet = %wallet,
+                            balance_lamports = balance,
+                            error_kind = error_kind,
+                            error = %e,
+                            "transaction failed (non-retryable)"
+                        );
+                        return Err(e).context(format!(
+                            "send_and_confirm_transaction ({error_kind}): {err_str}"
+                        ));
+                    }
+                    last_err = Some(e);
+                }
             }
         }
+
+        let balance = self.rpc.get_balance(&wallet).await.unwrap_or(0);
+        tracing::error!(
+            wallet = %wallet,
+            balance_lamports = balance,
+            attempts = 3,
+            "transaction failed after all retries"
+        );
+        Err(last_err.unwrap()).context("send_and_confirm_transaction: all retries exhausted")
     }
 
     // -- Read-only operations --------------------------------------------------

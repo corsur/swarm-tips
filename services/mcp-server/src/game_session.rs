@@ -192,7 +192,12 @@ impl GameSessionManager {
     // -- Firestore persistence helpers --
 
     /// Persist the current session state to Firestore (write-through).
-    async fn persist_session(&self, session: &GameSession) {
+    ///
+    /// Returns an error only when the session contains a commit preimage —
+    /// losing the preimage means the agent can't reveal after a pod restart.
+    /// For other states, Firestore failures are logged but non-fatal.
+    async fn persist_session(&self, session: &GameSession) -> Result<()> {
+        let has_preimage = session.commit_preimage.is_some();
         let doc = PersistedGameSession {
             wallet: session.wallet.clone(),
             jwt: session.jwt.clone(),
@@ -217,12 +222,24 @@ impl GameSessionManager {
             .execute::<PersistedGameSession>()
             .await
         {
+            if has_preimage {
+                // Preimage loss is critical — agent can't reveal after pod restart.
+                tracing::error!(
+                    wallet = %session.wallet,
+                    error = %e,
+                    "CRITICAL: failed to persist commit preimage to Firestore"
+                );
+                return Err(anyhow::anyhow!(
+                    "failed to persist commit preimage — retry commit_guess"
+                ));
+            }
             tracing::warn!(
                 wallet = %session.wallet,
                 error = %e,
                 "failed to persist session to Firestore (non-fatal)"
             );
         }
+        Ok(())
     }
 
     /// Load a persisted session from Firestore, if one exists.
@@ -558,7 +575,7 @@ impl GameSessionManager {
                     // Persist after auth.
                     {
                         let s = session.lock().await;
-                        self.persist_session(&s).await;
+                        self.persist_session(&s).await?;
                     }
 
                     tracing::info!(wallet = %wallet, "authenticated via deposit_stake tx");
@@ -581,7 +598,7 @@ impl GameSessionManager {
                 };
                 {
                     let s = session.lock().await;
-                    self.persist_session(&s).await;
+                    self.persist_session(&s).await?;
                 }
                 let game_id = session.lock().await.game_id.unwrap_or(0);
                 if !session_id.is_empty() {
@@ -596,7 +613,7 @@ impl GameSessionManager {
                 let mut s = session.lock().await;
                 s.state = GameSessionState::Committed;
                 // CRITICAL: persist preimage so it survives pod restarts.
-                self.persist_session(&s).await;
+                self.persist_session(&s).await?;
                 let jwt = s.jwt.clone();
                 let session_id = s.session_id.clone().unwrap_or_default();
                 drop(s);
@@ -622,7 +639,7 @@ impl GameSessionManager {
                 };
                 {
                     let s = session.lock().await;
-                    self.persist_session(&s).await;
+                    self.persist_session(&s).await?;
                 }
                 if !session_id.is_empty() {
                     let api_client = GameApiClient::new(&self.game_api_url)?;
@@ -680,7 +697,7 @@ impl GameSessionManager {
         let mut s = session.lock().await;
         s.state = GameSessionState::Queued;
         s.tournament_id = Some(tournament_id);
-        self.persist_session(&s).await;
+        self.persist_session(&s).await?;
 
         tracing::info!(
             service = "coordination-mcp-server",
@@ -896,7 +913,7 @@ impl GameSessionManager {
         {
             let mut s = session.lock().await;
             s.commit_preimage = Some(preimage);
-            self.persist_session(&s).await;
+            self.persist_session(&s).await?;
         }
 
         let preimage_hex = hex::encode(preimage);
