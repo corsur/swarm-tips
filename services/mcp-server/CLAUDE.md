@@ -75,10 +75,23 @@ The MCP server is fully non-custodial for game operations:
 
 ---
 
+## Game Session Persistence
+
+Game sessions are persisted to Firestore (`mcp_game_sessions/{wallet}`) on every state transition. This ensures pod restarts don't lose critical state — especially the `commit_preimage` needed for the reveal step.
+
+**Stored fields:** wallet, jwt, state, game_id, tournament_id, session_id, role, matchup_commitment, commit_preimage_hex, game_ready, reveal_data.
+
+**Restore flow:** On `game_register_wallet`, if a persisted session exists with an active state (not Resolved), it is restored — including preimage and WS reconnection (with 10s timeout for stale JWTs). Resolved sessions are cleaned up on the next register call.
+
+**WS reconnect:** Background WS listener uses exponential backoff (2s, 4s, 8s, max 3 attempts) with a `CancellationToken` for clean shutdown.
+
+---
+
 ## Key Invariants
 
 - **Non-custodial game operations** — MCP server returns unsigned transactions, agents sign locally
+- **Session persistence** — commit_preimage survives pod restarts via Firestore write-through
 - Session keys can ONLY call `claim_task` and `submit_work` — enforced on-chain
 - Agent revocation is instant and on-chain — no MCP server cooperation needed
-- All read operations proxy to game-api or orchestrator (no direct Firestore access)
+- Game session reads from on-chain state (GameTxBuilder.read_game) for reveal state checks
 - Rate limiting prevents compromised sessions from spamming claims/submissions
