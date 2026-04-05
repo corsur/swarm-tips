@@ -610,8 +610,33 @@ impl GameSessionManager {
             }
             "reveal_guess" => {
                 session.lock().await.state = GameSessionState::Resolved;
-                // Game over — full cleanup (memory, WS task, Firestore).
-                self.cleanup(wallet).await;
+                // Cancel WS listener immediately so it stops reconnecting.
+                if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
+                    token.cancel();
+                }
+                // Clean up in-memory state synchronously.
+                self.sessions.write().await.remove(wallet);
+                self.ws_sinks.write().await.remove(wallet);
+                self.tx_builders.write().await.remove(wallet);
+                // Delete Firestore doc in background (don't block the response).
+                let db = Arc::clone(&self.db);
+                let wallet_owned = wallet.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = db
+                        .fluent()
+                        .delete()
+                        .from(MCP_SESSIONS_COLLECTION)
+                        .document_id(&wallet_owned)
+                        .execute()
+                        .await
+                    {
+                        tracing::warn!(
+                            wallet = %wallet_owned,
+                            error = %e,
+                            "failed to delete persisted session"
+                        );
+                    }
+                });
                 tracing::info!(wallet = %wallet, "revealed guess on-chain, session cleaned up");
             }
             "create_game" => {
@@ -1007,23 +1032,6 @@ impl GameSessionManager {
             p2_guess: game.p2_guess,
             state: format!("{:?}", game.state),
         })
-    }
-
-    /// Remove a session and clean up all resources (in-memory, WS task, Firestore).
-    pub async fn cleanup(&self, wallet: &str) {
-        self.sessions.write().await.remove(wallet);
-        self.ws_sinks.write().await.remove(wallet);
-        self.tx_builders.write().await.remove(wallet);
-        // Cancel the background WS listener task so it stops reconnecting.
-        if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
-            token.cancel();
-        }
-        self.delete_persisted_session(wallet).await;
-        tracing::info!(
-            service = "coordination-mcp-server",
-            wallet = %wallet,
-            "game session cleaned up"
-        );
     }
 
     // -- Player 1 game creation -----------------------------------------------
