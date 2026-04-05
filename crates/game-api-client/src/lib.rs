@@ -394,6 +394,8 @@ impl GameApiClient {
         p2_guess: u8,
         p1_return: u64,
         p2_return: u64,
+        matchup_type: u8,
+        first_committer: u8,
         agent_guess_reasoning: Option<&str>,
         agent_guess_source: Option<&str>,
     ) -> Result<(), GameApiError> {
@@ -404,6 +406,8 @@ impl GameApiClient {
             p2_guess: u8,
             p1_return: u64,
             p2_return: u64,
+            matchup_type: u8,
+            first_committer: u8,
             #[serde(skip_serializing_if = "Option::is_none")]
             agent_guess_reasoning: Option<&'a str>,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -421,6 +425,8 @@ impl GameApiClient {
                 p2_guess,
                 p1_return,
                 p2_return,
+                matchup_type,
+                first_committer,
                 agent_guess_reasoning,
                 agent_guess_source,
             })
