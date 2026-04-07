@@ -200,6 +200,12 @@ pub async fn fetch_botbounty(client: &reqwest::Client) -> FetchResult {
 /// Hardcoded ETH price fallback for USD estimation.
 const ETH_PRICE_USD: f64 = 2000.0;
 
+/// Hardcoded SOL price fallback for USD estimation. Used by sources that
+/// quote rewards in lamports. A live price feed would be nicer but the
+/// listings card is rounded to whole dollars so a stale constant is fine
+/// until SOL moves >50%.
+const SOL_PRICE_USD: f64 = 150.0;
+
 fn parse_botbounty(b: &serde_json::Value) -> Option<RawListing> {
     let id = b.get("id")?.to_string().trim_matches('"').to_string();
     let amount_str = b
@@ -374,6 +380,155 @@ fn parse_moltlaunch_gig(g: &serde_json::Value) -> Option<RawListing> {
         payment_model: "fixed".to_string(),
         escrow: true,
         posted_at,
+        deadline: None,
+    })
+}
+
+/// Fetch open content tasks from the Shillbot orchestrator (Solana / SOL).
+///
+/// Shillbot is one of swarm.tips' own verticals — the AI-agent task
+/// marketplace where clients pay agents in escrowed SOL to create short-form
+/// content. Surfacing live Shillbot tasks under EARN closes the loop: the
+/// landing page promises agent earning opportunities, and the DAO's own
+/// marketplace is the most agent-native one we have. Without this source the
+/// frontend never auto-picked up new Shillbot campaigns.
+pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
+    let source = "shillbot".to_string();
+    let start = Instant::now();
+
+    let result = async {
+        let res = client.get("https://api.shillbot.org/tasks").send().await?;
+
+        let status = res.status().as_u16();
+        if !res.status().is_success() {
+            tracing::warn!(source = "shillbot", status, "non-success response");
+            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
+        }
+
+        let data: serde_json::Value = res.json().await?;
+        let tasks = data
+            .get("tasks")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let listings: Vec<RawListing> = tasks
+            .iter()
+            .filter(|t| {
+                t.get("state")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == "open")
+                    .unwrap_or(false)
+            })
+            .take(20)
+            .filter_map(parse_shillbot_task)
+            .collect();
+
+        Ok((listings, status))
+    }
+    .await;
+
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok((listings, status)) => {
+            let count = listings.len() as u32;
+            FetchResult {
+                source,
+                listings,
+                health: HealthCheck {
+                    timestamp: Utc::now(),
+                    status_code: status,
+                    response_ms: elapsed_ms,
+                    listing_count: count,
+                    error: None,
+                },
+            }
+        }
+        Err(e) => {
+            tracing::warn!(source = "shillbot", error = %e, "fetch failed");
+            FetchResult {
+                source,
+                listings: vec![],
+                health: HealthCheck {
+                    timestamp: Utc::now(),
+                    status_code: 0,
+                    response_ms: elapsed_ms,
+                    listing_count: 0,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+    }
+}
+
+/// Map a Shillbot platform enum integer to a human-readable label.
+/// Mirrors `shillbot-orchestrator`'s Platform serialization (numeric repr).
+fn shillbot_platform_label(platform: i64) -> &'static str {
+    match platform {
+        0 => "twitter",
+        1 => "tiktok",
+        2 => "instagram",
+        3 => "youtube",
+        4 => "farcaster",
+        5 => "youtube-shorts",
+        _ => "other",
+    }
+}
+
+fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
+    let task_id = str_field(t, "task_id")?;
+    let topic = str_field(t, "campaign_topic").unwrap_or_else(|| "Shillbot task".to_string());
+
+    // Drop tasks without an estimated payment — they're not actionable as
+    // earning opportunities.
+    let lamports = t.get("estimated_payment_lamports").and_then(|v| v.as_u64())?;
+    if lamports == 0 {
+        return None;
+    }
+    let sol_amount = (lamports as f64) / 1e9;
+
+    let platform_int = t.get("platform").and_then(|v| v.as_i64()).unwrap_or(-1);
+    let platform_label = shillbot_platform_label(platform_int);
+
+    let brief = t.get("brief");
+    let cta = brief
+        .and_then(|b| b.get("cta"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let voice = brief
+        .and_then(|b| b.get("brand_voice"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Description: combine voice + cta + platform so the swarm.tips card has
+    // enough context for an agent to decide whether to pursue.
+    let description = format!(
+        "Create a {platform_label} short. {voice} CTA: {cta}"
+    )
+    .chars()
+    .take(500)
+    .collect::<String>();
+
+    // task_id is already namespaced as "{campaign_id}:{task_uuid}"; strip the
+    // campaign half for a cleaner public URL.
+    let url_id = task_id.split(':').next_back().unwrap_or(&task_id);
+
+    Some(RawListing {
+        source: "shillbot".to_string(),
+        source_id: task_id.clone(),
+        source_url: format!("https://shillbot.org/tasks/{url_id}"),
+        title: topic,
+        description,
+        category: "content".to_string(),
+        tags: vec!["solana".to_string(), platform_label.to_string()],
+        reward_amount: format!("{sol_amount:.4}"),
+        reward_token: "SOL".to_string(),
+        reward_chain: "solana".to_string(),
+        reward_usd_estimate: Some(sol_amount * SOL_PRICE_USD),
+        payment_model: "fixed".to_string(),
+        escrow: true,
+        posted_at: parse_datetime(t.get("created_at")).unwrap_or_else(Utc::now),
         deadline: None,
     })
 }
@@ -564,6 +719,72 @@ mod tests {
         });
 
         assert!(parse_bountycaster(&json).is_none());
+    }
+
+    #[test]
+    fn parse_shillbot_task_happy_path() {
+        let json = serde_json::json!({
+            "task_id": "campaign-uuid:task-uuid",
+            "campaign_id": "campaign-uuid",
+            "campaign_topic": "Play a round of coordination.game",
+            "state": "open",
+            "platform": 5,
+            "created_at": "2026-04-07T08:20:57.959927902Z",
+            "estimated_payment_lamports": 20_000_000u64,
+            "brief": {
+                "topic": "Play a round of coordination.game",
+                "brand_voice": "Direct incentive.",
+                "cta": "Play one round at coordination.game",
+                "utm_link": "https://coordination.game",
+                "blocklist": [],
+                "examples": []
+            }
+        });
+
+        let listing = parse_shillbot_task(&json).expect("should parse");
+        assert_eq!(listing.source, "shillbot");
+        assert_eq!(listing.source_id, "campaign-uuid:task-uuid");
+        assert_eq!(listing.reward_token, "SOL");
+        assert_eq!(listing.reward_chain, "solana");
+        assert_eq!(listing.reward_amount, "0.0200");
+        assert!(listing.description.contains("youtube-shorts"));
+        assert!(listing.description.contains("coordination.game"));
+        assert!(listing.source_url.ends_with("/task-uuid"));
+        assert!(listing.escrow);
+    }
+
+    #[test]
+    fn parse_shillbot_task_drops_unpriced() {
+        let json = serde_json::json!({
+            "task_id": "c:t",
+            "campaign_topic": "topic",
+            "state": "open",
+            "platform": 3,
+            "created_at": "2026-04-07T08:20:57Z",
+            "estimated_payment_lamports": 0u64,
+            "brief": {}
+        });
+        assert!(parse_shillbot_task(&json).is_none());
+    }
+
+    #[test]
+    fn parse_shillbot_task_drops_missing_payment() {
+        let json = serde_json::json!({
+            "task_id": "c:t",
+            "campaign_topic": "topic",
+            "state": "open",
+            "platform": 3,
+            "created_at": "2026-04-07T08:20:57Z",
+            "brief": {}
+        });
+        assert!(parse_shillbot_task(&json).is_none());
+    }
+
+    #[test]
+    fn shillbot_platform_label_known_and_unknown() {
+        assert_eq!(shillbot_platform_label(3), "youtube");
+        assert_eq!(shillbot_platform_label(5), "youtube-shorts");
+        assert_eq!(shillbot_platform_label(99), "other");
     }
 
     #[test]
