@@ -424,13 +424,41 @@ impl OrchestratorProxy {
         let mut req = self.client.post(&endpoint).json(&body);
 
         // If the agent provides a tx_signature, include the x402 payment proof header.
-        // Log the byte length so we can correlate "builder error" failures against
-        // payload size — reqwest 0.12's HeaderValue::from_str rejection collapses to
-        // a generic "builder error" Display message that hides the source.
+        // Log byte-level details so we can pinpoint exactly which byte fails
+        // http::header::HeaderValue::from_str validation (rejected: 0-8, 10-31, 127).
         if let Some(sig) = tx_signature {
-            tracing::debug!(
+            let bytes = sig.as_bytes();
+            // Walk for the first byte that http::HeaderValue::from_str would reject:
+            // valid set is `b == 9 (tab) || (b >= 32 && b != 127)`. Anything else
+            // is rejected.
+            let first_bad = bytes
+                .iter()
+                .enumerate()
+                .find(|(_, b)| !(**b == 9 || (**b >= 32 && **b != 127)))
+                .map(|(i, b)| (i, *b));
+            let head: String = bytes
+                .iter()
+                .take(40)
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join("");
+            let tail: String = bytes
+                .iter()
+                .rev()
+                .take(40)
+                .collect::<Vec<_>>()
+                .iter()
+                .rev()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join("");
+            tracing::info!(
                 service = "mcp-server",
                 payment_header_len = sig.len(),
+                payment_header_head_hex = %head,
+                payment_header_tail_hex = %tail,
+                payment_header_first_bad_pos = ?first_bad.map(|(i, _)| i),
+                payment_header_first_bad_byte = ?first_bad.map(|(_, b)| format!("0x{b:02x}")),
                 "x402: attaching X-PAYMENT header"
             );
             req = req.header("X-PAYMENT", sig);
