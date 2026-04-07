@@ -113,8 +113,21 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
-    let discovery_state =
-        discovery_db.map(|db| Arc::new(DiscoveryState::new(db, rpc_client.clone())));
+    // Optional Layer 2 LLM classifier — only enabled if XAI_API_KEY is set in
+    // the environment. Without it, refresh + earning-candidates work as
+    // before; the /internal/mcp/llm-classify endpoint returns 503.
+    let xai_api_key = std::env::var("XAI_API_KEY").ok();
+    if xai_api_key.is_none() {
+        tracing::warn!(
+            service = "mcp-server",
+            "XAI_API_KEY not set — Layer 2 LLM classification disabled"
+        );
+    }
+    let llm_classifier = xai_api_key
+        .map(|key| crate::discovery::llm_classify::LlmClassifier::new(key, rpc_client.clone()));
+
+    let discovery_state = discovery_db
+        .map(|db| Arc::new(DiscoveryState::new(db, rpc_client.clone(), llm_classifier)));
 
     // Second Firestore client for game session persistence (cheap client wrapper).
     let game_db = FirestoreDb::new(&gcp_project_id)
@@ -213,8 +226,16 @@ async fn main() -> anyhow::Result<()> {
                 discovery::earning_candidates_handler(discovery_state.clone()),
             )
             .route(
+                "/internal/mcp/primitives",
+                discovery::primitives_handler(discovery_state.clone()),
+            )
+            .route(
                 "/internal/mcp/refresh",
-                discovery::refresh_handler(discovery_state),
+                discovery::refresh_handler(discovery_state.clone()),
+            )
+            .route(
+                "/internal/mcp/llm-classify",
+                discovery::llm_classify_handler(discovery_state),
             );
     }
 

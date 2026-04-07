@@ -9,10 +9,12 @@
 //! (2) composable primitives, (3) market intelligence.
 
 pub mod classify;
+pub mod llm_classify;
 pub mod merge;
 pub mod models;
 pub mod sources;
 
+use crate::discovery::llm_classify::{LlmClassifier, MAX_SERVERS_PER_CYCLE};
 use crate::discovery::merge::merge_and_classify;
 use crate::discovery::models::{EnrichedServer, MCP_SERVERS_COLLECTION};
 use crate::discovery::sources::pull_official_registry;
@@ -38,14 +40,20 @@ pub struct DiscoveryState {
     pub db: FirestoreDb,
     pub http: reqwest::Client,
     pub cache: Mutex<Option<DiscoveryCache>>,
+    /// Layer 2 classifier — populated only if `XAI_API_KEY` is set in the
+    /// environment. When None, the `/internal/mcp/llm-classify` endpoint
+    /// returns 503 and `refresh_discovery` skips Layer 2 entirely. Layer 1
+    /// keeps working in either case.
+    pub llm: Option<LlmClassifier>,
 }
 
 impl DiscoveryState {
-    pub fn new(db: FirestoreDb, http: reqwest::Client) -> Self {
+    pub fn new(db: FirestoreDb, http: reqwest::Client, llm: Option<LlmClassifier>) -> Self {
         Self {
             db,
             http,
             cache: Mutex::new(None),
+            llm,
         }
     }
 }
@@ -146,6 +154,172 @@ pub struct RefreshSummary {
     pub elapsed_ms: u64,
 }
 
+/// Result of a Layer 2 classification cycle.
+#[derive(Debug, serde::Serialize)]
+pub struct Layer2Summary {
+    /// Total servers we considered (Layer 1 unconfident).
+    pub considered: usize,
+    /// Of those, how many we actually called Grok on this cycle (capped).
+    pub classified: usize,
+    /// Of the classified, how many came back as earning candidates.
+    pub new_earning_candidates: usize,
+    /// Of the classified, how many came back as composable primitives.
+    pub new_primitives: usize,
+    pub firestore_writes: usize,
+    pub firestore_write_errors: usize,
+    pub grok_call_errors: usize,
+    pub elapsed_ms: u64,
+}
+
+/// Run a Layer 2 LLM classification pass over `mcp_servers/` documents where
+/// Layer 1 was not confident AND no `layer2_classification` exists yet. Caps
+/// at `MAX_SERVERS_PER_CYCLE` to bound budget exposure.
+///
+/// This is intentionally serial — Grok is the bottleneck (~2s/call), and at
+/// 200 calls/cycle that's ~7 minutes. Caller (HTTP handler) should spawn this
+/// in the background instead of awaiting it inline; the cap keeps the worst
+/// case bounded.
+pub async fn run_layer2_pass(state: &Arc<DiscoveryState>) -> Result<Layer2Summary> {
+    let started = std::time::Instant::now();
+
+    let llm = state
+        .llm
+        .as_ref()
+        .context("Layer 2 disabled — XAI_API_KEY not set at startup")?;
+
+    // Pull the full index from Firestore. We could query only unconfident
+    // ones, but the dataset is small (~2k docs) so a full pull is fine and
+    // saves an index requirement.
+    let all_servers = load_from_firestore(&state.db).await?;
+
+    let candidates: Vec<&EnrichedServer> = all_servers
+        .iter()
+        .filter(|s| !s.classification.confident && s.layer2_classification.is_none())
+        .take(MAX_SERVERS_PER_CYCLE)
+        .collect();
+
+    let considered = candidates.len();
+    let mut classified = 0usize;
+    let mut new_earning = 0usize;
+    let mut new_primitives = 0usize;
+    let mut writes = 0usize;
+    let mut write_errors = 0usize;
+    let mut grok_errors = 0usize;
+
+    for server in candidates {
+        match llm.classify_server(server).await {
+            Ok(verdict) => {
+                classified = classified.saturating_add(1);
+
+                // Build the updated record with Layer 2 attached.
+                let mut updated = server.clone();
+                let became_earning = matches!(
+                    verdict.cash_flow_direction,
+                    Some(models::CashFlowDirection::EarnsForAgent)
+                ) || matches!(
+                    verdict.value_to_swarm,
+                    Some(models::ValueToSwarm::AggregateListing)
+                );
+                let became_primitive = matches!(
+                    verdict.value_to_swarm,
+                    Some(models::ValueToSwarm::Dependency)
+                );
+                if became_earning && verdict.confidence >= 0.6 {
+                    new_earning = new_earning.saturating_add(1);
+                }
+                if became_primitive && verdict.confidence >= 0.6 {
+                    new_primitives = new_primitives.saturating_add(1);
+                }
+                updated.layer2_classification = Some(verdict);
+
+                let slug = updated.slug();
+                match state
+                    .db
+                    .fluent()
+                    .update()
+                    .in_col(MCP_SERVERS_COLLECTION)
+                    .document_id(&slug)
+                    .object(&updated)
+                    .execute::<()>()
+                    .await
+                {
+                    Ok(_) => writes = writes.saturating_add(1),
+                    Err(e) => {
+                        write_errors = write_errors.saturating_add(1);
+                        tracing::warn!(slug, error = %e, "layer2 write failed");
+                    }
+                }
+            }
+            Err(e) => {
+                grok_errors = grok_errors.saturating_add(1);
+                tracing::warn!(server = %server.name, error = %e, "layer2 Grok call failed");
+            }
+        }
+    }
+
+    // Invalidate the in-memory cache so the next earning-candidates query
+    // sees the new Layer 2 verdicts.
+    {
+        let mut cache = state.cache.lock().await;
+        *cache = None;
+    }
+
+    let elapsed_ms = started.elapsed().as_millis();
+    tracing::info!(
+        considered,
+        classified,
+        new_earning,
+        new_primitives,
+        writes,
+        write_errors,
+        grok_errors,
+        elapsed_ms,
+        "run_layer2_pass complete"
+    );
+
+    Ok(Layer2Summary {
+        considered,
+        classified,
+        new_earning_candidates: new_earning,
+        new_primitives,
+        firestore_writes: writes,
+        firestore_write_errors: write_errors,
+        grok_call_errors: grok_errors,
+        elapsed_ms: elapsed_ms as u64,
+    })
+}
+
+/// Get the current composable-primitives list. Same caching strategy as
+/// `get_earning_candidates` — in-memory cache, fall back to Firestore.
+pub async fn get_primitives(state: &Arc<DiscoveryState>) -> Vec<EnrichedServer> {
+    {
+        let cache = state.cache.lock().await;
+        if let Some(c) = cache.as_ref() {
+            return c
+                .servers
+                .iter()
+                .filter(|s| s.is_primitive())
+                .cloned()
+                .collect();
+        }
+    }
+
+    match load_from_firestore(&state.db).await {
+        Ok(servers) => {
+            let mut cache = state.cache.lock().await;
+            *cache = Some(DiscoveryCache {
+                servers: servers.clone(),
+                last_refreshed_at: chrono::Utc::now(),
+            });
+            servers.into_iter().filter(|s| s.is_primitive()).collect()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load discovery index for primitives");
+            Vec::new()
+        }
+    }
+}
+
 /// Get the current earning-candidates list. If the cache is empty, attempts
 /// to load from Firestore. Returns an empty list if both fail (caller can
 /// trigger a refresh).
@@ -227,6 +401,53 @@ pub fn refresh_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRoute
                 Ok(summary) => axum::Json(summary).into_response(),
                 Err(e) => {
                     tracing::error!(error = %e, "discovery refresh failed");
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("{{\"error\": \"{e}\"}}"),
+                    )
+                        .into_response()
+                }
+            }
+        }
+    })
+}
+
+/// GET /internal/mcp/primitives → Vec<EnrichedServer>
+///
+/// Returns servers tagged as composable primitives (`value_to_swarm =
+/// dependency`). Tier-2 priority — these are the building blocks other
+/// agents can compose into earning loops.
+pub fn primitives_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {
+    axum::routing::get(move || {
+        let state = state.clone();
+        async move {
+            let primitives = get_primitives(&state).await;
+            tracing::info!(count = primitives.len(), "served /internal/mcp/primitives");
+            axum::Json(primitives).into_response()
+        }
+    })
+}
+
+/// POST /internal/mcp/llm-classify → kick off a Layer 2 LLM classification
+/// pass over the unconfident remainder. Returns 503 if `XAI_API_KEY` was
+/// not set at startup. Awaits the full pass and returns a Layer2Summary.
+/// Caller should expect this to take ~5-10 minutes for a full cap-bounded
+/// cycle, so prefer triggering via background workflow.
+pub fn llm_classify_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {
+    axum::routing::post(move || {
+        let state = state.clone();
+        async move {
+            if state.llm.is_none() {
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "{\"error\": \"Layer 2 disabled — XAI_API_KEY not set\"}".to_string(),
+                )
+                    .into_response();
+            }
+            match run_layer2_pass(&state).await {
+                Ok(summary) => axum::Json(summary).into_response(),
+                Err(e) => {
+                    tracing::error!(error = %e, "layer2 pass failed");
                     (
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                         format!("{{\"error\": \"{e}\"}}"),

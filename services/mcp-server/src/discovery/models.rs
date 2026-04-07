@@ -89,6 +89,28 @@ pub struct Layer1Classification {
     pub matched_signals: Vec<String>,
 }
 
+/// Layer 2 classification — Grok-derived verdict on a server. Only populated
+/// for servers where Layer 1 was not confident (`confident = false`). Lives
+/// alongside the Layer 1 record on the same Firestore doc, never overwrites it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Layer2Classification {
+    pub category: Option<Category>,
+    pub cash_flow_direction: Option<CashFlowDirection>,
+    pub currencies: Vec<String>,
+    pub value_to_swarm: Option<ValueToSwarm>,
+    /// Grok's self-reported confidence on its own classification, 0.0-1.0.
+    pub confidence: f32,
+    /// One-sentence reasoning. Logged + stored for audit, never user-facing.
+    pub reasoning: String,
+    /// Effort estimate to integrate this server as a swarm.tips listings
+    /// source. "trivial" / "moderate" / "high".
+    pub integration_effort: String,
+    /// When this verdict was computed.
+    pub classified_at: DateTime<Utc>,
+    /// Which Grok model was used (for cost tracking + future rerun decisions).
+    pub model: String,
+}
+
 /// Final enriched server record stored in Firestore at `mcp_servers/{slug}`.
 /// Combines metadata from all sources + Layer 1 classification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +129,11 @@ pub struct EnrichedServer {
     pub upstream_quality_score: Option<f32>,
     pub upstream_visitors_estimate: Option<u64>,
     pub classification: Layer1Classification,
+    /// Layer 2 (LLM) verdict — populated by `discovery::llm_classify` for
+    /// servers where Layer 1 was not confident. Layer 1 stays the source of
+    /// truth for high-confidence hits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer2_classification: Option<Layer2Classification>,
     pub first_seen_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
 }
@@ -119,15 +146,44 @@ impl EnrichedServer {
     }
 
     /// True if this server should appear in the earning-candidates list.
-    /// Used by the `/internal/mcp/earning-candidates` endpoint.
+    /// Considers BOTH Layer 1 (always trusted) and Layer 2 (only if confidence >= 0.6).
     pub fn is_earning_candidate(&self) -> bool {
-        matches!(
+        let l1 = matches!(
             self.classification.cash_flow_direction,
             Some(CashFlowDirection::EarnsForAgent)
         ) || matches!(
             self.classification.value_to_swarm,
             Some(ValueToSwarm::AggregateListing)
-        )
+        );
+
+        let l2 = self
+            .layer2_classification
+            .as_ref()
+            .filter(|c| c.confidence >= 0.6)
+            .is_some_and(|c| {
+                matches!(
+                    c.cash_flow_direction,
+                    Some(CashFlowDirection::EarnsForAgent)
+                ) || matches!(c.value_to_swarm, Some(ValueToSwarm::AggregateListing))
+            });
+
+        l1 || l2
+    }
+
+    /// True if this server should appear in the composable-primitives list
+    /// (`/internal/mcp/primitives`). Tier-2 priority — read from Layer 1
+    /// `value_to_swarm = Dependency` first, then Layer 2 if Layer 1 is silent.
+    pub fn is_primitive(&self) -> bool {
+        let l1 = matches!(
+            self.classification.value_to_swarm,
+            Some(ValueToSwarm::Dependency)
+        );
+        let l2 = self
+            .layer2_classification
+            .as_ref()
+            .filter(|c| c.confidence >= 0.6)
+            .is_some_and(|c| matches!(c.value_to_swarm, Some(ValueToSwarm::Dependency)));
+        l1 || l2
     }
 }
 

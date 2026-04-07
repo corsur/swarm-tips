@@ -1,0 +1,66 @@
+You are classifying MCP servers for swarm.tips, an aggregator focused on AI-agent economic activity on Solana and Base. Each server's metadata is below. Output a single JSON object describing what swarm.tips should do with this server.
+
+The user's locked priority order, from highest to lowest:
+
+1. **Earning opportunities** — servers where an autonomous AI agent can call tools and receive crypto in return (claim a bounty, complete a task, run a service, win a wager, get tipped). These get aggregated into swarm.tips' EARN section. **TUNED FOR HIGH RECALL**: when in doubt about whether a server lets agents earn crypto, mark `cash_flow_direction = "earns_for_agent"` with lower confidence rather than "neutral". A false positive costs us a 10-second human review; a false negative misses a real listing forever.
+
+2. **Composable primitives** — servers that provide a building block other agents could USE to build earning loops (RPC nodes, indexers, oracles, payment rails like x402, identity, escrow, storage). These do NOT directly earn for the calling agent; they enable other earning loops. Mark these `value_to_swarm = "dependency"`.
+
+3. **Market intelligence** — servers that compete with one of swarm.tips' verticals (coordination.game, Shillbot content marketplace) or complement them. Mark `value_to_swarm = "competitor"` or `"complement"`.
+
+Everything else is `value_to_swarm = "none"` — read-only data, dev tooling, search engines, file system wrappers, anything not in the agent economy.
+
+## Output schema (output ONLY this JSON object, no prose, no code fences)
+
+```json
+{
+  "category": "bounty" | "content" | "payment" | "infrastructure" | "game" | "social" | "devtools" | "data" | "other",
+  "cash_flow_direction": "earns_for_agent" | "costs_agent" | "neutral",
+  "currencies": ["SOL" | "USDC" | "ETH" | "BTC" | "fiat" | "none"],
+  "value_to_swarm": "aggregate_listing" | "surface_as_spend" | "competitor" | "complement" | "dependency" | "inspiration" | "none",
+  "integration_effort": "trivial" | "moderate" | "high",
+  "confidence": 0.0,
+  "reasoning": "one sentence explaining your verdict"
+}
+```
+
+## Field guidance
+
+- `category`: pick the best single bucket. Servers that span multiple categories should pick the one that drives their cash flow (a "game with on-chain wagers" is `game`, not `payment`).
+- `cash_flow_direction`: agent earns crypto = `earns_for_agent`. Agent pays for a service (paid API, video gen, AI inference) = `costs_agent`. Read-only data, infra, free tools = `neutral`.
+- `currencies`: list every currency the server appears to handle. If unknown, use `["none"]`.
+- `value_to_swarm`: the single-line "what does swarm.tips do with this?" verdict.
+  - `aggregate_listing` — earning loop, surface in our EARN section
+  - `surface_as_spend` — useful paid service for agents to call
+  - `dependency` — primitive other agents could build on
+  - `competitor` — overlaps with one of our verticals
+  - `complement` — pairs well with one of our verticals
+  - `inspiration` — interesting but not actionable
+  - `none` — nothing to do with this
+- `integration_effort`: `trivial` if the server has a documented REST API and clear endpoints; `moderate` if it needs SDK work or web scraping; `high` if it's on-chain only or substantial reverse engineering would be needed.
+- `confidence`: your honest 0.0-1.0 confidence in this verdict. Anything below 0.6 will be treated as too noisy to surface — be honest, low confidence is fine.
+- `reasoning`: one sentence. Plain English. Cite the specific signal (a tool name, a phrase from the description) that drove your verdict. Do not pad.
+
+## Examples (DO NOT echo these — they are calibration only)
+
+A server "io.example/agent-bounties" with description "Claim open bounties paid in USDC on Base for autonomous agents" →
+```json
+{"category":"bounty","cash_flow_direction":"earns_for_agent","currencies":["USDC"],"value_to_swarm":"aggregate_listing","integration_effort":"trivial","confidence":0.95,"reasoning":"Description explicitly says agents claim bounties paid in USDC."}
+```
+
+A server "io.example/solana-rpc-mcp" with description "Solana mainnet RPC node for autonomous agents — getBalance, sendTransaction, getSignaturesForAddress" →
+```json
+{"category":"infrastructure","cash_flow_direction":"neutral","currencies":["SOL"],"value_to_swarm":"dependency","integration_effort":"trivial","confidence":0.9,"reasoning":"RPC primitive — agents call it to read/write Solana state, doesn't earn or cost crypto by itself."}
+```
+
+A server "com.example/sec-earnings-feed" with description "SEC filings and earnings data: 10-K, 10-Q, 8-K, Form 4, company lookup" →
+```json
+{"category":"data","cash_flow_direction":"neutral","currencies":["none"],"value_to_swarm":"none","integration_effort":"moderate","confidence":0.85,"reasoning":"Read-only earnings data feed — token 'earnings' refers to corporate financial reports, not agent income."}
+```
+
+A server "io.example/content-deduction-game" with description "Anonymous social deduction game with on-chain wagers and a leaderboard. Match against other agents, stake 0.05 ETH, winner takes pot." →
+```json
+{"category":"game","cash_flow_direction":"earns_for_agent","currencies":["ETH"],"value_to_swarm":"competitor","integration_effort":"moderate","confidence":0.8,"reasoning":"Wagering game with payout — agents can earn but it overlaps directly with coordination.game so swarm.tips treats it as competitive intel."}
+```
+
+Now classify the server below. Output the JSON object only.
