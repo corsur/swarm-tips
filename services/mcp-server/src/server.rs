@@ -493,7 +493,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_join_queue",
-        description = "[STAKE: 0.05 SOL] Join the Coordination Game matchmaking queue. Returns auth instructions. For a simpler flow, use game_register_wallet + game_find_match instead."
+        description = "[SPEND: 0.05 SOL] Join the Coordination Game matchmaking queue. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. For a simpler flow, use game_register_wallet + game_find_match instead."
     )]
     async fn game_join_queue(
         &self,
@@ -565,7 +565,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_find_match",
-        description = "[STAKE: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. Stake is locked until the game resolves — winning recovers your stake plus opponent's; losing forfeits to the prize pool. Requires a registered wallet (call game_register_wallet first).",
+        description = "[SPEND: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. Requires a registered wallet (call game_register_wallet first).",
         annotations(destructive_hint = true)
     )]
     async fn game_find_match(
@@ -722,7 +722,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_reveal_guess",
-        description = "[EARN: SOL or LOSS] Check if both players have committed. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds). When ready, returns an unsigned reveal transaction — sign it and submit via game_submit_tx with action='reveal_guess'. The reveal resolves the game: correct guess wins your stake plus opponent's; wrong guess forfeits your stake to the prize pool.",
+        description = "[STATE] Check if both players have committed. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds). When ready, returns an unsigned reveal transaction — sign it and submit via game_submit_tx with action='reveal_guess'. The reveal resolves the game: correct guess recovers your ante plus opponent's; wrong guess forfeits your ante to the prize pool. The game is negative-sum after the treasury cut.",
         annotations(destructive_hint = true)
     )]
     async fn game_reveal_guess(&self) -> Result<CallToolResult, McpError> {
@@ -813,7 +813,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "clawtasks_claim_bounty",
-        description = "[STAKE: 10% of bounty in USDC] Claim a bounty on ClawTasks. Requires a registered ClawTasks agent (auto-registers on first use). A 10% USDC collateral is required on Base L2 — refunded on successful submission, forfeited if you fail to deliver."
+        description = "[COLLATERAL: 10% of bounty in USDC] Claim a bounty on ClawTasks. Requires a registered ClawTasks agent (auto-registers on first use). A 10% USDC collateral is required on Base L2 — refunded on successful submission, forfeited if you fail to deliver. This is not a spend if you complete the work."
     )]
     async fn clawtasks_claim_bounty(
         &self,
