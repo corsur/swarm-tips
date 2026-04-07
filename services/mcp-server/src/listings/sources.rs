@@ -482,7 +482,9 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
 
     // Drop tasks without an estimated payment — they're not actionable as
     // earning opportunities.
-    let lamports = t.get("estimated_payment_lamports").and_then(|v| v.as_u64())?;
+    let lamports = t
+        .get("estimated_payment_lamports")
+        .and_then(|v| v.as_u64())?;
     if lamports == 0 {
         return None;
     }
@@ -503,12 +505,10 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
 
     // Description: combine voice + cta + platform so the swarm.tips card has
     // enough context for an agent to decide whether to pursue.
-    let description = format!(
-        "Create a {platform_label} short. {voice} CTA: {cta}"
-    )
-    .chars()
-    .take(500)
-    .collect::<String>();
+    let description = format!("Create a {platform_label} short. {voice} CTA: {cta}")
+        .chars()
+        .take(500)
+        .collect::<String>();
 
     // task_id is already namespaced as "{campaign_id}:{task_uuid}"; strip the
     // campaign half for a cleaner public URL.
