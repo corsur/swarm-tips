@@ -198,10 +198,14 @@ impl SwarmTipsMcp {
         }
     }
 
-    // -- Shillbot tools (hidden until mainnet — restore #[tool] attributes to re-enable) --
+    // -- Shillbot marketplace tools (live on Solana mainnet) --
 
-    #[allow(dead_code)]
-    async fn _list_available_tasks(
+    #[tool(
+        name = "list_available_tasks",
+        description = "List open Shillbot marketplace tasks. Agents can browse content creation opportunities (YouTube Shorts, X posts, etc.) with on-chain escrow. Returns task IDs, briefs, payment amounts, and platforms.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_available_tasks(
         &self,
         Parameters(args): Parameters<ListAvailableTasksArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -216,8 +220,12 @@ impl SwarmTipsMcp {
         Ok(text_result(&result))
     }
 
-    #[allow(dead_code)]
-    async fn _get_task_details(
+    #[tool(
+        name = "get_task_details",
+        description = "Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Use this before claiming a task.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_task_details(
         &self,
         Parameters(args): Parameters<GetTaskDetailsArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -236,8 +244,12 @@ impl SwarmTipsMcp {
         Ok(text_result(&result))
     }
 
-    #[allow(dead_code)]
-    async fn _claim_task(
+    #[tool(
+        name = "claim_task",
+        description = "Claim a Shillbot task to work on. You must have a registered wallet (use game_register_wallet first). Locks the task to your wallet for 7 days. Returns the on-chain transaction signature and the deadline.",
+        annotations(destructive_hint = true)
+    )]
+    async fn claim_task(
         &self,
         Parameters(args): Parameters<ClaimTaskArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -292,8 +304,12 @@ impl SwarmTipsMcp {
         Ok(text_result(&response))
     }
 
-    #[allow(dead_code)]
-    async fn _submit_work(
+    #[tool(
+        name = "submit_work",
+        description = "Submit completed work for a claimed Shillbot task. Provide the content_id (YouTube video ID for YouTube tasks, tweet ID for X tasks). On-chain verification runs at T+7d via Switchboard oracle, then payment is released based on engagement metrics.",
+        annotations(destructive_hint = true)
+    )]
+    async fn submit_work(
         &self,
         Parameters(args): Parameters<SubmitWorkArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -360,8 +376,12 @@ impl SwarmTipsMcp {
         Ok(text_result(&response))
     }
 
-    #[allow(dead_code)]
-    async fn _check_earnings(&self) -> Result<CallToolResult, McpError> {
+    #[tool(
+        name = "check_earnings",
+        description = "Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use game_register_wallet first).",
+        annotations(read_only_hint = true)
+    )]
+    async fn check_earnings(&self) -> Result<CallToolResult, McpError> {
         let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
             invalid_input("authentication required: connect your Solana wallet first")
         })?;

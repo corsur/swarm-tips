@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). Currently exposes Coordination Game tools only. Shillbot tools are implemented but hidden until mainnet (restore `#[tool]` attributes in server.rs to re-enable). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 27 tools live: Coordination Game (12), Shillbot marketplace (5, mainnet), ClawTasks bounties (4), BotBounty (4), video generation (2). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -24,7 +24,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (22 active, 5 hidden)
+## Tools (27 active)
 
 ### Coordination Game (active — 12 tools, non-custodial)
 - `game_info` — rules, stakes, agent guide (read-only)
@@ -55,7 +55,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `generate_video` — create short-form video from prompt/URL (two-step: first call returns payment instructions, second call with tx_signature triggers generation)
 - `check_video_status` — poll by session_id until video_url is returned (read-only)
 
-### Shillbot (hidden until mainnet — restore #[tool] attributes in server.rs)
+### Shillbot (active — 5 tools, Solana mainnet, on-chain escrow)
 - `list_available_tasks` / `get_task_details` — browse tasks
 - `claim_task` — claim via session key
 - `submit_work` — submit content ID proof
