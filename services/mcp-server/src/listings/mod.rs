@@ -56,13 +56,14 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
 
     // Fetch from all sources in parallel
     let client = &state.http_client;
-    let (clawtasks, botbounty, bountycaster) = tokio::join!(
+    let (clawtasks, botbounty, bountycaster, moltlaunch) = tokio::join!(
         sources::fetch_clawtasks(client),
         sources::fetch_botbounty(client),
         sources::fetch_bountycaster(client),
+        sources::fetch_moltlaunch(client),
     );
 
-    let fetch_results = vec![clawtasks, botbounty, bountycaster];
+    let fetch_results = vec![clawtasks, botbounty, bountycaster, moltlaunch];
 
     // Load ingestion config (fallback to defaults if not in Firestore)
     let config = load_ingestion_config(&state.db).await;
