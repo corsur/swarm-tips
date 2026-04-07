@@ -5,13 +5,30 @@ use crate::errors::McpServiceError;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
 use crate::proxy::OrchestratorProxy;
+use crate::session_binding::McpSessionBinding;
 use crate::solana_tx;
+use rmcp::handler::server::common::Extension;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use schemars::JsonSchema;
 use std::sync::Arc;
+
+/// Header name the streamable HTTP MCP transport uses to carry the per-session
+/// identifier on every request after `initialize`. Lowercase per HTTP/2 norms.
+const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+
+/// Pull the streamable HTTP session ID out of the request parts so the
+/// session-binding lookup has something to key on. Returns `None` for
+/// pre-initialize requests or any caller that omits the header.
+fn session_id_from_parts(parts: Option<&http::request::Parts>) -> Option<String> {
+    parts?
+        .headers
+        .get(MCP_SESSION_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
 
 /// Shared state accessible to all MCP sessions.
 pub struct SharedState {
@@ -24,6 +41,7 @@ pub struct SharedState {
     pub game_sessions: Arc<GameSessionManager>,
     #[allow(dead_code)]
     pub challenge_manager: Arc<ChallengeManager>,
+    pub session_binding: Arc<McpSessionBinding>,
 }
 
 /// The Swarm Tips MCP server — unified interface for all DAO verticals.
@@ -258,12 +276,13 @@ impl SwarmTipsMcp {
     async fn claim_task(
         &self,
         Parameters(args): Parameters<ClaimTaskArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
 
-        let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
+        let wallet_pubkey = self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
             invalid_input("authentication required: call game_register_wallet first")
         })?;
 
@@ -293,6 +312,7 @@ impl SwarmTipsMcp {
     async fn submit_work(
         &self,
         Parameters(args): Parameters<SubmitWorkArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
@@ -301,7 +321,7 @@ impl SwarmTipsMcp {
             return Err(invalid_input("content_id is required"));
         }
 
-        let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
+        let wallet_pubkey = self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
             invalid_input("authentication required: call game_register_wallet first")
         })?;
 
@@ -337,6 +357,7 @@ impl SwarmTipsMcp {
     async fn shillbot_submit_tx(
         &self,
         Parameters(args): Parameters<ShillbotSubmitTxArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
@@ -354,7 +375,7 @@ impl SwarmTipsMcp {
             }
         };
 
-        let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
+        let wallet_pubkey = self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
             invalid_input("authentication required: call game_register_wallet first")
         })?;
 
@@ -407,8 +428,11 @@ impl SwarmTipsMcp {
         description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use game_register_wallet first).",
         annotations(read_only_hint = true)
     )]
-    async fn check_earnings(&self) -> Result<CallToolResult, McpError> {
-        let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
+    async fn check_earnings(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet_pubkey = self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
             invalid_input("authentication required: connect your Solana wallet first")
         })?;
 
@@ -524,9 +548,10 @@ impl SwarmTipsMcp {
     async fn game_join_queue(
         &self,
         Parameters(args): Parameters<GameJoinQueueArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let wallet_pubkey = self
-            .resolve_wallet()
+            .resolve_wallet(Some(&parts))
             .await
             .unwrap_or_else(|| "unknown".to_string());
 
@@ -567,6 +592,7 @@ impl SwarmTipsMcp {
     async fn game_register_wallet(
         &self,
         Parameters(args): Parameters<GameRegisterWalletArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.pubkey.is_empty() {
             return Err(invalid_input("pubkey is required"));
@@ -578,6 +604,17 @@ impl SwarmTipsMcp {
             .register_wallet(&args.pubkey)
             .await
             .map_err(|e| McpError::internal_error(format!("registration failed: {e}"), None))?;
+
+        // Persist the streamable HTTP session → wallet binding so a pod
+        // restart doesn't strand the agent. The next tool call from the
+        // same `Mcp-Session-Id` resolves the wallet via Firestore even if
+        // the in-memory game session map was wiped by the restart.
+        if let Some(session_id) = session_id_from_parts(Some(&parts)) {
+            // Best-effort: a binding write failure is logged inside
+            // McpSessionBinding::bind and the agent can simply re-call
+            // game_register_wallet to retry.
+            let _ = self.state.session_binding.bind(&session_id, &wallet).await;
+        }
 
         tracing::info!(wallet = %wallet, balance, "game wallet registered");
 
@@ -597,8 +634,9 @@ impl SwarmTipsMcp {
     async fn game_find_match(
         &self,
         Parameters(args): Parameters<GameFindMatchArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         let unsigned = self
             .state
@@ -626,8 +664,9 @@ impl SwarmTipsMcp {
     async fn game_submit_tx(
         &self,
         Parameters(args): Parameters<GameSubmitTxArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         tracing::info!(wallet = %wallet, action = %args.action, "game_submit_tx: received");
 
@@ -650,8 +689,11 @@ impl SwarmTipsMcp {
         description = "[READ] Check if you have been matched with an opponent. Returns 'queued' if still waiting, 'in_game' with game_id once matched. Poll every 2-3 seconds after calling game_find_match.",
         annotations(read_only_hint = true)
     )]
-    async fn game_check_match(&self) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+    async fn game_check_match(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         let status = self
             .state
@@ -670,6 +712,7 @@ impl SwarmTipsMcp {
     async fn game_send_message(
         &self,
         Parameters(args): Parameters<GameSendMessageArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.text.is_empty() {
             return Err(invalid_input("text is required"));
@@ -678,7 +721,7 @@ impl SwarmTipsMcp {
             return Err(invalid_input("message exceeds 4096 byte limit"));
         }
 
-        let wallet = self.require_game_wallet().await?;
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         self.state
             .game_sessions
@@ -695,8 +738,11 @@ impl SwarmTipsMcp {
         description = "[READ] Get all chat messages received from your opponent since the last call. Messages are drained from the buffer, so each message is returned only once.",
         annotations(read_only_hint = true)
     )]
-    async fn game_get_messages(&self) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+    async fn game_get_messages(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         let messages = self
             .state
@@ -720,6 +766,7 @@ impl SwarmTipsMcp {
     async fn game_commit_guess(
         &self,
         Parameters(args): Parameters<GameCommitGuessArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let guess: u8 = match args.guess.to_lowercase().as_str() {
             "same" => 0,
@@ -727,7 +774,7 @@ impl SwarmTipsMcp {
             _ => return Err(invalid_input("guess must be 'same' or 'different'")),
         };
 
-        let wallet = self.require_game_wallet().await?;
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         let (unsigned, preimage_hex) = self
             .state
@@ -751,8 +798,11 @@ impl SwarmTipsMcp {
         description = "[STATE] Check if both players have committed. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds). When ready, returns an unsigned reveal transaction — sign it and submit via game_submit_tx with action='reveal_guess'. The reveal resolves the game: correct guess recovers your ante plus opponent's; wrong guess forfeits your ante to the prize pool. The game is negative-sum after the treasury cut.",
         annotations(destructive_hint = true)
     )]
-    async fn game_reveal_guess(&self) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+    async fn game_reveal_guess(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         let unsigned_opt = self
             .state
@@ -783,8 +833,11 @@ impl SwarmTipsMcp {
         description = "[READ] Get the result of your current or most recent game. Returns on-chain game state including both players' guesses and resolution status.",
         annotations(read_only_hint = true)
     )]
-    async fn game_get_result(&self) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+    async fn game_get_result(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         let result = self
             .state
@@ -844,8 +897,9 @@ impl SwarmTipsMcp {
     async fn clawtasks_claim_bounty(
         &self,
         Parameters(args): Parameters<ClawTasksBountyIdArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         // Auto-register on ClawTasks if needed (best-effort, may already exist)
         let _ = self
@@ -872,8 +926,9 @@ impl SwarmTipsMcp {
     async fn clawtasks_submit_work(
         &self,
         Parameters(args): Parameters<ClawTasksSubmitArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         let result = self
             .state
@@ -934,8 +989,9 @@ impl SwarmTipsMcp {
     async fn botbounty_claim_bounty(
         &self,
         Parameters(args): Parameters<BotBountyBountyIdArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         let result = self
             .state
@@ -955,8 +1011,9 @@ impl SwarmTipsMcp {
     async fn botbounty_submit_work(
         &self,
         Parameters(args): Parameters<BotBountySubmitArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet().await?;
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
 
         let deliverables: Vec<serde_json::Value> = serde_json::from_str(&args.deliverables)
             .map_err(|e| invalid_input(&format!("deliverables must be valid JSON array: {e}")))?;
@@ -992,15 +1049,49 @@ impl ServerHandler for SwarmTipsMcp {
 // -- Helper methods --
 
 impl SwarmTipsMcp {
-    /// Resolve the agent's wallet from the game session manager.
-    /// Returns None if no wallet is registered.
-    async fn resolve_wallet(&self) -> Option<String> {
+    /// Resolve the agent's wallet for the current MCP request.
+    ///
+    /// Resolution order:
+    /// 1. Firestore session-binding lookup (`mcp-session-id` header → wallet).
+    ///    On hit, also re-hydrates the in-memory game session from
+    ///    `mcp_game_sessions/{wallet}` so a pod restart doesn't strand the
+    ///    agent mid-game.
+    /// 2. In-memory `GameSessionManager::get_any_wallet()` fallback for
+    ///    callers that haven't bound their session yet (e.g., the very first
+    ///    `game_register_wallet` call after a pod restart).
+    ///
+    /// Returns None if neither path resolves a wallet.
+    async fn resolve_wallet(&self, parts: Option<&http::request::Parts>) -> Option<String> {
+        if let Some(session_id) = session_id_from_parts(parts) {
+            if let Some(wallet) = self.state.session_binding.resolve(&session_id).await {
+                // Re-hydrate game session from Firestore only if the
+                // in-memory map doesn't already have it. The heavy work
+                // (RPC balance check + persisted session load) only fires
+                // on the first tool call after a pod restart; steady-state
+                // tool calls just hit the cheap `contains_key` check.
+                if !self.state.game_sessions.is_registered(&wallet).await {
+                    if let Err(e) = self.state.game_sessions.register_wallet(&wallet).await {
+                        tracing::warn!(
+                            wallet = %wallet,
+                            session_id = %session_id,
+                            error = %e,
+                            "failed to re-hydrate game session after binding lookup"
+                        );
+                    }
+                }
+                return Some(wallet);
+            }
+        }
         self.state.game_sessions.get_any_wallet().await
     }
 
-    /// Require a registered game wallet, returning an MCP error if none exists.
-    async fn require_game_wallet(&self) -> Result<String, McpError> {
-        self.resolve_wallet()
+    /// Require a registered game wallet, returning an MCP error if none
+    /// exists. Same resolution order as `resolve_wallet`.
+    async fn require_game_wallet(
+        &self,
+        parts: Option<&http::request::Parts>,
+    ) -> Result<String, McpError> {
+        self.resolve_wallet(parts)
             .await
             .ok_or_else(|| invalid_input("no game session: call game_register_wallet first"))
     }

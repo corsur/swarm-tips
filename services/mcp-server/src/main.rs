@@ -16,6 +16,7 @@ mod game_session;
 mod listings;
 mod proxy;
 mod server;
+mod session_binding;
 mod solana_tx;
 
 use crate::auth::ChallengeManager;
@@ -27,6 +28,7 @@ use crate::game_session::GameSessionManager;
 use crate::listings::ListingsState;
 use crate::proxy::OrchestratorProxy;
 use crate::server::{SharedState, SwarmTipsMcp};
+use crate::session_binding::McpSessionBinding;
 use anyhow::Context;
 use firestore::FirestoreDb;
 use rmcp::transport::streamable_http_server::{
@@ -133,11 +135,18 @@ async fn main() -> anyhow::Result<()> {
     let game_db = FirestoreDb::new(&gcp_project_id)
         .await
         .expect("Firestore client for game sessions must initialize");
+    let game_db = Arc::new(game_db);
     let game_sessions = Arc::new(GameSessionManager::new(
         game_api_url.clone(),
         solana_rpc_url.clone(),
-        Arc::new(game_db),
+        Arc::clone(&game_db),
     ));
+
+    // MCP HTTP session binding — `Mcp-Session-Id → wallet` lookup so a pod
+    // restart doesn't strand an active agent. Shares the game-session
+    // Firestore client because both are cheap wrappers around the same
+    // underlying connection pool.
+    let session_binding = Arc::new(McpSessionBinding::new(game_db));
 
     let shared = Arc::new(SharedState {
         orchestrator: OrchestratorProxy::new(orchestrator_url),
@@ -148,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         rpc_client,
         game_sessions,
         challenge_manager,
+        session_binding,
     });
 
     let ct = tokio_util::sync::CancellationToken::new();

@@ -284,6 +284,15 @@ impl GameSessionManager {
         self.sessions.read().await.keys().next().cloned()
     }
 
+    /// Whether the in-memory session map already holds a session for
+    /// `wallet`. Used by `resolve_wallet` to skip the heavy
+    /// `register_wallet` re-hydrate path on every tool call — only the
+    /// first call after a pod restart actually pays the
+    /// Firestore-load + balance-check cost.
+    pub async fn is_registered(&self, wallet: &str) -> bool {
+        self.sessions.read().await.contains_key(wallet)
+    }
+
     /// Register an agent wallet by public key only. Non-custodial: no private
     /// key ever touches the MCP server.
     ///
