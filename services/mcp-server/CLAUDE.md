@@ -109,6 +109,19 @@ Game sessions are persisted to Firestore (`mcp_game_sessions/{wallet}`) on every
 
 ---
 
+## Workflow Orchestration (Google Workflows)
+
+**Cross-repo standard.** Multi-step / deferred work in mcp-server uses Google Workflows, never `tokio::spawn` timers, in-memory job queues, or polling loops. This is the same rule that applies to every backend service in every repo — see `swarm/CLAUDE.md` "Workflow Orchestration (Google Workflows) — cross-repo standard" for the canonical statement.
+
+mcp-server-specific notes:
+
+- **Layer 2 LLM classifier (`/internal/mcp/llm-classify`)** is currently invoked synchronously by HTTP. When the cap-bounded run grows past comfortable HTTP timeouts, migrate to a Google Workflow that calls `/internal/mcp/llm-classify` once per batch with a `sys.sleep` between batches. Workflow YAML belongs in `infra/workflows/` once it exists; today the directory only holds the daily discovery refresh skeleton.
+- **Layer 3 deep analysis (`/internal/mcp/deep-analyze`)** has the same property — the current ~15s sync run is fine, but a future "full deep-analyze across the whole index" pass should be a Workflow.
+- **Discovery refresh (`/internal/mcp/refresh`)** is meant to run daily. The Cloud Workflow + scheduled trigger that calls it lives in the `infra/workflows/` directory once added — this is the correct pattern for any periodic recompute.
+- **What you must NOT add to mcp-server:** any background `tokio::spawn` task that runs forever, any Mutex<HashMap<job_id, ...>> queue, any "remind me later" mechanism that lives in a single pod's memory. Mcp-server is KEDA-scaled and stateless — anything in-process is lost on scale-down.
+
+---
+
 ## Key Invariants
 
 - **Non-custodial game operations** — MCP server returns unsigned transactions, agents sign locally
