@@ -142,8 +142,19 @@ fn build_haystack(raw: &RawServer) -> String {
     s
 }
 
+/// Word-boundary-aware match against any needle in `needles`.
+///
+/// CRITICAL: never use plain `String::contains` for keyword matching here.
+/// Production audit (2026-04-07) found ~14 false positives in the first
+/// 35 earning candidates because `EARNING_KEYWORDS` contains the bare token
+/// `"earn"` and substring matching fired on "**L**earn", "L**earn**ing",
+/// "Hebbian l**earn**ing", "reinforcement l**earn**ing", "Microsoft L**earn**",
+/// and "**earn**ings" (data sources, not loops). Word-boundary matching kills
+/// the entire family in one pass. `contains_word` already handles internal
+/// spaces (e.g. "task marketplace") because it only checks the chars
+/// immediately before/after the *whole* needle, not each internal token.
 fn matches_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|n| haystack.contains(n))
+    needles.iter().any(|n| contains_word(haystack, n))
 }
 
 /// Word-boundary-ish check — does the haystack contain `word` surrounded by
@@ -184,10 +195,25 @@ fn contains_word(haystack: &str, word: &str) -> bool {
 /// Be liberal — false positives go to manual review, false negatives are missed
 /// opportunities forever.
 const EARNING_KEYWORDS: &[&str] = &[
+    // Verb forms — explicitly enumerated because `matches_any` is now word-
+    // boundary-strict on BOTH ends. Without "earning"/"earns", a description
+    // like "agents earning ETH" wouldn't match because "earn" is followed by
+    // an alphanumeric. We deliberately do NOT include "earnings" because
+    // that token shows up in non-earning data sources (SEC filings, college
+    // earnings stats) and Layer 2 LLM is the right tool to disambiguate.
     "earn",
+    "earns",
+    "earning",
     "payout",
+    "payouts",
+    "reward",
     "rewards",
-    "claim ",
+    // "claim" + inflections. Risky — also matches "factual claim", "insurance
+    // claim" — but most real earning servers say "claim a task / claim a
+    // bounty" so the net signal is positive. Layer 2 LLM sweeps residual noise.
+    "claim",
+    "claims",
+    "claiming",
     "submit work",
     "submit_work",
     "submit-work",
@@ -197,6 +223,7 @@ const EARNING_KEYWORDS: &[&str] = &[
     "paid task",
     "paid tasks",
     "freelance",
+    "gig",
     "gigs",
     "bounty",
     "bounties",
@@ -210,6 +237,8 @@ const EARNING_KEYWORDS: &[&str] = &[
     "agent earnings",
     // Game-but-earning: wagering on games where you can win money
     "wager",
+    "wagers",
+    "wagered",
     "wagering",
     "stake-to-play",
     "stake to play",
@@ -247,12 +276,19 @@ const PAYMENT_KEYWORDS: &[&str] = &[
 /// Game / wagering / coordination — tier 3 competitive intel
 const GAME_KEYWORDS: &[&str] = &[
     "game",
+    "games",
     "wager",
+    "wagers",
+    "wagering",
     "stake",
+    "stakes",
     "duel",
+    "duels",
     "tournament",
+    "tournaments",
     "social deduction",
     "leaderboard",
+    "leaderboards",
 ];
 
 /// Infrastructure: RPC, indexer, oracle, storage — tier 2 dependency
@@ -384,6 +420,126 @@ mod tests {
         let c = classify_layer1(&r);
         assert!(!c.confident, "should defer to Layer 2");
         assert_eq!(c.cash_flow_direction, None);
+    }
+
+    // Regression: production audit on 2026-04-07 found 14/35 earning candidates
+    // were "Learn"/"Learning" substring matches on the bare token "earn".
+    // After switching `matches_any` to word-boundary matching, none of these
+    // should classify as earning candidates anymore. Each fixture below is a
+    // real (paraphrased) server description that produced a false positive.
+    #[test]
+    fn no_false_positive_on_learn_substring() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "com.microsoft/microsoft-learn-mcp",
+                "Official Microsoft Learn MCP Server – real-time, trusted docs and code samples for AI and LLMs.",
+            ),
+            (
+                "app.aspirelearning/mcp",
+                "Aspire Learning MCP — browse courses, chapters, lessons, and import LaTeX quizzes.",
+            ),
+            (
+                "io.github.example/content-repurposer",
+                "Repurpose content into Twitter threads, LinkedIn posts, Substack notes, email, and video. (Geek-Learns project)",
+            ),
+            (
+                "io.github.example/qiskit-gym",
+                "MCP server for qiskit-gym reinforcement learning quantum circuit synthesis.",
+            ),
+            (
+                "io.github.example/hebbian-mind",
+                "Associative memory via Hebbian learning. Connections strengthen through use.",
+            ),
+            (
+                "io.github.example/cuba-memorys",
+                "Persistent memory for AI agents. Knowledge graph, Hebbian learning, RRF search.",
+            ),
+            (
+                "ai.smithery/hello-world-test",
+                "Kickstart your setup with ready-to-run greetings. Learn the inten and origin of Hello World.",
+            ),
+            (
+                "com.close/close-mcp",
+                "Close CRM to manage your sales pipeline. Learn more at https://close.com",
+            ),
+        ];
+        for (name, desc) in cases {
+            let r = raw_with_desc(name, desc);
+            let c = classify_layer1(&r);
+            assert!(
+                !matches!(
+                    c.cash_flow_direction,
+                    Some(CashFlowDirection::EarnsForAgent)
+                ),
+                "{name} should NOT be flagged as earning — desc: {desc}"
+            );
+            assert!(
+                !matches!(c.value_to_swarm, Some(ValueToSwarm::AggregateListing)),
+                "{name} should NOT be value=AggregateListing — desc: {desc}"
+            );
+        }
+    }
+
+    // Regression: "earnings" as a data-source noun (SEC filings, college
+    // earnings stats) should not get classified as an earning loop. The fix
+    // is word-boundary matching — "earn" no longer matches "earnings".
+    #[test]
+    fn no_false_positive_on_earnings_data_sources() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "com.earningsfeed/mcp",
+                "SEC filings and insider trades in real-time. 10-K, 10-Q, 8-K, Form 4, and company lookup.",
+            ),
+            (
+                "com.olyport/college-scorecard",
+                "Higher education data: tuition, graduation rates, and earnings.",
+            ),
+        ];
+        for (name, desc) in cases {
+            let r = raw_with_desc(name, desc);
+            let c = classify_layer1(&r);
+            assert!(
+                !matches!(
+                    c.cash_flow_direction,
+                    Some(CashFlowDirection::EarnsForAgent)
+                ),
+                "{name} should NOT be flagged as earning — desc: {desc}"
+            );
+        }
+    }
+
+    // Regression: "freelance" should match "freelance gig marketplace" but
+    // NOT "German freelancers". Word-boundary matching draws the line at
+    // the trailing alphanumeric.
+    #[test]
+    fn freelance_word_boundary_distinguishes_freelancers() {
+        // Real earning loop — should still match.
+        let r1 = raw_with_desc(
+            "io.github.example/freelance-marketplace",
+            "Open freelance gig marketplace for autonomous agents.",
+        );
+        let c1 = classify_layer1(&r1);
+        assert!(
+            matches!(
+                c1.cash_flow_direction,
+                Some(CashFlowDirection::EarnsForAgent)
+            ),
+            "freelance gig marketplace must still classify as earning"
+        );
+
+        // Tool for human freelancers — should NOT match.
+        let r2 = raw_with_desc(
+            "finance.norman/mcp-server",
+            "AI-powered bookkeeping, invoicing, and VAT filing for German freelancers.",
+        );
+        let c2 = classify_layer1(&r2);
+        assert!(
+            !matches!(
+                c2.cash_flow_direction,
+                Some(CashFlowDirection::EarnsForAgent)
+            ),
+            "bookkeeping tool for human freelancers must NOT classify as earning"
+        );
     }
 
     #[test]
