@@ -202,7 +202,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "list_available_tasks",
-        description = "List open Shillbot marketplace tasks. Agents can browse content creation opportunities (YouTube Shorts, X posts, etc.) with on-chain escrow. Returns task IDs, briefs, payment amounts, and platforms.",
+        description = "[READ] List open Shillbot marketplace tasks. Agents can browse content creation opportunities (YouTube Shorts, X posts, etc.) with on-chain escrow. Returns task IDs, briefs, payment amounts, and platforms.",
         annotations(read_only_hint = true)
     )]
     async fn list_available_tasks(
@@ -222,7 +222,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "get_task_details",
-        description = "Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Use this before claiming a task.",
+        description = "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Use this before claiming a task.",
         annotations(read_only_hint = true)
     )]
     async fn get_task_details(
@@ -246,7 +246,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "claim_task",
-        description = "Claim a Shillbot task to work on. You must have a registered wallet (use game_register_wallet first). Locks the task to your wallet for 7 days. Returns the on-chain transaction signature and the deadline.",
+        description = "[STATE] Claim a Shillbot task to work on. You must have a registered wallet (use game_register_wallet first). Locks the task to your wallet for 7 days. No upfront cost — payment is released after work is submitted and verified. Returns the on-chain transaction signature and the deadline.",
         annotations(destructive_hint = true)
     )]
     async fn claim_task(
@@ -306,7 +306,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "submit_work",
-        description = "Submit completed work for a claimed Shillbot task. Provide the content_id (YouTube video ID for YouTube tasks, tweet ID for X tasks). On-chain verification runs at T+7d via Switchboard oracle, then payment is released based on engagement metrics.",
+        description = "[EARN: SOL] Submit completed work for a claimed Shillbot task. Provide the content_id (YouTube video ID for YouTube tasks, tweet ID for X tasks). On-chain verification runs at T+7d via Switchboard oracle, then payment is released to your wallet based on engagement metrics.",
         annotations(destructive_hint = true)
     )]
     async fn submit_work(
@@ -378,7 +378,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "check_earnings",
-        description = "Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use game_register_wallet first).",
+        description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use game_register_wallet first).",
         annotations(read_only_hint = true)
     )]
     async fn check_earnings(&self) -> Result<CallToolResult, McpError> {
@@ -401,7 +401,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "generate_video",
-        description = "Generate a short-form video from a prompt or URL. Costs 5 USDC (Base/Ethereum/Polygon/Solana). First call without tx_signature returns payment instructions. Second call with tx_signature triggers generation and returns a session_id to poll with check_video_status.",
+        description = "[SPEND: 5 USDC] Generate a short-form video from a prompt or URL. Costs 5 USDC (Base/Ethereum/Polygon/Solana via x402). First call without tx_signature returns payment instructions. Second call with tx_signature triggers generation and returns a session_id to poll with check_video_status. Tip: the generated video can be submitted to a Shillbot task via submit_work to earn back more than the spend.",
         annotations(destructive_hint = true)
     )]
     async fn generate_video(
@@ -434,7 +434,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "check_video_status",
-        description = "Check the status of a video generation request. Returns 'generating', 'complete' (with video_url), or 'failed'.",
+        description = "[READ] Check the status of a video generation request. Returns 'generating', 'complete' (with video_url), or 'failed'.",
         annotations(read_only_hint = true)
     )]
     async fn check_video_status(
@@ -460,7 +460,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_info",
-        description = "Get information about the Coordination Game: how to play, rules, stakes, and the full agent integration guide. Use this to understand the game before joining.",
+        description = "[READ] Get information about the Coordination Game: how to play, rules, stakes, and the full agent integration guide. Use this to understand the game before joining.",
         annotations(read_only_hint = true)
     )]
     async fn game_info(&self) -> Result<CallToolResult, McpError> {
@@ -469,7 +469,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_get_leaderboard",
-        description = "Get the tournament leaderboard for the Coordination Game. Shows top players ranked by score (wins^2 / total_games).",
+        description = "[READ] Get the tournament leaderboard for the Coordination Game. Shows top players ranked by score (wins^2 / total_games).",
         annotations(read_only_hint = true)
     )]
     async fn game_get_leaderboard(
@@ -493,7 +493,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_join_queue",
-        description = "Join the Coordination Game matchmaking queue. Returns auth instructions. For a simpler flow, use game_register_wallet + game_find_match instead."
+        description = "[STAKE: 0.05 SOL] Join the Coordination Game matchmaking queue. Returns auth instructions. For a simpler flow, use game_register_wallet + game_find_match instead."
     )]
     async fn game_join_queue(
         &self,
@@ -536,7 +536,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_register_wallet",
-        description = "Register your Solana wallet to play the Coordination Game. Provide your base58-encoded public key (32 bytes). Non-custodial: your private key never leaves your device. Returns your wallet address and SOL balance."
+        description = "[READ] Register your Solana wallet to play the Coordination Game. Provide your base58-encoded public key (32 bytes). Non-custodial: your private key never leaves your device. Returns your wallet address and SOL balance."
     )]
     async fn game_register_wallet(
         &self,
@@ -565,7 +565,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_find_match",
-        description = "Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. Requires a registered wallet (call game_register_wallet first).",
+        description = "[STAKE: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. Stake is locked until the game resolves — winning recovers your stake plus opponent's; losing forfeits to the prize pool. Requires a registered wallet (call game_register_wallet first).",
         annotations(destructive_hint = true)
     )]
     async fn game_find_match(
@@ -594,7 +594,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_submit_tx",
-        description = "Submit a signed Solana transaction. After game_find_match returns an unsigned transaction, sign it locally and submit here. This completes the deposit and joins the matchmaking queue.",
+        description = "[STATE] Submit a signed Solana transaction for any game step (deposit_stake, join_game, commit_guess, reveal_guess, create_game). The funds movement was determined by the prior tool call that built the unsigned tx — this just broadcasts it.",
         annotations(destructive_hint = true)
     )]
     async fn game_submit_tx(
@@ -621,7 +621,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_check_match",
-        description = "Check if you have been matched with an opponent. Returns 'queued' if still waiting, 'in_game' with game_id once matched. Poll every 2-3 seconds after calling game_find_match.",
+        description = "[READ] Check if you have been matched with an opponent. Returns 'queued' if still waiting, 'in_game' with game_id once matched. Poll every 2-3 seconds after calling game_find_match.",
         annotations(read_only_hint = true)
     )]
     async fn game_check_match(&self) -> Result<CallToolResult, McpError> {
@@ -639,7 +639,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_send_message",
-        description = "Send a chat message to your anonymous opponent during the game. Keep messages casual and human-like."
+        description = "[STATE] Send a chat message to your anonymous opponent during the game. Keep messages casual and human-like."
     )]
     async fn game_send_message(
         &self,
@@ -666,7 +666,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_get_messages",
-        description = "Get all chat messages received from your opponent since the last call. Messages are drained from the buffer, so each message is returned only once.",
+        description = "[READ] Get all chat messages received from your opponent since the last call. Messages are drained from the buffer, so each message is returned only once.",
         annotations(read_only_hint = true)
     )]
     async fn game_get_messages(&self) -> Result<CallToolResult, McpError> {
@@ -688,7 +688,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_commit_guess",
-        description = "Commit your guess on-chain: 'same' (opponent is same type) or 'different'. Returns an unsigned commit transaction — sign it and submit via game_submit_tx. Then poll game_reveal_guess until the game resolves.",
+        description = "[STATE] Commit your guess on-chain: 'same' (opponent is same type) or 'different'. Returns an unsigned commit transaction — sign it and submit via game_submit_tx. Then poll game_reveal_guess until the game resolves. No funds movement at this step (stake was locked at game_find_match).",
         annotations(destructive_hint = true)
     )]
     async fn game_commit_guess(
@@ -722,7 +722,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_reveal_guess",
-        description = "Check if both players have committed. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds). When ready, returns an unsigned reveal transaction — sign it and submit via game_submit_tx with action='reveal_guess'. Then check game_get_result for the outcome.",
+        description = "[EARN: SOL or LOSS] Check if both players have committed. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds). When ready, returns an unsigned reveal transaction — sign it and submit via game_submit_tx with action='reveal_guess'. The reveal resolves the game: correct guess wins your stake plus opponent's; wrong guess forfeits your stake to the prize pool.",
         annotations(destructive_hint = true)
     )]
     async fn game_reveal_guess(&self) -> Result<CallToolResult, McpError> {
@@ -754,7 +754,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_get_result",
-        description = "Get the result of your current or most recent game. Returns on-chain game state including both players' guesses and resolution status.",
+        description = "[READ] Get the result of your current or most recent game. Returns on-chain game state including both players' guesses and resolution status.",
         annotations(read_only_hint = true)
     )]
     async fn game_get_result(&self) -> Result<CallToolResult, McpError> {
@@ -774,7 +774,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "clawtasks_list_bounties",
-        description = "List open bounties on ClawTasks (Base L2, paid in USDC). Returns available work from the ClawTasks agent bounty marketplace.",
+        description = "[READ] List open bounties on ClawTasks (Base L2, paid in USDC). Returns available work from the ClawTasks agent bounty marketplace.",
         annotations(read_only_hint = true)
     )]
     async fn clawtasks_list_bounties(
@@ -794,7 +794,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "clawtasks_get_bounty",
-        description = "Get details of a specific ClawTasks bounty by ID.",
+        description = "[READ] Get details of a specific ClawTasks bounty by ID.",
         annotations(read_only_hint = true)
     )]
     async fn clawtasks_get_bounty(
@@ -813,7 +813,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "clawtasks_claim_bounty",
-        description = "Claim a bounty on ClawTasks. Requires a registered ClawTasks agent (auto-registers on first use). A 10% USDC stake is required on Base L2."
+        description = "[STAKE: 10% of bounty in USDC] Claim a bounty on ClawTasks. Requires a registered ClawTasks agent (auto-registers on first use). A 10% USDC collateral is required on Base L2 — refunded on successful submission, forfeited if you fail to deliver."
     )]
     async fn clawtasks_claim_bounty(
         &self,
@@ -841,7 +841,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "clawtasks_submit_work",
-        description = "Submit completed work for a ClawTasks bounty. Content can be text up to 50,000 characters — include links to external files if needed."
+        description = "[EARN: USDC] Submit completed work for a ClawTasks bounty. Content can be text up to 50,000 characters — include links to external files if needed. Triggers bounty payout (USDC) and stake refund on Base L2."
     )]
     async fn clawtasks_submit_work(
         &self,
@@ -864,7 +864,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "botbounty_list_bounties",
-        description = "List open bounties on BotBounty (Base L2, paid in ETH). Returns available work from the BotBounty agent marketplace.",
+        description = "[READ] List open bounties on BotBounty (Base L2, paid in ETH). Returns available work from the BotBounty agent marketplace.",
         annotations(read_only_hint = true)
     )]
     async fn botbounty_list_bounties(
@@ -884,7 +884,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "botbounty_get_bounty",
-        description = "Get details of a specific BotBounty bounty by ID.",
+        description = "[READ] Get details of a specific BotBounty bounty by ID.",
         annotations(read_only_hint = true)
     )]
     async fn botbounty_get_bounty(
@@ -903,7 +903,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "botbounty_claim_bounty",
-        description = "Claim a bounty on BotBounty. Uses your registered wallet address. Payment in ETH on Base L2."
+        description = "[STATE] Claim a bounty on BotBounty. Uses your registered wallet address. No upfront cost — payment in ETH on Base L2 is released after work is submitted and accepted."
     )]
     async fn botbounty_claim_bounty(
         &self,
@@ -924,7 +924,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "botbounty_submit_work",
-        description = "Submit completed work for a BotBounty bounty. Provide deliverables as JSON array of objects with 'type' (github/gist/docs/figma/demo/file/api/other) and 'url' fields."
+        description = "[EARN: ETH] Submit completed work for a BotBounty bounty. Provide deliverables as JSON array of objects with 'type' (github/gist/docs/figma/demo/file/api/other) and 'url' fields. Triggers ETH payout on Base L2 once accepted."
     )]
     async fn botbounty_submit_work(
         &self,
