@@ -423,14 +423,44 @@ impl OrchestratorProxy {
 
         let mut req = self.client.post(&endpoint).json(&body);
 
-        // If the agent provides a tx_signature, include the x402 payment proof header
+        // If the agent provides a tx_signature, include the x402 payment proof header.
+        // Log the byte length so we can correlate "builder error" failures against
+        // payload size — reqwest 0.12's HeaderValue::from_str rejection collapses to
+        // a generic "builder error" Display message that hides the source.
         if let Some(sig) = tx_signature {
+            tracing::debug!(
+                service = "mcp-server",
+                payment_header_len = sig.len(),
+                "x402: attaching X-PAYMENT header"
+            );
             req = req.header("X-PAYMENT", sig);
         }
 
         let response = req.send().await.map_err(|e| {
-            tracing::error!(service = "mcp-server", error = %e, "orchestrator create_short_crypto failed");
-            McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            // The Display impl on reqwest::Error::Builder collapses the underlying
+            // cause to literally "builder error" with no source field. Walk the
+            // std::error::Error::source chain so we can see WHICH step inside the
+            // builder actually failed (header validation, URL parse, body serde,
+            // etc.) and log the full Debug representation alongside.
+            let mut chain = String::new();
+            let mut src: Option<&dyn std::error::Error> = std::error::Error::source(&e);
+            while let Some(s) = src {
+                if !chain.is_empty() {
+                    chain.push_str(" -> ");
+                }
+                chain.push_str(&s.to_string());
+                src = s.source();
+            }
+            tracing::error!(
+                service = "mcp-server",
+                error = %e,
+                error_debug = ?e,
+                error_chain = %chain,
+                payment_header_present = tx_signature.is_some(),
+                payment_header_len = tx_signature.map(str::len).unwrap_or(0),
+                "orchestrator create_short_crypto failed"
+            );
+            McpServiceError::OrchestratorError(format!("request failed: {e} ({chain})"))
         })?;
 
         let status = response.status();
