@@ -349,7 +349,9 @@ pub struct DeepAnalysisSummary {
 }
 
 /// Top-level entry point — pulls candidates from Firestore via the discovery
-/// state, picks the top N, runs deep analysis on each.
+/// state, picks the top N, runs deep analysis on each, and invalidates the
+/// in-memory cache so the next earning-candidates query sees the new
+/// `layer3_analysis` fields.
 pub async fn run_layer3_pass(
     state: &Arc<crate::discovery::DiscoveryState>,
 ) -> Result<DeepAnalysisSummary> {
@@ -357,7 +359,16 @@ pub async fn run_layer3_pass(
         .await
         .context("load discovery index for layer 3")?;
     let candidates = select_top_candidates(all_servers, MAX_SERVERS_PER_CYCLE);
-    run_deep_analysis(&state.db, &state.http, &candidates).await
+    let summary = run_deep_analysis(&state.db, &state.http, &candidates).await?;
+
+    // Invalidate the cache so subsequent /earning-candidates and /primitives
+    // calls re-read from Firestore and pick up the new Layer 3 fields.
+    {
+        let mut cache = state.cache.lock().await;
+        *cache = None;
+    }
+
+    Ok(summary)
 }
 
 // -- Wire types for npm + GitHub responses --

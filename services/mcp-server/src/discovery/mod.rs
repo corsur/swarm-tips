@@ -87,8 +87,40 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
         }
     }
 
-    // Merge + classify (synchronous, in-memory)
-    let merged = merge_and_classify(all_sources);
+    // Merge + classify (synchronous, in-memory). This produces records with
+    // layer2_classification = layer3_analysis = None — we then patch them
+    // back in from existing Firestore docs below so a fresh refresh doesn't
+    // wipe out hours of LLM work.
+    let mut merged = merge_and_classify(all_sources);
+
+    // Preserve Layer 2 + Layer 3 across refresh: load the current Firestore
+    // docs once, build a slug -> existing-doc map, then for each newly merged
+    // record copy any non-None layer2/layer3 fields onto it. The Firestore
+    // load is best-effort — if it fails the refresh still completes, we just
+    // lose the LLM context (next Layer 2 run regenerates it).
+    let existing_by_slug: std::collections::HashMap<String, EnrichedServer> =
+        match load_from_firestore(&state.db).await {
+            Ok(docs) => docs.into_iter().map(|d| (d.slug(), d)).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not load existing index for layer2/3 preservation");
+                std::collections::HashMap::new()
+            }
+        };
+    let mut preserved_layer2 = 0usize;
+    let mut preserved_layer3 = 0usize;
+    for srv in &mut merged {
+        if let Some(existing) = existing_by_slug.get(&srv.slug()) {
+            if srv.layer2_classification.is_none() && existing.layer2_classification.is_some() {
+                srv.layer2_classification = existing.layer2_classification.clone();
+                preserved_layer2 = preserved_layer2.saturating_add(1);
+            }
+            if srv.layer3_analysis.is_none() && existing.layer3_analysis.is_some() {
+                srv.layer3_analysis = existing.layer3_analysis.clone();
+                preserved_layer3 = preserved_layer3.saturating_add(1);
+            }
+        }
+    }
+
     let total = merged.len();
     let earning_count = merged.iter().filter(|s| s.is_earning_candidate()).count();
 
@@ -130,6 +162,8 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
     tracing::info!(
         total,
         earning_count,
+        preserved_layer2,
+        preserved_layer3,
         written,
         write_errors,
         elapsed_ms,
