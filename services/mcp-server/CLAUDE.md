@@ -122,6 +122,19 @@ mcp-server-specific notes:
 
 ---
 
+## Secret Management
+
+**Cross-repo standard.** Sensitive runtime values (`xai-api-key`, future secrets) come from GCP Secret Manager DIRECTLY via `gcloud-sdk` at startup. Never via K8s Secrets, env-var mounts, or config files. See `swarm/CLAUDE.md` "Direct Secret Manager reads only for runtime secrets" for the canonical statement and `coordination-app/backend/CLAUDE.md` "Three secret categories, three homes" for the three-way split (runtime → GCP SM, CI → GitHub Secrets, K8s Secrets banned).
+
+mcp-server-specific notes:
+
+- **`src/config.rs::load_optional_secret`** is the reusable helper (copied verbatim from `backend/x-bridge/src/config.rs`). For secrets whose absence should crash-loop the pod, add a sibling `load_secret` that panics on failure — match `backend/chatwoot-responder/src/config.rs::load_secret`.
+- **`xai-api-key`** is loaded via `load_optional_secret` at mcp-server startup. If Secret Manager access fails or the secret doesn't exist, mcp-server logs a `warn!` and boots with Layer 2 disabled. Layer 1 + Layer 3 continue to work. `POST /internal/mcp/llm-classify` returns 503.
+- **Legacy gap:** the deployment manifest still has `envFrom.secretRef.name: solana-rpc-secret` (optional). That's a pre-existing K8s Secret bridge that should be migrated to direct Secret Manager reads using the same pattern. Don't add new secretRefs of that shape — migrate when touching game-related code.
+- **What you must NOT add:** any env-var-based API key read (`std::env::var("FOO_API_KEY")` for sensitive values), any new `secretRef` in the deployment manifest, any hardcoded secret in Rust source.
+
+---
+
 ## Key Invariants
 
 - **Non-custodial game operations** — MCP server returns unsigned transactions, agents sign locally

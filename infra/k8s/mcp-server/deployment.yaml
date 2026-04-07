@@ -34,16 +34,12 @@ spec:
             - secretRef:
                 name: solana-rpc-secret
                 optional: true
-            # Optional: enables the Layer 2 LLM classifier in
-            # discovery::llm_classify. Without it, mcp-server starts in
-            # degraded mode (Layer 1 + Layer 3 work; /internal/mcp/llm-classify
-            # returns 503). To enable, create the K8s secret with:
-            #   kubectl create secret generic xai-api-key-secret -n swarm-tips \
-            #     --from-literal=XAI_API_KEY=$(gcloud secrets versions access \
-            #       latest --secret=xai-api-key --project=coordination-game-prod)
-            - secretRef:
-                name: xai-api-key-secret
-                optional: true
+          # NOTE: sensitive runtime values (xai-api-key, etc.) come from GCP
+          # Secret Manager DIRECTLY via gcloud-sdk at startup — see
+          # src/config.rs::load_optional_secret. No K8s Secret bridge. The
+          # `solana-rpc-secret` envFrom above is a legacy pre-existing gap
+          # tracked for migration; do NOT add new secretRefs of that shape.
+          # See `swarm/CLAUDE.md` "Three secret categories, three homes".
           resources:
             requests:
               cpu: 100m

@@ -9,6 +9,7 @@
 mod auth;
 mod botbounty_proxy;
 mod clawtasks_proxy;
+mod config;
 mod discovery;
 mod errors;
 mod game_proxy;
@@ -115,14 +116,17 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
-    // Optional Layer 2 LLM classifier — only enabled if XAI_API_KEY is set in
-    // the environment. Without it, refresh + earning-candidates work as
-    // before; the /internal/mcp/llm-classify endpoint returns 503.
-    let xai_api_key = std::env::var("XAI_API_KEY").ok();
+    // Optional Layer 2 LLM classifier — enabled if `xai-api-key` is available
+    // in GCP Secret Manager. Without it, refresh + earning-candidates work as
+    // before; the /internal/mcp/llm-classify endpoint returns 503. Reads
+    // directly from Secret Manager via Workload Identity — never from K8s
+    // Secrets or env vars. See `config.rs` + the "Three secret categories,
+    // three homes" rule in `swarm/CLAUDE.md`.
+    let xai_api_key = config::load_optional_secret(&gcp_project_id, "xai-api-key").await;
     if xai_api_key.is_none() {
         tracing::warn!(
             service = "mcp-server",
-            "XAI_API_KEY not set — Layer 2 LLM classification disabled"
+            "xai-api-key not found in Secret Manager — Layer 2 LLM classification disabled"
         );
     }
     let llm_classifier = xai_api_key

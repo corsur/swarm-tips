@@ -2413,6 +2413,7 @@ dependencies = [
  "futures-util",
  "game-api-client",
  "game-chain",
+ "gcloud-sdk",
  "hex",
  "http",
  "rand 0.8.5",
