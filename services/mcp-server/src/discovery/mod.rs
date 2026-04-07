@@ -9,6 +9,7 @@
 //! (2) composable primitives, (3) market intelligence.
 
 pub mod classify;
+pub mod deep_analysis;
 pub mod llm_classify;
 pub mod merge;
 pub mod models;
@@ -357,7 +358,7 @@ pub async fn get_earning_candidates(state: &Arc<DiscoveryState>) -> Vec<Enriched
     }
 }
 
-async fn load_from_firestore(db: &FirestoreDb) -> Result<Vec<EnrichedServer>> {
+pub async fn load_from_firestore(db: &FirestoreDb) -> Result<Vec<EnrichedServer>> {
     let docs: Vec<EnrichedServer> = db
         .fluent()
         .select()
@@ -424,6 +425,29 @@ pub fn primitives_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRo
             let primitives = get_primitives(&state).await;
             tracing::info!(count = primitives.len(), "served /internal/mcp/primitives");
             axum::Json(primitives).into_response()
+        }
+    })
+}
+
+/// POST /internal/mcp/deep-analyze → run a Layer 3 deep-analysis pass over
+/// the top earning candidates. Capped at `deep_analysis::MAX_SERVERS_PER_CYCLE`.
+/// Returns a `DeepAnalysisSummary`. This is a relatively expensive call (one
+/// HTTP round-trip per npm/GitHub lookup × 50 servers); expect ~60-120s.
+pub fn deep_analyze_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {
+    axum::routing::post(move || {
+        let state = state.clone();
+        async move {
+            match deep_analysis::run_layer3_pass(&state).await {
+                Ok(summary) => axum::Json(summary).into_response(),
+                Err(e) => {
+                    tracing::error!(error = %e, "layer3 deep-analysis pass failed");
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("{{\"error\": \"{e}\"}}"),
+                    )
+                        .into_response()
+                }
+            }
         }
     })
 }

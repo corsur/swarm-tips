@@ -89,6 +89,36 @@ pub struct Layer1Classification {
     pub matched_signals: Vec<String>,
 }
 
+/// One on-chain address pulled out of a server's GitHub README. Used as the
+/// hand-off to a future on-chain volume lookup pass — for now we just extract
+/// + store, no RPC calls yet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedAddress {
+    /// "solana_program" or "evm_contract".
+    pub kind: String,
+    pub address: String,
+    /// Up-to-80-char snippet of surrounding text for human review.
+    pub context: String,
+}
+
+/// Layer 3 deep-analysis bundle — populated by `discovery::deep_analysis` for
+/// the top tier-1 earning candidates. Heaviest pass: hits GitHub + npm APIs.
+/// Only run on the top ~50 candidates per cycle, never on the whole index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Layer3Analysis {
+    /// On-chain addresses extracted from the README.
+    pub extracted_addresses: Vec<ExtractedAddress>,
+    /// Weekly downloads from npm — None if no package or the API failed.
+    pub npm_weekly_downloads: Option<u64>,
+    /// GitHub stargazers count, None if no repo or the API failed.
+    pub github_stars: Option<u32>,
+    /// First ~800 characters of the README, for fast human review.
+    pub readme_excerpt: Option<String>,
+    /// Whether we attempted the analysis at all. False = no npm pkg AND no GitHub repo.
+    pub probed: bool,
+    pub probed_at: DateTime<Utc>,
+}
+
 /// Layer 2 classification — Grok-derived verdict on a server. Only populated
 /// for servers where Layer 1 was not confident (`confident = false`). Lives
 /// alongside the Layer 1 record on the same Firestore doc, never overwrites it.
@@ -134,6 +164,10 @@ pub struct EnrichedServer {
     /// truth for high-confidence hits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer2_classification: Option<Layer2Classification>,
+    /// Layer 3 deep-analysis bundle — populated by `discovery::deep_analysis`
+    /// only for the top ~50 earning candidates per cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer3_analysis: Option<Layer3Analysis>,
     pub first_seen_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
 }

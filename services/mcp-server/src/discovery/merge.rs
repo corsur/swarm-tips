@@ -72,6 +72,7 @@ fn build_enriched(raw: &RawServer, now: chrono::DateTime<Utc>) -> EnrichedServer
         upstream_visitors_estimate: raw.upstream_visitors_estimate,
         classification,
         layer2_classification: None,
+        layer3_analysis: None,
         first_seen_at: now,
         last_seen_at: now,
     }

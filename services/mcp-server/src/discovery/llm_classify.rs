@@ -282,6 +282,7 @@ mod tests {
                 matched_signals: vec![],
             },
             layer2_classification: None,
+            layer3_analysis: None,
             first_seen_at: Utc::now(),
             last_seen_at: Utc::now(),
         }

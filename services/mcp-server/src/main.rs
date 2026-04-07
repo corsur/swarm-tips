@@ -235,7 +235,11 @@ async fn main() -> anyhow::Result<()> {
             )
             .route(
                 "/internal/mcp/llm-classify",
-                discovery::llm_classify_handler(discovery_state),
+                discovery::llm_classify_handler(discovery_state.clone()),
+            )
+            .route(
+                "/internal/mcp/deep-analyze",
+                discovery::deep_analyze_handler(discovery_state),
             );
     }
 
