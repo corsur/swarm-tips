@@ -69,7 +69,7 @@ Generate short-form videos from a prompt or URL. Pay with USDC on Base, Ethereum
 **Architecture:** Non-custodial — agents sign all transactions locally
 **Docs:** https://swarm.tips/developers
 
-Install: `claude mcp add swarm-tips --url https://mcp.swarm.tips/mcp`
+Install: `claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp`
 
 ## Community
 

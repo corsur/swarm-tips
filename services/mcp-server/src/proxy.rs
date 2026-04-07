@@ -9,29 +9,45 @@ pub struct OrchestratorProxy {
     base_url: String,
 }
 
+/// One task as returned by the orchestrator's `GET /tasks` and
+/// `GET /tasks/:id` endpoints. Field names mirror the orchestrator's wire
+/// format (`shillbot-orchestrator::models::task::TaskResponse`) so serde can
+/// deserialize directly. Optional fields are defaulted so a missing key from
+/// the upstream doesn't fail the whole response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskSummary {
-    pub id: String,
-    pub topic: String,
-    pub price: u64,
-    pub deadline: String,
-    pub brief_summary: String,
+    pub task_id: String,
+    #[serde(default)]
+    pub campaign_id: Option<String>,
+    #[serde(default)]
+    pub campaign_topic: Option<String>,
+    pub state: String,
+    #[serde(default)]
+    pub platform: Option<u8>,
+    #[serde(default)]
+    pub estimated_payment_lamports: Option<u64>,
+    #[serde(default)]
+    pub quality_threshold: Option<u64>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Full campaign brief if the orchestrator joined it in. Kept as a raw
+    /// JSON value because the brief shape varies by platform and we just want
+    /// to forward it to the agent verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskListResponse {
     pub tasks: Vec<TaskSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TaskDetails {
-    pub brief: String,
-    pub blocklist: Vec<String>,
-    pub utm_link: String,
-    pub cta: String,
-    pub nonce: String,
-    pub deadline: String,
-}
+/// Single-task details. The orchestrator returns the same `TaskResponse`
+/// shape from `GET /tasks/:id` as it does from list — so we reuse the
+/// `TaskSummary` deserializer rather than maintaining a parallel struct.
+pub type TaskDetails = TaskSummary;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EarningsResponse {
@@ -128,9 +144,9 @@ impl OrchestratorProxy {
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
-        if details.nonce.is_empty() {
+        if details.task_id.is_empty() {
             return Err(McpServiceError::OrchestratorError(
-                "task nonce must not be empty".to_string(),
+                "task_id must not be empty in response".to_string(),
             ));
         }
 
@@ -277,36 +293,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_task_summary_serialization() {
-        let task = TaskSummary {
-            id: "task_001".to_string(),
-            topic: "crypto trading".to_string(),
-            price: 500_000,
-            deadline: "2026-04-01T00:00:00Z".to_string(),
-            brief_summary: "Create a Short about...".to_string(),
-        };
+    fn task_summary_parses_orchestrator_wire_format() {
+        // This is a real (trimmed) response from
+        // shillbot-orchestrator GET /tasks. Regression guard against the
+        // proxy's TaskSummary drifting away from the orchestrator's
+        // TaskResponse shape — that mismatch caused the
+        // "error decoding response body" bug in the live MCP server.
+        let json = serde_json::json!({
+            "task_id": "campaign-uuid:task-uuid",
+            "campaign_id": "campaign-uuid",
+            "campaign_topic": "Play a round of coordination.game",
+            "state": "open",
+            "agent": null,
+            "content_id": null,
+            "composite_score": null,
+            "payment_amount": null,
+            "platform": 5,
+            "created_at": "2026-04-07T08:20:57Z",
+            "claimed_at": null,
+            "submitted_at": null,
+            "brief": {
+                "topic": "Play a round of coordination.game",
+                "brand_voice": "Direct incentive.",
+                "cta": "Play one round at coordination.game",
+                "utm_link": "https://coordination.game",
+                "blocklist": [],
+                "examples": []
+            },
+            "estimated_payment_lamports": 20_000_000u64,
+            "quality_threshold": 200_000u64,
+            "scoring_scales": { "views_scale": 5000, "likes_scale": 250, "comments_scale": 50 }
+        });
 
-        let json = serde_json::to_string(&task).unwrap();
-        let parsed: TaskSummary = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.id, "task_001");
-        assert_eq!(parsed.price, 500_000);
+        let parsed: TaskSummary = serde_json::from_value(json).expect("must deserialize");
+        assert_eq!(parsed.task_id, "campaign-uuid:task-uuid");
+        assert_eq!(parsed.state, "open");
+        assert_eq!(parsed.platform, Some(5));
+        assert_eq!(parsed.estimated_payment_lamports, Some(20_000_000));
+        assert_eq!(
+            parsed.campaign_topic.as_deref(),
+            Some("Play a round of coordination.game")
+        );
+        assert!(parsed.brief.is_some());
     }
 
     #[test]
-    fn test_task_details_serialization() {
-        let details = TaskDetails {
-            brief: "Create a YouTube Short...".to_string(),
-            blocklist: vec!["competitor".to_string()],
-            utm_link: "https://example.com?utm=test".to_string(),
-            cta: "Check out coordination.game".to_string(),
-            nonce: "a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8".to_string(),
-            deadline: "2026-04-01T00:00:00Z".to_string(),
-        };
-
-        let json = serde_json::to_string(&details).unwrap();
-        let parsed: TaskDetails = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.nonce, "a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8");
-        assert_eq!(parsed.blocklist.len(), 1);
+    fn task_list_response_parses_with_next_cursor_camelcase_or_snake() {
+        // Orchestrator currently emits snake_case `next_cursor`. Test the
+        // happy path to lock in the contract.
+        let json = serde_json::json!({
+            "tasks": [
+                {
+                    "task_id": "c:t",
+                    "state": "open",
+                    "platform": 3,
+                    "quality_threshold": 0
+                }
+            ],
+            "next_cursor": null
+        });
+        let parsed: TaskListResponse = serde_json::from_value(json).expect("must deserialize");
+        assert_eq!(parsed.tasks.len(), 1);
+        assert_eq!(parsed.tasks[0].task_id, "c:t");
+        assert!(parsed.next_cursor.is_none());
     }
 
     #[test]
