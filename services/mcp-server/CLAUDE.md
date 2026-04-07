@@ -4,6 +4,28 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 27 tools live: Coordinatio
 
 ---
 
+## Registry Status
+
+**Official MCP Registry:** Published as `io.github.corsur/swarm-tips` on `registry.modelcontextprotocol.io`.
+
+| Field | Value |
+|-------|-------|
+| Name | `io.github.corsur/swarm-tips` |
+| Published version | **0.1.0** (2026-04-04) |
+| Local `server.json` version | **0.1.1** (pending re-publish) |
+| Status | active |
+| Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
+
+The 0.1.0 listing description still says "22 tools" — stale. v0.1.1 has the updated description ("27 tools: play games, claim tasks, browse bounties, generate videos. Non-custodial.") but the publish failed because the `mcp-publisher` OAuth token expired. To re-publish: run `mcp-publisher login github` (interactive browser flow) then `mcp-publisher publish` from `services/mcp-server/`.
+
+**Auth tokens** are stored in `services/mcp-server/.mcpregistry_github_token` and `.mcpregistry_registry_token` (gitignored). Both expire periodically.
+
+**Other directories:** Not yet submitted to mcp.so, PulseMCP, Glama, or ClawHub. SKILL.md (at repo root) is ready for ClawHub submission.
+
+**Tool descriptions** include cash-flow tags (`[READ]`, `[STAKE: ...]`, `[EARN: ...]`, `[SPEND: ...]`, `[STATE]`) so AI agents running a business can reason about inflows vs outflows from descriptions alone.
+
+---
+
 ## Architecture
 
 ```
