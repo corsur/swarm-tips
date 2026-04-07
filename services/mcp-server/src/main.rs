@@ -9,6 +9,7 @@
 mod auth;
 mod botbounty_proxy;
 mod clawtasks_proxy;
+mod discovery;
 mod errors;
 mod game_proxy;
 mod game_session;
@@ -22,6 +23,7 @@ mod solana_tx;
 use crate::auth::ChallengeManager;
 use crate::botbounty_proxy::BotBountyProxy;
 use crate::clawtasks_proxy::ClawTasksProxy;
+use crate::discovery::DiscoveryState;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
 use crate::listings::ListingsState;
@@ -102,6 +104,22 @@ async fn main() -> anyhow::Result<()> {
         .expect("Firestore client must initialize at startup");
 
     let listings_state = Arc::new(ListingsState::new(db, rpc_client.clone()));
+
+    // Discovery (MCP mining engine) needs its own Firestore client + the
+    // shared HTTP client. Best-effort: if Firestore init fails the discovery
+    // routes will return empty data instead of crashing the whole server.
+    let discovery_db = match FirestoreDb::new(&gcp_project_id).await {
+        Ok(db) => Some(db),
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "Firestore init for discovery failed — /internal/mcp/* will return empty"
+            );
+            None
+        }
+    };
+    let discovery_state =
+        discovery_db.map(|db| Arc::new(DiscoveryState::new(db, rpc_client.clone())));
 
     // Second Firestore client for game session persistence (cheap client wrapper).
     let game_db = FirestoreDb::new(&gcp_project_id)
@@ -188,13 +206,26 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let router = axum::Router::new()
+    let mut router = axum::Router::new()
         .route("/health", axum::routing::get(health_handler))
         .route(
             "/internal/listings",
             listings::listings_handler(listings_state),
-        )
-        .nest_service("/mcp", service);
+        );
+
+    if let Some(discovery_state) = discovery_state {
+        router = router
+            .route(
+                "/internal/mcp/earning-candidates",
+                discovery::earning_candidates_handler(discovery_state.clone()),
+            )
+            .route(
+                "/internal/mcp/refresh",
+                discovery::refresh_handler(discovery_state),
+            );
+    }
+
+    let router = router.nest_service("/mcp", service);
     let bind_addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
 
