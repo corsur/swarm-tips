@@ -371,8 +371,20 @@ impl SwarmTipsMcp {
             wallet = %wallet_pubkey,
             action = %args.action,
             sig = %tx_signature,
-            "shillbot_submit_tx: tx broadcast",
+            "shillbot_submit_tx: tx broadcast"
         );
+
+        // Wait for the orchestrator's RPC view to see the tx before calling
+        // confirm — avoids the "transaction not found — it may not be
+        // confirmed yet" race in shillbot-orchestrator::solana::verify_tx_confirmed.
+        solana_tx::wait_for_signature_confirmed(
+            &self.state.rpc_client,
+            &self.state.solana_rpc_url,
+            &tx_signature,
+            30,
+        )
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
 
         let confirm = self
             .state

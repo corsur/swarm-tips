@@ -55,6 +55,72 @@ pub async fn broadcast_signed_b64(
         .map(|s| s.to_string())
 }
 
+/// Poll `getSignatureStatuses` until the given signature reports `confirmed`
+/// (or higher) commitment. Returns `Ok(())` once visible, or an error after
+/// `max_attempts * 1s` of polling. Used between broadcast and orchestrator
+/// confirm to avoid the race where the orchestrator's `verify_tx_confirmed`
+/// runs before the tx has propagated to its RPC view.
+pub async fn wait_for_signature_confirmed(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    signature: &str,
+    max_attempts: u32,
+) -> Result<(), McpServiceError> {
+    if signature.is_empty() {
+        return Err(McpServiceError::TransactionError(
+            "signature must not be empty".to_string(),
+        ));
+    }
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignatureStatuses",
+        "params": [[signature], { "searchTransactionHistory": true }],
+    });
+
+    for attempt in 0..max_attempts {
+        let response = client
+            .post(rpc_url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| McpServiceError::SolanaRpcError(format!("status request failed: {e}")))?;
+        let json: serde_json::Value = response.json().await.map_err(|e| {
+            McpServiceError::SolanaRpcError(format!("status response parse failed: {e}"))
+        })?;
+
+        let entry = json["result"]["value"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        if !entry.is_null() {
+            if let Some(err) = entry.get("err").filter(|v| !v.is_null()) {
+                return Err(McpServiceError::SolanaRpcError(format!(
+                    "transaction failed on-chain: {err}"
+                )));
+            }
+            let confirmation_status = entry["confirmationStatus"].as_str().unwrap_or("");
+            if matches!(confirmation_status, "confirmed" | "finalized") {
+                tracing::info!(
+                    signature = %signature,
+                    attempt = attempt,
+                    status = %confirmation_status,
+                    "tx confirmed on-chain"
+                );
+                return Ok(());
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    Err(McpServiceError::SolanaRpcError(format!(
+        "transaction {signature} did not reach confirmed commitment within {max_attempts}s"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
