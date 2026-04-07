@@ -534,10 +534,20 @@ impl GameSessionManager {
         // Action-specific post-submission logic.
         match action {
             "deposit_stake" => {
-                // Authenticate and open WS if not already done.
-                // Cancel any existing WS task before opening a new one.
-                let needs_auth = session.lock().await.jwt.is_empty();
-                if needs_auth {
+                // Always re-authenticate after a deposit_stake submission. The
+                // JWT we have (if any) was issued for a *previous* stake; the
+                // game-api ties session_id to a specific deposit, so reusing
+                // an old JWT against a new stake hits an ExpiredSignature or
+                // wrong-session 401 once the original token TTL elapses. The
+                // fresh stake we just broadcast IS the auth credential.
+                if !session.lock().await.jwt.is_empty() {
+                    if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
+                        token.cancel();
+                    }
+                    self.ws_sinks.write().await.remove(wallet);
+                    session.lock().await.jwt.clear();
+                }
+                {
                     let api_client = GameApiClient::new(&self.game_api_url)?;
                     let auth_resp = api_client.session_auth(wallet, &sig_str).await?;
                     let jwt = auth_resp.token.clone();
