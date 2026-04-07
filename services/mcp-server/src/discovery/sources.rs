@@ -90,7 +90,7 @@ pub async fn pull_official_registry(client: &reqwest::Client) -> Result<Vec<RawS
         // Cursor for next page
         cursor = body
             .get("metadata")
-            .and_then(|m| m.get("next_cursor"))
+            .and_then(|m| m.get("nextCursor").or_else(|| m.get("next_cursor")))
             .and_then(|c| c.as_str())
             .map(String::from);
 
