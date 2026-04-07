@@ -5,7 +5,6 @@ use crate::errors::McpServiceError;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
 use crate::proxy::OrchestratorProxy;
-use crate::session::SessionManager;
 use crate::solana_tx;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -20,9 +19,7 @@ pub struct SharedState {
     pub game_api: GameApiProxy,
     pub clawtasks: ClawTasksProxy,
     pub botbounty: BotBountyProxy,
-    pub sessions: Arc<SessionManager>,
     pub solana_rpc_url: String,
-    pub program_id: String,
     pub rpc_client: reqwest::Client,
     pub game_sessions: Arc<GameSessionManager>,
     #[allow(dead_code)]
@@ -54,20 +51,29 @@ pub struct GetTaskDetailsArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct ClaimTaskArgs {
-    /// The unique task identifier (task_counter as u64) to claim.
+    /// The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned
+    /// by `list_available_tasks`.
     pub task_id: String,
-    /// The client (task creator) public key, needed for PDA derivation.
-    pub client_pubkey: String,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct SubmitWorkArgs {
-    /// The unique task identifier (task_counter as u64).
+    /// The unique task identifier (format: `<campaign_id>:<task_uuid>`).
     pub task_id: String,
-    /// The content ID of the completed work (YouTube video ID, tweet ID, etc.).
+    /// The content ID of the completed work (YouTube video ID, tweet ID,
+    /// game session ID, etc.).
     pub content_id: String,
-    /// The client (task creator) public key, needed for PDA derivation.
-    pub client_pubkey: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct ShillbotSubmitTxArgs {
+    /// The task identifier the signed tx applies to.
+    pub task_id: String,
+    /// `"claim"` for a signed `claim_task` tx, `"submit"` for `submit_work`.
+    pub action: String,
+    /// Base64-encoded signed Solana transaction returned by `claim_task` /
+    /// `submit_work` and signed locally by the agent's wallet.
+    pub signed_transaction: String,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -246,7 +252,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "claim_task",
-        description = "[STATE] Claim a Shillbot task to work on. You must have a registered wallet (use game_register_wallet first). Locks the task to your wallet for 7 days. No upfront cost — payment is released after work is submitted and verified. Returns the on-chain transaction signature and the deadline.",
+        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call game_register_wallet first).",
         annotations(destructive_hint = true)
     )]
     async fn claim_task(
@@ -256,57 +262,32 @@ impl SwarmTipsMcp {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
-        if args.client_pubkey.is_empty() {
-            return Err(invalid_input("client_pubkey is required"));
-        }
 
-        // For now, wallet identity comes from the game session (registered via game_register_wallet).
-        // When OAuth is wired up, this will come from the authenticated MCP session.
         let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
-            invalid_input("authentication required: connect your Solana wallet first")
+            invalid_input("authentication required: call game_register_wallet first")
         })?;
 
-        let session = self
+        let response = self
             .state
-            .sessions
-            .get_active_session(&wallet_pubkey)
+            .orchestrator
+            .claim_task(&args.task_id, &wallet_pubkey)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        self.state
-            .sessions
-            .check_claim_rate_limit(&wallet_pubkey)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
+        tracing::info!(task_id = %args.task_id, wallet = %wallet_pubkey, "claim_task: unsigned tx built");
 
-        let tx_params = solana_tx::TxParams {
-            task_id: &args.task_id,
-            client_pubkey: &args.client_pubkey,
-            wallet_pubkey: &wallet_pubkey,
-            session_keypair_bytes: &session.session_keypair_bytes,
-            solana_rpc_url: &self.state.solana_rpc_url,
-            program_id: &self.state.program_id,
-            rpc_client: &self.state.rpc_client,
-        };
-        let tx_signature = solana_tx::submit_claim_task(&tx_params)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        tracing::info!(task_id = %args.task_id, wallet = %wallet_pubkey, tx = %tx_signature, "task claimed");
-
-        let response = serde_json::json!({
-            "tx_signature": tx_signature,
-            "claimed_deadline": chrono::Utc::now()
-                .checked_add_signed(chrono::Duration::days(7))
-                .map(|t| t.to_rfc3339())
-                .unwrap_or_default(),
+        let result = serde_json::json!({
+            "action": "claim",
+            "task_id": response.task_id,
+            "unsigned_tx": response.transaction,
+            "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"claim\" to broadcast and confirm the claim with the orchestrator.",
         });
-        Ok(text_result(&response))
+        Ok(text_result(&result))
     }
 
     #[tool(
         name = "submit_work",
-        description = "[EARN: SOL] Submit completed work for a claimed Shillbot task. Provide the content_id (YouTube video ID for YouTube tasks, tweet ID for X tasks). On-chain verification runs at T+7d via Switchboard oracle, then payment is released to your wallet based on engagement metrics.",
+        description = "[EARN: SOL] Submit completed work for a claimed Shillbot task. Provide the content_id (YouTube video ID, tweet ID, game session ID, etc.). Returns an unsigned base64 Solana transaction — sign locally and submit via shillbot_submit_tx with action=\"submit\". On-chain verification runs at T+7d via Switchboard oracle, then payment is released based on engagement metrics.",
         annotations(destructive_hint = true)
     )]
     async fn submit_work(
@@ -319,42 +300,15 @@ impl SwarmTipsMcp {
         if args.content_id.is_empty() {
             return Err(invalid_input("content_id is required"));
         }
-        if !solana_tx::is_valid_content_id(&args.content_id) {
-            return Err(invalid_input(
-                "content_id must be a valid content ID (YouTube: 11 chars, X/Twitter: numeric tweet ID)",
-            ));
-        }
-        if args.client_pubkey.is_empty() {
-            return Err(invalid_input("client_pubkey is required"));
-        }
 
         let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
-            invalid_input("authentication required: connect your Solana wallet first")
+            invalid_input("authentication required: call game_register_wallet first")
         })?;
 
-        let session = self
+        let response = self
             .state
-            .sessions
-            .get_active_session(&wallet_pubkey)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        self.state
-            .sessions
-            .check_submit_rate_limit(&wallet_pubkey, &args.task_id)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        let tx_params = solana_tx::TxParams {
-            task_id: &args.task_id,
-            client_pubkey: &args.client_pubkey,
-            wallet_pubkey: &wallet_pubkey,
-            session_keypair_bytes: &session.session_keypair_bytes,
-            solana_rpc_url: &self.state.solana_rpc_url,
-            program_id: &self.state.program_id,
-            rpc_client: &self.state.rpc_client,
-        };
-        let tx_signature = solana_tx::submit_work_tx(&tx_params, &args.content_id)
+            .orchestrator
+            .submit_task(&args.task_id, &wallet_pubkey, &args.content_id)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -362,18 +316,78 @@ impl SwarmTipsMcp {
             task_id = %args.task_id,
             content_id = %args.content_id,
             wallet = %wallet_pubkey,
-            tx = %tx_signature,
-            "work submitted"
+            "submit_work: unsigned tx built"
         );
 
-        let response = serde_json::json!({
-            "tx_signature": tx_signature,
-            "estimated_score_available_at": chrono::Utc::now()
-                .checked_add_signed(chrono::Duration::days(7))
-                .map(|t| t.to_rfc3339())
-                .unwrap_or_default(),
+        let result = serde_json::json!({
+            "action": "submit",
+            "task_id": response.task_id,
+            "content_id": args.content_id,
+            "unsigned_tx": response.transaction,
+            "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"submit\" to broadcast and confirm submission with the orchestrator.",
         });
-        Ok(text_result(&response))
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "shillbot_submit_tx",
+        description = "[STATE] Broadcast a signed Shillbot Solana transaction (claim_task or submit_work) to mainnet, then notify the orchestrator the action landed. Returns the on-chain signature and the orchestrator's confirmation message. Pair with claim_task / submit_work — those return the unsigned tx, this submits the signed result.",
+        annotations(destructive_hint = true)
+    )]
+    async fn shillbot_submit_tx(
+        &self,
+        Parameters(args): Parameters<ShillbotSubmitTxArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.task_id.is_empty() {
+            return Err(invalid_input("task_id is required"));
+        }
+        if args.signed_transaction.is_empty() {
+            return Err(invalid_input("signed_transaction is required"));
+        }
+        let action = match args.action.as_str() {
+            "claim" => crate::proxy::ConfirmAction::Claim,
+            "submit" => crate::proxy::ConfirmAction::Submit,
+            other => {
+                return Err(invalid_input(&format!(
+                    "action must be \"claim\" or \"submit\", got {other:?}"
+                )));
+            }
+        };
+
+        let wallet_pubkey = self.resolve_wallet().await.ok_or_else(|| {
+            invalid_input("authentication required: call game_register_wallet first")
+        })?;
+
+        let tx_signature = solana_tx::broadcast_signed_b64(
+            &self.state.rpc_client,
+            &self.state.solana_rpc_url,
+            &args.signed_transaction,
+        )
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(
+            task_id = %args.task_id,
+            wallet = %wallet_pubkey,
+            action = %args.action,
+            sig = %tx_signature,
+            "shillbot_submit_tx: tx broadcast",
+        );
+
+        let confirm = self
+            .state
+            .orchestrator
+            .confirm_task(&args.task_id, &wallet_pubkey, &tx_signature, action)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        let result = serde_json::json!({
+            "tx_signature": tx_signature,
+            "task_id": confirm.task_id,
+            "action": confirm.action,
+            "message": confirm.message,
+        });
+        Ok(text_result(&result))
     }
 
     #[tool(

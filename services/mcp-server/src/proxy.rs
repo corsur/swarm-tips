@@ -57,6 +57,38 @@ pub struct EarningsResponse {
     pub pending_tasks: u32,
 }
 
+/// Mirrors `shillbot-orchestrator::models::task::TransactionResponse`. Returned
+/// by `POST /tasks/:id/claim` and `POST /tasks/:id/submit` — the orchestrator
+/// builds the unsigned Solana transaction and the agent signs locally.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionResponse {
+    pub message: String,
+    pub task_id: String,
+    /// Base64-encoded unsigned Solana transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_pda: Option<String>,
+}
+
+/// Action discriminator for `POST /tasks/:id/confirm`. Mirrors
+/// `shillbot-orchestrator::models::task::ConfirmAction` — must serialize as
+/// snake_case to match the orchestrator's `#[serde(rename_all = "snake_case")]`.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmAction {
+    Claim,
+    Submit,
+}
+
+/// Mirrors `shillbot-orchestrator::models::task::ConfirmTaskResponse`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfirmTaskResponse {
+    pub task_id: String,
+    pub action: String,
+    pub message: String,
+}
+
 impl OrchestratorProxy {
     pub fn new(base_url: String) -> Self {
         assert!(
@@ -169,7 +201,7 @@ impl OrchestratorProxy {
         let response = self
             .client
             .get(&url)
-            .header("X-Agent-Wallet", wallet_pubkey)
+            .bearer_auth(wallet_pubkey)
             .send()
             .await
             .map_err(|e| {
@@ -200,6 +232,178 @@ impl OrchestratorProxy {
         }
 
         Ok(earnings)
+    }
+
+    /// Request the orchestrator build an unsigned `claim_task` Solana transaction
+    /// for `wallet_pubkey`. The orchestrator looks up the task PDA, derives the
+    /// client wallet from on-chain state, and returns a base64-encoded unsigned
+    /// transaction the agent must sign locally.
+    pub async fn claim_task(
+        &self,
+        task_id: &str,
+        wallet_pubkey: &str,
+    ) -> Result<TransactionResponse, McpServiceError> {
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
+        if wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "wallet_pubkey must not be empty".to_string(),
+            ));
+        }
+
+        let url = format!("{}/tasks/{task_id}/claim", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(wallet_pubkey)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator claim_task failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator claim_task returned error");
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        let parsed: TransactionResponse = response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid claim_task response: {e}"))
+        })?;
+
+        if parsed.transaction.is_none() {
+            return Err(McpServiceError::OrchestratorError(
+                "claim_task response missing transaction field".to_string(),
+            ));
+        }
+
+        Ok(parsed)
+    }
+
+    /// Request the orchestrator build an unsigned `submit_work` Solana
+    /// transaction. The orchestrator persists the content_id on the task doc
+    /// before returning so it survives the confirm round-trip.
+    pub async fn submit_task(
+        &self,
+        task_id: &str,
+        wallet_pubkey: &str,
+        content_id: &str,
+    ) -> Result<TransactionResponse, McpServiceError> {
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
+        if wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "wallet_pubkey must not be empty".to_string(),
+            ));
+        }
+        if content_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "content_id must not be empty".to_string(),
+            ));
+        }
+
+        let url = format!("{}/tasks/{task_id}/submit", self.base_url);
+        let body = serde_json::json!({ "content_id": content_id });
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(wallet_pubkey)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator submit_task failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator submit_task returned error");
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        let parsed: TransactionResponse = response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid submit_task response: {e}"))
+        })?;
+
+        if parsed.transaction.is_none() {
+            return Err(McpServiceError::OrchestratorError(
+                "submit_task response missing transaction field".to_string(),
+            ));
+        }
+
+        Ok(parsed)
+    }
+
+    /// Notify the orchestrator that a `claim_task` or `submit_work` transaction
+    /// landed on-chain. The orchestrator verifies the signature, deduplicates,
+    /// and advances the task state in Firestore.
+    pub async fn confirm_task(
+        &self,
+        task_id: &str,
+        wallet_pubkey: &str,
+        tx_signature: &str,
+        action: ConfirmAction,
+    ) -> Result<ConfirmTaskResponse, McpServiceError> {
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
+        if wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "wallet_pubkey must not be empty".to_string(),
+            ));
+        }
+        if tx_signature.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "tx_signature must not be empty".to_string(),
+            ));
+        }
+
+        let url = format!("{}/tasks/{task_id}/confirm", self.base_url);
+        let body = serde_json::json!({
+            "tx_signature": tx_signature,
+            "action": action,
+        });
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(wallet_pubkey)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator confirm_task failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator confirm_task returned error");
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid confirm_task response: {e}"))
+        })
     }
 
     /// Create a short-form video via the crypto endpoint.
@@ -356,6 +560,39 @@ mod tests {
         assert_eq!(parsed.tasks.len(), 1);
         assert_eq!(parsed.tasks[0].task_id, "c:t");
         assert!(parsed.next_cursor.is_none());
+    }
+
+    #[test]
+    fn transaction_response_parses_orchestrator_claim_payload() {
+        // Trimmed real shape from `POST /tasks/:id/claim` — the orchestrator
+        // returns the unsigned tx as base64. The MCP proxy must round-trip
+        // this without losing the `transaction` field.
+        let json = serde_json::json!({
+            "message": "Sign and submit this transaction to claim the task on-chain. Then call POST /tasks/:id/confirm with the tx signature.",
+            "task_id": "campaign-uuid:task-uuid",
+            "transaction": "AQAAAA...base64-bytes...AAAB"
+        });
+        let parsed: TransactionResponse = serde_json::from_value(json).expect("must deserialize");
+        assert_eq!(parsed.task_id, "campaign-uuid:task-uuid");
+        assert_eq!(
+            parsed.transaction.as_deref(),
+            Some("AQAAAA...base64-bytes...AAAB")
+        );
+        assert!(parsed.task_pda.is_none());
+    }
+
+    #[test]
+    fn confirm_action_serializes_snake_case() {
+        // Must match shillbot-orchestrator's
+        // #[serde(rename_all = "snake_case")] on ConfirmAction.
+        assert_eq!(
+            serde_json::to_value(ConfirmAction::Claim).unwrap(),
+            serde_json::Value::String("claim".to_string())
+        );
+        assert_eq!(
+            serde_json::to_value(ConfirmAction::Submit).unwrap(),
+            serde_json::Value::String("submit".to_string())
+        );
     }
 
     #[test]

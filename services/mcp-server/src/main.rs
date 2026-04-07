@@ -16,8 +16,6 @@ mod game_session;
 mod listings;
 mod proxy;
 mod server;
-#[allow(dead_code)]
-mod session;
 mod solana_tx;
 
 use crate::auth::ChallengeManager;
@@ -29,7 +27,6 @@ use crate::game_session::GameSessionManager;
 use crate::listings::ListingsState;
 use crate::proxy::OrchestratorProxy;
 use crate::server::{SharedState, SwarmTipsMcp};
-use crate::session::SessionManager;
 use anyhow::Context;
 use firestore::FirestoreDb;
 use rmcp::transport::streamable_http_server::{
@@ -68,7 +65,6 @@ async fn main() -> anyhow::Result<()> {
             "using public Solana RPC — set SOLANA_RPC_URL to Helius for production reliability"
         );
     }
-    let program_id = load_env_or("SHILLBOT_PROGRAM_ID", "11111111111111111111111111111111");
     let clawtasks_url = load_env_or("CLAWTASKS_API_URL", "https://clawtasks.com/api");
     let botbounty_url = load_env_or(
         "BOTBOUNTY_API_URL",
@@ -90,7 +86,6 @@ async fn main() -> anyhow::Result<()> {
 
     let gcp_project_id = load_env_or("GCP_PROJECT_ID", "coordination-game-prod");
 
-    let sessions = SessionManager::new();
     let challenge_manager = ChallengeManager::new();
 
     let rpc_client = reqwest::Client::builder()
@@ -136,9 +131,7 @@ async fn main() -> anyhow::Result<()> {
         game_api: GameApiProxy::new(game_api_url)?,
         clawtasks: ClawTasksProxy::new(clawtasks_url),
         botbounty: BotBountyProxy::new(botbounty_url),
-        sessions,
         solana_rpc_url,
-        program_id,
         rpc_client,
         game_sessions,
         challenge_manager,
