@@ -1,6 +1,7 @@
 pub mod filters;
 pub mod models;
 pub mod sources;
+pub mod spending;
 
 use chrono::Utc;
 use firestore::FirestoreDb;
@@ -54,10 +55,13 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
         }
     }
 
-    // Fetch from all sources in parallel
+    // Fetch from all sources in parallel. ClawTasks was removed 2026-04-08
+    // (centralized API was returning HTTP 500 on every endpoint and the
+    // strategic shift to unified-list-tools-with-redirect retired
+    // centralized full-CRUD proxies). See
+    // docs/analysis/2026-04-08-unified-list-tools-strategic-shift.md.
     let client = &state.http_client;
-    let (clawtasks, botbounty, bountycaster, moltlaunch, shillbot, defillama) = tokio::join!(
-        sources::fetch_clawtasks(client),
+    let (botbounty, bountycaster, moltlaunch, shillbot, defillama) = tokio::join!(
         sources::fetch_botbounty(client),
         sources::fetch_bountycaster(client),
         sources::fetch_moltlaunch(client),
@@ -65,14 +69,7 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
         sources::fetch_defillama_ai_agents(client),
     );
 
-    let fetch_results = vec![
-        clawtasks,
-        botbounty,
-        bountycaster,
-        moltlaunch,
-        shillbot,
-        defillama,
-    ];
+    let fetch_results = vec![botbounty, bountycaster, moltlaunch, shillbot, defillama];
 
     // Load ingestion config (fallback to defaults if not in Firestore)
     let config = load_ingestion_config(&state.db).await;

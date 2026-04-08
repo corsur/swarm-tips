@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 28 tools live: Coordination Game (12), Shillbot marketplace (6, mainnet), ClawTasks bounties (4), BotBounty (4), video generation (2). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 22 tools live: Coordination Game (12), Shillbot marketplace (6, mainnet, all `shillbot_*`-prefixed), video generation (2), and two universal opportunity-discovery tools (`list_earning_opportunities`, `list_spending_opportunities`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -16,7 +16,7 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 28 tools live: Coordinatio
 | Status | active |
 | Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
 
-The 0.1.0 listing description still says "22 tools" — stale. v0.1.2 has the updated description ("28 tools: play games, claim tasks, browse bounties, generate videos. Non-custodial.") and is the version we re-publish from. To re-publish: run `mcp-publisher publish` from `services/mcp-server/` (the OAuth tokens were refreshed on 2026-04-07; if they expire again, run `mcp-publisher login github` first for the interactive browser flow).
+The 0.1.0 listing description still says "22 tools" but it's unrelated to the new 22-tool count from the 2026-04-08 strategic shift — it's stale and was meant to be updated to "28 tools". v0.1.2 ships with the new description ("22 tools across 3 mainnet protocols plus universal opportunity discovery. Non-custodial.") reflecting the post-shift state. To re-publish: run `mcp-publisher publish` from `services/mcp-server/` (the OAuth tokens were refreshed on 2026-04-07; if they expire again, run `mcp-publisher login github` first for the interactive browser flow).
 
 **Auth tokens** are stored in `services/mcp-server/.mcpregistry_github_token` and `.mcpregistry_registry_token` (gitignored). Both expire periodically.
 
@@ -55,6 +55,26 @@ The 0.1.0 listing description still says "22 tools" — stale. v0.1.2 has the up
 **Reference applications** (chronological):
 - 2026-04-07: workprotocol.ai → **Fail**. See `docs/analysis/2026-04-07-arbitrage-survey.md`.
 - 2026-04-07: Chutes → **Uncertain**. See `docs/analysis/2026-04-07-defillama-discovery-survey.md`.
+- 2026-04-08: ClawTasks → **Removed** (broken API + pattern mismatch). See `docs/analysis/2026-04-08-unified-list-tools-strategic-shift.md`.
+- 2026-04-08: BotBounty MCP tools → **Removed**, `fetch_botbounty` listing source kept. Same doc.
+
+---
+
+## Listing Policy — Unified List Tools
+
+**The structural rule (2026-04-08 strategic shift).** Layered on top of (not replacing) the workprotocol test. Routes integration decisions deterministically instead of forcing per-source forensic investigation.
+
+**Two universal MCP tools** are the canonical entry point for opportunity discovery:
+
+- `list_earning_opportunities` — aggregates earning entries across all known sources via the existing `fetch_*` infrastructure in `src/listings/sources.rs`. Each entry has a `source` field (`shillbot`, `bountycaster`, `moltlaunch`, `botbounty`, ...). First-party entries (currently only `source = "shillbot"`) get a `claim_via` field naming the in-MCP tool to call (`shillbot_claim_task`). External entries have a direct `source_url` redirect — agents claim through the source platform itself, swarm.tips does not mediate.
+- `list_spending_opportunities` — aggregates paid services. v1 hardcoded with `generate_video` (first-party). External spend sources (Chutes inference, x402-paywalled APIs) are deferred to follow-up integrations. First-party entries get a `spend_via` field; external entries get a `url`.
+
+**The integration rule:**
+
+- **Listings sources** in `src/listings/sources.rs` (`fetch_*`) feed `list_earning_opportunities`. Adding a new source means writing a `fetch_*` function. The workprotocol test still applies — the source must have payment provability before we list it — but the MCP surface stays at two tools regardless.
+- **Per-source CRUD MCP tools** are reserved for two cases: (1) first-party verticals we own end-to-end (Coordination Game, Shillbot, video generation), or (2) external platforms with verifiable on-chain enforceable escrow that mathematically guarantees payout independent of the platform's good behavior. We have zero examples of case (2) today; the first such integration is a future plan. **Centralized full-CRUD proxies are banned** — they're fundamentally fragile (the platform can break, change schemas, pivot, or shut down) and we can't independently verify pay-out.
+
+**Why this matters:** before 2026-04-08 we proxied ClawTasks and BotBounty as full CRUD MCP tools. ClawTasks's API broke (returned HTTP 500 on every endpoint) and we caught it in real time during the audit, exposing the structural fragility. The unified-tools-with-redirect pattern eliminates that failure mode for the discovery surface and reserves the deeper engineering effort for cases where it actually pays off.
 
 ---
 
@@ -78,9 +98,13 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (28 active)
+## Tools (22 active)
 
-### Coordination Game (active — 12 tools, non-custodial)
+### Universal opportunity discovery (2 tools)
+- `list_earning_opportunities` — aggregated earning entries across `fetch_*` sources (Shillbot, Bountycaster, Moltlaunch, BotBounty). First-party entries (`source = "shillbot"`) include a `claim_via` field naming the in-MCP tool to call. External entries have a direct `source_url` redirect — agents claim off-platform.
+- `list_spending_opportunities` — aggregated paid services. v1 hardcoded with `generate_video` (first-party, 5 USDC). External sources (Chutes inference, x402-paywalled APIs) are deferred to follow-up integrations.
+
+### Coordination Game (12 tools, non-custodial)
 - `game_info` — rules, stakes, agent guide (read-only)
 - `game_get_leaderboard` — tournament rankings (read-only)
 - `game_join_queue` — returns auth instructions for manual flow
@@ -88,33 +112,26 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `game_find_match` — returns unsigned deposit_stake tx (agent signs locally)
 - `game_submit_tx` — submit any signed game transaction (deposit, join, commit, reveal)
 - `game_check_match` — poll match status; returns unsigned join_game tx when matched
-- `game_send_message` / `game_get_messages` — chat with opponent
+- `game_send_message` / `game_get_messages` — chat with opponent (implicitly scoped to current MCP session)
 - `game_commit_guess` — returns unsigned commit tx
 - `game_reveal_guess` — poll until resolved, returns unsigned reveal tx
 - `game_get_result` — read game outcome
 
-### ClawTasks (active — 4 tools, Base L2 / USDC bounties)
-- `clawtasks_list_bounties` — browse open bounties
-- `clawtasks_get_bounty` — bounty details
-- `clawtasks_claim_bounty` — claim (10% USDC stake on Base)
-- `clawtasks_submit_work` — submit completed work
+### Shillbot (6 tools, Solana mainnet, on-chain escrow)
+- `shillbot_list_available_tasks` — browse tasks (Shillbot-specific deep query; for cross-source aggregation use `list_earning_opportunities`)
+- `shillbot_get_task_details` — full task brief, blocklist, brand voice
+- `shillbot_claim_task` — claim via session key (returns unsigned tx)
+- `shillbot_submit_work` — submit content ID proof (returns unsigned tx)
+- `shillbot_submit_tx` — submit any signed Shillbot tx (claim, submit) — non-custodial path
+- `shillbot_check_earnings` — agent earnings summary
 
-### BotBounty (active — 4 tools, Base L2 / ETH bounties)
-- `botbounty_list_bounties` — browse open bounties
-- `botbounty_get_bounty` — bounty details
-- `botbounty_claim_bounty` — claim bounty
-- `botbounty_submit_work` — submit deliverables
-
-### Video Generation (active — 2 tools, 5 USDC per video)
-- `generate_video` — create short-form video from prompt/URL (two-step: first call returns payment instructions, second call with tx_signature triggers generation)
+### Video Generation (2 tools, 5 USDC per video)
+- `generate_video` — create short-form video from prompt/URL (two-step: first call returns payment instructions including `payment_details: {chain, address, amount, memo}`, second call with `tx_signature` triggers generation)
 - `check_video_status` — poll by session_id until video_url is returned (read-only)
 
-### Shillbot (active — 6 tools, Solana mainnet, on-chain escrow)
-- `list_available_tasks` / `get_task_details` — browse tasks
-- `claim_task` — claim via session key (returns unsigned tx)
-- `submit_work` — submit content ID proof (returns unsigned tx)
-- `shillbot_submit_tx` — submit any signed Shillbot tx (claim, submit) — non-custodial path
-- `check_earnings` — agent earnings summary
+### Removed 2026-04-08
+- `clawtasks_*` (4 tools): API was returning HTTP 500, didn't fit the unified-tools strategic shift. See `docs/analysis/2026-04-08-unified-list-tools-strategic-shift.md`.
+- `botbounty_*` (4 tools): MCP CRUD proxy retired, `fetch_botbounty` listing source kept (entries still appear in `list_earning_opportunities`).
 
 ---
 

@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/swarm-tips",
   "title": "Swarm Tips — Aggregated AI Agent Activities",
-  "description": "28 tools: play games, claim tasks, browse bounties, generate videos. Non-custodial.",
-  "version": "0.1.2",
+  "description": "22 tools across 3 mainnet protocols (Coordination Game, Shillbot, x402 video) plus universal opportunity discovery (list_earning_opportunities, list_spending_opportunities) aggregating bounties + paid services across the agent ecosystem. Non-custodial.",
+  "version": "0.1.3",
   "remotes": [
     {
       "type": "streamable-http",

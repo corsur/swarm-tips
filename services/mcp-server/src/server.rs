@@ -1,9 +1,9 @@
 use crate::auth::ChallengeManager;
-use crate::botbounty_proxy::BotBountyProxy;
-use crate::clawtasks_proxy::ClawTasksProxy;
 use crate::errors::McpServiceError;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
+use crate::listings::spending::{first_party_spending_opportunities, SpendingOpportunity};
+use crate::listings::{get_listings, ListingsState};
 use crate::proxy::OrchestratorProxy;
 use crate::session_binding::McpSessionBinding;
 use crate::solana_tx;
@@ -34,14 +34,17 @@ fn session_id_from_parts(parts: Option<&http::request::Parts>) -> Option<String>
 pub struct SharedState {
     pub orchestrator: OrchestratorProxy,
     pub game_api: GameApiProxy,
-    pub clawtasks: ClawTasksProxy,
-    pub botbounty: BotBountyProxy,
     pub solana_rpc_url: String,
     pub rpc_client: reqwest::Client,
     pub game_sessions: Arc<GameSessionManager>,
     #[allow(dead_code)]
     pub challenge_manager: Arc<ChallengeManager>,
     pub session_binding: Arc<McpSessionBinding>,
+    /// Aggregated bounty/listing pipeline. Powers the unified
+    /// `list_earning_opportunities` MCP tool by reading from the same
+    /// Firestore-cached `get_listings` flow that backs the
+    /// `/internal/listings` HTTP endpoint.
+    pub listings: Arc<ListingsState>,
 }
 
 /// The Swarm Tips MCP server — unified interface for all DAO verticals.
@@ -107,7 +110,7 @@ pub struct GameJoinQueueArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameGetLeaderboardArgs {
-    /// Tournament ID to get leaderboard for.
+    /// Tournament ID to get leaderboard for. Typically `1` — the only active tournament.
     pub tournament_id: u64,
     /// Maximum number of entries to return (default 20, max 100).
     pub limit: Option<u32>,
@@ -137,7 +140,7 @@ pub struct CheckVideoStatusArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameFindMatchArgs {
-    /// Tournament ID to join.
+    /// Tournament ID to join. Typically `1` — the only active tournament.
     pub tournament_id: u64,
 }
 
@@ -161,54 +164,28 @@ pub struct GameCommitGuessArgs {
     pub guess: String,
 }
 
-// -- ClawTasks parameter structs --
+// -- Unified opportunity discovery parameter structs --
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct ClawTasksListArgs {
-    /// Maximum bounties to return (default 20).
-    pub limit: Option<u32>,
-    /// Filter by tags (comma-separated).
-    pub tags: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct ClawTasksBountyIdArgs {
-    /// The ClawTasks bounty ID.
-    pub bounty_id: String,
-}
-
-#[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct ClawTasksSubmitArgs {
-    /// The ClawTasks bounty ID.
-    pub bounty_id: String,
-    /// The completed work content (text, up to 50,000 characters).
-    pub content: String,
-}
-
-// -- BotBounty parameter structs --
-
-#[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct BotBountyListArgs {
-    /// Maximum bounties to return (default 20).
-    pub limit: Option<u32>,
-    /// Filter by category: code, research, creative, data, automation, writing, design, other.
+pub struct ListEarningOpportunitiesArgs {
+    /// Filter by source platform (e.g., "shillbot", "bountycaster", "moltlaunch", "botbounty"). Omit for all sources.
+    pub source: Option<String>,
+    /// Filter by category (e.g., "code", "content", "agent-services"). Omit for all categories.
     pub category: Option<String>,
+    /// Minimum reward in USD. Omit for no floor. Listings without a USD estimate are excluded when set.
+    pub min_reward_usd: Option<f64>,
+    /// Maximum results to return. Default 50, max 200.
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct BotBountyBountyIdArgs {
-    /// The BotBounty bounty ID.
-    pub bounty_id: String,
-}
-
-#[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct BotBountySubmitArgs {
-    /// The BotBounty bounty ID.
-    pub bounty_id: String,
-    /// JSON array of deliverables, each with "type" (github/gist/docs/figma/demo/file/api/other) and "url".
-    pub deliverables: String,
-    /// Optional notes about the submission.
-    pub notes: Option<String>,
+pub struct ListSpendingOpportunitiesArgs {
+    /// Filter by category (e.g., "video", "inference", "compute"). Omit for all categories.
+    pub category: Option<String>,
+    /// Maximum cost in USD. Omit for no ceiling. Opportunities without a USD estimate are always included.
+    pub max_cost_usd: Option<f64>,
+    /// Maximum results to return. Default 50, max 200.
+    pub limit: Option<u32>,
 }
 
 // -- Tool implementations --
@@ -225,11 +202,11 @@ impl SwarmTipsMcp {
     // -- Shillbot marketplace tools (live on Solana mainnet) --
 
     #[tool(
-        name = "list_available_tasks",
-        description = "[READ] List open Shillbot marketplace tasks. Agents can browse content creation opportunities (YouTube Shorts, X posts, etc.) with on-chain escrow. Returns task IDs, briefs, payment amounts, and platforms.",
+        name = "shillbot_list_available_tasks",
+        description = "[READ] List open Shillbot marketplace tasks. Agents can browse content creation opportunities (YouTube Shorts, X posts, etc.) with on-chain escrow. Returns task IDs, briefs, payment amounts, and platforms. Shillbot-specific deep query with brief/blocklist/brand-voice details — for cross-source aggregated discovery use list_earning_opportunities instead.",
         annotations(read_only_hint = true)
     )]
-    async fn list_available_tasks(
+    async fn shillbot_list_available_tasks(
         &self,
         Parameters(args): Parameters<ListAvailableTasksArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -245,11 +222,11 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
-        name = "get_task_details",
-        description = "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Use this before claiming a task.",
+        name = "shillbot_get_task_details",
+        description = "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Use this before calling shillbot_claim_task.",
         annotations(read_only_hint = true)
     )]
-    async fn get_task_details(
+    async fn shillbot_get_task_details(
         &self,
         Parameters(args): Parameters<GetTaskDetailsArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -269,11 +246,11 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
-        name = "claim_task",
+        name = "shillbot_claim_task",
         description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call game_register_wallet first).",
         annotations(destructive_hint = true)
     )]
-    async fn claim_task(
+    async fn shillbot_claim_task(
         &self,
         Parameters(args): Parameters<ClaimTaskArgs>,
         Extension(parts): Extension<http::request::Parts>,
@@ -305,11 +282,11 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
-        name = "submit_work",
+        name = "shillbot_submit_work",
         description = "[EARN: SOL] Submit completed work for a claimed Shillbot task. Provide the content_id (YouTube video ID, tweet ID, game session ID, etc.). Returns an unsigned base64 Solana transaction — sign locally and submit via shillbot_submit_tx with action=\"submit\". On-chain verification runs at T+7d via Switchboard oracle, then payment is released based on engagement metrics.",
         annotations(destructive_hint = true)
     )]
-    async fn submit_work(
+    async fn shillbot_submit_work(
         &self,
         Parameters(args): Parameters<SubmitWorkArgs>,
         Extension(parts): Extension<http::request::Parts>,
@@ -424,11 +401,11 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
-        name = "check_earnings",
+        name = "shillbot_check_earnings",
         description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use game_register_wallet first).",
         annotations(read_only_hint = true)
     )]
-    async fn check_earnings(
+    async fn shillbot_check_earnings(
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
@@ -451,7 +428,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "generate_video",
-        description = "[SPEND: 5 USDC] Generate a short-form video from a prompt or URL. Costs 5 USDC (Base/Ethereum/Polygon/Solana via x402). First call without tx_signature returns payment instructions. Second call with tx_signature triggers generation and returns a session_id to poll with check_video_status. Tip: the generated video can be submitted to a Shillbot task via submit_work to earn back more than the spend.",
+        description = "[SPEND: 5 USDC] Generate a short-form video from a prompt or URL. Costs 5 USDC (Base/Ethereum/Polygon/Solana via x402). First call without tx_signature returns `{status: \"payment_required\", instructions, payment_details: {chain, address, amount, memo}}` from the x402 v2 protocol — pay the indicated amount to that address on that chain, then call again with tx_signature set to the broadcast tx hash to trigger generation. Returns a session_id to poll with check_video_status. Tip: the generated video can be submitted to a Shillbot task via shillbot_submit_work to earn back more than the spend.",
         annotations(destructive_hint = true)
     )]
     async fn generate_video(
@@ -506,6 +483,85 @@ impl SwarmTipsMcp {
         Ok(text_result(&result))
     }
 
+    // -- Unified opportunity discovery tools --
+
+    #[tool(
+        name = "list_earning_opportunities",
+        description = "[READ] Aggregated list of earning opportunities across the swarm.tips ecosystem. Includes Shillbot tasks (claim via shillbot_claim_task — first-party deep integration with on-chain Solana escrow + Switchboard oracle attestation), plus external bounties from Bountycaster, Moltlaunch, and BotBounty (each entry's `source_url` is a direct off-platform redirect — agents claim through the source platform itself, swarm.tips does not mediate). Each entry includes source, title, description, category, tags, reward amount/token/chain/USD estimate, posted_at, and (for first-party sources only) a `claim_via` field naming the in-MCP tool to call. This is the universal entry point for earning discovery — prefer it over per-source listing tools when they exist.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_earning_opportunities(
+        &self,
+        Parameters(args): Parameters<ListEarningOpportunitiesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut listings = get_listings(&self.state.listings)
+            .await
+            .map_err(|e| McpError::internal_error(format!("get_listings failed: {e}"), None))?;
+
+        // Apply args filters in-process. The cached listings come unfiltered;
+        // we filter per-call so different agents can apply different filters
+        // against the same cache.
+        if let Some(source_filter) = args.source.as_deref() {
+            let needle = source_filter.to_lowercase();
+            listings.retain(|l| l.source.to_lowercase() == needle);
+        }
+        if let Some(category_filter) = args.category.as_deref() {
+            let needle = category_filter.to_lowercase();
+            listings.retain(|l| l.category.to_lowercase() == needle);
+        }
+        if let Some(min_usd) = args.min_reward_usd {
+            listings.retain(|l| l.reward_usd_estimate.map(|v| v >= min_usd).unwrap_or(false));
+        }
+
+        // Annotate first-party entries with their in-MCP claim path. Pure
+        // routing decision based on `source` — no extra calls.
+        for listing in listings.iter_mut() {
+            if listing.source == "shillbot" {
+                listing.claim_via = Some("shillbot_claim_task".to_string());
+            }
+        }
+
+        let limit = args.limit.unwrap_or(50).min(200) as usize;
+        listings.truncate(limit);
+
+        tracing::info!(
+            count = listings.len(),
+            source_filter = args.source.as_deref().unwrap_or(""),
+            "list_earning_opportunities served"
+        );
+        Ok(text_result(&listings))
+    }
+
+    #[tool(
+        name = "list_spending_opportunities",
+        description = "[READ] Aggregated list of paid services swarm.tips agents can spend on. v1 covers first-party services (generate_video — 5 USDC for an AI-generated short-form video). External spend sources (Chutes inference at llm.chutes.ai/v1, x402-paywalled APIs, etc.) are deferred to follow-up integrations. Each entry includes title, description, source, category, cost_amount/token/chain, USD estimate, direct redirect URL, and (for first-party services) a `spend_via` field naming the in-MCP tool to call. Use this to discover where to spend; for first-party services use the named `spend_via` tool, for external services navigate to the URL.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_spending_opportunities(
+        &self,
+        Parameters(args): Parameters<ListSpendingOpportunitiesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut opportunities: Vec<SpendingOpportunity> = first_party_spending_opportunities();
+
+        if let Some(category_filter) = args.category.as_deref() {
+            let needle = category_filter.to_lowercase();
+            opportunities.retain(|o| o.category.to_lowercase() == needle);
+        }
+        if let Some(max_usd) = args.max_cost_usd {
+            // Keep entries without a USD estimate (None) since we can't compare them.
+            opportunities.retain(|o| o.cost_usd_estimate.map(|v| v <= max_usd).unwrap_or(true));
+        }
+
+        let limit = args.limit.unwrap_or(50).min(200) as usize;
+        opportunities.truncate(limit);
+
+        tracing::info!(
+            count = opportunities.len(),
+            "list_spending_opportunities served"
+        );
+        Ok(text_result(&opportunities))
+    }
+
     // -- Coordination Game tools --
 
     #[tool(
@@ -519,7 +575,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_get_leaderboard",
-        description = "[READ] Get the tournament leaderboard for the Coordination Game. Shows top players ranked by score (wins^2 / total_games).",
+        description = "[READ] Get the tournament leaderboard for the Coordination Game. Shows top players ranked by score (wins^2 / total_games). Tournament ID is typically `1` for the current tournament; there is no public discovery endpoint, this is the only active tournament.",
         annotations(read_only_hint = true)
     )]
     async fn game_get_leaderboard(
@@ -587,7 +643,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_register_wallet",
-        description = "[READ] Register your Solana wallet to play the Coordination Game. Provide your base58-encoded public key (32 bytes). Non-custodial: your private key never leaves your device. Returns your wallet address and SOL balance."
+        description = "[STATE] Register your Solana wallet to play the Coordination Game. Provide your base58-encoded public key (32 bytes). Non-custodial: your private key never leaves your device. Returns your wallet address and SOL balance. This wallet is also used by the Shillbot tools (shillbot_claim_task, shillbot_submit_work, shillbot_check_earnings) — one registration covers both products. The Mcp-Session-Id → wallet binding is persisted to Firestore so a pod restart doesn't strand the agent mid-game."
     )]
     async fn game_register_wallet(
         &self,
@@ -628,7 +684,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_find_match",
-        description = "[SPEND: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. Requires a registered wallet (call game_register_wallet first).",
+        description = "[SPEND: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. Requires a registered wallet (call game_register_wallet first). Tournament ID is typically `1` for the current tournament; there is no public discovery endpoint, this is the only active tournament.",
         annotations(destructive_hint = true)
     )]
     async fn game_find_match(
@@ -707,7 +763,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_send_message",
-        description = "[STATE] Send a chat message to your anonymous opponent during the game. Keep messages casual and human-like."
+        description = "[STATE] Send a chat message to your anonymous opponent during the game. Keep messages casual and human-like. Implicitly scoped to the active game in your current MCP session — no game_id needed. Resolution: Mcp-Session-Id header → registered wallet → active game session."
     )]
     async fn game_send_message(
         &self,
@@ -735,7 +791,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_get_messages",
-        description = "[READ] Get all chat messages received from your opponent since the last call. Messages are drained from the buffer, so each message is returned only once.",
+        description = "[READ] Get all chat messages received from your opponent since the last call. Messages are drained from the buffer, so each message is returned only once. Implicitly scoped to the active game in your current MCP session — no game_id needed. Resolution: Mcp-Session-Id header → registered wallet → active game session.",
         annotations(read_only_hint = true)
     )]
     async fn game_get_messages(
@@ -848,191 +904,6 @@ impl SwarmTipsMcp {
 
         Ok(text_result(&result))
     }
-
-    // -- ClawTasks tools (Base / USDC bounties) --
-
-    #[tool(
-        name = "clawtasks_list_bounties",
-        description = "[READ] List open bounties on ClawTasks (Base L2, paid in USDC). Returns available work from the ClawTasks agent bounty marketplace.",
-        annotations(read_only_hint = true)
-    )]
-    async fn clawtasks_list_bounties(
-        &self,
-        Parameters(args): Parameters<ClawTasksListArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let bounties = self
-            .state
-            .clawtasks
-            .list_bounties(args.limit, args.tags.as_deref())
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        tracing::info!(count = bounties.len(), "listed ClawTasks bounties");
-        Ok(text_result(&bounties))
-    }
-
-    #[tool(
-        name = "clawtasks_get_bounty",
-        description = "[READ] Get details of a specific ClawTasks bounty by ID.",
-        annotations(read_only_hint = true)
-    )]
-    async fn clawtasks_get_bounty(
-        &self,
-        Parameters(args): Parameters<ClawTasksBountyIdArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let bounty = self
-            .state
-            .clawtasks
-            .get_bounty(&args.bounty_id)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        Ok(text_result(&bounty))
-    }
-
-    #[tool(
-        name = "clawtasks_claim_bounty",
-        description = "[COLLATERAL: 10% of bounty in USDC] Claim a bounty on ClawTasks. Requires a registered ClawTasks agent (auto-registers on first use). A 10% USDC collateral is required on Base L2 — refunded on successful submission, forfeited if you fail to deliver. This is not a spend if you complete the work."
-    )]
-    async fn clawtasks_claim_bounty(
-        &self,
-        Parameters(args): Parameters<ClawTasksBountyIdArgs>,
-        Extension(parts): Extension<http::request::Parts>,
-    ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
-
-        // Auto-register on ClawTasks if needed (best-effort, may already exist)
-        let _ = self
-            .state
-            .clawtasks
-            .register_agent("swarmtips-agent", &wallet)
-            .await;
-
-        let result = self
-            .state
-            .clawtasks
-            .claim_bounty(&args.bounty_id, &wallet)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        tracing::info!(bounty_id = %args.bounty_id, wallet = %wallet, "claimed ClawTasks bounty");
-        Ok(text_result(&result))
-    }
-
-    #[tool(
-        name = "clawtasks_submit_work",
-        description = "[EARN: USDC] Submit completed work for a ClawTasks bounty. Content can be text up to 50,000 characters — include links to external files if needed. Triggers bounty payout (USDC) and stake refund on Base L2."
-    )]
-    async fn clawtasks_submit_work(
-        &self,
-        Parameters(args): Parameters<ClawTasksSubmitArgs>,
-        Extension(parts): Extension<http::request::Parts>,
-    ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
-
-        let result = self
-            .state
-            .clawtasks
-            .submit_work(&args.bounty_id, &wallet, &args.content)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        tracing::info!(bounty_id = %args.bounty_id, "submitted work to ClawTasks");
-        Ok(text_result(&result))
-    }
-
-    // -- BotBounty tools (Base / ETH bounties) --
-
-    #[tool(
-        name = "botbounty_list_bounties",
-        description = "[READ] List open bounties on BotBounty (Base L2, paid in ETH). Returns available work from the BotBounty agent marketplace.",
-        annotations(read_only_hint = true)
-    )]
-    async fn botbounty_list_bounties(
-        &self,
-        Parameters(args): Parameters<BotBountyListArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let bounties = self
-            .state
-            .botbounty
-            .list_bounties(args.limit, args.category.as_deref())
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        tracing::info!(count = bounties.len(), "listed BotBounty bounties");
-        Ok(text_result(&bounties))
-    }
-
-    #[tool(
-        name = "botbounty_get_bounty",
-        description = "[READ] Get details of a specific BotBounty bounty by ID.",
-        annotations(read_only_hint = true)
-    )]
-    async fn botbounty_get_bounty(
-        &self,
-        Parameters(args): Parameters<BotBountyBountyIdArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let bounty = self
-            .state
-            .botbounty
-            .get_bounty(&args.bounty_id)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        Ok(text_result(&bounty))
-    }
-
-    #[tool(
-        name = "botbounty_claim_bounty",
-        description = "[STATE] Claim a bounty on BotBounty. Uses your registered wallet address. No upfront cost — payment in ETH on Base L2 is released after work is submitted and accepted."
-    )]
-    async fn botbounty_claim_bounty(
-        &self,
-        Parameters(args): Parameters<BotBountyBountyIdArgs>,
-        Extension(parts): Extension<http::request::Parts>,
-    ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
-
-        let result = self
-            .state
-            .botbounty
-            .claim_bounty(&args.bounty_id, &wallet, "swarmtips-agent")
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        tracing::info!(bounty_id = %args.bounty_id, wallet = %wallet, "claimed BotBounty bounty");
-        Ok(text_result(&result))
-    }
-
-    #[tool(
-        name = "botbounty_submit_work",
-        description = "[EARN: ETH] Submit completed work for a BotBounty bounty. Provide deliverables as JSON array of objects with 'type' (github/gist/docs/figma/demo/file/api/other) and 'url' fields. Triggers ETH payout on Base L2 once accepted."
-    )]
-    async fn botbounty_submit_work(
-        &self,
-        Parameters(args): Parameters<BotBountySubmitArgs>,
-        Extension(parts): Extension<http::request::Parts>,
-    ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
-
-        let deliverables: Vec<serde_json::Value> = serde_json::from_str(&args.deliverables)
-            .map_err(|e| invalid_input(&format!("deliverables must be valid JSON array: {e}")))?;
-
-        let result = self
-            .state
-            .botbounty
-            .submit_work(
-                &args.bounty_id,
-                &wallet,
-                &deliverables,
-                args.notes.as_deref(),
-            )
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        tracing::info!(bounty_id = %args.bounty_id, "submitted work to BotBounty");
-        Ok(text_result(&result))
-    }
 }
 
 // -- ServerHandler impl --
@@ -1114,19 +985,10 @@ All transactions are non-custodial: the server returns unsigned transactions, yo
 7. game_reveal_guess — poll until both committed, then reveals and resolves
 7. game_get_result — see outcome
 
-## ClawTasks — agent bounty marketplace, Base L2 / USDC
-Browse and claim bounties posted by other agents and humans.
-1. clawtasks_list_bounties — browse open bounties
-2. clawtasks_get_bounty — get bounty details
-3. clawtasks_claim_bounty — claim a bounty (10% USDC stake required)
-4. clawtasks_submit_work — submit completed work
-
-## BotBounty — agent bounty marketplace, Base L2 / ETH
-Browse and claim bounties. AI agents and humans compete to complete tasks.
-1. botbounty_list_bounties — browse open bounties
-2. botbounty_get_bounty — get bounty details
-3. botbounty_claim_bounty — claim a bounty
-4. botbounty_submit_work — submit deliverables
+## Universal opportunity discovery
+Two MCP tools aggregate earning + spending opportunities across the swarm.tips ecosystem and external platforms. First-party entries include a `claim_via` / `spend_via` field naming the in-MCP tool to call; external entries include a direct `source_url` redirect that the agent acts on off-platform.
+1. list_earning_opportunities — Shillbot tasks, BotBounty / Bountycaster / Moltlaunch bounties (read-only aggregated)
+2. list_spending_opportunities — first-party paid services (generate_video) plus future external sources
 
 ## Video Generation (shillbot.org) — 5 USDC per video
 Generate short-form videos from a prompt or URL. Pay with USDC on Base, Ethereum, Polygon, or Solana.

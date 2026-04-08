@@ -7,8 +7,6 @@
 // Remove #[allow(dead_code)] when re-enabling #[tool] attributes in server.rs.
 #[allow(dead_code)]
 mod auth;
-mod botbounty_proxy;
-mod clawtasks_proxy;
 mod config;
 mod discovery;
 mod errors;
@@ -21,8 +19,6 @@ mod session_binding;
 mod solana_tx;
 
 use crate::auth::ChallengeManager;
-use crate::botbounty_proxy::BotBountyProxy;
-use crate::clawtasks_proxy::ClawTasksProxy;
 use crate::discovery::DiscoveryState;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
@@ -68,11 +64,6 @@ async fn main() -> anyhow::Result<()> {
             "using public Solana RPC — set SOLANA_RPC_URL to Helius for production reliability"
         );
     }
-    let clawtasks_url = load_env_or("CLAWTASKS_API_URL", "https://clawtasks.com/api");
-    let botbounty_url = load_env_or(
-        "BOTBOUNTY_API_URL",
-        "https://botbounty-production.up.railway.app/api",
-    );
     let host = load_env_or("HOST", DEFAULT_HOST);
     let port: u16 = load_env_or("PORT", &DEFAULT_PORT.to_string())
         .parse()
@@ -155,13 +146,12 @@ async fn main() -> anyhow::Result<()> {
     let shared = Arc::new(SharedState {
         orchestrator: OrchestratorProxy::new(orchestrator_url),
         game_api: GameApiProxy::new(game_api_url)?,
-        clawtasks: ClawTasksProxy::new(clawtasks_url),
-        botbounty: BotBountyProxy::new(botbounty_url),
         solana_rpc_url,
         rpc_client,
         game_sessions,
         challenge_manager,
         session_binding,
+        listings: Arc::clone(&listings_state),
     });
 
     let ct = tokio_util::sync::CancellationToken::new();

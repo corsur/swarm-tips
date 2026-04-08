@@ -119,7 +119,7 @@ impl Default for IngestionConfig {
 }
 
 /// JSON response format matching the existing AgentJob TypeScript interface.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentJob {
     pub id: String,
     pub source: String,
@@ -141,6 +141,12 @@ pub struct AgentJob {
     pub deadline: Option<String>,
     pub status: String,
     pub indexed_at: String,
+    /// First-party MCP tool name to call when an in-MCP deep integration is
+    /// available for this opportunity. Set for `source = "shillbot"` (claim
+    /// via `shillbot_claim_task`); `None` for external sources where the
+    /// agent navigates to `source_url` off-platform.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub claim_via: Option<String>,
 }
 
 impl From<&ListingDoc> for AgentJob {
@@ -164,6 +170,9 @@ impl From<&ListingDoc> for AgentJob {
             deadline: doc.deadline.map(|d| d.to_rfc3339()),
             status: doc.status.clone(),
             indexed_at: doc.last_seen_at.to_rfc3339(),
+            // claim_via is set per-call by the unified `list_earning_opportunities`
+            // MCP tool based on `source` — not persisted with the listing.
+            claim_via: None,
         }
     }
 }
