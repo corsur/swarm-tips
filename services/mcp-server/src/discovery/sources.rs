@@ -408,7 +408,10 @@ fn clean_heading(raw: &str) -> String {
     // Strip an inline `<a name="..."></a>` anchor by jumping past `</a>`.
     if s.starts_with('<') {
         if let Some(end) = s.find("</a>") {
-            s = s[end + 4..].trim().to_string();
+            // saturating_add: end + 4 is bounded by s.len() since `find`
+            // returned a valid byte offset and "</a>" is 4 bytes.
+            let after = end.saturating_add(4);
+            s = s.get(after..).unwrap_or("").trim().to_string();
         }
     }
 
@@ -421,21 +424,23 @@ fn clean_heading(raw: &str) -> String {
 ///   - `- <img...> [Name](url) - desc`
 ///   - `- [Name](url) - desc`
 fn extract_link_and_desc(line: &str) -> Option<(String, String, String)> {
-    // Find first '[' and the ']( pair that closes it
+    // Find first '[' and the ']( pair that closes it. All arithmetic on
+    // string indices uses checked_add to honor `clippy::arithmetic_side_effects`.
     let lb = line.find('[')?;
-    let after_lb = &line[lb + 1..];
+    let name_start = lb.checked_add(1)?;
+    let after_lb = line.get(name_start..)?;
     let rb_rel = after_lb.find("](")?;
-    let name_end = lb + 1 + rb_rel;
-    let name = line[lb + 1..name_end].trim().to_string();
+    let name_end = name_start.checked_add(rb_rel)?;
+    let name = line.get(name_start..name_end)?.trim().to_string();
     if name.is_empty() {
         return None;
     }
 
-    let url_start = name_end + 2;
+    let url_start = name_end.checked_add(2)?;
     let after_url_open = line.get(url_start..)?;
     let rp_rel = after_url_open.find(')')?;
-    let url_end = url_start + rp_rel;
-    let url = line[url_start..url_end].trim().to_string();
+    let url_end = url_start.checked_add(rp_rel)?;
+    let url = line.get(url_start..url_end)?.trim().to_string();
     if url.is_empty() {
         return None;
     }
@@ -447,7 +452,8 @@ fn extract_link_and_desc(line: &str) -> Option<(String, String, String)> {
     //   `** - desc with - dashes` (wong2 with dashes inside the description)
     // Strip any closing bold markers and `<sup>...</sup>` tags, then expect
     // a leading "- " separator.
-    let mut suffix = line.get(url_end + 1..)?.trim_start();
+    let after_paren = url_end.checked_add(1)?;
+    let mut suffix = line.get(after_paren..)?.trim_start();
 
     // Strip closing bold marker (**) if present.
     if let Some(rest) = suffix.strip_prefix("**") {
@@ -457,8 +463,9 @@ fn extract_link_and_desc(line: &str) -> Option<(String, String, String)> {
     // Skip any number of `<sup>...</sup>` superscripts (appcypher uses
     // nested ones like `<sup><sup>1</sup></sup>`).
     while suffix.starts_with("<sup>") {
-        let end = suffix.find("</sup>")? + 6;
-        suffix = suffix.get(end..)?.trim_start();
+        let close_rel = suffix.find("</sup>")?;
+        let after_close = close_rel.checked_add(6)?;
+        suffix = suffix.get(after_close..)?.trim_start();
     }
 
     // Now expect a leading dash separator.
@@ -480,11 +487,9 @@ fn extract_link_and_desc(line: &str) -> Option<(String, String, String)> {
 fn extract_first_github_url(line: &str) -> Option<String> {
     const KEY: &str = "https://github.com/";
     let start = line.find(KEY)?;
-    let rest = &line[start..];
-    let end = rest
-        .find(|c: char| c == '"' || c == '<' || c == ' ' || c == ')' || c == '\'')
-        .unwrap_or(rest.len());
-    let url = rest[..end].trim_end_matches('/').to_string();
+    let rest = line.get(start..)?;
+    let end = rest.find(['"', '<', ' ', ')', '\'']).unwrap_or(rest.len());
+    let url = rest.get(..end)?.trim_end_matches('/').to_string();
     if url.len() <= KEY.len() {
         return None;
     }
@@ -505,17 +510,20 @@ fn repo_path_from_github_url(url: &str) -> String {
 /// and the next `<code>` or `</summary>`.
 fn extract_best_of_description(line: &str) -> Option<String> {
     let anchor_end = line.find("</a></b>")?;
-    let after_anchor = &line[anchor_end + 8..];
+    let after_anchor_start = anchor_end.checked_add(8)?;
+    let after_anchor = line.get(after_anchor_start..)?;
 
     let dash_idx = after_anchor.find(" - ")?;
-    let after_dash = &after_anchor[dash_idx + 3..];
+    let after_dash_start = dash_idx.checked_add(3)?;
+    let after_dash = after_anchor.get(after_dash_start..)?;
 
     let stop_idx = after_dash
         .find("<code>")
         .or_else(|| after_dash.find("</summary>"))
         .unwrap_or(after_dash.len());
 
-    let desc = after_dash[..stop_idx]
+    let desc = after_dash
+        .get(..stop_idx)?
         .trim()
         .trim_end_matches('.')
         .trim()
