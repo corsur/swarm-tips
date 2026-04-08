@@ -2,7 +2,9 @@
 
 **Status:** PREPARED — awaiting user approval to add in Namecheap dashboard.
 
-DNS for `swarm.tips`, `coordination.game`, `shillbot.org` lives at Namecheap (the registrar), not in Terraform. To verify these properties with search engines, the following TXT records need to be added manually in the Namecheap "Advanced DNS" tab for each domain.
+**Correction (2026-04-08):** Brave Search has **no webmaster tool** and no DNS verification flow. The original version of this doc listed `brave-site-verification=…` records, but verified at probe time that no such tool exists. Brave Search builds its index via the [Web Discovery Project](https://brave.com/web-discovery-project/) — anonymous sampling of opted-in Brave users' browsing — not via crawler submission. The way to get on Brave is to get real users to visit on the Brave browser, which is downstream of the launch outreach in this playbook (Bountycaster, X, Farcaster). No Namecheap entry needed for Brave; just don't worry about it.
+
+DNS for `swarm.tips`, `coordination.game`, `shillbot.org` lives at Namecheap (the registrar), not in Terraform. To verify these properties with **Google Search Console** and **Bing Webmaster Tools**, the following TXT records need to be added manually in the Namecheap "Advanced DNS" tab for each domain.
 
 ## Why this isn't automated
 
@@ -12,7 +14,7 @@ Per `coordination-app/infra/CLAUDE.md`: "DNS is managed externally (not Cloud DN
 
 ## Records to add (per domain)
 
-For **each** of the three domains, add three TXT records at the apex (`@` host).
+For **each** of the three domains, add two TXT records at the apex (`@` host) — one for Google, one for Bing.
 
 ### swarm.tips
 
@@ -20,7 +22,6 @@ For **each** of the three domains, add three TXT records at the apex (`@` host).
 |------|------|-------|-----|
 | TXT | `@` | `google-site-verification=<TOKEN_FROM_GSC>` | Automatic |
 | TXT | `@` | `MS=ms<DIGITS_FROM_BING>` _(or BingSiteAuth.xml file upload — pick whichever Bing offers)_ | Automatic |
-| TXT | `@` | `brave-site-verification=<TOKEN_FROM_BRAVE>` | Automatic |
 
 ### coordination.game
 
@@ -28,7 +29,6 @@ For **each** of the three domains, add three TXT records at the apex (`@` host).
 |------|------|-------|-----|
 | TXT | `@` | `google-site-verification=<TOKEN_FROM_GSC>` | Automatic |
 | TXT | `@` | `MS=ms<DIGITS_FROM_BING>` | Automatic |
-| TXT | `@` | `brave-site-verification=<TOKEN_FROM_BRAVE>` | Automatic |
 
 ### shillbot.org
 
@@ -36,7 +36,6 @@ For **each** of the three domains, add three TXT records at the apex (`@` host).
 |------|------|-------|-----|
 | TXT | `@` | `google-site-verification=<TOKEN_FROM_GSC>` | Automatic |
 | TXT | `@` | `MS=ms<DIGITS_FROM_BING>` | Automatic |
-| TXT | `@` | `brave-site-verification=<TOKEN_FROM_BRAVE>` | Automatic |
 
 ## How to get the tokens
 
@@ -49,21 +48,21 @@ Each token is issued by the search engine when you add the property to its webma
    - Repeat for `coordination.game` and `shillbot.org`
 
 2. **Bing Webmaster Tools** — `https://www.bing.com/webmasters`
-   - Add site → enter URL
-   - Choose "Add a CNAME or TXT record to DNS" — Bing shows the exact `MS=…` string
-   - Repeat for the other two domains
+   - **Strong recommendation:** use the **"Import sites from Google Search Console"** button on the Bing dashboard. One click brings over all three properties + their sitemaps after GSC verification completes. Skips the per-site TXT-record dance.
+   - If you don't import: Add site → enter URL → choose "Add a CNAME or TXT record to DNS" → Bing shows the exact `MS=…` string → paste into Namecheap. Repeat for the other two.
+   - **Why Bing matters for swarm.tips specifically:** ChatGPT's web search uses Bing, Microsoft Copilot uses Bing, DuckDuckGo+Yahoo+Ecosia all use Bing as their backend. Verifying Bing reaches a much larger AI-agent surface than the raw Bing market share suggests.
 
-3. **Brave Search Webmaster Tools** — `https://search.brave.com/help/webmaster-tools`
-   - Add site → DNS TXT verification
-   - Brave shows the exact `brave-site-verification=…` string
-   - Repeat for the other two domains
+3. **Brave Search** — no webmaster tool exists. **Skip this step entirely.**
+   - Brave's index is built from the Web Discovery Project (anonymous sampling of opted-in Brave users' actual browsing), not from crawler submission.
+   - The way to get on Brave is to get real users to visit your site on the Brave browser. That happens downstream of the Bountycaster + X + Farcaster outreach in the rest of this playbook.
+   - No DNS record, no submission form, nothing to do here today.
 
 ## After the records propagate (5–60 min)
 
 In each webmaster tool's UI, click "Verify". Once verified:
 - **Google Search Console:** submit `https://swarm.tips/sitemap.xml`, request indexing on the homepage
-- **Bing Webmaster Tools:** submit the sitemap, enable IndexNow integration (it'll auto-detect the `{key}.txt` file we already deployed at the site root)
-- **Brave Search Webmaster Tools:** submit the sitemap
+- **Bing Webmaster Tools:** submit the sitemap (auto-imported if you used the GSC import button), then **explicitly enable IndexNow integration** if it isn't auto-on. This is the multiplier — every future content change pings Bing + Yandex + Seznam + Naver simultaneously via the `{key}.txt` files already deployed at site root.
+- **Brave Search:** nothing to do. Indexing happens passively as real Brave users visit (downstream of the launch outreach).
 
 ## IndexNow keys (already deployed in `public/`)
 
