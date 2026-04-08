@@ -533,6 +533,178 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
     })
 }
 
+/// Fetch AI-agent platforms from DefiLlama's "AI Agents" + "Decentralized AI"
+/// categories (https://defillama.com/protocols/ai-agents).
+///
+/// These are *platforms*, not individual jobs — they get persisted as
+/// `category = "platform-candidate"` so the existing reward filter drops
+/// them from the public listings response while still landing them in
+/// Firestore for the survey doc and future job-probe pipelines. The point
+/// is meta-discovery: when a new crypto-native agent platform launches, it
+/// shows up in DefiLlama within days, and we want it queryable here so we
+/// can decide whether to integrate it as a real listings source the way
+/// Moltlaunch was added by hand.
+pub async fn fetch_defillama_ai_agents(client: &reqwest::Client) -> FetchResult {
+    let source = "defillama-ai".to_string();
+    let start = Instant::now();
+
+    let result = async {
+        let res = client
+            .get("https://api.llama.fi/protocols")
+            .header(
+                reqwest::header::USER_AGENT,
+                "SwarmTipsDiscovery/0.1 (+https://swarm.tips)",
+            )
+            .send()
+            .await?;
+
+        let status = res.status().as_u16();
+        if !res.status().is_success() {
+            tracing::warn!(source = "defillama-ai", status, "non-success response");
+            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
+        }
+
+        let data: serde_json::Value = res.json().await?;
+        let protocols = data.as_array().cloned().unwrap_or_default();
+
+        // Bounded loop: DefiLlama returns ~7K protocols, we filter on category.
+        // Cap input iteration at MAX_PROTOCOLS as a safety measure even though
+        // we expect well under 100 matching entries today.
+        const MAX_PROTOCOLS: usize = 20_000;
+        let listings: Vec<RawListing> = protocols
+            .iter()
+            .take(MAX_PROTOCOLS)
+            .filter(|p| {
+                p.get("category")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c == "AI Agents" || c == "Decentralized AI")
+                    .unwrap_or(false)
+            })
+            .filter_map(parse_defillama_protocol)
+            .collect();
+
+        Ok((listings, status))
+    }
+    .await;
+
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok((listings, status)) => {
+            let count = listings.len() as u32;
+            tracing::info!(
+                source = "defillama-ai",
+                count,
+                "fetched DefiLlama AI agent platforms"
+            );
+            FetchResult {
+                source,
+                listings,
+                health: HealthCheck {
+                    timestamp: Utc::now(),
+                    status_code: status,
+                    response_ms: elapsed_ms,
+                    listing_count: count,
+                    error: None,
+                },
+            }
+        }
+        Err(e) => {
+            tracing::warn!(source = "defillama-ai", error = %e, "fetch failed");
+            FetchResult {
+                source,
+                listings: vec![],
+                health: HealthCheck {
+                    timestamp: Utc::now(),
+                    status_code: 0,
+                    response_ms: elapsed_ms,
+                    listing_count: 0,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+    }
+}
+
+fn parse_defillama_protocol(p: &serde_json::Value) -> Option<RawListing> {
+    let slug = str_field(p, "slug")?;
+    let name = str_field(p, "name").unwrap_or_else(|| slug.clone());
+    let category = str_field(p, "category").unwrap_or_default();
+
+    // listedAt is Unix epoch seconds (e.g., 1668170565). Some entries omit it.
+    let listed_secs = p.get("listedAt").and_then(|v| v.as_i64()).unwrap_or(0);
+    let posted_at = if listed_secs > 0 {
+        chrono::DateTime::<Utc>::from_timestamp(listed_secs, 0).unwrap_or_else(Utc::now)
+    } else {
+        Utc::now()
+    };
+
+    let raw_url = str_field(p, "url").unwrap_or_default();
+    let project_url = if raw_url.is_empty() {
+        format!("https://defillama.com/protocol/{slug}")
+    } else {
+        raw_url
+    };
+
+    let primary_chain = str_field(p, "chain").unwrap_or_else(|| "multi".to_string());
+    let chains: Vec<String> = p
+        .get("chains")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let twitter = str_field(p, "twitter").unwrap_or_default();
+    let raw_description = str_field(p, "description").unwrap_or_default();
+
+    // Combine description + twitter + DefiLlama URL so the survey doc has
+    // enough context to triage the platform without re-querying.
+    let mut description = raw_description.chars().take(380).collect::<String>();
+    if description.is_empty() {
+        description = format!("{name} (no description)");
+    }
+    if !twitter.is_empty() {
+        description.push_str(&format!(" • twitter: @{twitter}"));
+    }
+    description.push_str(&format!(
+        " • defillama: https://defillama.com/protocol/{slug}"
+    ));
+
+    let mut tags = vec![
+        "meta-discovery".to_string(),
+        "defillama".to_string(),
+        category.to_lowercase().replace(' ', "-"),
+    ];
+    for c in chains.iter().take(8) {
+        tags.push(c.to_lowercase());
+    }
+
+    Some(RawListing {
+        source: "defillama-ai".to_string(),
+        source_id: slug.clone(),
+        source_url: project_url,
+        title: name,
+        description,
+        // "platform-candidate" causes the reward filter to drop these from
+        // the public listings response while still persisting to Firestore.
+        // Future work: separate /internal/listings/platforms endpoint.
+        category: "platform-candidate".to_string(),
+        tags,
+        reward_amount: "0".to_string(),
+        reward_token: "N/A".to_string(),
+        reward_chain: primary_chain.to_lowercase(),
+        // None deliberately — the reward filter drops these as expected.
+        reward_usd_estimate: None,
+        payment_model: "discovery".to_string(),
+        escrow: false,
+        posted_at,
+        deadline: None,
+    })
+}
+
 /// Fetch open bounties from Bountycaster (Base / USDC, Farcaster-native).
 pub async fn fetch_bountycaster(client: &reqwest::Client) -> FetchResult {
     let source = "bountycaster".to_string();
@@ -893,6 +1065,116 @@ mod tests {
             "agent": { "name": "ghost" }
         });
         assert!(parse_moltlaunch_gig(&json).is_none());
+    }
+
+    #[test]
+    fn parse_defillama_protocol_basic() {
+        let json = serde_json::json!({
+            "id": "1234",
+            "name": "Giza",
+            "slug": "giza",
+            "category": "AI Agents",
+            "url": "https://www.gizatech.xyz/",
+            "chain": "Multi-Chain",
+            "chains": ["Base", "Arbitrum"],
+            "tvl": 16795479.88,
+            "description": "Giza is the infrastructure powering autonomous financial markets...",
+            "twitter": "gizatechxyz",
+            "listedAt": 1700000000i64
+        });
+
+        let listing = parse_defillama_protocol(&json).expect("should parse");
+        assert_eq!(listing.source, "defillama-ai");
+        assert_eq!(listing.source_id, "giza");
+        assert_eq!(listing.title, "Giza");
+        assert_eq!(listing.source_url, "https://www.gizatech.xyz/");
+        assert_eq!(listing.category, "platform-candidate");
+        assert_eq!(listing.reward_token, "N/A");
+        assert!(listing.reward_usd_estimate.is_none());
+        assert!(listing.tags.contains(&"meta-discovery".to_string()));
+        assert!(listing.tags.contains(&"defillama".to_string()));
+        assert!(listing.tags.contains(&"ai-agents".to_string()));
+        assert!(listing.tags.contains(&"base".to_string()));
+        assert!(listing.description.contains("@gizatechxyz"));
+        assert!(listing.description.contains("defillama.com/protocol/giza"));
+    }
+
+    #[test]
+    fn parse_defillama_protocol_decentralized_ai_category() {
+        let json = serde_json::json!({
+            "name": "FLock.io",
+            "slug": "flock.io",
+            "category": "Decentralized AI",
+            "url": "https://www.flock.io/",
+            "chain": "Base",
+            "chains": ["Base"],
+            "description": "FLock.io is a private AI training platform.",
+            "twitter": "flock_io"
+        });
+
+        let listing = parse_defillama_protocol(&json).expect("should parse");
+        assert_eq!(listing.source_id, "flock.io");
+        assert!(listing.tags.contains(&"decentralized-ai".to_string()));
+    }
+
+    #[test]
+    fn parse_defillama_protocol_falls_back_when_url_empty() {
+        let json = serde_json::json!({
+            "name": "Yoko",
+            "slug": "yoko",
+            "category": "AI Agents",
+            "url": "",
+            "chain": "Sonic",
+            "chains": ["Sonic"],
+            "description": "Yoko is a no-code platform for launching AI Agents"
+        });
+
+        let listing = parse_defillama_protocol(&json).expect("should parse");
+        assert_eq!(
+            listing.source_url,
+            "https://defillama.com/protocol/yoko"
+        );
+    }
+
+    #[test]
+    fn parse_defillama_protocol_handles_null_chain_and_missing_listedat() {
+        let json = serde_json::json!({
+            "name": "Virtuals Protocol",
+            "slug": "virtuals-protocol",
+            "category": "AI Agents",
+            "url": "https://app.virtuals.io/",
+            "chain": null,
+            "chains": [],
+            "description": "Society of AI Agents base"
+        });
+
+        let listing = parse_defillama_protocol(&json).expect("should parse");
+        assert_eq!(listing.reward_chain, "multi");
+        // Defaults posted_at to now when listedAt missing — just check it parses.
+        assert_eq!(listing.title, "Virtuals Protocol");
+    }
+
+    #[test]
+    fn parse_defillama_protocol_drops_missing_slug() {
+        let json = serde_json::json!({
+            "name": "no-slug-protocol",
+            "category": "AI Agents",
+            "description": "Should be dropped"
+        });
+        assert!(parse_defillama_protocol(&json).is_none());
+    }
+
+    #[test]
+    fn parse_defillama_protocol_uses_placeholder_when_description_empty() {
+        let json = serde_json::json!({
+            "name": "Quietproto",
+            "slug": "quietproto",
+            "category": "AI Agents",
+            "description": ""
+        });
+        let listing = parse_defillama_protocol(&json).expect("should parse");
+        assert!(listing.description.contains("Quietproto"));
+        assert!(listing.description.contains("(no description)"));
     }
 
     #[test]

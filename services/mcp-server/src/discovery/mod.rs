@@ -18,7 +18,10 @@ pub mod sources;
 use crate::discovery::llm_classify::{LlmClassifier, MAX_SERVERS_PER_CYCLE};
 use crate::discovery::merge::merge_and_classify;
 use crate::discovery::models::{EnrichedServer, MCP_SERVERS_COLLECTION};
-use crate::discovery::sources::pull_official_registry;
+use crate::discovery::sources::{
+    pull_awesome_mcp, pull_best_of_mcp, pull_official_registry, SOURCE_AWESOME_APPCYPHER,
+    SOURCE_AWESOME_WONG2, SOURCE_BEST_OF_MCP,
+};
 use anyhow::{Context, Result};
 use firestore::FirestoreDb;
 use std::sync::Arc;
@@ -66,24 +69,45 @@ impl DiscoveryState {
 pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSummary> {
     let started = std::time::Instant::now();
 
-    // Pull from sources. Each source is best-effort — partial failures are OK.
-    let mut all_sources: Vec<Vec<crate::discovery::models::RawServer>> = Vec::new();
+    // Pull from all sources in parallel. Each source is best-effort — partial
+    // failures degrade to empty vecs with an `error!` log so the rest of the
+    // refresh still completes.
+    let (official, wong2, appcypher, best_of) = tokio::join!(
+        pull_official_registry(&state.http),
+        pull_awesome_mcp(
+            &state.http,
+            SOURCE_AWESOME_WONG2,
+            "wong2",
+            "awesome-mcp-servers"
+        ),
+        pull_awesome_mcp(
+            &state.http,
+            SOURCE_AWESOME_APPCYPHER,
+            "appcypher",
+            "awesome-mcp-servers"
+        ),
+        pull_best_of_mcp(&state.http),
+    );
 
-    match pull_official_registry(&state.http).await {
-        Ok(batch) => {
-            tracing::info!(
-                source = "official",
-                count = batch.len(),
-                "pulled official MCP registry"
-            );
-            all_sources.push(batch);
-        }
-        Err(e) => {
-            tracing::error!(
-                source = "official",
-                error = %e,
-                "official registry pull failed — continuing with no data"
-            );
+    let mut all_sources: Vec<Vec<crate::discovery::models::RawServer>> = Vec::new();
+    for (label, result) in [
+        ("official", official),
+        (SOURCE_AWESOME_WONG2, wong2),
+        (SOURCE_AWESOME_APPCYPHER, appcypher),
+        (SOURCE_BEST_OF_MCP, best_of),
+    ] {
+        match result {
+            Ok(batch) => {
+                tracing::info!(source = label, count = batch.len(), "pulled discovery source");
+                all_sources.push(batch);
+            }
+            Err(e) => {
+                tracing::error!(
+                    source = label,
+                    error = %e,
+                    "discovery source pull failed — continuing without it"
+                );
+            }
         }
     }
 

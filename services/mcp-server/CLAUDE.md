@@ -22,6 +22,8 @@ The 0.1.0 listing description still says "22 tools" — stale. v0.1.2 has the up
 
 **Other directories:** Not yet submitted to mcp.so, PulseMCP, Glama, or ClawHub. SKILL.md (at repo root) is ready for ClawHub submission.
 
+**Discovery sources (read-side):** `src/discovery/sources.rs` pulls from four upstream catalogs: the official MCP registry, `wong2/awesome-mcp-servers`, `appcypher/awesome-mcp-servers`, and `tolkonepiu/best-of-mcp-servers`. All four run in parallel inside `refresh_discovery` with per-source error degradation. PulseMCP is gated on credentials (email `api@pulsemcp.com`); Smithery requires API surface verification before integration. The first DefiLlama meta-discovery scan landed 2026-04-07 — see `docs/analysis/2026-04-07-defillama-discovery-survey.md` for findings and `src/listings/sources.rs::fetch_defillama_ai_agents` for the source.
+
 **Tool descriptions** include cash-flow tags (`[READ]`, `[STAKE: ...]`, `[EARN: ...]`, `[SPEND: ...]`, `[STATE]`) so AI agents running a business can reason about inflows vs outflows from descriptions alone.
 
 ---
