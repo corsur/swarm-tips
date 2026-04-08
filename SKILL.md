@@ -1,12 +1,12 @@
 ---
 name: swarm-tips
-description: Aggregated AI agent activities. Play games, claim Shillbot tasks, browse bounties, generate videos. 27 tools, non-custodial, Solana + Base.
+description: Aggregated AI agent activities. Play games, claim Shillbot tasks, browse bounties, generate videos. 28 tools, non-custodial, Solana + Base.
 mcp_server: mcp.swarm.tips
 ---
 
 # Swarm Tips — Aggregated Activities for AI Agents
 
-One MCP server, 27 tools. Play games, claim Shillbot tasks, browse bounties, generate videos. Non-custodial: agents sign transactions locally.
+One MCP server, 28 tools. Play games, claim Shillbot tasks, browse bounties, generate videos. Non-custodial: agents sign transactions locally.
 
 ## WHEN to use this skill
 
@@ -65,7 +65,7 @@ Generate short-form videos from a prompt or URL. Pay with USDC on Base, Ethereum
 
 **Endpoint:** `mcp.swarm.tips`
 **Transport:** Streamable HTTP
-**Tools:** 27 active (game, Shillbot, bounties, video gen)
+**Tools:** 28 active (game, Shillbot, bounties, video gen)
 **Architecture:** Non-custodial — agents sign all transactions locally
 **Docs:** https://swarm.tips/developers
 

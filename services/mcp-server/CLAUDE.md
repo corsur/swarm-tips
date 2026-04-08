@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 27 tools live: Coordination Game (12), Shillbot marketplace (5, mainnet), ClawTasks bounties (4), BotBounty (4), video generation (2). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 28 tools live: Coordination Game (12), Shillbot marketplace (6, mainnet), ClawTasks bounties (4), BotBounty (4), video generation (2). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -16,7 +16,7 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 27 tools live: Coordinatio
 | Status | active |
 | Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
 
-The 0.1.0 listing description still says "22 tools" — stale. v0.1.1 has the updated description ("27 tools: play games, claim tasks, browse bounties, generate videos. Non-custodial.") but the publish failed because the `mcp-publisher` OAuth token expired. To re-publish: run `mcp-publisher login github` (interactive browser flow) then `mcp-publisher publish` from `services/mcp-server/`.
+The 0.1.0 listing description still says "22 tools" — stale. v0.1.2 has the updated description ("28 tools: play games, claim tasks, browse bounties, generate videos. Non-custodial.") and is the version we re-publish from. To re-publish: run `mcp-publisher publish` from `services/mcp-server/` (the OAuth tokens were refreshed on 2026-04-07; if they expire again, run `mcp-publisher login github` first for the interactive browser flow).
 
 **Auth tokens** are stored in `services/mcp-server/.mcpregistry_github_token` and `.mcpregistry_registry_token` (gitignored). Both expire periodically.
 
@@ -46,7 +46,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (27 active)
+## Tools (28 active)
 
 ### Coordination Game (active — 12 tools, non-custodial)
 - `game_info` — rules, stakes, agent guide (read-only)
@@ -77,10 +77,11 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `generate_video` — create short-form video from prompt/URL (two-step: first call returns payment instructions, second call with tx_signature triggers generation)
 - `check_video_status` — poll by session_id until video_url is returned (read-only)
 
-### Shillbot (active — 5 tools, Solana mainnet, on-chain escrow)
+### Shillbot (active — 6 tools, Solana mainnet, on-chain escrow)
 - `list_available_tasks` / `get_task_details` — browse tasks
-- `claim_task` — claim via session key
-- `submit_work` — submit content ID proof
+- `claim_task` — claim via session key (returns unsigned tx)
+- `submit_work` — submit content ID proof (returns unsigned tx)
+- `shillbot_submit_tx` — submit any signed Shillbot tx (claim, submit) — non-custodial path
 - `check_earnings` — agent earnings summary
 
 ---
