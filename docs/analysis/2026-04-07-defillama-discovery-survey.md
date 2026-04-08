@@ -91,6 +91,65 @@ The companion code change (`fetch_defillama_ai_agents`) makes this scan repeatab
 - **The category split is inconsistent.** "AI Agents" and "Decentralized AI" overlap heavily (FLock.io is in Decentralized AI, Capx AI is in AI Agents — both involve training and agent issuance). The Layer 1 fetcher includes both to avoid missing entries; future work could collapse them or run pattern-matching across all categories instead of relying on DefiLlama's own taxonomy.
 - **TVL is a noisy signal.** 18 of 27 protocols have TVL of 0 or null, including Virtuals Protocol — one of the most prominent agent platforms in the space. TVL zero does not mean the platform is dead; it often means DefiLlama doesn't have an adapter for the chain or the protocol's value isn't TVL-shaped. Triage by description first, TVL second.
 
+## Probe results (2026-04-07 evening) — verdicts updated after hitting actual APIs
+
+After landing the scrapers I went through the ranked candidates from the description-based triage above and actually probed each one's HTTP surface. Three of the original candidates turn out to have **pivoted away** from the framing DefiLlama still describes them with, and one **previously-tier-C candidate jumped to the top**. Updated verdicts below override the description-based triage — trust this section, not the tiers above.
+
+### ★ Chutes — the actual headline finding
+
+**Original tier:** C (probe-later, "decentralized serverless AI compute on Bittensor")
+**Updated verdict:** **Top earning candidate by a wide margin.** Real revenue, real bounties, fully self-service, and a dual-direction integration shape that touches both swarm.tips verticals.
+
+What I verified by hitting their public API:
+
+- **`api.chutes.ai/openapi.json`** — 240KB FastAPI OpenAPI spec, 165 paths, fully self-documenting. No login required to read.
+- **`api.chutes.ai/chutes/?include_public=true`** — public catalog of **542 chutes** (compute units / hosted models). Pagination envelope `{total, page, limit, items}`, 0-indexed.
+- **`api.chutes.ai/bounties/`** — public list of **8 active bounties** right now. Each is a chute that users want hosted and have escrowed payment for. Top bounty: `23458` (units uncertain but reads as TAO satoshis or USD cents — needs decode), 22h remaining. Anyone with GPU capacity can claim by hosting the chute. **This is a Moltlaunch-shape job board for compute providers.**
+- **`api.chutes.ai/daily_revenue_summary`** — public daily revenue by day:
+  - 2026-04-07: **$14,518 total revenue**, 650 new subscribers
+  - 2026-04-06: $16,307
+  - 2026-04-05: $15,881
+  - 2026-04-04: $15,141
+  - 7-day average: **~$15K/day** ($5.4M annualized run-rate)
+  - Two streams: subscriber (~$2.5-3K/day) + pay-as-you-go (~$10-13K/day)
+- **`api.chutes.ai/payments/summary/tao`** — total TAO paid through the platform: **1,980,246 TAO lifetime**, 36,851 this month, 599 today.
+- **`api.chutes.ai/api_keys/`** — self-service API key creation. POST a name, get back a `cpk_` Bearer token. No KYC.
+- **`chutes.ai/llms.txt`** — 22KB agent-readable docs. They explicitly authored this for AI agents to consume — the file even contains a note thanking "Const" (presumably Const = Bittensor founder Const) for suggesting it.
+- **OpenAI-compatible inference API** at `https://llm.chutes.ai/v1` — drop-in replacement for OpenAI client libs.
+
+**Real volume on the catalog**: top model (`Qwen/Qwen3-32B-TEE`) has **4.38M lifetime invocations**. Multiple models with 100K+ invocations. These aren't vanity numbers.
+
+**Real prices**: `Qwen3-32B-TEE` is $0.08/MTok input, $0.24/MTok output (USD). For comparison, OpenAI's `gpt-4o-mini` is $0.15 input / $0.60 output, and Claude Haiku is $0.25 / $1.25. **Chutes is meaningfully cheaper** for similar-quality open-source models. GPU instance pricing: $22/hour or $0.0061/sec.
+
+**Two earning shapes for swarm.tips agents:**
+
+1. **Provider side (earning).** Operate a chute serving a popular open-source model. Earn from invocation revenue + bounties. The catalog top-10 by usage tells you which models are oversubscribed and which bounties to chase. Entry cost: GPU access (rentable on Vast.ai / RunPod / etc.) plus their docker image. No allowlist — `cpk_` keys are self-service.
+2. **Consumer side (cost reduction).** Shillbot's video-generation pipeline currently spends on inference somewhere — likely OpenAI / Anthropic / Replicate. Switching to Chutes for the open-source-model parts of the pipeline would meaningfully reduce per-video cost. If a $5 video has 60% inference cost, even a 2x reduction on the inference share is $1.50/video → $0.30/video margin gain to the DAO treasury.
+
+**Why this didn't surface in the description-only triage:** the DefiLlama description ("The Decentralized, Distributed Serverless AI Compute Platform") sounded like infrastructure, not a marketplace. The bounty endpoint, the live revenue numbers, and the self-service API key flow only become obvious once you hit `/openapi.json`. Lesson for future surveys: **always pull the OpenAPI spec when one is exposed.** It's a 30-second probe that can flip a verdict from "infrastructure, skip" to "top candidate".
+
+**Suggested next step**: build a `fetch_chutes_bounties` source for `src/listings/sources.rs` that surfaces live bounties in the swarm.tips listings response. Real jobs, real pay, on-chain settlement. Same shape as `fetch_moltlaunch`.
+
+### Updated verdicts on the original top-5
+
+| Candidate | Original verdict | Probe result | Updated verdict |
+|---|---|---|---|
+| **Infinite Trading Protocol** | PROBE — top candidate | `api.infinitetrading.io/` exposes a Swagger UI + 25-endpoint OpenAPI spec for managing pooled DeFi strategies (Aave v3 lending, AMM trading, CEX subaccounts, performance fee collection). | **Real platform, not Moltlaunch-shape.** Earning loop is "be a quant manager, attract investor deposits, earn performance + management fees". Closer to a hedge-fund admin layer than a job board. Worth integrating as a *separate listing kind* ("manager-platform") but doesn't slot into existing `fetch_*` patterns cleanly. Defer until we want to support AUM-based earning. |
+| **Virtuals Protocol** | PROBE — second-tier | `api.virtuals.io/api/virtuals` returns **39,109 agents** in their public registry (paginated, no auth). Probed `/api/missions`, `/api/jobs`, `/api/quests`, `/api/bounties`, `/api/services`, `/api/marketplace`, `/api/inferences` — **all return 204 No Content**. The only resource with data is the agent registry itself + `/api/proposals` (DAO governance). | **Earning shape is "launch an agent token", not "claim a job".** Virtuals is an IPO-of-agents platform: tokenize an AI agent, attract holders, earn from token economy. No public bounties, no missions, no marketplace endpoint. Skip for `fetch_*` integration. Worth reading their Sentient Agents docs separately if we want to launch a swarm.tips agent on Virtuals as a marketing play. |
+| **MyShell** | PROBE — third-tier | `myshell.ai/llms.txt` returns a consumer-product-only doc: face swap, headshot generator, baby face generator, Ghibli filter, Squid Game filter, AI tarot reading. The "MyShell began as an open, decentralized ecosystem where creators can build, share, and monetize AI agents" framing is **explicitly past tense**. The dev-side platform still exists at `docs.myshell.ai` but it's a no-code agent builder with widgets, not a job marketplace. | **Pivoted away from the agent marketplace shape.** DefiLlama's listing is stale. **Skip.** |
+| **AgentFi** | PROBE | `docs.agentfi.io/llms.txt` reveals it's **5 yield-farming strategies on Blast**: Concentrated Liquidity Manager, Pac Looper, Orbit Looper, DEX Balancer, Multipliooor. Same shape as Infinite Trading: be a strategy developer earning fees from depositors. Smaller scope (Blast-only). | **Confirmed not Moltlaunch-shape.** Same defer-until-AUM-listings reasoning as Infinite Trading. |
+| **Xeleb Protocol** | PROBE | Site rebrand: title is now **"Xeleb 2049 \| Turn Social Profiles into Personal AI Agents"** — consumer tool for spinning up personal AI agents from social profiles. NOT the AI-influencer-marketing marketplace I worried might be a Shillbot competitor. | **Pivoted away from the original framing.** DefiLlama listing is stale. **Skip.** Not a Shillbot peer. |
+
+### Pivot pattern — DefiLlama descriptions for AI Agents are unreliable
+
+3 of 5 ranked candidates (MyShell, Xeleb, partially Virtuals) have meaningfully shifted from what DefiLlama still says they are. The agent space moves fast and DefiLlama descriptions are not maintained. **Always probe before trusting the description.** This is the second lesson from this evening's work and worth adding to the discovery pipeline as a generalized "freshness check": flag any DefiLlama entry whose `lastUpdated` (if exposed) is more than 60 days old.
+
+### Other probe-tier findings
+
+- **Yoko**: yoko.live, yoko.gg both unreachable. yoko.ai resolves but unrelated company. The DefiLlama URL is empty. **Dead or unfindable.**
+- **Arbius**: site live (arbius.ai, 110KB). `/api`, `/api/jobs` both 404. Their job marketplace likely runs on-chain via smart contracts on Arbitrum, not via REST. Would need a subgraph integration to surface jobs. **Defer.**
+- **DefiLlama's own MCP server** at `defillama.com/mcp` exists but is Cloudflare-blocked from my probes (403). Worth manually verifying via Claude Desktop or similar — they may have published the connect URL in their docs. If it exposes anything more than a wrapper around the public REST API, it's a peer in our discovery space worth tracking.
+
 ## Track A — MCP catalog scrapers (shipped, not yet surveyed)
 
 The three new Layer 1 sources land in this PR but the per-entry classification survey is deferred to a follow-up doc once a production refresh has run and the merged + Layer-2-classified output is in Firestore. Quick parser estimates against the live READMEs (April 2026 snapshots):
@@ -109,7 +168,10 @@ The three new Layer 1 sources land in this PR but the per-entry classification s
 
 ## Open follow-ups
 
-- **Manually probe the 5 ranked candidates** above for public APIs. Time-box at 30 minutes per candidate. Anything that returns a structured listing payload becomes a `fetch_*` function in `src/listings/sources.rs` the same way Moltlaunch was added.
-- **Add `defillama.com/mcp` to the official MCP registry scan results doc** — it should appear automatically next time `pull_official_registry` runs, but the 2026-04-07 arbitrage survey doc didn't mention it, so confirm the listing exists and capture the tool inventory.
-- **Schedule a recurring DefiLlama scan diff.** This survey is a snapshot. The point of automating the source is that next month's scan will surface whatever's *new* — that diff is the actionable signal, not the absolute list. Once Google Workflows runs the listings refresh on schedule, write a small diff query: protocols in this scan that weren't in the previous scan = "new agent platforms launched this period".
-- **Decide what "platform-candidate" listings should do in the public response.** Currently filtered out by the reward filter. If we want a public `/internal/listings/platforms` endpoint for the swarm.tips frontend to surface "agent platforms worth knowing about" (separate from "jobs you can earn from right now"), that's a follow-up.
+- **★ Build `fetch_chutes_bounties` in `src/listings/sources.rs`.** Chutes is the highest-value finding from this whole survey. Bounties are public, paid in TAO, on-chain settlement, ~8 active at any time, no auth needed for the listing. Same shape as `fetch_moltlaunch`. This is the next concrete code change to ship.
+- **★ Pricing experiment for Shillbot's video pipeline.** Compare current per-video inference cost vs running the same prompts through `https://llm.chutes.ai/v1`. If the savings are >30% the migration justifies itself; the consumer-side integration becomes the second Chutes shipment after `fetch_chutes_bounties`.
+- **Decode the Chutes bounty `bounty_amount` units.** The example is `23458` and `18871` with `seconds_elapsed` / `time_remaining` in real seconds — units could be USD cents, TAO satoshis, or something else. Hit `/pricing` and `/fmv` (both public per the OpenAPI spec) to find out.
+- **Probe DefiLlama's own MCP server** via a non-curl path (Claude Desktop, mcp-publisher, or a UA that Cloudflare allows). Their `defillama.com/mcp` returned 403 to my agent but the path exists. If it's a real MCP server, add it to the official registry scan results.
+- **Schedule a recurring DefiLlama scan diff.** This survey is a snapshot; the actionable signal is the *delta* from one scan to the next. Once Google Workflows runs the listings refresh on schedule, write a small diff query: protocols in this scan that weren't in the previous = "new agent platforms launched this period".
+- **Add a freshness flag to Layer 1.** 3 of 5 ranked candidates (MyShell, Xeleb, partial Virtuals) had pivoted away from their DefiLlama descriptions. Flag any DefiLlama entry that hasn't been updated in 60+ days so the LLM classifier knows to discount the description.
+- **Decide what "platform-candidate" listings should do in the public response.** Currently filtered out by the reward filter. If we want a public `/internal/listings/platforms` endpoint for the swarm.tips frontend to surface "agent platforms worth knowing about" (separate from "jobs you can earn from right now"), that's a follow-up. Chutes provides a concrete first user.
