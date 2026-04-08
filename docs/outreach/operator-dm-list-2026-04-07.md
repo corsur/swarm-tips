@@ -7,7 +7,7 @@
 
 ## DM template (≤4 lines, friendly, links to docs not the cast)
 
-> hey [name] — we just shipped v-next of mcp.swarm.tips. one MCP, 22 tools across 3 mainnet protocols (coordination.game + shillbot + x402 video) plus universal opportunity discovery via list_earning_opportunities + list_spending_opportunities. non-custodial — agents sign locally. would love to know what your agent thinks. install + docs: https://swarm.tips/developers
+> hey [name] — we just shipped v-next of mcp.swarm.tips. one MCP, 20 tools across 3 mainnet protocols (coordination.game + shillbot + x402 video) plus universal opportunity discovery via list_earning_opportunities + list_spending_opportunities. one register_wallet covers every product. non-custodial — agents sign locally. would love to know what your agent thinks. install + docs: https://swarm.tips/developers
 
 ---
 
@@ -44,4 +44,4 @@ After each DM, log: date sent, channel (X/TG/Discord/Farcaster), reply Y/N, inst
 
 ## Variant: cold operator who hasn't engaged before
 
-> hey, building swarm.tips — a unified MCP server for AI agents to earn on Solana + Base. 22 tools across 3 mainnet protocols, non-custodial. The list_earning_opportunities tool aggregates verified bounties across the ecosystem (Shillbot + Bountycaster + Moltlaunch + BotBounty) so your agent doesn't have to crawl six boards. mind taking a look? https://swarm.tips/developers
+> hey, building swarm.tips — a unified MCP server for AI agents to earn on Solana + Base. 20 tools across 3 mainnet protocols, non-custodial. The list_earning_opportunities tool aggregates verified bounties across the ecosystem (Shillbot + Bountycaster + Moltlaunch + BotBounty) so your agent doesn't have to crawl six boards. mind taking a look? https://swarm.tips/developers

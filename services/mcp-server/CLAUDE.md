@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 22 tools live: Coordination Game (12), Shillbot marketplace (6, mainnet, all `shillbot_*`-prefixed), video generation (2), and two universal opportunity-discovery tools (`list_earning_opportunities`, `list_spending_opportunities`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 20 tools live: Coordination Game (10, including the cross-product `register_wallet`), Shillbot marketplace (6, mainnet, all `shillbot_*`-prefixed), video generation (2), and two universal opportunity-discovery tools (`list_earning_opportunities`, `list_spending_opportunities`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -98,18 +98,18 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (22 active)
+## Tools (20 active)
 
 ### Universal opportunity discovery (2 tools)
 - `list_earning_opportunities` — aggregated earning entries across `fetch_*` sources (Shillbot, Bountycaster, Moltlaunch, BotBounty). First-party entries (`source = "shillbot"`) include a `claim_via` field naming the in-MCP tool to call. External entries have a direct `source_url` redirect — agents claim off-platform.
 - `list_spending_opportunities` — aggregated paid services. v1 hardcoded with `generate_video` (first-party, 5 USDC). External sources (Chutes inference, x402-paywalled APIs) are deferred to follow-up integrations.
 
-### Coordination Game (12 tools, non-custodial)
-- `game_info` — rules, stakes, agent guide (read-only)
-- `game_get_leaderboard` — tournament rankings (read-only)
-- `game_join_queue` — returns auth instructions for manual flow
-- `game_register_wallet` — register pubkey only (non-custodial, no private key)
-- `game_find_match` — returns unsigned deposit_stake tx (agent signs locally)
+### Wallet registration (1 tool, cross-product)
+- `register_wallet` — register your Solana pubkey (non-custodial, no private key). One registration covers every product (Coordination Game + Shillbot + video). Persisted via `Mcp-Session-Id` → wallet binding in Firestore so a pod restart doesn't strand the agent. Was previously named `game_register_wallet`; renamed 2026-04-08 to reflect cross-product use.
+
+### Coordination Game (9 tools, non-custodial)
+- `game_get_leaderboard` — tournament rankings (read-only, `tournament_id` defaults to 1)
+- `game_find_match` — returns unsigned deposit_stake tx (agent signs locally; `tournament_id` defaults to 1)
 - `game_submit_tx` — submit any signed game transaction (deposit, join, commit, reveal)
 - `game_check_match` — poll match status; returns unsigned join_game tx when matched
 - `game_send_message` / `game_get_messages` — chat with opponent (implicitly scoped to current MCP session)
@@ -132,6 +132,9 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 ### Removed 2026-04-08
 - `clawtasks_*` (4 tools): API was returning HTTP 500, didn't fit the unified-tools strategic shift. See `docs/analysis/2026-04-08-unified-list-tools-strategic-shift.md`.
 - `botbounty_*` (4 tools): MCP CRUD proxy retired, `fetch_botbounty` listing source kept (entries still appear in `list_earning_opportunities`).
+- `game_info` (1 tool): the `GAME_INFO_JSON` content (rules, stake, how_to_play, rules_for_agents) was duplicated by the `INSTRUCTIONS` field served in the MCP `initialize` response. Content was merged into `INSTRUCTIONS` and the tool was removed. See `docs/analysis/2026-04-08-round-2-polish-survey.md`.
+- `game_join_queue` (1 tool): deprecated by its own description ("For a simpler flow, use register_wallet + game_find_match instead"). Removed as the deprecation note shipped as a live tool.
+- `game_register_wallet` (1 tool): renamed to `register_wallet` (no `game_` prefix) since it serves as the registration entry point for both Coordination Game and Shillbot tools.
 
 ---
 

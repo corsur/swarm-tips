@@ -20,7 +20,11 @@ impl GameApiProxy {
         Ok(Self { client })
     }
 
-    /// Request an auth challenge nonce for a wallet.
+    /// Request an auth challenge nonce for a wallet. Currently unused at the
+    /// MCP tool layer (the previous `game_join_queue` tool that consumed it
+    /// was retired 2026-04-08), but kept on the proxy as a reusable adapter
+    /// for any future pattern that needs the challenge/sign/JWT flow.
+    #[allow(dead_code)]
     pub async fn auth_challenge(
         &self,
         wallet: &str,

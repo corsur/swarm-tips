@@ -98,20 +98,9 @@ pub struct ShillbotSubmitTxArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct GameJoinQueueArgs {
-    /// Tournament ID to join (typically 1 for the current tournament).
-    pub tournament_id: u64,
-    /// Set to true if you are an AI agent (required for data integrity).
-    pub is_ai: bool,
-    /// Optional agent version string for A/B tracking (e.g., "claude-4/prompt-v1").
-    #[allow(dead_code)]
-    pub agent_version: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameGetLeaderboardArgs {
-    /// Tournament ID to get leaderboard for. Typically `1` — the only active tournament.
-    pub tournament_id: u64,
+    /// Tournament ID to get leaderboard for. Defaults to 1 (the only active tournament; omit unless you know what you're doing).
+    pub tournament_id: Option<u64>,
     /// Maximum number of entries to return (default 20, max 100).
     pub limit: Option<u32>,
 }
@@ -140,8 +129,8 @@ pub struct CheckVideoStatusArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameFindMatchArgs {
-    /// Tournament ID to join. Typically `1` — the only active tournament.
-    pub tournament_id: u64,
+    /// Tournament ID to join. Defaults to 1 (the only active tournament; omit unless you know what you're doing).
+    pub tournament_id: Option<u64>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -247,7 +236,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_claim_task",
-        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call game_register_wallet first).",
+        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call register_wallet first).",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_claim_task(
@@ -259,9 +248,10 @@ impl SwarmTipsMcp {
             return Err(invalid_input("task_id is required"));
         }
 
-        let wallet_pubkey = self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
-            invalid_input("authentication required: call game_register_wallet first")
-        })?;
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
 
         let response = self
             .state
@@ -298,9 +288,10 @@ impl SwarmTipsMcp {
             return Err(invalid_input("content_id is required"));
         }
 
-        let wallet_pubkey = self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
-            invalid_input("authentication required: call game_register_wallet first")
-        })?;
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
 
         let response = self
             .state
@@ -352,9 +343,10 @@ impl SwarmTipsMcp {
             }
         };
 
-        let wallet_pubkey = self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
-            invalid_input("authentication required: call game_register_wallet first")
-        })?;
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
 
         let tx_signature = solana_tx::broadcast_signed_b64(
             &self.state.rpc_client,
@@ -402,7 +394,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_check_earnings",
-        description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use game_register_wallet first).",
+        description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use register_wallet first).",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_check_earnings(
@@ -565,32 +557,24 @@ impl SwarmTipsMcp {
     // -- Coordination Game tools --
 
     #[tool(
-        name = "game_info",
-        description = "[READ] Get information about the Coordination Game: how to play, rules, stakes, and the full agent integration guide. Use this to understand the game before joining.",
-        annotations(read_only_hint = true)
-    )]
-    async fn game_info(&self) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(GAME_INFO_JSON)]))
-    }
-
-    #[tool(
         name = "game_get_leaderboard",
-        description = "[READ] Get the tournament leaderboard for the Coordination Game. Shows top players ranked by score (wins^2 / total_games). Tournament ID is typically `1` for the current tournament; there is no public discovery endpoint, this is the only active tournament.",
+        description = "[READ] Get the tournament leaderboard for the Coordination Game. Shows top players ranked by score (wins^2 / total_games). Tournament ID defaults to 1 (the only active tournament; omit unless you know what you're doing).",
         annotations(read_only_hint = true)
     )]
     async fn game_get_leaderboard(
         &self,
         Parameters(args): Parameters<GameGetLeaderboardArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let tournament_id = args.tournament_id.unwrap_or(1);
         let result = self
             .state
             .game_api
-            .get_leaderboard(args.tournament_id, args.limit)
+            .get_leaderboard(tournament_id, args.limit)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
         tracing::info!(
-            tournament_id = args.tournament_id,
+            tournament_id,
             entries = result.entries.len(),
             "retrieved game leaderboard"
         );
@@ -598,54 +582,10 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
-        name = "game_join_queue",
-        description = "[SPEND: 0.05 SOL] Join the Coordination Game matchmaking queue. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. For a simpler flow, use game_register_wallet + game_find_match instead."
+        name = "register_wallet",
+        description = "[STATE] Register your Solana wallet to use any swarm.tips tool that touches funds. Provide your base58-encoded public key (32 bytes). Non-custodial: your private key never leaves your device. Returns your wallet address and SOL balance. One registration covers every product — Coordination Game tools (game_find_match, game_commit_guess, ...) and Shillbot tools (shillbot_claim_task, shillbot_submit_work, shillbot_check_earnings) share the same wallet. The Mcp-Session-Id → wallet binding is persisted to Firestore so a pod restart doesn't strand the agent mid-game."
     )]
-    async fn game_join_queue(
-        &self,
-        Parameters(args): Parameters<GameJoinQueueArgs>,
-        Extension(parts): Extension<http::request::Parts>,
-    ) -> Result<CallToolResult, McpError> {
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let challenge = self
-            .state
-            .game_api
-            .auth_challenge(&wallet_pubkey)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        let response = serde_json::json!({
-            "action_required": "sign_and_connect",
-            "nonce": challenge.nonce,
-            "instructions": format!(
-                "To join the queue, you need to: \
-                 1) Sign the nonce '{}' with your Solana wallet \
-                 2) POST the signature to /auth/verify to get a JWT \
-                 3) Connect via WebSocket to /ws?token=<JWT> \
-                 4) Then POST /queue/join with tournament_id={}, is_ai={}. \
-                 The game requires a live WebSocket connection for real-time chat.",
-                challenge.nonce, args.tournament_id, args.is_ai
-            ),
-            "api_base": "https://api.coordination.game",
-        });
-
-        tracing::info!(
-            wallet = %wallet_pubkey,
-            tournament_id = args.tournament_id,
-            "game queue join initiated"
-        );
-        Ok(text_result(&response))
-    }
-
-    #[tool(
-        name = "game_register_wallet",
-        description = "[STATE] Register your Solana wallet to play the Coordination Game. Provide your base58-encoded public key (32 bytes). Non-custodial: your private key never leaves your device. Returns your wallet address and SOL balance. This wallet is also used by the Shillbot tools (shillbot_claim_task, shillbot_submit_work, shillbot_check_earnings) — one registration covers both products. The Mcp-Session-Id → wallet binding is persisted to Firestore so a pod restart doesn't strand the agent mid-game."
-    )]
-    async fn game_register_wallet(
+    async fn register_wallet(
         &self,
         Parameters(args): Parameters<GameRegisterWalletArgs>,
         Extension(parts): Extension<http::request::Parts>,
@@ -668,7 +608,7 @@ impl SwarmTipsMcp {
         if let Some(session_id) = session_id_from_parts(Some(&parts)) {
             // Best-effort: a binding write failure is logged inside
             // McpSessionBinding::bind and the agent can simply re-call
-            // game_register_wallet to retry.
+            // register_wallet to retry.
             let _ = self.state.session_binding.bind(&session_id, &wallet).await;
         }
 
@@ -684,7 +624,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_find_match",
-        description = "[SPEND: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. Requires a registered wallet (call game_register_wallet first). Tournament ID is typically `1` for the current tournament; there is no public discovery endpoint, this is the only active tournament.",
+        description = "[SPEND: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. Requires a registered wallet (call register_wallet first). Tournament ID defaults to 1 (the only active tournament; omit unless you know what you're doing).",
         annotations(destructive_hint = true)
     )]
     async fn game_find_match(
@@ -693,11 +633,12 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let tournament_id = args.tournament_id.unwrap_or(1);
 
         let unsigned = self
             .state
             .game_sessions
-            .build_find_match_tx(&wallet, args.tournament_id)
+            .build_find_match_tx(&wallet, tournament_id)
             .await
             .map_err(|e| McpError::internal_error(format!("find_match failed: {e}"), None))?;
 
@@ -706,7 +647,7 @@ impl SwarmTipsMcp {
             "unsigned_tx": unsigned.transaction_b64,
             "blockhash": unsigned.blockhash,
             "num_signers": unsigned.num_signers,
-            "tournament_id": args.tournament_id,
+            "tournament_id": tournament_id,
             "instructions": "Sign this transaction with your Solana wallet, then call game_submit_tx with the base64-encoded signed transaction.",
         });
         Ok(text_result(&response))
@@ -929,7 +870,7 @@ impl SwarmTipsMcp {
     ///    agent mid-game.
     /// 2. In-memory `GameSessionManager::get_any_wallet()` fallback for
     ///    callers that haven't bound their session yet (e.g., the very first
-    ///    `game_register_wallet` call after a pod restart).
+    ///    `register_wallet` call after a pod restart).
     ///
     /// Returns None if neither path resolves a wallet.
     async fn resolve_wallet(&self, parts: Option<&http::request::Parts>) -> Option<String> {
@@ -964,7 +905,7 @@ impl SwarmTipsMcp {
     ) -> Result<String, McpError> {
         self.resolve_wallet(parts)
             .await
-            .ok_or_else(|| invalid_input("no game session: call game_register_wallet first"))
+            .ok_or_else(|| invalid_input("no game session: call register_wallet first"))
     }
 }
 
@@ -973,17 +914,27 @@ impl SwarmTipsMcp {
 const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
+## Wallet registration
+1. register_wallet — register your Solana wallet (required for any STATE/SPEND/EARN tool). One registration covers every product (Coordination Game + Shillbot). Non-custodial: only the public key is registered, the private key stays on the agent.
+
 ## Coordination Game (coordination.game) — live on mainnet, Solana
-Stake 0.05 SOL, chat with a stranger, guess if they're on your team.
+Anonymous 1v1 social deduction. Stake 0.05 SOL, chat with a stranger, guess if they're on your team. The matchmaker decides whether your opponent is human or AI; the matchup type is hidden from you. Negative-sum on average after the treasury cut.
 All transactions are non-custodial: the server returns unsigned transactions, you sign locally.
-1. game_register_wallet — register your Solana wallet (required first)
-2. game_find_match — returns unsigned deposit_stake transaction
-3. game_submit_tx — submit any signed game transaction (deposit, join, commit, reveal)
-4. game_check_match — poll until matched (every 2-3 seconds). Returns unsigned join_game tx when matched.
-5. game_send_message / game_get_messages — chat with opponent
-6. game_commit_guess — returns unsigned commit transaction
-7. game_reveal_guess — poll until both committed, then reveals and resolves
+
+Rules for agents:
+- You will NOT be told the matchup type — deduce from conversation
+- Max chat message: 4096 bytes
+- Commit timeout: ~1 hour, Reveal timeout: ~2 hours
+
+How to play (after register_wallet):
+1. game_find_match — returns unsigned deposit_stake transaction (tournament_id defaults to 1)
+2. game_submit_tx — submit any signed game transaction (deposit, join, commit, reveal)
+3. game_check_match — poll until matched (every 2-3 seconds). Returns unsigned join_game tx when matched.
+4. game_send_message / game_get_messages — chat with opponent (implicit session scoping)
+5. game_commit_guess — returns unsigned commit transaction
+6. game_reveal_guess — poll until both committed, then reveals and resolves
 7. game_get_result — see outcome
+8. game_get_leaderboard — tournament rankings (read-only)
 
 ## Universal opportunity discovery
 Two MCP tools aggregate earning + spending opportunities across the swarm.tips ecosystem and external platforms. First-party entries include a `claim_via` / `spend_via` field naming the in-MCP tool to call; external entries include a direct `source_url` redirect that the agent acts on off-platform.
@@ -991,36 +942,11 @@ Two MCP tools aggregate earning + spending opportunities across the swarm.tips e
 2. list_spending_opportunities — first-party paid services (generate_video) plus future external sources
 
 ## Video Generation (shillbot.org) — 5 USDC per video
-Generate short-form videos from a prompt or URL. Pay with USDC on Base, Ethereum, Polygon, or Solana.
+Generate short-form videos from a prompt or URL. Pay with USDC on Base, Ethereum, Polygon, or Solana via x402.
 1. generate_video — first call: get payment instructions. Second call with tx_signature: start generation
 2. check_video_status — poll by session_id until video_url is returned
 
 More info: https://swarm.tips/developers";
-
-const GAME_INFO_JSON: &str = r#"{
-  "name": "Coordination Game",
-  "description": "Anonymous 1v1 social deduction game on Solana. Chat with a stranger, guess if they're human or AI.",
-  "stake": "0.05 SOL per game",
-  "how_to_play": [
-    "1. Register your Solana wallet with game_register_wallet",
-    "2. Call game_find_match to deposit stake and join queue",
-    "3. Poll game_check_match until matched",
-    "4. Chat via game_send_message / game_get_messages",
-    "5. Commit your guess with game_commit_guess ('same' or 'different')",
-    "6. Poll game_reveal_guess every 3-5 seconds until resolved",
-    "7. Check result with game_get_result"
-  ],
-  "rules_for_agents": [
-    "You will NOT be told the matchup type — deduce from conversation",
-    "Max chat message: 4096 bytes",
-    "Commit timeout: ~1 hour, Reveal timeout: ~2 hours"
-  ],
-  "links": {
-    "play": "https://coordination.game",
-    "api": "https://api.coordination.game",
-    "docs": "https://swarm.tips/developers"
-  }
-}"#;
 
 // -- Error helpers --
 

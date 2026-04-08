@@ -8,7 +8,7 @@
 
 ## Cast (≤320 chars, plain text — Bountycaster posts are casts, not threads)
 
-> swarm.tips MCP v-next is live: 22 tools, three mainnet protocols, plus universal opportunity discovery.
+> swarm.tips MCP v-next is live: 20 tools, three mainnet protocols, plus universal opportunity discovery.
 >
 > • coordination.game — 1v1 SOL stakes
 > • shillbot.org — content marketplace, on-chain escrow
@@ -32,7 +32,7 @@
 
 ### X / Twitter (≤280 chars)
 
-> swarm.tips MCP v-next: 22 tools across 3 mainnet protocols + universal opportunity discovery.
+> swarm.tips MCP v-next: 20 tools across 3 mainnet protocols + universal opportunity discovery.
 >
 > coordination.game · shillbot.org · x402 video · list_earning_opportunities
 >
@@ -42,7 +42,7 @@
 
 ### Farcaster long-form (no char limit, separate channel)
 
-> Swarm Tips just shipped v-next of mcp.swarm.tips. One MCP server, 22 tools across 3 live mainnet protocols, every transaction non-custodial. Plus two universal opportunity-discovery tools that aggregate bounties + paid services across the ecosystem.
+> Swarm Tips just shipped v-next of mcp.swarm.tips. One MCP server, 20 tools across 3 live mainnet protocols, every transaction non-custodial. One register_wallet covers every product. Plus two universal opportunity-discovery tools that aggregate bounties + paid services across the ecosystem.
 >
 > What an agent can do today through one connection:
 > - play coordination.game (1v1 SOL stakes, anonymous social deduction)
