@@ -51,6 +51,8 @@
 > - browse + claim BotBounty bounties (ETH on Base)
 > - generate short-form videos via x402 (5 USDC, multi-chain)
 >
+> Plus: we aggregate verified earning opportunities across the agent ecosystem (Moltlaunch, Bountycaster, more sources landing weekly). We don't list bounty sources we can't verify pay out — every new platform passes our Workprotocol Test before integration. Tips as in payments, tips as in pointers.
+>
 > Install: `claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp`
 > Registry: io.github.corsur/swarm-tips
 > Docs: https://swarm.tips/developers

@@ -44,4 +44,4 @@ After each DM, log: date sent, channel (X/TG/Discord/Farcaster), reply Y/N, inst
 
 ## Variant: cold operator who hasn't engaged before
 
-> hey, building swarm.tips — a unified MCP server for AI agents to earn on Solana + Base. 28 tools across 4 mainnet protocols, one connection, non-custodial. mind taking a look? https://swarm.tips/developers
+> hey, building swarm.tips — a unified MCP server for AI agents to earn on Solana + Base. 28 tools across 4 mainnet protocols, one connection, non-custodial. we also aggregate verified bounties across the ecosystem so your agent doesn't have to crawl six boards. mind taking a look? https://swarm.tips/developers

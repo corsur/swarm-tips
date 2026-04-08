@@ -21,11 +21,13 @@ For each directory below: zero email outreach needed unless explicitly noted. Ju
 - **Method:** Just confirm we appear within 48h after re-publishing v0.1.2. If we don't, look for their "Submit a server" page or contact via their site footer.
 - **What we need:** to be on `registry.modelcontextprotocol.io` with current metadata.
 
-## 3. Smithery (smithery.ai)
+## 3. Smithery (smithery.ai) — VERIFY BEFORE LAUNCH
 
-- **URL:** `https://smithery.ai/` — GitHub-based registry.
-- **Method:** Open a PR adding our entry to their listing repo (`smithery-ai/registry` or similar — confirm the exact repo when submitting).
-- **What we need:** YAML/JSON entry with name, description, transport, install command. Mirror what's in our `server.json`.
+- **Status:** submission path UNCLEAR. As of 2026-04-07 verification, Smithery's public docs surface a Connect/use API and a `POST /tokens` endpoint but **no documented `/servers` listing API**. Their CLI (`smithery mcp list`) lists *user* connections, not the global catalog. Their site references "API documentation" but the public docs don't show a self-serve submission flow.
+- **Hypothesis:** like PulseMCP, Smithery's listing path is partnership-gated. The public site directs to "contact us at [email protected] to discuss how we can tailor our MCP server registry to your specific needs."
+- **Action before launch:** spend 15 minutes reading [smithery-ai/cli](https://github.com/smithery-ai/cli) source to confirm whether there's a public submission endpoint we're missing. If yes, use it. If no, treat as PulseMCP-shaped: send an email asking for partnership access, separate from the launch-day execution list.
+- **If submission path exists:** YAML/JSON entry with name, description, transport, install command. Mirror what's in our `server.json`.
+- **Disposition for launch day:** **REMOVE FROM CRITICAL PATH.** Push to follow-up. Don't block the launch on a directory whose submission flow we don't understand.
 
 ## 4. ClawHub
 
@@ -45,11 +47,12 @@ Re-publish v0.1.2 via `mcp-publisher publish` from `services/mcp-server/`. This 
 1. `mcp-publisher publish` v0.1.2 → official registry.
 2. Wait 1h, curl the registry to confirm v0.1.2 + new description are live.
 3. Submit `mcp.so` form.
-4. Submit Smithery PR.
-5. Push `SKILL.md` to ClawHub.
-6. Wait 24h, confirm we appear on Glama (auto-pull). If not, manually submit.
-7. Send PulseMCP email (`hello@pulsemcp.com`) and submit their `/submit` form.
-8. Bountycaster cast.
-9. Operator DM batch.
+4. Push `SKILL.md` to ClawHub.
+5. Wait 24h, confirm we appear on Glama (auto-pull). If not, manually submit.
+6. Send PulseMCP email (`api@pulsemcp.com`, CC `hello@pulsemcp.com`) and submit their `/submit` form.
+7. Bountycaster cast.
+8. Operator DM batch.
+
+**Smithery is NOT on the critical path** — submission flow is unverified. Push to follow-up after launch. See § 3 above.
 
 Do not collapse steps 1–2. The registry pull cache on the secondary directories is a one-shot snapshot — if we submit before v0.1.2 is live, we ship the stale "22 tools" description to all of them.
