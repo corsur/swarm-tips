@@ -205,8 +205,7 @@ pub async fn pull_awesome_mcp(
     owner: &str,
     repo: &str,
 ) -> Result<Vec<RawServer>> {
-    let url =
-        format!("https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md");
+    let url = format!("https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md");
     let resp = client
         .get(&url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)

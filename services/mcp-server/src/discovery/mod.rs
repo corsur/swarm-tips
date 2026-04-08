@@ -98,7 +98,11 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
     ] {
         match result {
             Ok(batch) => {
-                tracing::info!(source = label, count = batch.len(), "pulled discovery source");
+                tracing::info!(
+                    source = label,
+                    count = batch.len(),
+                    "pulled discovery source"
+                );
                 all_sources.push(batch);
             }
             Err(e) => {

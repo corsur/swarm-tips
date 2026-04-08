@@ -1130,10 +1130,7 @@ mod tests {
         });
 
         let listing = parse_defillama_protocol(&json).expect("should parse");
-        assert_eq!(
-            listing.source_url,
-            "https://defillama.com/protocol/yoko"
-        );
+        assert_eq!(listing.source_url, "https://defillama.com/protocol/yoko");
     }
 
     #[test]
