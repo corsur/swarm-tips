@@ -407,7 +407,16 @@ impl OrchestratorProxy {
     }
 
     /// Create a short-form video via the crypto endpoint.
-    /// The orchestrator's x402 middleware will return 402 if payment is needed.
+    ///
+    /// The orchestrator's x402 v2 middleware uses a different wire format
+    /// from v1: a 402 response carries the payment requirements in the
+    /// `Payment-Required` response header (base64-encoded JSON), with an
+    /// EMPTY body. The agent supplies the signed payment payload via the
+    /// `Payment-Signature` request header (also base64-encoded JSON of an
+    /// `x402_types::v2::PaymentPayload`). Both header names are different
+    /// from v1 (`X-PAYMENT` request, body-only response) — the previous v1
+    /// integration was rejected by CDP for unrelated SVM-client interop
+    /// reasons, and switching to v2 sidesteps the entire mess.
     pub async fn create_short_crypto(
         &self,
         prompt: &str,
@@ -423,45 +432,13 @@ impl OrchestratorProxy {
 
         let mut req = self.client.post(&endpoint).json(&body);
 
-        // If the agent provides a tx_signature, include the x402 payment proof header.
-        // Log byte-level details so we can pinpoint exactly which byte fails
-        // http::header::HeaderValue::from_str validation (rejected: 0-8, 10-31, 127).
         if let Some(sig) = tx_signature {
-            let bytes = sig.as_bytes();
-            // Walk for the first byte that http::HeaderValue::from_str would reject:
-            // valid set is `b == 9 (tab) || (b >= 32 && b != 127)`. Anything else
-            // is rejected.
-            let first_bad = bytes
-                .iter()
-                .enumerate()
-                .find(|(_, b)| !(**b == 9 || (**b >= 32 && **b != 127)))
-                .map(|(i, b)| (i, *b));
-            let head: String = bytes
-                .iter()
-                .take(40)
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join("");
-            let tail: String = bytes
-                .iter()
-                .rev()
-                .take(40)
-                .collect::<Vec<_>>()
-                .iter()
-                .rev()
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join("");
-            tracing::info!(
+            tracing::debug!(
                 service = "mcp-server",
                 payment_header_len = sig.len(),
-                payment_header_head_hex = %head,
-                payment_header_tail_hex = %tail,
-                payment_header_first_bad_pos = ?first_bad.map(|(i, _)| i),
-                payment_header_first_bad_byte = ?first_bad.map(|(_, b)| format!("0x{b:02x}")),
-                "x402: attaching X-PAYMENT header"
+                "x402 v2: attaching Payment-Signature header"
             );
-            req = req.header("X-PAYMENT", sig);
+            req = req.header("Payment-Signature", sig);
         }
 
         let response = req.send().await.map_err(|e| {
@@ -492,19 +469,55 @@ impl OrchestratorProxy {
         })?;
 
         let status = response.status();
+
+        // x402 v2: a 402 response carries the payment requirements in the
+        // `Payment-Required` header (base64-encoded JSON), with an empty body.
+        // We surface them to the agent in the same `payment_details` shape the
+        // tool's wrapper uses, so the MCP `generate_video` contract is stable.
+        if status.as_u16() == 402 {
+            let header = response
+                .headers()
+                .get("payment-required")
+                .ok_or_else(|| {
+                    McpServiceError::OrchestratorError(
+                        "402 response missing Payment-Required header (expected x402 v2 shape)"
+                            .to_string(),
+                    )
+                })?
+                .to_str()
+                .map_err(|e| {
+                    McpServiceError::OrchestratorError(format!(
+                        "Payment-Required header is not valid UTF-8: {e}"
+                    ))
+                })?
+                .to_string();
+
+            use base64::Engine;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(&header)
+                .map_err(|e| {
+                    McpServiceError::OrchestratorError(format!(
+                        "Payment-Required header is not valid base64: {e}"
+                    ))
+                })?;
+            let payment_details: serde_json::Value =
+                serde_json::from_slice(&decoded).map_err(|e| {
+                    McpServiceError::OrchestratorError(format!(
+                        "Payment-Required body is not valid JSON: {e}"
+                    ))
+                })?;
+
+            return Ok(serde_json::json!({
+                "status": "payment_required",
+                "instructions": "Pay 5 USDC to the address below, then call generate_video again with your tx_signature (a base64-encoded x402 v2 PaymentPayload).",
+                "payment_details": payment_details,
+            }));
+        }
+
         let body: serde_json::Value = response
             .json()
             .await
             .map_err(|e| McpServiceError::OrchestratorError(format!("invalid response: {e}")))?;
-
-        if status.as_u16() == 402 {
-            // Payment required — return the payment instructions to the agent
-            return Ok(serde_json::json!({
-                "status": "payment_required",
-                "instructions": "Pay 5 USDC to the address below, then call generate_video again with your tx_signature.",
-                "payment_details": body,
-            }));
-        }
 
         if !status.is_success() {
             return Err(McpServiceError::OrchestratorError(format!(
