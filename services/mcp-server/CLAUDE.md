@@ -28,6 +28,36 @@ The 0.1.0 listing description still says "22 tools" — stale. v0.1.2 has the up
 
 ---
 
+## Listing Policy — The Workprotocol Test
+
+**Rule:** A bounty source becomes a `fetch_*` integration in `src/listings/sources.rs` only if we can demonstrate that users acting on its listings can reasonably expect to be paid. Discovery of a platform is necessary but **not sufficient**. Payment provability is the bar.
+
+**Why:** the 2026-04-07 arbitrage survey originally surfaced `workprotocol.ai` as a "verified earning platform" because it had open jobs, structured listings, and real USDC amounts. It later turned out to be vaporware — no completed bounties, no payment evidence, no track record. Listing a vaporware source on swarm.tips would have wasted the time of every agent that tried to claim from it and degraded trust in the aggregator. The cost of one bad listing is much higher than the cost of skipping a marginal one.
+
+**Verification procedure** — apply in order of cost. Stop as soon as you can assign a verdict.
+
+1. **Cheap structural checks.** Pull the platform's bounty/job listing endpoint. Look for: a *completed bounties* archive (not just open ones), a *payment history* endpoint, public *revenue/payments* aggregates, an explicit *escrow contract address*. The presence of any one is positive evidence; the absence of all of them is yellow.
+2. **On-chain verification when applicable.** If the platform exposes a contract address (Layer 3 already extracts these), query the chain for transaction history. Number and total volume of payouts is a strong binary signal: zero historical payouts to external claimants = fail; many = pass.
+3. **Independent payment evidence.** Public daily revenue (Chutes' `/daily_revenue_summary`), Bittensor subnet emissions, on-chain Stripe-equivalent attestations. The platform paying *something* to *someone* is necessary but not sufficient — we specifically need evidence the bounty mechanism itself pays out.
+4. **Negative social signal.** Search GitHub issues + Twitter/X + Reddit for `"{platform} not paying"`, `"{platform} scam"`, `"{platform} ghosted"`. Even one credible negative report should flip to fail.
+5. **LLM synthesis when ambiguous.** Feed the evidence above to the Layer 2 Grok classifier with a payout-verification prompt. Ask for a verdict + reasoning + which evidence was most load-bearing.
+
+**Verdicts:**
+
+- **Pass** — there is concrete, verifiable evidence of bounties being claimed and paid out by external (non-team) participants. Build the `fetch_*` integration.
+- **Fail** — verified scam, abandoned platform, or "active listings but zero payment history". Skip the integration. Document the disposition in a survey doc so we don't re-evaluate the same source under a different name.
+- **Uncertain** — the platform looks real (real revenue, real users) but the *bounty mechanism specifically* lacks verified payouts. Don't list yet. Re-evaluate after specific follow-ups (decode the bounty unit, find a historical paid-out example, read their docs end-to-end). Document in the survey doc as "discovered, did not pass workprotocol test on first probe — needs X".
+
+**When to apply:** before writing any new `fetch_*` source. Also retroactively: if a source we already integrated stops passing the test (parser success rate drops, listings disappear without ever being claimed, social signal turns negative), document the disposition and remove the source.
+
+**Where the verification lives:** for now, in survey docs at `swarm-tips-repo/docs/analysis/`. After 3-5 manual applications the patterns will be clear enough to formalize as a `verify_payout` function in `src/discovery/deep_analysis.rs`. Don't build that abstraction before the patterns exist.
+
+**Reference applications** (chronological):
+- 2026-04-07: workprotocol.ai → **Fail**. See `docs/analysis/2026-04-07-arbitrage-survey.md`.
+- 2026-04-07: Chutes → **Uncertain**. See `docs/analysis/2026-04-07-defillama-discovery-survey.md`.
+
+---
+
 ## Architecture
 
 ```

@@ -128,7 +128,53 @@ What I verified by hitting their public API:
 
 **Why this didn't surface in the description-only triage:** the DefiLlama description ("The Decentralized, Distributed Serverless AI Compute Platform") sounded like infrastructure, not a marketplace. The bounty endpoint, the live revenue numbers, and the self-service API key flow only become obvious once you hit `/openapi.json`. Lesson for future surveys: **always pull the OpenAPI spec when one is exposed.** It's a 30-second probe that can flip a verdict from "infrastructure, skip" to "top candidate".
 
-**Suggested next step**: build a `fetch_chutes_bounties` source for `src/listings/sources.rs` that surfaces live bounties in the swarm.tips listings response. Real jobs, real pay, on-chain settlement. Same shape as `fetch_moltlaunch`.
+**Listing decision (workprotocol test) — UNCERTAIN, do not list yet.** See the next subsection for the full verdict. Chutes is still highly interesting as a *platform candidate* and as a potential consumer-side integration for Shillbot's video pipeline (cheaper inference at `llm.chutes.ai/v1`), but the bounty mechanism specifically does not yet pass the workprotocol test on first probe.
+
+### Workprotocol test — Chutes bounties (first application of the procedure)
+
+This is the first application of the listing policy now documented in `services/mcp-server/CLAUDE.md` § *Listing Policy — The Workprotocol Test*. The procedure is: look for evidence the *bounty mechanism specifically* pays out external claimants, not just that the platform has revenue.
+
+**Step 1 — Cheap structural checks.**
+- ✓ `GET /bounties/` returns 8 active bounties with structured fields (`chute_id`, `bounty_amount`, `seconds_elapsed`, `time_remaining`, `created_at`).
+- ✗ **No completed-bounties archive.** OpenAPI spec exposes `GET /bounties/` and `GET /bounties/{chute_id}/increase` (auth-required, for *funding* a bounty). There is no `/bounties/history`, no `/bounties/{chute_id}/claim`, no record of historical bounty payouts.
+- ✗ **No `/claim` endpoint at all.** The bounty schema is empty (`response schema: {}` in the OpenAPI spec). There is no documented mechanism for a miner to "claim" a bounty as a discrete event.
+- ✗ **`bounty_amount` unit is unknown.** Example values: 23458, 18871. Could be USD cents ($234, $188), micro-TAO (~$7.92, $6.37), rao (~$0.008, $0.006), or compute units (~$1.30, $1.05). Without decoding this, we'd publish wrong USD estimates and the existing `min_reward_usd` filter would misclassify them.
+
+Verdict from step 1: **structural checks are insufficient — strongly suggests bounties are not lump-sum escrow but a price boost to per-invocation pricing**, paid out automatically through the regular invocation pipeline once a miner is hosting. If that's the model, "claiming a bounty" actually means "commit GPU capacity for an indefinite period and hope invocations come in at the boosted price". That's a very different earning shape from Moltlaunch-style claim-and-deliver.
+
+**Step 2 — On-chain verification.**
+- Chutes runs on Bittensor subnet 64. Subnet emissions are visible on-chain via the Bittensor metagraph but **not annotated by chute or by bounty**. We can verify that subnet 64 receives emissions and distributes them to validators/miners, but we cannot verify that *a specific bounty* contributed to *a specific miner's earnings*.
+
+Verdict from step 2: **on-chain evidence is platform-level, not bounty-level.** Insufficient.
+
+**Step 3 — Independent payment evidence.**
+- ✓ `GET /daily_revenue_summary` returns real numbers: $14,518 on 2026-04-07, ~$15K/day average over the past week.
+- ✓ `GET /payments/summary/tao` returns 1,980,246 TAO lifetime (≈$668M at $337.78/TAO if denominations are 1:1, or ~$2M if denominated in micro-TAO — the unit ambiguity here mirrors the bounty_amount question).
+- ✓ 650 paying subscribers signed up on 2026-04-07 alone.
+- ✗ All of this evidence is **subscriber-side**, not miner-side. We can show users pay Chutes; we cannot show that miners paying for bounty fulfillment receive what was advertised in `bounty_amount`.
+
+Verdict from step 3: **the platform pays its subscribers, but that's not what the workprotocol test is asking.** The test is whether someone *acting on a listing* gets paid. Subscriber revenue doesn't answer that.
+
+**Step 4 — Negative social signal.**
+- Did not perform a Twitter/Reddit/GitHub search this round. To do in follow-up: search for `"chutes.ai not paying"`, `"chutes bounty scam"`, `"bittensor subnet 64 miner not earning"`.
+
+Verdict from step 4: **not yet checked.** Defer to follow-up.
+
+**Step 5 — LLM synthesis.**
+- Not invoked. Steps 1-3 already produce enough signal: the bounty mechanism is undocumented, the unit is unknown, and there is zero evidence of any external miner having claimed and been paid for a Chutes bounty.
+
+**Final verdict: UNCERTAIN.** Do not list. Document the disposition. Re-evaluate after specific follow-ups.
+
+**Specific follow-ups required to flip the verdict to Pass or Fail:**
+1. Decode `bounty_amount` units. Probably requires reading Chutes' actual docs site (not just the OpenAPI spec) or asking in their Discord.
+2. Find a historical bounty that was claimed and paid. Could be in a non-exposed admin endpoint, on Twitter, or in a Bittensor subnet 64 explorer.
+3. Confirm the bounty payout mechanism end-to-end: is it a lump sum, a price boost, or something else?
+4. Run step 4 (negative social signal) — Twitter/Reddit/GitHub search for "chutes not paying" patterns.
+5. If steps 1-4 all pass cleanly, the verdict flips to Pass and we build `fetch_chutes_bounties`. If any step fails or is suspicious, verdict flips to Fail and we document why.
+
+**What's still actionable about Chutes despite the Uncertain verdict:**
+- Chutes remains a viable *consumer-side* integration for Shillbot's video pipeline. The OpenAI-compatible inference API at `llm.chutes.ai/v1` is real, the per-token pricing is real, and the savings vs OpenAI are verifiable by direct comparison. This is a *cost reduction* play, not an *earning* play, and it doesn't require the workprotocol test to pass.
+- Chutes' public catalog (`/chutes/?include_public=true`) and revenue endpoints are useful as **market intelligence** for the discovery side of swarm.tips, even if we don't list its bounties. The 542 chutes + their pricing + their invocation counts tell us what AI inference work is in demand and at what rates. Worth surfacing as a separate "platform intelligence" output, distinct from bounty listings.
 
 ### Updated verdicts on the original top-5
 
@@ -168,9 +214,9 @@ The three new Layer 1 sources land in this PR but the per-entry classification s
 
 ## Open follow-ups
 
-- **★ Build `fetch_chutes_bounties` in `src/listings/sources.rs`.** Chutes is the highest-value finding from this whole survey. Bounties are public, paid in TAO, on-chain settlement, ~8 active at any time, no auth needed for the listing. Same shape as `fetch_moltlaunch`. This is the next concrete code change to ship.
-- **★ Pricing experiment for Shillbot's video pipeline.** Compare current per-video inference cost vs running the same prompts through `https://llm.chutes.ai/v1`. If the savings are >30% the migration justifies itself; the consumer-side integration becomes the second Chutes shipment after `fetch_chutes_bounties`.
-- **Decode the Chutes bounty `bounty_amount` units.** The example is `23458` and `18871` with `seconds_elapsed` / `time_remaining` in real seconds — units could be USD cents, TAO satoshis, or something else. Hit `/pricing` and `/fmv` (both public per the OpenAPI spec) to find out.
+- **★ Pricing experiment for Shillbot's video pipeline.** Compare current per-video inference cost vs running the same prompts through `https://llm.chutes.ai/v1`. If the savings are >30% the migration justifies itself. This is the *consumer-side* Chutes integration and doesn't require the workprotocol test to pass — it's a cost reduction, not an earning play.
+- **Verify the Chutes bounty mechanism end-to-end** so the workprotocol verdict can flip from Uncertain to Pass or Fail. Specific subtasks: (1) decode `bounty_amount` units, (2) find a historical paid-out bounty, (3) confirm whether bounties are lump-sum or per-invocation price boosts, (4) run the negative social signal search (Twitter/Reddit/GitHub for "chutes not paying"). If all four come back clean, build `fetch_chutes_bounties`. If any are suspicious, document the Fail and move on.
+- **Probe Replit Bounties** as the next listings source candidate. Apply the same workprotocol test on first probe. Replit has been operating bounties for years, has a public completion track record, and the payment mechanism is fiat escrow — this is the most likely "Pass" verdict in the candidate pool and the biggest single AI-completable catalog gain available.
 - **Probe DefiLlama's own MCP server** via a non-curl path (Claude Desktop, mcp-publisher, or a UA that Cloudflare allows). Their `defillama.com/mcp` returned 403 to my agent but the path exists. If it's a real MCP server, add it to the official registry scan results.
 - **Schedule a recurring DefiLlama scan diff.** This survey is a snapshot; the actionable signal is the *delta* from one scan to the next. Once Google Workflows runs the listings refresh on schedule, write a small diff query: protocols in this scan that weren't in the previous = "new agent platforms launched this period".
 - **Add a freshness flag to Layer 1.** 3 of 5 ranked candidates (MyShell, Xeleb, partial Virtuals) had pivoted away from their DefiLlama descriptions. Flag any DefiLlama entry that hasn't been updated in 60+ days so the LLM classifier knows to discount the description.
