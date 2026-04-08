@@ -96,8 +96,18 @@ impl OrchestratorProxy {
             "orchestrator base_url must not be empty"
         );
 
+        // 60s timeout: most orchestrator endpoints respond in <500ms, but
+        // /shorts/create-crypto runs a Grok prompt expansion + Workflows
+        // kickoff inside the request handler that legitimately takes
+        // 10-15s. The previous 10s cap caused reqwest to drop the
+        // connection mid-handler, axum cancelled the in-flight handler at
+        // the next await, and a paid x402 session was stranded in
+        // Firestore with status=Generating but no actual workflow ever
+        // triggered. 60s is generous enough for any orchestrator endpoint
+        // we currently call without adding meaningful latency to the fast
+        // paths (tasks list / claim / earnings — all <500ms).
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap_or_default();
 
