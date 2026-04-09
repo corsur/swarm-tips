@@ -71,6 +71,18 @@ pub struct TransactionResponse {
     pub task_pda: Option<String>,
 }
 
+/// Verification data needed to build a bundled crank+verify transaction.
+/// Mirrors `shillbot-orchestrator::models::task::VerificationDataResponse`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VerificationDataResponse {
+    pub task_id: String,
+    pub task_pda: String,
+    pub composite_score: u64,
+    pub verification_hash: String,
+    pub global_state: String,
+    pub switchboard_feed: String,
+}
+
 /// Action discriminator for `POST /tasks/:id/confirm`. Mirrors
 /// `shillbot-orchestrator::models::task::ConfirmAction` — must serialize as
 /// snake_case to match the orchestrator's `#[serde(rename_all = "snake_case")]`.
@@ -364,11 +376,11 @@ impl OrchestratorProxy {
     /// Request the orchestrator build an unsigned `verify_task` Solana
     /// transaction. Bundles the Switchboard feed read + composite score
     /// into the on-chain verify instruction. The agent signs and submits.
-    pub async fn build_verify(
+    pub async fn get_verification_data(
         &self,
         task_id: &str,
         wallet_pubkey: &str,
-    ) -> Result<TransactionResponse, McpServiceError> {
+    ) -> Result<VerificationDataResponse, McpServiceError> {
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
                 "task_id must not be empty".to_string(),
@@ -383,7 +395,7 @@ impl OrchestratorProxy {
             .send()
             .await
             .map_err(|e| {
-                tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator build-verify failed");
+                tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator verification-data failed");
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
@@ -396,7 +408,7 @@ impl OrchestratorProxy {
         }
 
         response.json().await.map_err(|e| {
-            McpServiceError::OrchestratorError(format!("invalid build-verify response: {e}"))
+            McpServiceError::OrchestratorError(format!("invalid verification-data response: {e}"))
         })
     }
 

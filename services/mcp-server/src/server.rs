@@ -336,18 +336,66 @@ impl SwarmTipsMcp {
             .await
             .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
 
-        let response = self
+        // Get verification data from orchestrator
+        let vdata = self
             .state
             .orchestrator
-            .build_verify(&args.task_id, &wallet_pubkey)
+            .get_verification_data(&args.task_id, &wallet_pubkey)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
+        // Spawn build-verify-tx.ts to build the bundled crank+verify unsigned tx
+        let rpc_url = &self.state.solana_rpc_url;
+        let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts")
+            .join("build-verify-tx.ts");
+
+        let output = tokio::process::Command::new("npx")
+            .arg("tsx")
+            .arg(&script_path)
+            .arg("--task-id")
+            .arg(&args.task_id)
+            .arg("--payer")
+            .arg(&wallet_pubkey)
+            .arg("--score")
+            .arg(vdata.composite_score.to_string())
+            .arg("--hash")
+            .arg(&vdata.verification_hash)
+            .arg("--task-pda")
+            .arg(&vdata.task_pda)
+            .arg("--feed")
+            .arg(&vdata.switchboard_feed)
+            .arg("--global-state")
+            .arg(&vdata.global_state)
+            .arg("--rpc")
+            .arg(rpc_url)
+            .output()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, "failed to spawn build-verify-tx.ts");
+                McpError::internal_error(format!("failed to spawn build-verify-tx: {e}"), None)
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!(service = "mcp-server", stderr = %stderr, "build-verify-tx.ts failed");
+            return Err(McpError::internal_error(format!(
+                "build-verify-tx failed: {stderr}"
+            ), None));
+        }
+
+        let unsigned_tx = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if unsigned_tx.is_empty() {
+            return Err(McpError::internal_error(
+                "build-verify-tx produced empty output".to_string(), None,
+            ));
+        }
+
         let result = serde_json::json!({
             "action": "verify",
-            "task_id": response.task_id,
-            "unsigned_tx": response.transaction,
-            "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"verify\". The Switchboard feed must be cranked before or alongside this tx.",
+            "task_id": vdata.task_id,
+            "unsigned_tx": unsigned_tx,
+            "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"verify\".",
         });
         Ok(text_result(&result))
     }
