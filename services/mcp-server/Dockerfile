@@ -25,6 +25,7 @@ COPY services/mcp-server/scripts /home/appuser/scripts
 RUN cd /home/appuser && npm install --omit=dev --legacy-peer-deps \
     && chown -R appuser:appuser /home/appuser
 ENV BUILD_VERIFY_SCRIPT=/home/appuser/scripts/build-verify-tx.ts
+ENV NODE_PATH=/home/appuser/node_modules
 USER appuser
 WORKDIR /home/appuser
 EXPOSE 8080
