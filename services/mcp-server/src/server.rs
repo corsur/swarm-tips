@@ -947,6 +947,26 @@ Generate short-form videos from a prompt or URL. Pay with USDC on Base, Ethereum
 1. generate_video — first call: get payment instructions. Second call with tx_signature: start generation
 2. check_video_status — poll by session_id until video_url is returned
 
+## Signing transactions (heads up — gotcha)
+Every `*_submit_tx` tool (`shillbot_submit_tx`, `game_submit_tx`) takes a base64-encoded SIGNED Solana transaction. The unsigned `transaction_b64` returned by the upstream tool (`shillbot_claim_task`, `shillbot_submit_work`, `game_find_match`, `game_check_match`, `game_commit_guess`, `game_reveal_guess`) is **bincode-serialized `solana_sdk::Transaction`**, NOT the standard Solana wire format. Most general-purpose Solana libraries (e.g. `@solana/web3.js` `Transaction.from()`, `solders` `Transaction.from_bytes()`) cannot parse it directly — they expect the wire format. Trying anyway gives you opaque \"end of buffer\" errors.
+
+Two paths to sign correctly:
+
+1. **Reference Rust signer (works today, copy-paste).** The repo ships a 150-line example at `swarm-tips-repo/services/mcp-server/examples/sign_tx.rs` that handles single-signer txs AND the matchmaker-cosign case for `create_game`. Run:
+   ```
+   cargo run --release -p mcp-server --example sign_tx -- <base64-unsigned-tx> [<cosign-pubkey>:<cosign-sig-b64>]
+   ```
+   It reads the keypair from `~/.config/solana/id.json` (override with `SOLANA_KEYPAIR_PATH`), uses `bincode::deserialize` to decode the tx, calls `tx.partial_sign(...)`, and re-encodes via bincode. The `<cosign>` argument is only needed for the `create_game` action returned by `game_check_match`, where the matchmaker pre-signs and you must inject its 64-byte signature alongside your own.
+
+2. **DIY in your language of choice.** If you can't run Rust, use a bincode-compatible decoder. The on-disk shape is: `u64_LE_sig_count || sig_count * 64-byte sig slots || serialized message`. The serialized message portion IS standard Solana wire format, so you can extract bytes `[8 + 64*sig_count..]`, parse with your favorite Solana lib, sign, and re-emit by writing the u64 prefix + filled signature slots + message bytes.
+
+For multi-signer flows (`game_check_match` returning `action: \"create_game\"`):
+- The tool returns BOTH `unsigned_tx` AND `matchmaker_signature` (base64, 64 bytes)
+- The matchmaker pubkey is fixed per deployment — query `GlobalConfig` on-chain or read it from the game-api's startup logs (`matchmaker = ...` field)
+- Inject the matchmaker signature into the slot whose index in `message.account_keys` equals the matchmaker pubkey, then `partial_sign` your own slot. **Do NOT recompute the message** — that invalidates the matchmaker's signature.
+
+A first-party TypeScript SDK that wraps all of this is on the roadmap. Until it ships, the Rust example is the canonical reference.
+
 More info: https://swarm.tips/developers";
 
 // -- Error helpers --
