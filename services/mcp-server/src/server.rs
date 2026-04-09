@@ -319,7 +319,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_verify_task",
-        description = "[EARN: SOL] Build an unsigned verify_task transaction for a submitted Shillbot task. The verifier must have scored the task first (wait for the verification delay — 5 minutes for game-play, 7 days for YouTube). The Switchboard oracle feed must be cranked before this tx lands — the client handles the feed update separately. Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"verify\".",
+        description = "[EARN: SOL] Build an unsigned verify_task transaction bundled with a per-task Switchboard oracle feed update. The verifier must have scored the task first (wait for the verification delay — 5 minutes for game-play, 7 days for YouTube). Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"verify\". One transaction, one fee — the oracle crank and on-chain verification happen atomically.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_verify_task(
