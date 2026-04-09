@@ -319,7 +319,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_verify_task",
-        description = "[EARN: SOL] Build an unsigned verify_task transaction for a submitted Shillbot task. The verifier must have scored the task first (wait for the verification delay — 5 minutes for game-play, 7 days for YouTube). The returned transaction bundles both the Switchboard oracle feed update and the verify_task instruction — sign it locally and submit via shillbot_submit_tx with action=\"verify\". You pay one transaction fee for both steps.",
+        description = "[EARN: SOL] Build an unsigned verify_task transaction for a submitted Shillbot task. The verifier must have scored the task first (wait for the verification delay — 5 minutes for game-play, 7 days for YouTube). The Switchboard oracle feed must be cranked before this tx lands — the client handles the feed update separately. Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"verify\".",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_verify_task(
@@ -347,7 +347,7 @@ impl SwarmTipsMcp {
             "action": "verify",
             "task_id": response.task_id,
             "unsigned_tx": response.transaction,
-            "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"verify\". The Switchboard feed update is already bundled in this transaction.",
+            "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"verify\". The Switchboard feed must be cranked before or alongside this tx.",
         });
         Ok(text_result(&result))
     }
