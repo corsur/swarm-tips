@@ -50,20 +50,27 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    let gcp_project_id = load_env_or("GCP_PROJECT_ID", "coordination-game-prod");
     let orchestrator_url = load_env_or("ORCHESTRATOR_URL", "http://shillbot-orchestrator:8080");
     let game_api_url = load_env_or("GAME_API_URL", "http://game-api:8080");
-    // Prefer Helius over public devnet endpoint for reliability + rate limits.
-    // ConfigMap should set SOLANA_RPC_URL; falls back to public devnet only for local dev.
-    let solana_rpc_url = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
-    if solana_rpc_url.contains("api.devnet.solana.com")
-        || solana_rpc_url.contains("api.mainnet-beta.solana.com")
-    {
-        tracing::warn!(
-            service = "mcp-server",
-            rpc_url = %solana_rpc_url,
-            "using public Solana RPC — set SOLANA_RPC_URL to Helius for production reliability"
-        );
-    }
+    // Prefer Secret Manager for the RPC URL (cross-repo standard: direct Secret
+    // Manager reads for runtime secrets, never K8s Secrets as a bridge). Falls
+    // back to SOLANA_RPC_URL env var for local dev, then to public devnet.
+    let network = load_env_or("SOLANA_NETWORK", "mainnet");
+    let rpc_secret = format!("solana-rpc-url-{network}");
+    let solana_rpc_url =
+        if let Some(url) = config::load_optional_secret(&gcp_project_id, &rpc_secret).await {
+            tracing::info!(service = "mcp-server", network = %network, "loaded Solana RPC URL from Secret Manager");
+            url
+        } else {
+            let fallback = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
+            tracing::warn!(
+                service = "mcp-server",
+                rpc_url = %fallback,
+                "solana-rpc-url not in Secret Manager — falling back to env/devnet"
+            );
+            fallback
+        };
     let host = load_env_or("HOST", DEFAULT_HOST);
     let port: u16 = load_env_or("PORT", &DEFAULT_PORT.to_string())
         .parse()
@@ -77,8 +84,6 @@ async fn main() -> anyhow::Result<()> {
         port = %port,
         "starting MCP server"
     );
-
-    let gcp_project_id = load_env_or("GCP_PROJECT_ID", "coordination-game-prod");
 
     let challenge_manager = ChallengeManager::new();
 

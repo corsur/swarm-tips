@@ -31,14 +31,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: swarm-tips-config
-            - secretRef:
-                name: solana-rpc-secret
-                optional: true
-          # NOTE: sensitive runtime values (xai-api-key, etc.) come from GCP
-          # Secret Manager DIRECTLY via gcloud-sdk at startup — see
-          # src/config.rs::load_optional_secret. No K8s Secret bridge. The
-          # `solana-rpc-secret` envFrom above is a legacy pre-existing gap
-          # tracked for migration; do NOT add new secretRefs of that shape.
+          # Runtime secrets (xai-api-key, solana-rpc-url-{network}) come from
+          # GCP Secret Manager DIRECTLY via gcloud-sdk at startup — see
+          # src/config.rs::load_optional_secret. No K8s Secret bridge.
           # See `swarm/CLAUDE.md` "Three secret categories, three homes".
           resources:
             requests:

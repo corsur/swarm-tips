@@ -206,7 +206,7 @@ mcp-server-specific notes:
 
 - **`src/config.rs::load_optional_secret`** is the reusable helper (copied verbatim from `backend/x-bridge/src/config.rs`). For secrets whose absence should crash-loop the pod, add a sibling `load_secret` that panics on failure — match `backend/chatwoot-responder/src/config.rs::load_secret`.
 - **`xai-api-key`** is loaded via `load_optional_secret` at mcp-server startup. If Secret Manager access fails or the secret doesn't exist, mcp-server logs a `warn!` and boots with Layer 2 disabled. Layer 1 + Layer 3 continue to work. `POST /internal/mcp/llm-classify` returns 503.
-- **Legacy gap:** the deployment manifest still has `envFrom.secretRef.name: solana-rpc-secret` (optional). That's a pre-existing K8s Secret bridge that should be migrated to direct Secret Manager reads using the same pattern. Don't add new secretRefs of that shape — migrate when touching game-related code.
+- **Legacy gap: CLOSED (2026-04-09).** The `solana-rpc-secret` K8s Secret bridge has been migrated to `config::load_optional_secret(&gcp_project_id, "solana-rpc-url-{network}")`. The `secretRef` has been removed from the deployment manifest. All runtime secrets now come from GCP Secret Manager directly.
 - **What you must NOT add:** any env-var-based API key read (`std::env::var("FOO_API_KEY")` for sensitive values), any new `secretRef` in the deployment manifest, any hardcoded secret in Rust source.
 
 ---
