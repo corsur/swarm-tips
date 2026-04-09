@@ -22,7 +22,7 @@ COPY --from=test /app/target/release/mcp-server /usr/local/bin/mcp-server
 # Install TS script dependencies with npm (flat node_modules for tsx compatibility)
 COPY package.json /home/appuser/
 COPY services/mcp-server/scripts /home/appuser/scripts
-RUN cd /home/appuser && npm install --omit=dev \
+RUN cd /home/appuser && npm install --omit=dev --legacy-peer-deps \
     && chown -R appuser:appuser /home/appuser
 ENV BUILD_VERIFY_SCRIPT=/home/appuser/scripts/build-verify-tx.ts
 USER appuser
