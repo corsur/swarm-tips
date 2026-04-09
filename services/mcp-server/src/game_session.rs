@@ -1094,6 +1094,16 @@ impl GameSessionManager {
             .build_create_game(tournament_id, stake, matchup_commitment, &matchmaker)
             .await?;
 
+        // DEBUG: print byte lengths to track down a 6-byte truncation in the
+        // deployed binary's create_game tx output (vs locally-built ~546 bytes).
+        tracing::info!(
+            wallet = %wallet,
+            transaction_b64_len = unsigned.transaction_b64.len(),
+            message_len = unsigned.message.len(),
+            num_signers = unsigned.num_signers,
+            "DEBUG create_game tx sizes"
+        );
+
         // Get matchmaker cosignature from game-api.
         use base64::Engine;
         let msg_b64 = base64::engine::general_purpose::STANDARD.encode(&unsigned.message);
