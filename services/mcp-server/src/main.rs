@@ -58,19 +58,20 @@ async fn main() -> anyhow::Result<()> {
     // back to SOLANA_RPC_URL env var for local dev, then to public devnet.
     let network = load_env_or("SOLANA_NETWORK", "mainnet");
     let rpc_secret = format!("solana-rpc-url-{network}");
-    let solana_rpc_url =
-        if let Some(url) = config::load_optional_secret(&gcp_project_id, &rpc_secret).await {
-            tracing::info!(service = "mcp-server", network = %network, "loaded Solana RPC URL from Secret Manager");
-            url
-        } else {
-            let fallback = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
-            tracing::warn!(
-                service = "mcp-server",
-                rpc_url = %fallback,
-                "solana-rpc-url not in Secret Manager — falling back to env/devnet"
-            );
-            fallback
-        };
+    let solana_rpc_url = if let Some(url) =
+        config::load_optional_secret(&gcp_project_id, &rpc_secret).await
+    {
+        tracing::info!(service = "mcp-server", network = %network, "loaded Solana RPC URL from Secret Manager");
+        url
+    } else {
+        let fallback = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
+        tracing::warn!(
+            service = "mcp-server",
+            rpc_url = %fallback,
+            "solana-rpc-url not in Secret Manager — falling back to env/devnet"
+        );
+        fallback
+    };
     let host = load_env_or("HOST", DEFAULT_HOST);
     let port: u16 = load_env_or("PORT", &DEFAULT_PORT.to_string())
         .parse()
