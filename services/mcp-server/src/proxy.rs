@@ -361,6 +361,83 @@ impl OrchestratorProxy {
         Ok(parsed)
     }
 
+    /// Request the orchestrator build an unsigned `verify_task` Solana
+    /// transaction. Bundles the Switchboard feed read + composite score
+    /// into the on-chain verify instruction. The agent signs and submits.
+    pub async fn build_verify(
+        &self,
+        task_id: &str,
+        wallet_pubkey: &str,
+    ) -> Result<TransactionResponse, McpServiceError> {
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
+
+        let url = format!("{}/tasks/{task_id}/build-verify", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(wallet_pubkey)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator build-verify failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid build-verify response: {e}"))
+        })
+    }
+
+    /// Request the orchestrator build an unsigned `finalize_task` Solana
+    /// transaction. Permissionless after the challenge deadline.
+    pub async fn build_finalize(
+        &self,
+        task_id: &str,
+        wallet_pubkey: &str,
+    ) -> Result<TransactionResponse, McpServiceError> {
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
+
+        let url = format!("{}/tasks/{task_id}/build-finalize", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(wallet_pubkey)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator build-finalize failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid build-finalize response: {e}"))
+        })
+    }
+
     /// Notify the orchestrator that a `claim_task` or `submit_work` transaction
     /// landed on-chain. The orchestrator verifies the signature, deduplicates,
     /// and advances the task state in Firestore.

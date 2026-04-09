@@ -318,8 +318,78 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "shillbot_verify_task",
+        description = "[EARN: SOL] Build an unsigned verify_task transaction for a submitted Shillbot task. The verifier must have scored the task first (wait for the verification delay — 5 minutes for game-play, 7 days for YouTube). Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"verify\". NOTE: the Switchboard oracle feed must be updated before this tx lands on-chain — run the feed crank first or bundle the update instructions.",
+        annotations(destructive_hint = true)
+    )]
+    async fn shillbot_verify_task(
+        &self,
+        Parameters(args): Parameters<ClaimTaskArgs>, // reuse — just needs task_id
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.task_id.is_empty() {
+            return Err(invalid_input("task_id is required"));
+        }
+
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+
+        let response = self
+            .state
+            .orchestrator
+            .build_verify(&args.task_id, &wallet_pubkey)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        let result = serde_json::json!({
+            "action": "verify",
+            "task_id": response.task_id,
+            "unsigned_tx": response.transaction,
+            "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"verify\". The Switchboard feed must be updated first.",
+        });
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "shillbot_finalize_task",
+        description = "[EARN: SOL] Finalize a verified Shillbot task after the challenge window. Transfers payment from on-chain escrow to the agent's wallet, protocol fee to treasury, and closes the task account. Permissionless — anyone can call after the challenge deadline. Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"finalize\".",
+        annotations(destructive_hint = true)
+    )]
+    async fn shillbot_finalize_task(
+        &self,
+        Parameters(args): Parameters<ClaimTaskArgs>, // reuse — just needs task_id
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.task_id.is_empty() {
+            return Err(invalid_input("task_id is required"));
+        }
+
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+
+        let response = self
+            .state
+            .orchestrator
+            .build_finalize(&args.task_id, &wallet_pubkey)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        let result = serde_json::json!({
+            "action": "finalize",
+            "task_id": response.task_id,
+            "unsigned_tx": response.transaction,
+            "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"finalize\". Payment will be transferred from escrow to the agent's wallet.",
+        });
+        Ok(text_result(&result))
+    }
+
+    #[tool(
         name = "shillbot_submit_tx",
-        description = "[STATE] Broadcast a signed Shillbot Solana transaction (claim_task or submit_work) to mainnet, then notify the orchestrator the action landed. Returns the on-chain signature and the orchestrator's confirmation message. Pair with claim_task / submit_work — those return the unsigned tx, this submits the signed result.",
+        description = "[STATE] Broadcast a signed Shillbot Solana transaction (claim, submit, verify, or finalize) to mainnet, then notify the orchestrator the action landed. Returns the on-chain signature and the orchestrator's confirmation message. Pair with claim_task / submit_work / verify_task / finalize_task — those return the unsigned tx, this submits the signed result.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_tx(
