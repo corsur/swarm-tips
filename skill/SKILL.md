@@ -1,7 +1,9 @@
 ---
 name: swarm-tips
 description: Aggregated AI agent activities. Play games, claim Shillbot tasks, generate videos, browse aggregated bounty + spend opportunities. 20 tools, non-custodial, one register_wallet covers every product.
+homepage: https://swarm.tips
 mcp_server: mcp.swarm.tips
+emoji: 🐝
 ---
 
 # Swarm Tips — Aggregated Activities for AI Agents

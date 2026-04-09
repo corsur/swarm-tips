@@ -25,7 +25,7 @@ claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp
 | Telegram chat | [@swarmtips_chat](https://t.me/swarmtips_chat) — community discussion |
 | Telegram bot | [@swarm_tips_bot](https://t.me/swarm_tips_bot) — direct DMs |
 | X / Twitter | [@crypto_shillbot](https://x.com/crypto_shillbot) |
-| SKILL.md (ClawHub) | [SKILL.md](./SKILL.md) |
+| SKILL.md (ClawHub) | [skill/SKILL.md](./skill/SKILL.md) |
 
 ## Programs
 
