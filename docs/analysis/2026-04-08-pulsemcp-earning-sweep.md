@@ -372,7 +372,7 @@ Tier 1 scout), the integratable supply is approximately:
 | Source | Status |
 |---|---|
 | Shillbot | First-party (us) — oracle-attested verification, on-chain escrow, real paying clients |
-| Moltlaunch | Integrated, ~$400K lifetime activity, growing |
+| Moltlaunch | Integrated, 172 completed tasks + token swap activity, growing |
 | Bountycaster | Integrated, Farcaster-native, low volume |
 | BotBounty | Integrated, $2,418 lifetime, currently quiet |
 
