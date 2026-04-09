@@ -79,6 +79,8 @@ pub struct TransactionResponse {
 pub enum ConfirmAction {
     Claim,
     Submit,
+    Verify,
+    Finalize,
 }
 
 /// Mirrors `shillbot-orchestrator::models::task::ConfirmTaskResponse`.

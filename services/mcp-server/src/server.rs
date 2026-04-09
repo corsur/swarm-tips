@@ -336,9 +336,11 @@ impl SwarmTipsMcp {
         let action = match args.action.as_str() {
             "claim" => crate::proxy::ConfirmAction::Claim,
             "submit" => crate::proxy::ConfirmAction::Submit,
+            "verify" => crate::proxy::ConfirmAction::Verify,
+            "finalize" => crate::proxy::ConfirmAction::Finalize,
             other => {
                 return Err(invalid_input(&format!(
-                    "action must be \"claim\" or \"submit\", got {other:?}"
+                    "action must be \"claim\", \"submit\", \"verify\", or \"finalize\", got {other:?}"
                 )));
             }
         };
