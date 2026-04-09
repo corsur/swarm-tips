@@ -20,7 +20,7 @@ The 0.1.0 listing description still says "22 tools" but it's unrelated to the ne
 
 **Auth tokens** are stored in `services/mcp-server/.mcpregistry_github_token` and `.mcpregistry_registry_token` (gitignored). Both expire periodically.
 
-**Other directories:** Not yet submitted to mcp.so, PulseMCP, Glama, or ClawHub. SKILL.md (at repo root) is ready for ClawHub submission.
+**Other directories:** ClawHub publishing flow lives at `https://clawhub.ai/publish-skill` — manual form submission, takes a URL (can be the GitHub raw URL of `swarm-tips-repo/SKILL.md` or the swarm.tips homepage). Re-submit any time the underlying tool surface or product framing changes meaningfully (rename, removal, addition of a vertical). PulseMCP auto-pulls from the official MCP registry daily; no submission needed once the registry has the new version. Not yet submitted to mcp.so or Glama.
 
 **Discovery sources (read-side):** `src/discovery/sources.rs` pulls from four upstream catalogs: the official MCP registry, `wong2/awesome-mcp-servers`, `appcypher/awesome-mcp-servers`, and `tolkonepiu/best-of-mcp-servers`. All four run in parallel inside `refresh_discovery` with per-source error degradation. PulseMCP is gated on credentials (email `api@pulsemcp.com`); Smithery requires API surface verification before integration. The first DefiLlama meta-discovery scan landed 2026-04-07 — see `docs/analysis/2026-04-07-defillama-discovery-survey.md` for findings and `src/listings/sources.rs::fetch_defillama_ai_agents` for the source.
 
@@ -75,6 +75,19 @@ The 0.1.0 listing description still says "22 tools" but it's unrelated to the ne
 - **Per-source CRUD MCP tools** are reserved for two cases: (1) first-party verticals we own end-to-end (Coordination Game, Shillbot, video generation), or (2) external platforms with verifiable on-chain enforceable escrow that mathematically guarantees payout independent of the platform's good behavior. We have zero examples of case (2) today; the first such integration is a future plan. **Centralized full-CRUD proxies are banned** — they're fundamentally fragile (the platform can break, change schemas, pivot, or shut down) and we can't independently verify pay-out.
 
 **Why this matters:** before 2026-04-08 we proxied ClawTasks and BotBounty as full CRUD MCP tools. ClawTasks's API broke (returned HTTP 500 on every endpoint) and we caught it in real time during the audit, exposing the structural fragility. The unified-tools-with-redirect pattern eliminates that failure mode for the discovery surface and reserves the deeper engineering effort for cases where it actually pays off.
+
+**Architectural symmetry — frontend and MCP read from the same source.** Both surfaces consume the same Firestore-cached aggregation:
+
+- The MCP tool `list_earning_opportunities` calls `get_listings(&self.state.listings)` in `services/mcp-server/src/server.rs`.
+- The HTTP endpoint `GET /internal/listings` calls the same `get_listings` function via `listings::listings_handler` in `services/mcp-server/src/main.rs`.
+- The swarm.tips frontend at `coordination-app/frontend/swarm-tips/src/lib/fetch-bounties.ts:29-54` fetches from `https://mcp.swarm.tips/internal/listings` directly. No Firebase client, no separate backend, no per-source pages — single source of truth.
+- Both surfaces share the same 5-minute cache TTL on `ListingsState`.
+
+The symmetry on the spending side was added 2026-04-08 in the same commit as this doc update: `get_spending_opportunities` in `services/mcp-server/src/listings/spending.rs` mirrors `get_listings` (parallel `tokio::join!` aggregation, per-source health logging, dedupe). v1 has only `fetch_first_party_spending` as the source, but the structural slot is in place for external spend sources (Chutes inference, x402-paywalled directories, Replicate, Hugging Face Spaces with paid tier) to land as new `fetch_*_spending` functions.
+
+**The "no version bump for new sources" rule.** Adding a new bounty source means writing a `fetch_*` function in `listings/sources.rs` and wiring it into the parallel `tokio::join!` in `get_listings`. Adding a new spend source means writing a `fetch_*_spending` function in `listings/spending.rs` and wiring it into the `tokio::join!` in `get_spending_opportunities`. **Do not bump `server.json` version** — the MCP tool surface is unchanged, only the data behind the existing tools grows. The version field only matters at `mcp-publisher publish` time when the tool inventory itself changes (per the `feedback_dont_bump_server_json_preemptively` memory). Both the frontend and the MCP tool pick up new sources automatically within ~5 minutes of the next refresh.
+
+This is the architectural payoff of the unified-list-tools strategic shift: new protocols become entries in the existing surfaces, not new MCP tools. The DAO (or BDFL today) can add opportunities by integrating new `fetch_*` sources without coordinating an MCP server release.
 
 ---
 

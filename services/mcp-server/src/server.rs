@@ -2,7 +2,7 @@ use crate::auth::ChallengeManager;
 use crate::errors::McpServiceError;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
-use crate::listings::spending::{first_party_spending_opportunities, SpendingOpportunity};
+use crate::listings::spending::{get_spending_opportunities, SpendingOpportunity};
 use crate::listings::{get_listings, ListingsState};
 use crate::proxy::OrchestratorProxy;
 use crate::session_binding::McpSessionBinding;
@@ -533,7 +533,8 @@ impl SwarmTipsMcp {
         &self,
         Parameters(args): Parameters<ListSpendingOpportunitiesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let mut opportunities: Vec<SpendingOpportunity> = first_party_spending_opportunities();
+        let mut opportunities: Vec<SpendingOpportunity> =
+            get_spending_opportunities(&self.state.rpc_client).await;
 
         if let Some(category_filter) = args.category.as_deref() {
             let needle = category_filter.to_lowercase();
