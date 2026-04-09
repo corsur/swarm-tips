@@ -379,15 +379,17 @@ impl SwarmTipsMcp {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::error!(service = "mcp-server", stderr = %stderr, "build-verify-tx.ts failed");
-            return Err(McpError::internal_error(format!(
-                "build-verify-tx failed: {stderr}"
-            ), None));
+            return Err(McpError::internal_error(
+                format!("build-verify-tx failed: {stderr}"),
+                None,
+            ));
         }
 
         let unsigned_tx = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if unsigned_tx.is_empty() {
             return Err(McpError::internal_error(
-                "build-verify-tx produced empty output".to_string(), None,
+                "build-verify-tx produced empty output".to_string(),
+                None,
             ));
         }
 
