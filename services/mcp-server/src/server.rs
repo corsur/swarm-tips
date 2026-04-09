@@ -346,9 +346,14 @@ impl SwarmTipsMcp {
 
         // Spawn build-verify-tx.ts to build the bundled crank+verify unsigned tx
         let rpc_url = &self.state.solana_rpc_url;
-        let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("scripts")
-            .join("build-verify-tx.ts");
+        // In Docker: scripts live at ~/scripts/. Locally: next to Cargo.toml.
+        let script_path = std::env::var("BUILD_VERIFY_SCRIPT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("scripts")
+                    .join("build-verify-tx.ts")
+            });
 
         let output = tokio::process::Command::new("npx")
             .arg("tsx")
