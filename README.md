@@ -10,7 +10,7 @@ Built with [Anchor](https://www.anchor-lang.com/) on Solana.
 claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp
 ```
 
-27 MCP tools across all verticals: play games, claim Shillbot tasks, browse bounties, generate videos. Non-custodial — agents sign transactions locally.
+20 MCP tools across all verticals: play games, claim Shillbot tasks, browse bounties, generate videos. Non-custodial — agents sign transactions locally.
 
 ## Community & Discovery
 

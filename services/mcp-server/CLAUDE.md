@@ -11,12 +11,12 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 20 tools live: Coordinatio
 | Field | Value |
 |-------|-------|
 | Name | `io.github.corsur/swarm-tips` |
-| Published version | **0.1.0** (2026-04-04) |
-| Local `server.json` version | **0.1.1** (pending re-publish) |
+| Published version | **0.1.3** (2026-04-08) |
+| Local `server.json` version | **0.1.3** |
 | Status | active |
 | Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
 
-The 0.1.0 listing description still says "22 tools" but it's unrelated to the new 22-tool count from the 2026-04-08 strategic shift — it's stale and was meant to be updated to "28 tools". v0.1.2 ships with the new description ("22 tools across 3 mainnet protocols plus universal opportunity discovery. Non-custodial.") reflecting the post-shift state. To re-publish: run `mcp-publisher publish` from `services/mcp-server/` (the OAuth tokens were refreshed on 2026-04-07; if they expire again, run `mcp-publisher login github` first for the interactive browser flow).
+v0.1.3 was published on 2026-04-08 with the 20-tool description ("20 tools: play games, claim Shillbot tasks, generate videos, browse bounties. Non-custodial."). To re-publish after future tool-surface changes: run `mcp-publisher publish` from `services/mcp-server/` (if OAuth tokens expire, run `mcp-publisher login github` first for the interactive browser flow).
 
 **Auth tokens** are stored in `services/mcp-server/.mcpregistry_github_token` and `.mcpregistry_registry_token` (gitignored). Both expire periodically.
 
@@ -57,6 +57,16 @@ The 0.1.0 listing description still says "22 tools" but it's unrelated to the ne
 - 2026-04-07: Chutes → **Uncertain**. See `docs/analysis/2026-04-07-defillama-discovery-survey.md`.
 - 2026-04-08: ClawTasks → **Removed** (broken API + pattern mismatch). See `docs/analysis/2026-04-08-unified-list-tools-strategic-shift.md`.
 - 2026-04-08: BotBounty MCP tools → **Removed**, `fetch_botbounty` listing source kept. Same doc.
+- 2026-04-08: Moltlaunch (retroactive) → **Pass**. 172 completed tasks, ~196 ETH lifetime earnings across 43 active agents. Initial false-fail was a misread of the gigs endpoint schema (offers vs. escrows). See `docs/analysis/2026-04-08-pulsemcp-earning-sweep.md`.
+- 2026-04-08: BotBounty (retroactive) → **Pass**. 42 completed bounties, $2,418 lifetime via `/api/stats`. Currently quiet (0 open bounties) but real.
+- 2026-04-08: Algora → **Fail** (Stripe Connect fiat rail — agents can't claim).
+- 2026-04-08: ArcAgent → **Fail** (Stripe Escrow fiat rail).
+- 2026-04-08: DirectPing Escrow → **Fail** (Base Sepolia testnet, dormant production).
+- 2026-04-08: nullpath → **Uncertain** (Early Access, $0 volume — defer 30 days, re-check 2026-05-08).
+- 2026-04-08: Gitcoin Bounties → **Dead** (product discontinued, URL redirects to homepage).
+- 2026-04-08: OnlyDust → **Dead** (company shut down — explicit closure notice on app.onlydust.com).
+- 2026-04-08: Layer3 → **Pivoted** (no public quest API, wallet-gated only).
+- 2026-04-08: PulseMCP exhaustive sweep (466 servers, 53 queries) → 0 new earning sources for integration. See `docs/analysis/2026-04-08-pulsemcp-earning-sweep.md`.
 
 ---
 
@@ -142,7 +152,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `generate_video` — create short-form video from prompt/URL (two-step: first call returns payment instructions including `payment_details: {chain, address, amount, memo}`, second call with `tx_signature` triggers generation)
 - `check_video_status` — poll by session_id until video_url is returned (read-only)
 
-### Removed 2026-04-08
+### Removed 2026-04-08 (net change: 28 → 20 = −10 removed + 2 added)
 - `clawtasks_*` (4 tools): API was returning HTTP 500, didn't fit the unified-tools strategic shift. See `docs/analysis/2026-04-08-unified-list-tools-strategic-shift.md`.
 - `botbounty_*` (4 tools): MCP CRUD proxy retired, `fetch_botbounty` listing source kept (entries still appear in `list_earning_opportunities`).
 - `game_info` (1 tool): the `GAME_INFO_JSON` content (rules, stake, how_to_play, rules_for_agents) was duplicated by the `INSTRUCTIONS` field served in the MCP `initialize` response. Content was merged into `INSTRUCTIONS` and the tool was removed. See `docs/analysis/2026-04-08-round-2-polish-survey.md`.
@@ -157,7 +167,7 @@ Shillbot session keys: `claim_task` + `submit_work` only (on-chain bitmask 0x01 
 Game session keys: game-api JWT auth (off-chain, 24h expiry)
 
 The MCP server is fully non-custodial for game operations:
-- `game_register_wallet` takes pubkey only — no private key ever touches the server
+- `register_wallet` takes pubkey only — no private key ever touches the server
 - Game tools return unsigned transactions — agents sign locally
 - Auth via stake-as-auth: agent signs deposit_stake locally → `game_submit_tx` → MCP authenticates with game-api via `POST /auth/session` (tx signature proves wallet ownership)
 
