@@ -355,8 +355,12 @@ impl SwarmTipsMcp {
                     .join("build-verify-tx.ts")
             });
 
-        let output = tokio::process::Command::new("npx")
-            .arg("tsx")
+        // Run tsx from the script's directory so it finds node_modules
+        let script_dir = script_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let output = tokio::process::Command::new("tsx")
+            .current_dir(script_dir)
             .arg(&script_path)
             .arg("--task-id")
             .arg(&args.task_id)
