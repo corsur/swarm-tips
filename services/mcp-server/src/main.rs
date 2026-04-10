@@ -149,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
     // underlying connection pool.
     let session_binding = Arc::new(McpSessionBinding::new(game_db));
 
+    let rpc_url_for_verify = solana_rpc_url.clone();
     let shared = Arc::new(SharedState {
         orchestrator: OrchestratorProxy::new(orchestrator_url),
         game_api: GameApiProxy::new(game_api_url)?,
@@ -227,6 +228,12 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/internal/listings",
             listings::listings_handler(listings_state),
+        )
+        .route(
+            "/internal/build-verify-tx",
+            axum::routing::post(move |body: axum::Json<serde_json::Value>| async move {
+                build_verify_tx_handler(body, &rpc_url_for_verify).await
+            }),
         );
 
     if let Some(discovery_state) = discovery_state {
@@ -267,4 +274,82 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     Ok(())
+}
+
+/// HTTP handler for `/internal/build-verify-tx`.
+///
+/// Spawns `build-verify-tx.ts` server-side (no CORS issues with the
+/// Switchboard gateway) and returns the unsigned bundled tx.
+async fn build_verify_tx_handler(
+    axum::Json(body): axum::Json<serde_json::Value>,
+    rpc_url: &str,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    let get = |key: &str| body[key].as_str().unwrap_or("").to_string();
+    let task_id = get("task_id");
+    let payer = get("payer");
+    let score = body["score"].as_u64().unwrap_or(0).to_string();
+    let hash = get("hash");
+    let task_pda = get("task_pda");
+    let feed = get("feed");
+    let global_state = get("global_state");
+
+    if task_id.is_empty() || payer.is_empty() || task_pda.is_empty() {
+        return (StatusCode::BAD_REQUEST, "missing required fields").into_response();
+    }
+
+    let script_path = std::env::var("BUILD_VERIFY_SCRIPT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts")
+                .join("build-verify-tx.ts")
+        });
+    let script_dir = script_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    let output = tokio::process::Command::new("tsx")
+        .current_dir(script_dir)
+        .arg(&script_path)
+        .arg("--task-id")
+        .arg(&task_id)
+        .arg("--payer")
+        .arg(&payer)
+        .arg("--score")
+        .arg(&score)
+        .arg("--hash")
+        .arg(&hash)
+        .arg("--task-pda")
+        .arg(&task_pda)
+        .arg("--feed")
+        .arg(&feed)
+        .arg("--global-state")
+        .arg(&global_state)
+        .arg("--rpc")
+        .arg(rpc_url)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let tx = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            axum::Json(serde_json::json!({ "transaction": tx })).into_response()
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tracing::error!(service = "mcp-server", stderr = %stderr, "build-verify-tx failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("build-verify-tx: {stderr}"),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(service = "mcp-server", error = %e, "spawn failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("spawn: {e}")).into_response()
+        }
+    }
 }
