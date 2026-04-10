@@ -19,13 +19,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN npm install -g tsx
 RUN useradd -r -m -s /bin/false appuser
 COPY --from=test /app/target/release/mcp-server /usr/local/bin/mcp-server
-# Install TS script dependencies with npm (flat node_modules for tsx compatibility)
-COPY package.json /home/appuser/
+# Install TS script + deps (node_modules next to the script so tsx can resolve them)
 COPY services/mcp-server/scripts /home/appuser/scripts
-RUN cd /home/appuser && npm install --omit=dev --legacy-peer-deps \
+RUN cd /home/appuser/scripts && npm install \
     && chown -R appuser:appuser /home/appuser
 ENV BUILD_VERIFY_SCRIPT=/home/appuser/scripts/build-verify-tx.ts
-ENV NODE_PATH=/home/appuser/node_modules
 USER appuser
 WORKDIR /home/appuser
 EXPOSE 8080
