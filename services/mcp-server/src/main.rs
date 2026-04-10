@@ -233,6 +233,16 @@ async fn main() -> anyhow::Result<()> {
             "/internal/build-verify-tx",
             axum::routing::post(move |body: axum::Json<serde_json::Value>| async move {
                 build_verify_tx_handler(body, &rpc_url_for_verify).await
+            })
+            .options(|| async {
+                // CORS preflight for browser requests from shillbot.org
+                axum::http::Response::builder()
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "POST, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "content-type")
+                    .header("Access-Control-Max-Age", "3600")
+                    .body(axum::body::Body::empty())
+                    .unwrap()
             }),
         );
 
@@ -333,23 +343,35 @@ async fn build_verify_tx_handler(
         .output()
         .await;
 
+    let cors_headers = [("Access-Control-Allow-Origin", "*")];
+
     match output {
         Ok(out) if out.status.success() => {
             let tx = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            axum::Json(serde_json::json!({ "transaction": tx })).into_response()
+            (
+                cors_headers,
+                axum::Json(serde_json::json!({ "transaction": tx })),
+            )
+                .into_response()
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
             tracing::error!(service = "mcp-server", stderr = %stderr, "build-verify-tx failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
+                cors_headers,
                 format!("build-verify-tx: {stderr}"),
             )
                 .into_response()
         }
         Err(e) => {
             tracing::error!(service = "mcp-server", error = %e, "spawn failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("spawn: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                cors_headers,
+                format!("spawn: {e}"),
+            )
+                .into_response()
         }
     }
 }
