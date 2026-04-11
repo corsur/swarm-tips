@@ -326,17 +326,38 @@ async fn record_source_health(db: &FirestoreDb, source: &str, check: &HealthChec
     }
 }
 
+/// CORS headers attached to every /internal/listings response.
+///
+/// The swarm.tips frontend fetches this endpoint directly from the browser
+/// after first paint to refresh listings, so the response must be readable
+/// from any origin.
+pub const LISTINGS_CORS_HEADERS: [(&str, &str); 3] = [
+    ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, OPTIONS"),
+    ("Access-Control-Max-Age", "3600"),
+];
+
+/// Build the CORS preflight response for OPTIONS /internal/listings.
+pub fn listings_preflight_response() -> axum::http::Response<axum::body::Body> {
+    let mut builder = axum::http::Response::builder();
+    for (name, value) in LISTINGS_CORS_HEADERS {
+        builder = builder.header(name, value);
+    }
+    builder.body(axum::body::Body::empty()).unwrap()
+}
+
 /// Build the axum handler for GET /internal/listings.
 pub fn listings_handler(state: Arc<ListingsState>) -> axum::routing::MethodRouter {
     axum::routing::get(move || {
         let state = state.clone();
         async move {
             match get_listings(&state).await {
-                Ok(listings) => axum::Json(listings).into_response(),
+                Ok(listings) => (LISTINGS_CORS_HEADERS, axum::Json(listings)).into_response(),
                 Err(e) => {
                     tracing::error!(error = %e, "listings ingestion failed");
                     (
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        LISTINGS_CORS_HEADERS,
                         format!("{{\"error\": \"{e}\"}}"),
                     )
                         .into_response()
@@ -344,6 +365,39 @@ pub fn listings_handler(state: Arc<ListingsState>) -> axum::routing::MethodRoute
             }
         }
     })
+    .options(|| async { listings_preflight_response() })
 }
 
 use axum::response::IntoResponse;
+
+#[cfg(test)]
+mod cors_tests {
+    use super::*;
+
+    #[test]
+    fn preflight_response_has_cors_headers() {
+        let resp = listings_preflight_response();
+        let headers = resp.headers();
+        assert_eq!(headers.get("access-control-allow-origin").unwrap(), "*");
+        assert_eq!(
+            headers.get("access-control-allow-methods").unwrap(),
+            "GET, OPTIONS"
+        );
+        assert_eq!(headers.get("access-control-max-age").unwrap(), "3600");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[test]
+    fn cors_headers_constant_matches_browser_expectations() {
+        // The swarm.tips client script (frontend/swarm-tips/src/lib/
+        // listings-transform.ts) does a simple GET fetch with no custom
+        // headers, so a wildcard Allow-Origin is sufficient. If we ever
+        // add credentialed fetches we must echo the Origin instead of "*".
+        let map: std::collections::HashMap<_, _> = LISTINGS_CORS_HEADERS.iter().copied().collect();
+        assert_eq!(map.get("Access-Control-Allow-Origin"), Some(&"*"));
+        assert!(map
+            .get("Access-Control-Allow-Methods")
+            .unwrap()
+            .contains("GET"));
+    }
+}
