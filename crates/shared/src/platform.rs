@@ -3,6 +3,9 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use crate::constants::MAX_SCORE;
 
 /// Supported content platforms.
+///
+/// Discriminants are stable — they appear on-chain in `Task.platform` and must
+/// not be reordered. Append-only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 #[repr(u8)]
 pub enum PlatformType {
