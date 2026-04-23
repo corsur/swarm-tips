@@ -128,8 +128,11 @@ async function main() {
     verificationHash
   );
 
-  // 2. Load feed data to get queue and feed hash
-  const feedAccount = new PullFeed(program, feedPubkey);
+  // 2. Load feed data to get queue and feed hash.
+  // Cast: @switchboard-xyz/on-demand pins @coral-xyz/anchor ^0.31, the rest of the
+  // repo is on 0.32. Runtime behaves identically; the type mismatch is a
+  // private-property nominal conflict only.
+  const feedAccount = new PullFeed(program as any, feedPubkey);
   const feedData = await feedAccount.loadData();
   const queuePubkey = feedData.queue;
   const feedHashHex = Buffer.from(feedData.feedHash).toString("hex");
@@ -149,7 +152,7 @@ async function main() {
 
   // 4. Call gateway directly with variableOverrides via Queue.fetchSignaturesConsensus
   //    This properly passes variableOverrides to the gateway (unlike fetchUpdateIx).
-  const queueAccount = new Queue(program, queuePubkey);
+  const queueAccount = new Queue(program as any, queuePubkey);
   const response = await queueAccount.fetchSignaturesConsensus({
     feedConfigs: [
       {
@@ -203,7 +206,7 @@ async function main() {
     values: response.median_responses.map((mr: any) => new BN(mr.value)),
   };
 
-  const programState = State.keyFromSeed(program);
+  const programState = State.keyFromSeed(program as any);
   const rewardVault = getAssociatedTokenAddressSync(
     SOL_NATIVE_MINT,
     queuePubkey,
