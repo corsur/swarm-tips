@@ -31,16 +31,16 @@ import * as anchor from "@coral-xyz/anchor";
 import { BN } from "@coral-xyz/anchor";
 // Inline ATA derivation (avoids @solana/spl-token dependency)
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
-  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 );
 function getAssociatedTokenAddressSync(
   mint: PublicKey,
   owner: PublicKey,
-  allowOwnerOffCurve: boolean = false,
+  allowOwnerOffCurve: boolean = false
 ): PublicKey {
   return PublicKey.findProgramAddressSync(
     [owner.toBuffer(), SPL_TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    ASSOCIATED_TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
   )[0];
 }
 
@@ -59,24 +59,24 @@ function parseArgs(): Record<string, string> {
 }
 
 const SHILLBOT_PROGRAM_ID = new PublicKey(
-  "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
+  "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
 );
 const SB_PROGRAM_ID = new PublicKey(
-  "SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv",
+  "SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv"
 );
 // SPL sysvars
 const SYSVAR_SLOT_HASHES = new PublicKey(
-  "SysvarS1otHashes111111111111111111111111111",
+  "SysvarS1otHashes111111111111111111111111111"
 );
 const SYSVAR_INSTRUCTIONS = new PublicKey(
-  "Sysvar1nstructions1111111111111111111111111",
+  "Sysvar1nstructions1111111111111111111111111"
 );
 // SOL native mint
 const SOL_NATIVE_MINT = new PublicKey(
-  "So11111111111111111111111111111111111111112",
+  "So11111111111111111111111111111111111111112"
 );
 const SPL_TOKEN_PROGRAM_ID = new PublicKey(
-  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 );
 
 // ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ async function main() {
 
   if (!taskId || !rpcUrl) {
     process.stderr.write(
-      "required: --task-id, --payer, --score, --hash, --task-pda, --feed, --global-state, --rpc\n",
+      "required: --task-id, --payer, --score, --hash, --task-pda, --feed, --global-state, --rpc\n"
     );
     process.exit(1);
   }
@@ -125,7 +125,7 @@ async function main() {
     globalState,
     feedPubkey,
     score,
-    verificationHash,
+    verificationHash
   );
 
   // 2. Load feed data to get queue and feed hash
@@ -136,13 +136,13 @@ async function main() {
 
   // 3. Fetch jobs from crossbar (same as SDK does internally)
   const crossbarResp = await fetch(
-    `https://crossbar.switchboard.xyz/fetch/${feedHashHex}`,
+    `https://crossbar.switchboard.xyz/fetch/${feedHashHex}`
   ).then((r) => r.json() as Promise<any>);
   const jobs: any[] = crossbarResp.jobs || [];
 
   if (jobs.length === 0) {
     process.stderr.write(
-      `No jobs found on crossbar for feed hash ${feedHashHex}\n`,
+      `No jobs found on crossbar for feed hash ${feedHashHex}\n`
     );
     process.exit(1);
   }
@@ -162,10 +162,7 @@ async function main() {
     variableOverrides: { TASK_ID: taskId },
   });
 
-  if (
-    !response.oracle_responses ||
-    response.oracle_responses.length === 0
-  ) {
+  if (!response.oracle_responses || response.oracle_responses.length === 0) {
     process.stderr.write("No oracle responses received from gateway\n");
     process.exit(1);
   }
@@ -173,9 +170,7 @@ async function main() {
   // Check for oracle errors
   for (const oracleResp of response.oracle_responses) {
     if (oracleResp.errors && oracleResp.errors.length > 0) {
-      process.stderr.write(
-        `Oracle errors: ${oracleResp.errors.join("; ")}\n`,
-      );
+      process.stderr.write(`Oracle errors: ${oracleResp.errors.join("; ")}\n`);
     }
   }
 
@@ -188,7 +183,7 @@ async function main() {
       message: Buffer.from(oracleResponse.checksum, "base64"),
       recoveryId: oracleResponse.recovery_id,
       oracleIdx: responseIdx,
-    }),
+    })
   );
 
   if (secpSignatures.length === 0) {
@@ -197,32 +192,33 @@ async function main() {
   }
 
   // Build Secp256k1 native instruction using SDK's implementation
-  const secpIx = Secp256k1InstructionUtils.buildSecp256k1Instruction(secpSignatures, 0);
+  const secpIx = Secp256k1InstructionUtils.buildSecp256k1Instruction(
+    secpSignatures,
+    0
+  );
 
   // 6. Build pullFeedSubmitResponseConsensus instruction
   const instructionData = {
     slot: new BN(response.slot),
-    values: response.median_responses.map(
-      (mr: any) => new BN(mr.value),
-    ),
+    values: response.median_responses.map((mr: any) => new BN(mr.value)),
   };
 
   const programState = State.keyFromSeed(program);
   const rewardVault = getAssociatedTokenAddressSync(
     SOL_NATIVE_MINT,
     queuePubkey,
-    true,
+    true
   );
 
   const oraclePubkeys = response.oracle_responses.map(
-    (r: any) => new PublicKey(Buffer.from(r.oracle_pubkey, "hex")),
+    (r: any) => new PublicKey(Buffer.from(r.oracle_pubkey, "hex"))
   );
   const oracleStatsPubkeys = oraclePubkeys.map(
     (oracle: PublicKey) =>
       PublicKey.findProgramAddressSync(
         [Buffer.from("OracleStats"), oracle.toBuffer()],
-        SB_PROGRAM_ID,
-      )[0],
+        SB_PROGRAM_ID
+      )[0]
   );
 
   // Match feed pubkeys from median_responses
@@ -249,8 +245,9 @@ async function main() {
     })),
   ];
 
-  const submitResponseIx =
-    program.instruction.pullFeedSubmitResponseConsensus(instructionData, {
+  const submitResponseIx = program.instruction.pullFeedSubmitResponseConsensus(
+    instructionData,
+    {
       accounts: {
         queue: queuePubkey,
         programState,
@@ -263,7 +260,8 @@ async function main() {
         ixSysvar: SYSVAR_INSTRUCTIONS,
       },
       remainingAccounts,
-    });
+    }
+  );
 
   // 7. Bundle [secp256k1 verify, submit response, verify_task]
   const allIxs = [secpIx, submitResponseIx, verifyIx];
@@ -290,7 +288,7 @@ function buildVerifyTaskIx(
   globalState: PublicKey,
   switchboardFeed: PublicKey,
   compositeScore: bigint,
-  verificationHash: Buffer,
+  verificationHash: Buffer
 ): TransactionInstruction {
   // Anchor discriminator: SHA256("global:verify_task")[:8]
   const crypto = require("crypto");
