@@ -15,6 +15,7 @@ pub enum PlatformType {
     Reddit = 6,
     Podcast = 7,
     Blog = 8,
+    Website = 9,
 }
 
 impl PlatformType {
@@ -30,6 +31,7 @@ impl PlatformType {
             6 => Some(Self::Reddit),
             7 => Some(Self::Podcast),
             8 => Some(Self::Blog),
+            9 => Some(Self::Website),
             _ => None,
         }
     }
@@ -132,11 +134,12 @@ mod tests {
         assert_eq!(PlatformType::from_u8(6), Some(PlatformType::Reddit));
         assert_eq!(PlatformType::from_u8(7), Some(PlatformType::Podcast));
         assert_eq!(PlatformType::from_u8(8), Some(PlatformType::Blog));
+        assert_eq!(PlatformType::from_u8(9), Some(PlatformType::Website));
     }
 
     #[test]
     fn platform_type_from_u8_invalid() {
-        assert_eq!(PlatformType::from_u8(9), None);
+        assert_eq!(PlatformType::from_u8(10), None);
         assert_eq!(PlatformType::from_u8(255), None);
     }
 
@@ -152,6 +155,7 @@ mod tests {
             PlatformType::Reddit,
             PlatformType::Podcast,
             PlatformType::Blog,
+            PlatformType::Website,
         ] {
             let bytes = borsh::to_vec(&variant).expect("serialize");
             let deserialized = PlatformType::try_from_slice(&bytes).expect("deserialize");
