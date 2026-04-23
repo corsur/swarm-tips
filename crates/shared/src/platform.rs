@@ -5,7 +5,7 @@ use crate::constants::MAX_SCORE;
 /// Supported content platforms.
 ///
 /// Discriminants are stable — they appear on-chain in `Task.platform` and must
-/// not be reordered. Append-only.
+/// not be reordered. Append-only; new platforms get the next free value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 #[repr(u8)]
 pub enum PlatformType {
