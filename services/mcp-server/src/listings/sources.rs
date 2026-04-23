@@ -347,16 +347,32 @@ pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
 }
 
 /// Map a Shillbot platform enum integer to a human-readable label.
-/// Mirrors `shillbot-orchestrator`'s Platform serialization (numeric repr).
+/// Must match the discriminants actually used in production by the
+/// orchestrator/verifier (which diverged from the original PlatformType
+/// *names* in the shared crate — only the discriminant numbers are the
+/// contract). Keep this table in sync with
+/// `coordination-app/backend/shillbot-orchestrator/src/services/campaign_service.rs::default_cohort_for_platform`.
 fn shillbot_platform_label(platform: i64) -> &'static str {
     match platform {
-        0 => "twitter",
-        1 => "tiktok",
-        2 => "instagram",
-        3 => "youtube",
-        4 => "farcaster",
-        5 => "youtube-shorts",
+        0 => "youtube",
+        3 => "twitter",
+        4 => "referral",
+        5 => "game-play",
+        9 => "website",
         _ => "other",
+    }
+}
+
+/// Verb that matches the work shape of each platform. Used in the short
+/// description string surfaced to agents in `list_earning_opportunities`.
+fn shillbot_platform_action(platform: i64) -> &'static str {
+    match platform {
+        0 => "Create a youtube short.",
+        3 => "Post an X thread.",
+        4 => "Create a shillbot campaign.",
+        5 => "Play a round of coordination.game.",
+        9 => "Place a swarm.tips footer backlink on a site you control.",
+        _ => "Complete a shillbot task.",
     }
 }
 
@@ -389,7 +405,8 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
 
     // Description: combine voice + cta + platform so the swarm.tips card has
     // enough context for an agent to decide whether to pursue.
-    let description = format!("Create a {platform_label} short. {voice} CTA: {cta}")
+    let action = shillbot_platform_action(platform_int);
+    let description = format!("{action} {voice} CTA: {cta}")
         .chars()
         .take(500)
         .collect::<String>();
@@ -803,8 +820,10 @@ mod tests {
         assert_eq!(listing.reward_token, "SOL");
         assert_eq!(listing.reward_chain, "solana");
         assert_eq!(listing.reward_amount, "0.0200");
-        assert!(listing.description.contains("youtube-shorts"));
+        // Game-play (platform=5) description must surface the game-play action,
+        // not the old "youtube short" wording.
         assert!(listing.description.contains("coordination.game"));
+        assert!(listing.tags.contains(&"game-play".to_string()));
         assert!(listing.source_url.ends_with("/task-uuid"));
         assert!(listing.escrow);
     }
@@ -838,9 +857,23 @@ mod tests {
 
     #[test]
     fn shillbot_platform_label_known_and_unknown() {
-        assert_eq!(shillbot_platform_label(3), "youtube");
-        assert_eq!(shillbot_platform_label(5), "youtube-shorts");
+        // Matches production discriminants in the orchestrator.
+        assert_eq!(shillbot_platform_label(0), "youtube");
+        assert_eq!(shillbot_platform_label(3), "twitter");
+        assert_eq!(shillbot_platform_label(4), "referral");
+        assert_eq!(shillbot_platform_label(5), "game-play");
+        assert_eq!(shillbot_platform_label(9), "website");
         assert_eq!(shillbot_platform_label(99), "other");
+    }
+
+    #[test]
+    fn shillbot_platform_action_per_platform() {
+        assert!(shillbot_platform_action(0).contains("youtube"));
+        assert!(shillbot_platform_action(3).contains("X"));
+        assert!(shillbot_platform_action(4).contains("campaign"));
+        assert!(shillbot_platform_action(5).contains("coordination.game"));
+        assert!(shillbot_platform_action(9).contains("swarm.tips"));
+        assert_eq!(shillbot_platform_action(99), "Complete a shillbot task.");
     }
 
     #[test]
