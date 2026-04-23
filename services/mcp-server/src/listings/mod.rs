@@ -21,6 +21,11 @@ pub struct ListingsCache {
 }
 
 const CACHE_TTL_SECS: i64 = 300; // 5 minutes
+/// Jitter applied to the cache-hit check so refreshes don't happen at exactly
+/// a 5-minute boundary across pods. A real user loading a page doesn't fetch
+/// on a metronome. Adds/subtracts up to JITTER_SECS seconds randomly, so
+/// effective TTL is ~4-6 minutes.
+const CACHE_TTL_JITTER_SECS: i64 = 60;
 
 /// Number of consecutive failures before we back a source off.
 const BACKOFF_FAILURE_THRESHOLD: u32 = 3;
@@ -52,7 +57,13 @@ pub struct ListingsState {
 }
 
 impl ListingsState {
-    pub fn new(db: FirestoreDb, http_client: reqwest::Client) -> Self {
+    pub fn new(db: FirestoreDb, _rpc_client: reqwest::Client) -> Self {
+        // Build a dedicated scrape client with browser-like default headers.
+        // The caller's rpc_client (generic reqwest with shorter timeouts) is
+        // accepted for API compatibility but not used — we want one client
+        // tuned for this workload. Falls back to a bare default client if
+        // the builder fails (unlikely).
+        let http_client = build_scrape_client().unwrap_or_default();
         Self {
             db,
             http_client,
@@ -60,6 +71,46 @@ impl ListingsState {
             backoff: Mutex::new(SourceBackoff::default()),
         }
     }
+}
+
+/// Construct the reqwest client used for *external* listing scrapes. Carries
+/// a Chrome-on-Mac User-Agent plus the full bundle of `Sec-Fetch-*`,
+/// `Accept`, `Accept-Language`, `Accept-Encoding`, and `DNT` headers a real
+/// browser would send. Doesn't defeat JA3 fingerprinting (that would need
+/// rquest + BoringSSL + cmake in the build) but covers the header-based
+/// side of bot detection and reduces our "likely-bot" score.
+fn build_scrape_client() -> reqwest::Result<reqwest::Client> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    let h = |v: &'static str| reqwest::header::HeaderValue::from_static(v);
+    headers.insert(
+        reqwest::header::ACCEPT,
+        h("text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8"),
+    );
+    headers.insert(reqwest::header::ACCEPT_LANGUAGE, h("en-US,en;q=0.9"));
+    headers.insert("DNT", h("1"));
+    headers.insert("Sec-Fetch-Dest", h("document"));
+    headers.insert("Sec-Fetch-Mode", h("navigate"));
+    headers.insert("Sec-Fetch-Site", h("none"));
+    headers.insert("Sec-Fetch-User", h("?1"));
+    headers.insert("Upgrade-Insecure-Requests", h("1"));
+    headers.insert("Sec-Ch-Ua-Mobile", h("?0"));
+    headers.insert("Sec-Ch-Ua-Platform", h("\"macOS\""));
+    headers.insert(
+        "Sec-Ch-Ua",
+        h("\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\""),
+    );
+
+    reqwest::Client::builder()
+        .user_agent(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        )
+        .default_headers(headers)
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        // Don't force HTTP/2 — let reqwest negotiate. Bountycaster / botbounty
+        // etc. may only support HTTP/1.1 and would break on prior-knowledge.
+        .build()
 }
 
 /// A source fetch "succeeded" iff the HTTP transport completed with a 2xx and
@@ -70,6 +121,37 @@ impl ListingsState {
 fn is_fetch_success(result: &FetchResult) -> bool {
     let sc = result.health.status_code;
     result.health.error.is_none() && (200..=299).contains(&sc)
+}
+
+/// Cache-hit TTL with per-snapshot jitter in [-CACHE_TTL_JITTER_SECS,
+/// +CACHE_TTL_JITTER_SECS]. Deterministic on the `fetched_at` timestamp so
+/// we don't flap on repeated reads of the same cached blob — the jitter is
+/// fixed for the life of that cache entry.
+fn jittered_ttl(fetched_at: DateTime<Utc>) -> i64 {
+    let seed = fetched_at.timestamp() as i128;
+    // Cheap deterministic spread across [-jitter, +jitter].
+    let span = CACHE_TTL_JITTER_SECS.saturating_mul(2).saturating_add(1) as i128;
+    let spread = seed.rem_euclid(span) as i64;
+    CACHE_TTL_SECS
+        .saturating_sub(CACHE_TTL_JITTER_SECS)
+        .saturating_add(spread)
+}
+
+/// Sleep a random duration in `[min_ms, max_ms]`. Uses the standard-library
+/// hash of the system nanos as a cheap jitter source so we don't pull in
+/// the `rand` crate just for this.
+async fn random_sleep_ms(min_ms: u64, max_ms: u64) {
+    use std::hash::{BuildHasher, Hasher};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(nanos);
+    let h = hasher.finish();
+    let span = max_ms.saturating_sub(min_ms).saturating_add(1).max(1);
+    let delay_ms = min_ms.saturating_add(h.checked_rem(span).unwrap_or(0));
+    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 }
 
 /// Apply one cycle's fetch result to the in-memory backoff state.
@@ -106,15 +188,23 @@ fn apply_backoff_update(bk: &mut SourceBackoff, result: &FetchResult, now: DateT
 /// Fetch listings, update Firestore, return filtered results.
 /// This is called by the GET /internal/listings endpoint.
 pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, anyhow::Error> {
-    // Check cache
+    // Check cache with jittered TTL. sha(cached.fetched_at) mod (2*jitter)
+    // gives a deterministic [-J, +J] offset so the *same* cached blob gets
+    // the same TTL every call — we just want different pods to stagger, not
+    // flap.
     {
         let cache = state.cache.lock().await;
         if let Some(ref cached) = *cache {
             let age = Utc::now()
                 .signed_duration_since(cached.fetched_at)
                 .num_seconds();
-            if age < CACHE_TTL_SECS {
-                tracing::debug!(cache_age_secs = age, "serving listings from cache");
+            let effective_ttl = jittered_ttl(cached.fetched_at);
+            if age < effective_ttl {
+                tracing::debug!(
+                    cache_age_secs = age,
+                    effective_ttl = effective_ttl,
+                    "serving listings from cache"
+                );
                 return Ok(cached.listings.clone());
             }
         }
@@ -144,23 +234,40 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
         set
     };
 
-    let (botbounty, bountycaster, moltlaunch, shillbot, defillama) = tokio::join!(
-        fetch_if_not_skipped(&skipped, "botbounty", sources::fetch_botbounty(client)),
-        fetch_if_not_skipped(
-            &skipped,
-            "bountycaster",
-            sources::fetch_bountycaster(client)
-        ),
-        fetch_if_not_skipped(&skipped, "moltlaunch", sources::fetch_moltlaunch(client)),
-        fetch_if_not_skipped(&skipped, "shillbot", sources::fetch_shillbot(client)),
-        fetch_if_not_skipped(
-            &skipped,
-            "defillama-ai",
-            sources::fetch_defillama_ai_agents(client)
-        ),
-    );
-
-    let fetch_results = vec![botbounty, bountycaster, moltlaunch, shillbot, defillama];
+    // Stagger source fetches instead of firing all 5 at the same microsecond.
+    // A real browser loading a page doesn't make five cross-origin requests
+    // in lockstep; bots do. Each source starts 400-900ms after the previous
+    // one (small random jitter), so the upstream sees irregular spacing.
+    // Shillbot (our own) runs first without delay.
+    let fetch_results = vec![
+        fetch_if_not_skipped(&skipped, "shillbot", sources::fetch_shillbot(client)).await,
+        {
+            random_sleep_ms(300, 800).await;
+            fetch_if_not_skipped(&skipped, "botbounty", sources::fetch_botbounty(client)).await
+        },
+        {
+            random_sleep_ms(300, 800).await;
+            fetch_if_not_skipped(
+                &skipped,
+                "bountycaster",
+                sources::fetch_bountycaster(client),
+            )
+            .await
+        },
+        {
+            random_sleep_ms(300, 800).await;
+            fetch_if_not_skipped(&skipped, "moltlaunch", sources::fetch_moltlaunch(client)).await
+        },
+        {
+            random_sleep_ms(300, 800).await;
+            fetch_if_not_skipped(
+                &skipped,
+                "defillama-ai",
+                sources::fetch_defillama_ai_agents(client),
+            )
+            .await
+        },
+    ];
 
     // Update backoff state from this cycle's results.
     {
@@ -643,6 +750,43 @@ mod backoff_tests {
         // failure count unchanged — the skip doesn't count as a failure OR
         // a success.
         assert_eq!(bk.consecutive_failures.get("s"), Some(&2));
+    }
+
+    #[test]
+    fn jittered_ttl_within_bounds() {
+        // For any timestamp, the jittered TTL stays in
+        // [TTL - jitter, TTL + jitter].
+        let min = CACHE_TTL_SECS - CACHE_TTL_JITTER_SECS;
+        let max = CACHE_TTL_SECS + CACHE_TTL_JITTER_SECS;
+        for ts in [0_i64, 1, 100, 1_700_000_000, i64::MAX / 2] {
+            let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or(Utc::now());
+            let t = jittered_ttl(dt);
+            assert!(
+                t >= min && t <= max,
+                "jittered_ttl({ts}) = {t}, expected in [{min}, {max}]"
+            );
+        }
+    }
+
+    #[test]
+    fn jittered_ttl_is_deterministic_for_same_timestamp() {
+        let dt = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        assert_eq!(jittered_ttl(dt), jittered_ttl(dt));
+    }
+
+    #[test]
+    fn jittered_ttl_spreads_across_timestamps() {
+        // Ten neighboring timestamps should not all collapse to the same
+        // effective TTL. If they did, the spread function is broken.
+        let mut values = std::collections::HashSet::new();
+        for i in 0..10 {
+            let dt = DateTime::<Utc>::from_timestamp(1_700_000_000 + i, 0).unwrap();
+            values.insert(jittered_ttl(dt));
+        }
+        assert!(
+            values.len() > 1,
+            "all 10 neighboring timestamps mapped to the same TTL ({values:?})"
+        );
     }
 
     #[test]
