@@ -76,9 +76,11 @@ impl ListingsState {
 /// Construct the reqwest client used for *external* listing scrapes. Carries
 /// a Chrome-on-Mac User-Agent plus the full bundle of `Sec-Fetch-*`,
 /// `Accept`, `Accept-Language`, `Accept-Encoding`, and `DNT` headers a real
-/// browser would send. Doesn't defeat JA3 fingerprinting (that would need
-/// rquest + BoringSSL + cmake in the build) but covers the header-based
-/// side of bot detection and reduces our "likely-bot" score.
+/// browser would send. Header shape is one of two stealth layers — the other
+/// is the pinned NAT egress IP (see `coordination-app/infra/networking.tf`),
+/// which lets us control per-IP reputation directly. Doesn't defeat JA3
+/// fingerprinting (would require a TLS-emulating stack like rquest+BoringSSL);
+/// deferred unless IP + headers prove insufficient.
 fn build_scrape_client() -> reqwest::Result<reqwest::Client> {
     let mut headers = reqwest::header::HeaderMap::new();
     let h = |v: &'static str| reqwest::header::HeaderValue::from_static(v);
