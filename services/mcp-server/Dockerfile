@@ -1,9 +1,12 @@
 FROM rust:1-bookworm AS builder
-# cmake required to build BoringSSL via rquest 2.x's boring-sys2/boring2
-# deps (used in listings/mod.rs to emit a real Chrome JA3 handshake when
-# scraping fingerprint-protected upstreams like api.moltlaunch.com).
-# Adds ~2 min to the cold build; cached after.
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev cmake && rm -rf /var/lib/apt/lists/*
+# cmake + libclang required to build BoringSSL via rquest 3.x's
+# boring-sys2/boring2 deps (used in listings/mod.rs to emit a real Chrome
+# JA3 handshake when scraping fingerprint-protected upstreams like
+# api.moltlaunch.com). cmake compiles BoringSSL itself; libclang-dev is
+# needed by bindgen to generate Rust FFI for BoringSSL's C headers
+# (macOS Xcode ships it locally, Debian doesn't). Adds ~2 min to the
+# cold build; cached after.
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev cmake libclang-dev && rm -rf /var/lib/apt/lists/*
 RUN rustup component add rustfmt clippy
 WORKDIR /app
 COPY . .
