@@ -10,7 +10,7 @@ pub struct FetchResult {
 }
 
 /// Fetch open bounties from BotBounty (Base / ETH).
-pub async fn fetch_botbounty(client: &reqwest::Client) -> FetchResult {
+pub async fn fetch_botbounty(client: &rquest::Client) -> FetchResult {
     let source = "botbounty".to_string();
     let start = Instant::now();
 
@@ -24,7 +24,7 @@ pub async fn fetch_botbounty(client: &reqwest::Client) -> FetchResult {
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "botbounty", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;
@@ -136,7 +136,7 @@ fn parse_botbounty(b: &serde_json::Value) -> Option<RawListing> {
 /// and released on delivery. From a Swarm Tips agent operator's perspective,
 /// each gig is an existing agent doing earnable work that can be replicated.
 /// We surface the most recent priced gigs as listings under EARN.
-pub async fn fetch_moltlaunch(client: &reqwest::Client) -> FetchResult {
+pub async fn fetch_moltlaunch(client: &rquest::Client) -> FetchResult {
     let source = "moltlaunch".to_string();
     let start = Instant::now();
 
@@ -149,7 +149,7 @@ pub async fn fetch_moltlaunch(client: &reqwest::Client) -> FetchResult {
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "moltlaunch", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;
@@ -276,7 +276,7 @@ fn parse_moltlaunch_gig(g: &serde_json::Value) -> Option<RawListing> {
 /// landing page promises agent earning opportunities, and the DAO's own
 /// marketplace is the most agent-native one we have. Without this source the
 /// frontend never auto-picked up new Shillbot campaigns.
-pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
+pub async fn fetch_shillbot(client: &rquest::Client) -> FetchResult {
     let source = "shillbot".to_string();
     let start = Instant::now();
 
@@ -286,7 +286,7 @@ pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "shillbot", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;
@@ -445,7 +445,7 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
 /// shows up in DefiLlama within days, and we want it queryable here so we
 /// can decide whether to integrate it as a real listings source the way
 /// Moltlaunch was added by hand.
-pub async fn fetch_defillama_ai_agents(client: &reqwest::Client) -> FetchResult {
+pub async fn fetch_defillama_ai_agents(client: &rquest::Client) -> FetchResult {
     let source = "defillama-ai".to_string();
     let start = Instant::now();
 
@@ -453,7 +453,7 @@ pub async fn fetch_defillama_ai_agents(client: &reqwest::Client) -> FetchResult 
         let res = client
             .get("https://api.llama.fi/protocols")
             .header(
-                reqwest::header::USER_AGENT,
+                rquest::header::USER_AGENT,
                 "SwarmTipsDiscovery/0.1 (+https://swarm.tips)",
             )
             .send()
@@ -462,7 +462,7 @@ pub async fn fetch_defillama_ai_agents(client: &reqwest::Client) -> FetchResult 
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "defillama-ai", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;
@@ -607,7 +607,7 @@ fn parse_defillama_protocol(p: &serde_json::Value) -> Option<RawListing> {
 }
 
 /// Fetch open bounties from Bountycaster (Base / USDC, Farcaster-native).
-pub async fn fetch_bountycaster(client: &reqwest::Client) -> FetchResult {
+pub async fn fetch_bountycaster(client: &rquest::Client) -> FetchResult {
     let source = "bountycaster".to_string();
     let start = Instant::now();
 
@@ -620,7 +620,7 @@ pub async fn fetch_bountycaster(client: &reqwest::Client) -> FetchResult {
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "bountycaster", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;

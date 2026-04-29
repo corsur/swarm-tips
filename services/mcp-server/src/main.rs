@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .expect("Firestore client must initialize at startup");
 
-    let listings_state = Arc::new(ListingsState::new(db, rpc_client.clone()));
+    let listings_state = Arc::new(ListingsState::new(db));
 
     // Discovery (MCP mining engine) needs its own Firestore client + the
     // shared HTTP client. Best-effort: if Firestore init fails the discovery
