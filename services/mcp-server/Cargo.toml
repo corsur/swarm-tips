@@ -28,7 +28,15 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-reqwest = { workspace = true }
+# Pinned (not workspace) so we can swap the TLS backend to rustls. The
+# default reqwest `native-tls` backend links openssl-sys, and rquest's
+# boring-sys2 ships its own static libssl.a that the linker prefers via
+# Cargo's -L ordering — which makes native_tls's calls to OpenSSL-only
+# symbols (SSL_CTX_ctrl, SSL_get1_peer_certificate, SSL_write_ex, ...)
+# resolve into BoringSSL's stripped libssl and fail to link. rustls is
+# pure-Rust, has no -lssl footprint, and coexists with rquest+BoringSSL
+# cleanly.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # rquest 3.0.0 — reqwest-API-compatible client that emits a real browser's
 # TLS/JA3 + HTTP/2 fingerprint via BoringSSL. Used ONLY by the listings
 # scraper (services/mcp-server/src/listings/) to bypass Cloudflare's
