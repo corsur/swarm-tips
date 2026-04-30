@@ -51,15 +51,18 @@ struct SourceBackoff {
 /// State for the listings subsystem, added to SharedState.
 pub struct ListingsState {
     pub db: FirestoreDb,
-    pub http_client: rquest::Client,
+    pub http_client: reqwest::Client,
     cache: Mutex<Option<ListingsCache>>,
     backoff: Mutex<SourceBackoff>,
 }
 
 impl ListingsState {
-    pub fn new(db: FirestoreDb) -> Self {
-        // Falls back to a bare default rquest client if the builder fails
-        // (unlikely — would mean BoringSSL init blew up).
+    pub fn new(db: FirestoreDb, _rpc_client: reqwest::Client) -> Self {
+        // Build a dedicated scrape client with browser-like default headers.
+        // The caller's rpc_client (generic reqwest with shorter timeouts) is
+        // accepted for API compatibility but not used — we want one client
+        // tuned for this workload. Falls back to a bare default client if
+        // the builder fails (unlikely).
         let http_client = build_scrape_client().unwrap_or_default();
         Self {
             db,
@@ -70,23 +73,25 @@ impl ListingsState {
     }
 }
 
-/// Construct the rquest client used for *external* listing scrapes. Emits a
-/// real Chrome 131 TLS/JA3 + HTTP/2 fingerprint via BoringSSL on top of the
-/// matching Chrome-on-Mac User-Agent and the full `Sec-Fetch-*` / `Accept-*`
-/// header bundle a real browser would send. This is the second of two
-/// stealth layers — the other is the pinned NAT egress IP (see
-/// `coordination-app/infra/networking.tf`) which controls per-IP reputation.
-/// The fingerprint layer is what defeats Cloudflare's TLS-handshake bot
-/// detection (HTTP 429 / error code 1027 on api.moltlaunch.com — confirmed
-/// 2026-04-29 to be fingerprint-based, not IP-based).
-fn build_scrape_client() -> rquest::Result<rquest::Client> {
-    let mut headers = rquest::header::HeaderMap::new();
-    let h = |v: &'static str| rquest::header::HeaderValue::from_static(v);
+/// Construct the reqwest client used for *external* listing scrapes. Carries
+/// a Chrome-on-Mac User-Agent plus the full bundle of `Sec-Fetch-*`,
+/// `Accept`, `Accept-Language`, `Accept-Encoding`, and `DNT` headers a real
+/// browser would send. Header shape is one of two stealth layers — the other
+/// is the pinned NAT egress IP (see `coordination-app/infra/networking.tf`),
+/// which lets us control per-IP reputation directly. Doesn't defeat JA3
+/// fingerprinting on its own; sources that need a real browser TLS handshake
+/// (currently moltlaunch behind Cloudflare) shell out to the
+/// `listings-scraper` sibling binary, which links BoringSSL via rquest in
+/// its own process to keep the symbol footprint isolated from this crate's
+/// solana-sdk → openssl-sys link graph.
+fn build_scrape_client() -> reqwest::Result<reqwest::Client> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    let h = |v: &'static str| reqwest::header::HeaderValue::from_static(v);
     headers.insert(
-        rquest::header::ACCEPT,
+        reqwest::header::ACCEPT,
         h("text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8"),
     );
-    headers.insert(rquest::header::ACCEPT_LANGUAGE, h("en-US,en;q=0.9"));
+    headers.insert(reqwest::header::ACCEPT_LANGUAGE, h("en-US,en;q=0.9"));
     headers.insert("DNT", h("1"));
     headers.insert("Sec-Fetch-Dest", h("document"));
     headers.insert("Sec-Fetch-Mode", h("navigate"));
@@ -100,8 +105,7 @@ fn build_scrape_client() -> rquest::Result<rquest::Client> {
         h("\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\""),
     );
 
-    rquest::Client::builder()
-        .impersonate(rquest::Impersonate::Chrome131)
+    reqwest::Client::builder()
         .user_agent(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
              (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -109,6 +113,8 @@ fn build_scrape_client() -> rquest::Result<rquest::Client> {
         .default_headers(headers)
         .timeout(std::time::Duration::from_secs(15))
         .connect_timeout(std::time::Duration::from_secs(5))
+        // Don't force HTTP/2 — let reqwest negotiate. Bountycaster / botbounty
+        // etc. may only support HTTP/1.1 and would break on prior-knowledge.
         .build()
 }
 

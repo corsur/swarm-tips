@@ -10,7 +10,7 @@ pub struct FetchResult {
 }
 
 /// Fetch open bounties from BotBounty (Base / ETH).
-pub async fn fetch_botbounty(client: &rquest::Client) -> FetchResult {
+pub async fn fetch_botbounty(client: &reqwest::Client) -> FetchResult {
     let source = "botbounty".to_string();
     let start = Instant::now();
 
@@ -24,7 +24,7 @@ pub async fn fetch_botbounty(client: &rquest::Client) -> FetchResult {
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "botbounty", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;
@@ -129,6 +129,16 @@ fn parse_botbounty(b: &serde_json::Value) -> Option<RawListing> {
     })
 }
 
+/// Subprocess output contract from the `listings-scraper` sibling binary.
+/// Mirror of `services/listings-scraper/src/main.rs::ScraperOutput` — kept
+/// duplicated rather than shared via a workspace crate because the contract
+/// is three fields and rarely changes.
+#[derive(serde::Deserialize)]
+struct ScraperOutput {
+    status_code: u16,
+    body: String,
+}
+
 /// Fetch open agent gigs from Moltlaunch (Base / ETH).
 ///
 /// Moltlaunch is an agent marketplace on Base where AI agents publish "gigs"
@@ -136,23 +146,44 @@ fn parse_botbounty(b: &serde_json::Value) -> Option<RawListing> {
 /// and released on delivery. From a Swarm Tips agent operator's perspective,
 /// each gig is an existing agent doing earnable work that can be replicated.
 /// We surface the most recent priced gigs as listings under EARN.
-pub async fn fetch_moltlaunch(client: &rquest::Client) -> FetchResult {
+///
+/// Cloudflare fingerprint-blocks plain reqwest at `api.moltlaunch.com`
+/// (HTTP 429 / error code 1027 — confirmed 2026-04-29 to be JA3-level, not
+/// IP-level). We shell out to the `listings-scraper` sibling binary, which
+/// links BoringSSL via rquest and emits a real Chrome 131 handshake. Lives
+/// in its own process to keep BoringSSL out of mcp-server's link graph (the
+/// solana-sdk → openssl-sys path requires OpenSSL 3.0 symbols BoringSSL
+/// doesn't ship). The `_client` arg is unused — kept only to preserve the
+/// fetch_* call-site signature consistency.
+pub async fn fetch_moltlaunch(_client: &reqwest::Client) -> FetchResult {
     let source = "moltlaunch".to_string();
     let start = Instant::now();
+    let scraper_bin =
+        std::env::var("LISTINGS_SCRAPER_BIN").unwrap_or_else(|_| "listings-scraper".to_string());
 
-    let result = async {
-        let res = client
-            .get("https://api.moltlaunch.com/api/gigs")
-            .send()
+    let result: Result<(Vec<RawListing>, u16), anyhow::Error> = async {
+        let output = tokio::process::Command::new(&scraper_bin)
+            .args(["--url", "https://api.moltlaunch.com/api/gigs"])
+            .output()
             .await?;
 
-        let status = res.status().as_u16();
-        if !res.status().is_success() {
-            tracing::warn!(source = "moltlaunch", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("scraper subprocess failed: {stderr}");
         }
 
-        let data: serde_json::Value = res.json().await?;
+        let resp: ScraperOutput = serde_json::from_slice(&output.stdout)?;
+
+        if !(200..300).contains(&resp.status_code) {
+            tracing::warn!(
+                source = "moltlaunch",
+                status = resp.status_code,
+                "non-success response"
+            );
+            return Ok((vec![], resp.status_code));
+        }
+
+        let data: serde_json::Value = serde_json::from_str(&resp.body)?;
         let gigs = data
             .get("gigs")
             .and_then(|g| g.as_array())
@@ -166,7 +197,7 @@ pub async fn fetch_moltlaunch(client: &rquest::Client) -> FetchResult {
             .filter_map(parse_moltlaunch_gig)
             .collect();
 
-        Ok((listings, status))
+        Ok((listings, resp.status_code))
     }
     .await;
 
@@ -276,7 +307,7 @@ fn parse_moltlaunch_gig(g: &serde_json::Value) -> Option<RawListing> {
 /// landing page promises agent earning opportunities, and the DAO's own
 /// marketplace is the most agent-native one we have. Without this source the
 /// frontend never auto-picked up new Shillbot campaigns.
-pub async fn fetch_shillbot(client: &rquest::Client) -> FetchResult {
+pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
     let source = "shillbot".to_string();
     let start = Instant::now();
 
@@ -286,7 +317,7 @@ pub async fn fetch_shillbot(client: &rquest::Client) -> FetchResult {
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "shillbot", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;
@@ -445,7 +476,7 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
 /// shows up in DefiLlama within days, and we want it queryable here so we
 /// can decide whether to integrate it as a real listings source the way
 /// Moltlaunch was added by hand.
-pub async fn fetch_defillama_ai_agents(client: &rquest::Client) -> FetchResult {
+pub async fn fetch_defillama_ai_agents(client: &reqwest::Client) -> FetchResult {
     let source = "defillama-ai".to_string();
     let start = Instant::now();
 
@@ -453,7 +484,7 @@ pub async fn fetch_defillama_ai_agents(client: &rquest::Client) -> FetchResult {
         let res = client
             .get("https://api.llama.fi/protocols")
             .header(
-                rquest::header::USER_AGENT,
+                reqwest::header::USER_AGENT,
                 "SwarmTipsDiscovery/0.1 (+https://swarm.tips)",
             )
             .send()
@@ -462,7 +493,7 @@ pub async fn fetch_defillama_ai_agents(client: &rquest::Client) -> FetchResult {
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "defillama-ai", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;
@@ -607,7 +638,7 @@ fn parse_defillama_protocol(p: &serde_json::Value) -> Option<RawListing> {
 }
 
 /// Fetch open bounties from Bountycaster (Base / USDC, Farcaster-native).
-pub async fn fetch_bountycaster(client: &rquest::Client) -> FetchResult {
+pub async fn fetch_bountycaster(client: &reqwest::Client) -> FetchResult {
     let source = "bountycaster".to_string();
     let start = Instant::now();
 
@@ -620,7 +651,7 @@ pub async fn fetch_bountycaster(client: &rquest::Client) -> FetchResult {
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "bountycaster", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), rquest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;

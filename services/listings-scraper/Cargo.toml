@@ -1,0 +1,32 @@
+[package]
+name = "listings-scraper"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "listings-scraper"
+path = "src/main.rs"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+
+[dependencies]
+# rquest 3.0.0 — emits a real Chrome 131 TLS/JA3 + HTTP/2 fingerprint
+# via BoringSSL. This crate is split out from mcp-server specifically to
+# keep BoringSSL out of mcp-server's link graph: solana-sdk transitively
+# depends on the openssl crate, and BoringSSL doesn't ship every OpenSSL
+# 3.0+ symbol (ERR_get_error_all, SSL_get1_peer_certificate, ...) →
+# linker shadows -lssl with BoringSSL's stripped libssl.a and undefined
+# references blow up. Splitting the BoringSSL-using fetch path into a
+# separate process makes the two stacks coexist cleanly. Pinned to
+# =3.0.0: it's the last non-yanked release where Impersonate::Chrome131
+# lives in the Apache-2.0 main crate; 4.x+ moved the enum into the
+# GPL-3.0 rquest-util sibling, and 2.x is fully yanked upstream.
+rquest = { version = "=3.0.0", features = ["json", "gzip", "brotli", "deflate"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

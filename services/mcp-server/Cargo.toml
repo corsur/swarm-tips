@@ -28,25 +28,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-# Pinned (not workspace) so we can swap the TLS backend to rustls. The
-# default reqwest `native-tls` backend links openssl-sys, and rquest's
-# boring-sys2 ships its own static libssl.a that the linker prefers via
-# Cargo's -L ordering — which makes native_tls's calls to OpenSSL-only
-# symbols (SSL_CTX_ctrl, SSL_get1_peer_certificate, SSL_write_ex, ...)
-# resolve into BoringSSL's stripped libssl and fail to link. rustls is
-# pure-Rust, has no -lssl footprint, and coexists with rquest+BoringSSL
-# cleanly.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# rquest 3.0.0 — reqwest-API-compatible client that emits a real browser's
-# TLS/JA3 + HTTP/2 fingerprint via BoringSSL. Used ONLY by the listings
-# scraper (services/mcp-server/src/listings/) to bypass Cloudflare's
-# TLS-handshake fingerprint block on api.moltlaunch.com — Phase 1 IP
-# rotation confirmed (2026-04-29) the block is fingerprint-level, not
-# IP-level. Pinned to =3.0.0: it's the last non-yanked release where
-# Impersonate::Chrome131 lives in the Apache-2.0 main crate; 4.x onward
-# moved the enum into the GPL-3.0 `rquest-util` sibling, and 2.x is fully
-# yanked upstream. Pulls BoringSSL — adds cmake to the build image.
-rquest = { version = "=3.0.0", features = ["json", "gzip", "brotli", "deflate"] }
+reqwest = { workspace = true }
 firestore = "0.48"
 gcloud-sdk = { version = "0.29", features = ["google-cloud-secretmanager-v1"] }
 game-api-client = { workspace = true }
