@@ -90,6 +90,16 @@ function agentStatePda(
   );
 }
 
+function clientStatePda(
+  client: PublicKey,
+  programId: PublicKey
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("client_state"), client.toBuffer()],
+    programId
+  );
+}
+
 /** Warp the bankrun clock to a target unix timestamp. */
 async function warpToTimestamp(
   context: Awaited<ReturnType<typeof startAnchor>>,
@@ -216,6 +226,7 @@ async function createTask(
     "lifecycle test task " + global.taskCounter.toString()
   );
 
+  const [csPda] = clientStatePda(client.publicKey, program.programId);
   await program.methods
     .createTask(
       ESCROW_LAMPORTS,
@@ -231,6 +242,7 @@ async function createTask(
     .accountsPartial({
       globalState: globalPda,
       task: tPda,
+      clientState: csPda,
       client: client.publicKey,
       slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
       systemProgram: SystemProgram.programId,
@@ -901,6 +913,156 @@ describe("shillbot-lifecycle (bankrun)", () => {
       assert.isTrue(
         Number(agentBalAfter) > Number(agentBalBefore),
         "Agent balance should increase from rent reclaim (minus tx fee)"
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 3 blocker #2: MIN_ESCROW + per-client rate limit gates
+  // -------------------------------------------------------------------------
+
+  describe("Phase 3 blocker #2 economic gates", () => {
+    // Must match `programs/shillbot/src/constants.rs::MIN_ESCROW_LAMPORTS`.
+    const MIN_ESCROW_LAMPORTS = new BN(360_000_000); // 0.36 SOL
+    const RATE_LIMIT_WINDOW_SECONDS = 3_600;
+    const MAX_TASKS_PER_RATE_WINDOW = 10;
+
+    /** Direct createTask invocation that lets us parametrize escrow + content. */
+    async function createTaskRaw(
+      c: Keypair,
+      escrow: BN,
+      contentTag: string,
+      deadlineSec: BN
+    ): Promise<PublicKey> {
+      const global = await program.account.globalState.fetch(globalPda);
+      const [tPda] = taskPda(
+        global.taskCounter,
+        c.publicKey,
+        program.programId
+      );
+      const [csPda] = clientStatePda(c.publicKey, program.programId);
+      await program.methods
+        .createTask(
+          escrow,
+          contentHash(contentTag) as any,
+          deadlineSec,
+          new BN(3600),
+          new BN(14_400),
+          0,
+          0,
+          0,
+          0
+        )
+        .accountsPartial({
+          globalState: globalPda,
+          task: tPda,
+          clientState: csPda,
+          client: c.publicKey,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([c])
+        .rpc();
+      return tPda;
+    }
+
+    async function freshClient(): Promise<{ kp: Keypair; deadline: BN }> {
+      const kp = Keypair.generate();
+      await fundAccount(provider, kp.publicKey, 100 * LAMPORTS_PER_SOL);
+      const clock = await context.banksClient.getClock();
+      const deadline = new BN(Number(clock.unixTimestamp) + 86_400 * 60);
+      return { kp, deadline };
+    }
+
+    it("rejects createTask with escrow < MIN_ESCROW_LAMPORTS", async () => {
+      const { kp, deadline } = await freshClient();
+      try {
+        await createTaskRaw(
+          kp,
+          MIN_ESCROW_LAMPORTS.sub(new BN(1)), // 1 lamport below floor
+          "below-min",
+          deadline
+        );
+        assert.fail("expected EscrowBelowMinimum, got success");
+      } catch (e: any) {
+        const msg = String(e);
+        assert.match(
+          msg,
+          /EscrowBelowMinimum/,
+          `expected EscrowBelowMinimum, got: ${msg}`
+        );
+      }
+    });
+
+    it("succeeds with escrow == MIN_ESCROW_LAMPORTS (boundary)", async () => {
+      const { kp, deadline } = await freshClient();
+      await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, "at-min", deadline);
+      const [csPda] = clientStatePda(kp.publicKey, program.programId);
+      const cs = await program.account.clientState.fetch(csPda);
+      assert.equal(cs.tasksInWindow, 1, "first task in window sets count to 1");
+      assert.equal(cs.totalTasksCreated.toString(), "1");
+      assert.equal(cs.client.toBase58(), kp.publicKey.toBase58());
+    });
+
+    it("rejects 11th createTask within rate-limit window", async () => {
+      const { kp, deadline } = await freshClient();
+      // Fire MAX_TASKS_PER_RATE_WINDOW (10) successful calls.
+      for (let i = 0; i < MAX_TASKS_PER_RATE_WINDOW; i++) {
+        await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, `rl-${i}`, deadline);
+      }
+      const [csPda] = clientStatePda(kp.publicKey, program.programId);
+      const cs = await program.account.clientState.fetch(csPda);
+      assert.equal(
+        cs.tasksInWindow,
+        MAX_TASKS_PER_RATE_WINDOW,
+        "10 tasks should fill the window exactly"
+      );
+      // 11th must fail.
+      try {
+        await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, "rl-overflow", deadline);
+        assert.fail("expected RateLimitExceeded, got success");
+      } catch (e: any) {
+        const msg = String(e);
+        assert.match(
+          msg,
+          /RateLimitExceeded/,
+          `expected RateLimitExceeded, got: ${msg}`
+        );
+      }
+    });
+
+    it("resets window after RATE_LIMIT_WINDOW_SECONDS; total_tasks_created is monotonic", async () => {
+      const { kp, deadline } = await freshClient();
+      // Fill the window.
+      for (let i = 0; i < MAX_TASKS_PER_RATE_WINDOW; i++) {
+        await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, `wreset-${i}`, deadline);
+      }
+      const [csPda] = clientStatePda(kp.publicKey, program.programId);
+      const cs10 = await program.account.clientState.fetch(csPda);
+      const windowStart = cs10.windowStartTs.toNumber();
+
+      // Warp 1s past the window.
+      await warpToTimestamp(
+        context,
+        windowStart + RATE_LIMIT_WINDOW_SECONDS + 1
+      );
+
+      // 11th should now succeed (new window).
+      await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, "wreset-after", deadline);
+      const cs11 = await program.account.clientState.fetch(csPda);
+      assert.equal(
+        cs11.tasksInWindow,
+        1,
+        "tasks_in_window resets to 1 in fresh window"
+      );
+      assert.equal(
+        cs11.totalTasksCreated.toString(),
+        "11",
+        "total_tasks_created is monotonic across window resets"
+      );
+      assert.isTrue(
+        cs11.windowStartTs.toNumber() > windowStart,
+        "window_start_ts advances on reset"
       );
     });
   });

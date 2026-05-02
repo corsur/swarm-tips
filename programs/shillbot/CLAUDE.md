@@ -43,6 +43,7 @@ Every instruction asserts valid source state(s) as a precondition. Invalid state
 | `AgentState` | `["agent_state", agent_pubkey]` | Tracks `claimed_count`, `total_completed`, `total_earned` |
 | `SessionDelegate` | `["session", agent, delegate]` | Scoped session key delegation (bitmask: 0x01=claim, 0x02=submit) |
 | `Identity` | `["identity", agent, &[platform]]` | Maps agent wallet to platform identity hash |
+| `ClientState` | `["client_state", client_pubkey]` | Per-client task-creation rate limit (sliding 1h window) + lifetime task counter (Phase 3 blocker #2) |
 
 See `state/*.rs` for full field layouts.
 

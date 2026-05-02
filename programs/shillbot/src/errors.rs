@@ -109,4 +109,10 @@ pub enum ShillbotError {
 
     #[msg("Switchboard feed not configured in GlobalState")]
     SwitchboardFeedNotConfigured,
+
+    #[msg("Task escrow below MIN_ESCROW_LAMPORTS floor (sybil-economics gate)")]
+    EscrowBelowMinimum,
+
+    #[msg("Client exceeded MAX_TASKS_PER_RATE_WINDOW within RATE_LIMIT_WINDOW_SECONDS")]
+    RateLimitExceeded,
 }
