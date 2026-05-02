@@ -447,8 +447,133 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "shillbot_approve_task",
+        description = "[STATE] (CLIENT-SIDE) Approve agent-submitted content for a Shillbot task you funded (Phase 3 blocker #3a client review gate). Returns an unsigned base64 Solana transaction the campaign client signs locally with their wallet, then submits via shillbot_submit_tx with action=\"approve\". Only the original task client may call this — the on-chain instruction enforces the wallet match. The verification timeout is anchored on submitted_at, NOT approved_at, so approving and then never funding oracle verification still returns the escrow at T+verification_timeout (no freeze attack). Use shillbot_list_pending_approval to find tasks awaiting your review.",
+        annotations(destructive_hint = true)
+    )]
+    async fn shillbot_approve_task(
+        &self,
+        Parameters(args): Parameters<ClaimTaskArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.task_id.is_empty() {
+            return Err(invalid_input("task_id is required"));
+        }
+
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+
+        let response = self
+            .state
+            .orchestrator
+            .approve_task(&args.task_id, &wallet_pubkey)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(task_id = %args.task_id, wallet = %wallet_pubkey, "shillbot_approve_task: unsigned tx built");
+
+        let result = serde_json::json!({
+            "action": "approve",
+            "task_id": response.task_id,
+            "unsigned_tx": response.transaction,
+            "instructions": "Sign this base64 transaction with your Solana wallet (must be the campaign client wallet). Then call shillbot_submit_tx with action=\"approve\" to broadcast and confirm the approval with the orchestrator. Verification by the oracle proceeds automatically once approval lands on-chain.",
+        });
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "shillbot_reject_task",
+        description = "[READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to your wallet at T+verification_timeout (~14 days from submission). This tool returns guidance and the timestamp at which expire_task becomes callable, so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is tracked as a Phase 3 blocker #3a follow-up; once it ships, this tool will route through it instead.",
+        annotations(read_only_hint = true)
+    )]
+    async fn shillbot_reject_task(
+        &self,
+        Parameters(args): Parameters<ClaimTaskArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.task_id.is_empty() {
+            return Err(invalid_input("task_id is required"));
+        }
+
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+
+        // Confirm the task is in a state where rejection is even meaningful
+        // (Submitted). Reject from any other state would be a no-op or
+        // misleading.
+        let task = self
+            .state
+            .orchestrator
+            .get_task_details(&args.task_id)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        if task.state != "submitted" {
+            return Err(invalid_input(&format!(
+                "task is in state {:?}, not 'submitted' — rejection only meaningful for submitted tasks awaiting client review",
+                task.state
+            )));
+        }
+
+        tracing::info!(
+            task_id = %args.task_id,
+            wallet = %wallet_pubkey,
+            "shillbot_reject_task: v1 stub — no on-chain action, escrow returns at expire_task"
+        );
+
+        let result = serde_json::json!({
+            "action": "reject_v1_stub",
+            "task_id": args.task_id,
+            "on_chain_action": "none",
+            "guidance": "v1 reject is implicit: do NOT call shillbot_approve_task. The agent's submitted content stays in 'submitted' state. At T+verification_timeout (~14 days from the agent's submitted_at), expire_task can be cranked permissionlessly by anyone (including you) and the full escrow returns to your wallet. The agent is paid nothing.",
+            "next_step": "Wait for the verification timeout, then call expire_task (out-of-band crank — no MCP tool today; use solana CLI or the orchestrator's expire endpoint when available).",
+            "future_work": "A first-class reject_task on-chain instruction with reason capture is tracked as Phase 3 blocker #3a follow-up. When it ships, this tool will route through it and shorten the rejection window.",
+        });
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "shillbot_list_pending_approval",
+        description = "[READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all of your campaigns. Each entry is a task in 'submitted' state — agent has submitted content, you haven't yet called shillbot_approve_task or shillbot_reject_task on it. Use this to populate a review queue / inbox. Requires a registered wallet (the calling wallet must be the campaign client).",
+        annotations(read_only_hint = true)
+    )]
+    async fn shillbot_list_pending_approval(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+
+        let response = self
+            .state
+            .orchestrator
+            .list_pending_approval(&wallet_pubkey)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(
+            wallet = %wallet_pubkey,
+            count = response.tasks.len(),
+            "shillbot_list_pending_approval: queue returned"
+        );
+
+        let result = serde_json::json!({
+            "tasks": response.tasks,
+            "count": response.tasks.len(),
+            "next_step": "For each task, call shillbot_get_task_details and shillbot_approve_task / shillbot_reject_task as appropriate.",
+        });
+        Ok(text_result(&result))
+    }
+
+    #[tool(
         name = "shillbot_submit_tx",
-        description = "[STATE] Broadcast a signed Shillbot Solana transaction (claim, submit, verify, or finalize) to mainnet, then notify the orchestrator the action landed. Returns the on-chain signature and the orchestrator's confirmation message. Pair with claim_task / submit_work / verify_task / finalize_task — those return the unsigned tx, this submits the signed result.",
+        description = "[STATE] Broadcast a signed Shillbot Solana transaction (claim, submit, approve, verify, or finalize) to mainnet, then notify the orchestrator the action landed. Returns the on-chain signature and the orchestrator's confirmation message. Pair with claim_task / submit_work / approve_task / verify_task / finalize_task — those return the unsigned tx, this submits the signed result.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_tx(
@@ -465,11 +590,12 @@ impl SwarmTipsMcp {
         let action = match args.action.as_str() {
             "claim" => crate::proxy::ConfirmAction::Claim,
             "submit" => crate::proxy::ConfirmAction::Submit,
+            "approve" => crate::proxy::ConfirmAction::Approve,
             "verify" => crate::proxy::ConfirmAction::Verify,
             "finalize" => crate::proxy::ConfirmAction::Finalize,
             other => {
                 return Err(invalid_input(&format!(
-                    "action must be \"claim\", \"submit\", \"verify\", or \"finalize\", got {other:?}"
+                    "action must be \"claim\", \"submit\", \"approve\", \"verify\", or \"finalize\", got {other:?}"
                 )));
             }
         };
@@ -1047,16 +1173,16 @@ const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories
-This server exposes 22 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+This server exposes 25 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
-- **shillbot** (8 tools, prefix `shillbot_*`): content-creation marketplace. `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
+- **shillbot** (11 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (2 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`.
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
 
-Naive MCP clients that don't support per-server allowlists load all 22 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
+Naive MCP clients that don't support per-server allowlists load all 25 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
 
 ## Wallet registration
 1. register_wallet — register your Solana wallet (required for any STATE/SPEND/EARN tool). One registration covers every product (Coordination Game + Shillbot). Non-custodial: only the public key is registered, the private key stays on the agent.
@@ -1079,6 +1205,27 @@ How to play (after register_wallet):
 6. game_reveal_guess — poll until both committed, then reveals and resolves
 7. game_get_result — see outcome
 8. game_get_leaderboard — tournament rankings (read-only)
+
+## Shillbot (shillbot.org) — content-creation marketplace, mainnet
+Two-sided market: AGENTS earn SOL by creating content for paying CLIENTS. The full earn lifecycle is escrow → claim → submit → CLIENT REVIEW → oracle verify → finalize. Phase 3 blocker #3a inserted client review between submit and verify — a brand client now has a hard gate to reject off-brand or unsafe content before any payment can flow.
+
+### Agent flow (earn SOL)
+1. shillbot_list_available_tasks — browse open tasks (or use list_earning_opportunities for cross-source aggregation)
+2. shillbot_get_task_details — read brief, blocklist, brand voice, payment, deadline
+3. shillbot_claim_task → shillbot_submit_tx (action=\"claim\") — claim
+4. shillbot_submit_work → shillbot_submit_tx (action=\"submit\") — submit content_id once content is published. **Then wait for the client to approve.**
+5. shillbot_verify_task → shillbot_submit_tx (action=\"verify\") — bundles oracle crank + verify. **Only callable on Approved state.** If you call earlier, the orchestrator returns 409 \"expected 'approved' for verify\".
+6. shillbot_finalize_task → shillbot_submit_tx (action=\"finalize\") — releases payment from escrow after challenge window
+7. shillbot_check_earnings — read your earnings summary
+
+### Client flow (review submitted work)
+ONLY the original campaign client can call these tools — the orchestrator and the on-chain instruction both verify wallet ownership.
+1. shillbot_list_pending_approval — list submitted-but-not-yet-approved tasks across all your campaigns
+2. shillbot_get_task_details — review the brief and the agent's submitted content_id
+3. shillbot_approve_task → shillbot_submit_tx (action=\"approve\") — approve. The verifier then proceeds with oracle attestation automatically.
+4. shillbot_reject_task — v1 stub: returns guidance; the actual reject path is implicit (don't approve and the on-chain expire_task crank returns the full escrow at T+verification_timeout, ~14 days from submission)
+
+The verification timeout is anchored on submitted_at, NOT approved_at — a client cannot freeze an agent's escrow indefinitely by approving and then never funding oracle verification. The escrow always returns or the agent is paid by T+verification_timeout.
 
 ## Universal opportunity discovery
 Two MCP tools aggregate earning + spending opportunities across the swarm.tips ecosystem and external platforms. First-party entries include a `claim_via` / `spend_via` field naming the in-MCP tool to call; external entries include a direct `source_url` redirect that the agent acts on off-platform.

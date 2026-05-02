@@ -91,6 +91,8 @@ pub struct VerificationDataResponse {
 pub enum ConfirmAction {
     Claim,
     Submit,
+    /// Phase 3 blocker #3a: client signed `approve_task` on-chain.
+    Approve,
     Verify,
     Finalize,
 }
@@ -450,6 +452,102 @@ impl OrchestratorProxy {
         })
     }
 
+    /// Phase 3 blocker #3c: request the orchestrator build an unsigned
+    /// `approve_task` Solana transaction for the campaign client. The
+    /// orchestrator verifies the calling wallet IS the campaign's client
+    /// (mirrors on-chain `NotTaskClient` enforcement) and returns a
+    /// base64-encoded unsigned transaction the client signs locally.
+    pub async fn approve_task(
+        &self,
+        task_id: &str,
+        wallet_pubkey: &str,
+    ) -> Result<TransactionResponse, McpServiceError> {
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
+        if wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "wallet_pubkey must not be empty".to_string(),
+            ));
+        }
+
+        let url = format!("{}/tasks/{task_id}/approve", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(wallet_pubkey)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator approve_task failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator approve_task returned error");
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        let parsed: TransactionResponse = response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid approve_task response: {e}"))
+        })?;
+
+        if parsed.transaction.is_none() {
+            return Err(McpServiceError::OrchestratorError(
+                "approve_task response missing transaction field".to_string(),
+            ));
+        }
+
+        Ok(parsed)
+    }
+
+    /// Phase 3 blocker #3c: list pending-approval tasks across all of
+    /// the calling client's campaigns. Mirrors orchestrator
+    /// `GET /client/pending-approval`.
+    pub async fn list_pending_approval(
+        &self,
+        wallet_pubkey: &str,
+    ) -> Result<TaskListResponse, McpServiceError> {
+        if wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "wallet_pubkey must not be empty".to_string(),
+            ));
+        }
+
+        let url = format!("{}/client/pending-approval", self.base_url);
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(wallet_pubkey)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, "orchestrator list_pending_approval failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(service = "mcp-server", status = %status, "orchestrator list_pending_approval returned error");
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!(
+                "invalid list_pending_approval response: {e}"
+            ))
+        })
+    }
+
     /// Notify the orchestrator that a `claim_task` or `submit_work` transaction
     /// landed on-chain. The orchestrator verifies the signature, deduplicates,
     /// and advances the task state in Firestore.
@@ -764,6 +862,23 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ConfirmAction::Submit).unwrap(),
             serde_json::Value::String("submit".to_string())
+        );
+        // Phase 3 blocker #3c: approve action must round-trip the same
+        // snake_case form the orchestrator's enum expects (`"approve"`,
+        // not `"Approve"`). A casing drift here would route the confirm
+        // call into the orchestrator's serde-deserialization fallthrough
+        // and silently break the client review gate.
+        assert_eq!(
+            serde_json::to_value(ConfirmAction::Approve).unwrap(),
+            serde_json::Value::String("approve".to_string())
+        );
+        assert_eq!(
+            serde_json::to_value(ConfirmAction::Verify).unwrap(),
+            serde_json::Value::String("verify".to_string())
+        );
+        assert_eq!(
+            serde_json::to_value(ConfirmAction::Finalize).unwrap(),
+            serde_json::Value::String("finalize".to_string())
         );
     }
 
