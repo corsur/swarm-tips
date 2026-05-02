@@ -1571,5 +1571,169 @@ describe("shillbot-lifecycle (bankrun)", () => {
         "total_challenges_lost bumps by 1 when agent loses a challenge"
       );
     });
+
+    it("resolve_challenge with challenger_won=false does NOT bump total_challenges_lost", async () => {
+      // Negative-case guard: a future change that flipped the
+      // `if challenger_won` gate (or removed it) would silently corrupt
+      // the dispute_rate metric for every agent. This test fires
+      // resolveChallenge(false) and asserts the counter stays at 0.
+      const a = await freshAgentTask();
+      await claimTask(program, a.aKp, a.taskPda);
+      await submitWork(program, a.aKp, a.taskPda, "rep-agent-wins");
+      await approveTask(program, a.cKp, a.taskPda);
+
+      const t = await program.account.task.fetch(a.taskPda);
+      await warpToTimestamp(
+        context,
+        t.submittedAt.toNumber() + SEVEN_DAYS_SECONDS
+      );
+      await verifyTask(
+        program,
+        authority,
+        a.taskPda,
+        globalPda,
+        new BN(800_000),
+        context
+      );
+
+      const challengerKp = Keypair.generate();
+      await fundAccount(
+        provider,
+        challengerKp.publicKey,
+        10 * LAMPORTS_PER_SOL
+      );
+      const verified = await program.account.task.fetch(a.taskPda);
+      const [challPdaForTask] = challengePda(
+        verified.taskId,
+        challengerKp.publicKey,
+        program.programId
+      );
+
+      await program.methods
+        .challengeTask()
+        .accountsPartial({
+          task: a.taskPda,
+          challenge: challPdaForTask,
+          challenger: challengerKp.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([challengerKp])
+        .rpc();
+
+      const before = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(before.totalChallengesLost.toString(), "0");
+
+      // Resolve in agent's favor.
+      await program.methods
+        .resolveChallenge(false) // challenger_won = false → agent wins
+        .accountsPartial({
+          task: a.taskPda,
+          challenge: challPdaForTask,
+          globalState: globalPda,
+          authority: authority.publicKey,
+          agent: a.aKp.publicKey,
+          client: a.cKp.publicKey,
+          challenger: challengerKp.publicKey,
+          treasury: treasury.publicKey,
+        })
+        .remainingAccounts([
+          { pubkey: a.agentPda, isWritable: true, isSigner: false },
+        ])
+        .signers([authority])
+        .rpc();
+
+      const after = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(
+        after.totalChallengesLost.toString(),
+        "0",
+        "total_challenges_lost MUST stay at 0 when agent wins the challenge"
+      );
+    });
+
+    it("finalize_task with payment_amount == 0 does NOT bump total_score_sum or total_completed", async () => {
+      // Negative-case guard for the existing pre-#12 `if payment_amount > 0`
+      // gate in finalize_task. A future change that removed the gate
+      // would start crediting reputation to below-threshold finalizes,
+      // breaking the `average_score = total_score_sum / total_completed`
+      // invariant (because removing the gate touches both numerator and
+      // denominator inconsistently with the docstring's claim).
+      const a = await freshAgentTask();
+      await claimTask(program, a.aKp, a.taskPda);
+      await submitWork(program, a.aKp, a.taskPda, "rep-zero-score");
+      await approveTask(program, a.cKp, a.taskPda);
+
+      const t = await program.account.task.fetch(a.taskPda);
+      await warpToTimestamp(
+        context,
+        t.submittedAt.toNumber() + SEVEN_DAYS_SECONDS
+      );
+
+      // Score below quality_threshold (200_000) → payment_amount = 0.
+      // Switchboard's get_value() requires positive values, so use 1.
+      await verifyTask(
+        program,
+        authority,
+        a.taskPda,
+        globalPda,
+        new BN(1),
+        context
+      );
+
+      const verified = await program.account.task.fetch(a.taskPda);
+      assert.equal(
+        verified.paymentAmount.toString(),
+        "0",
+        "below-threshold score must produce payment_amount = 0 (precondition for the gate test)"
+      );
+
+      const pastChallenge = verified.challengeDeadline.toNumber() + 1;
+      await warpToTimestamp(context, pastChallenge);
+
+      // total_tasks_claimed already bumped by claim_task; capture it
+      // to assert it stays put through finalize.
+      const beforeFinalize = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(beforeFinalize.totalCompleted.toString(), "0");
+      assert.equal(beforeFinalize.totalEarned.toString(), "0");
+      assert.equal(beforeFinalize.totalScoreSum.toString(), "0");
+      assert.equal(beforeFinalize.totalTasksClaimed.toString(), "1");
+
+      await program.methods
+        .finalizeTask()
+        .accountsPartial({
+          task: a.taskPda,
+          globalState: globalPda,
+          agent: a.aKp.publicKey,
+          client: a.cKp.publicKey,
+          treasury: treasury.publicKey,
+        })
+        .remainingAccounts([
+          { pubkey: a.agentPda, isWritable: true, isSigner: false },
+        ])
+        .rpc();
+
+      const after = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(
+        after.totalCompleted.toString(),
+        "0",
+        "total_completed MUST stay at 0 when payment_amount=0 (pre-#12 gate)"
+      );
+      assert.equal(
+        after.totalEarned.toString(),
+        "0",
+        "total_earned MUST stay at 0 when payment_amount=0"
+      );
+      assert.equal(
+        after.totalScoreSum.toString(),
+        "0",
+        "total_score_sum MUST stay at 0 when payment_amount=0 (preserves average_score formula)"
+      );
+      // Sanity: total_tasks_claimed is unaffected by finalize_task —
+      // it only updates in claim_task.
+      assert.equal(
+        after.totalTasksClaimed.toString(),
+        "1",
+        "total_tasks_claimed only updates in claim_task, not finalize_task"
+      );
+    });
   });
 });

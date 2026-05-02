@@ -74,6 +74,7 @@ impl AgentState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anchor_lang::Discriminator;
 
     #[test]
     fn agent_state_space_is_90() {
@@ -82,5 +83,84 @@ mod tests {
         // Existing on-chain accounts retain bytewise compatibility because
         // their zero-initialized reserved bytes deserialize as zero counters.
         assert_eq!(AgentState::SPACE, 90);
+    }
+
+    /// Migration regression guard for task #12.
+    ///
+    /// Constructs a byte sequence representing an OLD-shape on-chain account
+    /// (pre-#12 layout: `agent | claimed_count | total_completed |
+    /// total_earned | _reserved[32] | bump`) and deserializes it as the
+    /// NEW struct. Asserts that:
+    ///
+    ///   - The two pre-existing counters (`total_completed`, `total_earned`)
+    ///     still read their original values.
+    ///   - The three new counters (`total_score_sum`, `total_tasks_claimed`,
+    ///     `total_challenges_lost`) read as 0, because the old `_reserved`
+    ///     bytes that now occupy their positions were zero-initialized.
+    ///   - The `bump` byte is at the same offset in both layouts and reads
+    ///     correctly.
+    ///
+    /// This catches a future contributor reordering fields. `agent_state_space_is_90`
+    /// only asserts SIZE preservation; this test asserts BYTE-LAYOUT
+    /// preservation, which is the actual mainnet-compat property.
+    #[test]
+    fn old_shape_account_deserializes_with_zero_new_counters() {
+        let agent_pubkey = Pubkey::new_unique();
+        let claimed_count: u8 = 3;
+        let total_completed: u64 = 7;
+        let total_earned: u64 = 1_000_000;
+        let bump: u8 = 254;
+
+        // Build pre-#12 on-chain bytes manually:
+        //   discriminator (8) | agent (32) | claimed_count (1) |
+        //   total_completed (8) | total_earned (8) | _reserved[32] |
+        //   bump (1) = 90 bytes
+        let mut bytes = Vec::with_capacity(AgentState::SPACE);
+        bytes.extend_from_slice(AgentState::DISCRIMINATOR);
+        bytes.extend_from_slice(agent_pubkey.as_ref());
+        bytes.push(claimed_count);
+        bytes.extend_from_slice(&total_completed.to_le_bytes());
+        bytes.extend_from_slice(&total_earned.to_le_bytes());
+        // 32 zero bytes — the OLD `_reserved` block. The first 24 bytes
+        // become `total_score_sum | total_tasks_claimed |
+        // total_challenges_lost` under the new layout (each u64 = 0
+        // because those bytes are zero). The last 8 bytes become the
+        // new `_reserved`.
+        bytes.extend_from_slice(&[0u8; 32]);
+        bytes.push(bump);
+
+        assert_eq!(bytes.len(), AgentState::SPACE);
+
+        // Deserialize via Anchor's typed reader (skips discriminator after
+        // verifying it matches AgentState::DISCRIMINATOR).
+        let parsed = AgentState::try_deserialize(&mut &bytes[..])
+            .expect("old-shape bytes must deserialize cleanly under the new layout");
+
+        // Pre-existing fields retain their values bytewise.
+        assert_eq!(parsed.agent, agent_pubkey);
+        assert_eq!(parsed.claimed_count, claimed_count);
+        assert_eq!(parsed.total_completed, total_completed);
+        assert_eq!(parsed.total_earned, total_earned);
+
+        // The three new counters MUST read as 0 — they occupy bytes that
+        // were zero in the old layout.
+        assert_eq!(
+            parsed.total_score_sum, 0,
+            "total_score_sum must read as 0 from old-shape account"
+        );
+        assert_eq!(
+            parsed.total_tasks_claimed, 0,
+            "total_tasks_claimed must read as 0 from old-shape account"
+        );
+        assert_eq!(
+            parsed.total_challenges_lost, 0,
+            "total_challenges_lost must read as 0 from old-shape account"
+        );
+
+        // `_reserved` shrunk to 8 bytes (also zero from old layout).
+        assert_eq!(parsed._reserved, [0u8; 8]);
+
+        // `bump` at the same offset in both layouts.
+        assert_eq!(parsed.bump, bump);
     }
 }
