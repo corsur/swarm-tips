@@ -24,6 +24,13 @@ pub struct WorkSubmitted {
 }
 
 #[event]
+pub struct TaskApproved {
+    pub task_id: u64,
+    pub client: Pubkey,
+    pub agent: Pubkey,
+}
+
+#[event]
 pub struct TaskVerified {
     pub task_id: u64,
     pub composite_score: u64,

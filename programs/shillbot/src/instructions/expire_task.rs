@@ -24,7 +24,13 @@ pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {
                 ShillbotError::DeadlineExpired
             );
         }
-        TaskState::Submitted => {
+        TaskState::Submitted | TaskState::Approved => {
+            // Phase 3 blocker #3a: Approved is a new state inserted
+            // between Submitted and Verified. The verification timeout
+            // is measured from `submitted_at` for both — client
+            // approval does not reset the clock. A task that's
+            // Submitted-but-never-approved expires the same way as a
+            // task that's Approved-but-never-verified.
             let verification_timeout = if task.verification_timeout_override > 0 {
                 i64::from(task.verification_timeout_override)
             } else {

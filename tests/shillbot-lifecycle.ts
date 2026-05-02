@@ -185,7 +185,9 @@ interface TaskSetup {
 // Must match `programs/shillbot/src/constants.rs::SWITCHBOARD_FEED`.
 // `setSwitchboardFeed` was removed in Phase 3 blocker #1 Path A;
 // `initialize` now sets `global.switchboard_feed` from this const.
-const DUMMY_SWITCHBOARD_FEED = new PublicKey("11111111111111111111111111111112");
+const DUMMY_SWITCHBOARD_FEED = new PublicKey(
+  "11111111111111111111111111111112"
+);
 
 async function initializeGlobal(
   program: Program<Shillbot>,
@@ -289,6 +291,24 @@ async function submitWork(
     .rpc();
 }
 
+// Phase 3 blocker #3a: client approval gate between Submitted and Verified.
+// verify_task now requires Approved (was Submitted), so every test that
+// reaches Verified must call this helper after submitWork.
+async function approveTask(
+  program: Program<Shillbot>,
+  client: Keypair,
+  taskPdaAddr: PublicKey
+): Promise<void> {
+  await program.methods
+    .approveTask()
+    .accountsPartial({
+      task: taskPdaAddr,
+      client: client.publicKey,
+    })
+    .signers([client])
+    .rpc();
+}
+
 async function verifyTask(
   program: Program<Shillbot>,
   _authority: Keypair,
@@ -385,6 +405,9 @@ describe("shillbot-lifecycle (bankrun)", () => {
       // Warp to submitted_at + 7 days (within staleness window)
       const verifyTime = submittedAt + SEVEN_DAYS_SECONDS;
       await warpToTimestamp(context, verifyTime);
+
+      // Client approves before oracle verification (Phase 3 blocker #3a gate)
+      await approveTask(program, client, setup.taskPda);
 
       await verifyTask(
         program,
@@ -499,6 +522,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       // Warp to T+7d for verification
       await warpToTimestamp(context, submittedAt + SEVEN_DAYS_SECONDS);
+      await approveTask(program, client, setup.taskPda);
       await verifyTask(
         program,
         authority,
@@ -634,6 +658,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       submittedAt = task.submittedAt.toNumber();
 
       await warpToTimestamp(context, submittedAt + SEVEN_DAYS_SECONDS);
+      await approveTask(program, client, setup.taskPda);
       await verifyTask(
         program,
         authority,
@@ -787,6 +812,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       // of 200k) — Switchboard's get_value() requires positive values, so 0
       // is not valid. Payment is still $0 because score < threshold.
       await warpToTimestamp(context, submittedAt + SEVEN_DAYS_SECONDS);
+      await approveTask(program, client, setup.taskPda);
       await verifyTask(
         program,
         authority,

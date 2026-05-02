@@ -22,8 +22,10 @@ Open ──(emergency_return)──► [escrow returned, account closed]
 Claimed ──(submit_work)──► Submitted
 Claimed ──(expire_task: past deadline)──► [escrow returned, account closed]
 Claimed ──(emergency_return)──► [escrow returned, account closed]
-Submitted ──(verify_task: oracle attestation)──► Verified
-Submitted ──(expire_task: T+14d verification timeout)──► [escrow returned, account closed]
+Submitted ──(approve_task: client signs)──► Approved
+Submitted ──(expire_task: T+14d verification timeout from submitted_at)──► [escrow returned, account closed]
+Approved ──(verify_task: oracle attestation)──► Verified
+Approved ──(expire_task: T+14d verification timeout from submitted_at)──► [escrow returned, account closed]
 Verified ──(finalize_task: challenge window passes)──► Finalized → [payment released, account closed]
 Verified ──(challenge_task)──► Disputed
 Disputed ──(resolve_challenge)──► Resolved → [payments adjusted, account closed]
@@ -56,11 +58,12 @@ See `state/*.rs` for full field layouts.
 - `create_task(escrow_lamports, content_hash, deadline, submit_margin, claim_buffer, platform, attestation_delay_override, challenge_window_override, verification_timeout_override)` — client creates task, funds escrow, generates task_nonce from slothash
 - `claim_task()` — agent claims Open task; enforces claim_buffer and max concurrent claims via AgentState
 - `submit_work(content_id)` — agent submits content ID proof; enforces submit_margin
-- `verify_task(composite_score, verification_hash)` — oracle attestation; computes payment, sets challenge window
+- `approve_task()` — client signs to approve submitted content; transitions Submitted → Approved (Phase 3 blocker #3a). The verification timeout clock is NOT reset by approval — it remains anchored on `submitted_at`, so a client cannot indefinitely stall an agent's escrow by approving and then never funding oracle verification.
+- `verify_task(composite_score, verification_hash)` — oracle attestation on an Approved task; computes payment, sets challenge window
 - `finalize_task()` — permissionless crank after challenge window; releases payment to agent, fee to treasury, remainder to client
 - `challenge_task()` — anyone posts bond (2-10x escrow) to dispute during challenge window
 - `resolve_challenge(challenger_won)` — authority resolves dispute; slashes loser's funds
-- `expire_task()` — permissionless crank; returns escrow for expired Open/Claimed tasks or Submitted tasks past verification timeout
+- `expire_task()` — permissionless crank; returns escrow for expired Open/Claimed tasks or Submitted/Approved tasks past verification timeout (measured from `submitted_at`)
 - `emergency_return()` — authority-only batch return of Open/Claimed task escrows (up to 20 tasks)
 
 ### Session Delegation

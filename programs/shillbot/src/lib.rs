@@ -119,6 +119,10 @@ pub mod shillbot {
         instructions::submit_work::submit_work(ctx, content_id)
     }
 
+    pub fn approve_task(ctx: Context<ApproveTask>) -> Result<()> {
+        instructions::approve_task::approve_task(ctx)
+    }
+
     pub fn verify_task(
         ctx: Context<VerifyTask>,
         composite_score: u64,

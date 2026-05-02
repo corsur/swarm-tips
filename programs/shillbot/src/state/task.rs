@@ -10,12 +10,19 @@ use anchor_lang::prelude::*;
 /// Claimed --(submit_work)--> Submitted
 /// Claimed --(expire_task: past deadline)--> [closed]
 /// Claimed --(emergency_return)--> [closed]
-/// Submitted --(verify_task)--> Verified
+/// Submitted --(approve_task: client signs)--> Approved
 /// Submitted --(expire_task: T+14d timeout)--> [closed]
+/// Approved --(verify_task: oracle authority)--> Verified
+/// Approved --(expire_task: T+14d timeout)--> [closed]
 /// Verified --(finalize_task)--> Finalized --> [closed]
 /// Verified --(challenge_task)--> Disputed
 /// Disputed --(resolve_challenge)--> Resolved --> [closed]
 /// ```
+///
+/// Note: `Approved = 7` is appended to preserve `#[repr(u8)]` discriminants
+/// of all prior variants. Existing on-chain Task accounts (created before
+/// the Phase 3 blocker #3a upgrade) keep their bytewise interpretation;
+/// new variants must always append.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum TaskState {
@@ -26,6 +33,7 @@ pub enum TaskState {
     Finalized = 4,
     Disputed = 5,
     Resolved = 6,
+    Approved = 7,
 }
 
 #[account]
@@ -119,16 +127,33 @@ mod tests {
 
     #[test]
     fn task_state_values_are_distinct() {
-        assert_ne!(TaskState::Open as u8, TaskState::Claimed as u8);
-        assert_ne!(TaskState::Claimed as u8, TaskState::Submitted as u8);
-        assert_ne!(TaskState::Submitted as u8, TaskState::Verified as u8);
-        assert_ne!(TaskState::Verified as u8, TaskState::Finalized as u8);
-        assert_ne!(TaskState::Finalized as u8, TaskState::Disputed as u8);
-        assert_ne!(TaskState::Disputed as u8, TaskState::Resolved as u8);
+        // Use a HashSet to prove all variants have distinct discriminants
+        // (the prior pairwise asserts were O(n) and missed cross-pairs).
+        use std::collections::HashSet;
+        let all = [
+            TaskState::Open,
+            TaskState::Claimed,
+            TaskState::Submitted,
+            TaskState::Verified,
+            TaskState::Finalized,
+            TaskState::Disputed,
+            TaskState::Resolved,
+            TaskState::Approved,
+        ];
+        let set: HashSet<u8> = all.iter().map(|s| *s as u8).collect();
+        assert_eq!(
+            set.len(),
+            all.len(),
+            "TaskState discriminants must all be distinct"
+        );
     }
 
     #[test]
     fn task_state_repr_matches_expected() {
+        // CRITICAL: Mainnet on-chain Task accounts encode `state` as the
+        // u8 discriminant of this enum. Reordering or renumbering ANY
+        // prior variant breaks bytewise interpretation of existing
+        // accounts. New variants must always be appended at the end.
         assert_eq!(TaskState::Open as u8, 0);
         assert_eq!(TaskState::Claimed as u8, 1);
         assert_eq!(TaskState::Submitted as u8, 2);
@@ -136,5 +161,6 @@ mod tests {
         assert_eq!(TaskState::Finalized as u8, 4);
         assert_eq!(TaskState::Disputed as u8, 5);
         assert_eq!(TaskState::Resolved as u8, 6);
+        assert_eq!(TaskState::Approved as u8, 7);
     }
 }

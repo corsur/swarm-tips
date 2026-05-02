@@ -656,6 +656,19 @@ describe("shillbot", () => {
         })
         .signers([agent])
         .rpc();
+
+      // Phase 3 blocker #3a: verify_task now requires Approved (was
+      // Submitted). Drive the test task through client approval so the
+      // staleness/feed-mismatch checks below fire as intended rather
+      // than tripping on InvalidTaskState first.
+      await program.methods
+        .approveTask()
+        .accountsPartial({
+          task: taskPdaForVerify,
+          client: client.publicKey,
+        })
+        .signers([client])
+        .rpc();
     });
 
     it("rejects verify from non-authority", async () => {

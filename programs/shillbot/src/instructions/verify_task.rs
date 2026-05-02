@@ -29,9 +29,13 @@ pub fn verify_task(
     let task = &ctx.accounts.task;
     let global = &ctx.accounts.global_state;
 
-    // Checks: state
+    // Checks: state — Phase 3 blocker #3a inserted client approval
+    // between Submitted and Verified. verify_task now requires
+    // Approved (was Submitted). Pre-#3a tasks that never made it
+    // through the new gate must be expired via expire_task; they
+    // can't be verified directly.
     require!(
-        task.state == TaskState::Submitted,
+        task.state == TaskState::Approved,
         ShillbotError::InvalidTaskState
     );
 

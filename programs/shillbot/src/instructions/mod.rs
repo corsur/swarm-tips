@@ -1,3 +1,4 @@
+pub mod approve_task;
 pub mod challenge_task;
 pub mod claim_task;
 pub mod claim_task_session;
@@ -20,6 +21,7 @@ pub mod update_params;
 pub mod update_treasury;
 pub mod verify_task;
 
+pub use approve_task::*;
 pub use challenge_task::*;
 pub use claim_task::*;
 pub use claim_task_session::*;
