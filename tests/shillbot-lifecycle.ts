@@ -1317,4 +1317,259 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Phase 1 reputation counters (#12)
+  //
+  // The Phase 1 reputation counters added to AgentState in task #12 are
+  // load-bearing for the future `agent_profile` MCP tool. These tests
+  // exercise the three update sites:
+  //   - claim_task        bumps total_tasks_claimed
+  //   - finalize_task     bumps total_completed, total_earned, total_score_sum
+  //                       (only when payment > 0, via remaining_accounts)
+  //   - resolve_challenge bumps total_challenges_lost when challenger_won
+  //                       (via remaining_accounts)
+  // The remaining_accounts pattern matches the existing finalize_task
+  // optionality — if the caller omits AgentState, counters don't update
+  // but the instruction still completes.
+  // -------------------------------------------------------------------------
+
+  describe("Phase 1 reputation counters (#12)", () => {
+    const REP_ESCROW = new BN(1 * LAMPORTS_PER_SOL);
+
+    async function freshAgentTask(): Promise<{
+      taskPda: PublicKey;
+      cKp: Keypair;
+      aKp: Keypair;
+      agentPda: PublicKey;
+    }> {
+      const cKp = Keypair.generate();
+      const aKp = Keypair.generate();
+      await fundAccount(provider, cKp.publicKey, 50 * LAMPORTS_PER_SOL);
+      await fundAccount(provider, aKp.publicKey, 10 * LAMPORTS_PER_SOL);
+      const clock = await context.banksClient.getClock();
+      const deadline = new BN(Number(clock.unixTimestamp) + 86_400 * 60);
+
+      const global = await program.account.globalState.fetch(globalPda);
+      const [tPda] = taskPda(
+        global.taskCounter,
+        cKp.publicKey,
+        program.programId
+      );
+      const [csPda] = clientStatePda(cKp.publicKey, program.programId);
+      const [agentPda] = agentStatePda(aKp.publicKey, program.programId);
+
+      await program.methods
+        .createTask(
+          REP_ESCROW,
+          contentHash("rep-counter-" + global.taskCounter.toString()) as any,
+          deadline,
+          new BN(3600),
+          new BN(14_400),
+          0,
+          0,
+          0,
+          0
+        )
+        .accountsPartial({
+          globalState: globalPda,
+          task: tPda,
+          clientState: csPda,
+          client: cKp.publicKey,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([cKp])
+        .rpc();
+
+      return { taskPda: tPda, cKp, aKp, agentPda };
+    }
+
+    it("claim_task increments total_tasks_claimed (counter is monotonic across multiple claims)", async () => {
+      const a = await freshAgentTask();
+      await claimTask(program, a.aKp, a.taskPda);
+      let agentState = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(
+        agentState.totalTasksClaimed.toString(),
+        "1",
+        "first claim sets total_tasks_claimed to 1"
+      );
+      assert.equal(agentState.claimedCount, 1);
+
+      // Submit + approve + verify + finalize to free the claim slot,
+      // then claim a second task with the SAME agent — counter must
+      // continue accumulating.
+      await submitWork(program, a.aKp, a.taskPda, "rep-1");
+      await approveTask(program, a.cKp, a.taskPda);
+      const t1 = await program.account.task.fetch(a.taskPda);
+      await warpToTimestamp(
+        context,
+        t1.submittedAt.toNumber() + SEVEN_DAYS_SECONDS
+      );
+      await verifyTask(
+        program,
+        authority,
+        a.taskPda,
+        globalPda,
+        new BN(MAX_SCORE),
+        context
+      );
+
+      // Second claim by same agent on a fresh task.
+      const b = await freshAgentTask();
+      // Reuse the agent from `a`. We need to fund the same agent enough
+      // to pay for tx — already done in freshAgentTask, but for `a.aKp`
+      // we don't fund again; check existing balance is sufficient.
+      await claimTask(program, a.aKp, b.taskPda);
+      agentState = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(
+        agentState.totalTasksClaimed.toString(),
+        "2",
+        "second claim by same agent bumps total_tasks_claimed to 2"
+      );
+    });
+
+    it("finalize_task with AgentState remaining_account bumps total_completed, total_earned, total_score_sum", async () => {
+      const a = await freshAgentTask();
+      await claimTask(program, a.aKp, a.taskPda);
+      await submitWork(program, a.aKp, a.taskPda, "rep-finalize");
+      await approveTask(program, a.cKp, a.taskPda);
+
+      const t = await program.account.task.fetch(a.taskPda);
+      await warpToTimestamp(
+        context,
+        t.submittedAt.toNumber() + SEVEN_DAYS_SECONDS
+      );
+
+      const SCORE = new BN(800_000); // above QUALITY_THRESHOLD (200_000)
+      await verifyTask(
+        program,
+        authority,
+        a.taskPda,
+        globalPda,
+        SCORE,
+        context
+      );
+
+      const verified = await program.account.task.fetch(a.taskPda);
+      const expectedPayment = verified.paymentAmount.toNumber();
+      assert.isTrue(expectedPayment > 0, "happy-path payment should be > 0");
+
+      // Warp past challenge deadline.
+      const pastChallenge = verified.challengeDeadline.toNumber() + 1;
+      await warpToTimestamp(context, pastChallenge);
+
+      // Snapshot counters before finalize.
+      const before = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(before.totalCompleted.toString(), "0");
+      assert.equal(before.totalEarned.toString(), "0");
+      assert.equal(before.totalScoreSum.toString(), "0");
+
+      await program.methods
+        .finalizeTask()
+        .accountsPartial({
+          task: a.taskPda,
+          globalState: globalPda,
+          agent: a.aKp.publicKey,
+          client: a.cKp.publicKey,
+          treasury: treasury.publicKey,
+        })
+        .remainingAccounts([
+          { pubkey: a.agentPda, isWritable: true, isSigner: false },
+        ])
+        .rpc();
+
+      const after = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(
+        after.totalCompleted.toString(),
+        "1",
+        "total_completed bumps by 1 on first finalize"
+      );
+      assert.equal(
+        after.totalEarned.toString(),
+        expectedPayment.toString(),
+        "total_earned reflects payment_amount"
+      );
+      assert.equal(
+        after.totalScoreSum.toString(),
+        SCORE.toString(),
+        "total_score_sum accumulates the verified composite_score"
+      );
+    });
+
+    it("resolve_challenge with challenger_won=true + AgentState remaining_account bumps total_challenges_lost", async () => {
+      const a = await freshAgentTask();
+      await claimTask(program, a.aKp, a.taskPda);
+      await submitWork(program, a.aKp, a.taskPda, "rep-dispute");
+      await approveTask(program, a.cKp, a.taskPda);
+
+      const t = await program.account.task.fetch(a.taskPda);
+      await warpToTimestamp(
+        context,
+        t.submittedAt.toNumber() + SEVEN_DAYS_SECONDS
+      );
+      await verifyTask(
+        program,
+        authority,
+        a.taskPda,
+        globalPda,
+        new BN(800_000),
+        context
+      );
+
+      // Fund a challenger and post a bond.
+      const challengerKp = Keypair.generate();
+      await fundAccount(
+        provider,
+        challengerKp.publicKey,
+        10 * LAMPORTS_PER_SOL
+      );
+      const verified = await program.account.task.fetch(a.taskPda);
+      const [challPdaForTask] = challengePda(
+        verified.taskId,
+        challengerKp.publicKey,
+        program.programId
+      );
+
+      await program.methods
+        .challengeTask()
+        .accountsPartial({
+          task: a.taskPda,
+          challenge: challPdaForTask,
+          challenger: challengerKp.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([challengerKp])
+        .rpc();
+
+      // Snapshot the loser-counter before resolve.
+      const before = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(before.totalChallengesLost.toString(), "0");
+
+      await program.methods
+        .resolveChallenge(true) // challenger_won = true → agent loses
+        .accountsPartial({
+          task: a.taskPda,
+          challenge: challPdaForTask,
+          globalState: globalPda,
+          authority: authority.publicKey,
+          agent: a.aKp.publicKey,
+          client: a.cKp.publicKey,
+          challenger: challengerKp.publicKey,
+          treasury: treasury.publicKey,
+        })
+        .remainingAccounts([
+          { pubkey: a.agentPda, isWritable: true, isSigner: false },
+        ])
+        .signers([authority])
+        .rpc();
+
+      const after = await program.account.agentState.fetch(a.agentPda);
+      assert.equal(
+        after.totalChallengesLost.toString(),
+        "1",
+        "total_challenges_lost bumps by 1 when agent loses a challenge"
+      );
+    });
+  });
 });

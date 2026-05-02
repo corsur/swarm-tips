@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::ChallengeResolved;
-use crate::state::{Challenge, GlobalState, Task, TaskState};
+use crate::state::{AgentState, Challenge, GlobalState, Task, TaskState};
 use crate::transfers::transfer_lamports;
 
 /// Squads multisig resolves a dispute.
@@ -93,12 +93,57 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
         bond
     };
 
+    // Phase 1 reputation: if challenger won (agent lost) and the caller
+    // passed AgentState as a remaining_account, bump total_challenges_lost.
+    // Optional pattern matches `finalize_task::update_agent_stats` —
+    // omitting the account leaves the counter unchanged but the
+    // resolution still completes.
+    if challenger_won {
+        bump_agent_challenges_lost(ctx.remaining_accounts, ctx.program_id, &task.agent)?;
+    }
+
     emit!(ChallengeResolved {
         task_id: task.task_id,
         challenger_won,
         bond_slashed,
     });
 
+    Ok(())
+}
+
+/// Increment `total_challenges_lost` on the agent's AgentState, when passed
+/// as the first remaining_account. Mirrors the optional-update pattern in
+/// `finalize_task::update_agent_stats`.
+fn bump_agent_challenges_lost(
+    remaining_accounts: &[AccountInfo],
+    program_id: &Pubkey,
+    expected_agent: &Pubkey,
+) -> Result<()> {
+    if remaining_accounts.is_empty() {
+        return Ok(());
+    }
+    let agent_state_info = &remaining_accounts[0];
+
+    if agent_state_info.owner != program_id {
+        return Ok(());
+    }
+
+    let mut data = agent_state_info.try_borrow_mut_data()?;
+    let mut agent_state = match AgentState::try_deserialize(&mut &data[..]) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+
+    if agent_state.agent != *expected_agent {
+        return Ok(());
+    }
+
+    agent_state.total_challenges_lost = agent_state
+        .total_challenges_lost
+        .checked_add(1)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+
+    agent_state.try_serialize(&mut &mut data[..])?;
     Ok(())
 }
 

@@ -60,13 +60,17 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
         remainder,
     )?;
 
-    // If AgentState is passed as remaining_account, update stats
+    // If AgentState is passed as remaining_account, update stats.
+    // Reputation counters (total_completed, total_score_sum) only advance
+    // when payment_amount > 0 (score >= quality_threshold) — preserves
+    // pre-#12 behavior. See `state/agent.rs` doc-comment "Counter semantics".
     if payment_amount > 0 {
         update_agent_stats(
             ctx.remaining_accounts,
             ctx.program_id,
             &task.agent,
             payment_amount,
+            task.composite_score,
         )?;
     }
 
@@ -81,13 +85,14 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
 }
 
 /// If an AgentState account is passed as the first remaining_account, increment
-/// total_completed and total_earned. This is optional — callers that don't care
-/// about agent stats can omit it.
+/// `total_completed`, `total_earned`, and `total_score_sum`. This is optional
+/// — callers that don't care about agent stats can omit it.
 fn update_agent_stats(
     remaining_accounts: &[AccountInfo],
     program_id: &Pubkey,
     expected_agent: &Pubkey,
     payment_amount: u64,
+    composite_score: u64,
 ) -> Result<()> {
     if remaining_accounts.is_empty() {
         return Ok(());
@@ -117,6 +122,10 @@ fn update_agent_stats(
     agent_state.total_earned = agent_state
         .total_earned
         .checked_add(payment_amount)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    agent_state.total_score_sum = agent_state
+        .total_score_sum
+        .checked_add(composite_score)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
 
     agent_state.try_serialize(&mut &mut data[..])?;

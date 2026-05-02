@@ -52,6 +52,11 @@ pub fn claim_task(ctx: Context<ClaimTask>) -> Result<()> {
         .claimed_count
         .checked_add(1)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
+    // Phase 1 reputation: lifetime claim counter for completion_rate.
+    agent_state.total_tasks_claimed = agent_state
+        .total_tasks_claimed
+        .checked_add(1)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
 
     // Effects: update task
     let task = &mut ctx.accounts.task;
