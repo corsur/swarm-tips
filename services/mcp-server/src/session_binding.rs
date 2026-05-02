@@ -88,7 +88,15 @@ impl McpSessionBinding {
                 "failed to persist mcp http session binding (non-fatal — agent can re-register)"
             );
         } else {
+            // CONTRACT: the `event` field below is matched by
+            // coordination-app/infra/monitoring.tf's
+            // `mcp_agent_registrations` log-based metric (filter:
+            // jsonPayload.fields.event="register_wallet_bound"). Do not
+            // remove or rename this field without updating the metric
+            // filter; the alert policy will silently false-positive if
+            // the contract drifts.
             tracing::info!(
+                event = "register_wallet_bound",
                 session_id = %session_id,
                 wallet = %wallet,
                 "mcp http session bound"
