@@ -77,8 +77,9 @@ See `state/*.rs` for full field layouts.
 - `transfer_authority(new_authority)` — transfer GlobalState authority
 - `update_treasury(new_treasury)` — change treasury address
 - `update_oracle_authority(new_oracle_authority)` — change oracle signer
-- `set_switchboard_feed(feed)` — configure Switchboard oracle feed
 - `close_agent_state()` — close AgentState PDA, return rent
+
+**Removed (Phase 3 blocker #1 Path A, ~2026-05-01):** `set_switchboard_feed` was authority-mutable, which created a single-key compromise path to attacker-controlled scores. The Switchboard feed pubkey is now compile-time-locked in `programs/shillbot/src/constants.rs::SWITCHBOARD_FEED` and read directly by `verify_task` — the on-chain `GlobalState.switchboard_feed` field is vestigial (kept for schema compat; not consulted by any instruction). Future feed changes require a program upgrade signed by the upgrade authority (Squads multisig on mainnet). The `SwitchboardFeedUpdated` event was removed alongside the instruction. **USER MUST FILL** the const in `programs/shillbot/src/constants.rs` with the production Switchboard pull-feed pubkey before any mainnet program upgrade — without the swap, mainnet `verify_task` calls fail closed (caller's feed account won't match the placeholder pubkey).
 
 ---
 

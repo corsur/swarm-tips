@@ -121,9 +121,3 @@ pub struct IdentityRevoked {
     pub agent: Pubkey,
     pub platform: u8,
 }
-
-#[event]
-pub struct SwitchboardFeedUpdated {
-    pub old_feed: Pubkey,
-    pub new_feed: Pubkey,
-}

@@ -35,15 +35,28 @@ pub fn verify_task(
         ShillbotError::InvalidTaskState
     );
 
-    // Checks: Switchboard feed is configured
+    // Checks: Switchboard feed is configured (compile-time const)
+    //
+    // Reads the locked compile-time pubkey from `crate::constants` rather
+    // than `global.switchboard_feed`. The on-chain field is vestigial and
+    // kept only for schema compat with already-deployed `GlobalState`
+    // accounts (removing the field would shift byte offsets on the
+    // `_reserved` and `bump` fields that follow it). This eliminates the
+    // post-upgrade migration ambiguity flagged by the round-1 reviewer:
+    // before this commit, `verify_task` depended on whether the historical
+    // value of the on-chain field was ever set (via the now-removed
+    // `set_switchboard_feed` instruction). After this commit, only the
+    // const matters; operational verification at upgrade time reduces to
+    // "did the founder fill `constants::SWITCHBOARD_FEED` with the
+    // production feed pubkey?"
     require!(
-        global.switchboard_feed != Pubkey::default(),
+        crate::constants::SWITCHBOARD_FEED != Pubkey::default(),
         ShillbotError::SwitchboardFeedNotConfigured
     );
 
-    // Checks: feed account matches the configured feed
+    // Checks: feed account matches the locked feed
     require!(
-        ctx.accounts.switchboard_feed.key() == global.switchboard_feed,
+        ctx.accounts.switchboard_feed.key() == crate::constants::SWITCHBOARD_FEED,
         ShillbotError::SwitchboardFeedMismatch
     );
 

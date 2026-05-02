@@ -47,7 +47,12 @@ pub fn initialize(
     global.oracle_authority = ctx.accounts.authority.key();
     global.paused = false;
     global.paused_platforms = 0;
-    global.switchboard_feed = Pubkey::default();
+    // Initialize the (now-vestigial) field. `verify_task` reads
+    // `crate::constants::SWITCHBOARD_FEED` directly; this assignment
+    // exists only so on-chain readers (off-chain indexers, IDL
+    // consumers) see a sensible value rather than zeros. Future
+    // GlobalState v2 may drop the field entirely.
+    global.switchboard_feed = crate::constants::SWITCHBOARD_FEED;
     global._reserved = [0u8; 32];
     global.bump = ctx.bumps.global_state;
 

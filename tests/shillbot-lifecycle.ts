@@ -172,7 +172,10 @@ interface TaskSetup {
 // Dummy Switchboard feed pubkey used in lifecycle tests. The local validator
 // has no real Switchboard program, but verify_task checks that globalState's
 // switchboard_feed is set (non-default) and that the feed account matches.
-const DUMMY_SWITCHBOARD_FEED = Keypair.generate().publicKey;
+// Must match `programs/shillbot/src/constants.rs::SWITCHBOARD_FEED`.
+// `setSwitchboardFeed` was removed in Phase 3 blocker #1 Path A;
+// `initialize` now sets `global.switchboard_feed` from this const.
+const DUMMY_SWITCHBOARD_FEED = new PublicKey("11111111111111111111111111111112");
 
 async function initializeGlobal(
   program: Program<Shillbot>,
@@ -191,16 +194,10 @@ async function initializeGlobal(
     .signers([authority])
     .rpc();
 
-  // Configure switchboard feed so verify_task doesn't reject with
-  // SwitchboardFeedNotConfigured.
-  await program.methods
-    .setSwitchboardFeed(DUMMY_SWITCHBOARD_FEED)
-    .accountsPartial({
-      globalState: globalPda,
-      authority: authority.publicKey,
-    })
-    .signers([authority])
-    .rpc();
+  // Phase 3 blocker #1 Path A removed `setSwitchboardFeed`. `initialize`
+  // sets `global.switchboard_feed` to `constants::SWITCHBOARD_FEED`
+  // (which equals `DUMMY_SWITCHBOARD_FEED` here). No further setup
+  // needed for verify_task to pass the feed-account check.
 }
 
 async function createTask(

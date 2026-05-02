@@ -32,7 +32,13 @@ pub struct GlobalState {
     pub paused: bool,
     /// Bitmask of paused platforms (bit N = PlatformType with value N).
     pub paused_platforms: u16,
-    /// Switchboard pull feed account that provides oracle-attested composite scores.
+    /// Switchboard pull feed account that provides oracle-attested
+    /// composite scores. **Vestigial as of Phase 3 blocker #1 Path A**:
+    /// the field is no longer read by any instruction. `verify_task`
+    /// reads `crate::constants::SWITCHBOARD_FEED` instead. Kept on the
+    /// struct for schema compatibility (removing it would shift byte
+    /// offsets on `_reserved` and `bump`, breaking deserialization of
+    /// already-deployed accounts). Future GlobalState v2 may drop it.
     pub switchboard_feed: Pubkey,
     /// Reserved space for future fields without reallocation.
     pub _reserved: [u8; 32],

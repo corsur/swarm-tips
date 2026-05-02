@@ -4,6 +4,7 @@
 
 use anchor_lang::prelude::*;
 
+pub mod constants;
 pub mod errors;
 pub mod events;
 pub mod instructions;
@@ -194,9 +195,5 @@ pub mod shillbot {
         new_oracle_authority: Pubkey,
     ) -> Result<()> {
         instructions::update_oracle_authority::update_oracle_authority(ctx, new_oracle_authority)
-    }
-
-    pub fn set_switchboard_feed(ctx: Context<SetSwitchboardFeed>, feed: Pubkey) -> Result<()> {
-        instructions::set_switchboard_feed::set_switchboard_feed(ctx, feed)
     }
 }
