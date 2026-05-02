@@ -19,7 +19,12 @@ const MAX_SCORE = 1_000_000;
 const CHALLENGE_WINDOW_SECONDS = 86_400;
 const PROTOCOL_FEE_BPS = 1000; // 10%
 const QUALITY_THRESHOLD = new BN(200_000);
-const ESCROW_LAMPORTS = new BN(100_000_000); // 0.1 SOL
+// Must be >= MIN_ESCROW_LAMPORTS (0.36 SOL = 360_000_000) per Phase 3 blocker #2.
+// Tests pre-#10 used 0.1 SOL; bumped to 0.36 SOL when the on-chain floor landed
+// (commit `319b47a`). The cascade of EscrowBelowMinimum failures in CI runs
+// 25244246392 / 25244547607 / 25244070768 was the missed companion edit on
+// this file (`shillbot-lifecycle.ts` was updated, this file was not).
+const ESCROW_LAMPORTS = new BN(360_000_000); // 0.36 SOL == MIN_ESCROW_LAMPORTS floor
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -135,8 +140,11 @@ describe("shillbot", () => {
   before(async () => {
     [globalPda] = globalStatePda(program.programId);
 
-    // Airdrop to all wallets
-    for (const kp of [client, agent, challenger, treasury]) {
+    // Airdrop to all wallets. The client funds ~30+ tasks across the
+    // describe blocks at 0.36 SOL each plus rate-limit fixtures, so it
+    // needs significantly more than the 5 SOL we airdropped pre-#10.
+    await airdrop(provider.connection, client.publicKey, 50 * LAMPORTS_PER_SOL);
+    for (const kp of [agent, challenger, treasury]) {
       await airdrop(provider.connection, kp.publicKey, 5 * LAMPORTS_PER_SOL);
     }
   });
