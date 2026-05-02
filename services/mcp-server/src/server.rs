@@ -1046,6 +1046,18 @@ impl SwarmTipsMcp {
 const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
+## Tool categories
+This server exposes 22 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+
+- **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
+- **shillbot** (8 tools, prefix `shillbot_*`): content-creation marketplace. `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
+- **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
+- **listings** (2 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`.
+
+`register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
+
+Naive MCP clients that don't support per-server allowlists load all 22 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
+
 ## Wallet registration
 1. register_wallet — register your Solana wallet (required for any STATE/SPEND/EARN tool). One registration covers every product (Coordination Game + Shillbot). Non-custodial: only the public key is registered, the private key stays on the agent.
 
