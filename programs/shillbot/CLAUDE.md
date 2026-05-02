@@ -126,3 +126,9 @@ Authority (Squads multisig on mainnet) can modify via `update_params`:
 - `challenge_window_seconds`, `verification_timeout_seconds`, `attestation_delay_seconds`, `staleness_window_seconds`
 - `max_concurrent_claims`, `challenge_bond_multiplier`, `bond_slash_treasury_bps`
 - `paused`, `paused_platforms` — emergency pause controls
+
+---
+
+## Known limitations
+
+- **Approval-grief vector (Phase 3 blocker #3a residual).** A malicious client can create a task, wait for an agent to submit work, and then never call `approve_task`. The agent's escrow stays locked until `expire_task` returns it at T+verification_timeout (~14 days default). The agent's `claimed_count` is decremented on `submit_work`, so the agent can claim other tasks during this period — but the specific escrow is dead capital. The per-client rate limit (Phase 3 blocker #2: 10 tasks/hour) caps the harm at 10 agents per malicious client per hour. A first-class `reject_task` instruction with reason capture (Phase 3 blocker #3a follow-up) would let agents re-claim their attention faster than the timeout. Future hardening: client reputation slashing on excessive non-approval rates, or a shorter timeout when the client is silent vs. actively rejecting.

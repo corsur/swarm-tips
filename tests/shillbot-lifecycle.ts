@@ -1092,4 +1092,229 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Phase 3 blocker #3a: client approval gate between Submitted and Verified
+  //
+  // Behavior coverage for the new `approve_task` instruction. The Reviewer
+  // flagged that the wiring-only test additions (approveTask helper inserted
+  // between submitWork and verifyTask everywhere) didn't catch:
+  //
+  //   1. NotTaskClient: arbitrary signer cannot approve someone else's task.
+  //   2. InvalidTaskState: approve_task only valid from Submitted (not Open
+  //      or already-Approved).
+  //   3. The new verify_task gate: rejects state == Submitted (must be
+  //      Approved now).
+  //   4. Freeze-attack defense: the verification timeout is anchored on
+  //      submitted_at, NOT approved_at — a client who approves and then
+  //      never funds oracle verification still has the escrow returned at
+  //      T+verification_timeout.
+  // -------------------------------------------------------------------------
+
+  describe("Phase 3 blocker #3a approve gate", () => {
+    // Must match `programs/shillbot::DEFAULT_VERIFICATION_TIMEOUT_SECONDS`.
+    const VERIFICATION_TIMEOUT_SECONDS = 1_209_600; // 14 days
+    const MIN_ESCROW_LAMPORTS = new BN(360_000_000); // 0.36 SOL
+
+    /** Fresh client + agent + funded task, returned at the requested state. */
+    async function freshTask(): Promise<{
+      taskPda: PublicKey;
+      cKp: Keypair;
+      aKp: Keypair;
+    }> {
+      const cKp = Keypair.generate();
+      const aKp = Keypair.generate();
+      await fundAccount(provider, cKp.publicKey, 50 * LAMPORTS_PER_SOL);
+      await fundAccount(provider, aKp.publicKey, 10 * LAMPORTS_PER_SOL);
+      const clock = await context.banksClient.getClock();
+      const deadline = new BN(Number(clock.unixTimestamp) + 86_400 * 60);
+
+      const global = await program.account.globalState.fetch(globalPda);
+      const [tPda] = taskPda(
+        global.taskCounter,
+        cKp.publicKey,
+        program.programId
+      );
+      const [csPda] = clientStatePda(cKp.publicKey, program.programId);
+
+      await program.methods
+        .createTask(
+          MIN_ESCROW_LAMPORTS,
+          contentHash("approve-gate-" + global.taskCounter.toString()) as any,
+          deadline,
+          new BN(3600),
+          new BN(14_400),
+          0,
+          0,
+          0,
+          0
+        )
+        .accountsPartial({
+          globalState: globalPda,
+          task: tPda,
+          clientState: csPda,
+          client: cKp.publicKey,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([cKp])
+        .rpc();
+
+      return { taskPda: tPda, cKp, aKp };
+    }
+
+    it("approve_task rejects when caller is not the original client (NotTaskClient)", async () => {
+      const { taskPda: tPda, cKp, aKp } = await freshTask();
+      await claimTask(program, aKp, tPda);
+      await submitWork(program, aKp, tPda, "wrong-signer");
+
+      const imposter = Keypair.generate();
+      await fundAccount(provider, imposter.publicKey, 1 * LAMPORTS_PER_SOL);
+
+      try {
+        await program.methods
+          .approveTask()
+          .accountsPartial({
+            task: tPda,
+            client: imposter.publicKey,
+          })
+          .signers([imposter])
+          .rpc();
+        assert.fail("expected NotTaskClient, got success");
+      } catch (e: any) {
+        const msg = String(e);
+        assert.match(
+          msg,
+          /NotTaskClient/,
+          `expected NotTaskClient, got: ${msg}`
+        );
+      }
+
+      // Sanity: real client can still approve afterwards.
+      await approveTask(program, cKp, tPda);
+      const t = await program.account.task.fetch(tPda);
+      assert.deepEqual(t.state, { approved: {} });
+    });
+
+    it("approve_task rejects when state is Open (not yet Submitted)", async () => {
+      const { taskPda: tPda, cKp } = await freshTask();
+      // Skip claim + submit — leave in Open state.
+      try {
+        await approveTask(program, cKp, tPda);
+        assert.fail("expected InvalidTaskState, got success");
+      } catch (e: any) {
+        const msg = String(e);
+        assert.match(
+          msg,
+          /InvalidTaskState/,
+          `expected InvalidTaskState, got: ${msg}`
+        );
+      }
+    });
+
+    it("approve_task is non-idempotent: second call on already-Approved task rejects", async () => {
+      const { taskPda: tPda, cKp, aKp } = await freshTask();
+      await claimTask(program, aKp, tPda);
+      await submitWork(program, aKp, tPda, "double-approve");
+      await approveTask(program, cKp, tPda);
+
+      try {
+        await approveTask(program, cKp, tPda);
+        assert.fail("expected InvalidTaskState on double-approve, got success");
+      } catch (e: any) {
+        const msg = String(e);
+        assert.match(
+          msg,
+          /InvalidTaskState/,
+          `expected InvalidTaskState, got: ${msg}`
+        );
+      }
+    });
+
+    it("verify_task rejects state == Submitted (must be Approved post-#3a)", async () => {
+      const { taskPda: tPda, cKp, aKp } = await freshTask();
+      await claimTask(program, aKp, tPda);
+      await submitWork(program, aKp, tPda, "skip-approve");
+
+      const t = await program.account.task.fetch(tPda);
+      const submittedAt = t.submittedAt.toNumber();
+      // Warp into the staleness window so that the InvalidTaskState reject
+      // fires BEFORE the staleness check (which would also fail otherwise
+      // and mask the regression we're guarding against).
+      await warpToTimestamp(context, submittedAt + SEVEN_DAYS_SECONDS);
+
+      try {
+        await verifyTask(
+          program,
+          authority,
+          tPda,
+          globalPda,
+          new BN(800_000),
+          context
+        );
+        assert.fail("expected InvalidTaskState, got success");
+      } catch (e: any) {
+        const msg = String(e);
+        // approve_task gate must reject Submitted state with InvalidTaskState
+        // — NOT AttestationStale or any Switchboard error.
+        assert.match(
+          msg,
+          /InvalidTaskState/,
+          `expected InvalidTaskState (post-#3a verify gate), got: ${msg}`
+        );
+      }
+    });
+
+    it("freeze-attack defense: timeout is anchored on submitted_at, not approved_at", async () => {
+      // The freeze attack: client approves, then never funds oracle
+      // verification. If the verification timeout were anchored on
+      // approved_at, the client could indefinitely freeze the agent's
+      // escrow + claim slot by approving at the last possible moment.
+      // The timeout is anchored on submitted_at to defeat this.
+      //
+      // This test exercises the defense: approve immediately after
+      // submitting, then warp to T = submitted_at + verification_timeout
+      // + 1, then expire_task must succeed (returning escrow to client).
+      const { taskPda: tPda, cKp, aKp } = await freshTask();
+      await claimTask(program, aKp, tPda);
+      await submitWork(program, aKp, tPda, "freeze-attack");
+      await approveTask(program, cKp, tPda);
+
+      const t = await program.account.task.fetch(tPda);
+      assert.deepEqual(t.state, { approved: {} });
+      const submittedAt = t.submittedAt.toNumber();
+
+      // Warp to past submitted_at + verification_timeout (NOT
+      // approved_at + verification_timeout). If a future contributor
+      // re-anchors the timeout on approved_at, this assertion fails.
+      const expiryTs = submittedAt + VERIFICATION_TIMEOUT_SECONDS + 1;
+      await warpToTimestamp(context, expiryTs);
+
+      const clientBalBefore = await getBalance(context, cKp.publicKey);
+      const [agentPda] = agentStatePda(aKp.publicKey, program.programId);
+
+      await program.methods
+        .expireTask()
+        .accountsPartial({
+          task: tPda,
+          client: cKp.publicKey,
+        })
+        .remainingAccounts([
+          { pubkey: agentPda, isWritable: true, isSigner: false },
+        ])
+        .rpc();
+
+      // Task account closed.
+      const taskAcct = await context.banksClient.getAccount(tPda);
+      assert.isNull(taskAcct, "Task account should be closed after expire");
+
+      // Client receives at least the escrow back (plus rent from closure).
+      const clientBalAfter = await getBalance(context, cKp.publicKey);
+      const delta = Number(clientBalAfter) - Number(clientBalBefore);
+      assert.isTrue(
+        delta >= MIN_ESCROW_LAMPORTS.toNumber(),
+        `client should receive at least the escrow back; got delta=${delta}`
+      );
+    });
+  });
 });

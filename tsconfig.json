@@ -6,5 +6,6 @@
     "module": "commonjs",
     "target": "es2020",
     "esModuleInterop": true
-  }
+  },
+  "exclude": ["node_modules", "target", ".anchor"]
 }
