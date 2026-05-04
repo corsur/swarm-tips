@@ -126,7 +126,13 @@ describe("shillbot", () => {
   const program = anchor.workspace.shillbot as Program<Shillbot>;
 
   const authority = (provider.wallet as anchor.Wallet).payer;
-  const client = Keypair.generate();
+  // `client` is rebound per-test in `beforeEach` (see below). This is a
+  // mutable holder; every test gets a fresh keypair so the per-client
+  // task-creation rate limit (10 tasks / 1h, Phase 3 blocker #2) doesn't
+  // accumulate across describe blocks. Pre-#10 the file used a single
+  // shared client and accumulated 30+ task creations across the suite,
+  // tripping `RateLimitExceeded` from test #11 onward.
+  let client = Keypair.generate();
   const agent = Keypair.generate();
   const challenger = Keypair.generate();
   const treasury = Keypair.generate();
@@ -140,13 +146,23 @@ describe("shillbot", () => {
   before(async () => {
     [globalPda] = globalStatePda(program.programId);
 
-    // Airdrop to all wallets. The client funds ~30+ tasks across the
-    // describe blocks at 0.36 SOL each plus rate-limit fixtures, so it
-    // needs significantly more than the 5 SOL we airdropped pre-#10.
-    await airdrop(provider.connection, client.publicKey, 50 * LAMPORTS_PER_SOL);
+    // One-time airdrops for stable wallets that aren't rebound per-test.
     for (const kp of [agent, challenger, treasury]) {
       await airdrop(provider.connection, kp.publicKey, 5 * LAMPORTS_PER_SOL);
     }
+  });
+
+  beforeEach(async () => {
+    // Mint and fund a fresh client keypair before every `it`. This keeps
+    // each test's rate-limit budget (10 createTask calls / 1h per client
+    // wallet) at full, regardless of how many tasks earlier tests created.
+    // Each describe's pre-existing `before()` hooks that build setup
+    // fixtures still see a fresh client at first invocation; subsequent
+    // `it`s in the same describe ALSO get a fresh client, but tests
+    // referencing earlier-created task PDAs still work because the PDA
+    // is recorded in test-local state after creation.
+    client = Keypair.generate();
+    await airdrop(provider.connection, client.publicKey, 5 * LAMPORTS_PER_SOL);
   });
 
   // ---------------------------------------------------------------------------
