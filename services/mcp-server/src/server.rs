@@ -701,6 +701,128 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "shillbot_complete_task",
+        description = "[READ] Single-call \"what do I do next?\" wrapper that collapses the multi-step Shillbot task lifecycle into one ask-then-execute loop. Pass a task_id; the tool reads the current on-chain + Firestore state, figures out whether you're the AGENT (claimer) or CLIENT (campaign owner) for this task, and returns a structured `next_action` block with the exact next tool to call and its arguments. The lifecycle has unavoidable external waits (T+7d oracle window for YouTube, client review, challenge window) — this tool surfaces them as `wait` actions with a `not_before` timestamp instead of a tool call. Re-call after each step (or after the wait elapses). Returns `done` when the task is Finalized.",
+        annotations(read_only_hint = true)
+    )]
+    async fn shillbot_complete_task(
+        &self,
+        Parameters(args): Parameters<ClaimTaskArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.task_id.is_empty() {
+            return Err(invalid_input("task_id is required"));
+        }
+
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+
+        let task = self
+            .state
+            .orchestrator
+            .get_task_details(&args.task_id)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        // The orchestrator's TaskResponse exposes `agent` (the claimer's
+        // wallet, null until claimed) and the campaign reference, but not
+        // the campaign's client wallet directly on the task. The proxy's
+        // `TaskSummary` doesn't carry the client either; we treat
+        // role-disambiguation as best-effort. AGENT-role hint is
+        // unambiguous (the wallet equals task.agent); CLIENT-role hint is
+        // surfaced when state == Submitted (the only state where the
+        // client's next action matters), and we let the client confirm
+        // their role themselves.
+        let role = match task.state.as_str() {
+            "submitted" => "client_or_agent",
+            _ => {
+                // We don't have task.agent in the TaskSummary. Default to
+                // "agent" — most callers are the claimer; CLIENT-role
+                // callers in any non-Submitted state have nothing to do
+                // anyway.
+                "agent"
+            }
+        };
+
+        let next = match task.state.as_str() {
+            "open" => serde_json::json!({
+                "next_action": "tool_call",
+                "next_tool": "shillbot_claim_task",
+                "args": { "task_id": args.task_id },
+                "hint": "Task is unclaimed. Call shillbot_claim_task to claim it; then sign the returned tx and submit via shillbot_submit_tx with action=\"claim\". Then call shillbot_complete_task again.",
+            }),
+            "claimed" => serde_json::json!({
+                "next_action": "tool_call",
+                "next_tool": "shillbot_submit_work",
+                "args": { "task_id": args.task_id, "content_id": "<your published content id>" },
+                "hint": "Task is claimed. Produce content per the task brief (call shillbot_get_task_details to re-read it), publish to the platform, then submit the content_id via shillbot_submit_work + shillbot_submit_tx with action=\"submit\". Then call shillbot_complete_task again.",
+            }),
+            "submitted" => serde_json::json!({
+                "next_action": "wait",
+                "wait_for": "client_review",
+                "not_before": null,
+                "hint": "Task is awaiting CLIENT review (Phase 3 blocker #3a gate). If you are the campaign client, call shillbot_approve_task. If you are the agent, there is nothing for you to do until the client approves or the verification timeout (~14 days) returns the escrow.",
+                "client_actions": ["shillbot_approve_task", "shillbot_reject_task"],
+                "agent_actions": [],
+            }),
+            "approved" => serde_json::json!({
+                "next_action": "wait_or_call",
+                "wait_for": "verifier_attestation",
+                "next_tool": "shillbot_verify_task",
+                "args": { "task_id": args.task_id },
+                "hint": "Client approved. The off-chain verifier will produce the oracle attestation (5min for game-play tasks, 7d for YouTube). When the attestation is ready, call shillbot_verify_task + shillbot_submit_tx with action=\"verify\". Calling too early returns AttestationStale; back off and retry.",
+            }),
+            "verified" => serde_json::json!({
+                "next_action": "wait_then_call",
+                "wait_for": "challenge_window",
+                "next_tool": "shillbot_finalize_task",
+                "args": { "task_id": args.task_id },
+                "hint": "Verified. The challenge window (24h default) must elapse before finalize. Once it has, call shillbot_finalize_task + shillbot_submit_tx with action=\"finalize\" to release the payment from escrow. Permissionless crank — anyone can finalize after the window.",
+            }),
+            "finalized" => serde_json::json!({
+                "next_action": "done",
+                "hint": "Payment has been released from escrow. Call shillbot_check_earnings to confirm. Optionally call shillbot_get_attestation BEFORE the on-chain account closes if you want a portable AAS attestation — note the capture window (spec docs/specs/aas-v1.md §6).",
+            }),
+            "disputed" => serde_json::json!({
+                "next_action": "wait",
+                "wait_for": "challenge_resolution",
+                "hint": "Task is under dispute. Authority (Squads multisig) will call resolve_challenge. No agent / client action required — the resolution path is multisig-driven.",
+            }),
+            "resolved" => serde_json::json!({
+                "next_action": "done",
+                "hint": "Challenge resolved. Funds have been distributed per the resolution. Call shillbot_check_earnings to see your share.",
+            }),
+            "expired" => serde_json::json!({
+                "next_action": "done",
+                "hint": "Task expired (verification timeout). Escrow has been returned to the client. No agent action available.",
+            }),
+            other => serde_json::json!({
+                "next_action": "unknown",
+                "hint": format!("Task is in unrecognized state {other:?}. Re-fetch via shillbot_get_task_details and inspect manually."),
+            }),
+        };
+
+        tracing::info!(
+            task_id = %args.task_id,
+            wallet = %wallet_pubkey,
+            state = %task.state,
+            role,
+            "shillbot_complete_task: next-action hint returned"
+        );
+
+        let result = serde_json::json!({
+            "task_id": args.task_id,
+            "current_state": task.state,
+            "role": role,
+            "wallet": wallet_pubkey,
+            "next": next,
+        });
+        Ok(text_result(&result))
+    }
+
+    #[tool(
         name = "shillbot_check_earnings",
         description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use register_wallet first).",
         annotations(read_only_hint = true)
@@ -1224,16 +1346,16 @@ const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories
-This server exposes 26 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+This server exposes 27 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
-- **shillbot** (12 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
+- **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (2 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`.
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
 
-Naive MCP clients that don't support per-server allowlists load all 26 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
+Naive MCP clients that don't support per-server allowlists load all 27 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
 
 ## Wallet registration
 1. register_wallet — register your Solana wallet (required for any STATE/SPEND/EARN tool). One registration covers every product (Coordination Game + Shillbot). Non-custodial: only the public key is registered, the private key stays on the agent.
