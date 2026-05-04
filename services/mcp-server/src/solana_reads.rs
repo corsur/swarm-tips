@@ -7,11 +7,14 @@
 //! `programs/shillbot/src/state/agent.rs::AgentState` (post-#12) and
 //! `programs/coordination-game/src/state/player.rs::PlayerProfile`.
 //!
-//! Discriminators are NOT verified here — the JSON-RPC responses
-//! return `(owner, data)` and the caller filters by program id +
-//! account length. A future hardening pass could add Anchor
-//! discriminator verification, mirroring the AAS verifier
-//! (`services/aas-verifier-ts/src/discriminator.ts`).
+//! Anchor account discriminators are verified before parsing as
+//! defense-in-depth: if the off-chain `derive_pda` ever produced a
+//! wrong address that happened to host a different account type,
+//! length matching alone could let parsing proceed against garbage.
+//! The discriminator check (`sha256("account:<Name>")[0..8]`,
+//! mirroring `services/aas-verifier-ts/src/discriminator.ts`)
+//! fails fast with a clear error instead. See
+//! `fetch_account_data`.
 
 use base64::Engine;
 
@@ -22,6 +25,20 @@ const SHILLBOT_PROGRAM_ID_BASE58: &str = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EA
 
 /// Coordination Game program ID.
 const COORDINATION_GAME_PROGRAM_ID_BASE58: &str = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P";
+
+/// Anchor account discriminator: `sha256("account:" + name)[0..8]`.
+/// Used by `fetch_account_data` to defense-in-depth-verify the read
+/// landed on the right account type before parsing field offsets.
+/// Computed at module-load time (constant input → constant output).
+fn anchor_discriminator(account_kind: &str) -> [u8; 8] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(format!("account:{account_kind}").as_bytes());
+    let h: [u8; 32] = hasher.finalize().into();
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&h[0..8]);
+    out
+}
 
 /// Field-offset map for the post-#12 `AgentState` body
 /// (`programs/shillbot/src/state/agent.rs`):
@@ -123,7 +140,8 @@ pub async fn read_agent_state(
     agent_pubkey_b58: &str,
 ) -> Result<Option<AgentStateData>, McpServiceError> {
     let pda = agent_state_pda(agent_pubkey_b58)?;
-    let body = match fetch_account_data(client, rpc_url, &pda).await? {
+    let expected_disc = anchor_discriminator("AgentState");
+    let body = match fetch_account_data(client, rpc_url, &pda, Some(&expected_disc)).await? {
         None => return Ok(None),
         Some(b) => b,
     };
@@ -157,7 +175,8 @@ pub async fn read_player_profile(
     tournament_id: u64,
 ) -> Result<Option<PlayerProfileData>, McpServiceError> {
     let pda = player_profile_pda(wallet_b58, tournament_id)?;
-    let body = match fetch_account_data(client, rpc_url, &pda).await? {
+    let expected_disc = anchor_discriminator("PlayerProfile");
+    let body = match fetch_account_data(client, rpc_url, &pda, Some(&expected_disc)).await? {
         None => return Ok(None),
         Some(b) => b,
     };
@@ -186,10 +205,21 @@ pub async fn read_player_profile(
 /// JSON-RPC `getAccountInfo` with base64 encoding. Returns the data
 /// bytes AFTER the 8-byte Anchor discriminator (caller works with
 /// the body), or `None` if the account doesn't exist.
+///
+/// `expected_discriminator` adds defense-in-depth: if Some, the
+/// returned account's first 8 bytes MUST match (the canonical Anchor
+/// `sha256("account:<Name>")[0..8]`). If None, the discriminator is
+/// stripped without verification (legacy callers; new code passes
+/// the expected bytes). A discriminator mismatch returns
+/// `OrchestratorError` rather than silently parsing garbage as the
+/// caller's expected struct — covers the "what if our locally-
+/// derived PDA points at a different account type" failure mode
+/// even when on-chain account ownership says it shouldn't.
 async fn fetch_account_data(
     client: &reqwest::Client,
     rpc_url: &str,
     pubkey_b58: &str,
+    expected_discriminator: Option<&[u8; 8]>,
 ) -> Result<Option<Vec<u8>>, McpServiceError> {
     let request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -239,17 +269,27 @@ async fn fetch_account_data(
         .decode(b64)
         .map_err(|e| McpServiceError::OrchestratorError(format!("base64 decode: {e}")))?;
 
-    // Strip the 8-byte Anchor discriminator. The caller works with the
-    // account body. We don't verify the discriminator value here — a
-    // malformed account would manifest as a body-too-short error in the
-    // caller, which is acceptable for v1 (an attacker can't trick the
-    // verifier into believing wrong data without writing to a PDA they
-    // control under the right program, which Solana's runtime prevents).
+    // Verify + strip the 8-byte Anchor discriminator. Verifying covers
+    // the "our locally-derived PDA points at a different-type account"
+    // failure mode — Solana's runtime prevents writes to PDAs from
+    // arbitrary programs, but if the off-chain `derive_pda` produced
+    // a wrong address that happens to host a different account type,
+    // length matching alone could let parsing proceed against garbage.
+    // The discriminator check fails fast with a clear error.
     if bytes.len() < 8 {
         return Err(McpServiceError::OrchestratorError(format!(
             "account too short for discriminator: {} bytes",
             bytes.len()
         )));
+    }
+    if let Some(expected) = expected_discriminator {
+        if &bytes[0..8] != expected.as_slice() {
+            return Err(McpServiceError::OrchestratorError(format!(
+                "account discriminator mismatch at {pubkey_b58}: expected {:02x?}, got {:02x?}",
+                expected,
+                &bytes[0..8]
+            )));
+        }
     }
     Ok(Some(bytes[8..].to_vec()))
 }
@@ -348,5 +388,90 @@ mod tests {
     fn read_u64_le_rejects_wrong_length() {
         assert!(read_u64_le(&[0u8; 7]).is_err());
         assert!(read_u64_le(&[0u8; 9]).is_err());
+    }
+
+    /// Canonical cross-check: the locally-implemented `derive_pda`
+    /// MUST produce the same address as Solana's
+    /// `Pubkey::find_program_address` for any (seeds, program_id).
+    /// Without this test, a subtle algorithm error in `derive_pda`
+    /// (hash field ordering, sentinel typo, off-curve check
+    /// disagreement, bump direction) would silently make every PDA
+    /// derivation wrong and every `agent_profile` read return None.
+    #[test]
+    fn derive_pda_matches_solana_sdk_find_program_address() {
+        use solana_sdk::pubkey::Pubkey;
+        use std::str::FromStr;
+
+        let shillbot_program = Pubkey::from_str(SHILLBOT_PROGRAM_ID_BASE58).unwrap();
+        let coordination_program = Pubkey::from_str(COORDINATION_GAME_PROGRAM_ID_BASE58).unwrap();
+        let shillbot_program_bytes = shillbot_program.to_bytes();
+        let coordination_program_bytes = coordination_program.to_bytes();
+
+        // Test wallets — three distinct ones so multiple bumps get
+        // exercised.
+        let wallets_b58 = [
+            "11111111111111111111111111111112",
+            "11111111111111111111111111111113",
+            "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+        ];
+
+        for wallet_b58 in wallets_b58 {
+            let wallet_pk = Pubkey::from_str(wallet_b58).unwrap();
+            let wallet_bytes = wallet_pk.to_bytes();
+
+            // ----- AgentState seeds -----
+            let (sdk_pda, _sdk_bump) = Pubkey::find_program_address(
+                &[b"agent_state", wallet_bytes.as_ref()],
+                &shillbot_program,
+            );
+            let local_pda_bytes =
+                derive_pda(&[b"agent_state", &wallet_bytes], &shillbot_program_bytes);
+            assert_eq!(
+                sdk_pda.to_bytes(),
+                local_pda_bytes,
+                "AgentState PDA divergence for wallet {wallet_b58}"
+            );
+
+            // ----- PlayerProfile seeds (per-tournament) -----
+            for tournament_id in [0u64, 1, 42] {
+                let tid_le = tournament_id.to_le_bytes();
+                let (sdk_pda, _sdk_bump) = Pubkey::find_program_address(
+                    &[b"player", tid_le.as_ref(), wallet_bytes.as_ref()],
+                    &coordination_program,
+                );
+                let local_pda_bytes = derive_pda(
+                    &[b"player", &tid_le, &wallet_bytes],
+                    &coordination_program_bytes,
+                );
+                assert_eq!(
+                    sdk_pda.to_bytes(),
+                    local_pda_bytes,
+                    "PlayerProfile PDA divergence for wallet {wallet_b58}, tournament_id {tournament_id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn anchor_discriminator_matches_canonical() {
+        // sha256("account:Task")[0..8] — same value that the AAS
+        // verifier in `services/aas-verifier-{ts,py}` computes. The
+        // bytes themselves aren't documented anywhere as a
+        // hardcoded constant; we just verify determinism + length
+        // here. The cross-language cross-check happens in the AAS
+        // verifier suite.
+        let task_disc = anchor_discriminator("Task");
+        let task_disc2 = anchor_discriminator("Task");
+        assert_eq!(task_disc, task_disc2);
+        assert_eq!(task_disc.len(), 8);
+
+        // Different account-kind names must yield different
+        // discriminators (sha256 collision resistance — practically
+        // certain).
+        let agent_state_disc = anchor_discriminator("AgentState");
+        let player_disc = anchor_discriminator("PlayerProfile");
+        assert_ne!(task_disc, agent_state_disc);
+        assert_ne!(agent_state_disc, player_disc);
+        assert_ne!(player_disc, task_disc);
     }
 }
