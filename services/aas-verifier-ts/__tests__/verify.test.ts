@@ -16,14 +16,13 @@ import {
   verifyV1OnChain,
   shillbotProtocol,
 } from "../src/index.js";
-import type {
-  AasV1Attestation,
-  ProtocolHandler,
-} from "../src/index.js";
+import type { AasV1Attestation, ProtocolHandler } from "../src/index.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 
 /** A minimal valid v1 attestation. Uses real-shaped pubkeys / hashes. */
-function fixtureAttestation(overrides: Partial<AasV1Attestation> = {}): AasV1Attestation {
+function fixtureAttestation(
+  overrides: Partial<AasV1Attestation> = {}
+): AasV1Attestation {
   return {
     version: "aas/v1",
     network: "mainnet",
@@ -58,13 +57,13 @@ describe("schema check (step 1)", () => {
 
   it("rejects non-base58 pubkeys", () => {
     expect(
-      checkSchema(fixtureAttestation({ program_id: "not-base58!!" })),
+      checkSchema(fixtureAttestation({ program_id: "not-base58!!" }))
     ).toBe("schema_invalid:program_id");
   });
 
   it("rejects oracle_feed that is neither pubkey nor null", () => {
     expect(checkSchema(fixtureAttestation({ oracle_feed: "" }))).toBe(
-      "schema_invalid:oracle_feed",
+      "schema_invalid:oracle_feed"
     );
   });
 
@@ -79,16 +78,16 @@ describe("schema check (step 1)", () => {
 
   it("rejects platform outside u8 range", () => {
     expect(checkSchema(fixtureAttestation({ platform: 256 }))).toBe(
-      "schema_invalid:platform",
+      "schema_invalid:platform"
     );
     expect(checkSchema(fixtureAttestation({ platform: -1 }))).toBe(
-      "schema_invalid:platform",
+      "schema_invalid:platform"
     );
   });
 
   it("rejects task_id with leading zero", () => {
     expect(checkSchema(fixtureAttestation({ task_id: "042" }))).toBe(
-      "schema_invalid:task_id",
+      "schema_invalid:task_id"
     );
   });
 
@@ -99,31 +98,37 @@ describe("schema check (step 1)", () => {
   it("rejects task_id that overflows u64", () => {
     // u64 max + 1
     expect(
-      checkSchema(fixtureAttestation({ task_id: "18446744073709551616" })),
+      checkSchema(fixtureAttestation({ task_id: "18446744073709551616" }))
     ).toBe("schema_invalid:task_id");
   });
 
   it("rejects uppercase hex-32", () => {
     expect(
-      checkSchema(fixtureAttestation({ verification_hash: "A".repeat(64) })),
+      checkSchema(fixtureAttestation({ verification_hash: "A".repeat(64) }))
     ).toBe("schema_invalid:verification_hash");
   });
 
   it("rejects 0x-prefixed hex", () => {
     expect(
-      checkSchema(fixtureAttestation({ verification_hash: "0x" + "a".repeat(62) })),
+      checkSchema(
+        fixtureAttestation({ verification_hash: "0x" + "a".repeat(62) })
+      )
     ).toBe("schema_invalid:verification_hash");
   });
 
   it("rejects RFC 3339 with fractional seconds (per spec §3 row)", () => {
     expect(
-      checkSchema(fixtureAttestation({ verified_at: "2026-05-02T12:00:00.123Z" })),
+      checkSchema(
+        fixtureAttestation({ verified_at: "2026-05-02T12:00:00.123Z" })
+      )
     ).toBe("schema_invalid:verified_at");
   });
 
   it("accepts both Z and +00:00 RFC 3339 forms", () => {
     expect(
-      checkSchema(fixtureAttestation({ verified_at: "2026-05-02T12:00:00+00:00" })),
+      checkSchema(
+        fixtureAttestation({ verified_at: "2026-05-02T12:00:00+00:00" })
+      )
     ).toBeNull();
   });
 });
@@ -164,7 +169,9 @@ describe("anchorDiscriminator", () => {
 
 describe("verifyV1OnChain (steps 2-5+7) with mocked RPC", () => {
   /** Minimal Connection mock returning whatever the test sets up. */
-  function mockRpc(account: { owner: string; data: Uint8Array } | null): Connection {
+  function mockRpc(
+    account: { owner: string; data: Uint8Array } | null
+  ): Connection {
     // Only `getAccountInfo` is exercised by verifyV1OnChain; cast through
     // unknown to satisfy the Connection type.
     const fake = {
@@ -187,7 +194,7 @@ describe("verifyV1OnChain (steps 2-5+7) with mocked RPC", () => {
     const verdict = await verifyV1OnChain(
       asV1(fixtureAttestation()),
       shillbotProtocol,
-      mockRpc(null),
+      mockRpc(null)
     );
     expect(verdict).toBe("account_closed");
   });
@@ -202,7 +209,7 @@ describe("verifyV1OnChain (steps 2-5+7) with mocked RPC", () => {
       mockRpc({
         owner: "11111111111111111111111111111111",
         data,
-      }),
+      })
     );
     expect(verdict).toBe("owner_mismatch");
   });
@@ -216,7 +223,7 @@ describe("verifyV1OnChain (steps 2-5+7) with mocked RPC", () => {
       mockRpc({
         owner: "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
         data,
-      }),
+      })
     );
     expect(verdict).toBe("discriminator_mismatch");
   });
@@ -290,7 +297,7 @@ function buildHappyAccountBytes(): Uint8Array {
 }
 
 function happyAttestation(
-  overrides: Partial<AasV1Attestation> = {},
+  overrides: Partial<AasV1Attestation> = {}
 ): AasV1Attestation {
   return {
     version: "aas/v1",
@@ -335,12 +342,12 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation(),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(true);
     if (verdict.valid) {
       expect(verdict.attestation.composite_score).toBe(
-        HAPPY_COMPOSITE_SCORE.toString(),
+        HAPPY_COMPOSITE_SCORE.toString()
       );
     }
   });
@@ -349,7 +356,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ task_id: "43" }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -361,7 +368,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ client: "11111111111111111111111111111119" }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -373,7 +380,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ agent: "11111111111111111111111111111119" }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -385,7 +392,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ composite_score: "850001" }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -397,7 +404,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ verification_hash: "d".repeat(64) }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -409,7 +416,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ content_hash: "d".repeat(64) }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -421,7 +428,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ content_id_hash: "d".repeat(64) }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -437,7 +444,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ verified_at: drifted }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -452,7 +459,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ verified_at: drifted }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(true);
   });
@@ -464,7 +471,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ state: "approved" }),
       shillbotProtocol,
-      happyMockRpc(),
+      happyMockRpc()
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -494,7 +501,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ state: "approved" }),
       shillbotProtocol,
-      rpc,
+      rpc
     );
     expect(verdict.valid).toBe(false);
     if (!verdict.valid) {
@@ -530,7 +537,7 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     const verdict = await verifyV1(
       happyAttestation({ state: "approved" }),
       liberalProtocol,
-      rpc,
+      rpc
     );
     expect(verdict.valid).toBe(true);
   });
@@ -546,7 +553,10 @@ describe("schema check — optional fields", () => {
   });
 
   it("accepts a string verifier_instructions", () => {
-    const a = { ...happyAttestation(), verifier_instructions: "re-read on-chain" };
+    const a = {
+      ...happyAttestation(),
+      verifier_instructions: "re-read on-chain",
+    };
     expect(checkSchema(a)).toBeNull();
   });
 });

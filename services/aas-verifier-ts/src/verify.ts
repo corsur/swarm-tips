@@ -21,7 +21,7 @@ import type {
 export async function verifyV1(
   attestation: unknown,
   protocol: ProtocolHandler,
-  rpc: Connection,
+  rpc: Connection
 ): Promise<Verdict> {
   const checkedAt = nowRfc3339();
   const rpcEndpoint = rpc.rpcEndpoint;
@@ -80,7 +80,7 @@ export function verifyV1Schema(attestation: unknown): FailureReason | null {
 export async function verifyV1OnChain(
   a: AasV1Attestation,
   protocol: ProtocolHandler,
-  rpc: Connection,
+  rpc: Connection
 ): Promise<FailureReason | null> {
   // Step 2 — fetch the on-chain account.
   const accountInfo = await rpc.getAccountInfo(new PublicKey(a.account));

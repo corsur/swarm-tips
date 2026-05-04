@@ -82,7 +82,7 @@ export interface DecodedAccount {
  */
 export type AccountDecoder = (
   data: Uint8Array,
-  accountKind: string,
+  accountKind: string
 ) => DecodedAccount;
 
 /**
@@ -94,7 +94,10 @@ export type AccountDecoder = (
  * Returns `null` for unknown discriminants — the verifier treats that
  * as `state_invalid`.
  */
-export type StateResolver = (state: number, accountKind: string) => string | null;
+export type StateResolver = (
+  state: number,
+  accountKind: string
+) => string | null;
 
 /**
  * Per-protocol "states valid for attestation" lookup. Per spec §4 step

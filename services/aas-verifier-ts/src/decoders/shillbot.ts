@@ -1,5 +1,10 @@
 import { PublicKey } from "@solana/web3.js";
-import type { AccountDecoder, DecodedAccount, ProtocolHandler, StateResolver } from "../types.js";
+import type {
+  AccountDecoder,
+  DecodedAccount,
+  ProtocolHandler,
+  StateResolver,
+} from "../types.js";
 
 /**
  * Shillbot Task account decoder (post-#12 layout).
@@ -44,12 +49,12 @@ import type { AccountDecoder, DecodedAccount, ProtocolHandler, StateResolver } f
 export const decodeShillbotTask: AccountDecoder = (data, accountKind) => {
   if (accountKind !== "Task") {
     throw new Error(
-      `decodeShillbotTask only handles account_kind="Task", got "${accountKind}"`,
+      `decodeShillbotTask only handles account_kind="Task", got "${accountKind}"`
     );
   }
   if (data.length < 286) {
     throw new Error(
-      `Shillbot Task body too short: ${data.length} bytes (need >= 286 for the AAS-relevant fields)`,
+      `Shillbot Task body too short: ${data.length} bytes (need >= 286 for the AAS-relevant fields)`
     );
   }
 

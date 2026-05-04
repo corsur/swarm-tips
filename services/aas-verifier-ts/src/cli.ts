@@ -24,7 +24,7 @@ async function main(): Promise<number> {
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     process.stderr.write(
       "Usage: aas-verify <attestation.json> [--rpc <url>]\n" +
-        "       aas-verify - [--rpc <url>]   (read from stdin)\n",
+        "       aas-verify - [--rpc <url>]   (read from stdin)\n"
     );
     return 2;
   }
@@ -79,5 +79,5 @@ main().then(
   (err) => {
     process.stderr.write(`unexpected error: ${(err as Error).message}\n`);
     process.exit(2);
-  },
+  }
 );

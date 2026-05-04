@@ -18,7 +18,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 const idl = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "../target/idl/shillbot.json"), "utf8"),
+  fs.readFileSync(path.join(__dirname, "../target/idl/shillbot.json"), "utf8")
 );
 
 const STUCK_TASKS = [
@@ -44,7 +44,7 @@ async function main() {
   // Derive global PDA + read treasury.
   const [globalPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("shillbot_global")],
-    program.programId,
+    program.programId
   );
   const global = await (program.account as any).globalState.fetch(globalPda);
   const treasury = global.treasury as PublicKey;
@@ -57,13 +57,15 @@ async function main() {
     try {
       task = await (program.account as any).task.fetch(taskPda);
     } catch (e) {
-      console.log(`task ${task_id}: SKIP (account not found — already finalized?)`);
+      console.log(
+        `task ${task_id}: SKIP (account not found — already finalized?)`
+      );
       continue;
     }
     const stateName = Object.keys(task.state)[0];
     if (stateName !== "verified") {
       console.log(
-        `task ${task_id}: SKIP (state=${stateName}, not Verified — already cranked?)`,
+        `task ${task_id}: SKIP (state=${stateName}, not Verified — already cranked?)`
       );
       continue;
     }
@@ -73,10 +75,10 @@ async function main() {
       // Derive the agent's AgentState PDA so reputation counters update.
       const [agentStatePda] = PublicKey.findProgramAddressSync(
         [Buffer.from("agent_state"), task.agent.toBuffer()],
-        program.programId,
+        program.programId
       );
       const agentStateAccount = await provider.connection.getAccountInfo(
-        agentStatePda,
+        agentStatePda
       );
       const remainingAccounts = agentStateAccount
         ? [{ pubkey: agentStatePda, isSigner: false, isWritable: true }]

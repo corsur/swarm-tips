@@ -71,12 +71,7 @@ function isPubkey(v: unknown): boolean {
 
 /** JSON number in [0, 255]. */
 function isU8Number(v: unknown): boolean {
-  return (
-    typeof v === "number" &&
-    Number.isInteger(v) &&
-    v >= 0 &&
-    v <= 255
-  );
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 255;
 }
 
 /**
