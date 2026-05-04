@@ -1,0 +1,41 @@
+name: EigenTrust
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/eigentrust/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+  pull_request:
+    paths:
+      - 'services/eigentrust/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ github.workspace }}
+          shared-key: eigentrust
+
+      - name: cargo fmt --check
+        run: cargo fmt -p eigentrust --check
+
+      - name: cargo build --release
+        run: cargo build -p eigentrust --release
+
+      - name: cargo test
+        run: cargo test -p eigentrust
+
+      - name: cargo clippy
+        run: cargo clippy -p eigentrust --all-targets -- -D warnings
