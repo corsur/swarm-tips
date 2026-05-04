@@ -15,11 +15,20 @@ Options:
   --cluster       Solana cluster: devnet or mainnet-beta
   --program-id    The program's public key
 
-Environment variables:
-  EXPECTED_MULTISIG_PUBKEY  (optional on devnet, checked on mainnet-beta)
-                            The expected Squads multisig upgrade authority.
-                            On mainnet-beta: mismatch exits 1.
-                            If unset on mainnet-beta: warns and exits 0.
+Environment variables (mainnet-beta requires exactly one of these):
+  EXPECTED_MULTISIG_PUBKEY  The expected Squads multisig upgrade authority.
+                            Mismatch with actual authority exits 1.
+
+  ALLOW_EOA_AUTHORITY       Acknowledged-tech-debt opt-out. Set this to the
+                            expected EOA pubkey (e.g. founder wallet) when no
+                            Squads multisig has been set up yet. Mismatch
+                            with actual authority exits 1.
+
+If neither variable is set on mainnet-beta the script exits 1. The point
+is to make the program's authority surface explicit in the repo's CI
+config — silent skipping is what let us drift from policy unnoticed.
+
+Devnet: logs the authority and exits 0 (informational only).
 EOF
   exit 1
 }
@@ -85,21 +94,46 @@ if [[ "$CLUSTER" == "devnet" ]]; then
   exit 0
 fi
 
-# Mainnet-beta: compare against expected multisig.
-if [[ -z "${EXPECTED_MULTISIG_PUBKEY:-}" ]]; then
-  echo "WARNING: EXPECTED_MULTISIG_PUBKEY is not set. Skipping mainnet authority verification."
-  echo "WARNING: Set this variable to enforce the Squads multisig check."
-  exit 0
-fi
+# Mainnet-beta: require an explicit expected authority (multisig OR
+# acknowledged-EOA). Silent skipping was the failure mode that let us
+# drift to "every authority is one EOA" without anyone noticing.
+EXPECTED_MULTISIG="${EXPECTED_MULTISIG_PUBKEY:-}"
+EXPECTED_EOA="${ALLOW_EOA_AUTHORITY:-}"
 
-if [[ "$AUTHORITY" != "$EXPECTED_MULTISIG_PUBKEY" ]]; then
-  echo "ERROR: Upgrade authority mismatch on mainnet-beta!"
-  echo "  Expected: $EXPECTED_MULTISIG_PUBKEY"
-  echo "  Actual:   $AUTHORITY"
-  echo "This program's upgrade authority is NOT the expected Squads multisig."
-  echo "Deployment safety check FAILED."
+if [[ -z "$EXPECTED_MULTISIG" && -z "$EXPECTED_EOA" ]]; then
+  echo "ERROR: Neither EXPECTED_MULTISIG_PUBKEY nor ALLOW_EOA_AUTHORITY is set."
+  echo "Mainnet authority must be declared explicitly in the repo's CI variables."
+  echo "  Set EXPECTED_MULTISIG_PUBKEY=<squads-vault-pda>   (production)"
+  echo "  or ALLOW_EOA_AUTHORITY=<eoa-pubkey>               (acknowledged tech debt)"
   exit 1
 fi
 
-echo "OK: Upgrade authority matches expected Squads multisig ($EXPECTED_MULTISIG_PUBKEY)."
+if [[ -n "$EXPECTED_MULTISIG" && -n "$EXPECTED_EOA" ]]; then
+  echo "ERROR: Both EXPECTED_MULTISIG_PUBKEY and ALLOW_EOA_AUTHORITY are set."
+  echo "Pick one — the multisig path supersedes the EOA opt-out once a vault exists."
+  exit 1
+fi
+
+if [[ -n "$EXPECTED_MULTISIG" ]]; then
+  if [[ "$AUTHORITY" != "$EXPECTED_MULTISIG" ]]; then
+    echo "ERROR: Upgrade authority mismatch on mainnet-beta."
+    echo "  Expected (Squads multisig): $EXPECTED_MULTISIG"
+    echo "  Actual:                     $AUTHORITY"
+    exit 1
+  fi
+  echo "OK: Upgrade authority matches expected Squads multisig ($EXPECTED_MULTISIG)."
+  exit 0
+fi
+
+# EOA path — explicitly acknowledged tech debt.
+if [[ "$AUTHORITY" != "$EXPECTED_EOA" ]]; then
+  echo "ERROR: Upgrade authority mismatch on mainnet-beta."
+  echo "  Expected (acknowledged-EOA): $EXPECTED_EOA"
+  echo "  Actual:                      $AUTHORITY"
+  exit 1
+fi
+
+echo "OK: Upgrade authority matches acknowledged EOA ($EXPECTED_EOA)."
+echo "NOTE: ALLOW_EOA_AUTHORITY is set — this is tech debt. Set"
+echo "      EXPECTED_MULTISIG_PUBKEY instead once a Squads vault is configured."
 exit 0
