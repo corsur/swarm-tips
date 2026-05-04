@@ -177,6 +177,20 @@ pub struct ListSpendingOpportunitiesArgs {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct DiscoverOpportunitiesArgs {
+    /// Restrict to one vertical: "earn" (agent gets paid) or "spend" (agent pays for a service).
+    /// Omit to search both. Anything other than "earn" / "spend" is rejected.
+    pub intent: Option<String>,
+    /// Filter by category (substring, case-insensitive). Omit for all categories.
+    pub category: Option<String>,
+    /// Free-text needle matched case-insensitively against title, description, and tags.
+    /// Omit to skip keyword filtering.
+    pub keyword: Option<String>,
+    /// Maximum results to return. Default 50, max 200.
+    pub limit: Option<u32>,
+}
+
 // -- Tool implementations --
 
 #[tool_router]
@@ -1021,6 +1035,98 @@ impl SwarmTipsMcp {
         Ok(text_result(&opportunities))
     }
 
+    #[tool(
+        name = "discover_opportunities",
+        description = "[READ] Unified search across earn + spend verticals. Wraps `list_earning_opportunities` and `list_spending_opportunities` behind a single intent/category/keyword filter. Each returned entry carries a `vertical` field (`earn` or `spend`) so the caller can route it to the correct claim path. Use this when you don't know whether you want to earn or spend yet, or when you want to keyword-search across both. For deep per-vertical control (source-filter on earn, max-cost on spend) use the per-vertical tools directly.",
+        annotations(read_only_hint = true)
+    )]
+    async fn discover_opportunities(
+        &self,
+        Parameters(args): Parameters<DiscoverOpportunitiesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        // Validate intent up front so the caller gets a clean rejection
+        // for typos rather than a silent "search both" fallback.
+        let intent = match args.intent.as_deref() {
+            None | Some("") => None,
+            Some("earn") => Some("earn"),
+            Some("spend") => Some("spend"),
+            Some(other) => {
+                return Err(invalid_input(&format!(
+                    "intent must be \"earn\", \"spend\", or omitted; got {other:?}"
+                )));
+            }
+        };
+
+        let category_needle = args.category.as_deref().map(|s| s.to_lowercase());
+        let keyword_needle = args.keyword.as_deref().map(|s| s.to_lowercase());
+
+        // Each entry below is annotated with `vertical` so a single
+        // result list can carry both kinds without losing routing
+        // information. We use serde_json::Value to merge the two
+        // schemas (`Listing` + `SpendingOpportunity`) into one
+        // homogeneous list — the caller can pick fields on the
+        // discriminator.
+        let mut merged: Vec<serde_json::Value> = Vec::new();
+
+        if intent.map(|i| i == "earn").unwrap_or(true) {
+            let listings = get_listings(&self.state.listings)
+                .await
+                .map_err(|e| McpError::internal_error(format!("get_listings failed: {e}"), None))?;
+            for mut listing in listings {
+                if listing.source == "shillbot" {
+                    listing.claim_via = Some("shillbot_claim_task".to_string());
+                }
+                if !category_matches(&listing.category, category_needle.as_deref()) {
+                    continue;
+                }
+                if !keyword_matches_earn(&listing, keyword_needle.as_deref()) {
+                    continue;
+                }
+                let mut value = serde_json::to_value(&listing).unwrap_or(serde_json::Value::Null);
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert(
+                        "vertical".to_string(),
+                        serde_json::Value::String("earn".to_string()),
+                    );
+                }
+                merged.push(value);
+            }
+        }
+
+        if intent.map(|i| i == "spend").unwrap_or(true) {
+            let opportunities = get_spending_opportunities(&self.state.rpc_client).await;
+            for opp in opportunities {
+                if !category_matches(&opp.category, category_needle.as_deref()) {
+                    continue;
+                }
+                if !keyword_matches_spend(&opp, keyword_needle.as_deref()) {
+                    continue;
+                }
+                let mut value = serde_json::to_value(&opp).unwrap_or(serde_json::Value::Null);
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert(
+                        "vertical".to_string(),
+                        serde_json::Value::String("spend".to_string()),
+                    );
+                }
+                merged.push(value);
+            }
+        }
+
+        let limit = args.limit.unwrap_or(50).min(200) as usize;
+        merged.truncate(limit);
+
+        tracing::info!(
+            count = merged.len(),
+            intent = intent.unwrap_or("any"),
+            category = args.category.as_deref().unwrap_or(""),
+            keyword = args.keyword.as_deref().unwrap_or(""),
+            "discover_opportunities served"
+        );
+
+        Ok(text_result(&merged))
+    }
+
     // -- Coordination Game tools --
 
     #[tool(
@@ -1382,12 +1488,12 @@ const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories
-This server exposes 27 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+This server exposes 28 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
 - **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
-- **listings** (2 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`.
+- **listings** (3 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters).
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
 
@@ -1499,6 +1605,45 @@ fn to_mcp_error(err: &McpServiceError) -> McpError {
 
 fn invalid_input(msg: &str) -> McpError {
     McpError::invalid_params(msg.to_string(), None)
+}
+
+/// `discover_opportunities` filter helper — entry's category contains
+/// the lowercase `needle` substring. `None` needle means "no filter."
+fn category_matches(category: &str, needle: Option<&str>) -> bool {
+    match needle {
+        None => true,
+        Some(n) => category.to_lowercase().contains(n),
+    }
+}
+
+/// `discover_opportunities` keyword filter for earn entries — match
+/// against title, description, OR any tag (case-insensitive substring).
+fn keyword_matches_earn(listing: &crate::listings::models::AgentJob, needle: Option<&str>) -> bool {
+    let n = match needle {
+        None => return true,
+        Some(s) => s,
+    };
+    if listing.title.to_lowercase().contains(n) {
+        return true;
+    }
+    if listing.description.to_lowercase().contains(n) {
+        return true;
+    }
+    listing.tags.iter().any(|t| t.to_lowercase().contains(n))
+}
+
+/// `discover_opportunities` keyword filter for spend entries — same
+/// shape as earn (no tags on SpendingOpportunity, so just title +
+/// description).
+fn keyword_matches_spend(
+    opp: &crate::listings::spending::SpendingOpportunity,
+    needle: Option<&str>,
+) -> bool {
+    let n = match needle {
+        None => return true,
+        Some(s) => s,
+    };
+    opp.title.to_lowercase().contains(n) || opp.description.to_lowercase().contains(n)
 }
 
 fn text_result(value: &impl serde::Serialize) -> CallToolResult {
