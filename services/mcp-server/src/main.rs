@@ -16,6 +16,7 @@ mod listings;
 mod proxy;
 mod server;
 mod session_binding;
+mod solana_reads;
 mod solana_tx;
 
 use crate::auth::ChallengeManager;

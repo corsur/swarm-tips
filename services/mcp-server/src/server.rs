@@ -178,6 +178,18 @@ pub struct ListSpendingOpportunitiesArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct AgentProfileArgs {
+    /// Wallet pubkey to look up. Omit to query the caller's
+    /// currently-registered wallet.
+    pub wallet: Option<String>,
+    /// Coordination Game tournament to read PlayerProfile under.
+    /// Defaults to 1 (the only active tournament). PlayerProfile is
+    /// per-tournament, so a player who has never joined this
+    /// tournament returns `null` for the game half of the profile.
+    pub tournament_id: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct DiscoverOpportunitiesArgs {
     /// Restrict to one vertical: "earn" (agent gets paid) or "spend" (agent pays for a service).
     /// Omit to search both. Anything other than "earn" / "spend" is rejected.
@@ -896,6 +908,115 @@ impl SwarmTipsMcp {
         Ok(text_result(&result))
     }
 
+    #[tool(
+        name = "agent_profile",
+        description = "[READ] Trustless on-chain reputation lookup for an agent. Reads AgentState (Shillbot reputation: total_completed, total_earned, total_score_sum, total_tasks_claimed, total_challenges_lost) and PlayerProfile (Coordination Game per-tournament: wins, total_games, score) directly from Solana via getAccountInfo. NO orchestrator hop, NO Firestore cache — the orchestrator could lie, but this tool reads the source of truth. Returns derived metrics: average_score = total_score_sum / total_completed, completion_rate = total_completed / total_tasks_claimed, dispute_rate = total_challenges_lost / total_completed, win_rate = wins / total_games. Either or both PDAs may not exist (agent has never claimed / never played); the response carries `null` for the missing half. Pass `wallet` to query a specific agent; omit to query your own registered wallet. `tournament_id` defaults to 1 (the only active tournament).",
+        annotations(read_only_hint = true)
+    )]
+    async fn agent_profile(
+        &self,
+        Parameters(args): Parameters<AgentProfileArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        // Resolve target wallet: explicit arg, else the caller's
+        // registered wallet.
+        let target_wallet = match args.wallet.as_deref() {
+            Some(w) if !w.is_empty() => w.to_string(),
+            _ => self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
+                invalid_input(
+                    "wallet arg omitted AND no registered wallet — call register_wallet first or pass wallet explicitly",
+                )
+            })?,
+        };
+        let tournament_id = args.tournament_id.unwrap_or(1);
+
+        // Fan out the two reads concurrently — they target different
+        // programs / accounts so they're independent.
+        let (agent_state, player_profile) = tokio::join!(
+            crate::solana_reads::read_agent_state(
+                &self.state.rpc_client,
+                &self.state.solana_rpc_url,
+                &target_wallet,
+            ),
+            crate::solana_reads::read_player_profile(
+                &self.state.rpc_client,
+                &self.state.solana_rpc_url,
+                &target_wallet,
+                tournament_id,
+            ),
+        );
+
+        let agent_state = agent_state.map_err(|e| to_mcp_error(&e))?;
+        let player_profile = player_profile.map_err(|e| to_mcp_error(&e))?;
+
+        // Derived metrics. Each is `null` when the denominator is zero
+        // (no division-by-zero noise into the response).
+        let derived = match &agent_state {
+            None => serde_json::json!({}),
+            Some(s) => {
+                let avg_score = if s.total_completed > 0 {
+                    Some((s.total_score_sum as f64) / (s.total_completed as f64))
+                } else {
+                    None
+                };
+                let completion_rate = if s.total_tasks_claimed > 0 {
+                    Some((s.total_completed as f64) / (s.total_tasks_claimed as f64))
+                } else {
+                    None
+                };
+                let dispute_rate = if s.total_completed > 0 {
+                    Some((s.total_challenges_lost as f64) / (s.total_completed as f64))
+                } else {
+                    None
+                };
+                serde_json::json!({
+                    "average_score": avg_score,
+                    "completion_rate": completion_rate,
+                    "dispute_rate": dispute_rate,
+                })
+            }
+        };
+
+        let game_derived = match &player_profile {
+            None => serde_json::json!({}),
+            Some(p) => {
+                let win_rate = if p.total_games > 0 {
+                    Some((p.wins as f64) / (p.total_games as f64))
+                } else {
+                    None
+                };
+                serde_json::json!({ "win_rate": win_rate })
+            }
+        };
+
+        let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+        let result = serde_json::json!({
+            "wallet": target_wallet,
+            "tournament_id": tournament_id,
+            "shillbot": {
+                "raw": agent_state,
+                "derived": derived,
+            },
+            "coordination_game": {
+                "raw": player_profile,
+                "derived": game_derived,
+            },
+            "last_updated": now_iso,
+            "source": "on-chain (Solana getAccountInfo); orchestrator NOT consulted.",
+        });
+
+        tracing::info!(
+            wallet = %target_wallet,
+            tournament_id,
+            shillbot_present = agent_state.is_some(),
+            player_profile_present = player_profile.is_some(),
+            "agent_profile served"
+        );
+
+        Ok(text_result(&result))
+    }
+
     // -- Video generation tools --
 
     #[tool(
@@ -1488,12 +1609,13 @@ const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories
-This server exposes 28 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+This server exposes 29 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
 - **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (3 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters).
+- **profile** (1 tool, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate).
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
 
