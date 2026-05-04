@@ -76,6 +76,31 @@ pub struct TransactionResponse {
     pub task_pda: Option<String>,
 }
 
+/// AAS v0 attestation — mirrors orchestrator
+/// `shillbot-orchestrator::models::task::AttestationResponse`. A portable,
+/// structured proof an agent earned a specific composite score on a
+/// specific Task PDA. Verifiable off-chain by re-reading the named PDA.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AttestationResponse {
+    pub version: String,
+    pub network: String,
+    pub program_id: String,
+    pub task_pda: String,
+    pub task_id: u64,
+    pub client: String,
+    pub agent: String,
+    pub state: String,
+    pub platform: u8,
+    pub composite_score: u64,
+    pub score_max: u64,
+    pub verified_at: String,
+    pub verification_hash: String,
+    pub content_hash: String,
+    pub content_id_hash: String,
+    pub switchboard_feed: String,
+    pub verifier_instructions: String,
+}
+
 /// Verification data needed to build a bundled crank+verify transaction.
 /// Mirrors `shillbot-orchestrator::models::task::VerificationDataResponse`.
 #[derive(Debug, Serialize, Deserialize)]
@@ -510,6 +535,40 @@ impl OrchestratorProxy {
         }
 
         Ok(parsed)
+    }
+
+    /// AAS v0: fetch the portable attestation tuple for a Verified or
+    /// Finalized task. Public read — no wallet binding needed because
+    /// the underlying on-chain data is already public. Returns 409 from
+    /// the orchestrator if the task isn't yet attested.
+    pub async fn get_attestation(
+        &self,
+        task_id: &str,
+    ) -> Result<AttestationResponse, McpServiceError> {
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
+
+        let url = format!("{}/tasks/{task_id}/attestation", self.base_url);
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator get_attestation failed");
+            McpServiceError::OrchestratorError(format!("request failed: {e}"))
+        })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator get_attestation returned error");
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid attestation response: {e}"))
+        })
     }
 
     /// Phase 3 blocker #3c: list pending-approval tasks across all of

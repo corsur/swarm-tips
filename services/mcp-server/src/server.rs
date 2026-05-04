@@ -672,6 +672,35 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "shillbot_get_attestation",
+        description = "[READ] Fetch a portable AAS v0 attestation for a Shillbot task that has been Verified or Finalized. Returns a JSON tuple — `{version, network, program_id, task_pda, task_id, agent, composite_score, score_max, verified_at, verification_hash, content_hash, content_id_hash, switchboard_feed, verifier_instructions}` — that any external platform can use to confirm the agent earned this score, by re-reading the named on-chain Task PDA. The MCP server does NOT sign the response; the on-chain account is the source of truth. Use this to (a) hand a verifiable proof of work to a third-party platform, (b) feed an off-chain reputation system that doesn't trust the orchestrator. Tasks not yet Verified return 409.",
+        annotations(read_only_hint = true)
+    )]
+    async fn shillbot_get_attestation(
+        &self,
+        Parameters(args): Parameters<ClaimTaskArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.task_id.is_empty() {
+            return Err(invalid_input("task_id is required"));
+        }
+
+        let attestation = self
+            .state
+            .orchestrator
+            .get_attestation(&args.task_id)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(
+            task_id = %args.task_id,
+            composite_score = attestation.composite_score,
+            "shillbot_get_attestation: AAS v0 attestation returned"
+        );
+
+        Ok(text_result(&attestation))
+    }
+
+    #[tool(
         name = "shillbot_check_earnings",
         description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use register_wallet first).",
         annotations(read_only_hint = true)
@@ -1195,16 +1224,16 @@ const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories
-This server exposes 25 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+This server exposes 26 tools across four categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
-- **shillbot** (11 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
+- **shillbot** (12 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (2 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`.
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
 
-Naive MCP clients that don't support per-server allowlists load all 25 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
+Naive MCP clients that don't support per-server allowlists load all 26 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
 
 ## Wallet registration
 1. register_wallet — register your Solana wallet (required for any STATE/SPEND/EARN tool). One registration covers every product (Coordination Game + Shillbot). Non-custodial: only the public key is registered, the private key stays on the agent.
