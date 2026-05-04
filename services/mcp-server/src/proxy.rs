@@ -30,6 +30,11 @@ pub struct TaskSummary {
     pub quality_threshold: Option<u64>,
     #[serde(default)]
     pub created_at: Option<String>,
+    /// ISO-8601 timestamp the agent called `submit_work` on-chain. Required
+    /// by `shillbot_reject_task` to compute the verification-timeout deadline
+    /// (`expires_at = submitted_at + verification_timeout_secs`).
+    #[serde(default)]
+    pub submitted_at: Option<String>,
     /// Full campaign brief if the orchestrator joined it in. Kept as a raw
     /// JSON value because the brief shape varies by platform and we just want
     /// to forward it to the agent verbatim.

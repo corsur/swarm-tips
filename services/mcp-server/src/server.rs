@@ -485,7 +485,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_reject_task",
-        description = "[READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to your wallet at T+verification_timeout (~14 days from submission). This tool returns guidance and the timestamp at which expire_task becomes callable, so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is tracked as a Phase 3 blocker #3a follow-up; once it ships, this tool will route through it instead.",
+        description = "[READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is tracked as a Phase 3 blocker #3a follow-up; once it ships, this tool will route through it instead.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_reject_task(
@@ -519,9 +519,28 @@ impl SwarmTipsMcp {
             )));
         }
 
+        // Compute the deadline at which `expire_task` becomes callable for
+        // this task: `submitted_at + verification_timeout_secs`. The default
+        // verification timeout in the orchestrator is 14 days (matches the
+        // on-chain `DEFAULT_VERIFICATION_TIMEOUT_SECONDS = 1_209_600`). The
+        // task may carry a `verification_timeout_override` on-chain that
+        // shortens this — the orchestrator doesn't surface that field today,
+        // so we use the default and document the conservative-upper-bound
+        // semantics in the response.
+        const DEFAULT_VERIFICATION_TIMEOUT_SECS: i64 = 1_209_600;
+        let expires_at = task.submitted_at.as_deref().and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s).ok().and_then(|dt| {
+                dt.with_timezone(&chrono::Utc)
+                    .checked_add_signed(chrono::Duration::seconds(
+                        DEFAULT_VERIFICATION_TIMEOUT_SECS,
+                    ))
+            })
+        });
+
         tracing::info!(
             task_id = %args.task_id,
             wallet = %wallet_pubkey,
+            expires_at = ?expires_at,
             "shillbot_reject_task: v1 stub — no on-chain action, escrow returns at expire_task"
         );
 
@@ -529,8 +548,11 @@ impl SwarmTipsMcp {
             "action": "reject_v1_stub",
             "task_id": args.task_id,
             "on_chain_action": "none",
-            "guidance": "v1 reject is implicit: do NOT call shillbot_approve_task. The agent's submitted content stays in 'submitted' state. At T+verification_timeout (~14 days from the agent's submitted_at), expire_task can be cranked permissionlessly by anyone (including you) and the full escrow returns to your wallet. The agent is paid nothing.",
-            "next_step": "Wait for the verification timeout, then call expire_task (out-of-band crank — no MCP tool today; use solana CLI or the orchestrator's expire endpoint when available).",
+            "submitted_at": task.submitted_at,
+            "expires_at": expires_at.map(|dt| dt.to_rfc3339()),
+            "verification_timeout_secs": DEFAULT_VERIFICATION_TIMEOUT_SECS,
+            "guidance": "v1 reject is implicit: do NOT call shillbot_approve_task. The agent's submitted content stays in 'submitted' state. At T+verification_timeout (~14 days from the agent's submitted_at), expire_task can be cranked permissionlessly by anyone (including the campaign client) and the full escrow returns to the campaign's client wallet. The agent is paid nothing.",
+            "next_step": "Wait until expires_at, then call expire_task (out-of-band crank — no MCP tool today; use solana CLI or the orchestrator's expire endpoint when available). Use the expires_at timestamp to schedule a follow-up reminder.",
             "future_work": "A first-class reject_task on-chain instruction with reason capture is tracked as Phase 3 blocker #3a follow-up. When it ships, this tool will route through it and shorten the rejection window.",
         });
         Ok(text_result(&result))
