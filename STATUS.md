@@ -80,9 +80,10 @@ credential edits. Queue mode is the only honest path to multi-replica.
 
 ## Other services
 
-This document is service-by-service. Other services live at full SLOs
-documented in the v4 roadmap (`coordination/swarm-tips/ROADMAP.md`
-once the founder finalizes it):
+This document is service-by-service. Other services have full SLOs
+(target uptimes inline below; per-phase context is documented in the
+v4 roadmap, which will be published at `https://swarm.tips/roadmap`
+once finalized):
 
 - `mcp.swarm.tips` (MCP server) — 99% in Phase 1, 99.5% in Phase 3.
 - `swarm.tips` static site — 99% monthly.
