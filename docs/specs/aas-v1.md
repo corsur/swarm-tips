@@ -1,12 +1,21 @@
 # AAS v1 — Agent Attestation Standard (RFC)
 
-**Status:** RFC, draft 1 · 2026-05-02
+**Status:** RFC, draft 1 · 2026-05-02. v1 is wire-format-stable; **no
+shipped emitter implements it yet.** Shillbot's current emitter ships
+`version: "aas/v0"` (commit `808ec1d` in `coordination-app`); migration
+to v1 is queued as a follow-up to task #18. A reader writing a verifier
+against this spec today will not find a live `aas/v1` emitter to test
+against until the migration lands.
 **Editor:** swarm.tips DAO (`corsur/swarm-tips`)
-**Implements:** the wire format `version: "aas/v1"`, superseding the
-transitional `"aas/v0"` shipped by Shillbot in commit
-[`808ec1d`](../../) (orchestrator) and [`0971ec7`](../../) (MCP server).
-**Reference verifiers:** `swarm-tips-repo/services/aas-verifier-ts`
-and `aas-verifier-py` (planned, task #18).
+**Reference verifiers:** `services/aas-verifier-ts` and
+`services/aas-verifier-py` (planned, task #18).
+
+> **DRAFT WARNING.** This is draft 1 — wire format is intended to be
+> stable, but implementation pressure from the reference verifiers
+> (#18) may surface clarifications. If your verifier disagrees with
+> this spec, please file an issue rather than baking around the
+> mismatch. The spec text is authoritative; reference implementations
+> track the spec.
 
 ---
 
@@ -61,22 +70,22 @@ parse JSON, not bytes).
 | Field | Type | Description |
 |---|---|---|
 | `version` | string | Exactly `"aas/v1"`. Verifiers MUST reject any other value. |
-| `network` | string | Solana cluster the on-chain account lives on. Pin: `"mainnet"` or `"devnet"`. Verifier uses this to pick the RPC endpoint. |
+| `network` | string | Solana cluster the on-chain account lives on. Pin: `"mainnet"` or `"devnet"`. Verifier uses this to pick the RPC endpoint. v1 deliberately excludes `"testnet"` because no AAS-conformant protocol currently deploys there; protocols MAY emit `"testnet"` as a non-conformant extension and v2 will canonicalize. |
 | `program_id` | string | Base58 pubkey of the protocol that escrowed and verified the work. Verifier uses this to confirm account ownership when re-reading. |
 | `account` | string | Base58 PDA address of the on-chain account that holds the verification result. Verifier MUST re-read this account from `network` and confirm fields below. |
 | `account_kind` | string | Anchor account discriminator name (e.g. `"Task"`). Lets a verifier disambiguate when one program emits multiple account types. |
 | `task_id` | string | Decimal string of the on-chain u64. **String, not number** — JS `Number.MAX_SAFE_INTEGER` truncates after 2^53-1. (v0 shipped this as a JSON number; v1 fixes that.) |
 | `client` | string | Base58 pubkey of the entity that escrowed the work. |
 | `agent` | string | Base58 pubkey of the entity that performed the work. |
-| `state` | string | Lower-case state name, drawn from a closed enum the protocol publishes. For Shillbot, only `"verified"` is valid in v1 (see §6). |
+| `state` | string | Lower-case state name, drawn from a closed enum the protocol publishes at a discoverable path (see §7 conformance). For Shillbot, the enum lives at `programs/shillbot/src/state/task.rs::TaskState`; only `"verified"` is valid in v1 (see §6). |
 | `platform` | u8 | Platform discriminant (e.g. 0 = YouTube, 3 = X). Protocol-defined. |
 | `composite_score` | string | Decimal string of the fixed-point score. Same string-not-number rationale as `task_id`. |
 | `score_max` | string | Decimal string of the score's maximum value. Combined with `composite_score`, defines the score's domain (e.g. `"850000"` / `"1000000"`). |
-| `verified_at` | string | RFC 3339 timestamp the on-chain `verified_at` field carries (typically the slot timestamp at oracle attestation). |
+| `verified_at` | string | RFC 3339 timestamp the on-chain `verified_at` field carries (typically the slot timestamp at oracle attestation). Serialization MUST be RFC 3339 with **no fractional seconds** (the on-chain source is i64 unix seconds — there is nothing to fractionalize). Either `Z` or `+00:00` for the UTC offset is conformant; verifiers MUST accept both. The ±1 second drift tolerance in §4 step 5 is defensive cover for library-version differences in the unix-seconds → RFC 3339 conversion; emitters and verifiers using standard chrono / Python `datetime` libraries should produce exact matches. |
 | `verification_hash` | string | Hex-encoded 32 bytes from on-chain. The protocol's binding between `task_id` and `composite_score`. |
 | `content_hash` | string | Hex-encoded 32 bytes — sha256 of the off-chain campaign brief. |
 | `content_id_hash` | string | Hex-encoded 32 bytes — sha256 of the submitted content identifier. |
-| `oracle_feed` | string \| null | Base58 pubkey of the oracle feed account that posted the score (e.g. Switchboard pull-feed for Shillbot). `null` if the protocol uses an in-house oracle without a separate feed account. |
+| `oracle_feed` | string \| null | Base58 pubkey of the oracle feed account that posted the score (e.g. Switchboard pull-feed for Shillbot). `null` means the protocol's verification does not depend on a separate oracle-feed account. A protocol that uses an oracle but does not wish to disclose the feed account MUST emit the field anyway as the disclosed pubkey — AAS does not provide a privacy mechanism for oracle endpoints, and emitting `null` to obscure a real feed is non-conformant. |
 
 **Optional fields:**
 
@@ -89,10 +98,27 @@ parse JSON, not bytes).
 
 ## 4. Verification protocol
 
+> v1's verification protocol is **Solana-Anchor-specific** — references
+> to `u64`/`i64`/`Pubkey`/Anchor account discriminators assume the
+> emitter anchors to Solana under an Anchor-compiled program. v2 will
+> bifurcate by `network` discriminator to support cross-chain emitters.
+
+**"Well-formed" per type** (referenced by step 1 below):
+
+| Type | Well-formed iff |
+|---|---|
+| Pubkey (e.g. `program_id`, `account`, `client`, `agent`, `oracle_feed`) | Decodes from base58 to exactly 32 bytes. |
+| Decimal-string u64 (e.g. `task_id`, `composite_score`, `score_max`) | Matches `^[0-9]+$`, no leading zeros except for the literal value `"0"`, fits in u64 (max `18446744073709551615`). |
+| Hex-32 (e.g. `verification_hash`, `content_hash`, `content_id_hash`) | Matches `^[0-9a-f]{64}$` (lowercase, no `0x` prefix). Verifiers MAY accept uppercase but emitters MUST emit lowercase. |
+| u8 (`platform`) | JSON number in `[0, 255]`. |
+| RFC 3339 timestamp (`verified_at`) | Per §3 row: no fractional seconds; `Z` or `+00:00` offset. |
+| Enum string (`version`, `network`, `state`, `account_kind`) | Non-empty, no whitespace, lowercase except where the enum's published value is otherwise. |
+| Object (`extensions`) | Valid JSON object (may be empty). Verifiers tolerate any key/value shape. |
+
 A v1 verifier accepts an attestation `A` iff ALL of the following hold:
 
-1. **Schema check.** Every required field in §3 is present and well-formed.
-   `version == "aas/v1"`. Reject otherwise.
+1. **Schema check.** Every required field in §3 is present and well-formed
+   per the table above. `version == "aas/v1"`. Reject otherwise.
 
 2. **On-chain read.** Connect to the named `network`, fetch the account
    at `A.account`. The account MUST exist; if it doesn't, reject with
@@ -140,9 +166,18 @@ A verifier that completes steps 1–7 MAY return a verdict object:
 }
 ```
 
-If any step fails the verdict object MUST include a `failure_reason`
-field (one of the strings in steps 2–6, with field name on
-`field_mismatch:`).
+If any step fails, the verdict object MUST include a `failure_reason`
+field. Closed taxonomy (one string per step):
+
+| Step | Failure reason |
+|---|---|
+| 1 | `schema_invalid:<field>` |
+| 2 | `account_closed` |
+| 3 | `owner_mismatch` |
+| 4 | `discriminator_mismatch` |
+| 5 | `field_mismatch:<field>` (one of `task_id`, `client`, `agent`, `composite_score`, `verified_at`, `verification_hash`, `content_hash`, `content_id_hash`, `state`) |
+| 6 | `score_above_max` |
+| 7 | `state_invalid` |
 
 ---
 
@@ -214,9 +249,17 @@ A verifier claims AAS v1 conformance by:
 3. Returning structured verdicts with the failure-reason taxonomy in §4.
 
 The reference verifiers in `services/aas-verifier-ts` (TypeScript) and
-`services/aas-verifier-py` (Python) are normative for resolving
-ambiguity in §4 — if the spec text and the reference disagree, the
-reference is authoritative until v2 lands.
+`services/aas-verifier-py` (Python) are non-normative implementations.
+If they disagree with this spec, please file an issue: either the
+spec is unclear (we'll clarify in a draft revision) or the verifier
+has a bug (we'll fix it). Until then, the spec text is authoritative.
+
+A protocol or verifier that publishes a state enum MUST do so at a
+discoverable path — typically a source file in the protocol's public
+repo (Shillbot's enum lives at
+`programs/shillbot/src/state/task.rs::TaskState`). Listing the
+discriminant values, names, and which subset is "valid for
+attestation" is part of the conformance claim.
 
 ---
 
@@ -266,9 +309,17 @@ v0 was an unstable transitional format shipped under
 
 ## 10. References
 
-- AAS v0 emitter (Shillbot): `coordination-app/backend/shillbot-orchestrator/src/services/task_service.rs::build_attestation` + `routes/tasks.rs::get_attestation`
-- AAS v0 MCP tool: `swarm-tips-repo/services/mcp-server/src/server.rs::shillbot_get_attestation`
-- Shillbot on-chain `verify_task`: `swarm-tips-repo/programs/shillbot/src/instructions/verify_task.rs`
-- Shillbot on-chain `Task` account schema: `swarm-tips-repo/programs/shillbot/src/state/task.rs`
-- Switchboard feed: compile-time-locked at `swarm-tips-repo/programs/shillbot/src/constants.rs::SWITCHBOARD_FEED`
-- Reference verifiers (planned): `swarm-tips-repo/services/aas-verifier-ts` and `services/aas-verifier-py` (task #18)
+In-repo paths are relative to `swarm-tips-repo/` (this repo); external
+paths name the repo explicitly.
+
+- AAS v0 emitter (Shillbot, EXTERNAL): `corsur/coordination-app` →
+  `backend/shillbot-orchestrator/src/services/task_service.rs::build_attestation`
+  + `backend/shillbot-orchestrator/src/routes/tasks.rs::get_attestation`
+- AAS v0 MCP tool: `services/mcp-server/src/server.rs::shillbot_get_attestation`
+- Shillbot on-chain `verify_task`: `programs/shillbot/src/instructions/verify_task.rs`
+- Shillbot on-chain `Task` account schema: `programs/shillbot/src/state/task.rs`
+- Shillbot on-chain `TaskState` enum (the published state enum
+  AAS verifiers consume): `programs/shillbot/src/state/task.rs`
+- Switchboard feed: compile-time-locked at `programs/shillbot/src/constants.rs::SWITCHBOARD_FEED`
+- Reference verifiers (planned): `services/aas-verifier-ts` and
+  `services/aas-verifier-py` (task #18)
