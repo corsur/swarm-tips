@@ -12,6 +12,7 @@ mod discovery;
 mod errors;
 mod game_proxy;
 mod game_session;
+mod layer3;
 mod listings;
 mod proxy;
 mod server;

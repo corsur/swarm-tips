@@ -1,0 +1,280 @@
+{
+  "$schema_doc": "Layer 3 curated directory of MCP servers and agent-work tools. Each entry has a vetting tier — `first-party` (we own/operate), `vetted` (we've used and verified), or `discovered` (cataloged but not yet vetted to the workprotocol-test bar). Transparency over completeness — readers should know which tier each entry sits in.",
+  "tiers": {
+    "first-party": "Operated by the swarm.tips DAO or a vertical we own. Trust = same as the swarm.tips marketplace itself.",
+    "vetted": "Independently maintained by a third party; we have used it, confirmed the install path works, and verified the published capabilities match runtime behavior. Trust = we recommend it.",
+    "discovered": "Cataloged from public sources (MCP registry, awesome-mcp lists, GitHub). Not yet exercised end-to-end. Trust = read at your own risk; we surface it for discovery, not endorsement."
+  },
+  "entries": [
+    {
+      "name": "Swarm Tips MCP",
+      "url": "https://mcp.swarm.tips/mcp",
+      "category": "agent-work-marketplace",
+      "tier": "first-party",
+      "tags": ["solana", "earn", "review", "video", "game"],
+      "description": "26 tools across game, shillbot (12 tools — agent + client review + AAS attestation), video, and listings. Non-custodial.",
+      "why_listed": "Canonical entry point for the swarm.tips DAO; aggregates all first-party verticals plus external bounty listings."
+    },
+    {
+      "name": "Coordination Game",
+      "url": "https://coordination.game",
+      "category": "gaming",
+      "tier": "first-party",
+      "tags": ["solana", "1v1", "social-deduction", "ai-detection"],
+      "description": "Anonymous 1v1 social deduction game on Solana mainnet. Stake, chat, guess: human or AI? Negative-sum after the treasury cut.",
+      "why_listed": "First-party DAO vertical; on-chain commit-reveal, transparent payouts."
+    },
+    {
+      "name": "Shillbot",
+      "url": "https://shillbot.org",
+      "category": "content-creation-marketplace",
+      "tier": "first-party",
+      "tags": ["solana", "youtube", "x-twitter", "escrow", "oracle"],
+      "description": "Two-sided marketplace: clients escrow SOL for content; agents fulfill via YouTube Shorts / X posts. Switchboard-attested scoring.",
+      "why_listed": "First-party DAO vertical; payment flows match the AAS v1 attestation surface."
+    },
+    {
+      "name": "Anthropic Claude API MCP",
+      "url": "https://docs.anthropic.com/en/docs/mcp",
+      "category": "ai-models",
+      "tier": "vetted",
+      "tags": ["llm", "claude", "anthropic", "official"],
+      "description": "Official Anthropic MCP support — Claude Code, Claude Desktop, and Claude Agent SDK consume any MCP server, including this directory's first-party and vetted entries.",
+      "why_listed": "Reference MCP client implementation; primary host for swarm-tips MCP server installations."
+    },
+    {
+      "name": "Brave Search MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search",
+      "category": "search",
+      "tier": "vetted",
+      "tags": ["search", "brave", "web", "official"],
+      "description": "Independent Western web index (40B+ pages). Highest agent-score (14.89) per public benchmarks; ~669ms median latency.",
+      "why_listed": "Dominant search engine for AI agents; the only non-Big-Tech web index at scale."
+    },
+    {
+      "name": "Filesystem MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "category": "developer-tools",
+      "tier": "vetted",
+      "tags": ["files", "local", "official", "reference"],
+      "description": "Read/write/search across allowlisted directories on the local filesystem. Reference MCP server from the spec authors.",
+      "why_listed": "Foundational tool — most agent tasks need filesystem access. Reference implementation."
+    },
+    {
+      "name": "GitHub MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+      "category": "developer-tools",
+      "tier": "vetted",
+      "tags": ["github", "repos", "issues", "prs", "official"],
+      "description": "Read repos, search code, manage issues + PRs against any account/org with a personal access token.",
+      "why_listed": "Most agent-coding workflows go through GitHub; first-party tool from MCP spec authors."
+    },
+    {
+      "name": "GitLab MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/gitlab",
+      "category": "developer-tools",
+      "tier": "discovered",
+      "tags": ["gitlab", "repos", "issues"],
+      "description": "GitLab counterpart to the GitHub MCP — projects, MRs, issues, snippets.",
+      "why_listed": "Alternative to GitHub for self-hosted or non-GitHub workflows."
+    },
+    {
+      "name": "Postgres MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres",
+      "category": "data",
+      "tier": "vetted",
+      "tags": ["postgres", "sql", "database", "official"],
+      "description": "Read-only SQL query interface against any reachable Postgres instance, with schema introspection.",
+      "why_listed": "Most agent data-analysis tasks need SQL; reference implementation."
+    },
+    {
+      "name": "SQLite MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite",
+      "category": "data",
+      "tier": "vetted",
+      "tags": ["sqlite", "sql", "local-db"],
+      "description": "Local-database SQL queries against a SQLite file. Useful for offline workflows and data wrangling.",
+      "why_listed": "Lightweight pair to Postgres MCP — same query interface, no server."
+    },
+    {
+      "name": "Slack MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
+      "category": "social-comms",
+      "tier": "discovered",
+      "tags": ["slack", "messaging", "workspace"],
+      "description": "Read channels, post messages, list users in a Slack workspace via bot token.",
+      "why_listed": "Standard team-comms surface — most agents that touch internal communications need this."
+    },
+    {
+      "name": "Memory MCP (knowledge graph)",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+      "category": "ai-tools",
+      "tier": "discovered",
+      "tags": ["memory", "knowledge-graph", "persistence"],
+      "description": "Persist typed entities and relationships across sessions. Reference long-term-memory implementation for MCP.",
+      "why_listed": "Common agent need — persisting facts across runs without baking them into the system prompt."
+    },
+    {
+      "name": "Puppeteer MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer",
+      "category": "web-automation",
+      "tier": "discovered",
+      "tags": ["browser", "puppeteer", "screenshot", "scrape"],
+      "description": "Headless-browser automation: navigate, click, screenshot, extract DOM. Useful for scraping JS-heavy sites.",
+      "why_listed": "Closes the gap that pure HTTP-fetch tools leave for SPAs and JS-only content."
+    },
+    {
+      "name": "Fetch MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+      "category": "web-automation",
+      "tier": "vetted",
+      "tags": ["http", "web-fetch", "markdown", "official"],
+      "description": "HTTP fetch with HTML→markdown conversion. Reference web-content tool for agents.",
+      "why_listed": "Lighter than Puppeteer for static content; the right default for most web-fetch needs."
+    },
+    {
+      "name": "Time MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
+      "category": "developer-tools",
+      "tier": "vetted",
+      "tags": ["time", "timezone", "official"],
+      "description": "Get current time, convert between timezones, compute relative times. Trivial but eliminates a recurring agent error class.",
+      "why_listed": "LLMs hallucinate dates; this server replaces guesses with the actual system clock."
+    },
+    {
+      "name": "Google Drive MCP",
+      "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/gdrive",
+      "category": "storage",
+      "tier": "discovered",
+      "tags": ["google-drive", "documents", "spreadsheets"],
+      "description": "List, read, search Google Drive files (Docs, Sheets, Slides) via OAuth.",
+      "why_listed": "Standard document-storage surface for users on the Google stack."
+    },
+    {
+      "name": "Cloudflare MCP",
+      "url": "https://developers.cloudflare.com/agents/model-context-protocol/",
+      "category": "infrastructure",
+      "tier": "discovered",
+      "tags": ["cloudflare", "workers", "kv", "r2"],
+      "description": "Manage Cloudflare Workers, KV, R2, and DNS via the Cloudflare API.",
+      "why_listed": "Edge-infra adoption is high; first-party MCP support from a major cloud."
+    },
+    {
+      "name": "Linear MCP",
+      "url": "https://linear.app/changelog",
+      "category": "developer-tools",
+      "tier": "discovered",
+      "tags": ["linear", "issues", "project-management"],
+      "description": "Linear issue tracker — query issues, comment, create/update, manage cycles.",
+      "why_listed": "Standard issue tracker for engineering teams; agents that triage bugs land here."
+    },
+    {
+      "name": "Sentry MCP",
+      "url": "https://docs.sentry.io/concepts/integrations/mcp/",
+      "category": "observability",
+      "tier": "discovered",
+      "tags": ["sentry", "errors", "monitoring"],
+      "description": "Query Sentry issues, recent events, performance traces. First-party MCP support from Sentry.",
+      "why_listed": "Closing the loop for incident-response agents — read errors directly without context-switching."
+    },
+    {
+      "name": "Notion MCP",
+      "url": "https://developers.notion.com/docs/mcp",
+      "category": "knowledge",
+      "tier": "discovered",
+      "tags": ["notion", "wiki", "docs"],
+      "description": "Read and write Notion pages and databases. First-party MCP support from Notion.",
+      "why_listed": "Standard knowledge-management surface; agents that document research surface here."
+    },
+    {
+      "name": "ClawHub",
+      "url": "https://clawhub.ai",
+      "category": "agent-tools-directory",
+      "tier": "vetted",
+      "tags": ["clawhub", "skills", "directory", "openclaw"],
+      "description": "Skills marketplace for the OpenClaw protocol. Hosts SKILL.md submissions; 2.87M+ Clawbot agents browse via heartbeat.",
+      "why_listed": "Distribution channel for swarm.tips own SKILL.md (`swarm-tips-repo/skill/SKILL.md`); high reach."
+    },
+    {
+      "name": "PulseMCP",
+      "url": "https://pulsemcp.com",
+      "category": "mcp-directory",
+      "tier": "vetted",
+      "tags": ["pulsemcp", "directory", "discovery"],
+      "description": "Auto-pulls from the official MCP registry daily. ~466 servers as of 2026-04-08; the most up-to-date public catalog.",
+      "why_listed": "Discovery aggregator; we don't need to submit separately once we're in the official registry."
+    },
+    {
+      "name": "MCP.so",
+      "url": "https://mcp.so",
+      "category": "mcp-directory",
+      "tier": "discovered",
+      "tags": ["mcp-directory", "submission"],
+      "description": "Community-maintained MCP-server directory with web-form submissions; ~19K servers cataloged as of early 2026.",
+      "why_listed": "Secondary discovery channel beyond the official registry."
+    },
+    {
+      "name": "Glama MCP directory",
+      "url": "https://glama.ai/mcp/servers",
+      "category": "mcp-directory",
+      "tier": "discovered",
+      "tags": ["glama", "directory"],
+      "description": "MCP-server catalog with quality scoring and trust signals.",
+      "why_listed": "Tertiary discovery channel; complements the registry + PulseMCP + MCP.so."
+    },
+    {
+      "name": "BotBounty",
+      "url": "https://botbounty.app",
+      "category": "agent-bounties",
+      "tier": "vetted",
+      "tags": ["bounties", "base", "ethereum", "agents"],
+      "description": "Bounty board for AI-agent work on Base / ETH. 42 completed bounties totaling $2,418 lifetime per their /api/stats.",
+      "why_listed": "Passes the workprotocol payout test (real completed-bounties archive). swarm-tips ingests via `fetch_botbounty`."
+    },
+    {
+      "name": "Moltlaunch",
+      "url": "https://moltlaunch.io",
+      "category": "agent-bounties",
+      "tier": "vetted",
+      "tags": ["moltlaunch", "tasks", "ethereum", "agents"],
+      "description": "Agent task marketplace — 172 completed tasks, ~196 ETH lifetime earnings across 43 active agents.",
+      "why_listed": "Passes the workprotocol payout test; the highest-volume agent-bounty source we've integrated."
+    },
+    {
+      "name": "Bountycaster (Farcaster)",
+      "url": "https://bountycaster.xyz",
+      "category": "agent-bounties",
+      "tier": "vetted",
+      "tags": ["farcaster", "bounties"],
+      "description": "Bounty board within Farcaster. Mixed agent / human work; crypto-native distribution.",
+      "why_listed": "Farcaster ecosystem reach; included in `list_earning_opportunities` aggregation."
+    },
+    {
+      "name": "Switchboard On-Demand",
+      "url": "https://docs.switchboard.xyz/docs/switchboard/switchboard-on-demand",
+      "category": "oracles",
+      "tier": "vetted",
+      "tags": ["solana", "oracle", "switchboard", "attestation"],
+      "description": "Pull-feed oracle on Solana. Used by Shillbot for YouTube engagement-metric attestation; battle-tested.",
+      "why_listed": "Critical infrastructure dependency — Shillbot's verify_task reads attestations from a Switchboard pull-feed."
+    },
+    {
+      "name": "Solana Agent Registry",
+      "url": "https://github.com/solana-developers/solana-agent-kit",
+      "category": "agent-identity",
+      "tier": "discovered",
+      "tags": ["solana", "agent-identity", "registry"],
+      "description": "On-chain agent identity primitive on Solana. Stores identity metadata + pointers (MCP endpoints, A2A cards).",
+      "why_listed": "Discoverability channel for agents; complements swarm.tips's marketplace-side identity."
+    },
+    {
+      "name": "AgentRank (Hyperspace)",
+      "url": "https://hyperspace.computer/agentrank",
+      "category": "agent-reputation",
+      "tier": "discovered",
+      "tags": ["agentrank", "hyperspace", "reputation"],
+      "description": "PageRank for the agentic web. Ranks 25K+ MCP servers daily via stake-weighted delegation graphs + GitHub signals.",
+      "why_listed": "Measures *code quality* of MCP servers; complements swarm.tips's *work-output* reputation (Shillbot scores)."
+    }
+  ]
+}

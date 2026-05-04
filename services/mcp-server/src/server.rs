@@ -190,6 +190,23 @@ pub struct AgentProfileArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct SearchMcpServersArgs {
+    /// Free-text needle, matched case-insensitively against entry
+    /// name, description, why-listed, and tags. Omit to skip text
+    /// filtering (and rely on `category` / `tier` instead).
+    pub query: Option<String>,
+    /// Filter by category (substring, case-insensitive). E.g.,
+    /// `"agent"` matches `agent-bounties`, `agent-tools-directory`,
+    /// etc.
+    pub category: Option<String>,
+    /// Filter by vetting tier: `"first-party"`, `"vetted"`, or
+    /// `"discovered"`. Unknown values return zero results.
+    pub tier: Option<String>,
+    /// Maximum results to return. Default 50, max 200.
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct DiscoverOpportunitiesArgs {
     /// Restrict to one vertical: "earn" (agent gets paid) or "spend" (agent pays for a service).
     /// Omit to search both. Anything other than "earn" / "spend" is rejected.
@@ -1248,6 +1265,52 @@ impl SwarmTipsMcp {
         Ok(text_result(&merged))
     }
 
+    #[tool(
+        name = "search_mcp_servers",
+        description = "[READ] Search the Layer 3 curated directory of MCP servers and agent-work tools. The directory has 30 entries across three vetting tiers — `first-party` (operated by the swarm.tips DAO), `vetted` (third-party, we've used + verified), `discovered` (cataloged from public sources, not yet exercised). Filter by `query` (substring vs name/description/tags), `category` (substring), and `tier`. Results sort first-party → vetted → discovered. The same directory powers swarm.tips/discover; this tool exposes it programmatically. Use this when an agent needs to find an MCP server for a capability (DeFi, search, browser automation, etc.) instead of an opportunity (which `discover_opportunities` covers).",
+        annotations(read_only_hint = true)
+    )]
+    async fn search_mcp_servers(
+        &self,
+        Parameters(args): Parameters<SearchMcpServersArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = args.limit.unwrap_or(50).min(200) as usize;
+        let filter = crate::layer3::Filter {
+            query: args.query.as_deref().filter(|s| !s.is_empty()),
+            category: args.category.as_deref().filter(|s| !s.is_empty()),
+            tier: args.tier.as_deref().filter(|s| !s.is_empty()),
+            limit: Some(limit),
+        };
+        let hits = crate::layer3::search(&filter);
+
+        tracing::info!(
+            count = hits.len(),
+            query = args.query.as_deref().unwrap_or(""),
+            category = args.category.as_deref().unwrap_or(""),
+            tier = args.tier.as_deref().unwrap_or(""),
+            "search_mcp_servers served"
+        );
+
+        // Wrap with the directory-level metadata so the caller can
+        // tell at a glance how many entries the directory has and
+        // what the tier definitions mean. Mirrors the `/discover`
+        // page's legend.
+        let total_in_directory = crate::layer3::entries().len();
+        let result = serde_json::json!({
+            "results": hits,
+            "total_in_directory": total_in_directory,
+            "returned": hits.len(),
+            "tier_definitions": {
+                "first-party": "Operated by the swarm.tips DAO or a vertical we own. Trust = same as the marketplace itself.",
+                "vetted": "Independently maintained by a third party; we have used it, confirmed the install path works, and verified the published capabilities match runtime behavior. Trust = we recommend it.",
+                "discovered": "Cataloged from public sources (MCP registry, awesome-mcp lists, GitHub). Not yet exercised end-to-end. Trust = read at your own risk; we surface it for discovery, not endorsement.",
+            },
+            "browse_url": "https://swarm.tips/discover",
+        });
+
+        Ok(text_result(&result))
+    }
+
     // -- Coordination Game tools --
 
     #[tool(
@@ -1609,12 +1672,12 @@ const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories
-This server exposes 29 tools across five categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+This server exposes 30 tools across five categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
 - **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
-- **listings** (3 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters).
+- **listings** (4 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters), `search_mcp_servers` (Layer 3 curated MCP-server directory — 30 entries with tier-aware trust framing).
 - **profile** (1 tool, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate).
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
