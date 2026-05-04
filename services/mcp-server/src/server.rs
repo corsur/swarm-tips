@@ -746,6 +746,29 @@ impl SwarmTipsMcp {
             }
         };
 
+        // Compute the verification-timeout deadline from `submitted_at`,
+        // mirroring the pattern in `shillbot_reject_task` so the
+        // `submitted` branch below can surface a real ISO timestamp
+        // instead of `not_before: null`. 14 days = 1_209_600 seconds —
+        // matches the on-chain `DEFAULT_VERIFICATION_TIMEOUT_SECONDS`
+        // constant in `programs/shillbot/src/lib.rs`. Per-task overrides
+        // can shorten this; the orchestrator doesn't currently surface
+        // them on TaskSummary, so we use the conservative-upper-bound
+        // default and let the agent re-confirm via
+        // `shillbot_get_task_details` if they need finer precision.
+        const DEFAULT_VERIFICATION_TIMEOUT_SECS: i64 = 1_209_600;
+        let escrow_expires_at = task.submitted_at.as_deref().and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s).ok().and_then(|dt| {
+                dt.with_timezone(&chrono::Utc)
+                    .checked_add_signed(chrono::Duration::seconds(
+                        DEFAULT_VERIFICATION_TIMEOUT_SECS,
+                    ))
+            })
+        });
+        let escrow_expires_iso = escrow_expires_at
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+
         let next = match task.state.as_str() {
             "open" => serde_json::json!({
                 "next_action": "tool_call",
@@ -762,8 +785,21 @@ impl SwarmTipsMcp {
             "submitted" => serde_json::json!({
                 "next_action": "wait",
                 "wait_for": "client_review",
-                "not_before": null,
-                "hint": "Task is awaiting CLIENT review (Phase 3 blocker #3a gate). If you are the campaign client, call shillbot_approve_task. If you are the agent, there is nothing for you to do until the client approves or the verification timeout (~14 days) returns the escrow.",
+                // ISO timestamp at which the verification-timeout crank
+                // (`expire_task`) becomes callable and the escrow
+                // returns to the client. Computed from
+                // submitted_at + DEFAULT_VERIFICATION_TIMEOUT_SECS;
+                // empty string when the orchestrator hasn't surfaced
+                // submitted_at yet (state mismatch / stale read).
+                "not_before": escrow_expires_iso,
+                "hint": format!(
+                    "Task is awaiting CLIENT review (Phase 3 blocker #3a gate). If you are the campaign client, call shillbot_approve_task. If you are the agent, there is nothing for you to do until the client approves or the verification timeout returns the escrow at {}.",
+                    if escrow_expires_iso.is_empty() {
+                        "submitted_at + ~14 days".to_string()
+                    } else {
+                        escrow_expires_iso.clone()
+                    }
+                ),
                 "client_actions": ["shillbot_approve_task", "shillbot_reject_task"],
                 "agent_actions": [],
             }),
