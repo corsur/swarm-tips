@@ -3,6 +3,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 pub mod anti_gaming;
+pub mod composite_trust;
 pub mod errors;
 pub mod models;
 pub mod normalization;

@@ -190,6 +190,25 @@ pub struct AgentProfileArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct AgentTrustScoreArgs {
+    /// Wallet pubkey to score. Omit to query the caller's
+    /// currently-registered wallet.
+    pub wallet: Option<String>,
+    /// Coordination Game tournament to read PlayerProfile under.
+    /// Defaults to 1.
+    pub tournament_id: Option<u64>,
+    /// Optional curator-tier ascription (`"first-party"`, `"vetted"`,
+    /// `"discovered"`) — pass when you've already looked the agent up
+    /// in the Layer 3 directory and want to fold the tier into the
+    /// composite. Omit to skip the curator signal.
+    pub curator_tier: Option<String>,
+    /// Optional Hyperspace AgentRank score in 0..1. Pass when
+    /// available; the composite formula folds it in. AgentRank
+    /// integration is queued; for now callers compute it externally.
+    pub agent_rank: Option<f64>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct SearchMcpServersArgs {
     /// Free-text needle, matched case-insensitively against entry
     /// name, description, why-listed, and tags. Omit to skip text
@@ -1034,6 +1053,134 @@ impl SwarmTipsMcp {
         Ok(text_result(&result))
     }
 
+    #[tool(
+        name = "agent_trust_score",
+        description = "[READ] Composite trust score (0..1) combining Shillbot reputation (oracle-attested completion + score), Coordination Game performance (win rate ≥ 5 games), Layer 3 curator tier ascription, and (optionally) Hyperspace AgentRank. Partial-data tolerant — every signal is optional, weights renormalize over the present signals, and the response carries a `confidence` count (0..=4 — how many signals contributed). Reads on-chain via the same path as agent_profile (#29) for the Shillbot + Game halves; pass `curator_tier` / `agent_rank` if you have them. Output includes a `breakdown` showing per-signal value + applied weight so a reader can audit how the score was derived. Use this when you need a single number to decide whether to trust an agent for a task / hire / payout. NOTE: this is the off-chain composite formula. EigenTrust (the global trust-graph computation) is a separate task and will compose with this score once it ships.",
+        annotations(read_only_hint = true)
+    )]
+    async fn agent_trust_score(
+        &self,
+        Parameters(args): Parameters<AgentTrustScoreArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        // Resolve target wallet (same shape as agent_profile).
+        let target_wallet = match args.wallet.as_deref() {
+            Some(w) if !w.is_empty() => w.to_string(),
+            _ => self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
+                invalid_input(
+                    "wallet arg omitted AND no registered wallet — call register_wallet first or pass wallet explicitly",
+                )
+            })?,
+        };
+        let tournament_id = args.tournament_id.unwrap_or(1);
+
+        // Fan out the on-chain reads concurrently — same pattern as
+        // agent_profile.
+        let (agent_state_res, player_profile_res) = tokio::join!(
+            crate::solana_reads::read_agent_state(
+                &self.state.rpc_client,
+                &self.state.solana_rpc_url,
+                &target_wallet,
+            ),
+            crate::solana_reads::read_player_profile(
+                &self.state.rpc_client,
+                &self.state.solana_rpc_url,
+                &target_wallet,
+                tournament_id,
+            ),
+        );
+        let agent_state = agent_state_res.map_err(|e| to_mcp_error(&e))?;
+        let player_profile = player_profile_res.map_err(|e| to_mcp_error(&e))?;
+
+        // Build composite-trust inputs from the on-chain reads.
+        use shillbot_scorer::composite_trust::{
+            compute_trust, CuratorTier, GameInput, ShillbotInput, TrustInputs,
+        };
+
+        let shillbot_input = agent_state.as_ref().map(|s| {
+            let avg = if s.total_completed > 0 {
+                Some((s.total_score_sum as f64) / (s.total_completed as f64))
+            } else {
+                None
+            };
+            let completion = if s.total_tasks_claimed > 0 {
+                Some((s.total_completed as f64) / (s.total_tasks_claimed as f64))
+            } else {
+                None
+            };
+            ShillbotInput {
+                average_score: avg,
+                // MAX_SCORE = 1_000_000 per shared::MAX_SCORE; hardcoded
+                // here to avoid pulling that crate as a dep, mirroring
+                // the orchestrator's same hardcode at the AAS attestation
+                // surface (#16). Drift risk: if the on-chain MAX_SCORE
+                // ever changes (it hasn't since v0), this constant
+                // updates in lockstep with the on-chain commit.
+                score_max: 1_000_000,
+                completion_rate: completion,
+                total_completed: s.total_completed,
+            }
+        });
+
+        let game_input = player_profile.as_ref().map(|p| {
+            let win_rate = if p.total_games > 0 {
+                Some((p.wins as f64) / (p.total_games as f64))
+            } else {
+                None
+            };
+            GameInput {
+                win_rate,
+                total_games: p.total_games,
+            }
+        });
+
+        let curator = match args.curator_tier.as_deref() {
+            Some("first-party") => Some(CuratorTier::FirstParty),
+            Some("vetted") => Some(CuratorTier::Vetted),
+            Some("discovered") => Some(CuratorTier::Discovered),
+            None | Some("") => None,
+            Some(other) => {
+                return Err(invalid_input(&format!(
+                    "curator_tier must be \"first-party\", \"vetted\", \"discovered\", or omitted; got {other:?}"
+                )));
+            }
+        };
+
+        let inputs = TrustInputs {
+            shillbot: shillbot_input,
+            game: game_input,
+            curator,
+            agent_rank: args.agent_rank,
+        };
+        let trust = compute_trust(&inputs);
+
+        let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let result = serde_json::json!({
+            "wallet": target_wallet,
+            "tournament_id": tournament_id,
+            "trust_score": trust.score,
+            "confidence": trust.confidence,
+            "breakdown": trust.breakdown,
+            "inputs_present": {
+                "shillbot": agent_state.is_some(),
+                "game": player_profile.is_some(),
+                "curator": curator.is_some(),
+                "agent_rank": args.agent_rank.is_some(),
+            },
+            "last_updated": now_iso,
+        });
+
+        tracing::info!(
+            wallet = %target_wallet,
+            tournament_id,
+            trust_score = trust.score,
+            confidence = trust.confidence,
+            "agent_trust_score served"
+        );
+
+        Ok(text_result(&result))
+    }
+
     // -- Video generation tools --
 
     #[tool(
@@ -1672,13 +1819,13 @@ const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories
-This server exposes 30 tools across five categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+This server exposes 31 tools across five categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
 - **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (4 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters), `search_mcp_servers` (Layer 3 curated MCP-server directory — 30 entries with tier-aware trust framing).
-- **profile** (1 tool, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate).
+- **profile** (2 tools, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate). `agent_trust_score` consumes the same on-chain reads + optional curator-tier + optional Hyperspace AgentRank and returns a single composite 0..1 trust score with a confidence count and per-signal breakdown for transparency.
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
 

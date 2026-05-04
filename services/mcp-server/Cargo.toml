@@ -14,6 +14,7 @@ warnings = "deny"
 all = "deny"
 
 [dependencies]
+shillbot-scorer = { path = "../shillbot-scorer" }
 rmcp = { version = "1.3", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 schemars = "1.0"
 axum = "0.8"
