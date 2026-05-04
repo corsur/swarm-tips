@@ -69,7 +69,17 @@ def resolve_shillbot_state(state: int, account_kind: str) -> Optional[str]:
     return _SHILLBOT_STATE_NAMES.get(state)
 
 
+def shillbot_valid_states(account_kind: str):
+    """Shillbot's "states valid for attestation" policy. Per
+    ``docs/specs/aas-v1.md`` §6 capture window: only Verified is
+    attestable — finalize closes the on-chain account."""
+    if account_kind != "Task":
+        return ()
+    return ("verified",)
+
+
 SHILLBOT_PROTOCOL = ProtocolHandler(
     decode=decode_shillbot_task,
     resolve_state=resolve_shillbot_state,
+    valid_states=shillbot_valid_states,
 )

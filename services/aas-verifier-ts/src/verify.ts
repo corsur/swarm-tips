@@ -143,11 +143,14 @@ export async function verifyV1OnChain(
     return "field_mismatch:state";
   }
 
-  // Step 7 — state validity. v1 protocols MUST publish which states
-  // are "valid for attestation"; this v1 reference accepts only
-  // "verified" (matching Shillbot's policy in `docs/specs/aas-v1.md`
-  // §6). Other protocols can compose their own filter on the verdict.
-  if (a.state !== "verified") {
+  // Step 7 — state validity. Spec §4 step 7 says protocols publish
+  // which on-chain states are "valid for attestation"; the verifier
+  // delegates to the protocol handler's `validStates` to avoid
+  // hardcoding any one protocol's policy. Shillbot returns
+  // `["verified"]`; other protocols can return larger sets without
+  // forking this verifier.
+  const valid = protocol.validStates(a.account_kind);
+  if (!valid.includes(a.state)) {
     return "state_invalid";
   }
 

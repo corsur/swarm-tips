@@ -178,3 +178,205 @@ def test_returns_discriminator_mismatch_when_first_8_bytes_wrong():
         _stub_rpc(("2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi", data)),
     )
     assert res == "discriminator_mismatch"
+
+
+# ----- happy path + step 5 / step 7 negatives ----------------------
+#
+# Builds 315 bytes of synthetic on-chain Task account data that matches
+# the wire-format attestation, then mutates one field at a time to
+# confirm each ``field_mismatch:<field>`` reason is reachable. Without
+# this the on-chain happy path is uncovered — only the negatives at
+# steps 2-4 are exercised above.
+
+
+import struct
+from datetime import datetime, timezone
+
+import base58
+
+from aas_verifier import ProtocolHandler, verify_v1
+from aas_verifier.types import DecodedAccount
+
+
+_HAPPY_TASK_ID = 42
+_HAPPY_VERIFIED_AT_SECS = 1_746_201_600
+_HAPPY_VERIFIED_AT_ISO = (
+    datetime.fromtimestamp(_HAPPY_VERIFIED_AT_SECS, tz=timezone.utc)
+    .strftime("%Y-%m-%dT%H:%M:%SZ")
+)
+_HAPPY_COMPOSITE_SCORE = 850_000
+_HAPPY_VERIFY_HASH = "a" * 64
+_HAPPY_CONTENT_HASH = "b" * 64
+_HAPPY_CONTENT_ID_HASH = "c" * 64
+
+_SHILLBOT_PROGRAM_ID = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
+_HAPPY_ACCOUNT = "11111111111111111111111111111112"
+_HAPPY_CLIENT = "11111111111111111111111111111113"
+_HAPPY_AGENT = "11111111111111111111111111111114"
+
+
+def _build_happy_account_bytes(state_byte: int = 3) -> bytes:
+    """Construct 315 bytes (discriminator + 307-byte body) matching the
+    happy-path attestation. ``state_byte`` defaults to 3 (Verified);
+    pass 7 to test a state-invalid scenario.
+
+    Layout per ``decoders/shillbot.py``."""
+    from aas_verifier.discriminator import anchor_discriminator
+
+    body = bytearray(307)
+    struct.pack_into("<Q", body, 0, _HAPPY_TASK_ID)
+    body[8:40] = base58.b58decode(_HAPPY_CLIENT)
+    body[40:72] = base58.b58decode(_HAPPY_AGENT)
+    body[72] = state_byte
+    body[73] = 0  # platform = YouTube
+    # 74-82: escrow_lamports (zero)
+    body[82:114] = bytes.fromhex(_HAPPY_CONTENT_HASH)
+    body[114:146] = bytes.fromhex(_HAPPY_CONTENT_ID_HASH)
+    # 146-162: task_nonce (zero)
+    struct.pack_into("<Q", body, 162, _HAPPY_COMPOSITE_SCORE)
+    # 170-226: payment_amount, fee_amount, deadline, submit_margin,
+    # claim_buffer, created_at, submitted_at (zero)
+    struct.pack_into("<q", body, 226, _HAPPY_VERIFIED_AT_SECS)
+    # 234-254: challenge_deadline + three u32 overrides (zero)
+    body[254:286] = bytes.fromhex(_HAPPY_VERIFY_HASH)
+    # 286-306: _reserved (zero)
+    body[306] = 254  # bump
+
+    return anchor_discriminator("Task") + bytes(body)
+
+
+def _happy_attestation(**overrides: Any) -> Dict[str, Any]:
+    base = {
+        "version": "aas/v1",
+        "network": "mainnet",
+        "program_id": _SHILLBOT_PROGRAM_ID,
+        "account": _HAPPY_ACCOUNT,
+        "account_kind": "Task",
+        "task_id": str(_HAPPY_TASK_ID),
+        "client": _HAPPY_CLIENT,
+        "agent": _HAPPY_AGENT,
+        "state": "verified",
+        "platform": 0,
+        "composite_score": str(_HAPPY_COMPOSITE_SCORE),
+        "score_max": "1000000",
+        "verified_at": _HAPPY_VERIFIED_AT_ISO,
+        "verification_hash": _HAPPY_VERIFY_HASH,
+        "content_hash": _HAPPY_CONTENT_HASH,
+        "content_id_hash": _HAPPY_CONTENT_ID_HASH,
+        "oracle_feed": "11111111111111111111111111111115",
+    }
+    base.update(overrides)
+    return base
+
+
+def _happy_rpc(state_byte: int = 3):
+    data = _build_happy_account_bytes(state_byte=state_byte)
+    return _stub_rpc((_SHILLBOT_PROGRAM_ID, data))
+
+
+def test_happy_path_returns_valid_true():
+    verdict = verify_v1(_happy_attestation(), SHILLBOT_PROTOCOL, _happy_rpc())
+    assert verdict["valid"] is True
+
+
+@pytest.mark.parametrize(
+    "field,wire_value,reason",
+    [
+        ("task_id", "43", "field_mismatch:task_id"),
+        ("client", "11111111111111111111111111111119", "field_mismatch:client"),
+        ("agent", "11111111111111111111111111111119", "field_mismatch:agent"),
+        ("composite_score", "850001", "field_mismatch:composite_score"),
+        ("verification_hash", "d" * 64, "field_mismatch:verification_hash"),
+        ("content_hash", "d" * 64, "field_mismatch:content_hash"),
+        ("content_id_hash", "d" * 64, "field_mismatch:content_id_hash"),
+    ],
+)
+def test_field_mismatch_reasons_are_each_reachable(field, wire_value, reason):
+    verdict = verify_v1(
+        _happy_attestation(**{field: wire_value}),
+        SHILLBOT_PROTOCOL,
+        _happy_rpc(),
+    )
+    assert verdict["valid"] is False
+    assert verdict["failure_reason"] == reason
+
+
+def test_field_mismatch_verified_at_when_drift_above_one_second():
+    drifted_secs = _HAPPY_VERIFIED_AT_SECS + 5
+    drifted_iso = (
+        datetime.fromtimestamp(drifted_secs, tz=timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    verdict = verify_v1(
+        _happy_attestation(verified_at=drifted_iso),
+        SHILLBOT_PROTOCOL,
+        _happy_rpc(),
+    )
+    assert verdict["valid"] is False
+    assert verdict["failure_reason"] == "field_mismatch:verified_at"
+
+
+def test_verified_at_one_second_drift_accepted():
+    drifted_secs = _HAPPY_VERIFIED_AT_SECS + 1
+    drifted_iso = (
+        datetime.fromtimestamp(drifted_secs, tz=timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    verdict = verify_v1(
+        _happy_attestation(verified_at=drifted_iso),
+        SHILLBOT_PROTOCOL,
+        _happy_rpc(),
+    )
+    assert verdict["valid"] is True
+
+
+def test_field_mismatch_state_when_wire_disagrees_with_resolved_chain_state():
+    verdict = verify_v1(
+        _happy_attestation(state="approved"),
+        SHILLBOT_PROTOCOL,
+        _happy_rpc(),
+    )
+    assert verdict["valid"] is False
+    assert verdict["failure_reason"] == "field_mismatch:state"
+
+
+def test_state_invalid_when_protocol_doesnt_allow_state():
+    # Wire claims "approved" AND on-chain state byte is 7 (Approved). Step 5
+    # passes; step 7 rejects because Shillbot's valid_states is ("verified",).
+    verdict = verify_v1(
+        _happy_attestation(state="approved"),
+        SHILLBOT_PROTOCOL,
+        _happy_rpc(state_byte=7),
+    )
+    assert verdict["valid"] is False
+    assert verdict["failure_reason"] == "state_invalid"
+
+
+def test_custom_protocol_with_multi_state_valid_states_accepts_what_shillbot_rejects():
+    # validStates extension point isn't Shillbot-locked.
+    liberal = ProtocolHandler(
+        decode=SHILLBOT_PROTOCOL.decode,
+        resolve_state=SHILLBOT_PROTOCOL.resolve_state,
+        valid_states=lambda kind: ("verified", "approved"),
+    )
+    verdict = verify_v1(
+        _happy_attestation(state="approved"),
+        liberal,
+        _happy_rpc(state_byte=7),
+    )
+    assert verdict["valid"] is True
+
+
+# ----- optional-field schema validation -----------------------------
+
+
+def test_schema_rejects_verifier_instructions_wrong_type():
+    a = _happy_attestation()
+    a["verifier_instructions"] = 42  # number instead of string
+    assert check_schema(a) == "schema_invalid:verifier_instructions"
+
+
+def test_schema_accepts_string_verifier_instructions():
+    a = _happy_attestation()
+    a["verifier_instructions"] = "re-read on-chain"
+    assert check_schema(a) is None

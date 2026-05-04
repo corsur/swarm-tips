@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Literal, Optional, TypedDict, Union
+from typing import Any, Callable, Dict, Literal, Optional, Sequence, TypedDict, Union
 
 
 class AasV1Attestation(TypedDict, total=False):
@@ -55,12 +55,16 @@ class DecodedAccount:
 # 8-byte Anchor discriminator; ``account_kind`` is for routing.
 AccountDecoder = Callable[[bytes, str], DecodedAccount]
 StateResolver = Callable[[int, str], Optional[str]]
+# Per-protocol "states valid for attestation" lookup. Spec §4 step 7.
+# Shillbot returns ``("verified",)``; other protocols MAY allow more.
+ValidStates = Callable[[str], Sequence[str]]
 
 
 @dataclass(frozen=True)
 class ProtocolHandler:
     decode: AccountDecoder
     resolve_state: StateResolver
+    valid_states: ValidStates
 
 
 # Verdict shape. ``failure_reason`` is a string from the closed taxonomy

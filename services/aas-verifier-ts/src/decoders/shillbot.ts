@@ -112,10 +112,19 @@ export const resolveShillbotState: StateResolver = (state, accountKind) => {
   }
 };
 
-/** Convenience bundle for callers that just want the canonical Shillbot pair. */
+/** Shillbot's "states valid for attestation" policy, per `docs/specs/aas-v1.md`
+ *  §6 capture window: only Verified is attestable. Finalize closes the on-chain
+ *  account, so post-finalize the attestation is permanently unverifiable. */
+export const shillbotValidStates = (accountKind: string): readonly string[] => {
+  if (accountKind !== "Task") return [];
+  return ["verified"];
+};
+
+/** Convenience bundle for callers that just want the canonical Shillbot triple. */
 export const shillbotProtocol: ProtocolHandler = {
   decode: decodeShillbotTask,
   resolveState: resolveShillbotState,
+  validStates: shillbotValidStates,
 };
 
 function bytesToHex(b: Uint8Array): string {

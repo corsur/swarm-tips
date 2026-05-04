@@ -11,11 +11,15 @@ import {
   anchorDiscriminator,
   asV1,
   checkSchema,
+  verifyV1,
   verifyV1Schema,
   verifyV1OnChain,
   shillbotProtocol,
 } from "../src/index.js";
-import type { AasV1Attestation } from "../src/index.js";
+import type {
+  AasV1Attestation,
+  ProtocolHandler,
+} from "../src/index.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 
 /** A minimal valid v1 attestation. Uses real-shaped pubkeys / hashes. */
@@ -215,5 +219,334 @@ describe("verifyV1OnChain (steps 2-5+7) with mocked RPC", () => {
       }),
     );
     expect(verdict).toBe("discriminator_mismatch");
+  });
+});
+
+// ----------------------------------------------------------------------
+// Happy path + step-5 negatives + step-7 negative
+//
+// Builds 315 bytes of synthetic on-chain Task account data that matches
+// the wire-format attestation, then mutates one field at a time to
+// confirm each `field_mismatch:<field>` reason is reachable. Without
+// this, a regression in the decoder offsets or any step-5 comparison
+// would slip through silently — only the negative steps 2-4 are
+// exercised above.
+// ----------------------------------------------------------------------
+
+const HAPPY_TASK_ID_LE_U64 = 42n;
+const HAPPY_VERIFIED_AT_SECS = 1_746_201_600; // 2025-05-02T12:00:00Z roughly
+const HAPPY_VERIFIED_AT_ISO = new Date(HAPPY_VERIFIED_AT_SECS * 1000)
+  .toISOString()
+  .replace(/\.\d+Z$/, "Z");
+const HAPPY_COMPOSITE_SCORE = 850_000n;
+const HAPPY_VERIFY_HASH = "a".repeat(64);
+const HAPPY_CONTENT_HASH = "b".repeat(64);
+const HAPPY_CONTENT_ID_HASH = "c".repeat(64);
+
+const SHILLBOT_PROGRAM_ID = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi";
+const HAPPY_ACCOUNT = "11111111111111111111111111111112";
+const HAPPY_CLIENT = "11111111111111111111111111111113";
+const HAPPY_AGENT = "11111111111111111111111111111114";
+
+/** Hex string → Uint8Array (32 bytes). */
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+/** Construct a 315-byte Task account whose decoded fields match the
+ *  values used in `happyAttestation()`. Discriminator + 307-byte body.
+ *  Layout per `decoders/shillbot.ts:14-42`. */
+function buildHappyAccountBytes(): Uint8Array {
+  const disc = anchorDiscriminator("Task");
+  const body = new Uint8Array(307);
+  const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
+
+  view.setBigUint64(0, HAPPY_TASK_ID_LE_U64, true);
+  body.set(new PublicKey(HAPPY_CLIENT).toBytes(), 8);
+  body.set(new PublicKey(HAPPY_AGENT).toBytes(), 40);
+  body[72] = 3; // state = Verified
+  body[73] = 0; // platform = YouTube
+  // bytes 74-82: escrow_lamports (zero)
+  body.set(hexToBytes(HAPPY_CONTENT_HASH), 82);
+  body.set(hexToBytes(HAPPY_CONTENT_ID_HASH), 114);
+  // bytes 146-162: task_nonce (zero)
+  view.setBigUint64(162, HAPPY_COMPOSITE_SCORE, true);
+  // bytes 170-226: payment_amount, fee_amount, deadline, submit_margin,
+  // claim_buffer, created_at, submitted_at (all zero)
+  view.setBigInt64(226, BigInt(HAPPY_VERIFIED_AT_SECS), true);
+  // bytes 234-254: challenge_deadline + three u32 overrides (zero)
+  body.set(hexToBytes(HAPPY_VERIFY_HASH), 254);
+  // bytes 286-306: _reserved (zero)
+  body[306] = 254; // bump
+
+  const out = new Uint8Array(8 + body.length);
+  out.set(disc, 0);
+  out.set(body, 8);
+  return out;
+}
+
+function happyAttestation(
+  overrides: Partial<AasV1Attestation> = {},
+): AasV1Attestation {
+  return {
+    version: "aas/v1",
+    network: "mainnet",
+    program_id: SHILLBOT_PROGRAM_ID,
+    account: HAPPY_ACCOUNT,
+    account_kind: "Task",
+    task_id: HAPPY_TASK_ID_LE_U64.toString(),
+    client: HAPPY_CLIENT,
+    agent: HAPPY_AGENT,
+    state: "verified",
+    platform: 0,
+    composite_score: HAPPY_COMPOSITE_SCORE.toString(),
+    score_max: "1000000",
+    verified_at: HAPPY_VERIFIED_AT_ISO,
+    verification_hash: HAPPY_VERIFY_HASH,
+    content_hash: HAPPY_CONTENT_HASH,
+    content_id_hash: HAPPY_CONTENT_ID_HASH,
+    oracle_feed: "11111111111111111111111111111115",
+    ...overrides,
+  };
+}
+
+function happyMockRpc(): Connection {
+  const data = buildHappyAccountBytes();
+  return {
+    rpcEndpoint: "mock://test",
+    async getAccountInfo(_pubkey: PublicKey) {
+      return {
+        owner: new PublicKey(SHILLBOT_PROGRAM_ID),
+        data: Buffer.from(data),
+        lamports: 1,
+        executable: false,
+        rentEpoch: 0,
+      };
+    },
+  } as unknown as Connection;
+}
+
+describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
+  it("returns valid:true when wire and on-chain agree", async () => {
+    const verdict = await verifyV1(
+      happyAttestation(),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(true);
+    if (verdict.valid) {
+      expect(verdict.attestation.composite_score).toBe(
+        HAPPY_COMPOSITE_SCORE.toString(),
+      );
+    }
+  });
+
+  it("returns field_mismatch:task_id when wire claims a different task_id", async () => {
+    const verdict = await verifyV1(
+      happyAttestation({ task_id: "43" }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:task_id");
+    }
+  });
+
+  it("returns field_mismatch:client when wire claims a different client pubkey", async () => {
+    const verdict = await verifyV1(
+      happyAttestation({ client: "11111111111111111111111111111119" }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:client");
+    }
+  });
+
+  it("returns field_mismatch:agent when wire claims a different agent pubkey", async () => {
+    const verdict = await verifyV1(
+      happyAttestation({ agent: "11111111111111111111111111111119" }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:agent");
+    }
+  });
+
+  it("returns field_mismatch:composite_score when wire score differs", async () => {
+    const verdict = await verifyV1(
+      happyAttestation({ composite_score: "850001" }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:composite_score");
+    }
+  });
+
+  it("returns field_mismatch:verification_hash when wire hash differs", async () => {
+    const verdict = await verifyV1(
+      happyAttestation({ verification_hash: "d".repeat(64) }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:verification_hash");
+    }
+  });
+
+  it("returns field_mismatch:content_hash when wire hash differs", async () => {
+    const verdict = await verifyV1(
+      happyAttestation({ content_hash: "d".repeat(64) }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:content_hash");
+    }
+  });
+
+  it("returns field_mismatch:content_id_hash when wire hash differs", async () => {
+    const verdict = await verifyV1(
+      happyAttestation({ content_id_hash: "d".repeat(64) }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:content_id_hash");
+    }
+  });
+
+  it("returns field_mismatch:verified_at when wire timestamp drifts > 1 second", async () => {
+    // Wire claims 5 seconds AFTER the on-chain value; tolerance is ±1.
+    const drifted = new Date((HAPPY_VERIFIED_AT_SECS + 5) * 1000)
+      .toISOString()
+      .replace(/\.\d+Z$/, "Z");
+    const verdict = await verifyV1(
+      happyAttestation({ verified_at: drifted }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:verified_at");
+    }
+  });
+
+  it("accepts ±1 second drift on verified_at (defensive cover per spec §4 step 5)", async () => {
+    const drifted = new Date((HAPPY_VERIFIED_AT_SECS + 1) * 1000)
+      .toISOString()
+      .replace(/\.\d+Z$/, "Z");
+    const verdict = await verifyV1(
+      happyAttestation({ verified_at: drifted }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(true);
+  });
+
+  it("returns field_mismatch:state when wire state name disagrees with on-chain discriminant", async () => {
+    // On-chain state byte is 3 (Verified). Wire claims "approved" — both
+    // pass schema but step-5 state comparison fails after resolveState
+    // maps the on-chain 3 → "verified" ≠ "approved".
+    const verdict = await verifyV1(
+      happyAttestation({ state: "approved" }),
+      shillbotProtocol,
+      happyMockRpc(),
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:state");
+    }
+  });
+
+  it("returns state_invalid when wire+chain agree on a state that's not in protocol's validStates", async () => {
+    // Build an account body where state byte is 7 (Approved). Wire also
+    // claims "approved", so step 5 passes. But Shillbot's validStates
+    // is ["verified"] only → step 7 rejects.
+    const data = buildHappyAccountBytes();
+    data[8 + 72] = 7; // overwrite the state byte in the body (post-discriminator offset 72)
+    const rpc = {
+      rpcEndpoint: "mock://test",
+      async getAccountInfo(_pubkey: PublicKey) {
+        return {
+          owner: new PublicKey(SHILLBOT_PROGRAM_ID),
+          data: Buffer.from(data),
+          lamports: 1,
+          executable: false,
+          rentEpoch: 0,
+        };
+      },
+    } as unknown as Connection;
+
+    const verdict = await verifyV1(
+      happyAttestation({ state: "approved" }),
+      shillbotProtocol,
+      rpc,
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("state_invalid");
+    }
+  });
+
+  it("custom protocol with multi-state validStates accepts what Shillbot would reject", async () => {
+    // Demonstrates the validStates extension point isn't Shillbot-locked.
+    // A custom handler that returns ["verified", "approved"] accepts the
+    // approved-state attestation that Shillbot's handler rejects above.
+    const data = buildHappyAccountBytes();
+    data[8 + 72] = 7; // approved on-chain
+    const rpc = {
+      rpcEndpoint: "mock://test",
+      async getAccountInfo(_pubkey: PublicKey) {
+        return {
+          owner: new PublicKey(SHILLBOT_PROGRAM_ID),
+          data: Buffer.from(data),
+          lamports: 1,
+          executable: false,
+          rentEpoch: 0,
+        };
+      },
+    } as unknown as Connection;
+
+    const liberalProtocol: ProtocolHandler = {
+      decode: shillbotProtocol.decode,
+      resolveState: shillbotProtocol.resolveState,
+      validStates: () => ["verified", "approved"],
+    };
+
+    const verdict = await verifyV1(
+      happyAttestation({ state: "approved" }),
+      liberalProtocol,
+      rpc,
+    );
+    expect(verdict.valid).toBe(true);
+  });
+});
+
+describe("schema check — optional fields", () => {
+  it("rejects verifier_instructions of wrong type (number instead of string)", () => {
+    const a = {
+      ...happyAttestation(),
+      verifier_instructions: 42 as unknown as string,
+    };
+    expect(checkSchema(a)).toBe("schema_invalid:verifier_instructions");
+  });
+
+  it("accepts a string verifier_instructions", () => {
+    const a = { ...happyAttestation(), verifier_instructions: "re-read on-chain" };
+    expect(checkSchema(a)).toBeNull();
   });
 });

@@ -48,6 +48,13 @@ export function checkSchema(input: unknown): FailureReason | null {
     return "schema_invalid:extensions";
   }
 
+  if (
+    a.verifier_instructions !== undefined &&
+    typeof a.verifier_instructions !== "string"
+  ) {
+    return "schema_invalid:verifier_instructions";
+  }
+
   return null;
 }
 

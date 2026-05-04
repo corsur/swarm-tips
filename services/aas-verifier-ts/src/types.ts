@@ -97,11 +97,24 @@ export type AccountDecoder = (
 export type StateResolver = (state: number, accountKind: string) => string | null;
 
 /**
- * The two pluggable hooks a non-Shillbot protocol passes when calling
+ * Per-protocol "states valid for attestation" lookup. Per spec §4 step
+ * 7, protocols publish which on-chain states are attestable. The
+ * verifier rejects an attestation whose `state` isn't in this list.
+ *
+ * Shillbot exports `["verified"]` (only Verified is attestable; finalize
+ * closes the on-chain account, see spec §6 capture window). Other
+ * protocols MAY allow multiple states.
+ */
+export type ValidStates = (accountKind: string) => readonly string[];
+
+/**
+ * The three pluggable hooks a non-Shillbot protocol passes when calling
  * the verifier. For Shillbot, `services/aas-verifier-ts/src/decoders/shillbot.ts`
- * exports both with the canonical Task layout and TaskState enum.
+ * exports all three with the canonical Task layout, TaskState enum,
+ * and the `["verified"]`-only attestation policy.
  */
 export interface ProtocolHandler {
   decode: AccountDecoder;
   resolveState: StateResolver;
+  validStates: ValidStates;
 }

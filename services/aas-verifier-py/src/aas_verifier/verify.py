@@ -117,10 +117,14 @@ def verify_v1_on_chain(
     if resolved is None or resolved != a["state"]:
         return "field_mismatch:state"
 
-    # Step 7 — state validity. v1 reference accepts only "verified"
-    # (matching Shillbot's policy in spec §6). Other protocols can
-    # compose their own filter on the verdict.
-    if a["state"] != "verified":
+    # Step 7 — state validity. Spec §4 step 7 says protocols publish
+    # which on-chain states are "valid for attestation"; the verifier
+    # delegates to the protocol handler's ``valid_states`` to avoid
+    # hardcoding any one protocol's policy. Shillbot returns
+    # ``("verified",)``; other protocols can return larger tuples
+    # without forking this verifier.
+    valid = protocol.valid_states(a["account_kind"])
+    if a["state"] not in valid:
         return "state_invalid"
 
     return None

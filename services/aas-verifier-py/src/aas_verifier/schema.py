@@ -82,6 +82,10 @@ def check_schema(input_value: Any) -> Optional[str]:
     if extensions is not None and not isinstance(extensions, dict):
         return "schema_invalid:extensions"
 
+    verifier_instructions = a.get("verifier_instructions")
+    if verifier_instructions is not None and not isinstance(verifier_instructions, str):
+        return "schema_invalid:verifier_instructions"
+
     return None
 
 
