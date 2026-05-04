@@ -1,0 +1,29 @@
+{
+  "name": "@swarm-tips/aas-verifier",
+  "version": "0.1.0",
+  "description": "AAS v1 reference verifier — TypeScript. Implements the 7-step verification protocol from docs/specs/aas-v1.md.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "aas-verify": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "js-sha256": "^0.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

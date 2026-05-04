@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aas-verifier"
+version = "0.1.0"
+description = "AAS v1 reference verifier — Python. Implements the 7-step protocol from docs/specs/aas-v1.md."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "base58>=2.1",
+  "requests>=2.32",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+aas-verify = "aas_verifier.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
