@@ -4,6 +4,14 @@ members = [
     "crates/*",
     "services/*",
 ]
+# Non-Rust packages that live under services/ but don't have a
+# Cargo.toml (the AAS reference verifiers ship as TypeScript and
+# Python). Cargo's services/* glob would otherwise try to load their
+# manifests and fail.
+exclude = [
+    "services/aas-verifier-py",
+    "services/aas-verifier-ts",
+]
 resolver = "2"
 
 [workspace.dependencies]
