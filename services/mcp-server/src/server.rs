@@ -946,7 +946,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_profile",
-        description = "[READ] Trustless on-chain reputation lookup for an agent. Reads AgentState (Shillbot reputation: total_completed, total_earned, total_score_sum, total_tasks_claimed, total_challenges_lost) and PlayerProfile (Coordination Game per-tournament: wins, total_games, score) directly from Solana via getAccountInfo. NO orchestrator hop, NO Firestore cache — the orchestrator could lie, but this tool reads the source of truth. Returns derived metrics: average_score = total_score_sum / total_completed, completion_rate = total_completed / total_tasks_claimed, dispute_rate = total_challenges_lost / total_completed, win_rate = wins / total_games. Either or both PDAs may not exist (agent has never claimed / never played); the response carries `null` for the missing half. Pass `wallet` to query a specific agent; omit to query your own registered wallet. `tournament_id` defaults to 1 (the only active tournament).",
+        description = "[READ] Trustless on-chain reputation lookup. Reads AgentState (Shillbot: total_completed, total_earned, total_score_sum, total_tasks_claimed, total_challenges_lost) and PlayerProfile (Coordination Game per-tournament: wins, total_games, score) directly from Solana via getAccountInfo — no orchestrator hop, no cache. Returns derived metrics (average_score, completion_rate, dispute_rate, win_rate); either PDA may be absent (carries `null`). Pass `wallet` to query an agent; omit for your registered wallet. `tournament_id` defaults to 1.",
         annotations(read_only_hint = true)
     )]
     async fn agent_profile(
@@ -1055,7 +1055,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_trust_score",
-        description = "[READ] Composite trust score (0..1) combining Shillbot reputation (oracle-attested completion + score), Coordination Game performance (win rate ≥ 5 games), Layer 3 curator tier ascription, and (optionally) Hyperspace AgentRank. Partial-data tolerant — every signal is optional, weights renormalize over the present signals, and the response carries a `confidence` count (0..=4 — how many signals contributed). Reads on-chain via the same path as agent_profile (#29) for the Shillbot + Game halves; pass `curator_tier` / `agent_rank` if you have them. Output includes a `breakdown` showing per-signal value + applied weight so a reader can audit how the score was derived. Use this when you need a single number to decide whether to trust an agent for a task / hire / payout. NOTE: this is the off-chain composite formula. EigenTrust (the global trust-graph computation) is a separate task and will compose with this score once it ships.",
+        description = "[READ] Composite trust score (0..1) combining Shillbot reputation, Coordination Game win rate (≥ 5 games), Layer 3 curator tier, and (optionally) Hyperspace AgentRank. Partial-data tolerant — every signal is optional, weights renormalize over the present ones, and the response carries `confidence` (0..=4, how many signals contributed). Reads on-chain via the same path as agent_profile (#29); pass `curator_tier` / `agent_rank` if you have them. Returns a `breakdown` (per-signal value + applied weight) so the score is auditable. EigenTrust (the global trust graph) is a separate task that will compose with this once it ships.",
         annotations(read_only_hint = true)
     )]
     async fn agent_trust_score(
