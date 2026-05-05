@@ -185,7 +185,15 @@ jobs:
           # Compile TypeScript to JavaScript for Node.js consumers
           cd sdk
           npx tsc coordination_game.ts --outDir . --declaration --module nodenext --moduleResolution nodenext --target es2020 --esModuleInterop
-          npm version 0.1.$(git rev-list --count HEAD) --no-git-tag-version
+          # Use ${{ github.run_number }} for the patch version. The previous
+          # `git rev-list --count HEAD` formula always returned 1 because
+          # actions/checkout's default fetch-depth is 1 (shallow), so every
+          # push produced version 0.1.1 and the second publish onward hit
+          # `npm error 409 Cannot publish over existing version`. The first
+          # publish landed 2026-04-02; every CG run since has been red on
+          # this single step. github.run_number is monotonic across all runs
+          # of this workflow, guaranteed unique, no shallow-clone gotcha.
+          npm version 0.1.${{ github.run_number }} --no-git-tag-version
           npm publish --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
