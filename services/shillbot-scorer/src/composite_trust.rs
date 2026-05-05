@@ -146,10 +146,21 @@ pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
         if let Some(avg) = s.average_score {
             if s.total_completed >= 1 && s.score_max > 0 {
                 let normalized_score = (avg / s.score_max as f64).clamp(0.0, 1.0);
-                // Combine average_score and completion_rate equally
-                // within the Shillbot signal.
-                let completion = s.completion_rate.unwrap_or(0.0).clamp(0.0, 1.0);
-                let combined = (normalized_score + completion) / 2.0;
+                // If completion_rate is present, combine it with the
+                // average score equally within the Shillbot signal.
+                // If it's absent (None), score on quality alone — DO NOT
+                // treat missing data as 0% completion. Treating None as
+                // 0.0 caps the shillbot signal at 0.5 for legacy agents
+                // (e.g. those who completed tasks before the AgentState
+                // schema was extended in task #12 and so have
+                // total_tasks_claimed=0 with total_completed>0). Surfaced
+                // by the 2026-05-04 E2E test session — the founder's
+                // wallet showed trust_score=0.4708 instead of the ~0.875
+                // its 5 perfect-score completions warranted.
+                let combined = match s.completion_rate {
+                    Some(rate) => (normalized_score + rate.clamp(0.0, 1.0)) / 2.0,
+                    None => normalized_score,
+                };
                 signals.push(TrustContribution {
                     signal: "shillbot".to_string(),
                     value: combined,
@@ -289,6 +300,38 @@ mod tests {
         // Single signal → renormalized weight = 1.0.
         assert!(approx_eq(s.weight, 1.0));
         assert!(approx_eq(result.score, 0.9));
+    }
+
+    #[test]
+    fn shillbot_signal_uses_score_alone_when_completion_rate_is_none() {
+        // Legacy-agent case: agents who completed tasks before the
+        // AgentState schema extension in task #12 have
+        // total_tasks_claimed=0 with total_completed>0, so the
+        // orchestrator/MCP returns completion_rate=None. Treating None
+        // as 0.0 (the prior behavior) capped their shillbot signal at
+        // 0.5*avg, halving the score they'd earned. The fix: when
+        // completion_rate is None, score on quality alone.
+        //
+        // average = 1.0 (perfect score), completion = None →
+        // combined value should be 1.0, not 0.5.
+        let result = compute_trust(&TrustInputs {
+            shillbot: Some(ShillbotInput {
+                average_score: Some(1_000_000.0),
+                score_max: 1_000_000,
+                completion_rate: None,
+                total_completed: 5,
+            }),
+            ..Default::default()
+        });
+        assert_eq!(result.confidence, 1);
+        let s = &result.breakdown[0];
+        assert_eq!(s.signal, "shillbot");
+        assert!(
+            approx_eq(s.value, 1.0),
+            "legacy agent with perfect score should score 1.0 on shillbot signal, got {}",
+            s.value
+        );
+        assert!(approx_eq(result.score, 1.0));
     }
 
     #[test]

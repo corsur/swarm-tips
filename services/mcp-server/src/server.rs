@@ -1880,7 +1880,7 @@ This server exposes 31 tools across five categories. If your agent only cares ab
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
 
-Naive MCP clients that don't support per-server allowlists load all 27 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
+Naive MCP clients that don't support per-server allowlists load all 31 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
 
 ## Wallet registration
 1. register_wallet — register your Solana wallet (required for any STATE/SPEND/EARN tool). One registration covers every product (Coordination Game + Shillbot). Non-custodial: only the public key is registered, the private key stays on the agent.
