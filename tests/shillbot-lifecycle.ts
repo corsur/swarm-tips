@@ -2,6 +2,7 @@ import { startAnchor } from "anchor-bankrun";
 import { BankrunProvider } from "anchor-bankrun";
 import { BN, Program } from "@coral-xyz/anchor";
 import {
+  ComputeBudgetProgram,
   Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
@@ -1218,8 +1219,22 @@ describe("shillbot-lifecycle (bankrun)", () => {
       await submitWork(program, aKp, tPda, "double-approve");
       await approveTask(program, cKp, tPda);
 
+      // Second call must produce a transaction whose signature differs from
+      // the first (otherwise bankrun's tx-dedup returns "already processed"
+      // before the on-chain handler runs and we never see InvalidTaskState).
+      // A unique compute-unit-limit preInstruction guarantees a fresh tx hash.
       try {
-        await approveTask(program, cKp, tPda);
+        await program.methods
+          .approveTask()
+          .accountsPartial({
+            task: tPda,
+            client: cKp.publicKey,
+          })
+          .preInstructions([
+            ComputeBudgetProgram.setComputeUnitLimit({ units: 199_999 }),
+          ])
+          .signers([cKp])
+          .rpc();
         assert.fail("expected InvalidTaskState on double-approve, got success");
       } catch (e: any) {
         const msg = String(e);
