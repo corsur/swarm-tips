@@ -7,6 +7,8 @@ on:
       - 'programs/coordination-game/**'
       - 'crates/shared/**'
       - 'tests/coordination-game.ts'
+      - 'tsconfig.json'
+      - 'package.json'
       - 'Anchor.toml'
       - '.github/workflows/coordination-game.yml'
       - 'sdk/**'
@@ -15,9 +17,12 @@ on:
       - 'programs/coordination-game/**'
       - 'crates/shared/**'
       - 'tests/coordination-game.ts'
+      - 'tsconfig.json'
+      - 'package.json'
       - 'Anchor.toml'
       - '.github/workflows/coordination-game.yml'
       - 'sdk/**'
+  workflow_dispatch:
 
 jobs:
   test:

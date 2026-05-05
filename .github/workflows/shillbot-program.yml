@@ -8,6 +8,8 @@ on:
       - 'crates/shared/**'
       - 'tests/shillbot.ts'
       - 'tests/shillbot-lifecycle.ts'
+      - 'tsconfig.json'
+      - 'package.json'
       - 'Anchor.toml'
       - '.github/workflows/shillbot-program.yml'
   pull_request:
@@ -15,8 +17,11 @@ on:
       - 'programs/shillbot/**'
       - 'crates/shared/**'
       - 'tests/shillbot*.ts'
+      - 'tsconfig.json'
+      - 'package.json'
       - 'Anchor.toml'
       - '.github/workflows/shillbot-program.yml'
+  workflow_dispatch:
 
 jobs:
   test:
