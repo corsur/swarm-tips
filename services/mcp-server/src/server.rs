@@ -92,6 +92,14 @@ pub struct GetAttestationArgs {
     /// `task_id` or `task_pda`.
     #[serde(default)]
     pub task_pda: Option<String>,
+    /// Solana network to read the on-chain account from. `"mainnet"`
+    /// (default) or `"devnet"`. Defaults to mainnet — pass `"devnet"`
+    /// only if the task you're attesting was created on a devnet
+    /// orchestrator. The orchestrator routes to a different RPC based
+    /// on this value; mismatched network = the on-chain account won't
+    /// be found and the call returns 409.
+    #[serde(default)]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -752,13 +760,21 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_get_attestation",
-        description = "[READ] Fetch a portable AAS v0 attestation for a Verified Shillbot task. Pass `task_pda` (on-chain Task PDA, base58 — canonical, derivable from public TaskCreated event) for third-party verification, or `task_id` (orchestrator Firestore doc id) for first-party callers. Exactly one is required. Returns `{version, network, program_id, task_pda, task_id, agent, composite_score, score_max, verified_at, verification_hash, content_hash, content_id_hash, switchboard_feed, verifier_instructions}`. Re-read the named PDA to verify; MCP does not sign. Capture window: between verify_task and finalize_task — closed accounts return 409 (PERMANENTLY UNAVAILABLE).",
+        description = "[READ] Fetch a portable AAS v0 attestation for a Verified Shillbot task. Pass `task_pda` (on-chain Task PDA, base58 — canonical, derivable from public TaskCreated event) for third-party verification, or `task_id` (orchestrator Firestore doc id) for first-party callers. Exactly one is required. Optional `network`: 'mainnet' (default) or 'devnet'. Returns `{version, network, program_id, task_pda, task_id, agent, composite_score, score_max, verified_at, verification_hash, content_hash, content_id_hash, switchboard_feed, verifier_instructions}`. Re-read the named PDA to verify; MCP does not sign. Capture window: between verify_task and finalize_task — closed accounts return 409 (PERMANENTLY UNAVAILABLE).",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_get_attestation(
         &self,
         Parameters(args): Parameters<GetAttestationArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let network = match args.network.as_deref() {
+            None | Some("") | Some("mainnet") | Some("mainnet-beta") => None,
+            Some("devnet") => Some("devnet"),
+            Some(other) => {
+                let msg = format!("network must be 'mainnet' or 'devnet', got '{other}'");
+                return Err(invalid_input(&msg));
+            }
+        };
         let attestation = match (
             args.task_id.as_deref().filter(|s| !s.is_empty()),
             args.task_pda.as_deref().filter(|s| !s.is_empty()),
@@ -776,13 +792,13 @@ impl SwarmTipsMcp {
             (Some(task_id), None) => self
                 .state
                 .orchestrator
-                .get_attestation(task_id)
+                .get_attestation(task_id, network)
                 .await
                 .map_err(|e| to_mcp_error(&e))?,
             (None, Some(task_pda)) => self
                 .state
                 .orchestrator
-                .get_attestation_by_pda(task_pda)
+                .get_attestation_by_pda(task_pda, network)
                 .await
                 .map_err(|e| to_mcp_error(&e))?,
         };

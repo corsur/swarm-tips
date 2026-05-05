@@ -544,6 +544,7 @@ impl OrchestratorProxy {
     pub async fn get_attestation(
         &self,
         task_id: &str,
+        network: Option<&str>,
     ) -> Result<AttestationResponse, McpServiceError> {
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -551,7 +552,11 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/tasks/{task_id}/attestation", self.base_url);
+        let qs = match network {
+            Some(n) => format!("?network={}", urlencoding::encode(n)),
+            None => String::new(),
+        };
+        let url = format!("{}/tasks/{task_id}/attestation{qs}", self.base_url);
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator get_attestation failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
@@ -581,6 +586,7 @@ impl OrchestratorProxy {
     pub async fn get_attestation_by_pda(
         &self,
         task_pda: &str,
+        network: Option<&str>,
     ) -> Result<AttestationResponse, McpServiceError> {
         if task_pda.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -597,7 +603,11 @@ impl OrchestratorProxy {
             )));
         }
 
-        let url = format!("{}/tasks/by-pda/{task_pda}/attestation", self.base_url);
+        let qs = match network {
+            Some(n) => format!("?network={}", urlencoding::encode(n)),
+            None => String::new(),
+        };
+        let url = format!("{}/tasks/by-pda/{task_pda}/attestation{qs}", self.base_url);
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, task_pda = %task_pda, "orchestrator get_attestation_by_pda failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
