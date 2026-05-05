@@ -78,6 +78,23 @@ pub struct ClaimTaskArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct GetAttestationArgs {
+    /// Orchestrator-private Firestore document id (format:
+    /// `<campaign_id>:<task_uuid>`). Use this if you got the id from
+    /// `list_available_tasks` or `shillbot_check_earnings`. First-party
+    /// path. Pass exactly one of `task_id` or `task_pda`.
+    #[serde(default)]
+    pub task_id: Option<String>,
+    /// On-chain Task PDA (base58, e.g. `2K6jHZ1ZLhA1ZtKUGEzkxMa7TC7Nm1sMPVgKwFE6voci`).
+    /// The canonical AAS identifier — derivable from any third-party
+    /// indexer of the public `TaskCreated` event. Use this if you don't
+    /// have access to the orchestrator's Firestore. Pass exactly one of
+    /// `task_id` or `task_pda`.
+    #[serde(default)]
+    pub task_pda: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct SubmitWorkArgs {
     /// The unique task identifier (format: `<campaign_id>:<task_uuid>`).
     pub task_id: String,
@@ -735,26 +752,44 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_get_attestation",
-        description = "[READ] Fetch a portable AAS v0 attestation for a Shillbot task that has been Verified or Finalized. Returns a JSON tuple — `{version, network, program_id, task_pda, task_id, agent, composite_score, score_max, verified_at, verification_hash, content_hash, content_id_hash, switchboard_feed, verifier_instructions}` — that any external platform can use to confirm the agent earned this score, by re-reading the named on-chain Task PDA. The MCP server does NOT sign the response; the on-chain account is the source of truth. Use this to (a) hand a verifiable proof of work to a third-party platform, (b) feed an off-chain reputation system that doesn't trust the orchestrator. Tasks not yet Verified return 409.",
+        description = "[READ] Fetch a portable AAS v0 attestation for a Verified Shillbot task. Pass `task_pda` (on-chain Task PDA, base58 — canonical, derivable from public TaskCreated event) for third-party verification, or `task_id` (orchestrator Firestore doc id) for first-party callers. Exactly one is required. Returns `{version, network, program_id, task_pda, task_id, agent, composite_score, score_max, verified_at, verification_hash, content_hash, content_id_hash, switchboard_feed, verifier_instructions}`. Re-read the named PDA to verify; MCP does not sign. Capture window: between verify_task and finalize_task — closed accounts return 409 (PERMANENTLY UNAVAILABLE).",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_get_attestation(
         &self,
-        Parameters(args): Parameters<ClaimTaskArgs>,
+        Parameters(args): Parameters<GetAttestationArgs>,
     ) -> Result<CallToolResult, McpError> {
-        if args.task_id.is_empty() {
-            return Err(invalid_input("task_id is required"));
-        }
-
-        let attestation = self
-            .state
-            .orchestrator
-            .get_attestation(&args.task_id)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
+        let attestation = match (
+            args.task_id.as_deref().filter(|s| !s.is_empty()),
+            args.task_pda.as_deref().filter(|s| !s.is_empty()),
+        ) {
+            (Some(_), Some(_)) => {
+                return Err(invalid_input(
+                    "pass exactly one of task_id or task_pda, not both",
+                ));
+            }
+            (None, None) => {
+                return Err(invalid_input(
+                    "either task_id (Firestore doc id) or task_pda (on-chain PDA) is required",
+                ));
+            }
+            (Some(task_id), None) => self
+                .state
+                .orchestrator
+                .get_attestation(task_id)
+                .await
+                .map_err(|e| to_mcp_error(&e))?,
+            (None, Some(task_pda)) => self
+                .state
+                .orchestrator
+                .get_attestation_by_pda(task_pda)
+                .await
+                .map_err(|e| to_mcp_error(&e))?,
+        };
 
         tracing::info!(
-            task_id = %args.task_id,
+            task_id_arg = ?args.task_id,
+            task_pda_arg = ?args.task_pda,
             composite_score = attestation.composite_score,
             "shillbot_get_attestation: AAS v0 attestation returned"
         );

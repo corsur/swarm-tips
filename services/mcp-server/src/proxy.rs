@@ -571,6 +571,52 @@ impl OrchestratorProxy {
         })
     }
 
+    /// AAS v0: fetch the portable attestation tuple by on-chain Task PDA.
+    /// The PDA is the canonical AAS identifier — derivable from any
+    /// public indexer of the `TaskCreated` event, no orchestrator
+    /// access needed. Closes the portability gap surfaced in the
+    /// 2026-05-04 E2E test: the legacy `task_id` route resolved against
+    /// the orchestrator's Firestore document id, which third-party
+    /// verifiers cannot know.
+    pub async fn get_attestation_by_pda(
+        &self,
+        task_pda: &str,
+    ) -> Result<AttestationResponse, McpServiceError> {
+        if task_pda.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_pda must not be empty".to_string(),
+            ));
+        }
+        // Light client-side validation: PDAs are base58-encoded 32-byte
+        // pubkeys, so 32-44 chars after encoding. Tighter parsing happens
+        // server-side; this just rejects obvious junk early.
+        if !(32..=44).contains(&task_pda.len()) {
+            return Err(McpServiceError::InvalidInput(format!(
+                "task_pda length {} outside expected base58 pubkey range 32..=44",
+                task_pda.len()
+            )));
+        }
+
+        let url = format!("{}/tasks/by-pda/{task_pda}/attestation", self.base_url);
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            tracing::error!(service = "mcp-server", error = %e, task_pda = %task_pda, "orchestrator get_attestation_by_pda failed");
+            McpServiceError::OrchestratorError(format!("request failed: {e}"))
+        })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(service = "mcp-server", status = %status, task_pda = %task_pda, "orchestrator get_attestation_by_pda returned error");
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid attestation response: {e}"))
+        })
+    }
+
     /// Phase 3 blocker #3c: list pending-approval tasks across all of
     /// the calling client's campaigns. Mirrors orchestrator
     /// `GET /client/pending-approval`.
