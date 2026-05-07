@@ -4,13 +4,17 @@
 //!
 //! The streamable HTTP MCP protocol gives every client a session ID returned
 //! in the `Mcp-Session-Id` response header on initialize. The client echoes
-//! that ID back on every subsequent tool call. Today the in-memory mapping
-//! `session_id → wallet` lives only in `GameSessionManager`'s in-memory
-//! HashMap (which `resolve_wallet` falls back to via `get_any_wallet()`),
-//! so a Kubernetes rolling restart of the `mcp-server` deployment wipes the
-//! mapping for every active session — even though the agent retries with
-//! the same session ID and the agent's game state is still in Firestore at
-//! `mcp_game_sessions/{wallet}`.
+//! that ID back on every subsequent tool call. Before Q4 (2026-05-07), the
+//! mapping `session_id → wallet` lived only in `GameSessionManager`'s
+//! in-memory HashMap, with `resolve_wallet` falling back to
+//! `get_any_wallet()` (returns the first wallet in the map, regardless of
+//! caller). Two problems: (a) a Kubernetes rolling restart wiped the map
+//! for every active session, even though the agent's game state was still
+//! in Firestore at `mcp_game_sessions/{wallet}`; (b) the `get_any_wallet()`
+//! fallback leaked wallets across MCP sessions on the same pod — a fresh
+//! caller would silently resolve to whatever wallet some prior agent had
+//! registered. Q4 removed that fallback; this binding is now the sole auth
+//! signal.
 //!
 //! This module persists the binding so a new pod can recover. On
 //! `game_register_wallet`, the server writes `{ session_id → wallet }` to

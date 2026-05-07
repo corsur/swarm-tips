@@ -1848,38 +1848,45 @@ impl ServerHandler for SwarmTipsMcp {
 impl SwarmTipsMcp {
     /// Resolve the agent's wallet for the current MCP request.
     ///
-    /// Resolution order:
-    /// 1. Firestore session-binding lookup (`mcp-session-id` header → wallet).
-    ///    On hit, also re-hydrates the in-memory game session from
-    ///    `mcp_game_sessions/{wallet}` so a pod restart doesn't strand the
-    ///    agent mid-game.
-    /// 2. In-memory `GameSessionManager::get_any_wallet()` fallback for
-    ///    callers that haven't bound their session yet (e.g., the very first
-    ///    `register_wallet` call after a pod restart).
+    /// Resolution: per-session Firestore binding only.
     ///
-    /// Returns None if neither path resolves a wallet.
+    /// `mcp-session-id` header → wallet via the `mcp_http_sessions`
+    /// collection written by `register_wallet`. On hit, re-hydrates the
+    /// in-memory game session from `mcp_game_sessions/{wallet}` so a
+    /// pod restart doesn't strand the agent mid-game.
+    ///
+    /// Returns None if no binding exists. Caller surfaces the standard
+    /// "no game session: call register_wallet first" error.
+    ///
+    /// Q4 fix (2026-05-07): removed the prior `get_any_wallet()`
+    /// fallback. That fallback returned the FIRST wallet in the
+    /// in-memory HashMap regardless of which agent was calling — a
+    /// privacy leak across MCP sessions on the same pod. A fresh
+    /// session that hadn't called register_wallet would silently
+    /// resolve to whatever wallet the pod had previously registered
+    /// for some other agent, then proceed through tool calls (balance
+    /// preflights, agent_profile reads, etc.) against that other
+    /// wallet. The fallback was a pre-session-binding leftover; with
+    /// the Firestore binding shipped, it's strictly a leak.
     async fn resolve_wallet(&self, parts: Option<&http::request::Parts>) -> Option<String> {
-        if let Some(session_id) = session_id_from_parts(parts) {
-            if let Some(wallet) = self.state.session_binding.resolve(&session_id).await {
-                // Re-hydrate game session from Firestore only if the
-                // in-memory map doesn't already have it. The heavy work
-                // (RPC balance check + persisted session load) only fires
-                // on the first tool call after a pod restart; steady-state
-                // tool calls just hit the cheap `contains_key` check.
-                if !self.state.game_sessions.is_registered(&wallet).await {
-                    if let Err(e) = self.state.game_sessions.register_wallet(&wallet).await {
-                        tracing::warn!(
-                            wallet = %wallet,
-                            session_id = %session_id,
-                            error = %e,
-                            "failed to re-hydrate game session after binding lookup"
-                        );
-                    }
-                }
-                return Some(wallet);
+        let session_id = session_id_from_parts(parts)?;
+        let wallet = self.state.session_binding.resolve(&session_id).await?;
+        // Re-hydrate game session from Firestore only if the in-memory
+        // map doesn't already have it. The heavy work (RPC balance
+        // check + persisted session load) only fires on the first tool
+        // call after a pod restart; steady-state tool calls just hit
+        // the cheap `contains_key` check.
+        if !self.state.game_sessions.is_registered(&wallet).await {
+            if let Err(e) = self.state.game_sessions.register_wallet(&wallet).await {
+                tracing::warn!(
+                    wallet = %wallet,
+                    session_id = %session_id,
+                    error = %e,
+                    "failed to re-hydrate game session after binding lookup"
+                );
             }
         }
-        self.state.game_sessions.get_any_wallet().await
+        Some(wallet)
     }
 
     /// Require a registered game wallet, returning an MCP error if none
