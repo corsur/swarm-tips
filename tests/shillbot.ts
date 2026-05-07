@@ -19,12 +19,11 @@ const MAX_SCORE = 1_000_000;
 const CHALLENGE_WINDOW_SECONDS = 86_400;
 const PROTOCOL_FEE_BPS = 1000; // 10%
 const QUALITY_THRESHOLD = new BN(200_000);
-// Must be >= MIN_ESCROW_LAMPORTS (0.36 SOL = 360_000_000) per Phase 3 blocker #2.
-// Tests pre-#10 used 0.1 SOL; bumped to 0.36 SOL when the on-chain floor landed
-// (commit `319b47a`). The cascade of EscrowBelowMinimum failures in CI runs
-// 25244246392 / 25244547607 / 25244070768 was the missed companion edit on
-// this file (`shillbot-lifecycle.ts` was updated, this file was not).
-const ESCROW_LAMPORTS = new BN(360_000_000); // 0.36 SOL == MIN_ESCROW_LAMPORTS floor
+// Test escrow value. The 0.36 SOL MIN_ESCROW_LAMPORTS gate was removed
+// 2026-05-07 (sybil deterrence moves to EigenTrust); this constant is now
+// arbitrary, kept at 0.36 SOL only so historical test scenarios continue
+// to use the same numeric values.
+const ESCROW_LAMPORTS = new BN(360_000_000); // 0.36 SOL
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -230,7 +229,8 @@ describe("shillbot", () => {
           0,
           0, // attestation_delay_override: use global default
           0, // challenge_window_override: use global default
-          0 // verification_timeout_override: use global default
+          0, // verification_timeout_override: use global default
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -302,7 +302,8 @@ describe("shillbot", () => {
             0,
             0,
             0,
-            0 // timing overrides: use global defaults
+            0, // timing overrides: use global defaults
+            true // D1 requires_approval — pre-D1 mandatory-approval behavior
           )
           .accountsPartial({
             globalState: globalPda,
@@ -338,7 +339,8 @@ describe("shillbot", () => {
             0,
             0,
             0,
-            0 // timing overrides: use global defaults
+            0, // timing overrides: use global defaults
+            true // D1 requires_approval — pre-D1 mandatory-approval behavior
           )
           .accountsPartial({
             globalState: globalPda,
@@ -383,7 +385,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -478,7 +481,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -557,7 +561,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -646,7 +651,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -817,7 +823,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -879,7 +886,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -942,7 +950,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1020,7 +1029,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1074,7 +1084,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1174,7 +1185,8 @@ describe("shillbot", () => {
             0,
             0,
             0,
-            0 // timing overrides: use global defaults
+            0, // timing overrides: use global defaults
+            true // D1 requires_approval — pre-D1 mandatory-approval behavior
           )
           .accountsPartial({
             globalState: globalPda,
@@ -1230,7 +1242,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1286,7 +1299,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1594,7 +1608,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1654,7 +1669,8 @@ describe("shillbot", () => {
             0,
             0,
             0,
-            0 // timing overrides: use global defaults
+            0, // timing overrides: use global defaults
+            true // D1 requires_approval — pre-D1 mandatory-approval behavior
           )
           .accountsPartial({
             globalState: globalPda,
@@ -1746,7 +1762,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1837,7 +1854,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1888,7 +1906,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1966,7 +1985,6 @@ describe("shillbot", () => {
           5_000,
           false,
           0,
-          new BN(360_000_000),
           new BN(3600),
           10
         )
@@ -1994,7 +2012,6 @@ describe("shillbot", () => {
           5_000,
           false,
           0,
-          new BN(360_000_000),
           new BN(3600),
           10
         )
@@ -2030,7 +2047,6 @@ describe("shillbot", () => {
             5_000,
             false,
             0,
-            new BN(360_000_000),
             new BN(3600),
             10
           )
@@ -2061,7 +2077,6 @@ describe("shillbot", () => {
             5_000,
             false,
             0,
-            new BN(360_000_000),
             new BN(3600),
             10
           ) // 50 bps < 100 bps minimum
@@ -2091,7 +2106,6 @@ describe("shillbot", () => {
             5_000,
             false,
             0,
-            new BN(360_000_000),
             new BN(3600),
             10
           ) // 3000 bps > 2500 bps maximum
@@ -2121,7 +2135,6 @@ describe("shillbot", () => {
             5_000,
             false,
             0,
-            new BN(360_000_000),
             new BN(3600),
             10
           )
@@ -2162,7 +2175,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          0 // timing overrides: use global defaults
+          0, // timing overrides: use global defaults
+          true // D1 requires_approval — pre-D1 mandatory-approval behavior
         )
         .accountsPartial({
           globalState: globalPda,

@@ -42,14 +42,16 @@ pub struct GlobalState {
     pub switchboard_feed: Pubkey,
     /// Minimum task escrow in lamports (Phase 3 blocker #2 — D2).
     /// Carved from `_reserved` 2026-05-07. Pre-D2 was a compile-time
-    /// const (`crate::constants::MIN_ESCROW_LAMPORTS`); moved to
-    /// governance with bounds in `update_params` so multisig can
-    /// tune in response to SOL price + sybil pressure without a
-    /// program upgrade. Bounds: [MIN_ESCROW_LAMPORTS_FLOOR,
-    /// MIN_ESCROW_LAMPORTS_CEILING] in `constants.rs`. Existing
-    /// on-chain GlobalState accounts at the old layout decode this
-    /// byte range as zero — `initialize` sets the default; for
-    /// pre-existing accounts use `update_params`.
+    /// **Vestigial slot — retired 2026-05-07.** Was the per-task
+    /// minimum escrow floor for sybil deterrence (Phase 3 blocker #2).
+    /// Removed because the friction on legitimate small clients
+    /// exceeded the benefit at solo + pre-PMF scale. The right
+    /// end-state defense is the EigenTrust reputation graph (Phase 2
+    /// in `swarm-tips/CLAUDE.md`). The slot is preserved here so
+    /// existing on-chain 227-byte GlobalState accounts continue to
+    /// deserialize unchanged; no instruction reads or writes it.
+    /// `initialize` zero-fills it; future GlobalState v2 may rename
+    /// to `_reserved_min_escrow`.
     pub min_escrow_lamports: u64,
     /// Per-client task-creation rate-limit window length (D3).
     /// Same migration story as `min_escrow_lamports`: was const,

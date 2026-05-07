@@ -55,19 +55,18 @@ pub fn create_task(
     // on-chain, so tests and direct callers can use short buffers on devnet.
     require!(escrow_lamports > 0, ShillbotError::ArithmeticOverflow);
 
-    // Phase 3 blocker #2: enforce min_escrow_lamports floor. Sybil
-    // operators who control both client and agent can recover most of
-    // an escrow round-trip; the minimum floor ensures each round-trip
-    // ties up non-trivial capital and accumulates protocol-fee bleed.
-    // D2 (2026-05-07): the floor moved from a compile-time const to a
-    // GlobalState governance param so multisig can tune it without a
-    // program upgrade. Bounds enforced in `update_params`.
-    require!(
-        escrow_lamports >= global.min_escrow_lamports,
-        ShillbotError::EscrowBelowMinimum
-    );
+    // MIN_ESCROW_LAMPORTS gate removed 2026-05-07. The original Phase 3
+    // blocker #2 mitigation imposed a 0.36 SOL (≈$50) floor to make sybil
+    // round-trips ($1 fee × 100 trips = $100 bleed) economically irrational.
+    // The cost — legitimate small clients couldn't run sub-$50 campaigns —
+    // exceeded the benefit at solo + pre-PMF scale. The right end-state
+    // sybil defense is the EigenTrust reputation graph (sybil clusters
+    // self-vouch, gain zero global trust); see swarm-tips/CLAUDE.md
+    // "Reputation Model" Phase 2. The vestigial `global.min_escrow_lamports`
+    // GlobalState slot is preserved for binary compat with deployed 227-byte
+    // accounts but is no longer read by any instruction.
 
-    // Phase 3 blocker #2: per-client task-creation rate limit.
+    // Phase 3 blocker #2 (residual): per-client task-creation rate limit.
     //
     // Sliding 1-hour window: at most MAX_TASKS_PER_RATE_WINDOW
     // create_task calls per client per RATE_LIMIT_WINDOW_SECONDS.

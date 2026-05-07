@@ -25,26 +25,15 @@ use anchor_lang::prelude::*;
 /// `tests/shillbot-lifecycle.ts` for the pattern.
 pub const SWITCHBOARD_FEED: Pubkey = pubkey!("11111111111111111111111111111112");
 
-/// Minimum task escrow in lamports (Phase 3 blocker #2).
-///
-/// 0.36 SOL ≈ $50 at $140/SOL, the dollar floor named in the v4 roadmap
-/// for rejecting trivial sybil farming. Rationale:
-///
-/// A sybil attacker who controls both client and agent wallets pays the
-/// escrow on `create_task` and recovers most of it on `finalize_task`,
-/// minus `protocol_fee_bps` (default 100 bps = 1%). At MIN_ESCROW =
-/// 0.36 SOL and protocol fee 1%, each round-trip costs ~$0.50 in
-/// protocol fees plus ~8 days of locked capital (7d verification +
-/// 1d challenge window). At the per-client rate limit below, 10 tasks
-/// per hour means 3.6 SOL of locked capital per hour, ceiling about
-/// 240 SOL across an 8-day window — non-trivial for a marginal sybil
-/// operation. See `programs/shillbot/CLAUDE.md` "Sybil economics" for
-/// the full attack-cost analysis.
-///
-/// `const`, not a config field on `GlobalState`: per the v4 roadmap
-/// "must be a `const`, not a config field, so it can't be downgraded
-/// silently."
-pub const MIN_ESCROW_LAMPORTS: u64 = 360_000_000;
+// MIN_ESCROW_LAMPORTS (and the bound consts MIN_ESCROW_LAMPORTS_FLOOR,
+// MIN_ESCROW_LAMPORTS_CEILING) removed 2026-05-07. The 0.36 SOL per-task
+// escrow floor (Phase 3 blocker #2 from the 2026-04-02 panel review)
+// imposed real friction on legitimate small clients to deter sybil
+// round-trips at solo + pre-PMF scale. The right end-state defense is the
+// EigenTrust reputation graph (sybil clusters self-vouch and gain zero
+// global trust); see `swarm-tips/CLAUDE.md` Phase 2. The vestigial
+// `GlobalState.min_escrow_lamports` slot is preserved for binary compat
+// with deployed 227-byte accounts; no instruction reads it.
 
 /// Per-client task-creation rate-limit window (Phase 3 blocker #2).
 /// Sliding window of 1 hour: a client can `create_task` at most
@@ -63,25 +52,12 @@ pub const RATE_LIMIT_WINDOW_SECONDS: i64 = 3_600;
 pub const MAX_TASKS_PER_RATE_WINDOW: u32 = 10;
 
 // ---------------------------------------------------------------------------
-// D2/D3 governance bounds (2026-05-07)
+// D3 governance bounds (2026-05-07)
 // ---------------------------------------------------------------------------
-// `MIN_ESCROW_LAMPORTS`, `RATE_LIMIT_WINDOW_SECONDS`, and
-// `MAX_TASKS_PER_RATE_WINDOW` moved from compile-time consts to
-// `GlobalState` governance params. The consts above remain as INITIAL
-// values used by `initialize`. After deploy, multisig governance can
-// adjust within the bounds below via `update_params` — preserving the
-// "can't be downgraded silently" property by enforcing floors that
-// keep sybil-resistance meaningful even at the lower bound.
-
-/// Minimum allowed `min_escrow_lamports` value. 0.05 SOL ≈ $7-8 at
-/// $140/SOL; sybil per-task cost stays at ~$0.07 protocol fee even at
-/// this lower bound — materially weaker than the 0.36 SOL default but
-/// still non-trivial friction.
-pub const MIN_ESCROW_LAMPORTS_FLOOR: u64 = 50_000_000;
-/// Maximum allowed `min_escrow_lamports` value. 1 SOL = ~$140 at
-/// $140/SOL; prevents governance from setting an absurdly high floor
-/// that excludes legitimate clients.
-pub const MIN_ESCROW_LAMPORTS_CEILING: u64 = 1_000_000_000;
+// `RATE_LIMIT_WINDOW_SECONDS` and `MAX_TASKS_PER_RATE_WINDOW` moved from
+// compile-time consts to `GlobalState` governance params. The consts above
+// remain as INITIAL values used by `initialize`. After deploy, multisig
+// governance can adjust within the bounds below via `update_params`.
 
 /// Rate-limit window bounds: [1 minute, 1 day].
 pub const MIN_RATE_LIMIT_WINDOW_SECONDS: i64 = 60;

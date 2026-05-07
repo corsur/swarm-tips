@@ -946,12 +946,15 @@ describe("shillbot-lifecycle (bankrun)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Phase 3 blocker #2: MIN_ESCROW + per-client rate limit gates
+  // Phase 3 blocker #2 (residual): per-client rate-limit gate
+  //
+  // The MIN_ESCROW_LAMPORTS sub-block was retired 2026-05-07 — sybil
+  // deterrence moves to the EigenTrust reputation graph (Phase 2). Only
+  // the rate-limit gate remains; tests below cover its behavior.
   // -------------------------------------------------------------------------
 
-  describe("Phase 3 blocker #2 economic gates", () => {
-    // Must match `programs/shillbot/src/constants.rs::MIN_ESCROW_LAMPORTS`.
-    const MIN_ESCROW_LAMPORTS = new BN(360_000_000); // 0.36 SOL
+  describe("Phase 3 blocker #2 rate-limit gate", () => {
+    const TEST_ESCROW = new BN(360_000_000); // 0.36 SOL — arbitrary post-removal
     const RATE_LIMIT_WINDOW_SECONDS = 3_600;
     const MAX_TASKS_PER_RATE_WINDOW = 10;
 
@@ -1003,29 +1006,10 @@ describe("shillbot-lifecycle (bankrun)", () => {
       return { kp, deadline };
     }
 
-    it("rejects createTask with escrow < MIN_ESCROW_LAMPORTS", async () => {
+    it("succeeds with arbitrary escrow (MIN_ESCROW gate retired 2026-05-07)", async () => {
       const { kp, deadline } = await freshClient();
-      try {
-        await createTaskRaw(
-          kp,
-          MIN_ESCROW_LAMPORTS.sub(new BN(1)), // 1 lamport below floor
-          "below-min",
-          deadline
-        );
-        assert.fail("expected EscrowBelowMinimum, got success");
-      } catch (e: any) {
-        const msg = String(e);
-        assert.match(
-          msg,
-          /EscrowBelowMinimum/,
-          `expected EscrowBelowMinimum, got: ${msg}`
-        );
-      }
-    });
-
-    it("succeeds with escrow == MIN_ESCROW_LAMPORTS (boundary)", async () => {
-      const { kp, deadline } = await freshClient();
-      await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, "at-min", deadline);
+      // Escrow 1 lamport — would have failed under the old gate, succeeds now.
+      await createTaskRaw(kp, new BN(1), "tiny-escrow", deadline);
       const [csPda] = clientStatePda(kp.publicKey, program.programId);
       const cs = await program.account.clientState.fetch(csPda);
       assert.equal(cs.tasksInWindow, 1, "first task in window sets count to 1");
@@ -1037,7 +1021,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       const { kp, deadline } = await freshClient();
       // Fire MAX_TASKS_PER_RATE_WINDOW (10) successful calls.
       for (let i = 0; i < MAX_TASKS_PER_RATE_WINDOW; i++) {
-        await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, `rl-${i}`, deadline);
+        await createTaskRaw(kp, TEST_ESCROW, `rl-${i}`, deadline);
       }
       const [csPda] = clientStatePda(kp.publicKey, program.programId);
       const cs = await program.account.clientState.fetch(csPda);
@@ -1048,7 +1032,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
       // 11th must fail.
       try {
-        await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, "rl-overflow", deadline);
+        await createTaskRaw(kp, TEST_ESCROW, "rl-overflow", deadline);
         assert.fail("expected RateLimitExceeded, got success");
       } catch (e: any) {
         const msg = String(e);
@@ -1064,7 +1048,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       const { kp, deadline } = await freshClient();
       // Fill the window.
       for (let i = 0; i < MAX_TASKS_PER_RATE_WINDOW; i++) {
-        await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, `wreset-${i}`, deadline);
+        await createTaskRaw(kp, TEST_ESCROW, `wreset-${i}`, deadline);
       }
       const [csPda] = clientStatePda(kp.publicKey, program.programId);
       const cs10 = await program.account.clientState.fetch(csPda);
@@ -1077,7 +1061,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
 
       // 11th should now succeed (new window).
-      await createTaskRaw(kp, MIN_ESCROW_LAMPORTS, "wreset-after", deadline);
+      await createTaskRaw(kp, TEST_ESCROW, "wreset-after", deadline);
       const cs11 = await program.account.clientState.fetch(csPda);
       assert.equal(
         cs11.tasksInWindow,
@@ -1117,7 +1101,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
   describe("Phase 3 blocker #3a approve gate", () => {
     // Must match `programs/shillbot::DEFAULT_VERIFICATION_TIMEOUT_SECONDS`.
     const VERIFICATION_TIMEOUT_SECONDS = 1_209_600; // 14 days
-    const MIN_ESCROW_LAMPORTS = new BN(360_000_000); // 0.36 SOL
+    // Test escrow value (the MIN_ESCROW gate was retired 2026-05-07).
+    const TEST_ESCROW = new BN(360_000_000); // 0.36 SOL — arbitrary post-removal
 
     /** Fresh client + agent + funded task, returned at the requested state. */
     async function freshTask(): Promise<{
@@ -1142,7 +1127,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       await program.methods
         .createTask(
-          MIN_ESCROW_LAMPORTS,
+          TEST_ESCROW,
           contentHash("approve-gate-" + global.taskCounter.toString()) as any,
           deadline,
           new BN(3600),
@@ -1330,7 +1315,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
       const clientBalAfter = await getBalance(context, cKp.publicKey);
       const delta = Number(clientBalAfter) - Number(clientBalBefore);
       assert.isTrue(
-        delta >= MIN_ESCROW_LAMPORTS.toNumber(),
+        delta >= TEST_ESCROW.toNumber(),
         `client should receive at least the escrow back; got delta=${delta}`
       );
     });

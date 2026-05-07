@@ -110,8 +110,14 @@ pub enum ShillbotError {
     #[msg("Switchboard feed not configured in GlobalState")]
     SwitchboardFeedNotConfigured,
 
-    #[msg("Task escrow below MIN_ESCROW_LAMPORTS floor (sybil-economics gate)")]
-    EscrowBelowMinimum,
+    // `EscrowBelowMinimum` (variant 5034) was retired 2026-05-07 alongside
+    // the MIN_ESCROW_LAMPORTS gate removal. The variant is preserved as a
+    // tombstone here so subsequent variants don't shift their error numbers
+    // (Anchor assigns codes by source-order); deserializers seeing 5034 in
+    // historical logs should treat it as "MIN_ESCROW gate" — which no longer
+    // exists. Future callers cannot return it.
+    #[msg("(retired 2026-05-07; see ShillbotError comment) MIN_ESCROW gate removed")]
+    EscrowBelowMinimumRetired,
 
     #[msg("Client exceeded MAX_TASKS_PER_RATE_WINDOW within RATE_LIMIT_WINDOW_SECONDS")]
     RateLimitExceeded,

@@ -53,12 +53,11 @@ pub fn initialize(
     // consumers) see a sensible value rather than zeros. Future
     // GlobalState v2 may drop the field entirely.
     global.switchboard_feed = crate::constants::SWITCHBOARD_FEED;
-    // D2/D3 (2026-05-07): defaults match the pre-D2 const values so
-    // initialize-then-update_params is a clean transition. Operators
-    // who upgrade an existing GlobalState must call update_params
-    // explicitly to populate these — see the migration test in
-    // state/global.rs that asserts old layouts read these as zero.
-    global.min_escrow_lamports = crate::constants::MIN_ESCROW_LAMPORTS;
+    // D3 (2026-05-07): rate-limit defaults match the pre-D3 const values
+    // so initialize-then-update_params is a clean transition.
+    // The D2 `min_escrow_lamports` slot stays zero — the gate was removed
+    // 2026-05-07 in favor of the EigenTrust reputation-graph defense.
+    global.min_escrow_lamports = 0;
     global.rate_limit_window_seconds = crate::constants::RATE_LIMIT_WINDOW_SECONDS;
     global.max_tasks_per_rate_window = crate::constants::MAX_TASKS_PER_RATE_WINDOW;
     global._reserved = [0u8; 12];

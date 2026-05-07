@@ -1,8 +1,8 @@
 use anchor_lang::prelude::*;
 
 use crate::constants::{
-    MAX_RATE_LIMIT_WINDOW_SECONDS, MAX_TASKS_PER_RATE_WINDOW_CEILING, MIN_ESCROW_LAMPORTS_CEILING,
-    MIN_ESCROW_LAMPORTS_FLOOR, MIN_RATE_LIMIT_WINDOW_SECONDS, MIN_TASKS_PER_RATE_WINDOW,
+    MAX_RATE_LIMIT_WINDOW_SECONDS, MAX_TASKS_PER_RATE_WINDOW_CEILING,
+    MIN_RATE_LIMIT_WINDOW_SECONDS, MIN_TASKS_PER_RATE_WINDOW,
 };
 use crate::errors::ShillbotError;
 use crate::events::ParamsUpdated;
@@ -24,9 +24,10 @@ pub fn update_params(
     bond_slash_treasury_bps: u16,
     paused: bool,
     paused_platforms: u16,
-    // D2/D3 (2026-05-07): governance-controllable sybil-economics
-    // params with bounds enforced below.
-    min_escrow_lamports: u64,
+    // D3 (2026-05-07): per-client task-creation rate limit, governance-
+    // controllable with bounds enforced below. The D2 `min_escrow_lamports`
+    // param was removed 2026-05-07; the GlobalState slot is preserved as
+    // vestigial-zero for binary compat with deployed 227-byte accounts.
     rate_limit_window_seconds: i64,
     max_tasks_per_rate_window: u32,
 ) -> Result<()> {
@@ -91,16 +92,6 @@ pub fn update_params(
         ShillbotError::ProtocolFeeBoundsExceeded
     );
 
-    // Checks (D2): min_escrow_lamports within bounds
-    require!(
-        min_escrow_lamports >= MIN_ESCROW_LAMPORTS_FLOOR,
-        ShillbotError::EscrowBelowMinimum
-    );
-    require!(
-        min_escrow_lamports <= MIN_ESCROW_LAMPORTS_CEILING,
-        ShillbotError::EscrowBelowMinimum
-    );
-
     // Checks (D3): rate-limit window within bounds
     require!(
         rate_limit_window_seconds >= MIN_RATE_LIMIT_WINDOW_SECONDS,
@@ -134,7 +125,9 @@ pub fn update_params(
     global.bond_slash_treasury_bps = bond_slash_treasury_bps;
     global.paused = paused;
     global.paused_platforms = paused_platforms;
-    global.min_escrow_lamports = min_escrow_lamports;
+    // `min_escrow_lamports` is intentionally not written here. The slot is
+    // preserved on the struct for binary compat (227 bytes) but no
+    // instruction reads it after the 2026-05-07 removal.
     global.rate_limit_window_seconds = rate_limit_window_seconds;
     global.max_tasks_per_rate_window = max_tasks_per_rate_window;
 
