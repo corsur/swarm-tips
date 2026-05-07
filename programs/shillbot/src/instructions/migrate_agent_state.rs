@@ -30,10 +30,13 @@
 //!     that didn't decrement) can issue a separate close + re-init flow.
 //!   * Idempotent for already-migrated accounts: a 90-byte account that
 //!     deserializes cleanly returns `Ok(())` so retried txs don't fail.
-//!   * The agent (signer) pays the rent diff for the larger account. Agents
-//!     that aren't ready to spend the lamports can simply not call this — the
-//!     rest of the program continues to function for them, except `claim_task`
-//!     which deserializes the AgentState as part of its account context.
+//!   * **Caller pre-funds the rent diff.** This handler does not do a
+//!     SystemProgram::transfer CPI. The agent's client-side tx must
+//!     include a transfer instruction before this one, sized at
+//!     `>= rent.minimum_balance(90) - current_lamports`. Keeping the
+//!     handler pure-compute simplifies the borrow lifetime around
+//!     `AccountInfo::resize`. The two-instruction client UX is
+//!     acceptable for a one-shot migration.
 //!
 //! Layout transition (the actual bytewise contract):
 //! ```text
@@ -51,7 +54,6 @@
 //! ```
 
 use anchor_lang::prelude::*;
-use anchor_lang::system_program;
 use anchor_lang::Discriminator;
 
 use crate::errors::ShillbotError;
@@ -132,27 +134,21 @@ pub fn migrate_agent_state(ctx: Context<MigrateAgentState>) -> Result<()> {
         ShillbotError::AgentStateAgentMismatch
     );
 
-    // Effects: top up rent before realloc. Solana's account realloc requires
-    // the post-realloc account to be rent-exempt at its new size; we transfer
-    // the diff from the agent so the account is ready before we resize.
+    // Checks: caller must have pre-funded the account to be rent-exempt
+    // at the new size. We do NOT do the system_program transfer inside this
+    // ix because (a) it complicates the borrow lifetime around resize, and
+    // (b) it's cleaner to keep this handler pure-compute. The agent's
+    // client-side tx must include a SystemProgram::transfer instruction
+    // before this one, sized at >= rent.minimum_balance(90) - current
+    // lamports.
     let rent = Rent::get()?;
     let new_min_lamports = rent.minimum_balance(CURRENT_AGENT_STATE_SIZE);
-    let current_lamports = agent_state_info.lamports();
-    let lamports_diff = new_min_lamports.saturating_sub(current_lamports);
+    require!(
+        agent_state_info.lamports() >= new_min_lamports,
+        ShillbotError::AgentStateUnsupportedSize
+    );
 
-    if lamports_diff > 0 {
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            system_program::Transfer {
-                from: agent_signer.to_account_info(),
-                to: agent_state_info.to_account_info(),
-            },
-        );
-        system_program::transfer(cpi_ctx, lamports_diff)?;
-    }
-
-    // Effects: resize the account. `zero_init = false` because we overwrite
-    // the entire data buffer below — no need to zero first.
+    // Effects: resize the account.
     agent_state_info.resize(CURRENT_AGENT_STATE_SIZE)?;
 
     // Effects: write the new layout. claimed_count is preserved from v1
@@ -171,20 +167,27 @@ pub fn migrate_agent_state(ctx: Context<MigrateAgentState>) -> Result<()> {
         bump: old_bump,
     };
 
-    let mut data = agent_state_info.try_borrow_mut_data()?;
-    let mut writer: &mut [u8] = &mut data;
-    new_state
-        .try_serialize(&mut writer)
-        .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
+    // Effects + postcondition in one scope. Crucially, the mutable
+    // borrow on `data` lives ONLY inside this block — calling any
+    // method on `agent_state_info` while a borrow is alive (even a
+    // read like `data_len()`) panics "RefCell already mutably borrowed"
+    // because Anchor's wrapper code re-borrows the AccountInfo on
+    // exit.
+    {
+        let mut data = agent_state_info.try_borrow_mut_data()?;
+        require!(
+            data.len() == CURRENT_AGENT_STATE_SIZE,
+            ShillbotError::AgentStateUnsupportedSize
+        );
+        let mut writer: &mut [u8] = &mut data;
+        new_state
+            .try_serialize(&mut writer)
+            .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
 
-    // Postconditions: the account now matches the current SPACE and round-trips
-    // through Anchor's deserializer.
-    require!(
-        agent_state_info.data_len() == CURRENT_AGENT_STATE_SIZE,
-        ShillbotError::AgentStateUnsupportedSize
-    );
-    let _round_trip = AgentState::try_deserialize(&mut &data[..])
-        .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
+        // Round-trip postcondition while we still hold the borrow.
+        let _round_trip = AgentState::try_deserialize(&mut &data[..])
+            .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
+    }
 
     msg!(
         "migrated AgentState {} from {} to {} bytes",
@@ -198,10 +201,9 @@ pub fn migrate_agent_state(ctx: Context<MigrateAgentState>) -> Result<()> {
 
 #[derive(Accounts)]
 pub struct MigrateAgentState<'info> {
-    #[account(mut)]
     pub agent: Signer<'info>,
 
-    /// CHECK: legacy accounts may be at the 41-byte size, which would prevent
+    /// CHECK: legacy accounts may be at the 42-byte size, which would prevent
     /// `Account<AgentState>` from opening them. We verify the discriminator,
     /// the agent pubkey stored in the account, and the PDA derivation
     /// explicitly inside the handler — those are the same properties Anchor
@@ -212,8 +214,6 @@ pub struct MigrateAgentState<'info> {
         bump,
     )]
     pub agent_state: AccountInfo<'info>,
-
-    pub system_program: Program<'info, System>,
 }
 
 #[cfg(test)]

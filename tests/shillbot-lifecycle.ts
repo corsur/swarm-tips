@@ -1751,4 +1751,240 @@ describe("shillbot-lifecycle (bankrun)", () => {
       );
     });
   });
+
+  // -------------------------------------------------------------------------
+  // migrate_agent_state — Sprint 0-FU-1, Q1
+  //
+  // Drives the legacy 42-byte (v1 layout: 8 disc + 32 agent + 1 claimed_count
+  // + 1 bump) → 90-byte realloc against bankrun-injected fixtures. Mirrors
+  // the unit tests in instructions/migrate_agent_state.rs::tests but
+  // exercises the actual on-chain realloc + rent CPI + idempotency paths.
+  // -------------------------------------------------------------------------
+
+  describe("migrate_agent_state (Q1 bankrun integration)", () => {
+    // sha256("account:AgentState")[0..8] — verified via xxd of an actual
+    // legacy account on devnet (PDA 67NVWtF4...). Hardcoding rather than
+    // recomputing in TS to keep the test independent of Anchor coder
+    // internals.
+    const AGENT_STATE_DISCRIMINATOR = Buffer.from(
+      "febb6277e4302f31",
+      "hex"
+    );
+    const LEGACY_SIZE = 42; // 8 + 32 + 1 + 1
+    const CURRENT_SIZE = 90; // matches AgentState::SPACE
+
+    /** Build a 42-byte v1 buffer for a given agent. */
+    function buildLegacyAccount(
+      agent: PublicKey,
+      claimedCount: number,
+      bump: number
+    ): Buffer {
+      assert.isTrue(claimedCount >= 0 && claimedCount <= 255);
+      assert.isTrue(bump >= 0 && bump <= 255);
+      const buf = Buffer.alloc(LEGACY_SIZE);
+      AGENT_STATE_DISCRIMINATOR.copy(buf, 0);
+      agent.toBuffer().copy(buf, 8);
+      buf.writeUInt8(claimedCount, 40);
+      buf.writeUInt8(bump, 41);
+      return buf;
+    }
+
+    /** Inject a legacy AgentState account at the given PDA.
+     * Default lamports = rent-exempt at 90 bytes (1,517,280) so the
+     * happy-path test doesn't need a separate pre-funding step;
+     * the migration ix's "caller pre-funds" requirement is met
+     * by injecting at the post-migration rent floor.
+     */
+    function injectLegacy(
+      pda: PublicKey,
+      data: Buffer,
+      lamports: number = 1_517_280
+    ): void {
+      context.setAccount(pda, {
+        lamports,
+        data,
+        owner: program.programId,
+        executable: false,
+      });
+    }
+
+    it("happy path: 42→90 byte migration, claimed_count + bump preserved", async () => {
+      const k = Keypair.generate();
+      await fundAccount(provider, k.publicKey, 10 * LAMPORTS_PER_SOL);
+      const [pda, bump] = agentStatePda(k.publicKey, program.programId);
+
+      // Inject a legacy 42-byte account with claimed_count=5 (matching
+      // the founder's devnet state that surfaced 0a-FINDING).
+      const legacy = buildLegacyAccount(k.publicKey, 5, bump);
+      assert.equal(legacy.length, LEGACY_SIZE);
+      injectLegacy(pda, legacy);
+
+      await program.methods
+        .migrateAgentState()
+        .accountsPartial({
+          agent: k.publicKey,
+          agentState: pda,
+        })
+        .signers([k])
+        .rpc();
+
+      // After: account is at current size and Anchor can deserialize it.
+      const after = await program.account.agentState.fetch(pda);
+      assert.equal(after.agent.toString(), k.publicKey.toString());
+      assert.equal(after.claimedCount, 5, "claimed_count preserved");
+      assert.equal(after.bump, bump, "bump preserved");
+      assert.equal(after.totalCompleted.toString(), "0");
+      assert.equal(after.totalEarned.toString(), "0");
+      assert.equal(after.totalScoreSum.toString(), "0");
+      assert.equal(after.totalTasksClaimed.toString(), "0");
+      assert.equal(after.totalChallengesLost.toString(), "0");
+
+      const accountInfo = await context.banksClient.getAccount(pda);
+      assert.isNotNull(accountInfo);
+      assert.equal(
+        accountInfo!.data.length,
+        CURRENT_SIZE,
+        "account resized to 90 bytes"
+      );
+    });
+
+    it("idempotent: migrating an already-90-byte account is a no-op", async () => {
+      // Use claim_task's normal init_if_needed path to create a 90-byte
+      // AgentState organically.
+      const k = Keypair.generate();
+      await fundAccount(provider, k.publicKey, 10 * LAMPORTS_PER_SOL);
+      const [pda] = agentStatePda(k.publicKey, program.programId);
+
+      // Drive a normal claim flow to create the account at current size.
+      const c = Keypair.generate();
+      await fundAccount(provider, c.publicKey, 50 * LAMPORTS_PER_SOL);
+      const currentClock = await context.banksClient.getClock();
+      const now = Number(currentClock.unixTimestamp);
+      const setup = await createTask(
+        program,
+        c,
+        globalPda,
+        new BN(now + 86_400 * 60)
+      );
+      await claimTask(program, k, setup.taskPda);
+
+      const before = await program.account.agentState.fetch(pda);
+      const beforeInfo = await context.banksClient.getAccount(pda);
+      assert.equal(beforeInfo!.data.length, CURRENT_SIZE);
+
+      // Idempotent migrate.
+      await program.methods
+        .migrateAgentState()
+        .accountsPartial({
+          agent: k.publicKey,
+          agentState: pda,
+        })
+        .signers([k])
+        .rpc();
+
+      const after = await program.account.agentState.fetch(pda);
+      assert.equal(after.agent.toString(), before.agent.toString());
+      assert.equal(after.claimedCount, before.claimedCount);
+      assert.equal(after.bump, before.bump);
+      assert.equal(
+        after.totalTasksClaimed.toString(),
+        before.totalTasksClaimed.toString(),
+        "counters preserved on no-op migrate"
+      );
+    });
+
+    it("rejects account with wrong discriminator", async () => {
+      const k = Keypair.generate();
+      await fundAccount(provider, k.publicKey, 10 * LAMPORTS_PER_SOL);
+      const [pda, bump] = agentStatePda(k.publicKey, program.programId);
+
+      const data = buildLegacyAccount(k.publicKey, 0, bump);
+      // Corrupt the discriminator (zeros).
+      Buffer.alloc(8).copy(data, 0);
+      injectLegacy(pda, data);
+
+      try {
+        await program.methods
+          .migrateAgentState()
+          .accountsPartial({
+            agent: k.publicKey,
+            agentState: pda,
+          })
+          .signers([k])
+          .rpc();
+        assert.fail("expected migration to reject wrong-discriminator account");
+      } catch (e: unknown) {
+        const msg = String(e);
+        assert.match(
+          msg,
+          /AgentStateDiscriminatorMismatch|discriminator/i,
+          `expected discriminator-mismatch error, got: ${msg}`
+        );
+      }
+    });
+
+    it("rejects when account's agent field doesn't match signer", async () => {
+      // Setup: derive PDA from K1, but inject account with K2 in data.
+      const k1 = Keypair.generate();
+      const k2 = Keypair.generate();
+      await fundAccount(provider, k1.publicKey, 10 * LAMPORTS_PER_SOL);
+      const [pda, bump] = agentStatePda(k1.publicKey, program.programId);
+
+      // Discriminator + agent=k2 (not k1) + claimed_count + bump
+      const data = buildLegacyAccount(k2.publicKey, 0, bump);
+      injectLegacy(pda, data);
+
+      try {
+        await program.methods
+          .migrateAgentState()
+          .accountsPartial({
+            agent: k1.publicKey,
+            agentState: pda,
+          })
+          .signers([k1])
+          .rpc();
+        assert.fail("expected migration to reject agent-mismatch");
+      } catch (e: unknown) {
+        const msg = String(e);
+        assert.match(
+          msg,
+          /AgentStateAgentMismatch|agent.*match/i,
+          `expected agent-mismatch error, got: ${msg}`
+        );
+      }
+    });
+
+    it("rejects unsupported intermediate sizes", async () => {
+      const k = Keypair.generate();
+      await fundAccount(provider, k.publicKey, 10 * LAMPORTS_PER_SOL);
+      const [pda] = agentStatePda(k.publicKey, program.programId);
+
+      // 50-byte account (between 42 and 90, not a known layout).
+      const data = Buffer.alloc(50);
+      AGENT_STATE_DISCRIMINATOR.copy(data, 0);
+      k.publicKey.toBuffer().copy(data, 8);
+      // bytes 40-49 are arbitrary; doesn't matter — the size check
+      // should reject before the rest is read.
+      injectLegacy(pda, data, 1_300_000);
+
+      try {
+        await program.methods
+          .migrateAgentState()
+          .accountsPartial({
+            agent: k.publicKey,
+            agentState: pda,
+          })
+          .signers([k])
+          .rpc();
+        assert.fail("expected migration to reject unsupported 50-byte size");
+      } catch (e: unknown) {
+        const msg = String(e);
+        assert.match(
+          msg,
+          /AgentStateUnsupportedSize|size/i,
+          `expected unsupported-size error, got: ${msg}`
+        );
+      }
+    });
+  });
 });
