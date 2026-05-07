@@ -98,6 +98,7 @@ pub mod shillbot {
         attestation_delay_override: u32,
         challenge_window_override: u32,
         verification_timeout_override: u32,
+        requires_approval: bool,
     ) -> Result<()> {
         instructions::create_task::create_task(
             ctx,
@@ -110,6 +111,7 @@ pub mod shillbot {
             attestation_delay_override,
             challenge_window_override,
             verification_timeout_override,
+            requires_approval,
         )
     }
 

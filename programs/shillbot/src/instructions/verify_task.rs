@@ -29,13 +29,20 @@ pub fn verify_task(
     let task = &ctx.accounts.task;
     let global = &ctx.accounts.global_state;
 
-    // Checks: state — Phase 3 blocker #3a inserted client approval
-    // between Submitted and Verified. verify_task now requires
-    // Approved (was Submitted). Pre-#3a tasks that never made it
-    // through the new gate must be expired via expire_task; they
-    // can't be verified directly.
+    // Checks: state — D1 (2026-05-07) reverts mandatory client
+    // approval to per-task opt-in (matches spec line 433). Tasks
+    // created with `requires_approval = true` keep the v4 #3a flow:
+    // Submitted → Approved (client signs) → Verified. Tasks with
+    // `requires_approval = false` skip the approval gate: Submitted
+    // → Verified directly. The required source-state for verify_task
+    // therefore branches on the flag.
+    let required_state = if task.requires_approval == 1 {
+        TaskState::Approved
+    } else {
+        TaskState::Submitted
+    };
     require!(
-        task.state == TaskState::Approved,
+        task.state == required_state,
         ShillbotError::InvalidTaskState
     );
 

@@ -240,7 +240,8 @@ async function createTask(
       0, // platform = YouTube
       0,
       0,
-      0 // timing overrides: use global defaults
+      0, // timing overrides: use global defaults
+      true // D1: requires_approval — keep v4 #3a flow for the lifecycle tests
     )
     .accountsPartial({
       globalState: globalPda,
@@ -978,7 +979,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
           0,
           0,
           0,
-          0
+          0,
+          true // D1: requires_approval — keep v4 #3a flow for these tests
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1148,7 +1150,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
           0,
           0,
           0,
-          0
+          0,
+          true
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1384,7 +1387,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
           0,
           0,
           0,
-          0
+          0,
+          true
         )
         .accountsPartial({
           globalState: globalPda,

@@ -81,13 +81,33 @@ pub struct Task {
     pub verification_timeout_override: u32,
     /// SHA-256 of the verification snapshot (content + metrics JSON). 0 until verified.
     pub verification_hash: [u8; 32],
+    /// Whether this task requires explicit client `approve_task`
+    /// before oracle verification (D1, 2026-05-07). 0 = false (oracle
+    /// path proceeds directly from Submitted), 1 = true (mandatory
+    /// client approval gate, matches v4 #11 behavior).
+    ///
+    /// Default OFF — matches the protocol spec at
+    /// `~/swarm/shillbot/CLAUDE.md` line 433: "Optional pre-approval
+    /// flow: Clients can enable a mode where agent submissions are
+    /// queued for client review." v4 #11 made approval mandatory for
+    /// every task; D1 reverts to per-campaign opt-in.
+    ///
+    /// Carved from `_reserved` 2026-05-07 — bytewise-compatible with
+    /// pre-D1 layout because the byte was zero in `_reserved`. In-flight
+    /// Submitted-state tasks at the moment of program upgrade transition
+    /// from "mandatory approval" to "no approval needed" — caller
+    /// instructions migrate accordingly. **Operators with in-flight
+    /// Submitted tasks should ensure they're approved or expired before
+    /// the program upgrade.**
+    pub requires_approval: u8,
     /// Reserved space for future fields without reallocation.
-    pub _reserved: [u8; 20],
+    /// Reduced from 20 → 19 bytes by D1 (carved 1 byte for
+    /// `requires_approval`).
+    pub _reserved: [u8; 19],
     pub bump: u8,
 }
 
 impl Task {
-    // 8 + 8 + 32 + 32 + 1 + 1 + 8 + 32 + 32 + 16 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 64 + 1 = 315
     pub const SPACE: usize = 8   // discriminator
         + 8    // task_id
         + 32   // client
@@ -112,8 +132,10 @@ impl Task {
         + 4    // challenge_window_override
         + 4    // verification_timeout_override
         + 32   // verification_hash
-        + 20   // _reserved
+        + 1    // requires_approval         (D1 — was reserved)
+        + 19   // _reserved (was 20, carved 1 by D1)
         + 1; // bump
+             // Total = 315 (unchanged); bytewise-compatible with v4 layout.
 }
 
 #[cfg(test)]

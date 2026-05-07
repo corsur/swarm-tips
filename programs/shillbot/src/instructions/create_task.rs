@@ -18,6 +18,11 @@ pub fn create_task(
     attestation_delay_override: u32,
     challenge_window_override: u32,
     verification_timeout_override: u32,
+    // requires_approval (D1, 2026-05-07): false = oracle path
+    // proceeds directly from Submitted; true = mandatory approval
+    // gate (matches v4 #11 behavior). Per-task opt-in; campaign-
+    // level UX is in the orchestrator.
+    requires_approval: bool,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let global = &ctx.accounts.global_state;
@@ -214,7 +219,8 @@ pub fn create_task(
     task.challenge_window_override = challenge_window_override;
     task.verification_timeout_override = verification_timeout_override;
     task.verification_hash = [0u8; 32];
-    task._reserved = [0u8; 20];
+    task.requires_approval = u8::from(requires_approval);
+    task._reserved = [0u8; 19];
     task.bump = ctx.bumps.task;
 
     // Interactions: transfer escrow from client to task PDA
