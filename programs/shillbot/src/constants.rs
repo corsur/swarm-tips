@@ -61,3 +61,32 @@ pub const RATE_LIMIT_WINDOW_SECONDS: i64 = 3_600;
 /// fee on the $50 escrow floor) — the rate limit's primary effect is
 /// forcing attackers to maintain more wallets, not the rent itself.
 pub const MAX_TASKS_PER_RATE_WINDOW: u32 = 10;
+
+// ---------------------------------------------------------------------------
+// D2/D3 governance bounds (2026-05-07)
+// ---------------------------------------------------------------------------
+// `MIN_ESCROW_LAMPORTS`, `RATE_LIMIT_WINDOW_SECONDS`, and
+// `MAX_TASKS_PER_RATE_WINDOW` moved from compile-time consts to
+// `GlobalState` governance params. The consts above remain as INITIAL
+// values used by `initialize`. After deploy, multisig governance can
+// adjust within the bounds below via `update_params` — preserving the
+// "can't be downgraded silently" property by enforcing floors that
+// keep sybil-resistance meaningful even at the lower bound.
+
+/// Minimum allowed `min_escrow_lamports` value. 0.05 SOL ≈ $7-8 at
+/// $140/SOL; sybil per-task cost stays at ~$0.07 protocol fee even at
+/// this lower bound — materially weaker than the 0.36 SOL default but
+/// still non-trivial friction.
+pub const MIN_ESCROW_LAMPORTS_FLOOR: u64 = 50_000_000;
+/// Maximum allowed `min_escrow_lamports` value. 1 SOL = ~$140 at
+/// $140/SOL; prevents governance from setting an absurdly high floor
+/// that excludes legitimate clients.
+pub const MIN_ESCROW_LAMPORTS_CEILING: u64 = 1_000_000_000;
+
+/// Rate-limit window bounds: [1 minute, 1 day].
+pub const MIN_RATE_LIMIT_WINDOW_SECONDS: i64 = 60;
+pub const MAX_RATE_LIMIT_WINDOW_SECONDS: i64 = 86_400;
+
+/// Per-window task cap bounds: [1, 100].
+pub const MIN_TASKS_PER_RATE_WINDOW: u32 = 1;
+pub const MAX_TASKS_PER_RATE_WINDOW_CEILING: u32 = 100;

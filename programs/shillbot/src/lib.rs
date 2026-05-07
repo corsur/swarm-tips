@@ -63,6 +63,9 @@ pub mod shillbot {
         bond_slash_treasury_bps: u16,
         paused: bool,
         paused_platforms: u16,
+        min_escrow_lamports: u64,
+        rate_limit_window_seconds: i64,
+        max_tasks_per_rate_window: u32,
     ) -> Result<()> {
         instructions::update_params::update_params(
             ctx,
@@ -77,6 +80,9 @@ pub mod shillbot {
             bond_slash_treasury_bps,
             paused,
             paused_platforms,
+            min_escrow_lamports,
+            rate_limit_window_seconds,
+            max_tasks_per_rate_window,
         )
     }
 
@@ -92,6 +98,7 @@ pub mod shillbot {
         attestation_delay_override: u32,
         challenge_window_override: u32,
         verification_timeout_override: u32,
+        requires_approval: bool,
     ) -> Result<()> {
         instructions::create_task::create_task(
             ctx,
@@ -104,6 +111,7 @@ pub mod shillbot {
             attestation_delay_override,
             challenge_window_override,
             verification_timeout_override,
+            requires_approval,
         )
     }
 

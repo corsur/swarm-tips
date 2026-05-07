@@ -1,7 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-use crate::constants::{MAX_TASKS_PER_RATE_WINDOW, MIN_ESCROW_LAMPORTS, RATE_LIMIT_WINDOW_SECONDS};
 use crate::errors::ShillbotError;
 use crate::events::TaskCreated;
 use crate::state::{ClientState, GlobalState, Task, TaskState};
@@ -19,6 +18,11 @@ pub fn create_task(
     attestation_delay_override: u32,
     challenge_window_override: u32,
     verification_timeout_override: u32,
+    // requires_approval (D1, 2026-05-07): false = oracle path
+    // proceeds directly from Submitted; true = mandatory approval
+    // gate (matches v4 #11 behavior). Per-task opt-in; campaign-
+    // level UX is in the orchestrator.
+    requires_approval: bool,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let global = &ctx.accounts.global_state;
@@ -51,13 +55,15 @@ pub fn create_task(
     // on-chain, so tests and direct callers can use short buffers on devnet.
     require!(escrow_lamports > 0, ShillbotError::ArithmeticOverflow);
 
-    // Phase 3 blocker #2: enforce MIN_ESCROW_LAMPORTS floor. Sybil
+    // Phase 3 blocker #2: enforce min_escrow_lamports floor. Sybil
     // operators who control both client and agent can recover most of
     // an escrow round-trip; the minimum floor ensures each round-trip
     // ties up non-trivial capital and accumulates protocol-fee bleed.
-    // See `crate::constants::MIN_ESCROW_LAMPORTS` for the cost analysis.
+    // D2 (2026-05-07): the floor moved from a compile-time const to a
+    // GlobalState governance param so multisig can tune it without a
+    // program upgrade. Bounds enforced in `update_params`.
     require!(
-        escrow_lamports >= MIN_ESCROW_LAMPORTS,
+        escrow_lamports >= global.min_escrow_lamports,
         ShillbotError::EscrowBelowMinimum
     );
 
@@ -92,7 +98,7 @@ pub fn create_task(
             .checked_sub(client_state.window_start_ts)
             .ok_or(ShillbotError::ArithmeticOverflow)?
     };
-    let window_expired = elapsed >= RATE_LIMIT_WINDOW_SECONDS;
+    let window_expired = elapsed >= global.rate_limit_window_seconds;
     let new_count: u32 = if is_first_call || window_expired {
         1
     } else {
@@ -104,8 +110,10 @@ pub fn create_task(
 
     // Checks (pure CEI): both the rate-limit cap AND any future
     // invariants on the counter happen here, before any mutation.
+    // D3 (2026-05-07): cap moved from compile-time const to
+    // GlobalState governance param.
     require!(
-        new_count <= MAX_TASKS_PER_RATE_WINDOW,
+        new_count <= global.max_tasks_per_rate_window,
         ShillbotError::RateLimitExceeded
     );
 
@@ -211,7 +219,8 @@ pub fn create_task(
     task.challenge_window_override = challenge_window_override;
     task.verification_timeout_override = verification_timeout_override;
     task.verification_hash = [0u8; 32];
-    task._reserved = [0u8; 20];
+    task.requires_approval = u8::from(requires_approval);
+    task._reserved = [0u8; 19];
     task.bump = ctx.bumps.task;
 
     // Interactions: transfer escrow from client to task PDA

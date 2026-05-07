@@ -37,6 +37,13 @@ pub fn approve_task(ctx: Context<ApproveTask>) -> Result<()> {
         ShillbotError::InvalidTaskState
     );
 
+    // Checks (D1, 2026-05-07): only valid when this task requires
+    // approval. Tasks created with requires_approval=false proceed
+    // directly from Submitted to oracle verification (no client
+    // approval gate); calling approve_task on them is meaningless
+    // and we reject loudly to surface programming errors in callers.
+    require!(task.requires_approval == 1, ShillbotError::InvalidTaskState);
+
     // Checks: caller must be the task's original client
     require!(task.client == client.key(), ShillbotError::NotTaskClient);
 
