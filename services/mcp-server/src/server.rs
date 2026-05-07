@@ -1209,6 +1209,13 @@ impl SwarmTipsMcp {
         let result = serde_json::json!({
             "wallet": target_wallet,
             "tournament_id": tournament_id,
+            // Wire-format-stable formula version. v0 weights are pre-
+            // calibration heuristics — they will change once we have
+            // ≥100 unique client-agent pairs (the EigenTrust threshold
+            // from the spec). Integrators should pin behavior to a
+            // specific version and re-validate on bumps. Filed in
+            // execution-v5/tasks.md as D5.
+            "trust_score_version": "v0",
             "trust_score": trust.score,
             "confidence": trust.confidence,
             "breakdown": trust.breakdown,
