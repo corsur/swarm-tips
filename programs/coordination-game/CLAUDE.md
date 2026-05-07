@@ -124,3 +124,40 @@ See `state/*.rs` for full field layouts.
 `PlayerProfile.score = wins * wins / total_games` (integer division, updated after each resolution).
 
 **Win definition:** A player earns a win when they guess correctly. In same-team both-correct, BOTH players earn a win.
+
+---
+
+## Events
+
+The program emits one Anchor event per state transition. The exact field set is the public ABI for off-chain indexers.
+
+| Event | Emitted by | Fields |
+|---|---|---|
+| `TournamentCreated` | `create_tournament` | `tournament_id`, `start_time`, `end_time` |
+| `GameCreated` | `create_game` / `create_game_session` | `game_id`, `tournament_id`, `player_one`, `stake_lamports` |
+| `GameStarted` | `join_game` / `join_game_session` | `game_id`, `tournament_id`, `player_one`, `player_two` |
+| `GuessCommitted` | `commit_guess` / `commit_guess_session` | `game_id`, `player`, `commit_slot` |
+| `GuessRevealed` | `reveal_guess` / `reveal_guess_session` | `game_id`, `player` |
+| `GameResolved` | `reveal_guess` (terminal), `resolve_timeout` | `game_id`, `p1_guess`, `p2_guess`, `p1_return`, `p2_return`, `tournament_gain`, `treasury_gain` |
+| `TimeoutSlash` | `resolve_timeout` | `game_id`, `slashed_player`, `slash_amount` |
+| `TournamentFinalized` | `finalize_tournament` | `tournament_id`, `prize_snapshot`, `merkle_root` |
+| `RewardClaimed` | `claim_reward` | `tournament_id`, `player`, `amount` |
+| `StakeDeposited` | `deposit_stake` / `deposit_stake_session` | `player`, `tournament_id`, `amount` |
+| `StakeWithdrawn` | `withdraw_stake` | `wallet`, `tournament_id`, `amount` |
+| `SessionCreated` | `create_player_session` | `player`, `session_key`, `expires_at` |
+| `SessionClosed` | `close_player_session` / `close_session_by_delegate` | `player`, `session_key` |
+| `ConfigUpdated` | `initialize_config` / `update_config` | `authority`, `treasury_split_bps` |
+
+**Anonymity invariant — `matchup_type` omitted from event stream.** `GameCreated`, `GameStarted`, and `GameResolved` deliberately do NOT include `matchup_type`. The matchmaker writes `matchup_type` directly into the `Game` PDA at creation (initially `MATCHUP_TYPE_UNSET = 255`, then revealed in-account during the first `reveal_guess`). It IS visible on-chain to anyone reading the Game account post-resolve, but it is NEVER emitted in the event stream — so a WebSocket-only indexer cannot leak it to a player mid-game.
+
+---
+
+## Late-resolution guarantee
+
+`reveal_guess` only transitions a game to `Resolved` while the state is `Revealing`. If a malicious party with a valid `r` tries to call `reveal_guess` after the game has already been timeout-resolved, the state-machine check `require!(game.state == GameState::Revealing, InvalidGameState)` rejects the call. Combined with the timeout-window check, this means once a game enters `Resolved` via either path (full reveal or timeout), no further state mutation is possible until `close_game` deletes the account — there is no "late reveal" exploit that can rewrite an already-resolved outcome.
+
+---
+
+## Tournament `is_active` boundary
+
+`Tournament::is_active(now)` returns true when `start_time <= now <= end_time` — **both bounds inclusive**. Games may be created exactly at `start_time` and exactly at `end_time` (the second `<=` is intentional). `finalize_tournament` separately requires `now > end_time` (strict greater), so the tournament cannot be finalized in the same Unix-second that a final game is created.
