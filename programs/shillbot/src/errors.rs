@@ -115,4 +115,13 @@ pub enum ShillbotError {
 
     #[msg("Client exceeded MAX_TASKS_PER_RATE_WINDOW within RATE_LIMIT_WINDOW_SECONDS")]
     RateLimitExceeded,
+
+    #[msg("AgentState account discriminator does not match — refusing to migrate")]
+    AgentStateDiscriminatorMismatch,
+
+    #[msg("AgentState account size is unsupported by migrate_agent_state (expected legacy 41 or current 90)")]
+    AgentStateUnsupportedSize,
+
+    #[msg("AgentState account agent pubkey does not match the signer")]
+    AgentStateAgentMismatch,
 }

@@ -123,6 +123,10 @@ pub mod shillbot {
         instructions::close_agent_state::close_agent_state(ctx)
     }
 
+    pub fn migrate_agent_state(ctx: Context<MigrateAgentState>) -> Result<()> {
+        instructions::migrate_agent_state::migrate_agent_state(ctx)
+    }
+
     pub fn submit_work(ctx: Context<SubmitWork>, content_id: Vec<u8>) -> Result<()> {
         instructions::submit_work::submit_work(ctx, content_id)
     }
