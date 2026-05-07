@@ -135,7 +135,7 @@ async function main(): Promise<void> {
   const conn = new Connection(args.rpcUrl, "confirmed");
   const disc = discriminator(args.accountName);
   console.log(
-    `Disc:         ${disc} (base58 of sha256("account:${args.accountName}")[..8])`,
+    `Disc:         ${disc} (base58 of sha256("account:${args.accountName}")[..8])`
   );
 
   console.log(`\nFetching all matching accounts via getProgramAccounts…`);
@@ -165,7 +165,9 @@ async function main(): Promise<void> {
     const row = buckets.get(size)!;
     const pct = ((row.count / accounts.length) * 100).toFixed(1);
     console.log(
-      `  size=${String(size).padStart(4)}  count=${String(row.count).padStart(5)}  (${pct}%)`,
+      `  size=${String(size).padStart(4)}  count=${String(row.count).padStart(
+        5
+      )}  (${pct}%)`
     );
     for (const sample of row.samples) {
       console.log(`    sample: ${sample}`);
@@ -174,20 +176,22 @@ async function main(): Promise<void> {
 
   console.log(`\n--- Summary ---`);
   console.log(`  ${accounts.length} total ${args.accountName} account(s)`);
-  console.log(`  ${sizes.length} distinct size bucket(s): [${sizes.join(", ")}]`);
+  console.log(
+    `  ${sizes.length} distinct size bucket(s): [${sizes.join(", ")}]`
+  );
   if (sizes.length > 1) {
     console.log(
-      `\n  ⚠ Multiple sizes detected — any struct-extension PR claiming`,
+      `\n  ⚠ Multiple sizes detected — any struct-extension PR claiming`
     );
     console.log(
-      `  "bytewise compatible, no realloc" must explicitly handle each`,
+      `  "bytewise compatible, no realloc" must explicitly handle each`
     );
-    console.log(
-      `  size in this list, OR ship a migration instruction.`,
-    );
+    console.log(`  size in this list, OR ship a migration instruction.`);
   } else {
     console.log(`\n  All accounts at the same size — bytewise extension is`);
-    console.log(`  safe IFF the new struct keeps the existing size as a prefix.`);
+    console.log(
+      `  safe IFF the new struct keeps the existing size as a prefix.`
+    );
   }
 }
 
