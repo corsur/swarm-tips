@@ -198,6 +198,120 @@ pub async fn read_player_profile(
     }))
 }
 
+/// Read all PlayerProfile accounts for a given tournament_id via
+/// `getProgramAccounts` with a discriminator + tournament_id memcmp
+/// filter. Decodes each into `PlayerProfileData` and returns sorted by
+/// `score` descending (the leaderboard order).
+///
+/// Used by the `game_get_leaderboard` MCP tool. Replaces the dead
+/// `game_api_client::get_leaderboard` HTTP path that pointed at a
+/// game-api endpoint that never existed (0b-FINDING-1, 2026-05-07
+/// audit). Reading on-chain directly is the right architectural
+/// answer because PlayerProfile data lives entirely on-chain — the
+/// game-api hop was an unnecessary indirection.
+pub async fn read_all_player_profiles_for_tournament(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    tournament_id: u64,
+) -> Result<Vec<PlayerProfileData>, McpServiceError> {
+    let expected_disc = anchor_discriminator("PlayerProfile");
+    let disc_b58 = bs58::encode(expected_disc).into_string();
+    let tid_b58 = bs58::encode(tournament_id.to_le_bytes()).into_string();
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getProgramAccounts",
+        "params": [
+            COORDINATION_GAME_PROGRAM_ID_BASE58,
+            {
+                "encoding": "base64",
+                "commitment": "confirmed",
+                "filters": [
+                    { "memcmp": { "offset": 0, "bytes": disc_b58 } },
+                    // tournament_id is at offset 8 (disc) + 32 (wallet) = 40.
+                    { "memcmp": { "offset": 40, "bytes": tid_b58 } },
+                ],
+            },
+        ],
+    });
+
+    let resp = client
+        .post(rpc_url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| {
+            McpServiceError::OrchestratorError(format!("getProgramAccounts request failed: {e}"))
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(McpServiceError::OrchestratorError(format!(
+            "getProgramAccounts RPC status {}",
+            resp.status()
+        )));
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| {
+        McpServiceError::OrchestratorError(format!("getProgramAccounts JSON parse failed: {e}"))
+    })?;
+
+    let result_arr = body
+        .get("result")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            McpServiceError::OrchestratorError(format!(
+                "getProgramAccounts missing result array: {body}"
+            ))
+        })?;
+
+    let mut out = Vec::with_capacity(result_arr.len());
+    for entry in result_arr {
+        let data_arr = entry
+            .get("account")
+            .and_then(|a| a.get("data"))
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| {
+                McpServiceError::OrchestratorError(
+                    "getProgramAccounts entry missing account.data".to_string(),
+                )
+            })?;
+        let b64 = data_arr.first().and_then(|v| v.as_str()).ok_or_else(|| {
+            McpServiceError::OrchestratorError(
+                "getProgramAccounts entry data[0] not a string".to_string(),
+            )
+        })?;
+
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let raw = STANDARD.decode(b64).map_err(|e| {
+            McpServiceError::OrchestratorError(format!("base64 decode failed: {e}"))
+        })?;
+        if raw.len() < 8 || raw[..8] != expected_disc {
+            // Filter should have prevented this, but defense-in-depth.
+            continue;
+        }
+        let body_bytes = &raw[8..];
+        if body_bytes.len() < PLAYER_PROFILE_MIN_BODY_LEN {
+            continue; // skip malformed entries
+        }
+        let wallet_bytes: [u8; 32] = body_bytes[0..32].try_into().map_err(|_| {
+            McpServiceError::OrchestratorError("PlayerProfile wallet slice".to_string())
+        })?;
+        out.push(PlayerProfileData {
+            wallet: bs58::encode(wallet_bytes).into_string(),
+            tournament_id: read_u64_le(&body_bytes[32..40])?,
+            wins: read_u64_le(&body_bytes[40..48])?,
+            total_games: read_u64_le(&body_bytes[48..56])?,
+            score: read_u64_le(&body_bytes[56..64])?,
+        });
+    }
+
+    // Leaderboard order: highest score first. Stable secondary sort by
+    // wallet to keep ordering deterministic across calls when scores tie.
+    out.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.wallet.cmp(&b.wallet)));
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

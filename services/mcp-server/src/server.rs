@@ -33,6 +33,10 @@ fn session_id_from_parts(parts: Option<&http::request::Parts>) -> Option<String>
 /// Shared state accessible to all MCP sessions.
 pub struct SharedState {
     pub orchestrator: OrchestratorProxy,
+    /// Reserved adapter for future game-api flows (auth_challenge,
+    /// join_queue). The leaderboard path that previously consumed it
+    /// was removed in 0-FU-3 — see `game_proxy.rs` for context.
+    #[allow(dead_code)]
     pub game_api: GameApiProxy,
     pub solana_rpc_url: String,
     pub rpc_client: reqwest::Client,
@@ -1528,17 +1532,36 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<GameGetLeaderboardArgs>,
     ) -> Result<CallToolResult, McpError> {
         let tournament_id = args.tournament_id.unwrap_or(1);
-        let result = self
-            .state
-            .game_api
-            .get_leaderboard(tournament_id, args.limit)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
+        let limit = args.limit.unwrap_or(20).min(100) as usize;
+
+        // 0-FU-3 (2026-05-07): read PlayerProfile PDAs directly from
+        // Solana RPC instead of calling game-api's
+        // /tournaments/{id}/leaderboard endpoint. That endpoint never
+        // existed (verified via Q6 game-api source read end-to-end);
+        // the prior `game_api.get_leaderboard()` call was always 401-ing
+        // because game-api's protected_routes auth-middleware
+        // fall-through caught the unmatched path. PlayerProfile data
+        // lives entirely on-chain — the RPC hop was unnecessary
+        // indirection.
+        let mut entries = crate::solana_reads::read_all_player_profiles_for_tournament(
+            &self.state.rpc_client,
+            &self.state.solana_rpc_url,
+            tournament_id,
+        )
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+
+        entries.truncate(limit);
+
+        let result = serde_json::json!({
+            "tournament_id": tournament_id,
+            "entries": entries,
+        });
 
         tracing::info!(
             tournament_id,
-            entries = result.entries.len(),
-            "retrieved game leaderboard"
+            entries = entries.len(),
+            "retrieved game leaderboard (on-chain read)"
         );
         Ok(text_result(&result))
     }
