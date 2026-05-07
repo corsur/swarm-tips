@@ -1,5 +1,9 @@
 use anchor_lang::prelude::*;
 
+use crate::constants::{
+    MAX_RATE_LIMIT_WINDOW_SECONDS, MAX_TASKS_PER_RATE_WINDOW_CEILING, MIN_ESCROW_LAMPORTS_CEILING,
+    MIN_ESCROW_LAMPORTS_FLOOR, MIN_RATE_LIMIT_WINDOW_SECONDS, MIN_TASKS_PER_RATE_WINDOW,
+};
 use crate::errors::ShillbotError;
 use crate::events::ParamsUpdated;
 use crate::state::GlobalState;
@@ -20,6 +24,11 @@ pub fn update_params(
     bond_slash_treasury_bps: u16,
     paused: bool,
     paused_platforms: u16,
+    // D2/D3 (2026-05-07): governance-controllable sybil-economics
+    // params with bounds enforced below.
+    min_escrow_lamports: u64,
+    rate_limit_window_seconds: i64,
+    max_tasks_per_rate_window: u32,
 ) -> Result<()> {
     let global = &ctx.accounts.global_state;
 
@@ -82,6 +91,36 @@ pub fn update_params(
         ShillbotError::ProtocolFeeBoundsExceeded
     );
 
+    // Checks (D2): min_escrow_lamports within bounds
+    require!(
+        min_escrow_lamports >= MIN_ESCROW_LAMPORTS_FLOOR,
+        ShillbotError::EscrowBelowMinimum
+    );
+    require!(
+        min_escrow_lamports <= MIN_ESCROW_LAMPORTS_CEILING,
+        ShillbotError::EscrowBelowMinimum
+    );
+
+    // Checks (D3): rate-limit window within bounds
+    require!(
+        rate_limit_window_seconds >= MIN_RATE_LIMIT_WINDOW_SECONDS,
+        ShillbotError::RateLimitExceeded
+    );
+    require!(
+        rate_limit_window_seconds <= MAX_RATE_LIMIT_WINDOW_SECONDS,
+        ShillbotError::RateLimitExceeded
+    );
+
+    // Checks (D3): max_tasks_per_rate_window within bounds
+    require!(
+        max_tasks_per_rate_window >= MIN_TASKS_PER_RATE_WINDOW,
+        ShillbotError::RateLimitExceeded
+    );
+    require!(
+        max_tasks_per_rate_window <= MAX_TASKS_PER_RATE_WINDOW_CEILING,
+        ShillbotError::RateLimitExceeded
+    );
+
     // Effects
     let global = &mut ctx.accounts.global_state;
     global.protocol_fee_bps = protocol_fee_bps;
@@ -95,6 +134,9 @@ pub fn update_params(
     global.bond_slash_treasury_bps = bond_slash_treasury_bps;
     global.paused = paused;
     global.paused_platforms = paused_platforms;
+    global.min_escrow_lamports = min_escrow_lamports;
+    global.rate_limit_window_seconds = rate_limit_window_seconds;
+    global.max_tasks_per_rate_window = max_tasks_per_rate_window;
 
     emit!(ParamsUpdated {
         protocol_fee_bps,

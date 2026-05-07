@@ -1965,7 +1965,10 @@ describe("shillbot", () => {
           2,
           5_000,
           false,
-          0
+          0,
+          new BN(360_000_000),
+          new BN(3600),
+          10
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1990,7 +1993,10 @@ describe("shillbot", () => {
           2,
           5_000,
           false,
-          0
+          0,
+          new BN(360_000_000),
+          new BN(3600),
+          10
         )
         .accountsPartial({
           globalState: globalPda,
@@ -2023,7 +2029,10 @@ describe("shillbot", () => {
             2,
             5_000,
             false,
-            0
+            0,
+            new BN(360_000_000),
+            new BN(3600),
+            10
           )
           .accountsPartial({
             globalState: globalPda,
@@ -2051,7 +2060,10 @@ describe("shillbot", () => {
             2,
             5_000,
             false,
-            0
+            0,
+            new BN(360_000_000),
+            new BN(3600),
+            10
           ) // 50 bps < 100 bps minimum
           .accountsPartial({
             globalState: globalPda,
@@ -2078,7 +2090,10 @@ describe("shillbot", () => {
             2,
             5_000,
             false,
-            0
+            0,
+            new BN(360_000_000),
+            new BN(3600),
+            10
           ) // 3000 bps > 2500 bps maximum
           .accountsPartial({
             globalState: globalPda,
@@ -2105,7 +2120,10 @@ describe("shillbot", () => {
             2,
             5_000,
             false,
-            0
+            0,
+            new BN(360_000_000),
+            new BN(3600),
+            10
           )
           .accountsPartial({
             globalState: globalPda,

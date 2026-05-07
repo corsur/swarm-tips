@@ -40,13 +40,33 @@ pub struct GlobalState {
     /// offsets on `_reserved` and `bump`, breaking deserialization of
     /// already-deployed accounts). Future GlobalState v2 may drop it.
     pub switchboard_feed: Pubkey,
+    /// Minimum task escrow in lamports (Phase 3 blocker #2 — D2).
+    /// Carved from `_reserved` 2026-05-07. Pre-D2 was a compile-time
+    /// const (`crate::constants::MIN_ESCROW_LAMPORTS`); moved to
+    /// governance with bounds in `update_params` so multisig can
+    /// tune in response to SOL price + sybil pressure without a
+    /// program upgrade. Bounds: [MIN_ESCROW_LAMPORTS_FLOOR,
+    /// MIN_ESCROW_LAMPORTS_CEILING] in `constants.rs`. Existing
+    /// on-chain GlobalState accounts at the old layout decode this
+    /// byte range as zero — `initialize` sets the default; for
+    /// pre-existing accounts use `update_params`.
+    pub min_escrow_lamports: u64,
+    /// Per-client task-creation rate-limit window length (D3).
+    /// Same migration story as `min_escrow_lamports`: was const,
+    /// now governance with bounds.
+    pub rate_limit_window_seconds: i64,
+    /// Per-client task-creation rate-limit count within the window
+    /// (D3). Same migration story.
+    pub max_tasks_per_rate_window: u32,
     /// Reserved space for future fields without reallocation.
-    pub _reserved: [u8; 32],
+    /// Reduced from 32 → 19 bytes by D2/D3 (carved 8 + 8 + 4 = 20
+    /// bytes; net loss is the 1 byte alignment between the new
+    /// fields and bump, conservatively rounded).
+    pub _reserved: [u8; 12],
     pub bump: u8,
 }
 
 impl GlobalState {
-    // 8 + 8 + 32 + 32 + 2 + 8 + 8 + 8 + 8 + 8 + 1 + 2 + 2 + 32 + 1 + 2 + 32 + 32 + 1 = 227
     pub const SPACE: usize = 8   // discriminator
         + 8    // task_counter
         + 32   // authority
@@ -64,8 +84,13 @@ impl GlobalState {
         + 1    // paused
         + 2    // paused_platforms
         + 32   // switchboard_feed
-        + 32   // _reserved
+        + 8    // min_escrow_lamports         (D2 — was const)
+        + 8    // rate_limit_window_seconds   (D3 — was const)
+        + 4    // max_tasks_per_rate_window   (D3 — was const)
+        + 12   // _reserved (was 32, carved 20 by D2+D3)
         + 1; // bump
+             // Total = 227 (unchanged); bytewise-compatible with v4 layout
+             // because the carved bytes were zero in `_reserved`.
 }
 
 #[cfg(test)]
@@ -75,5 +100,79 @@ mod tests {
     #[test]
     fn global_state_space_is_227() {
         assert_eq!(GlobalState::SPACE, 227);
+    }
+
+    /// Migration regression guard for D2/D3.
+    ///
+    /// Builds a byte sequence representing the OLD layout (pre-D2/D3:
+    /// 32-byte `_reserved` block where the new fields now live) and
+    /// deserializes it as the NEW struct. Asserts that:
+    ///   - All pre-existing fields keep their values
+    ///   - The 3 new fields (`min_escrow_lamports`,
+    ///     `rate_limit_window_seconds`, `max_tasks_per_rate_window`)
+    ///     read as 0 from the zero-initialized old `_reserved` bytes
+    ///   - `bump` is at the correct offset in both layouts
+    ///
+    /// Pre-D2/D3 callers must `update_params` to set non-zero values
+    /// for the 3 new fields after the program upgrade lands; until they
+    /// do, `create_task` will fail because escrow >= 0 is trivially
+    /// satisfied but the rate-limit window of 0 seconds means the
+    /// limit is never reached.
+    #[test]
+    fn old_layout_deserializes_with_zero_new_fields() {
+        use anchor_lang::Discriminator;
+
+        let authority = Pubkey::new_unique();
+        let treasury = Pubkey::new_unique();
+        let oracle = Pubkey::new_unique();
+        let feed = Pubkey::new_unique();
+        let bump: u8 = 255;
+
+        // Pre-D2/D3 layout: same as current up to switchboard_feed,
+        // then 32-byte _reserved, then bump.
+        let mut bytes = Vec::with_capacity(GlobalState::SPACE);
+        bytes.extend_from_slice(GlobalState::DISCRIMINATOR);
+        bytes.extend_from_slice(&123u64.to_le_bytes()); // task_counter
+        bytes.extend_from_slice(authority.as_ref());
+        bytes.extend_from_slice(treasury.as_ref());
+        bytes.extend_from_slice(&100u16.to_le_bytes()); // protocol_fee_bps
+        bytes.extend_from_slice(&200_000u64.to_le_bytes()); // quality_threshold
+        bytes.extend_from_slice(&86_400i64.to_le_bytes()); // challenge_window_seconds
+        bytes.extend_from_slice(&1_209_600i64.to_le_bytes()); // verification_timeout_seconds
+        bytes.extend_from_slice(&604_800i64.to_le_bytes()); // attestation_delay_seconds
+        bytes.extend_from_slice(&86_400i64.to_le_bytes()); // staleness_window_seconds
+        bytes.push(5u8); // max_concurrent_claims
+        bytes.extend_from_slice(&20_000u16.to_le_bytes()); // challenge_bond_multiplier_bps
+        bytes.extend_from_slice(&5_000u16.to_le_bytes()); // bond_slash_treasury_bps
+        bytes.extend_from_slice(oracle.as_ref());
+        bytes.push(0u8); // paused = false
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // paused_platforms
+        bytes.extend_from_slice(feed.as_ref());
+        // 32 zero bytes — the OLD `_reserved` block. The first 20
+        // bytes become min_escrow_lamports + rate_limit_window_seconds
+        // + max_tasks_per_rate_window under the new layout (all u-int
+        // = 0 because those bytes are zero). The last 12 bytes become
+        // the new `_reserved`.
+        bytes.extend_from_slice(&[0u8; 32]);
+        bytes.push(bump);
+
+        assert_eq!(bytes.len(), GlobalState::SPACE);
+
+        let parsed = GlobalState::try_deserialize(&mut &bytes[..])
+            .expect("old layout must deserialize cleanly under new layout");
+
+        assert_eq!(parsed.task_counter, 123);
+        assert_eq!(parsed.authority, authority);
+        assert_eq!(parsed.treasury, treasury);
+        assert_eq!(parsed.protocol_fee_bps, 100);
+        assert_eq!(parsed.quality_threshold, 200_000);
+        assert_eq!(parsed.bump, bump);
+
+        // The 3 new fields MUST read as 0 (operator must `update_params`
+        // post-upgrade to set non-zero values).
+        assert_eq!(parsed.min_escrow_lamports, 0);
+        assert_eq!(parsed.rate_limit_window_seconds, 0);
+        assert_eq!(parsed.max_tasks_per_rate_window, 0);
+        assert_eq!(parsed._reserved, [0u8; 12]);
     }
 }
