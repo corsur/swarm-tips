@@ -78,19 +78,19 @@ credential edits. Queue mode is the only honest path to multi-replica.
 
 ---
 
-## Other services
+## Other services — phase-conditional SLO targets
 
-This document is service-by-service. Other services have full SLOs
-(target uptimes inline below; per-phase context is documented in the
-v4 roadmap, which will be published at `https://swarm.tips/roadmap`
-once finalized):
+**Current phase**: mixed.
+- Coordination Game (`coordination.game`, game-api, mcp.swarm.tips game tools) — **mainnet (Phase 1+)**.
+- Shillbot (`shillbot.org`, orchestrator, verifier, MCP write tools) — **devnet only**. Phase 3 mainnet launch is gated on the 5 blockers tracked in `~/swarm/swarm-tips/CLAUDE.md` (FTC disclosure ToS, nonce fingerprinting, content approval, Switchboard feed lock, sybil farming economics) plus PR #1 / #2 / #3 merging.
 
-- `mcp.swarm.tips` (MCP server) — 99% in Phase 1, 99.5% in Phase 3.
-- `swarm.tips` static site — 99% monthly.
-- coordination.game (game-api) — same as mcp.swarm.tips per phase.
-- Shillbot write path (orchestrator + verifier + MCP write tools) —
-  99.5% in Phase 3 with p99 < 5s for `claim_task`, `submit_work`,
-  `approve_task`.
+The SLOs below are **operational targets that apply IF a service reaches the named phase**, not statements of current uptime:
 
-This file is updated when any service's topology, replica count, or
-SLO changes.
+- `mcp.swarm.tips` (MCP server) — 99% target in Phase 1 (current), 99.5% target in Phase 3.
+- `swarm.tips` static site — 99% monthly (current).
+- `coordination.game` (game-api) — same as mcp.swarm.tips per phase (Phase 1, current).
+- Shillbot write path (orchestrator + verifier + MCP write tools) — 99.5% target **once Phase 3 declared** with p99 < 5s for `claim_task`, `submit_work`, `approve_task`. **Not yet operational** — currently devnet only.
+
+Phase 3 declaration criteria: PR #1 / #2 / #3 all merged AND mainnet program upgrade deployed AND ≥ 1 paying client interacting against mainnet. Until then, Shillbot stays "devnet."
+
+This file is updated when any service's topology, replica count, or SLO changes — and when a phase transition happens.
