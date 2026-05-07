@@ -1766,10 +1766,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
     // legacy account on devnet (PDA 67NVWtF4...). Hardcoding rather than
     // recomputing in TS to keep the test independent of Anchor coder
     // internals.
-    const AGENT_STATE_DISCRIMINATOR = Buffer.from(
-      "febb6277e4302f31",
-      "hex"
-    );
+    const AGENT_STATE_DISCRIMINATOR = Buffer.from("febb6277e4302f31", "hex");
     const LEGACY_SIZE = 42; // 8 + 32 + 1 + 1
     const CURRENT_SIZE = 90; // matches AgentState::SPACE
 
