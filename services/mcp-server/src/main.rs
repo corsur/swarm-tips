@@ -151,7 +151,30 @@ async fn main() -> anyhow::Result<()> {
     // underlying connection pool.
     let session_binding = Arc::new(McpSessionBinding::new(game_db));
 
-    let rpc_url_for_verify = solana_rpc_url.clone();
+    // Load the per-network RPC URLs for the build-verify-tx handler.
+    // The handler runs on whichever RPC the request specifies — mainnet by
+    // default, devnet when the body sets `network: "devnet"`. Without the
+    // per-network URL, build-verify-tx.ts connects to the wrong cluster
+    // and the Switchboard feed account lookup fails ("Account does not
+    // exist or has no data") — caught 2026-05-08 when the orchestrator
+    // returned the devnet feed pubkey but the MCP script was reading
+    // mainnet's RPC.
+    let rpc_url_mainnet = if network == "mainnet" {
+        solana_rpc_url.clone()
+    } else {
+        config::load_optional_secret(&gcp_project_id, "solana-rpc-url-mainnet")
+            .await
+            .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string())
+    };
+    let rpc_url_devnet = if network == "devnet" {
+        solana_rpc_url.clone()
+    } else {
+        config::load_optional_secret(&gcp_project_id, "solana-rpc-url-devnet")
+            .await
+            .unwrap_or_else(|| "https://api.devnet.solana.com".to_string())
+    };
+    let rpc_url_mainnet_for_verify = rpc_url_mainnet.clone();
+    let rpc_url_devnet_for_verify = rpc_url_devnet.clone();
     let shared = Arc::new(SharedState {
         orchestrator: OrchestratorProxy::new(orchestrator_url),
         game_api: GameApiProxy::new(game_api_url)?,
@@ -233,8 +256,17 @@ async fn main() -> anyhow::Result<()> {
         )
         .route(
             "/internal/build-verify-tx",
-            axum::routing::post(move |body: axum::Json<serde_json::Value>| async move {
-                build_verify_tx_handler(body, &rpc_url_for_verify).await
+            axum::routing::post(move |body: axum::Json<serde_json::Value>| {
+                let mainnet = rpc_url_mainnet_for_verify.clone();
+                let devnet = rpc_url_devnet_for_verify.clone();
+                async move {
+                    // Pick the right network's RPC based on the body's
+                    // optional `network` field. Defaults to mainnet so
+                    // production calls without the field hit prod RPC.
+                    let net = body["network"].as_str().unwrap_or("mainnet");
+                    let rpc = if net == "devnet" { &devnet } else { &mainnet };
+                    build_verify_tx_handler(body, rpc).await
+                }
             })
             .options(|| async {
                 // CORS preflight for browser requests from shillbot.org
