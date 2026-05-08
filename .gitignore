@@ -8,3 +8,4 @@ test-ledger
 sdk/*.d.ts
 sdk/*.js
 services/mcp-server/.mcpregistry_*
+logs/
