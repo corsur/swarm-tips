@@ -73,6 +73,18 @@ pub fn initialize(
     global._reserved = [0u8; 12];
     global.bump = ctx.bumps.global_state;
 
+    // Postconditions: bump is correctly stored (so subsequent instructions
+    // re-derive the same PDA) and the authority and treasury slots reflect
+    // what the caller passed in.
+    require!(
+        global.bump == ctx.bumps.global_state,
+        ShillbotError::InvalidTaskState
+    );
+    require!(
+        global.authority == ctx.accounts.authority.key(),
+        ShillbotError::NotAuthority
+    );
+
     Ok(())
 }
 

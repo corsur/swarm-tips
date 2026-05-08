@@ -15,10 +15,7 @@ pub fn update_treasury(ctx: Context<UpdateTreasury>, new_treasury: Pubkey) -> Re
     );
 
     // Checks: new treasury is not the zero key
-    require!(
-        new_treasury != Pubkey::default(),
-        ShillbotError::ArithmeticOverflow
-    );
+    require!(new_treasury != Pubkey::default(), ShillbotError::ZeroPubkey);
 
     let old_treasury = global.treasury;
 

@@ -14,78 +14,43 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
             || game.state == GameState::Revealing,
         CoordinationError::InvalidGameState,
     );
-
-    let current_slot = Clock::get()?.slot;
-    let now = Clock::get()?.unix_timestamp;
-    let outcome = find_timeout(game, current_slot)?;
+    let clock = Clock::get()?;
+    let outcome = find_timeout(game, clock.slot)?;
     let resolved = compute_timeout_result(&outcome, game.stake_lamports, game.player_one)?;
-
+    let stake_lamports = game.stake_lamports;
     let tournament_id = ctx.accounts.tournament.tournament_id;
     let treasury_split_bps = ctx.accounts.global_config.treasury_split_bps;
-
-    // Resolve winner wallet from context before mutable borrows
+    let (treasury_share, tournament_share) =
+        compute_pool_split(resolved.pool_gain, treasury_split_bps)?;
+    assert_lamport_conservation(
+        &outcome,
+        &resolved,
+        treasury_share,
+        tournament_share,
+        stake_lamports,
+    )?;
     let winner_wallet = match outcome {
-        TimeoutOutcome::OneWinner { winner_is_p1, .. } => {
-            if winner_is_p1 {
-                Some(ctx.accounts.player_one_wallet.to_account_info())
-            } else {
-                Some(ctx.accounts.player_two_wallet.to_account_info())
-            }
-        }
+        TimeoutOutcome::OneWinner { winner_is_p1, .. } => Some(if winner_is_p1 {
+            ctx.accounts.player_one_wallet.to_account_info()
+        } else {
+            ctx.accounts.player_two_wallet.to_account_info()
+        }),
         TimeoutOutcome::BothForfeited => None,
     };
-
     let game_info = ctx.accounts.game.to_account_info();
     let tournament_info = ctx.accounts.tournament.to_account_info();
     let treasury_info = ctx.accounts.treasury.to_account_info();
-
-    // Compute treasury/tournament split for pool gain
-    let (treasury_share, tournament_share) = if resolved.pool_gain > 0 {
-        let split = compute_treasury_split(resolved.pool_gain, treasury_split_bps)?;
-        (split.treasury_share, split.tournament_share)
-    } else {
-        (0u64, 0u64)
-    };
-
-    // Effects: apply all state mutations before any lamport transfers
-    ctx.accounts
-        .p1_profile
-        .update_after_game(resolved.p1_won, tournament_id)?;
-    ctx.accounts
-        .p2_profile
-        .update_after_game(resolved.p2_won, tournament_id)?;
-
-    ctx.accounts.tournament.game_count = ctx
-        .accounts
-        .tournament
-        .game_count
-        .checked_add(1)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-
-    if tournament_share > 0 {
-        ctx.accounts.tournament.prize_lamports = ctx
-            .accounts
-            .tournament
-            .prize_lamports
-            .checked_add(tournament_share)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-    }
-
+    apply_timeout_effects(
+        &mut ctx.accounts.p1_profile,
+        &mut ctx.accounts.p2_profile,
+        &mut ctx.accounts.tournament,
+        &mut ctx.accounts.game,
+        &resolved,
+        tournament_share,
+        tournament_id,
+        clock.unix_timestamp,
+    )?;
     let game_id = ctx.accounts.game.game_id;
-    ctx.accounts.game.state = GameState::Resolved;
-    ctx.accounts.game.resolved_at = now;
-
-    // Postconditions: game must be resolved and timestamped
-    require!(
-        ctx.accounts.game.state == GameState::Resolved,
-        CoordinationError::InvalidGameState
-    );
-    require!(
-        ctx.accounts.game.resolved_at == now,
-        CoordinationError::InvalidGameState
-    );
-
-    // Interactions: lamport transfers after all state is committed
     if let Some(winner) = winner_wallet {
         transfer_lamports(&game_info, &winner, resolved.both_stakes)?;
     }
@@ -95,12 +60,87 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
     if tournament_share > 0 {
         transfer_lamports(&game_info, &tournament_info, tournament_share)?;
     }
-
     emit!(TimeoutSlash {
         game_id,
         slashed_player: resolved.slashed_player,
         slash_amount: resolved.pool_gain,
     });
+    Ok(())
+}
+
+/// Treasury/tournament split for the pool gain. Returns (0, 0) if the
+/// pool gain is zero (one-winner case).
+fn compute_pool_split(pool_gain: u64, treasury_split_bps: u16) -> Result<(u64, u64)> {
+    if pool_gain == 0 {
+        return Ok((0, 0));
+    }
+    let split = compute_treasury_split(pool_gain, treasury_split_bps)?;
+    Ok((split.treasury_share, split.tournament_share))
+}
+
+/// Lamport conservation: payout_to_winner + treasury_share +
+/// tournament_share == 2 * stake_lamports. The two cases:
+///   OneWinner: payout = both_stakes (= 2S); shares = 0; total = 2S.
+///   BothForfeited: payout = 0; shares sum to pool_gain = 2S; total = 2S.
+fn assert_lamport_conservation(
+    outcome: &TimeoutOutcome,
+    resolved: &TimeoutResult,
+    treasury_share: u64,
+    tournament_share: u64,
+    stake_lamports: u64,
+) -> Result<()> {
+    let two_stakes = stake_lamports
+        .checked_mul(2)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let payout_to_winner = if matches!(outcome, TimeoutOutcome::OneWinner { .. }) {
+        resolved.both_stakes
+    } else {
+        0
+    };
+    let conservation_total = payout_to_winner
+        .checked_add(treasury_share)
+        .and_then(|s| s.checked_add(tournament_share))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    require!(
+        conservation_total == two_stakes,
+        CoordinationError::ArithmeticOverflow
+    );
+    Ok(())
+}
+
+/// Update both player profiles, the tournament counters, and the game
+/// state in a single helper. All mutations happen before any of the
+/// caller's lamport transfers.
+#[allow(clippy::too_many_arguments)]
+fn apply_timeout_effects(
+    p1_profile: &mut Account<'_, PlayerProfile>,
+    p2_profile: &mut Account<'_, PlayerProfile>,
+    tournament: &mut Account<'_, Tournament>,
+    game: &mut Account<'_, Game>,
+    resolved: &TimeoutResult,
+    tournament_share: u64,
+    tournament_id: u64,
+    now: i64,
+) -> Result<()> {
+    p1_profile.update_after_game(resolved.p1_won, tournament_id)?;
+    p2_profile.update_after_game(resolved.p2_won, tournament_id)?;
+    tournament.game_count = tournament
+        .game_count
+        .checked_add(1)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    if tournament_share > 0 {
+        tournament.prize_lamports = tournament
+            .prize_lamports
+            .checked_add(tournament_share)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+    }
+    game.state = GameState::Resolved;
+    game.resolved_at = now;
+    require!(
+        game.state == GameState::Resolved,
+        CoordinationError::InvalidGameState
+    );
+    require!(game.resolved_at == now, CoordinationError::InvalidGameState);
     Ok(())
 }
 

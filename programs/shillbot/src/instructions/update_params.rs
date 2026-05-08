@@ -32,88 +32,67 @@ pub fn update_params(
     max_tasks_per_rate_window: u32,
 ) -> Result<()> {
     let global = &ctx.accounts.global_state;
-
     // Checks: caller is authority
     require!(
         ctx.accounts.authority.key() == global.authority,
         ShillbotError::NotAuthority
     );
+    // Checks: every per-field bound on the new parameter set.
+    validate_update(
+        protocol_fee_bps,
+        quality_threshold,
+        challenge_window_seconds,
+        verification_timeout_seconds,
+        attestation_delay_seconds,
+        staleness_window_seconds,
+        max_concurrent_claims,
+        challenge_bond_multiplier,
+        bond_slash_treasury_bps,
+        rate_limit_window_seconds,
+        max_tasks_per_rate_window,
+    )?;
+    // Effects: commit the new parameter set.
+    apply_update(
+        &mut ctx.accounts.global_state,
+        protocol_fee_bps,
+        quality_threshold,
+        challenge_window_seconds,
+        verification_timeout_seconds,
+        attestation_delay_seconds,
+        staleness_window_seconds,
+        max_concurrent_claims,
+        challenge_bond_multiplier,
+        bond_slash_treasury_bps,
+        paused,
+        paused_platforms,
+        rate_limit_window_seconds,
+        max_tasks_per_rate_window,
+    );
+    emit!(ParamsUpdated {
+        protocol_fee_bps,
+        quality_threshold,
+    });
+    Ok(())
+}
 
-    // Checks: fee within bounds [100, 2500] bps
-    require!(
-        protocol_fee_bps >= shared::MIN_PROTOCOL_FEE_BPS,
-        ShillbotError::ProtocolFeeBoundsExceeded
-    );
-    require!(
-        protocol_fee_bps <= shared::MAX_PROTOCOL_FEE_BPS,
-        ShillbotError::ProtocolFeeBoundsExceeded
-    );
-
-    // Checks: threshold within bounds
-    require!(
-        quality_threshold <= shared::MAX_SCORE,
-        ShillbotError::QualityThresholdBoundsExceeded
-    );
-
-    // Checks: timing parameters must be positive
-    require!(
-        challenge_window_seconds > 0,
-        ShillbotError::ArithmeticOverflow
-    );
-    require!(
-        verification_timeout_seconds > 0,
-        ShillbotError::ArithmeticOverflow
-    );
-    require!(
-        attestation_delay_seconds > 0,
-        ShillbotError::ArithmeticOverflow
-    );
-    require!(
-        staleness_window_seconds > 0,
-        ShillbotError::ArithmeticOverflow
-    );
-
-    // Checks: max_concurrent_claims in [1, 255]
-    require!(max_concurrent_claims > 0, ShillbotError::ArithmeticOverflow);
-
-    // Checks: challenge bond multiplier within bounds [2, 10]
-    require!(
-        challenge_bond_multiplier >= MIN_CHALLENGE_BOND_MULTIPLIER,
-        ShillbotError::InsufficientBond
-    );
-    require!(
-        challenge_bond_multiplier <= MAX_CHALLENGE_BOND_MULTIPLIER,
-        ShillbotError::InsufficientBond
-    );
-
-    // Checks: bond_slash_treasury_bps within [0, 10000]
-    require!(
-        bond_slash_treasury_bps <= 10_000,
-        ShillbotError::ProtocolFeeBoundsExceeded
-    );
-
-    // Checks (D3): rate-limit window within bounds
-    require!(
-        rate_limit_window_seconds >= MIN_RATE_LIMIT_WINDOW_SECONDS,
-        ShillbotError::RateLimitExceeded
-    );
-    require!(
-        rate_limit_window_seconds <= MAX_RATE_LIMIT_WINDOW_SECONDS,
-        ShillbotError::RateLimitExceeded
-    );
-
-    // Checks (D3): max_tasks_per_rate_window within bounds
-    require!(
-        max_tasks_per_rate_window >= MIN_TASKS_PER_RATE_WINDOW,
-        ShillbotError::RateLimitExceeded
-    );
-    require!(
-        max_tasks_per_rate_window <= MAX_TASKS_PER_RATE_WINDOW_CEILING,
-        ShillbotError::RateLimitExceeded
-    );
-
-    // Effects
-    let global = &mut ctx.accounts.global_state;
+/// Pure assignment of the validated parameter set to the GlobalState PDA.
+#[allow(clippy::too_many_arguments)]
+fn apply_update(
+    global: &mut GlobalState,
+    protocol_fee_bps: u16,
+    quality_threshold: u64,
+    challenge_window_seconds: i64,
+    verification_timeout_seconds: i64,
+    attestation_delay_seconds: i64,
+    staleness_window_seconds: i64,
+    max_concurrent_claims: u8,
+    challenge_bond_multiplier: u8,
+    bond_slash_treasury_bps: u16,
+    paused: bool,
+    paused_platforms: u16,
+    rate_limit_window_seconds: i64,
+    max_tasks_per_rate_window: u32,
+) {
     global.protocol_fee_bps = protocol_fee_bps;
     global.quality_threshold = quality_threshold;
     global.challenge_window_seconds = challenge_window_seconds;
@@ -130,12 +109,75 @@ pub fn update_params(
     // instruction reads it after the 2026-05-07 removal.
     global.rate_limit_window_seconds = rate_limit_window_seconds;
     global.max_tasks_per_rate_window = max_tasks_per_rate_window;
+}
 
-    emit!(ParamsUpdated {
-        protocol_fee_bps,
-        quality_threshold,
-    });
-
+/// Validate every per-field bound on the parameter set passed to
+/// `update_params`. Pure check phase — no I/O, no mutation.
+#[allow(clippy::too_many_arguments)]
+fn validate_update(
+    protocol_fee_bps: u16,
+    quality_threshold: u64,
+    challenge_window_seconds: i64,
+    verification_timeout_seconds: i64,
+    attestation_delay_seconds: i64,
+    staleness_window_seconds: i64,
+    max_concurrent_claims: u8,
+    challenge_bond_multiplier: u8,
+    bond_slash_treasury_bps: u16,
+    rate_limit_window_seconds: i64,
+    max_tasks_per_rate_window: u32,
+) -> Result<()> {
+    // Fee within bounds [100, 2500] bps
+    require!(
+        (shared::MIN_PROTOCOL_FEE_BPS..=shared::MAX_PROTOCOL_FEE_BPS).contains(&protocol_fee_bps),
+        ShillbotError::ProtocolFeeBoundsExceeded
+    );
+    // Quality threshold within bounds
+    require!(
+        quality_threshold <= shared::MAX_SCORE,
+        ShillbotError::QualityThresholdBoundsExceeded
+    );
+    // Timing parameters must be strictly positive
+    require!(
+        challenge_window_seconds > 0,
+        ShillbotError::InvalidParameter
+    );
+    require!(
+        verification_timeout_seconds > 0,
+        ShillbotError::InvalidParameter
+    );
+    require!(
+        attestation_delay_seconds > 0,
+        ShillbotError::InvalidParameter
+    );
+    require!(
+        staleness_window_seconds > 0,
+        ShillbotError::InvalidParameter
+    );
+    require!(max_concurrent_claims > 0, ShillbotError::InvalidParameter);
+    // Challenge bond multiplier within bounds [2, 10]
+    require!(
+        (MIN_CHALLENGE_BOND_MULTIPLIER..=MAX_CHALLENGE_BOND_MULTIPLIER)
+            .contains(&challenge_bond_multiplier),
+        ShillbotError::InsufficientBond
+    );
+    // bond_slash_treasury_bps within [0, 10000]
+    require!(
+        bond_slash_treasury_bps <= 10_000,
+        ShillbotError::ProtocolFeeBoundsExceeded
+    );
+    // (D3) rate-limit window within bounds
+    require!(
+        (MIN_RATE_LIMIT_WINDOW_SECONDS..=MAX_RATE_LIMIT_WINDOW_SECONDS)
+            .contains(&rate_limit_window_seconds),
+        ShillbotError::RateLimitExceeded
+    );
+    // (D3) max_tasks_per_rate_window within bounds
+    require!(
+        (MIN_TASKS_PER_RATE_WINDOW..=MAX_TASKS_PER_RATE_WINDOW_CEILING)
+            .contains(&max_tasks_per_rate_window),
+        ShillbotError::RateLimitExceeded
+    );
     Ok(())
 }
 

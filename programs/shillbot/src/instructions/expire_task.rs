@@ -14,23 +14,54 @@ pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
     let global = &ctx.accounts.global_state;
-
-    // Checks: valid expiry conditions
     let state_at_expiry = task.state;
+
+    // Checks
+    validate_expiry_eligibility(task, global, state_at_expiry, clock.unix_timestamp)?;
+
+    // Effects: if task was Claimed, decrement the agent's claim count.
+    if state_at_expiry == TaskState::Claimed {
+        decrement_agent_claim_count(ctx.remaining_accounts, ctx.program_id, &task.agent)?;
+    }
+
+    let escrow = task.escrow_lamports;
+    let task_id = task.task_id;
+    let platform = task.platform;
+    // No state change to commit — the account is about to be closed.
+
+    // Interactions: return escrow to client via lamport transfer.
+    return_escrow(
+        &ctx.accounts.task.to_account_info(),
+        &ctx.accounts.client.to_account_info(),
+        escrow,
+    )?;
+
+    emit!(TaskExpired {
+        task_id,
+        state_at_expiry: state_at_expiry as u8,
+        platform,
+    });
+
+    Ok(())
+}
+
+/// Verify that the task is in a state that allows expiry, and that enough
+/// time has elapsed for the relevant deadline.
+fn validate_expiry_eligibility(
+    task: &Task,
+    global: &GlobalState,
+    state_at_expiry: TaskState,
+    now: i64,
+) -> Result<()> {
     match state_at_expiry {
         TaskState::Open | TaskState::Claimed => {
-            require!(
-                clock.unix_timestamp > task.deadline,
-                ShillbotError::DeadlineExpired
-            );
+            require!(now > task.deadline, ShillbotError::DeadlineExpired);
         }
         TaskState::Submitted | TaskState::Approved => {
-            // Phase 3 blocker #3a: Approved is a new state inserted
-            // between Submitted and Verified. The verification timeout
-            // is measured from `submitted_at` for both — client
-            // approval does not reset the clock. A task that's
-            // Submitted-but-never-approved expires the same way as a
-            // task that's Approved-but-never-verified.
+            // Phase 3 blocker #3a: Approved is a new state inserted between
+            // Submitted and Verified. The verification timeout is measured
+            // from `submitted_at` for both — client approval does not reset
+            // the clock.
             let verification_timeout = if task.verification_timeout_override > 0 {
                 i64::from(task.verification_timeout_override)
             } else {
@@ -41,49 +72,27 @@ pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {
                 .checked_add(verification_timeout)
                 .ok_or(ShillbotError::ArithmeticOverflow)?;
             require!(
-                clock.unix_timestamp > verification_deadline,
+                now > verification_deadline,
                 ShillbotError::VerificationTimeoutNotReached
             );
         }
-        _ => {
-            return Err(error!(ShillbotError::InvalidTaskState));
-        }
+        _ => return Err(error!(ShillbotError::InvalidTaskState)),
     }
+    Ok(())
+}
 
-    // Effects: if task was Claimed, decrement the agent's claim count.
-    if state_at_expiry == TaskState::Claimed {
-        decrement_agent_claim_count(ctx.remaining_accounts, ctx.program_id, &task.agent)?;
-    }
-
-    let escrow = task.escrow_lamports;
-
-    // Effects: no meaningful state change needed — account will be closed.
-    // We do not set a new state since the account is about to be zeroed by `close`.
-    let task = &mut ctx.accounts.task;
-
-    // Interactions: return escrow to client via lamport transfer
-    let task_info = task.to_account_info();
-    let client_info = ctx.accounts.client.to_account_info();
-
-    let task_lamports = task_info.lamports();
-    let client_lamports = client_info.lamports();
-
-    let new_task = task_lamports
+/// Return the escrow lamports from the task PDA to the client wallet.
+fn return_escrow(task_info: &AccountInfo, client_info: &AccountInfo, escrow: u64) -> Result<()> {
+    let new_task = task_info
+        .lamports()
         .checked_sub(escrow)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-    let new_client = client_lamports
+    let new_client = client_info
+        .lamports()
         .checked_add(escrow)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-
     **task_info.try_borrow_mut_lamports()? = new_task;
     **client_info.try_borrow_mut_lamports()? = new_client;
-
-    emit!(TaskExpired {
-        task_id: task.task_id,
-        state_at_expiry: state_at_expiry as u8,
-        platform: task.platform,
-    });
-
     Ok(())
 }
 
@@ -140,10 +149,7 @@ fn decrement_agent_claim_count(
         agent_state.agent == *expected_agent,
         ShillbotError::NotTaskAgent
     );
-    require!(
-        agent_state.claimed_count > 0,
-        ShillbotError::ArithmeticOverflow
-    );
+    require!(agent_state.claimed_count > 0, ShillbotError::NoActiveClaim);
 
     agent_state.claimed_count = agent_state
         .claimed_count

@@ -1,11 +1,10 @@
 use crate::errors::CoordinationError;
 use crate::events::GameCreated;
 use crate::instructions::session_utils::validate_session_authority;
-use crate::instructions::utils::transfer_lamports;
+use crate::instructions::utils::{init_game, transfer_lamports, validate_tournament_cutoff};
 use crate::state::{
     Game, GameCounter, GameState, GlobalConfig, PlayerProfile, SessionAuthority, StakeEscrow,
-    Tournament, COMMIT_TIMEOUT_SLOTS, FIXED_STAKE_LAMPORTS, GUESS_UNREVEALED, MATCHUP_TYPE_UNSET,
-    REVEAL_TIMEOUT_SLOTS,
+    Tournament, FIXED_STAKE_LAMPORTS, MATCHUP_TYPE_UNSET,
 };
 use anchor_lang::prelude::*;
 
@@ -17,94 +16,43 @@ pub fn create_game_session(
     stake_lamports: u64,
     matchup_commitment: [u8; 32],
 ) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let player_key = ctx.accounts.player.key();
+    let tournament_id = ctx.accounts.tournament.tournament_id;
+    // Checks
     validate_session_authority(
         &ctx.accounts.session_authority,
         &ctx.accounts.matchmaker_wallet.key(),
         &ctx.accounts.session_signer.key(),
     )?;
-
-    require!(
-        stake_lamports == FIXED_STAKE_LAMPORTS,
-        CoordinationError::StakeMismatch
-    );
-
-    // Checks: matchmaker wallet is the authorized matchmaker
-    require!(
-        ctx.accounts.matchmaker_wallet.key() == ctx.accounts.global_config.matchmaker,
-        CoordinationError::NotMatchmaker
-    );
-
-    // Checks: commitment is not all zeros (would be trivially forgeable)
-    require!(
-        matchup_commitment != [0u8; 32],
-        CoordinationError::InvalidGameState
-    );
-
-    let clock = Clock::get()?;
-    let now = clock.unix_timestamp;
-    require!(
-        ctx.accounts.tournament.is_active(now),
-        CoordinationError::OutsideTournamentWindow,
-    );
-
-    // Checks: end-of-tournament cutoff — no games within final ~3 hours
-    let cutoff_slots = COMMIT_TIMEOUT_SLOTS
-        .checked_add(REVEAL_TIMEOUT_SLOTS)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    let slots_per_second: u64 = 2;
-    let cutoff_seconds = cutoff_slots
-        .checked_div(slots_per_second)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    let cutoff_seconds_i64 =
-        i64::try_from(cutoff_seconds).map_err(|_| CoordinationError::ArithmeticOverflow)?;
-    let cutoff_timestamp = now
-        .checked_add(cutoff_seconds_i64)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    require!(
-        cutoff_timestamp < ctx.accounts.tournament.end_time,
-        CoordinationError::OutsideTournamentWindow,
-    );
-
-    // Validate the player's escrow
-    let player_key = ctx.accounts.player.key();
-    let escrow = &ctx.accounts.escrow;
-    require!(
-        escrow.validate_for_game(&player_key, ctx.accounts.tournament.tournament_id),
-        CoordinationError::EscrowInvalid,
-    );
-
-    // Assign game_id from counter, then increment
+    validate_create_session_inputs(
+        stake_lamports,
+        matchup_commitment,
+        ctx.accounts.matchmaker_wallet.key(),
+        ctx.accounts.global_config.matchmaker,
+        &ctx.accounts.tournament,
+        &ctx.accounts.escrow,
+        &player_key,
+        tournament_id,
+        now,
+    )?;
+    // Effects: assign game_id, init Game + PlayerProfile, consume escrow.
     let counter = &mut ctx.accounts.game_counter;
     let game_id = counter.count;
     counter.count = counter
         .count
         .checked_add(1)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
-
-    let game = &mut ctx.accounts.game;
-    game.game_id = game_id;
-    game.tournament_id = ctx.accounts.tournament.tournament_id;
-    game.player_one = player_key;
-    game.player_two = Pubkey::default();
-    game.state = GameState::Pending;
-    game.stake_lamports = stake_lamports;
-    game.p1_commit = [0u8; 32];
-    game.p2_commit = [0u8; 32];
-    game.p1_guess = GUESS_UNREVEALED;
-    game.p2_guess = GUESS_UNREVEALED;
-    game.first_committer = 0;
-    game.p1_commit_slot = 0;
-    game.p2_commit_slot = 0;
-    game.commit_timeout_slots = COMMIT_TIMEOUT_SLOTS;
-    game.created_at = now;
-    game.resolved_at = 0;
-    game.activated_at_slot = 0;
-    game.matchup_commitment = matchup_commitment;
-    game.matchup_type = MATCHUP_TYPE_UNSET;
-    game.bump = ctx.bumps.game;
-
-    // Init player profile if needed
-    let tournament_id = ctx.accounts.tournament.tournament_id;
+    init_game(
+        &mut ctx.accounts.game,
+        game_id,
+        tournament_id,
+        player_key,
+        stake_lamports,
+        matchup_commitment,
+        now,
+        ctx.bumps.game,
+    );
     ctx.accounts
         .player_profile
         .init_if_new(player_key, tournament_id, ctx.bumps.player_profile);
@@ -112,33 +60,68 @@ pub fn create_game_session(
         ctx.accounts.player_profile.tournament_id == tournament_id,
         CoordinationError::ProfileTournamentMismatch,
     );
-
-    // Mark escrow as consumed (CEI)
     ctx.accounts.escrow.consumed = true;
-
     // Postconditions
     require!(
-        game.state == GameState::Pending,
+        ctx.accounts.game.state == GameState::Pending,
         CoordinationError::InvalidGameState
     );
     require!(
-        game.matchup_type == MATCHUP_TYPE_UNSET,
+        ctx.accounts.game.matchup_type == MATCHUP_TYPE_UNSET,
         CoordinationError::InvalidGameState
     );
-
-    // Transfer stake from escrow to game PDA
+    // Interactions: move the stake from escrow to the Game PDA.
     transfer_lamports(
         &ctx.accounts.escrow.to_account_info(),
         &ctx.accounts.game.to_account_info(),
         stake_lamports,
     )?;
-
     emit!(GameCreated {
         game_id,
-        tournament_id: ctx.accounts.tournament.tournament_id,
+        tournament_id,
         player_one: player_key,
         stake_lamports,
     });
+    Ok(())
+}
+
+/// Same rule set as `create_game::validate_create_inputs` — duplicated
+/// only because the session variant uses `matchmaker_wallet` (an
+/// `UncheckedAccount`) rather than `matchmaker` (a `Signer`). The body
+/// is otherwise identical.
+#[allow(clippy::too_many_arguments)]
+fn validate_create_session_inputs(
+    stake_lamports: u64,
+    matchup_commitment: [u8; 32],
+    matchmaker_key: Pubkey,
+    expected_matchmaker: Pubkey,
+    tournament: &Tournament,
+    escrow: &StakeEscrow,
+    player_key: &Pubkey,
+    tournament_id: u64,
+    now: i64,
+) -> Result<()> {
+    require!(
+        stake_lamports == FIXED_STAKE_LAMPORTS,
+        CoordinationError::StakeMismatch
+    );
+    require!(
+        matchmaker_key == expected_matchmaker,
+        CoordinationError::NotMatchmaker
+    );
+    require!(
+        matchup_commitment != [0u8; 32],
+        CoordinationError::InvalidGameState
+    );
+    require!(
+        tournament.is_active(now),
+        CoordinationError::OutsideTournamentWindow,
+    );
+    validate_tournament_cutoff(now, tournament.end_time)?;
+    require!(
+        escrow.validate_for_game(player_key, tournament_id),
+        CoordinationError::EscrowInvalid,
+    );
     Ok(())
 }
 

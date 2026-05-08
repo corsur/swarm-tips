@@ -3,8 +3,14 @@ use anchor_lang::prelude::*;
 use crate::errors::ShillbotError;
 
 /// Transfer lamports from a PDA by directly adjusting lamport balances.
-/// Safe because the source PDA is owned by this program.
+///
+/// The source account MUST be owned by this program. Direct lamport mutation
+/// is only sound on accounts owned by the executing program — the runtime
+/// enforces this at exit, and we enforce it explicitly here so the safety
+/// contract is part of the function, not caller-discipline.
 pub fn transfer_lamports(from: &AccountInfo, to: &AccountInfo, amount: u64) -> Result<()> {
+    require!(*from.owner == crate::ID, ShillbotError::InvalidTaskState);
+
     let from_lamports = from.lamports();
     let to_lamports = to.lamports();
 

@@ -24,19 +24,101 @@ pub fn create_task(
     // level UX is in the orchestrator.
     requires_approval: bool,
 ) -> Result<()> {
-    let clock = Clock::get()?;
+    let now = Clock::get()?.unix_timestamp;
+    let client_key = ctx.accounts.client.key();
     let global = &ctx.accounts.global_state;
+    // Checks
+    validate_create_task_inputs(
+        global,
+        platform,
+        deadline,
+        submit_margin,
+        claim_buffer,
+        escrow_lamports,
+        attestation_delay_override,
+        challenge_window_override,
+        verification_timeout_override,
+        now,
+    )?;
+    // Effects: rate limit + global counter + derive nonce + init Task PDA.
+    apply_rate_limit(
+        &mut ctx.accounts.client_state,
+        ctx.bumps.client_state,
+        client_key,
+        global.rate_limit_window_seconds,
+        global.max_tasks_per_rate_window,
+        now,
+    )?;
+    let task_id = ctx.accounts.global_state.task_counter;
+    ctx.accounts.global_state.task_counter = ctx
+        .accounts
+        .global_state
+        .task_counter
+        .checked_add(1)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    let task_nonce = derive_task_nonce(&ctx.accounts.slot_hashes)?;
+    init_task_account(
+        &mut ctx.accounts.task,
+        client_key,
+        ctx.bumps.task,
+        task_id,
+        platform,
+        escrow_lamports,
+        content_hash,
+        task_nonce,
+        deadline,
+        submit_margin,
+        claim_buffer,
+        attestation_delay_override,
+        challenge_window_override,
+        verification_timeout_override,
+        requires_approval,
+        now,
+    );
+    // Interactions: transfer escrow from client to task PDA.
+    system_program::transfer(
+        CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            system_program::Transfer {
+                from: ctx.accounts.client.to_account_info(),
+                to: ctx.accounts.task.to_account_info(),
+            },
+        ),
+        escrow_lamports,
+    )?;
+    emit!(TaskCreated {
+        task_id,
+        client: client_key,
+        escrow_lamports,
+        deadline,
+        task_nonce,
+        platform,
+    });
+    Ok(())
+}
 
-    // Checks: protocol not paused
+/// Validate every input that does not depend on Task / ClientState mutation.
+/// Pure check phase — all `require!` lives here.
+#[allow(clippy::too_many_arguments)]
+fn validate_create_task_inputs(
+    global: &GlobalState,
+    platform: u8,
+    deadline: i64,
+    submit_margin: i64,
+    claim_buffer: i64,
+    escrow_lamports: u64,
+    attestation_delay_override: u32,
+    challenge_window_override: u32,
+    verification_timeout_override: u32,
+    now: i64,
+) -> Result<()> {
     require!(!global.paused, ShillbotError::ProtocolPaused);
 
-    // Checks: platform is valid (must be a known PlatformType)
     require!(
         shared::PlatformType::from_u8(platform).is_some(),
         ShillbotError::InvalidPlatform
     );
 
-    // Checks: platform not paused (bit N corresponds to PlatformType with value N)
     let platform_bit = 1u16
         .checked_shl(platform as u32)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
@@ -45,59 +127,55 @@ pub fn create_task(
         ShillbotError::PlatformPaused
     );
 
-    require!(
-        deadline > clock.unix_timestamp,
-        ShillbotError::DeadlineExpired
-    );
-    require!(submit_margin >= 0, ShillbotError::ArithmeticOverflow);
-    require!(claim_buffer >= 0, ShillbotError::ArithmeticOverflow);
-    // MIN_CLAIM_BUFFER_SECONDS enforced by orchestrator (off-chain) rather than
-    // on-chain, so tests and direct callers can use short buffers on devnet.
-    require!(escrow_lamports > 0, ShillbotError::ArithmeticOverflow);
+    require!(deadline > now, ShillbotError::DeadlineExpired);
+    require!(submit_margin >= 0, ShillbotError::InvalidParameter);
+    require!(claim_buffer >= 0, ShillbotError::InvalidParameter);
+    require!(escrow_lamports > 0, ShillbotError::InvalidParameter);
 
-    // MIN_ESCROW_LAMPORTS gate removed 2026-05-07. The original Phase 3
-    // blocker #2 mitigation imposed a 0.36 SOL (≈$50) floor to make sybil
-    // round-trips ($1 fee × 100 trips = $100 bleed) economically irrational.
-    // The cost — legitimate small clients couldn't run sub-$50 campaigns —
-    // exceeded the benefit at solo + pre-PMF scale. The right end-state
-    // sybil defense is the EigenTrust reputation graph (sybil clusters
-    // self-vouch, gain zero global trust); see swarm-tips/CLAUDE.md
-    // "Reputation Model" Phase 2. The vestigial `global.min_escrow_lamports`
-    // GlobalState slot is preserved for binary compat with deployed 227-byte
-    // accounts but is no longer read by any instruction.
+    // Timing-override bounds: 0 means "use the global default", any nonzero
+    // value must fall inside the per-field [min, max] window.
+    if attestation_delay_override > 0 {
+        require!(
+            (3_600..=2_592_000).contains(&attestation_delay_override),
+            ShillbotError::TimingOverrideOutOfBounds
+        );
+    }
+    if challenge_window_override > 0 {
+        require!(
+            (3_600..=604_800).contains(&challenge_window_override),
+            ShillbotError::TimingOverrideOutOfBounds
+        );
+    }
+    if verification_timeout_override > 0 {
+        require!(
+            (86_400..=2_592_000).contains(&verification_timeout_override),
+            ShillbotError::TimingOverrideOutOfBounds
+        );
+    }
 
-    // Phase 3 blocker #2 (residual): per-client task-creation rate limit.
-    //
-    // Sliding 1-hour window: at most MAX_TASKS_PER_RATE_WINDOW
-    // create_task calls per client per RATE_LIMIT_WINDOW_SECONDS.
-    // Window resets when the next call lands more than the window
-    // duration after the current window's start. Sybil attackers must
-    // spawn additional client wallets to exceed the cap; each new
-    // wallet pays its own one-time ClientState rent (~$0.13 at typical
-    // rent prices) — the dominant per-task cost is the protocol-fee
-    // bleed (~$0.50 per task at 1% on the $50 escrow floor), so the
-    // primary effect of the rate limit is forcing sybil attackers to
-    // maintain more wallets, not the rent cost per se.
-    //
-    // Pure CEI ordering: compute the next-state values, validate, then
-    // mutate. Anchor's transaction atomicity makes the
-    // mutate-before-require! shape functionally correct (require!
-    // failure reverts everything), but pure CEI keeps the persona's
-    // style discipline.
-    let client_state = &mut ctx.accounts.client_state;
+    Ok(())
+}
+
+/// Apply the per-client sliding-window rate limit (Phase 3 blocker #2).
+///
+/// Pure CEI inside the helper: compute the next-state values, validate,
+/// then mutate the ClientState account.
+fn apply_rate_limit(
+    client_state: &mut Account<'_, ClientState>,
+    client_state_bump: u8,
+    client_key: Pubkey,
+    rate_limit_window_seconds: i64,
+    max_tasks_per_rate_window: u32,
+    now: i64,
+) -> Result<()> {
     let is_first_call = client_state.client == Pubkey::default();
     let elapsed = if is_first_call {
-        // First-ever create_task by this client (init_if_needed just
-        // zero-initialized the account). No prior window; treat as
-        // start of a fresh window.
         i64::MAX
     } else {
-        clock
-            .unix_timestamp
-            .checked_sub(client_state.window_start_ts)
+        now.checked_sub(client_state.window_start_ts)
             .ok_or(ShillbotError::ArithmeticOverflow)?
     };
-    let window_expired = elapsed >= global.rate_limit_window_seconds;
+    let window_expired = elapsed >= rate_limit_window_seconds;
     let new_count: u32 = if is_first_call || window_expired {
         1
     } else {
@@ -107,28 +185,20 @@ pub fn create_task(
             .ok_or(ShillbotError::ArithmeticOverflow)?
     };
 
-    // Checks (pure CEI): both the rate-limit cap AND any future
-    // invariants on the counter happen here, before any mutation.
-    // D3 (2026-05-07): cap moved from compile-time const to
-    // GlobalState governance param.
     require!(
-        new_count <= global.max_tasks_per_rate_window,
+        new_count <= max_tasks_per_rate_window,
         ShillbotError::RateLimitExceeded
     );
 
-    // Effects: now that all checks pass, commit the new state.
     if is_first_call {
-        // FIRST-CALL SENTINEL: detection at the `is_first_call` check
-        // above depends on `client_state.client` being
-        // `Pubkey::default()` before this assignment. No future code
-        // path may ever reset `client` to default — doing so would
-        // silently break the sentinel and re-initialize the rate-limit
-        // window on every call from that wallet.
-        client_state.client = ctx.accounts.client.key();
-        client_state.bump = ctx.bumps.client_state;
+        // FIRST-CALL SENTINEL: detection at `is_first_call` above depends on
+        // `client_state.client` being `Pubkey::default()` before this
+        // assignment. No future code path may ever reset `client` to default.
+        client_state.client = client_key;
+        client_state.bump = client_state_bump;
     }
     if is_first_call || window_expired {
-        client_state.window_start_ts = clock.unix_timestamp;
+        client_state.window_start_ts = now;
     }
     client_state.tasks_in_window = new_count;
     client_state.total_tasks_created = client_state
@@ -136,67 +206,50 @@ pub fn create_task(
         .checked_add(1)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
 
-    // Checks: timing override bounds (0 = use global default, nonzero must be in range)
-    if attestation_delay_override > 0 {
-        // Minimum 1 hour, maximum 30 days
-        require!(
-            attestation_delay_override >= 3_600,
-            ShillbotError::TimingOverrideOutOfBounds
-        );
-        require!(
-            attestation_delay_override <= 2_592_000,
-            ShillbotError::TimingOverrideOutOfBounds
-        );
-    }
-    if challenge_window_override > 0 {
-        // Minimum 1 hour, maximum 7 days
-        require!(
-            challenge_window_override >= 3_600,
-            ShillbotError::TimingOverrideOutOfBounds
-        );
-        require!(
-            challenge_window_override <= 604_800,
-            ShillbotError::TimingOverrideOutOfBounds
-        );
-    }
-    if verification_timeout_override > 0 {
-        // Minimum 1 day, maximum 30 days
-        require!(
-            verification_timeout_override >= 86_400,
-            ShillbotError::TimingOverrideOutOfBounds
-        );
-        require!(
-            verification_timeout_override <= 2_592_000,
-            ShillbotError::TimingOverrideOutOfBounds
-        );
-    }
+    Ok(())
+}
 
-    // Effects: increment counter
-    let global = &mut ctx.accounts.global_state;
-    let task_id = global.task_counter;
-    global.task_counter = global
-        .task_counter
-        .checked_add(1)
-        .ok_or(ShillbotError::ArithmeticOverflow)?;
-
-    // Generate task_nonce from recent slothash (16 bytes)
-    let slot_hashes = &ctx.accounts.slot_hashes;
+/// Read 16 bytes from the SlotHashes sysvar (offset 8 — past the count
+/// prefix) as the task nonce.
+///
+/// If the sysvar is malformed (truncated below the 24-byte minimum we
+/// need), reject the transaction. Pre-fix the handler silently fell back
+/// to a zero nonce; that made nonce-collision detection on the client
+/// side meaningless.
+fn derive_task_nonce(slot_hashes: &AccountInfo) -> Result<[u8; 16]> {
     let data = slot_hashes.data.borrow();
-    let mut task_nonce = [0u8; 16];
-    // Use the first 16 bytes of slot hashes data (after the count prefix of 8 bytes)
-    // as a source of pseudorandomness for the nonce.
     let start = 8usize;
     let end = start
         .checked_add(16)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-    if data.len() >= end {
-        task_nonce.copy_from_slice(&data[start..end]);
-    }
+    require!(data.len() >= end, ShillbotError::MalformedSlotHashes);
+    let mut task_nonce = [0u8; 16];
+    task_nonce.copy_from_slice(&data[start..end]);
+    Ok(task_nonce)
+}
 
-    // Effects: initialize task
-    let task = &mut ctx.accounts.task;
+/// Write the Task PDA's initial field set. Pure assignment — no I/O.
+#[allow(clippy::too_many_arguments)]
+fn init_task_account(
+    task: &mut Task,
+    client: Pubkey,
+    bump: u8,
+    task_id: u64,
+    platform: u8,
+    escrow_lamports: u64,
+    content_hash: [u8; 32],
+    task_nonce: [u8; 16],
+    deadline: i64,
+    submit_margin: i64,
+    claim_buffer: i64,
+    attestation_delay_override: u32,
+    challenge_window_override: u32,
+    verification_timeout_override: u32,
+    requires_approval: bool,
+    now: i64,
+) {
     task.task_id = task_id;
-    task.client = ctx.accounts.client.key();
+    task.client = client;
     task.agent = Pubkey::default();
     task.state = TaskState::Open;
     task.platform = platform;
@@ -210,7 +263,7 @@ pub fn create_task(
     task.deadline = deadline;
     task.submit_margin = submit_margin;
     task.claim_buffer = claim_buffer;
-    task.created_at = clock.unix_timestamp;
+    task.created_at = now;
     task.submitted_at = 0;
     task.verified_at = 0;
     task.challenge_deadline = 0;
@@ -220,30 +273,7 @@ pub fn create_task(
     task.verification_hash = [0u8; 32];
     task.requires_approval = u8::from(requires_approval);
     task._reserved = [0u8; 19];
-    task.bump = ctx.bumps.task;
-
-    // Interactions: transfer escrow from client to task PDA
-    system_program::transfer(
-        CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            system_program::Transfer {
-                from: ctx.accounts.client.to_account_info(),
-                to: ctx.accounts.task.to_account_info(),
-            },
-        ),
-        escrow_lamports,
-    )?;
-
-    emit!(TaskCreated {
-        task_id,
-        client: ctx.accounts.client.key(),
-        escrow_lamports,
-        deadline,
-        task_nonce,
-        platform,
-    });
-
-    Ok(())
+    task.bump = bump;
 }
 
 #[derive(Accounts)]

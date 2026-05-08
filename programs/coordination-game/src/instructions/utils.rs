@@ -1,4 +1,9 @@
 use crate::errors::CoordinationError;
+use crate::payoff::resolve_game;
+use crate::state::{
+    Game, GameState, PlayerProfile, Tournament, COMMIT_TIMEOUT_SLOTS, GUESS_SAME_TEAM,
+    GUESS_UNREVEALED, MATCHUP_TYPE_UNSET, REVEAL_TIMEOUT_SLOTS,
+};
 use anchor_lang::prelude::*;
 
 /// Transfer lamports directly between two program-owned or system accounts.
@@ -71,6 +76,205 @@ pub fn compute_treasury_split(total: u64, treasury_split_bps: u16) -> Result<Tre
         treasury_share,
         tournament_share,
     })
+}
+
+/// Outcome of `compute_finalization` — the values both `reveal_guess` and
+/// `reveal_guess_session` need to commit. Computed once before any state
+/// mutation; the caller hands the same values to `apply_finalize_effects`
+/// (state) and `distribute_finalize_lamports` (interactions).
+pub struct FinalizeOutcome {
+    pub p1_return: u64,
+    pub p2_return: u64,
+    pub tournament_gain: u64,
+    pub treasury_share: u64,
+    pub tournament_share: u64,
+    pub p1_won: bool,
+    pub p2_won: bool,
+    pub is_late_resolution: bool,
+}
+
+/// Pure-compute step shared by both reveal handlers. Computes the
+/// returns, the win flags, and the treasury/tournament split so the
+/// caller can apply effects and interactions independently.
+pub fn compute_finalization(
+    game: &Game,
+    tournament_end_time: i64,
+    treasury_split_bps: u16,
+    now: i64,
+) -> Result<FinalizeOutcome> {
+    let is_late_resolution = now > tournament_end_time;
+    let (p1_return, p2_return, tournament_gain) = if is_late_resolution {
+        (game.stake_lamports, game.stake_lamports, 0u64)
+    } else {
+        let resolution = resolve_game(
+            game.matchup_type,
+            game.p1_guess,
+            game.p2_guess,
+            game.stake_lamports,
+            game.first_committer,
+        )?;
+        (
+            resolution.p1_return,
+            resolution.p2_return,
+            resolution.tournament_gain,
+        )
+    };
+    // Determine wins. Late-resolved games don't count (refund with no scoring).
+    let (p1_won, p2_won) = if is_late_resolution {
+        (false, false)
+    } else {
+        let correct_guess = if game.matchup_type == 0 {
+            GUESS_SAME_TEAM
+        } else {
+            crate::state::GUESS_DIFF_TEAM
+        };
+        let p1_correct = game.p1_guess == correct_guess;
+        let p2_correct = game.p2_guess == correct_guess;
+        if game.matchup_type == 1 && p1_correct && p2_correct {
+            // Heterogeneous both-correct: only pot-winner earns a win.
+            (p1_return > p2_return, p2_return > p1_return)
+        } else {
+            (p1_correct, p2_correct)
+        }
+    };
+    // Compute treasury/tournament split exactly once.
+    let (treasury_share, tournament_share) = if tournament_gain > 0 {
+        let split = compute_treasury_split(tournament_gain, treasury_split_bps)?;
+        (split.treasury_share, split.tournament_share)
+    } else {
+        (0, 0)
+    };
+    Ok(FinalizeOutcome {
+        p1_return,
+        p2_return,
+        tournament_gain,
+        treasury_share,
+        tournament_share,
+        p1_won,
+        p2_won,
+        is_late_resolution,
+    })
+}
+
+/// Apply the state mutations for a finalized reveal: tournament
+/// counters, player profile updates, and the Game state transition.
+/// Pure CEI Effects step — no I/O.
+pub fn apply_finalize_effects(
+    tournament: &mut Tournament,
+    p1_profile: &mut PlayerProfile,
+    p2_profile: &mut PlayerProfile,
+    game: &mut Game,
+    outcome: &FinalizeOutcome,
+    tournament_id: u64,
+    now: i64,
+) -> Result<()> {
+    if !outcome.is_late_resolution {
+        tournament.game_count = tournament
+            .game_count
+            .checked_add(1)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+        if outcome.tournament_share > 0 {
+            tournament.prize_lamports = tournament
+                .prize_lamports
+                .checked_add(outcome.tournament_share)
+                .ok_or(CoordinationError::ArithmeticOverflow)?;
+        }
+        require!(
+            tournament.game_count >= 1,
+            CoordinationError::ArithmeticOverflow,
+        );
+        p1_profile.update_after_game(outcome.p1_won, tournament_id)?;
+        p2_profile.update_after_game(outcome.p2_won, tournament_id)?;
+    }
+    game.state = GameState::Resolved;
+    game.resolved_at = now;
+    require!(
+        game.state == GameState::Resolved,
+        CoordinationError::InvalidGameState
+    );
+    require!(game.resolved_at == now, CoordinationError::InvalidGameState);
+    Ok(())
+}
+
+/// Lamport interactions for a finalized reveal. Caller passes the
+/// `AccountInfo`s rather than typed accounts because the two reveal
+/// variants have different `Accounts` structs.
+pub fn distribute_finalize_lamports(
+    game_info: &AccountInfo,
+    p1_wallet: &AccountInfo,
+    p2_wallet: &AccountInfo,
+    treasury_info: &AccountInfo,
+    tournament_info: &AccountInfo,
+    outcome: &FinalizeOutcome,
+) -> Result<()> {
+    transfer_lamports(game_info, p1_wallet, outcome.p1_return)?;
+    transfer_lamports(game_info, p2_wallet, outcome.p2_return)?;
+    if outcome.tournament_gain > 0 {
+        transfer_lamports(game_info, treasury_info, outcome.treasury_share)?;
+        transfer_lamports(game_info, tournament_info, outcome.tournament_share)?;
+    }
+    Ok(())
+}
+
+/// Validate the end-of-tournament cutoff: no games may start within
+/// `commit_timeout + reveal_timeout` of the tournament's end_time. Used
+/// by both `create_game` and `create_game_session`.
+pub fn validate_tournament_cutoff(now: i64, end_time: i64) -> Result<()> {
+    let cutoff_slots = COMMIT_TIMEOUT_SLOTS
+        .checked_add(REVEAL_TIMEOUT_SLOTS)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let slots_per_second: u64 = 2;
+    let cutoff_seconds = cutoff_slots
+        .checked_div(slots_per_second)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let cutoff_seconds_i64 =
+        i64::try_from(cutoff_seconds).map_err(|_| CoordinationError::ArithmeticOverflow)?;
+    let cutoff_timestamp = now
+        .checked_add(cutoff_seconds_i64)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    require!(
+        cutoff_timestamp < end_time,
+        CoordinationError::OutsideTournamentWindow,
+    );
+    Ok(())
+}
+
+/// Initialize a freshly-allocated `Game` PDA with the same field set
+/// regardless of which entry point (`create_game` or
+/// `create_game_session`) created it. The two handlers were ~95%
+/// duplicate before this helper was added — keep them in lockstep
+/// here.
+#[allow(clippy::too_many_arguments)]
+pub fn init_game(
+    game: &mut Game,
+    game_id: u64,
+    tournament_id: u64,
+    player_one: Pubkey,
+    stake_lamports: u64,
+    matchup_commitment: [u8; 32],
+    now: i64,
+    bump: u8,
+) {
+    game.game_id = game_id;
+    game.tournament_id = tournament_id;
+    game.player_one = player_one;
+    game.player_two = Pubkey::default();
+    game.state = GameState::Pending;
+    game.stake_lamports = stake_lamports;
+    game.p1_commit = [0u8; 32];
+    game.p2_commit = [0u8; 32];
+    game.p1_guess = GUESS_UNREVEALED;
+    game.p2_guess = GUESS_UNREVEALED;
+    game.first_committer = 0;
+    game.p1_commit_slot = 0;
+    game.p2_commit_slot = 0;
+    game.commit_timeout_slots = COMMIT_TIMEOUT_SLOTS;
+    game.created_at = now;
+    game.resolved_at = 0;
+    game.activated_at_slot = 0;
+    game.matchup_commitment = matchup_commitment;
+    game.matchup_type = MATCHUP_TYPE_UNSET;
+    game.bump = bump;
 }
 
 #[cfg(test)]

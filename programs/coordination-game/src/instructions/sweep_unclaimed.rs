@@ -74,25 +74,26 @@ pub fn sweep_unclaimed_to_next(ctx: Context<SweepUnclaimedToNext>) -> Result<()>
         .checked_add(sweepable)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
 
-    // Interactions: move lamports
+    // Interactions: move lamports.
+    //
+    // Single read of the dest balance, single absolute write of the src
+    // balance. The sweep is structurally "set src to rent_minimum, add
+    // sweepable to dest" — express that directly so a future reader
+    // doesn't need to verify that the two reads agree.
     let src_info = ctx.accounts.src_tournament.to_account_info();
     let dest_info = ctx.accounts.dest_tournament.to_account_info();
 
-    let src_new = src_info
-        .lamports()
-        .checked_sub(sweepable)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
     let dest_new = dest_info
         .lamports()
         .checked_add(sweepable)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
 
-    **src_info.try_borrow_mut_lamports()? = src_new;
+    **src_info.try_borrow_mut_lamports()? = rent_minimum;
     **dest_info.try_borrow_mut_lamports()? = dest_new;
 
-    // Postconditions
+    // Postcondition: src is exactly at the rent floor.
     require!(
-        ctx.accounts.src_tournament.to_account_info().lamports() == rent_minimum,
+        src_info.lamports() == rent_minimum,
         CoordinationError::InvalidGameState,
     );
 

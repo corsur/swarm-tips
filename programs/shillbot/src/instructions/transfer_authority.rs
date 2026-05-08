@@ -18,7 +18,7 @@ pub fn transfer_authority(ctx: Context<TransferAuthority>, new_authority: Pubkey
     // Checks: new authority is not the zero key
     require!(
         new_authority != Pubkey::default(),
-        ShillbotError::ArithmeticOverflow
+        ShillbotError::ZeroPubkey
     );
 
     let old_authority = global.authority;

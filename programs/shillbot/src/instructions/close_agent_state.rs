@@ -18,7 +18,7 @@ pub fn close_agent_state(ctx: Context<CloseAgentState>) -> Result<()> {
     // Checks: no active claims
     require!(
         agent_state.claimed_count == 0,
-        ShillbotError::MaxConcurrentClaimsExceeded
+        ShillbotError::AgentStateHasActiveClaims
     );
 
     // Effects: account closed by Anchor `close` constraint

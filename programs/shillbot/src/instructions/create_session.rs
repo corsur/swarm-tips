@@ -21,7 +21,7 @@ pub fn create_session(
     // Checks: duration must be positive
     require!(
         duration_seconds > 0,
-        crate::errors::ShillbotError::ArithmeticOverflow
+        crate::errors::ShillbotError::InvalidParameter
     );
 
     // Checks: delegate must not be the agent itself (no self-delegation)
@@ -34,6 +34,10 @@ pub fn create_session(
         .unix_timestamp
         .checked_add(duration_seconds)
         .ok_or(crate::errors::ShillbotError::ArithmeticOverflow)?;
+    // Note: arithmetic-overflow on this addition is genuinely an arithmetic
+    // error (not an InvalidParameter case) — duration was already validated
+    // to be > 0 above, the overflow can only happen if the clock plus the
+    // requested duration exceeds i64::MAX.
 
     // Effects
     let session = &mut ctx.accounts.session_delegate;

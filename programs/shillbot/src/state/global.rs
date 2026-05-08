@@ -22,7 +22,20 @@ pub struct GlobalState {
     pub staleness_window_seconds: i64,
     /// Maximum number of tasks an agent can have in Claimed state simultaneously.
     pub max_concurrent_claims: u8,
-    /// Challenge bond multiplier in basis points (e.g., 20000 = 2x).
+    /// Challenge bond multiplier — raw u8 multiplier on the task's escrow,
+    /// stored in a u16 slot for forward compat.
+    ///
+    /// **Naming caveat:** the `_bps` suffix is misleading. Despite the
+    /// name, this is **NOT** basis points (1bp = 0.01%). It's a raw
+    /// multiplier: `2` means 2x escrow, `10` means 10x escrow, NOT
+    /// `200` for 2% or `20000` for 200%. The wire format is u16 only
+    /// because the original design considered bps semantics; the
+    /// final spec uses `MIN_CHALLENGE_BOND_MULTIPLIER..=MAX` which
+    /// are u8 values [2, 10]. `update_params` accepts `u8` and casts
+    /// to u16 on write. `challenge_task` reads this and multiplies
+    /// against `task.escrow_lamports` directly. The field is NOT
+    /// renamed because that's a wire-format change requiring an
+    /// account migration; the `_bps` suffix stays for binary compat.
     pub challenge_bond_multiplier_bps: u16,
     /// Portion of slashed bond sent to treasury in basis points.
     pub bond_slash_treasury_bps: u16,

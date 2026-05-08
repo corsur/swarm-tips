@@ -67,7 +67,7 @@ pub fn submit_work_session(ctx: Context<SubmitWorkSession>, content_id: Vec<u8>)
     // Checks: claimed_count > 0 (postcondition of claim_task)
     require!(
         ctx.accounts.agent_state.claimed_count > 0,
-        ShillbotError::ArithmeticOverflow
+        ShillbotError::NoActiveClaim
     );
 
     // Compute content ID hash

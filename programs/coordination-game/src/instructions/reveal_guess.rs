@@ -1,7 +1,8 @@
 use crate::errors::CoordinationError;
 use crate::events::{GameResolved, GuessRevealed};
-use crate::instructions::utils::{compute_treasury_split, transfer_lamports};
-use crate::payoff::resolve_game;
+use crate::instructions::utils::{
+    apply_finalize_effects, compute_finalization, distribute_finalize_lamports,
+};
 use crate::state::{
     Game, GameState, GlobalConfig, PlayerProfile, Tournament, GUESS_UNREVEALED, MATCHUP_TYPE_UNSET,
 };
@@ -69,6 +70,13 @@ pub fn reveal_guess(
         let matchup_type = r_mu[31] & 1;
         require!(matchup_type <= 1, CoordinationError::InvalidGameState);
         game.matchup_type = matchup_type;
+    } else {
+        // Matchup is already set — second revealer must NOT pass
+        // r_matchup. The simpler rule (reject any r_matchup the second
+        // revealer passes) prevents a class of "what if it disagrees"
+        // bugs at the cost of a stricter caller contract. The first
+        // revealer's r_matchup is the only one that ever gets used.
+        require!(r_matchup.is_none(), CoordinationError::RMatchupMismatch);
     }
 
     emit!(GuessRevealed {
@@ -86,172 +94,43 @@ pub fn reveal_guess(
 }
 
 fn finalize_game(ctx: Context<RevealGuess>) -> Result<()> {
-    let game = &ctx.accounts.game;
     let now = Clock::get()?.unix_timestamp;
-    let game_id = game.game_id;
-    let tournament_id = game.tournament_id;
-
-    let is_late_resolution = now > ctx.accounts.tournament.end_time;
-    let (p1_return, p2_return, tournament_gain) =
-        compute_returns(game, now, ctx.accounts.tournament.end_time)?;
-
-    // Determine wins. Late-resolved games don't count (refund with no scoring).
-    let (p1_won, p2_won) = if is_late_resolution {
-        (false, false)
-    } else {
-        let correct_guess = if game.matchup_type == 0 {
-            crate::state::GUESS_SAME_TEAM
-        } else {
-            crate::state::GUESS_DIFF_TEAM
-        };
-        let p1_correct = game.p1_guess == correct_guess;
-        let p2_correct = game.p2_guess == correct_guess;
-
-        if game.matchup_type == 1 && p1_correct && p2_correct {
-            // Heterogeneous both-correct: only pot-winner earns a win
-            (p1_return > p2_return, p2_return > p1_return)
-        } else {
-            // All other cases: correct guess = win
-            (p1_correct, p2_correct)
-        }
-    };
-
-    // Compute tournament share (after treasury split) for state update
-    let tournament_share = if tournament_gain > 0 {
-        compute_treasury_split(
-            tournament_gain,
-            ctx.accounts.global_config.treasury_split_bps,
-        )?
-        .tournament_share
-    } else {
-        0
-    };
-
-    // Effects: apply all state mutations before any lamport transfers
-    if !is_late_resolution {
-        apply_tournament_update(&mut ctx.accounts.tournament, tournament_share)?;
-        ctx.accounts
-            .p1_profile
-            .update_after_game(p1_won, tournament_id)?;
-        ctx.accounts
-            .p2_profile
-            .update_after_game(p2_won, tournament_id)?;
-    }
-    ctx.accounts.game.state = GameState::Resolved;
-    ctx.accounts.game.resolved_at = now;
-
-    // Postcondition: game must be resolved and timestamped
-    require!(
-        ctx.accounts.game.state == GameState::Resolved,
-        CoordinationError::InvalidGameState
-    );
-    require!(
-        ctx.accounts.game.resolved_at == now,
-        CoordinationError::InvalidGameState
-    );
-
-    // Interactions: lamport transfers after all state is committed
-    let treasury_gain = distribute_lamports(&ctx, p1_return, p2_return, tournament_gain)?;
-
+    let game_id = ctx.accounts.game.game_id;
+    let tournament_id = ctx.accounts.game.tournament_id;
+    let outcome = compute_finalization(
+        &ctx.accounts.game,
+        ctx.accounts.tournament.end_time,
+        ctx.accounts.global_config.treasury_split_bps,
+        now,
+    )?;
+    apply_finalize_effects(
+        &mut ctx.accounts.tournament,
+        &mut ctx.accounts.p1_profile,
+        &mut ctx.accounts.p2_profile,
+        &mut ctx.accounts.game,
+        &outcome,
+        tournament_id,
+        now,
+    )?;
+    let p1_guess = ctx.accounts.game.p1_guess;
+    let p2_guess = ctx.accounts.game.p2_guess;
+    distribute_finalize_lamports(
+        &ctx.accounts.game.to_account_info(),
+        &ctx.accounts.player_one_wallet.to_account_info(),
+        &ctx.accounts.player_two_wallet.to_account_info(),
+        &ctx.accounts.treasury.to_account_info(),
+        &ctx.accounts.tournament.to_account_info(),
+        &outcome,
+    )?;
     emit!(GameResolved {
         game_id,
-        p1_guess: ctx.accounts.game.p1_guess,
-        p2_guess: ctx.accounts.game.p2_guess,
-        p1_return,
-        p2_return,
-        tournament_gain,
-        treasury_gain,
+        p1_guess,
+        p2_guess,
+        p1_return: outcome.p1_return,
+        p2_return: outcome.p2_return,
+        tournament_gain: outcome.tournament_gain,
+        treasury_gain: outcome.treasury_share,
     });
-    Ok(())
-}
-
-/// Compute p1_return, p2_return, tournament_gain based on guesses and tournament timing.
-fn compute_returns(game: &Game, now: i64, tournament_end_time: i64) -> Result<(u64, u64, u64)> {
-    // Late resolution: return full stakes, contribute nothing to prize pool
-    if now > tournament_end_time {
-        return Ok((game.stake_lamports, game.stake_lamports, 0u64));
-    }
-    let resolution = resolve_game(
-        game.matchup_type,
-        game.p1_guess,
-        game.p2_guess,
-        game.stake_lamports,
-        game.first_committer,
-    )?;
-    Ok((
-        resolution.p1_return,
-        resolution.p2_return,
-        resolution.tournament_gain,
-    ))
-}
-
-/// Transfer resolved amounts from game PDA to player wallets, treasury, and tournament.
-///
-/// When tournament_gain > 0, splits it between treasury and tournament
-/// according to global_config.treasury_split_bps.
-/// Returns the treasury_share for event emission.
-fn distribute_lamports(
-    ctx: &Context<RevealGuess>,
-    p1_return: u64,
-    p2_return: u64,
-    tournament_gain: u64,
-) -> Result<u64> {
-    let game_info = ctx.accounts.game.to_account_info();
-
-    transfer_lamports(
-        &game_info,
-        &ctx.accounts.player_one_wallet.to_account_info(),
-        p1_return,
-    )?;
-    transfer_lamports(
-        &game_info,
-        &ctx.accounts.player_two_wallet.to_account_info(),
-        p2_return,
-    )?;
-
-    if tournament_gain > 0 {
-        let split = compute_treasury_split(
-            tournament_gain,
-            ctx.accounts.global_config.treasury_split_bps,
-        )?;
-
-        transfer_lamports(
-            &game_info,
-            &ctx.accounts.treasury.to_account_info(),
-            split.treasury_share,
-        )?;
-        transfer_lamports(
-            &game_info,
-            &ctx.accounts.tournament.to_account_info(),
-            split.tournament_share,
-        )?;
-
-        Ok(split.treasury_share)
-    } else {
-        Ok(0)
-    }
-}
-
-/// Increment tournament game count and prize pool for every resolved game.
-fn apply_tournament_update(tournament: &mut Tournament, tournament_share: u64) -> Result<()> {
-    // Always increment game_count for ALL resolved games
-    tournament.game_count = tournament
-        .game_count
-        .checked_add(1)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-
-    if tournament_share > 0 {
-        tournament.prize_lamports = tournament
-            .prize_lamports
-            .checked_add(tournament_share)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-    }
-
-    // Postcondition: game_count must have advanced
-    require!(
-        tournament.game_count >= 1,
-        CoordinationError::ArithmeticOverflow,
-    );
     Ok(())
 }
 

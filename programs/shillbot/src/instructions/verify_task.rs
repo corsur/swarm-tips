@@ -28,14 +28,7 @@ pub fn verify_task(
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
     let global = &ctx.accounts.global_state;
-
-    // Checks: state — D1 (2026-05-07) reverts mandatory client
-    // approval to per-task opt-in (matches spec line 433). Tasks
-    // created with `requires_approval = true` keep the v4 #3a flow:
-    // Submitted → Approved (client signs) → Verified. Tasks with
-    // `requires_approval = false` skip the approval gate: Submitted
-    // → Verified directly. The required source-state for verify_task
-    // therefore branches on the flag.
+    // Checks
     let required_state = if task.requires_approval == 1 {
         TaskState::Approved
     } else {
@@ -45,64 +38,25 @@ pub fn verify_task(
         task.state == required_state,
         ShillbotError::InvalidTaskState
     );
-
-    // Checks: feed account matches the per-network value stored in
-    // `GlobalState.switchboard_feed`.
-    //
-    // The 2026-05-01 commit (task #9) moved this check to a compile-time
-    // const for hardening, on the theory that "single-key compromise of
-    // the authority lets an attacker redirect verify to a malicious
-    // feed." That hardening was reverted 2026-05-08 because (a) the
-    // const was committed as a placeholder and the load-bearing
-    // "USER MUST FILL" TODO was missed, blocking every verify_task call
-    // on every network for ~7 days, and (b) at zero TVL the attacker-
-    // model the const protected against was hypothetical, while the
-    // on-chain GlobalState.switchboard_feed field already has correct
-    // per-network values populated (mainnet `En9CN…`, devnet `BSSv19i…`)
-    // and is governance-mutable via `set_switchboard_feed` if the
-    // multisig ever needs to rotate. Reverting trades a hypothetical
-    // attacker-cost increase for actual operational reachability.
-    require!(
-        global.switchboard_feed != Pubkey::default(),
-        ShillbotError::SwitchboardFeedNotConfigured
-    );
-    require!(
-        ctx.accounts.switchboard_feed.key() == global.switchboard_feed,
-        ShillbotError::SwitchboardFeedMismatch
-    );
-
-    // Checks: score bounds
     require!(
         composite_score <= shared::MAX_SCORE,
         ShillbotError::ScoreOutOfBounds
     );
-
-    // Checks: verification hash must not be zero
     require!(
         verification_hash != [0u8; 32],
         ShillbotError::InvalidVerificationHash
     );
-
-    // Checks: staleness — attestation within staleness_window of submitted_at + attestation_delay
+    validate_switchboard_feed(global, &ctx.accounts.switchboard_feed)?;
     validate_attestation_staleness(task, global, clock.unix_timestamp)?;
-
-    // Checks: parse Switchboard feed and validate composite_score matches the oracle value
-    let feed_value = read_switchboard_score(&ctx.accounts.switchboard_feed, clock.slot)?;
+    let feed_score = read_switchboard_score(&ctx.accounts.switchboard_feed, clock.slot)?;
     require!(
-        feed_value == composite_score,
+        feed_score == composite_score,
         ShillbotError::SwitchboardScoreMismatch
     );
-
-    // Compute payment and fee — stored on the task so finalize/resolve use the
-    // fee that was in effect at verification time, not the current GlobalState fee.
-    let (payment_amount, fee_amount) = compute_payment(
-        composite_score,
-        global.quality_threshold,
-        task.escrow_lamports,
-        global.protocol_fee_bps,
-    )?;
-
-    // Effects
+    // Effects: compute payment + fee (stored so finalize/resolve use the
+    // fee that was in effect at verification time, not the current
+    // GlobalState fee), then commit task fields.
+    let (payment_amount, fee_amount) = compute_payment_amounts(task, global, composite_score)?;
     let task = &mut ctx.accounts.task;
     task.composite_score = composite_score;
     task.payment_amount = payment_amount;
@@ -119,7 +73,6 @@ pub fn verify_task(
         .checked_add(challenge_window)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     task.state = TaskState::Verified;
-
     // Interactions: none
     emit!(TaskVerified {
         task_id: task.task_id,
@@ -128,8 +81,45 @@ pub fn verify_task(
         fee_amount,
         verification_hash,
     });
-
     Ok(())
+}
+
+/// Verify the Switchboard feed account passed by the caller matches the
+/// one configured in GlobalState.
+///
+/// The 2026-05-01 commit (task #9) moved this check to a compile-time
+/// const for hardening, on the theory that "single-key compromise of the
+/// authority lets an attacker redirect verify to a malicious feed." That
+/// hardening was reverted 2026-05-08 because (a) the const was committed
+/// as a placeholder and the load-bearing TODO was missed, blocking every
+/// verify_task call on every network for ~7 days, and (b) at zero TVL
+/// the attacker-model was hypothetical, while the GlobalState field
+/// already has correct per-network values populated.
+fn validate_switchboard_feed(global: &GlobalState, feed: &AccountInfo) -> Result<()> {
+    require!(
+        global.switchboard_feed != Pubkey::default(),
+        ShillbotError::SwitchboardFeedNotConfigured
+    );
+    require!(
+        feed.key() == global.switchboard_feed,
+        ShillbotError::SwitchboardFeedMismatch
+    );
+    Ok(())
+}
+
+/// Compute (payment_amount, fee_amount) for the verification using the
+/// current GlobalState protocol_fee_bps and quality_threshold.
+fn compute_payment_amounts(
+    task: &Task,
+    global: &GlobalState,
+    composite_score: u64,
+) -> Result<(u64, u64)> {
+    compute_payment(
+        composite_score,
+        global.quality_threshold,
+        task.escrow_lamports,
+        global.protocol_fee_bps,
+    )
 }
 
 /// Validate that the current timestamp falls within the acceptable staleness window

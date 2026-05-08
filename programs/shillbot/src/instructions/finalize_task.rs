@@ -15,23 +15,17 @@ use crate::transfers::transfer_lamports;
 pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
-
-    // Checks: state
+    // Checks
     require!(
         task.state == TaskState::Verified,
         ShillbotError::InvalidTaskState
     );
-
-    // Checks: challenge window has closed
     require!(
         clock.unix_timestamp > task.challenge_deadline,
         ShillbotError::ChallengeWindowOpen
     );
-
     let payment_amount = task.payment_amount;
     let fee_amount = task.fee_amount;
-
-    // Postcondition: payment + fee <= escrow
     let total_out = payment_amount
         .checked_add(fee_amount)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
@@ -39,17 +33,14 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
         total_out <= task.escrow_lamports,
         ShillbotError::PaymentExceedsEscrow
     );
-
     let remainder = task
         .escrow_lamports
         .checked_sub(total_out)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-
     // Effects
     let task = &mut ctx.accounts.task;
     task.state = TaskState::Finalized;
-
-    // Interactions: distribute payment, fee, and remainder
+    // Interactions: distribute payment, fee, and remainder.
     distribute_finalized_payment(
         &task.to_account_info(),
         &ctx.accounts.agent.to_account_info(),
@@ -59,11 +50,8 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
         fee_amount,
         remainder,
     )?;
-
-    // If AgentState is passed as remaining_account, update stats.
-    // Reputation counters (total_completed, total_score_sum) only advance
-    // when payment_amount > 0 (score >= quality_threshold) — preserves
-    // pre-#12 behavior. See `state/agent.rs` doc-comment "Counter semantics".
+    // Update reputation counters only when payment_amount > 0 — preserves
+    // pre-#12 behavior. See `state/agent.rs` "Counter semantics".
     if payment_amount > 0 {
         update_agent_stats(
             ctx.remaining_accounts,
@@ -73,20 +61,22 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
             task.composite_score,
         )?;
     }
-
     emit!(TaskFinalized {
         task_id: task.task_id,
         agent: task.agent,
         payment_amount,
         fee_amount,
     });
-
     Ok(())
 }
 
 /// If an AgentState account is passed as the first remaining_account, increment
 /// `total_completed`, `total_earned`, and `total_score_sum`. This is optional
 /// — callers that don't care about agent stats can omit it.
+///
+/// Each silent-skip path emits a `msg!` with the reason so the off-chain
+/// indexer can detect "the orchestrator forgot to pass AgentState" cases —
+/// pre-fix, those failures were invisible in logs.
 fn update_agent_stats(
     remaining_accounts: &[AccountInfo],
     program_id: &Pubkey,
@@ -95,23 +85,38 @@ fn update_agent_stats(
     composite_score: u64,
 ) -> Result<()> {
     if remaining_accounts.is_empty() {
+        msg!("update_agent_stats: skipped — no remaining_accounts passed (caller did not include AgentState)");
         return Ok(());
     }
     let agent_state_info = &remaining_accounts[0];
 
-    // Validate ownership
     if agent_state_info.owner != program_id {
+        msg!(
+            "update_agent_stats: skipped — remaining_accounts[0] owner {} != program_id {}",
+            agent_state_info.owner,
+            program_id
+        );
         return Ok(());
     }
 
     let mut data = agent_state_info.try_borrow_mut_data()?;
     let mut agent_state = match AgentState::try_deserialize(&mut &data[..]) {
         Ok(s) => s,
-        Err(_) => return Ok(()),
+        Err(_) => {
+            msg!(
+                "update_agent_stats: skipped — AgentState deserialize failed for {}",
+                agent_state_info.key()
+            );
+            return Ok(());
+        }
     };
 
-    // Validate agent matches
     if agent_state.agent != *expected_agent {
+        msg!(
+            "update_agent_stats: skipped — AgentState.agent {} != expected_agent {}",
+            agent_state.agent,
+            expected_agent
+        );
         return Ok(());
     }
 

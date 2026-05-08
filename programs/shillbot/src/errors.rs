@@ -130,4 +130,21 @@ pub enum ShillbotError {
 
     #[msg("AgentState account agent pubkey does not match the signer")]
     AgentStateAgentMismatch,
+
+    #[msg("SlotHashes sysvar data is malformed (less than 24 bytes)")]
+    MalformedSlotHashes,
+
+    #[msg(
+        "Instruction parameter is outside its allowed range or is zero where positive is required"
+    )]
+    InvalidParameter,
+
+    #[msg("Pubkey parameter must not be the zero pubkey")]
+    ZeroPubkey,
+
+    #[msg("Operation requires the agent to have at least one active claim")]
+    NoActiveClaim,
+
+    #[msg("AgentState cannot be closed while it has active claims")]
+    AgentStateHasActiveClaims,
 }

@@ -67,94 +67,92 @@ const CURRENT_AGENT_STATE_SIZE: usize = AgentState::SPACE; // 90
 pub fn migrate_agent_state(ctx: Context<MigrateAgentState>) -> Result<()> {
     let agent_state_info = &ctx.accounts.agent_state;
     let agent_signer = &ctx.accounts.agent;
-
-    // Checks: ownership (the `seeds = [...] / bump` constraint already enforces
-    // PDA derivation matches this program; verify owner explicitly anyway as
-    // defense-in-depth — Anchor only enforces ownership when the account is
-    // typed as `Account<T>`, and we use AccountInfo here).
+    // Checks: ownership (defense-in-depth — Anchor only enforces ownership
+    // when the account is typed as `Account<T>`, and we use AccountInfo).
     require_keys_eq!(
         *agent_state_info.owner,
         crate::ID,
         ShillbotError::AgentStateDiscriminatorMismatch
     );
-
     let current_size = agent_state_info.data_len();
-
-    // Idempotency: if already at the current size, verify it deserializes
-    // cleanly and return Ok. A retried migration tx (from RPC flakiness, etc.)
-    // shouldn't fail.
     if current_size == CURRENT_AGENT_STATE_SIZE {
-        let data = agent_state_info.try_borrow_data()?;
-        require!(
-            data.len() >= 8 && data[..8] == *AgentState::DISCRIMINATOR,
-            ShillbotError::AgentStateDiscriminatorMismatch
-        );
-        // Try to deserialize — if it fails, the account is corrupted and we
-        // refuse to do anything. Don't try to reformat it.
-        let parsed = AgentState::try_deserialize(&mut &data[..])
-            .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
-        require_keys_eq!(
-            parsed.agent,
-            agent_signer.key(),
-            ShillbotError::AgentStateAgentMismatch
-        );
-        return Ok(());
+        return migrate_already_current(agent_state_info, agent_signer.key());
     }
-
-    // The migration only handles the v1 42-byte case. Anything else
-    // (truncated, partial-migration, corrupted) is rejected — we don't want
-    // best-effort reformatting on accounts we don't understand.
+    // Only the v1 42-byte case is supported. Truncated / partial-migrated
+    // / corrupted accounts are rejected.
     require!(
         current_size == LEGACY_AGENT_STATE_SIZE,
         ShillbotError::AgentStateUnsupportedSize
     );
-
-    // Read the v1 layout: discriminator [0..8], agent [8..40],
-    // claimed_count [40], bump [41].
-    let (old_agent, old_claimed_count, old_bump) = {
-        let data = agent_state_info.try_borrow_data()?;
-        require!(
-            data[..8] == *AgentState::DISCRIMINATOR,
-            ShillbotError::AgentStateDiscriminatorMismatch
-        );
-        let mut agent_bytes = [0u8; 32];
-        agent_bytes.copy_from_slice(&data[8..40]);
-        let agent = Pubkey::from(agent_bytes);
-        let claimed_count = data[40];
-        let bump = data[41];
-        (agent, claimed_count, bump)
-    };
-
-    // The agent pubkey stored in the account must match the signer. This is
-    // the per-account authority check — without it, anyone could call this
-    // with a stranger's PDA and force them to pay the rent diff.
+    let (old_agent, old_claimed_count, old_bump) = read_v1_fields(agent_state_info)?;
     require_keys_eq!(
         old_agent,
         agent_signer.key(),
         ShillbotError::AgentStateAgentMismatch
     );
-
-    // Checks: caller must have pre-funded the account to be rent-exempt
-    // at the new size. We do NOT do the system_program transfer inside this
-    // ix because (a) it complicates the borrow lifetime around resize, and
-    // (b) it's cleaner to keep this handler pure-compute. The agent's
-    // client-side tx must include a SystemProgram::transfer instruction
-    // before this one, sized at >= rent.minimum_balance(90) - current
-    // lamports.
-    let rent = Rent::get()?;
-    let new_min_lamports = rent.minimum_balance(CURRENT_AGENT_STATE_SIZE);
+    // The caller-side tx must include a SystemProgram::transfer before
+    // this ix sized at >= rent.minimum_balance(90) - current. Keeping the
+    // handler pure-compute simplifies the borrow lifetime around resize.
+    let new_min_lamports = Rent::get()?.minimum_balance(CURRENT_AGENT_STATE_SIZE);
     require!(
         agent_state_info.lamports() >= new_min_lamports,
         ShillbotError::AgentStateUnsupportedSize
     );
-
-    // Effects: resize the account.
+    // Effects: resize + write the new layout. claimed_count is preserved
+    // (active outstanding claims aren't safe to silently zero).
     agent_state_info.resize(CURRENT_AGENT_STATE_SIZE)?;
+    write_current_layout(agent_state_info, old_agent, old_claimed_count, old_bump)?;
+    msg!(
+        "migrated AgentState {} from {} to {} bytes",
+        agent_signer.key(),
+        LEGACY_AGENT_STATE_SIZE,
+        CURRENT_AGENT_STATE_SIZE
+    );
+    Ok(())
+}
 
-    // Effects: write the new layout. claimed_count is preserved from v1
-    // (active outstanding claims aren't safe to silently zero). All other
-    // counters start at 0 — v1 had no counters, so there's nothing to
-    // migrate forward.
+/// Idempotency path: account is already at the current size — confirm it
+/// deserializes and the agent pubkey matches the signer, then exit clean.
+fn migrate_already_current(agent_state_info: &AccountInfo, agent_signer_key: Pubkey) -> Result<()> {
+    let data = agent_state_info.try_borrow_data()?;
+    require!(
+        data.len() >= 8 && data[..8] == *AgentState::DISCRIMINATOR,
+        ShillbotError::AgentStateDiscriminatorMismatch
+    );
+    let parsed = AgentState::try_deserialize(&mut &data[..])
+        .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
+    require_keys_eq!(
+        parsed.agent,
+        agent_signer_key,
+        ShillbotError::AgentStateAgentMismatch
+    );
+    Ok(())
+}
+
+/// Decode the v1 42-byte layout: discriminator [0..8], agent [8..40],
+/// claimed_count [40], bump [41].
+fn read_v1_fields(agent_state_info: &AccountInfo) -> Result<(Pubkey, u8, u8)> {
+    let data = agent_state_info.try_borrow_data()?;
+    require!(
+        data[..8] == *AgentState::DISCRIMINATOR,
+        ShillbotError::AgentStateDiscriminatorMismatch
+    );
+    let mut agent_bytes = [0u8; 32];
+    agent_bytes.copy_from_slice(&data[8..40]);
+    Ok((Pubkey::from(agent_bytes), data[40], data[41]))
+}
+
+/// Effects + postcondition in one scope. The mutable borrow on `data`
+/// lives ONLY inside this fn — calling any method on `agent_state_info`
+/// while a borrow is alive (even a read like `data_len()`) panics
+/// "RefCell already mutably borrowed" because Anchor's wrapper code
+/// re-borrows the AccountInfo on exit.
+fn write_current_layout(
+    agent_state_info: &AccountInfo,
+    old_agent: Pubkey,
+    old_claimed_count: u8,
+    old_bump: u8,
+) -> Result<()> {
     let new_state = AgentState {
         agent: old_agent,
         claimed_count: old_claimed_count,
@@ -166,36 +164,18 @@ pub fn migrate_agent_state(ctx: Context<MigrateAgentState>) -> Result<()> {
         _reserved: [0u8; 8],
         bump: old_bump,
     };
-
-    // Effects + postcondition in one scope. Crucially, the mutable
-    // borrow on `data` lives ONLY inside this block — calling any
-    // method on `agent_state_info` while a borrow is alive (even a
-    // read like `data_len()`) panics "RefCell already mutably borrowed"
-    // because Anchor's wrapper code re-borrows the AccountInfo on
-    // exit.
-    {
-        let mut data = agent_state_info.try_borrow_mut_data()?;
-        require!(
-            data.len() == CURRENT_AGENT_STATE_SIZE,
-            ShillbotError::AgentStateUnsupportedSize
-        );
-        let mut writer: &mut [u8] = &mut data;
-        new_state
-            .try_serialize(&mut writer)
-            .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
-
-        // Round-trip postcondition while we still hold the borrow.
-        let _round_trip = AgentState::try_deserialize(&mut &data[..])
-            .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
-    }
-
-    msg!(
-        "migrated AgentState {} from {} to {} bytes",
-        agent_signer.key(),
-        LEGACY_AGENT_STATE_SIZE,
-        CURRENT_AGENT_STATE_SIZE
+    let mut data = agent_state_info.try_borrow_mut_data()?;
+    require!(
+        data.len() == CURRENT_AGENT_STATE_SIZE,
+        ShillbotError::AgentStateUnsupportedSize
     );
-
+    let mut writer: &mut [u8] = &mut data;
+    new_state
+        .try_serialize(&mut writer)
+        .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
+    // Round-trip postcondition while we still hold the borrow.
+    let _round_trip = AgentState::try_deserialize(&mut &data[..])
+        .map_err(|_| error!(ShillbotError::AgentStateDiscriminatorMismatch))?;
     Ok(())
 }
 

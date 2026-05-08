@@ -20,7 +20,7 @@ pub fn update_oracle_authority(
     // Checks: new oracle authority is not the zero key
     require!(
         new_oracle_authority != Pubkey::default(),
-        ShillbotError::ArithmeticOverflow
+        ShillbotError::ZeroPubkey
     );
 
     let old_oracle_authority = global.oracle_authority;

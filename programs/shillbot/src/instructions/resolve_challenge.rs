@@ -13,128 +13,161 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
     let task = &ctx.accounts.task;
     let challenge = &ctx.accounts.challenge;
     let global = &ctx.accounts.global_state;
-
-    // Checks: state
+    // Checks
     require!(
         task.state == TaskState::Disputed,
         ShillbotError::InvalidTaskState
     );
-
-    // Checks: authority is the multisig
     require!(
         ctx.accounts.authority.key() == global.authority,
         ShillbotError::NotAuthority
     );
-
-    // Checks: challenge belongs to this task
     require!(
         challenge.task_id == task.task_id,
         ShillbotError::InvalidTaskState
     );
-
     let bond = challenge.bond_lamports;
     let escrow = task.escrow_lamports;
-
-    // Effects: mark resolved
+    let bond_slash_treasury_bps = global.bond_slash_treasury_bps;
+    let task_agent = task.agent;
+    let task_id = task.task_id;
+    let payment = task.payment_amount;
+    let fee = task.fee_amount;
+    // Effects: mark resolved.
     let challenge = &mut ctx.accounts.challenge;
     challenge.resolved = true;
     challenge.challenger_won = challenger_won;
-
     let task = &mut ctx.accounts.task;
     task.state = TaskState::Resolved;
-
-    // Interactions: distribute funds
+    // Interactions: branch on the dispute outcome.
     let task_info = task.to_account_info();
     let challenge_info = challenge.to_account_info();
-
     let bond_slashed: u64 = if challenger_won {
-        // Return escrow to client, return bond to challenger
-        transfer_lamports(&task_info, &ctx.accounts.client.to_account_info(), escrow)?;
-        if bond > 0 {
-            transfer_lamports(
-                &challenge_info,
-                &ctx.accounts.challenger.to_account_info(),
-                bond,
-            )?;
-        }
+        challenger_won_branch(&task_info, &challenge_info, bond, escrow, &ctx)?;
+        bump_agent_challenges_lost(ctx.remaining_accounts, ctx.program_id, &task_agent)?;
         0
     } else {
-        // Use stored payment and fee from verification time (S-03 fix).
-        let payment = task.payment_amount;
-        let fee = task.fee_amount;
-        // Distribute escrow: payment to agent, fee to treasury, remainder to client
-        if payment > 0 {
-            transfer_lamports(&task_info, &ctx.accounts.agent.to_account_info(), payment)?;
-        }
-        if fee > 0 {
-            transfer_lamports(&task_info, &ctx.accounts.treasury.to_account_info(), fee)?;
-        }
-        let total_out = payment
-            .checked_add(fee)
-            .ok_or(ShillbotError::ArithmeticOverflow)?;
-        let remainder = escrow
-            .checked_sub(total_out)
-            .ok_or(ShillbotError::ArithmeticOverflow)?;
-        if remainder > 0 {
-            transfer_lamports(
-                &task_info,
-                &ctx.accounts.client.to_account_info(),
-                remainder,
-            )?;
-        }
-        // Slash bond: split between agent and treasury per bond_slash_treasury_bps
-        slash_bond(
+        agent_won_branch(
+            &task_info,
             &challenge_info,
-            &ctx.accounts.agent,
-            &ctx.accounts.treasury,
             bond,
-            global.bond_slash_treasury_bps,
+            escrow,
+            payment,
+            fee,
+            bond_slash_treasury_bps,
+            &ctx,
         )?;
         bond
     };
-
-    // Phase 1 reputation: if challenger won (agent lost) and the caller
-    // passed AgentState as a remaining_account, bump total_challenges_lost.
-    // Optional pattern matches `finalize_task::update_agent_stats` —
-    // omitting the account leaves the counter unchanged but the
-    // resolution still completes.
-    if challenger_won {
-        bump_agent_challenges_lost(ctx.remaining_accounts, ctx.program_id, &task.agent)?;
-    }
-
     emit!(ChallengeResolved {
-        task_id: task.task_id,
+        task_id,
         challenger_won,
         bond_slashed,
     });
+    Ok(())
+}
 
+/// Challenger-won path: escrow returned to client, bond returned to challenger.
+fn challenger_won_branch(
+    task_info: &AccountInfo,
+    challenge_info: &AccountInfo,
+    bond: u64,
+    escrow: u64,
+    ctx: &Context<ResolveChallenge>,
+) -> Result<()> {
+    transfer_lamports(task_info, &ctx.accounts.client.to_account_info(), escrow)?;
+    if bond > 0 {
+        transfer_lamports(
+            challenge_info,
+            &ctx.accounts.challenger.to_account_info(),
+            bond,
+        )?;
+    }
+    Ok(())
+}
+
+/// Agent-won path: payment to agent, fee to treasury, remainder escrow to
+/// client, bond slashed between agent and treasury per
+/// `bond_slash_treasury_bps`.
+#[allow(clippy::too_many_arguments)]
+fn agent_won_branch(
+    task_info: &AccountInfo,
+    challenge_info: &AccountInfo,
+    bond: u64,
+    escrow: u64,
+    payment: u64,
+    fee: u64,
+    bond_slash_treasury_bps: u16,
+    ctx: &Context<ResolveChallenge>,
+) -> Result<()> {
+    if payment > 0 {
+        transfer_lamports(task_info, &ctx.accounts.agent.to_account_info(), payment)?;
+    }
+    if fee > 0 {
+        transfer_lamports(task_info, &ctx.accounts.treasury.to_account_info(), fee)?;
+    }
+    let total_out = payment
+        .checked_add(fee)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    let remainder = escrow
+        .checked_sub(total_out)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    if remainder > 0 {
+        transfer_lamports(task_info, &ctx.accounts.client.to_account_info(), remainder)?;
+    }
+    slash_bond(
+        challenge_info,
+        &ctx.accounts.agent,
+        &ctx.accounts.treasury,
+        bond,
+        bond_slash_treasury_bps,
+    )?;
     Ok(())
 }
 
 /// Increment `total_challenges_lost` on the agent's AgentState, when passed
 /// as the first remaining_account. Mirrors the optional-update pattern in
-/// `finalize_task::update_agent_stats`.
+/// `finalize_task::update_agent_stats`. Each silent-skip path logs the
+/// reason so off-chain indexers can detect "caller forgot AgentState"
+/// cases — pre-fix those were invisible.
 fn bump_agent_challenges_lost(
     remaining_accounts: &[AccountInfo],
     program_id: &Pubkey,
     expected_agent: &Pubkey,
 ) -> Result<()> {
     if remaining_accounts.is_empty() {
+        msg!("bump_agent_challenges_lost: skipped — no remaining_accounts passed");
         return Ok(());
     }
     let agent_state_info = &remaining_accounts[0];
 
     if agent_state_info.owner != program_id {
+        msg!(
+            "bump_agent_challenges_lost: skipped — remaining_accounts[0] owner {} != program_id {}",
+            agent_state_info.owner,
+            program_id
+        );
         return Ok(());
     }
 
     let mut data = agent_state_info.try_borrow_mut_data()?;
     let mut agent_state = match AgentState::try_deserialize(&mut &data[..]) {
         Ok(s) => s,
-        Err(_) => return Ok(()),
+        Err(_) => {
+            msg!(
+                "bump_agent_challenges_lost: skipped — AgentState deserialize failed for {}",
+                agent_state_info.key()
+            );
+            return Ok(());
+        }
     };
 
     if agent_state.agent != *expected_agent {
+        msg!(
+            "bump_agent_challenges_lost: skipped — AgentState.agent {} != expected_agent {}",
+            agent_state.agent,
+            expected_agent
+        );
         return Ok(());
     }
 

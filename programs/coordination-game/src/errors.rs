@@ -95,4 +95,8 @@ pub enum CoordinationError {
     UnclaimedGracePeriodNotElapsed,
     #[msg("Destination tournament is invalid (same as source, finalized, or outside its active window)")]
     DestTournamentInvalid,
+
+    // Reveal
+    #[msg("r_matchup must not be passed once the matchup type is already revealed in the Game account")]
+    RMatchupMismatch,
 }

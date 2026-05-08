@@ -10,6 +10,17 @@ pub fn initialize_config(ctx: Context<InitializeConfig>, treasury_split_bps: u16
         (MIN_TREASURY_SPLIT_BPS..=MAX_TREASURY_SPLIT_BPS).contains(&treasury_split_bps),
         CoordinationError::InvalidTreasurySplitBps
     );
+    // Reject zero pubkeys for matchmaker and treasury — Pubkey::default()
+    // is the system program ID and never a legitimate destination for
+    // funds (treasury) or a legitimate signer (matchmaker).
+    require!(
+        ctx.accounts.matchmaker.key() != Pubkey::default(),
+        CoordinationError::NotMatchmaker
+    );
+    require!(
+        ctx.accounts.treasury.key() != Pubkey::default(),
+        CoordinationError::NotAuthority
+    );
 
     // Effects
     let config = &mut ctx.accounts.global_config;
