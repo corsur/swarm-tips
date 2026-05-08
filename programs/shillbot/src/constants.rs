@@ -1,61 +1,17 @@
 //! Compile-time constants for the Shillbot program.
-//!
-//! Replaces fields that were previously authority-mutable via dedicated
-//! "setter" instructions. Locking these as `const` removes a class of
-//! single-key compromise risk: an attacker who steals the authority
-//! keypair can no longer point the program at an attacker-controlled
-//! Switchboard feed (which would let them post arbitrary scores and
-//! drain task escrows).
 
-// SWITCHBOARD_FEED const removed 2026-05-08. The compile-time-locked feed
-// pubkey was added 2026-05-01 (task #9) as anti-compromise hardening:
-// "single-key compromise of the authority lets an attacker redirect verify
-// to a malicious feed." Reverted because the const shipped as a placeholder
-// (`11111…112`) and the load-bearing "USER MUST FILL" TODO was missed,
-// blocking every `verify_task` call on every network for ~7 days. The
-// per-network feed pubkey now lives in `GlobalState.switchboard_feed`,
-// already populated correctly on both networks (mainnet `En9CN…`, devnet
-// `BSSv19i…`). Multisig can rotate via `set_switchboard_feed` when
-// re-added — until then, rotation requires a program upgrade.
-
-// MIN_ESCROW_LAMPORTS (and the bound consts MIN_ESCROW_LAMPORTS_FLOOR,
-// MIN_ESCROW_LAMPORTS_CEILING) removed 2026-05-07. The 0.36 SOL per-task
-// escrow floor (Phase 3 blocker #2 from the 2026-04-02 panel review)
-// imposed real friction on legitimate small clients to deter sybil
-// round-trips at solo + pre-PMF scale. The right end-state defense is the
-// EigenTrust reputation graph (sybil clusters self-vouch and gain zero
-// global trust); see `swarm-tips/CLAUDE.md` Phase 2. The vestigial
-// `GlobalState.min_escrow_lamports` slot is preserved for binary compat
-// with deployed 227-byte accounts; no instruction reads it.
-
-/// Per-client task-creation rate-limit window (Phase 3 blocker #2).
-/// Sliding window of 1 hour: a client can `create_task` at most
-/// `MAX_TASKS_PER_RATE_WINDOW` times within any 1-hour window. Window
-/// resets when the next `create_task` lands more than this many seconds
-/// after the current window's start.
+/// Per-client `create_task` rate-limit window. Used as the INITIAL value
+/// for `GlobalState.rate_limit_window_seconds`; multisig governance can
+/// adjust at runtime via `update_params` within
+/// `[MIN_RATE_LIMIT_WINDOW_SECONDS, MAX_RATE_LIMIT_WINDOW_SECONDS]`.
 pub const RATE_LIMIT_WINDOW_SECONDS: i64 = 3_600;
 
-/// Maximum task-creations allowed per `RATE_LIMIT_WINDOW_SECONDS` per
-/// client. Caps a single client's task-creation throughput; sybil
-/// attackers must spawn additional client wallets to exceed it. Each
-/// new wallet pays a small (~$0.13) one-time `ClientState` rent in
-/// addition to the recurring per-task fee bleed (~$0.50/task at 1%
-/// fee on the $50 escrow floor) — the rate limit's primary effect is
-/// forcing attackers to maintain more wallets, not the rent itself.
+/// Per-window task-creation cap. INITIAL value for
+/// `GlobalState.max_tasks_per_rate_window`; bounds enforced at update time.
 pub const MAX_TASKS_PER_RATE_WINDOW: u32 = 10;
 
-// ---------------------------------------------------------------------------
-// D3 governance bounds (2026-05-07)
-// ---------------------------------------------------------------------------
-// `RATE_LIMIT_WINDOW_SECONDS` and `MAX_TASKS_PER_RATE_WINDOW` moved from
-// compile-time consts to `GlobalState` governance params. The consts above
-// remain as INITIAL values used by `initialize`. After deploy, multisig
-// governance can adjust within the bounds below via `update_params`.
-
-/// Rate-limit window bounds: [1 minute, 1 day].
 pub const MIN_RATE_LIMIT_WINDOW_SECONDS: i64 = 60;
 pub const MAX_RATE_LIMIT_WINDOW_SECONDS: i64 = 86_400;
 
-/// Per-window task cap bounds: [1, 100].
 pub const MIN_TASKS_PER_RATE_WINDOW: u32 = 1;
 pub const MAX_TASKS_PER_RATE_WINDOW_CEILING: u32 = 100;
