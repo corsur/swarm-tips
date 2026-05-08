@@ -215,7 +215,22 @@ async fn build_discovery_state(
     let llm_classifier = xai_api_key
         .map(|key| crate::discovery::llm_classify::LlmClassifier::new(key, rpc_client.clone()));
 
-    discovery_db.map(|db| Arc::new(DiscoveryState::new(db, rpc_client.clone(), llm_classifier)))
+    let github_token = config::load_optional_secret(gcp_project_id, "github-token").await;
+    if github_token.is_none() {
+        tracing::warn!(
+            service = "mcp-server",
+            "github-token not found in Secret Manager — deep-analysis GitHub calls will use unauthenticated rate limits (60/hour/IP)"
+        );
+    }
+
+    discovery_db.map(|db| {
+        Arc::new(DiscoveryState::new(
+            db,
+            rpc_client.clone(),
+            llm_classifier,
+            github_token,
+        ))
+    })
 }
 
 /// Per-network RPC URLs for `/internal/build-verify-tx`: the request body

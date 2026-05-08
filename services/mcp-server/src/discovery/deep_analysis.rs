@@ -43,6 +43,7 @@ pub async fn run_deep_analysis(
     db: &FirestoreDb,
     http: &reqwest::Client,
     candidates: &[EnrichedServer],
+    github_token: Option<&str>,
 ) -> Result<DeepAnalysisSummary> {
     let started = std::time::Instant::now();
     let total = candidates.len();
@@ -53,7 +54,7 @@ pub async fn run_deep_analysis(
     let mut addresses_found = 0usize;
 
     for server in candidates {
-        let analysis = analyze_one(http, server).await;
+        let analysis = analyze_one(http, server, github_token).await;
         if !analysis.probed {
             skipped = skipped.saturating_add(1);
         } else {
@@ -123,7 +124,11 @@ pub fn select_top_candidates(servers: Vec<EnrichedServer>, n: usize) -> Vec<Enri
 
 /// Analyze one server. Best-effort across npm + GitHub — any individual
 /// lookup failure is swallowed and the relevant field is left None.
-async fn analyze_one(http: &reqwest::Client, server: &EnrichedServer) -> Layer3Analysis {
+async fn analyze_one(
+    http: &reqwest::Client,
+    server: &EnrichedServer,
+    github_token: Option<&str>,
+) -> Layer3Analysis {
     let probed_at = Utc::now();
     let mut analysis = Layer3Analysis {
         extracted_addresses: Vec::new(),
@@ -149,7 +154,7 @@ async fn analyze_one(http: &reqwest::Client, server: &EnrichedServer) -> Layer3A
     // GitHub repo metadata + README
     if let Some(repo_url) = &server.github_repo {
         if let Some((owner, repo)) = parse_github_url(repo_url) {
-            if let Some(stars) = fetch_github_stars(http, &owner, &repo).await {
+            if let Some(stars) = fetch_github_stars(http, &owner, &repo, github_token).await {
                 analysis.github_stars = Some(stars);
             }
             if let Some(readme) = fetch_github_readme(http, &owner, &repo).await {
@@ -179,13 +184,18 @@ async fn fetch_npm_weekly_downloads(http: &reqwest::Client, pkg: &str) -> Option
 }
 
 /// Fetch GitHub repo metadata, return stargazers count.
-async fn fetch_github_stars(http: &reqwest::Client, owner: &str, repo: &str) -> Option<u32> {
+async fn fetch_github_stars(
+    http: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    github_token: Option<&str>,
+) -> Option<u32> {
     let url = format!("https://api.github.com/repos/{owner}/{repo}");
     let mut req = http
         .get(&url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .header("Accept", "application/vnd.github+json");
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+    if let Some(token) = github_token {
         if !token.is_empty() {
             req = req.bearer_auth(token);
         }
@@ -359,7 +369,13 @@ pub async fn run_layer3_pass(
         .await
         .context("load discovery index for layer 3")?;
     let candidates = select_top_candidates(all_servers, MAX_SERVERS_PER_CYCLE);
-    let summary = run_deep_analysis(&state.db, &state.http, &candidates).await?;
+    let summary = run_deep_analysis(
+        &state.db,
+        &state.http,
+        &candidates,
+        state.github_token.as_deref(),
+    )
+    .await?;
 
     // Invalidate the cache so subsequent /earning-candidates and /primitives
     // calls re-read from Firestore and pick up the new Layer 3 fields.

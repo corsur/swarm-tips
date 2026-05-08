@@ -44,20 +44,29 @@ pub struct DiscoveryState {
     pub db: FirestoreDb,
     pub http: reqwest::Client,
     pub cache: Mutex<Option<DiscoveryCache>>,
-    /// Layer 2 classifier — populated only if `XAI_API_KEY` is set in the
-    /// environment. When None, the `/internal/mcp/llm-classify` endpoint
-    /// returns 503 and `refresh_discovery` skips Layer 2 entirely. Layer 1
-    /// keeps working in either case.
+    /// Layer 2 classifier — populated only if `xai-api-key` is loaded from
+    /// GCP Secret Manager at startup. When None, `/internal/mcp/llm-classify`
+    /// returns 503 and `refresh_discovery` skips Layer 2.
     pub llm: Option<LlmClassifier>,
+    /// GitHub bearer token for raising rate limits on stargazer / README
+    /// fetches in `deep_analysis`. Loaded from `github-token` in GCP Secret
+    /// Manager. None falls back to unauthenticated calls (60/hour/IP).
+    pub github_token: Option<String>,
 }
 
 impl DiscoveryState {
-    pub fn new(db: FirestoreDb, http: reqwest::Client, llm: Option<LlmClassifier>) -> Self {
+    pub fn new(
+        db: FirestoreDb,
+        http: reqwest::Client,
+        llm: Option<LlmClassifier>,
+        github_token: Option<String>,
+    ) -> Self {
         Self {
             db,
             http,
             cache: Mutex::new(None),
             llm,
+            github_token,
         }
     }
 }
