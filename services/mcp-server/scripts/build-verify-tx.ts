@@ -61,8 +61,17 @@ function parseArgs(): Record<string, string> {
 const SHILLBOT_PROGRAM_ID = new PublicKey(
   "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
 );
-const SB_PROGRAM_ID = new PublicKey(
+// Switchboard On-Demand has different program IDs per network.
+//   mainnet: SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv
+//   devnet:  Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2
+// The SDK's `PullFeed`/`Queue` constructors derive PDAs from this program ID,
+// so picking the wrong one means we can't read the feed account or build
+// valid crank instructions. Selected per `--network` arg below.
+const SB_PROGRAM_ID_MAINNET = new PublicKey(
   "SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv"
+);
+const SB_PROGRAM_ID_DEVNET = new PublicKey(
+  "Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2"
 );
 // SPL sysvars
 const SYSVAR_SLOT_HASHES = new PublicKey(
@@ -93,6 +102,10 @@ async function main() {
   const feedPubkey = new PublicKey(args["feed"]);
   const globalState = new PublicKey(args["global-state"]);
   const rpcUrl = args["rpc"];
+  const network =
+    args["network"] === "devnet" || rpcUrl.includes("devnet") ? "devnet" : "mainnet";
+  const SB_PROGRAM_ID =
+    network === "devnet" ? SB_PROGRAM_ID_DEVNET : SB_PROGRAM_ID_MAINNET;
 
   if (!taskId || !rpcUrl) {
     process.stderr.write(

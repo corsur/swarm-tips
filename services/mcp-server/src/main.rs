@@ -355,6 +355,7 @@ async fn build_verify_tx_handler(
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
 
+    let network_str = body["network"].as_str().unwrap_or("mainnet");
     let output = tokio::process::Command::new("tsx")
         .current_dir(script_dir)
         .arg(&script_path)
@@ -374,6 +375,8 @@ async fn build_verify_tx_handler(
         .arg(&global_state)
         .arg("--rpc")
         .arg(rpc_url)
+        .arg("--network")
+        .arg(network_str)
         .output()
         .await;
 
