@@ -20,8 +20,8 @@ import * as path from "path";
 const idl = JSON.parse(
   fs.readFileSync(
     path.join(__dirname, "../target/idl/coordination_game.json"),
-    "utf8",
-  ),
+    "utf8"
+  )
 );
 
 const TOURNAMENT_ID = process.env.TOURNAMENT_ID;
@@ -31,7 +31,7 @@ if (!TOURNAMENT_ID) {
 }
 const PROOFS_FILE = path.join(
   __dirname,
-  `tournament-${TOURNAMENT_ID}-proofs.json`,
+  `tournament-${TOURNAMENT_ID}-proofs.json`
 );
 
 async function main() {
@@ -46,7 +46,7 @@ async function main() {
 
   const proofs = JSON.parse(fs.readFileSync(PROOFS_FILE, "utf8"));
   const entry = proofs.claims.find(
-    (c: { wallet: string }) => c.wallet === wallet.toBase58(),
+    (c: { wallet: string }) => c.wallet === wallet.toBase58()
   );
   if (!entry) {
     console.error(`No claim found for ${wallet.toBase58()}`);
@@ -59,15 +59,15 @@ async function main() {
   idBuf.writeBigUInt64LE(BigInt(proofs.tournament_id));
   const [tournamentPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("tournament"), idBuf],
-    program.programId,
+    program.programId
   );
   const [playerProfilePda] = PublicKey.findProgramAddressSync(
     [Buffer.from("player"), idBuf, wallet.toBuffer()],
-    program.programId,
+    program.programId
   );
 
   const profile = await (program.account as any).playerProfile.fetch(
-    playerProfilePda,
+    playerProfilePda
   );
   if (profile.claimed) {
     console.log("Already claimed. Done.");
@@ -75,7 +75,7 @@ async function main() {
   }
 
   const proofBytes = entry.proof.map((hex: string) =>
-    Array.from(Buffer.from(hex, "hex")),
+    Array.from(Buffer.from(hex, "hex"))
   );
 
   const balanceBefore = await provider.connection.getBalance(wallet);

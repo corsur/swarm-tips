@@ -24,8 +24,8 @@ import * as path from "path";
 const idl = JSON.parse(
   fs.readFileSync(
     path.join(__dirname, "../target/idl/coordination_game.json"),
-    "utf8",
-  ),
+    "utf8"
+  )
 );
 
 const TOURNAMENT_ID = BigInt(process.env.TOURNAMENT_ID ?? "0");
@@ -52,14 +52,16 @@ async function main() {
   console.log(`Tournament ID: ${TOURNAMENT_ID}`);
   console.log(`Start:   ${new Date(START_TIME * 1000).toISOString()}`);
   console.log(
-    `End:     ${new Date(END_TIME * 1000).toISOString()} (${END_TIME_DAYS}d out)`,
+    `End:     ${new Date(
+      END_TIME * 1000
+    ).toISOString()} (${END_TIME_DAYS}d out)`
   );
 
   const idBuf = Buffer.alloc(8);
   idBuf.writeBigUInt64LE(TOURNAMENT_ID);
   const [tournamentPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("tournament"), idBuf],
-    program.programId,
+    program.programId
   );
   console.log(`Tournament PDA: ${tournamentPda.toBase58()}`);
 
@@ -73,7 +75,7 @@ async function main() {
     .createTournament(
       new anchor.BN(TOURNAMENT_ID.toString()),
       new anchor.BN(START_TIME),
-      new anchor.BN(END_TIME),
+      new anchor.BN(END_TIME)
     )
     .accountsPartial({
       tournament: tournamentPda,

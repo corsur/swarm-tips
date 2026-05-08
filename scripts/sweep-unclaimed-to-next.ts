@@ -21,8 +21,8 @@ import * as path from "path";
 const idl = JSON.parse(
   fs.readFileSync(
     path.join(__dirname, "../target/idl/coordination_game.json"),
-    "utf8",
-  ),
+    "utf8"
+  )
 );
 
 const SRC_ID = BigInt(process.env.SRC_TOURNAMENT_ID ?? "1");
@@ -33,7 +33,7 @@ function pdaForTournament(programId: PublicKey, id: bigint): PublicKey {
   buf.writeBigUInt64LE(id);
   const [pda] = PublicKey.findProgramAddressSync(
     [Buffer.from("tournament"), buf],
-    programId,
+    programId
   );
   return pda;
 }
@@ -54,7 +54,7 @@ async function main() {
   const destPda = pdaForTournament(program.programId, DEST_ID);
   const [globalConfigPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("global_config")],
-    program.programId,
+    program.programId
   );
 
   const src = await (program.account as any).tournament.fetch(srcPda);
@@ -63,10 +63,20 @@ async function main() {
   const destLamportsBefore = await provider.connection.getBalance(destPda);
 
   console.log(`src finalized:           ${src.finalized}`);
-  console.log(`src end_time:            ${new Date(Number(src.endTime) * 1000).toISOString()}`);
-  console.log(`src lamports on-chain:   ${srcLamports} (${srcLamports / 1e9} SOL)`);
+  console.log(
+    `src end_time:            ${new Date(
+      Number(src.endTime) * 1000
+    ).toISOString()}`
+  );
+  console.log(
+    `src lamports on-chain:   ${srcLamports} (${srcLamports / 1e9} SOL)`
+  );
   console.log(`dest finalized:          ${dest.finalized}`);
-  console.log(`dest active window:      ${new Date(Number(dest.startTime) * 1000).toISOString()} → ${new Date(Number(dest.endTime) * 1000).toISOString()}`);
+  console.log(
+    `dest active window:      ${new Date(
+      Number(dest.startTime) * 1000
+    ).toISOString()} → ${new Date(Number(dest.endTime) * 1000).toISOString()}`
+  );
   console.log(`dest prize_lamports:     ${dest.prizeLamports.toString()}`);
   console.log(`dest lamports on-chain:  ${destLamportsBefore}`);
 
@@ -88,7 +98,11 @@ async function main() {
   console.log(`src lamports after:      ${srcAfter} (rent floor only)`);
   console.log(`dest prize_lamports:     ${destAfter.prizeLamports.toString()}`);
   console.log(`dest lamports after:     ${destLamportsAfter}`);
-  console.log(`swept:                   ${destLamportsAfter - destLamportsBefore} lamports`);
+  console.log(
+    `swept:                   ${
+      destLamportsAfter - destLamportsBefore
+    } lamports`
+  );
 }
 
 main().catch((e) => {

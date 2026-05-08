@@ -103,7 +103,9 @@ async function main() {
   const globalState = new PublicKey(args["global-state"]);
   const rpcUrl = args["rpc"];
   const network =
-    args["network"] === "devnet" || rpcUrl.includes("devnet") ? "devnet" : "mainnet";
+    args["network"] === "devnet" || rpcUrl.includes("devnet")
+      ? "devnet"
+      : "mainnet";
   const SB_PROGRAM_ID =
     network === "devnet" ? SB_PROGRAM_ID_DEVNET : SB_PROGRAM_ID_MAINNET;
 

@@ -25,8 +25,8 @@ import * as path from "path";
 const idl = JSON.parse(
   fs.readFileSync(
     path.join(__dirname, "../target/idl/coordination_game.json"),
-    "utf8",
-  ),
+    "utf8"
+  )
 );
 
 const TOURNAMENT_ID = BigInt(process.env.TOURNAMENT_ID ?? "0");
@@ -37,7 +37,7 @@ if (TOURNAMENT_ID === 0n) {
 const MIN_GAMES_FOR_PAYOUT = 5n;
 const PROOFS_FILE = path.join(
   __dirname,
-  `tournament-${TOURNAMENT_ID}-proofs.json`,
+  `tournament-${TOURNAMENT_ID}-proofs.json`
 );
 
 interface PlayerEntry {
@@ -57,14 +57,13 @@ function leaf(wallet: PublicKey, amount: bigint): Uint8Array {
   const amountBytes = new Uint8Array(8);
   new DataView(amountBytes.buffer).setBigUint64(0, amount, true);
   return keccak_256(
-    Buffer.concat([Buffer.from([0x00]), wallet.toBuffer(), amountBytes]),
+    Buffer.concat([Buffer.from([0x00]), wallet.toBuffer(), amountBytes])
   );
 }
 
 function hashInternal(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const [left, right] = Buffer.compare(Buffer.from(a), Buffer.from(b)) <= 0
-    ? [a, b]
-    : [b, a];
+  const [left, right] =
+    Buffer.compare(Buffer.from(a), Buffer.from(b)) <= 0 ? [a, b] : [b, a];
   return keccak_256(Buffer.concat([Buffer.from([0x01]), left, right]));
 }
 
@@ -103,7 +102,9 @@ function getProof(layers: Uint8Array[][], idx: number): Uint8Array[] {
 }
 
 const toHex = (b: Uint8Array): string =>
-  Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
+  Array.from(b)
+    .map((x) => x.toString(16).padStart(2, "0"))
+    .join("");
 
 async function main() {
   const provider = anchor.AnchorProvider.env();
@@ -122,28 +123,42 @@ async function main() {
   idBuf.writeBigUInt64LE(TOURNAMENT_ID);
   const [tournamentPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("tournament"), idBuf],
-    program.programId,
+    program.programId
   );
   console.log(`Tournament PDA: ${tournamentPda.toBase58()}`);
 
   const [globalConfigPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("global_config")],
-    program.programId,
+    program.programId
   );
 
-  const tournamentData = await (program.account as any).tournament.fetch(tournamentPda);
-  console.log(`  prize_lamports: ${tournamentData.prizeLamports.toString()} (${Number(tournamentData.prizeLamports) / 1e9} SOL)`);
+  const tournamentData = await (program.account as any).tournament.fetch(
+    tournamentPda
+  );
+  console.log(
+    `  prize_lamports: ${tournamentData.prizeLamports.toString()} (${
+      Number(tournamentData.prizeLamports) / 1e9
+    } SOL)`
+  );
   console.log(`  game_count:     ${tournamentData.gameCount.toString()}`);
-  console.log(`  end_time:       ${tournamentData.endTime.toString()} (${new Date(Number(tournamentData.endTime) * 1000).toISOString()})`);
+  console.log(
+    `  end_time:       ${tournamentData.endTime.toString()} (${new Date(
+      Number(tournamentData.endTime) * 1000
+    ).toISOString()})`
+  );
   console.log(`  finalized:      ${tournamentData.finalized}`);
 
   const now = Math.floor(Date.now() / 1000);
   if (Number(tournamentData.endTime) >= now) {
-    console.error(`Tournament has not ended (end_time=${tournamentData.endTime}, now=${now})`);
+    console.error(
+      `Tournament has not ended (end_time=${tournamentData.endTime}, now=${now})`
+    );
     process.exit(1);
   }
   if (tournamentData.finalized) {
-    console.log("Tournament already finalized. Skipping the on-chain call; will only refresh the proofs file.");
+    console.log(
+      "Tournament already finalized. Skipping the on-chain call; will only refresh the proofs file."
+    );
   }
 
   const prizeLamports = BigInt(tournamentData.prizeLamports.toString());
@@ -170,10 +185,12 @@ async function main() {
     }))
     .filter((p: PlayerEntry) => p.totalGames >= MIN_GAMES_FOR_PAYOUT)
     .sort((a: PlayerEntry, b: PlayerEntry) =>
-      a.wallet.toBase58().localeCompare(b.wallet.toBase58()),
+      a.wallet.toBase58().localeCompare(b.wallet.toBase58())
     );
 
-  console.log(`  eligible (>= ${MIN_GAMES_FOR_PAYOUT} games): ${eligible.length}`);
+  console.log(
+    `  eligible (>= ${MIN_GAMES_FOR_PAYOUT} games): ${eligible.length}`
+  );
 
   const totalScore = eligible.reduce((s, p) => s + p.score, 0n);
   console.log(`  total score across eligible players: ${totalScore}`);
@@ -187,7 +204,7 @@ async function main() {
   // scorer so the sum always equals prize_lamports exactly (the on-chain
   // tournament holds prize_lamports + rent; we must not over-distribute).
   const entitlements: bigint[] = eligible.map(
-    (p) => (prizeLamports * p.score) / totalScore,
+    (p) => (prizeLamports * p.score) / totalScore
   );
   const distributedSoFar = entitlements.reduce((s, e) => s + e, 0n);
   const dust = prizeLamports - distributedSoFar;
@@ -203,11 +220,16 @@ async function main() {
   for (let i = 0; i < eligible.length; i++) {
     console.log(
       `  ${eligible[i].wallet.toBase58()}: score=${eligible[i].score} ` +
-      `wins=${eligible[i].wins}/${eligible[i].totalGames} ` +
-      `→ ${entitlements[i]} lamports (${Number(entitlements[i]) / 1e9} SOL)`,
+        `wins=${eligible[i].wins}/${eligible[i].totalGames} ` +
+        `→ ${entitlements[i]} lamports (${Number(entitlements[i]) / 1e9} SOL)`
     );
   }
-  console.log(`  TOTAL: ${entitlements.reduce((s, e) => s + e, 0n)} = ${prizeLamports} lamports`);
+  console.log(
+    `  TOTAL: ${entitlements.reduce(
+      (s, e) => s + e,
+      0n
+    )} = ${prizeLamports} lamports`
+  );
 
   // Build merkle tree
   const leaves = eligible.map((p, i) => leaf(p.wallet, entitlements[i]));

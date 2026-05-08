@@ -22,7 +22,7 @@ import * as path from "path";
 import { execSync } from "child_process";
 
 const idl = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "../target/idl/shillbot.json"), "utf8"),
+  fs.readFileSync(path.join(__dirname, "../target/idl/shillbot.json"), "utf8")
 );
 
 const FIRESTORE_PROJECT = "coordination-game-prod";
@@ -50,16 +50,22 @@ interface AuditOutput {
 
 function loadAudit(): AuditOutput {
   const result = execSync(
-    `/tmp/fs-query-venv/bin/python3 ${path.join(__dirname, "audit-stuck-shillbot.py")}`,
-    { encoding: "utf8" },
+    `/tmp/fs-query-venv/bin/python3 ${path.join(
+      __dirname,
+      "audit-stuck-shillbot.py"
+    )}`,
+    { encoding: "utf8" }
   );
   return JSON.parse(result);
 }
 
 function updateFirestoreState(taskId: string, newState: string): void {
   execSync(
-    `/tmp/fs-query-venv/bin/python3 ${path.join(__dirname, "reconcile-firestore-state.py")} ${JSON.stringify(taskId)} ${newState}`,
-    { encoding: "utf8" },
+    `/tmp/fs-query-venv/bin/python3 ${path.join(
+      __dirname,
+      "reconcile-firestore-state.py"
+    )} ${JSON.stringify(taskId)} ${newState}`,
+    { encoding: "utf8" }
   );
 }
 
@@ -86,7 +92,7 @@ async function main() {
 
   const [globalPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("shillbot_global")],
-    new PublicKey(SHILLBOT_PROGRAM_ID),
+    new PublicKey(SHILLBOT_PROGRAM_ID)
   );
 
   // ---- Expire ----
@@ -96,7 +102,9 @@ async function main() {
     try {
       task = await (program.account as any).task.fetch(taskPda);
     } catch (e) {
-      console.log(`  ${t.on_chain_address}: account not found (already expired) — reconcile fs only`);
+      console.log(
+        `  ${t.on_chain_address}: account not found (already expired) — reconcile fs only`
+      );
       try {
         updateFirestoreState(t.task_id, "expired");
       } catch (e: any) {
@@ -105,7 +113,11 @@ async function main() {
       continue;
     }
 
-    process.stdout.write(`  expire ${t.on_chain_address} (state=${Object.keys(task.state)[0]}, escrow=${task.escrowLamports.toString()})… `);
+    process.stdout.write(
+      `  expire ${t.on_chain_address} (state=${
+        Object.keys(task.state)[0]
+      }, escrow=${task.escrowLamports.toString()})… `
+    );
     try {
       const sig = await (program.methods as any)
         .expireTask()
@@ -133,21 +145,27 @@ async function main() {
     try {
       task = await (program.account as any).task.fetch(taskPda);
     } catch (e) {
-      console.log(`  ${t.on_chain_address}: account not found — reconcile fs only`);
+      console.log(
+        `  ${t.on_chain_address}: account not found — reconcile fs only`
+      );
       updateFirestoreState(t.task_id, "finalized");
       continue;
     }
     const stateName = Object.keys(task.state)[0];
     if (stateName !== "verified") {
-      console.log(`  ${t.on_chain_address}: state=${stateName} not Verified — skip`);
+      console.log(
+        `  ${t.on_chain_address}: state=${stateName} not Verified — skip`
+      );
       continue;
     }
 
     const [agentStatePda] = PublicKey.findProgramAddressSync(
       [Buffer.from("agent_state"), task.agent.toBuffer()],
-      new PublicKey(SHILLBOT_PROGRAM_ID),
+      new PublicKey(SHILLBOT_PROGRAM_ID)
     );
-    const agentStateAccount = await provider.connection.getAccountInfo(agentStatePda);
+    const agentStateAccount = await provider.connection.getAccountInfo(
+      agentStatePda
+    );
     const remainingAccounts = agentStateAccount
       ? [{ pubkey: agentStatePda, isSigner: false, isWritable: true }]
       : [];
@@ -176,7 +194,9 @@ async function main() {
 
   // ---- Reconcile already-closed ----
   for (const t of firestoreStale) {
-    process.stdout.write(`  reconcile fs ${t.task_id.slice(0, 36)}… (was ${t.fs_state}) `);
+    process.stdout.write(
+      `  reconcile fs ${t.task_id.slice(0, 36)}… (was ${t.fs_state}) `
+    );
     try {
       // Already closed — pick "expired" as the canonical reconciled state
       // since we can't tell from the closed account whether it was expire or finalize.
