@@ -3,6 +3,33 @@ use serde::{Deserialize, Serialize};
 
 const MAX_TASK_LIMIT: u32 = 100;
 
+/// Build the `?network=<n>` query suffix the orchestrator uses to dispatch
+/// per-network state. Returns an empty string when `network` is `None`,
+/// preserving the orchestrator's mainnet-default behaviour. The suffix
+/// always starts with `?`; callers that need to append to a URL that
+/// already carries a query string should build the `&network=...` token
+/// inline (currently only `list_tasks`, which already has `?limit=...`).
+fn network_query_suffix(network: Option<&str>) -> String {
+    // Precondition: when present, the network token must not be empty —
+    // otherwise we'd emit `?network=` and the orchestrator would route to
+    // its default rather than rejecting the request.
+    debug_assert!(
+        network.map(|n| !n.is_empty()).unwrap_or(true),
+        "network must be None or a non-empty token"
+    );
+    let result = match network {
+        Some(n) => format!("?network={}", urlencoding::encode(n)),
+        None => String::new(),
+    };
+    // Postcondition: an emitted suffix is well-formed (`?network=...`),
+    // never just `?network=` with an empty value.
+    debug_assert!(
+        result.is_empty() || result.starts_with("?network="),
+        "suffix must be empty or start with `?network=`"
+    );
+    result
+}
+
 /// HTTP client for proxying read operations to the orchestrator API.
 pub struct OrchestratorProxy {
     client: reqwest::Client,
@@ -165,12 +192,16 @@ impl OrchestratorProxy {
         &self,
         limit: Option<u32>,
         min_price: Option<u64>,
+        network: Option<&str>,
     ) -> Result<TaskListResponse, McpServiceError> {
         let effective_limit = limit.unwrap_or(20).min(MAX_TASK_LIMIT);
 
         let mut url = format!("{}/tasks?limit={effective_limit}", self.base_url);
         if let Some(price) = min_price {
             url.push_str(&format!("&min_price={price}"));
+        }
+        if let Some(n) = network {
+            url.push_str(&format!("&network={}", urlencoding::encode(n)));
         }
 
         let response = self.client.get(&url).send().await.map_err(|e| {
@@ -204,14 +235,19 @@ impl OrchestratorProxy {
     }
 
     /// Get full details for a specific task.
-    pub async fn get_task_details(&self, task_id: &str) -> Result<TaskDetails, McpServiceError> {
+    pub async fn get_task_details(
+        &self,
+        task_id: &str,
+        network: Option<&str>,
+    ) -> Result<TaskDetails, McpServiceError> {
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
                 "task_id must not be empty".to_string(),
             ));
         }
 
-        let url = format!("{}/tasks/{task_id}", self.base_url);
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{task_id}{qs}", self.base_url);
 
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "coordination-mcp-server", error = %e, task_id = %task_id, "orchestrator get_task_details failed");
@@ -245,6 +281,7 @@ impl OrchestratorProxy {
     pub async fn get_earnings(
         &self,
         wallet_pubkey: &str,
+        network: Option<&str>,
     ) -> Result<EarningsResponse, McpServiceError> {
         if wallet_pubkey.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -252,7 +289,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/agent/earnings", self.base_url);
+        let qs = network_query_suffix(network);
+        let url = format!("{}/agent/earnings{qs}", self.base_url);
 
         let response = self
             .client
@@ -298,6 +336,7 @@ impl OrchestratorProxy {
         &self,
         task_id: &str,
         wallet_pubkey: &str,
+        network: Option<&str>,
     ) -> Result<TransactionResponse, McpServiceError> {
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -310,7 +349,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/tasks/{task_id}/claim", self.base_url);
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{task_id}/claim{qs}", self.base_url);
         let response = self
             .client
             .post(&url)
@@ -352,6 +392,7 @@ impl OrchestratorProxy {
         task_id: &str,
         wallet_pubkey: &str,
         content_id: &str,
+        network: Option<&str>,
     ) -> Result<TransactionResponse, McpServiceError> {
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -369,7 +410,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/tasks/{task_id}/submit", self.base_url);
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{task_id}/submit{qs}", self.base_url);
         let body = serde_json::json!({ "content_id": content_id });
         let response = self
             .client
@@ -412,6 +454,7 @@ impl OrchestratorProxy {
         &self,
         task_id: &str,
         wallet_pubkey: &str,
+        network: Option<&str>,
     ) -> Result<VerificationDataResponse, McpServiceError> {
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -419,7 +462,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/tasks/{task_id}/build-verify", self.base_url);
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{task_id}/build-verify{qs}", self.base_url);
         let response = self
             .client
             .post(&url)
@@ -450,6 +494,7 @@ impl OrchestratorProxy {
         &self,
         task_id: &str,
         wallet_pubkey: &str,
+        network: Option<&str>,
     ) -> Result<TransactionResponse, McpServiceError> {
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -457,7 +502,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/tasks/{task_id}/build-finalize", self.base_url);
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{task_id}/build-finalize{qs}", self.base_url);
         let response = self
             .client
             .post(&url)
@@ -491,6 +537,7 @@ impl OrchestratorProxy {
         &self,
         task_id: &str,
         wallet_pubkey: &str,
+        network: Option<&str>,
     ) -> Result<TransactionResponse, McpServiceError> {
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -503,7 +550,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/tasks/{task_id}/approve", self.base_url);
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{task_id}/approve{qs}", self.base_url);
         let response = self
             .client
             .post(&url)
@@ -552,10 +600,7 @@ impl OrchestratorProxy {
             ));
         }
 
-        let qs = match network {
-            Some(n) => format!("?network={}", urlencoding::encode(n)),
-            None => String::new(),
-        };
+        let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/attestation{qs}", self.base_url);
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator get_attestation failed");
@@ -601,10 +646,7 @@ impl OrchestratorProxy {
             )));
         }
 
-        let qs = match network {
-            Some(n) => format!("?network={}", urlencoding::encode(n)),
-            None => String::new(),
-        };
+        let qs = network_query_suffix(network);
         let url = format!("{}/tasks/by-pda/{task_pda}/attestation{qs}", self.base_url);
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, task_pda = %task_pda, "orchestrator get_attestation_by_pda failed");
@@ -630,6 +672,7 @@ impl OrchestratorProxy {
     pub async fn list_pending_approval(
         &self,
         wallet_pubkey: &str,
+        network: Option<&str>,
     ) -> Result<TaskListResponse, McpServiceError> {
         if wallet_pubkey.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -637,7 +680,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/client/pending-approval", self.base_url);
+        let qs = network_query_suffix(network);
+        let url = format!("{}/client/pending-approval{qs}", self.base_url);
         let response = self
             .client
             .get(&url)
@@ -674,6 +718,7 @@ impl OrchestratorProxy {
         wallet_pubkey: &str,
         tx_signature: &str,
         action: ConfirmAction,
+        network: Option<&str>,
     ) -> Result<ConfirmTaskResponse, McpServiceError> {
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
@@ -691,7 +736,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/tasks/{task_id}/confirm", self.base_url);
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{task_id}/confirm{qs}", self.base_url);
         let body = serde_json::json!({
             "tx_signature": tx_signature,
             "action": action,
@@ -1026,6 +1072,39 @@ mod tests {
     }
 
     #[test]
+    fn network_query_suffix_none_is_empty() {
+        // Mainnet-default behaviour: omitting the network must produce no
+        // query suffix so the orchestrator's existing routes keep working
+        // unchanged for clients that don't pass `network`.
+        assert_eq!(network_query_suffix(None), "");
+    }
+
+    #[test]
+    fn network_query_suffix_devnet_is_url_encoded() {
+        // Devnet is the primary non-default value; the orchestrator
+        // dispatches per-network internally based on this exact token.
+        assert_eq!(network_query_suffix(Some("devnet")), "?network=devnet");
+    }
+
+    #[test]
+    fn network_query_suffix_mainnet_is_explicit_when_passed() {
+        // We don't strip mainnet here — let the orchestrator handle it.
+        // This keeps the proxy honest: what came in goes out, modulo
+        // url-encoding.
+        assert_eq!(network_query_suffix(Some("mainnet")), "?network=mainnet");
+    }
+
+    #[test]
+    fn network_query_suffix_url_encodes_unexpected_chars() {
+        // The handler validates the token before reaching the proxy, but
+        // belt-and-suspenders: anything weird that does sneak through is
+        // url-encoded so it can't break the URL parse on the orchestrator
+        // side. `=` -> `%3D`.
+        let suffix = network_query_suffix(Some("a=b"));
+        assert_eq!(suffix, "?network=a%3Db");
+    }
+
+    #[test]
     fn test_earnings_response_serialization() {
         let earnings = EarningsResponse {
             total_earned: 10_000_000,
@@ -1038,5 +1117,367 @@ mod tests {
         let parsed: EarningsResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.total_earned, 10_000_000);
         assert_eq!(parsed.tasks_completed, 5);
+    }
+
+    /// Flow tests: every Shillbot proxy method must forward
+    /// `network = Some("devnet")` as a `?network=devnet` query string. The
+    /// orchestrator already dispatches per-network internally based on this
+    /// exact token; the regression risk we're guarding against is the proxy
+    /// silently dropping the parameter and pinning every call to mainnet.
+    ///
+    /// We use `wiremock` to stand up a fake orchestrator that asserts the
+    /// query string the proxy emits. Each method gets its own happy-path
+    /// devnet flow so a failure points at the offending method without
+    /// fishing through a single combined assertion.
+    mod network_flow_tests {
+        use super::*;
+        use wiremock::matchers::{header, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        /// Minimal `TaskSummary`-shaped JSON the proxy can deserialize.
+        fn minimal_task_json(task_id: &str, state: &str) -> serde_json::Value {
+            serde_json::json!({
+                "task_id": task_id,
+                "state": state,
+                "platform": 5,
+                "quality_threshold": 0,
+            })
+        }
+
+        /// Minimal `TransactionResponse`-shaped JSON.
+        fn minimal_tx_json(task_id: &str) -> serde_json::Value {
+            serde_json::json!({
+                "message": "ok",
+                "task_id": task_id,
+                "transaction": "AAAA",
+            })
+        }
+
+        #[tokio::test]
+        async fn list_tasks_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tasks"))
+                .and(query_param("network", "devnet"))
+                .and(query_param("limit", "20"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "tasks": [],
+                    "next_cursor": null,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            let result = proxy
+                .list_tasks(None, None, Some("devnet"))
+                .await
+                .expect("ok");
+            assert!(result.tasks.is_empty());
+        }
+
+        #[tokio::test]
+        async fn list_tasks_no_network_omits_query_param() {
+            // Mainnet-default behaviour: the orchestrator's default route
+            // must keep working unchanged when network is None.
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tasks"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "tasks": [],
+                    "next_cursor": null,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            // Verify the request URL had no `network` param. Wiremock
+            // doesn't expose a "missing param" matcher cleanly, so we
+            // pull the request log and assert it directly.
+            proxy.list_tasks(None, None, None).await.expect("ok");
+            let received = server.received_requests().await.expect("requests recorded");
+            assert_eq!(received.len(), 1);
+            let url = received[0].url.as_str();
+            assert!(
+                !url.contains("network="),
+                "expected no network query param when network=None, got url={url}"
+            );
+        }
+
+        #[tokio::test]
+        async fn get_task_details_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tasks/c:t"))
+                .and(query_param("network", "devnet"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(minimal_task_json("c:t", "open")),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            let task = proxy
+                .get_task_details("c:t", Some("devnet"))
+                .await
+                .expect("ok");
+            assert_eq!(task.task_id, "c:t");
+        }
+
+        #[tokio::test]
+        async fn claim_task_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/claim"))
+                .and(query_param("network", "devnet"))
+                .and(header("authorization", "Bearer wallet1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            let resp = proxy
+                .claim_task("c:t", "wallet1", Some("devnet"))
+                .await
+                .expect("ok");
+            assert_eq!(resp.task_id, "c:t");
+        }
+
+        #[tokio::test]
+        async fn submit_task_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/submit"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            let resp = proxy
+                .submit_task("c:t", "wallet1", "yt-abc", Some("devnet"))
+                .await
+                .expect("ok");
+            assert_eq!(resp.task_id, "c:t");
+        }
+
+        #[tokio::test]
+        async fn get_verification_data_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/build-verify"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "task_id": "c:t",
+                    "task_pda": "PDA111",
+                    "composite_score": 750_000,
+                    "verification_hash": "deadbeef",
+                    "global_state": "GS",
+                    "switchboard_feed": "FEED",
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            let resp = proxy
+                .get_verification_data("c:t", "wallet1", Some("devnet"))
+                .await
+                .expect("ok");
+            assert_eq!(resp.task_id, "c:t");
+            assert_eq!(resp.composite_score, 750_000);
+        }
+
+        #[tokio::test]
+        async fn build_finalize_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/build-finalize"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            proxy
+                .build_finalize("c:t", "wallet1", Some("devnet"))
+                .await
+                .expect("ok");
+        }
+
+        #[tokio::test]
+        async fn approve_task_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/approve"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            proxy
+                .approve_task("c:t", "wallet1", Some("devnet"))
+                .await
+                .expect("ok");
+        }
+
+        #[tokio::test]
+        async fn list_pending_approval_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/client/pending-approval"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "tasks": [],
+                    "next_cursor": null,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            let resp = proxy
+                .list_pending_approval("wallet1", Some("devnet"))
+                .await
+                .expect("ok");
+            assert!(resp.tasks.is_empty());
+        }
+
+        #[tokio::test]
+        async fn confirm_task_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/confirm"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "task_id": "c:t",
+                    "action": "claim",
+                    "message": "ok",
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            proxy
+                .confirm_task(
+                    "c:t",
+                    "wallet1",
+                    "sig",
+                    ConfirmAction::Claim,
+                    Some("devnet"),
+                )
+                .await
+                .expect("ok");
+        }
+
+        #[tokio::test]
+        async fn get_earnings_forwards_devnet_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/agent/earnings"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "total_earned": 0u64,
+                    "tasks_completed": 0u32,
+                    "average_score": 0u64,
+                    "pending_tasks": 0u32,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            proxy
+                .get_earnings("wallet1", Some("devnet"))
+                .await
+                .expect("ok");
+        }
+
+        /// End-to-end flow test (the project standard's "flow tests with
+        /// mocked I/O"): claim_task -> submit_task -> get_verification_data
+        /// -> build_finalize, all with `network = "devnet"`. Asserts each
+        /// of the four mocks is hit exactly once, with the network query
+        /// string present on every call. Catches a regression where any
+        /// single method drops the param mid-pipeline.
+        #[tokio::test]
+        async fn earn_lifecycle_flow_threads_devnet_through_every_call() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/claim"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/submit"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/build-verify"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "task_id": "c:t",
+                    "task_pda": "PDA111",
+                    "composite_score": 1u64,
+                    "verification_hash": "h",
+                    "global_state": "g",
+                    "switchboard_feed": "f",
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/build-finalize"))
+                .and(query_param("network", "devnet"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri());
+            proxy
+                .claim_task("c:t", "wallet1", Some("devnet"))
+                .await
+                .expect("claim ok");
+            proxy
+                .submit_task("c:t", "wallet1", "yt-id", Some("devnet"))
+                .await
+                .expect("submit ok");
+            proxy
+                .get_verification_data("c:t", "wallet1", Some("devnet"))
+                .await
+                .expect("verify-data ok");
+            proxy
+                .build_finalize("c:t", "wallet1", Some("devnet"))
+                .await
+                .expect("finalize ok");
+
+            // The `expect(1)` clauses on each Mock above are checked at
+            // server drop. Make the assertion explicit anyway by counting
+            // the recorded requests — four calls, four hits.
+            let requests = server.received_requests().await.expect("requests recorded");
+            assert_eq!(requests.len(), 4, "expected exactly four orchestrator hits");
+            for req in requests {
+                assert!(
+                    req.url.query().unwrap_or("").contains("network=devnet"),
+                    "request {} missing network=devnet query: {}",
+                    req.url.path(),
+                    req.url
+                );
+            }
+        }
     }
 }

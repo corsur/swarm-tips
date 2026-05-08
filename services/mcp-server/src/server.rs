@@ -37,7 +37,19 @@ pub struct SharedState {
     /// join_queue). No live tool currently consumes it.
     #[allow(dead_code)]
     pub game_api: GameApiProxy,
+    /// Default RPC URL — selected at startup based on `SOLANA_NETWORK`.
+    /// Used for any read path that doesn't accept a per-call network
+    /// override (currently the on-chain reads in `agent_profile` and the
+    /// game leaderboard).
     pub solana_rpc_url: String,
+    /// Mainnet RPC URL. Used by `shillbot_submit_tx` and
+    /// `shillbot_verify_task` when `network == None | Some("mainnet")`.
+    pub solana_rpc_url_mainnet: String,
+    /// Devnet RPC URL. Used by `shillbot_submit_tx` and
+    /// `shillbot_verify_task` when `network == Some("devnet")`. Without
+    /// the right URL the broadcast lands on a different cluster from
+    /// the unsigned tx and the orchestrator's confirm step fails.
+    pub solana_rpc_url_devnet: String,
     pub rpc_client: reqwest::Client,
     pub game_sessions: Arc<GameSessionManager>,
     #[allow(dead_code)]
@@ -65,12 +77,22 @@ pub struct ListAvailableTasksArgs {
     pub limit: Option<u32>,
     /// Minimum price in lamports to filter tasks (optional).
     pub min_price: Option<u64>,
+    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
+    /// the orchestrator which dispatches per-network state. Mismatched
+    /// network = the on-chain accounts won't be found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GetTaskDetailsArgs {
     /// The unique task identifier.
     pub task_id: String,
+    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
+    /// the orchestrator which dispatches per-network state. Mismatched
+    /// network = the on-chain accounts won't be found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -78,6 +100,11 @@ pub struct ClaimTaskArgs {
     /// The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned
     /// by `list_available_tasks`.
     pub task_id: String,
+    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
+    /// the orchestrator which dispatches per-network state. Mismatched
+    /// network = the on-chain accounts won't be found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -112,6 +139,11 @@ pub struct SubmitWorkArgs {
     /// The content ID of the completed work (YouTube video ID, tweet ID,
     /// game session ID, etc.).
     pub content_id: String,
+    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
+    /// the orchestrator which dispatches per-network state. Mismatched
+    /// network = the on-chain accounts won't be found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -123,6 +155,26 @@ pub struct ShillbotSubmitTxArgs {
     /// Base64-encoded signed Solana transaction returned by `claim_task` /
     /// `submit_work` and signed locally by the agent's wallet.
     pub signed_transaction: String,
+    /// Solana network. `"mainnet"` (default) or `"devnet"`. Selects the
+    /// RPC endpoint the signed transaction is broadcast to AND the
+    /// orchestrator's per-network confirmation route. Mismatched network
+    /// = the broadcast lands on a different cluster than the unsigned tx
+    /// was built for, and the orchestrator's confirm step will not find
+    /// the corresponding on-chain account.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+}
+
+/// Argument struct for tools that just need the network discriminator
+/// (currently `shillbot_list_pending_approval`). Lets us mirror the
+/// validation pattern from the other tools without inventing an empty
+/// struct.
+#[derive(Debug, serde::Deserialize, JsonSchema, Default)]
+pub struct NetworkOnlyArgs {
+    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
+    /// the orchestrator which dispatches per-network state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -282,27 +334,32 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_list_available_tasks",
-        description = "[READ] List open Shillbot marketplace tasks. Agents can browse content creation opportunities (YouTube Shorts, X posts, etc.) with on-chain escrow. Returns task IDs, briefs, payment amounts, and platforms. Shillbot-specific deep query with brief/blocklist/brand-voice details — for cross-source aggregated discovery use list_earning_opportunities instead.",
+        description = "[READ] List open Shillbot marketplace tasks. Agents can browse content creation opportunities (YouTube Shorts, X posts, etc.) with on-chain escrow. Returns task IDs, briefs, payment amounts, and platforms. Shillbot-specific deep query with brief/blocklist/brand-voice details — for cross-source aggregated discovery use list_earning_opportunities instead. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_list_available_tasks(
         &self,
         Parameters(args): Parameters<ListAvailableTasksArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let network = parse_network_arg(args.network.as_deref())?;
         let result = self
             .state
             .orchestrator
-            .list_tasks(args.limit, args.min_price)
+            .list_tasks(args.limit, args.min_price, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        tracing::info!(task_count = result.tasks.len(), "listed available tasks");
+        tracing::info!(
+            task_count = result.tasks.len(),
+            network = network.unwrap_or("mainnet"),
+            "listed available tasks"
+        );
         Ok(text_result(&result))
     }
 
     #[tool(
         name = "shillbot_get_task_details",
-        description = "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Use this before calling shillbot_claim_task.",
+        description = "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Use this before calling shillbot_claim_task. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_get_task_details(
@@ -312,21 +369,26 @@ impl SwarmTipsMcp {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
+        let network = parse_network_arg(args.network.as_deref())?;
 
         let result = self
             .state
             .orchestrator
-            .get_task_details(&args.task_id)
+            .get_task_details(&args.task_id, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        tracing::info!(task_id = %args.task_id, "retrieved task details");
+        tracing::info!(
+            task_id = %args.task_id,
+            network = network.unwrap_or("mainnet"),
+            "retrieved task details"
+        );
         Ok(text_result(&result))
     }
 
     #[tool(
         name = "shillbot_claim_task",
-        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call register_wallet first).",
+        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call register_wallet first). Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_claim_task(
@@ -337,6 +399,7 @@ impl SwarmTipsMcp {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
+        let network = parse_network_arg(args.network.as_deref())?;
 
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
@@ -346,11 +409,16 @@ impl SwarmTipsMcp {
         let response = self
             .state
             .orchestrator
-            .claim_task(&args.task_id, &wallet_pubkey)
+            .claim_task(&args.task_id, &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        tracing::info!(task_id = %args.task_id, wallet = %wallet_pubkey, "claim_task: unsigned tx built");
+        tracing::info!(
+            task_id = %args.task_id,
+            wallet = %wallet_pubkey,
+            network = network.unwrap_or("mainnet"),
+            "claim_task: unsigned tx built"
+        );
 
         let result = serde_json::json!({
             "action": "claim",
@@ -363,7 +431,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_submit_work",
-        description = "[EARN: SOL] Submit completed work for a claimed Shillbot task. Provide the content_id (YouTube video ID, tweet ID, game session ID, etc.). Returns an unsigned base64 Solana transaction — sign locally and submit via shillbot_submit_tx with action=\"submit\". On-chain verification runs at T+7d via Switchboard oracle, then payment is released based on engagement metrics.",
+        description = "[EARN: SOL] Submit completed work for a claimed Shillbot task. Provide the content_id (YouTube video ID, tweet ID, game session ID, etc.). Returns an unsigned base64 Solana transaction — sign locally and submit via shillbot_submit_tx with action=\"submit\". On-chain verification runs at T+7d via Switchboard oracle, then payment is released based on engagement metrics. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_work(
@@ -377,6 +445,7 @@ impl SwarmTipsMcp {
         if args.content_id.is_empty() {
             return Err(invalid_input("content_id is required"));
         }
+        let network = parse_network_arg(args.network.as_deref())?;
 
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
@@ -386,7 +455,7 @@ impl SwarmTipsMcp {
         let response = self
             .state
             .orchestrator
-            .submit_task(&args.task_id, &wallet_pubkey, &args.content_id)
+            .submit_task(&args.task_id, &wallet_pubkey, &args.content_id, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -394,6 +463,7 @@ impl SwarmTipsMcp {
             task_id = %args.task_id,
             content_id = %args.content_id,
             wallet = %wallet_pubkey,
+            network = network.unwrap_or("mainnet"),
             "submit_work: unsigned tx built"
         );
 
@@ -409,17 +479,18 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_verify_task",
-        description = "[EARN: SOL] Build an unsigned verify_task transaction bundled with a per-task Switchboard oracle feed update. The verifier must have scored the task first (wait for the verification delay — 5 minutes for game-play, 7 days for YouTube). Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"verify\". One transaction, one fee — the oracle crank and on-chain verification happen atomically.",
+        description = "[EARN: SOL] Build an unsigned verify_task transaction bundled with a per-task Switchboard oracle feed update. The verifier must have scored the task first (wait for the verification delay — 5 minutes for game-play, 7 days for YouTube). Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"verify\". One transaction, one fee — the oracle crank and on-chain verification happen atomically. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_verify_task(
         &self,
-        Parameters(args): Parameters<ClaimTaskArgs>, // reuse — just needs task_id
+        Parameters(args): Parameters<ClaimTaskArgs>, // reuse — just needs task_id (+ network)
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
+        let network = parse_network_arg(args.network.as_deref())?;
 
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
@@ -430,17 +501,13 @@ impl SwarmTipsMcp {
         let vdata = self
             .state
             .orchestrator
-            .get_verification_data(&args.task_id, &wallet_pubkey)
+            .get_verification_data(&args.task_id, &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        let unsigned_tx = run_build_verify_tx(
-            &args.task_id,
-            &wallet_pubkey,
-            &vdata,
-            &self.state.solana_rpc_url,
-        )
-        .await?;
+        let rpc_url = self.rpc_url_for_network(network);
+        let unsigned_tx =
+            run_build_verify_tx(&args.task_id, &wallet_pubkey, &vdata, rpc_url).await?;
 
         let result = serde_json::json!({
             "action": "verify",
@@ -453,17 +520,18 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_finalize_task",
-        description = "[EARN: SOL] Finalize a verified Shillbot task after the challenge window. Transfers payment from on-chain escrow to the agent's wallet, protocol fee to treasury, and closes the task account. Permissionless — anyone can call after the challenge deadline. Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"finalize\".",
+        description = "[EARN: SOL] Finalize a verified Shillbot task after the challenge window. Transfers payment from on-chain escrow to the agent's wallet, protocol fee to treasury, and closes the task account. Permissionless — anyone can call after the challenge deadline. Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"finalize\". Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_finalize_task(
         &self,
-        Parameters(args): Parameters<ClaimTaskArgs>, // reuse — just needs task_id
+        Parameters(args): Parameters<ClaimTaskArgs>, // reuse — just needs task_id (+ network)
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
+        let network = parse_network_arg(args.network.as_deref())?;
 
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
@@ -473,7 +541,7 @@ impl SwarmTipsMcp {
         let response = self
             .state
             .orchestrator
-            .build_finalize(&args.task_id, &wallet_pubkey)
+            .build_finalize(&args.task_id, &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -488,7 +556,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_approve_task",
-        description = "[STATE] (CLIENT-SIDE) Approve agent-submitted content for a Shillbot task you funded. Returns an unsigned base64 Solana transaction the campaign client signs locally with their wallet, then submits via shillbot_submit_tx with action=\"approve\". Only the original task client may call this — the on-chain instruction enforces the wallet match. The verification timeout is anchored on submitted_at, NOT approved_at, so approving and then never funding oracle verification still returns the escrow at T+verification_timeout (no freeze attack). Use shillbot_list_pending_approval to find tasks awaiting your review.",
+        description = "[STATE] (CLIENT-SIDE) Approve agent-submitted content for a Shillbot task you funded. Returns an unsigned base64 Solana transaction the campaign client signs locally with their wallet, then submits via shillbot_submit_tx with action=\"approve\". Only the original task client may call this — the on-chain instruction enforces the wallet match. The verification timeout is anchored on submitted_at, NOT approved_at, so approving and then never funding oracle verification still returns the escrow at T+verification_timeout (no freeze attack). Use shillbot_list_pending_approval to find tasks awaiting your review. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_approve_task(
@@ -499,6 +567,7 @@ impl SwarmTipsMcp {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
+        let network = parse_network_arg(args.network.as_deref())?;
 
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
@@ -508,11 +577,16 @@ impl SwarmTipsMcp {
         let response = self
             .state
             .orchestrator
-            .approve_task(&args.task_id, &wallet_pubkey)
+            .approve_task(&args.task_id, &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        tracing::info!(task_id = %args.task_id, wallet = %wallet_pubkey, "shillbot_approve_task: unsigned tx built");
+        tracing::info!(
+            task_id = %args.task_id,
+            wallet = %wallet_pubkey,
+            network = network.unwrap_or("mainnet"),
+            "shillbot_approve_task: unsigned tx built"
+        );
 
         let result = serde_json::json!({
             "action": "approve",
@@ -525,7 +599,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_reject_task",
-        description = "[READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is on the roadmap; once it ships, this tool will route through it instead.",
+        description = "[READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is on the roadmap; once it ships, this tool will route through it instead. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_reject_task(
@@ -536,6 +610,7 @@ impl SwarmTipsMcp {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
+        let network = parse_network_arg(args.network.as_deref())?;
 
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
@@ -548,7 +623,7 @@ impl SwarmTipsMcp {
         let task = self
             .state
             .orchestrator
-            .get_task_details(&args.task_id)
+            .get_task_details(&args.task_id, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -575,13 +650,15 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_list_pending_approval",
-        description = "[READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all of your campaigns. Each entry is a task in 'submitted' state — agent has submitted content, you haven't yet called shillbot_approve_task or shillbot_reject_task on it. Use this to populate a review queue / inbox. Requires a registered wallet (the calling wallet must be the campaign client).",
+        description = "[READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all of your campaigns. Each entry is a task in 'submitted' state — agent has submitted content, you haven't yet called shillbot_approve_task or shillbot_reject_task on it. Use this to populate a review queue / inbox. Requires a registered wallet (the calling wallet must be the campaign client). Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_list_pending_approval(
         &self,
+        Parameters(args): Parameters<NetworkOnlyArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
+        let network = parse_network_arg(args.network.as_deref())?;
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
             .await
@@ -590,13 +667,14 @@ impl SwarmTipsMcp {
         let response = self
             .state
             .orchestrator
-            .list_pending_approval(&wallet_pubkey)
+            .list_pending_approval(&wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
         tracing::info!(
             wallet = %wallet_pubkey,
             count = response.tasks.len(),
+            network = network.unwrap_or("mainnet"),
             "shillbot_list_pending_approval: queue returned"
         );
 
@@ -610,7 +688,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_submit_tx",
-        description = "[STATE] Broadcast a signed Shillbot Solana transaction (claim, submit, approve, verify, or finalize) to mainnet, then notify the orchestrator the action landed. Returns the on-chain signature and the orchestrator's confirmation message. Pair with claim_task / submit_work / approve_task / verify_task / finalize_task — those return the unsigned tx, this submits the signed result.",
+        description = "[STATE] Broadcast a signed Shillbot Solana transaction (claim, submit, approve, verify, or finalize) and notify the orchestrator the action landed. Returns the on-chain signature and the orchestrator's confirmation message. Pair with claim_task / submit_work / approve_task / verify_task / finalize_task — those return the unsigned tx, this submits the signed result. Optional `network`: 'mainnet' (default) or 'devnet'. Pass the SAME network token here that you passed to the corresponding build tool — broadcasting on a different cluster than the unsigned tx was built for produces an InvalidAccount-shaped error.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_tx(
@@ -625,6 +703,7 @@ impl SwarmTipsMcp {
             return Err(invalid_input("signed_transaction is required"));
         }
         let action = parse_confirm_action(&args.action)?;
+        let network = parse_network_arg(args.network.as_deref())?;
 
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
@@ -632,7 +711,7 @@ impl SwarmTipsMcp {
             .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
 
         let tx_signature = self
-            .broadcast_and_wait_for_confirmation(&args.signed_transaction)
+            .broadcast_and_wait_for_confirmation(&args.signed_transaction, network)
             .await?;
 
         tracing::info!(
@@ -640,13 +719,20 @@ impl SwarmTipsMcp {
             wallet = %wallet_pubkey,
             action = %args.action,
             sig = %tx_signature,
+            network = network.unwrap_or("mainnet"),
             "shillbot_submit_tx: tx broadcast"
         );
 
         let confirm = self
             .state
             .orchestrator
-            .confirm_task(&args.task_id, &wallet_pubkey, &tx_signature, action)
+            .confirm_task(
+                &args.task_id,
+                &wallet_pubkey,
+                &tx_signature,
+                action,
+                network,
+            )
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -668,14 +754,7 @@ impl SwarmTipsMcp {
         &self,
         Parameters(args): Parameters<GetAttestationArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let network = match args.network.as_deref() {
-            None | Some("") | Some("mainnet") | Some("mainnet-beta") => None,
-            Some("devnet") => Some("devnet"),
-            Some(other) => {
-                let msg = format!("network must be 'mainnet' or 'devnet', got '{other}'");
-                return Err(invalid_input(&msg));
-            }
-        };
+        let network = parse_network_arg(args.network.as_deref())?;
         let attestation = match (
             args.task_id.as_deref().filter(|s| !s.is_empty()),
             args.task_pda.as_deref().filter(|s| !s.is_empty()),
@@ -716,7 +795,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_complete_task",
-        description = "[READ] Single-call \"what do I do next?\" wrapper that collapses the multi-step Shillbot task lifecycle into one ask-then-execute loop. Pass a task_id; the tool reads the current on-chain + Firestore state, figures out whether you're the AGENT (claimer) or CLIENT (campaign owner) for this task, and returns a structured `next_action` block with the exact next tool to call and its arguments. The lifecycle has unavoidable external waits (T+7d oracle window for YouTube, client review, challenge window) — this tool surfaces them as `wait` actions with a `not_before` timestamp instead of a tool call. Re-call after each step (or after the wait elapses). Returns `done` when the task is Finalized.",
+        description = "[READ] Single-call \"what do I do next?\" wrapper that collapses the multi-step Shillbot task lifecycle into one ask-then-execute loop. Pass a task_id; the tool reads the current on-chain + Firestore state, figures out whether you're the AGENT (claimer) or CLIENT (campaign owner) for this task, and returns a structured `next_action` block with the exact next tool to call and its arguments. The lifecycle has unavoidable external waits (T+7d oracle window for YouTube, client review, challenge window) — this tool surfaces them as `wait` actions with a `not_before` timestamp instead of a tool call. Re-call after each step (or after the wait elapses). Returns `done` when the task is Finalized. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_complete_task(
@@ -727,6 +806,7 @@ impl SwarmTipsMcp {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
+        let network = parse_network_arg(args.network.as_deref())?;
 
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
@@ -736,7 +816,7 @@ impl SwarmTipsMcp {
         let task = self
             .state
             .orchestrator
-            .get_task_details(&args.task_id)
+            .get_task_details(&args.task_id, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -798,13 +878,15 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_check_earnings",
-        description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use register_wallet first).",
+        description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use register_wallet first). Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_check_earnings(
         &self,
+        Parameters(args): Parameters<NetworkOnlyArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
+        let network = parse_network_arg(args.network.as_deref())?;
         let wallet_pubkey = self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
             invalid_input("authentication required: connect your Solana wallet first")
         })?;
@@ -812,11 +894,15 @@ impl SwarmTipsMcp {
         let result = self
             .state
             .orchestrator
-            .get_earnings(&wallet_pubkey)
+            .get_earnings(&wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        tracing::info!(wallet = %wallet_pubkey, "checked earnings");
+        tracing::info!(
+            wallet = %wallet_pubkey,
+            network = network.unwrap_or("mainnet"),
+            "checked earnings"
+        );
         Ok(text_result(&result))
     }
 
@@ -1589,6 +1675,30 @@ impl SwarmTipsMcp {
         Ok((agent_state, player_profile))
     }
 
+    /// Resolve the RPC URL the broadcast and on-chain bundle-script paths
+    /// should hit for a given `network` token. `None` and `Some("mainnet")`
+    /// both map to `solana_rpc_url_mainnet`; `Some("devnet")` maps to the
+    /// devnet URL. Mismatched cluster = the broadcast lands on the wrong
+    /// network from the unsigned tx and the orchestrator's confirm step
+    /// can't find the on-chain account.
+    fn rpc_url_for_network(&self, network: Option<&str>) -> &str {
+        // Precondition: caller validated network ∈ {None, Some("devnet")}
+        // upstream via `parse_network_arg`. Anything else means we'd
+        // silently fall through to mainnet, which would mask a real bug.
+        debug_assert!(
+            matches!(network, None | Some("devnet") | Some("mainnet")),
+            "rpc_url_for_network expects a parsed token, got {network:?}"
+        );
+        let url = match network {
+            Some("devnet") => self.state.solana_rpc_url_devnet.as_str(),
+            _ => self.state.solana_rpc_url_mainnet.as_str(),
+        };
+        // Postcondition: the URL is non-empty so callers don't accidentally
+        // POST to "" and get a confusing reqwest builder error.
+        debug_assert!(!url.is_empty(), "resolved RPC URL must be non-empty");
+        url
+    }
+
     /// Broadcast a base64-encoded signed transaction, then wait until the
     /// orchestrator's RPC view sees it confirmed. Returns the tx signature on
     /// success. The wait avoids the "transaction not found" race in
@@ -1596,28 +1706,22 @@ impl SwarmTipsMcp {
     async fn broadcast_and_wait_for_confirmation(
         &self,
         signed_b64: &str,
+        network: Option<&str>,
     ) -> Result<String, McpError> {
         // Precondition: caller validated non-empty input at the handler boundary.
         debug_assert!(
             !signed_b64.is_empty(),
             "signed transaction must be non-empty at broadcast time"
         );
-        let tx_signature = solana_tx::broadcast_signed_b64(
-            &self.state.rpc_client,
-            &self.state.solana_rpc_url,
-            signed_b64,
-        )
-        .await
-        .map_err(|e| to_mcp_error(&e))?;
+        let rpc_url = self.rpc_url_for_network(network);
+        let tx_signature =
+            solana_tx::broadcast_signed_b64(&self.state.rpc_client, rpc_url, signed_b64)
+                .await
+                .map_err(|e| to_mcp_error(&e))?;
 
-        solana_tx::wait_for_signature_confirmed(
-            &self.state.rpc_client,
-            &self.state.solana_rpc_url,
-            &tx_signature,
-            30,
-        )
-        .await
-        .map_err(|e| to_mcp_error(&e))?;
+        solana_tx::wait_for_signature_confirmed(&self.state.rpc_client, rpc_url, &tx_signature, 30)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
         // Postcondition: a non-empty signature is returned only when both
         // broadcast and confirmation succeeded.
         debug_assert!(
@@ -2018,6 +2122,34 @@ async fn run_build_verify_tx(
     Ok(unsigned_tx)
 }
 
+/// Parse the optional `network` argument exposed by every Shillbot tool.
+/// Returns `Ok(None)` for omitted / empty / `"mainnet"` / `"mainnet-beta"`
+/// (the orchestrator default) and `Ok(Some("devnet"))` for explicit devnet
+/// targeting. Anything else is rejected with a 400-shaped MCP error so
+/// typos don't silently route to the default network. Mirrors the
+/// validation pattern in `shillbot_get_attestation`.
+fn parse_network_arg(raw: Option<&str>) -> Result<Option<&'static str>, McpError> {
+    // Precondition: raw is provided as-deref'd Option<&str>; the empty
+    // string is treated identically to None so JSON Schemas that fall
+    // back to "" don't trip the validator.
+    let result = match raw {
+        None | Some("") | Some("mainnet") | Some("mainnet-beta") => None,
+        Some("devnet") => Some("devnet"),
+        Some(other) => {
+            return Err(invalid_input(&format!(
+                "network must be 'mainnet' or 'devnet', got '{other}'"
+            )));
+        }
+    };
+    // Postcondition: a Some(_) result is exactly the canonical "devnet"
+    // token; nothing else can leak through.
+    debug_assert!(
+        matches!(result, None | Some("devnet")),
+        "network must be None or Some(\"devnet\")"
+    );
+    Ok(result)
+}
+
 /// Parse the action discriminator passed to `shillbot_submit_tx`. Returns a
 /// typed `ConfirmAction` or a 400-shaped MCP error listing the valid values.
 fn parse_confirm_action(action: &str) -> Result<crate::proxy::ConfirmAction, McpError> {
@@ -2311,4 +2443,49 @@ fn text_result(value: &impl serde::Serialize) -> CallToolResult {
     let json = serde_json::to_string_pretty(value)
         .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {e}\"}}"));
     CallToolResult::success(vec![Content::text(json)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_network_arg_accepts_omitted_and_default_aliases() {
+        // None, empty, mainnet, mainnet-beta all collapse to None so the
+        // proxy emits no query suffix and the orchestrator routes to its
+        // mainnet default. This is the behaviour every existing client
+        // depends on; a regression here would silently break every
+        // mainnet caller.
+        assert!(parse_network_arg(None).expect("ok").is_none());
+        assert!(parse_network_arg(Some("")).expect("ok").is_none());
+        assert!(parse_network_arg(Some("mainnet")).expect("ok").is_none());
+        assert!(parse_network_arg(Some("mainnet-beta"))
+            .expect("ok")
+            .is_none());
+    }
+
+    #[test]
+    fn parse_network_arg_accepts_devnet() {
+        // The only non-None value the helper is allowed to return —
+        // anything else is a typo we want to reject loudly.
+        assert_eq!(
+            parse_network_arg(Some("devnet")).expect("ok"),
+            Some("devnet")
+        );
+    }
+
+    #[test]
+    fn parse_network_arg_rejects_unknown_tokens() {
+        // Typos like "stagenet" / "testnet" must be rejected so they
+        // don't silently fall back to mainnet — that would route the
+        // call to the wrong cluster and produce confusing
+        // AccountNotFound errors downstream.
+        let err =
+            parse_network_arg(Some("stagenet")).expect_err("must reject unknown network token");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("stagenet") && msg.contains("mainnet"),
+            "error message should name the rejected token and the valid set, got: {msg}"
+        );
+    }
 }

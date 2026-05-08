@@ -83,6 +83,8 @@ async fn main() -> anyhow::Result<()> {
         orchestrator: OrchestratorProxy::new(cfg.orchestrator_url.clone()),
         game_api: GameApiProxy::new(cfg.game_api_url.clone())?,
         solana_rpc_url: cfg.solana_rpc_url.clone(),
+        solana_rpc_url_mainnet: rpc_url_mainnet.clone(),
+        solana_rpc_url_devnet: rpc_url_devnet.clone(),
         rpc_client,
         game_sessions,
         challenge_manager: ChallengeManager::new(),
