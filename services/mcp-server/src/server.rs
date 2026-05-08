@@ -885,76 +885,8 @@ impl SwarmTipsMcp {
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_default();
 
-        let next = match task.state.as_str() {
-            "open" => serde_json::json!({
-                "next_action": "tool_call",
-                "next_tool": "shillbot_claim_task",
-                "args": { "task_id": args.task_id },
-                "hint": "Task is unclaimed. Call shillbot_claim_task to claim it; then sign the returned tx and submit via shillbot_submit_tx with action=\"claim\". Then call shillbot_complete_task again.",
-            }),
-            "claimed" => serde_json::json!({
-                "next_action": "tool_call",
-                "next_tool": "shillbot_submit_work",
-                "args": { "task_id": args.task_id, "content_id": "<your published content id>" },
-                "hint": "Task is claimed. Produce content per the task brief (call shillbot_get_task_details to re-read it), publish to the platform, then submit the content_id via shillbot_submit_work + shillbot_submit_tx with action=\"submit\". Then call shillbot_complete_task again.",
-            }),
-            "submitted" => serde_json::json!({
-                "next_action": "wait",
-                "wait_for": "client_review",
-                // ISO timestamp at which the verification-timeout crank
-                // (`expire_task`) becomes callable and the escrow
-                // returns to the client. Computed from
-                // submitted_at + DEFAULT_VERIFICATION_TIMEOUT_SECS;
-                // empty string when the orchestrator hasn't surfaced
-                // submitted_at yet (state mismatch / stale read).
-                "not_before": escrow_expires_iso,
-                "hint": format!(
-                    "Task is awaiting CLIENT review. If you are the campaign client, call shillbot_approve_task. If you are the agent, there is nothing for you to do until the client approves or the verification timeout returns the escrow at {}.",
-                    if escrow_expires_iso.is_empty() {
-                        "submitted_at + ~14 days".to_string()
-                    } else {
-                        escrow_expires_iso.clone()
-                    }
-                ),
-                "client_actions": ["shillbot_approve_task", "shillbot_reject_task"],
-                "agent_actions": [],
-            }),
-            "approved" => serde_json::json!({
-                "next_action": "wait_or_call",
-                "wait_for": "verifier_attestation",
-                "next_tool": "shillbot_verify_task",
-                "args": { "task_id": args.task_id },
-                "hint": "Client approved. The off-chain verifier will produce the oracle attestation (5min for game-play tasks, 7d for YouTube). When the attestation is ready, call shillbot_verify_task + shillbot_submit_tx with action=\"verify\". Calling too early returns AttestationStale; back off and retry.",
-            }),
-            "verified" => serde_json::json!({
-                "next_action": "wait_then_call",
-                "wait_for": "challenge_window",
-                "next_tool": "shillbot_finalize_task",
-                "args": { "task_id": args.task_id },
-                "hint": "Verified. The challenge window (24h default) must elapse before finalize. Once it has, call shillbot_finalize_task + shillbot_submit_tx with action=\"finalize\" to release the payment from escrow. Permissionless crank — anyone can finalize after the window.",
-            }),
-            "finalized" => serde_json::json!({
-                "next_action": "done",
-                "hint": "Payment has been released from escrow. Call shillbot_check_earnings to confirm. Optionally call shillbot_get_attestation BEFORE the on-chain account closes if you want a portable AAS attestation — note the capture window (spec docs/specs/aas-v1.md §6).",
-            }),
-            "disputed" => serde_json::json!({
-                "next_action": "wait",
-                "wait_for": "challenge_resolution",
-                "hint": "Task is under dispute. The upgrade authority will call resolve_challenge. No agent / client action required.",
-            }),
-            "resolved" => serde_json::json!({
-                "next_action": "done",
-                "hint": "Challenge resolved. Funds have been distributed per the resolution. Call shillbot_check_earnings to see your share.",
-            }),
-            "expired" => serde_json::json!({
-                "next_action": "done",
-                "hint": "Task expired (verification timeout). Escrow has been returned to the client. No agent action available.",
-            }),
-            other => serde_json::json!({
-                "next_action": "unknown",
-                "hint": format!("Task is in unrecognized state {other:?}. Re-fetch via shillbot_get_task_details and inspect manually."),
-            }),
-        };
+        let next =
+            next_action_for_task_state(task.state.as_str(), &args.task_id, &escrow_expires_iso);
 
         tracing::info!(
             task_id = %args.task_id,
@@ -2003,6 +1935,83 @@ A first-party TypeScript SDK that wraps the whole MCP flow (register → claim �
 More info: https://swarm.tips/developers";
 
 // -- Error helpers --
+
+/// Build the "next action" hint block for `shillbot_complete_task` based on
+/// the task's current state. Extracted so the handler stays under the 60-line
+/// rule and so the per-state logic is easy to scan.
+fn next_action_for_task_state(
+    state: &str,
+    task_id: &str,
+    escrow_expires_iso: &str,
+) -> serde_json::Value {
+    match state {
+        "open" => serde_json::json!({
+            "next_action": "tool_call",
+            "next_tool": "shillbot_claim_task",
+            "args": { "task_id": task_id },
+            "hint": "Task is unclaimed. Call shillbot_claim_task to claim it; then sign the returned tx and submit via shillbot_submit_tx with action=\"claim\". Then call shillbot_complete_task again.",
+        }),
+        "claimed" => serde_json::json!({
+            "next_action": "tool_call",
+            "next_tool": "shillbot_submit_work",
+            "args": { "task_id": task_id, "content_id": "<your published content id>" },
+            "hint": "Task is claimed. Produce content per the task brief (call shillbot_get_task_details to re-read it), publish to the platform, then submit the content_id via shillbot_submit_work + shillbot_submit_tx with action=\"submit\". Then call shillbot_complete_task again.",
+        }),
+        "submitted" => {
+            let timeout_str = if escrow_expires_iso.is_empty() {
+                "submitted_at + ~14 days".to_string()
+            } else {
+                escrow_expires_iso.to_string()
+            };
+            serde_json::json!({
+                "next_action": "wait",
+                "wait_for": "client_review",
+                "not_before": escrow_expires_iso,
+                "hint": format!(
+                    "Task is awaiting CLIENT review. If you are the campaign client, call shillbot_approve_task. If you are the agent, there is nothing for you to do until the client approves or the verification timeout returns the escrow at {}.",
+                    timeout_str
+                ),
+                "client_actions": ["shillbot_approve_task", "shillbot_reject_task"],
+                "agent_actions": [],
+            })
+        }
+        "approved" => serde_json::json!({
+            "next_action": "wait_or_call",
+            "wait_for": "verifier_attestation",
+            "next_tool": "shillbot_verify_task",
+            "args": { "task_id": task_id },
+            "hint": "Client approved. The off-chain verifier will produce the oracle attestation (5min for game-play tasks, 7d for YouTube). When the attestation is ready, call shillbot_verify_task + shillbot_submit_tx with action=\"verify\". Calling too early returns AttestationStale; back off and retry.",
+        }),
+        "verified" => serde_json::json!({
+            "next_action": "wait_then_call",
+            "wait_for": "challenge_window",
+            "next_tool": "shillbot_finalize_task",
+            "args": { "task_id": task_id },
+            "hint": "Verified. The challenge window (24h default) must elapse before finalize. Once it has, call shillbot_finalize_task + shillbot_submit_tx with action=\"finalize\" to release the payment from escrow. Permissionless crank — anyone can finalize after the window.",
+        }),
+        "finalized" => serde_json::json!({
+            "next_action": "done",
+            "hint": "Payment has been released from escrow. Call shillbot_check_earnings to confirm. Optionally call shillbot_get_attestation BEFORE the on-chain account closes if you want a portable AAS attestation — note the capture window (spec docs/specs/aas-v1.md §6).",
+        }),
+        "disputed" => serde_json::json!({
+            "next_action": "wait",
+            "wait_for": "challenge_resolution",
+            "hint": "Task is under dispute. The upgrade authority will call resolve_challenge. No agent / client action required.",
+        }),
+        "resolved" => serde_json::json!({
+            "next_action": "done",
+            "hint": "Challenge resolved. Funds have been distributed per the resolution. Call shillbot_check_earnings to see your share.",
+        }),
+        "expired" => serde_json::json!({
+            "next_action": "done",
+            "hint": "Task expired (verification timeout). Escrow has been returned to the client. No agent action available.",
+        }),
+        other => serde_json::json!({
+            "next_action": "unknown",
+            "hint": format!("Task is in unrecognized state {other:?}. Re-fetch via shillbot_get_task_details and inspect manually."),
+        }),
+    }
+}
 
 fn to_mcp_error(err: &McpServiceError) -> McpError {
     McpError::internal_error(err.to_string(), None)
