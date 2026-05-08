@@ -1,19 +1,19 @@
 /**
- * One-shot: create tournament_id=2 on mainnet coordination-game.
+ * Create a new mainnet tournament. Permissionless — anyone with gas can
+ * call. Defaults to a 90-day window starting 1 minute ago (the negative
+ * `start_time` offset ensures `now >= start` for the first deposit_stake).
  *
- * Tournament 1 ended (page shows "Awaiting finalization", 79 games played),
- * so deposit_stake calls fail with OutsideTournamentWindow. This blocks the
- * gameplay E2E tests.
- *
- * create_tournament is permissionless — anyone can create one. Sets
- * end_time 90 days out so this doesn't recur soon.
- *
- * After running, also bump TOURNAMENT_ID = 2n in
- * coordination-app/frontend/coordination-game/src/lib/constants.ts and redeploy.
+ * Used at tournament rollover (current ends → create the next one with
+ * `TOURNAMENT_ID` set to the next free integer). Bumping
+ * coordination-app/frontend/coordination-game/src/lib/constants.ts to
+ * point at the new id is a separate manual step until that mapping moves
+ * to a dynamic config.
  *
  * Usage: ANCHOR_WALLET=~/.config/solana/id.json \
  *        ANCHOR_PROVIDER_URL=https://api.mainnet-beta.solana.com \
- *        npx ts-node scripts/create-mainnet-tournament-2.ts
+ *        TOURNAMENT_ID=3 \
+ *        END_TIME_DAYS=90 \
+ *          npx ts-node scripts/create-mainnet-tournament.ts
  */
 
 import * as anchor from "@coral-xyz/anchor";
@@ -28,10 +28,16 @@ const idl = JSON.parse(
   ),
 );
 
-const TOURNAMENT_ID = 2n;
+const TOURNAMENT_ID = BigInt(process.env.TOURNAMENT_ID ?? "0");
+if (TOURNAMENT_ID === 0n) {
+  console.error("TOURNAMENT_ID env var is required (e.g. 3, 4, 5).");
+  process.exit(1);
+}
+
+const END_TIME_DAYS = parseInt(process.env.END_TIME_DAYS ?? "90", 10);
 const NOW_SECS = Math.floor(Date.now() / 1000);
-const START_TIME = NOW_SECS - 60; // start 1 min ago to ensure now >= start
-const END_TIME = NOW_SECS + 90 * 24 * 60 * 60; // 90 days
+const START_TIME = NOW_SECS - 60;
+const END_TIME = NOW_SECS + END_TIME_DAYS * 24 * 60 * 60;
 
 async function main() {
   const provider = anchor.AnchorProvider.env();
@@ -45,8 +51,9 @@ async function main() {
   console.log(`Program: ${program.programId.toBase58()}`);
   console.log(`Tournament ID: ${TOURNAMENT_ID}`);
   console.log(`Start:   ${new Date(START_TIME * 1000).toISOString()}`);
-  console.log(`End:     ${new Date(END_TIME * 1000).toISOString()} (90d out)`);
-  console.log();
+  console.log(
+    `End:     ${new Date(END_TIME * 1000).toISOString()} (${END_TIME_DAYS}d out)`,
+  );
 
   const idBuf = Buffer.alloc(8);
   idBuf.writeBigUInt64LE(TOURNAMENT_ID);

@@ -1,22 +1,19 @@
 /**
- * One-shot: finalize mainnet tournament 1.
+ * Finalize a mainnet tournament: read every PlayerProfile for the tournament,
+ * compute entitlements proportional to score (wins²/total_games, ≥5 games to
+ * qualify), build the merkle tree using the program's exact scheme, and submit
+ * the root via `finalize_tournament(merkle_root)`. Players then call
+ * `claim_reward(amount, proof)` against the published artifact.
  *
- * 1. Reads every PlayerProfile account for tournament_id=1
- * 2. Filters to players with >= MIN_GAMES_FOR_PAYOUT (5) games
- * 3. Computes entitlements proportional to score (wins^2 / total_games)
- * 4. Builds the merkle tree using the program's exact scheme:
- *    - Leaf:     keccak256(0x00 || wallet_pubkey || amount_le_bytes)
- *    - Internal: keccak256(0x01 || min(left, right) || max(left, right))
- * 5. Calls finalize_tournament(merkle_root) (authority-gated, signed by id.json)
- * 6. Writes the full tree + per-player proofs to scripts/tournament-1-proofs.json
- *    so players can claim_reward(amount, proof) without re-running this script.
- *
- * Re-running after finalize is a no-op: the on-chain tournament.finalized
- * flag flips once and the require!() rejects subsequent calls.
+ * Re-running after finalize is a no-op: the on-chain `finalized` flag flips
+ * once and the require!() rejects subsequent calls.
  *
  * Usage: ANCHOR_WALLET=~/.config/solana/id.json \
  *        ANCHOR_PROVIDER_URL=https://api.mainnet-beta.solana.com \
- *        npx ts-node scripts/finalize-tournament-1.ts
+ *        TOURNAMENT_ID=2 \
+ *          npx ts-node scripts/finalize-tournament.ts
+ *
+ * Side effect: writes scripts/tournament-{id}-proofs.json. Authority-gated.
  */
 
 import * as anchor from "@coral-xyz/anchor";
@@ -32,9 +29,16 @@ const idl = JSON.parse(
   ),
 );
 
-const TOURNAMENT_ID = 1n;
+const TOURNAMENT_ID = BigInt(process.env.TOURNAMENT_ID ?? "0");
+if (TOURNAMENT_ID === 0n) {
+  console.error("TOURNAMENT_ID env var is required (e.g. 2, 3, 4).");
+  process.exit(1);
+}
 const MIN_GAMES_FOR_PAYOUT = 5n;
-const PROOFS_FILE = path.join(__dirname, "tournament-1-proofs.json");
+const PROOFS_FILE = path.join(
+  __dirname,
+  `tournament-${TOURNAMENT_ID}-proofs.json`,
+);
 
 interface PlayerEntry {
   wallet: PublicKey;
