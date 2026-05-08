@@ -42,8 +42,82 @@ fn load_env_or(var: &str, default: &str) -> String {
     std::env::var(var).unwrap_or_else(|_| default.to_string())
 }
 
+struct StartupConfig {
+    gcp_project_id: String,
+    orchestrator_url: String,
+    game_api_url: String,
+    solana_rpc_url: String,
+    network: String,
+    host: String,
+    port: u16,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    init_tracing();
+    let cfg = load_startup_config().await?;
+    log_startup(&cfg);
+
+    let rpc_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("reqwest client must build")?;
+
+    let listings_state = Arc::new(ListingsState::new(
+        open_firestore(&cfg.gcp_project_id).await,
+        rpc_client.clone(),
+    ));
+    let discovery_state = build_discovery_state(&cfg.gcp_project_id, &rpc_client).await;
+
+    let game_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
+    let game_sessions = Arc::new(GameSessionManager::new(
+        cfg.game_api_url.clone(),
+        cfg.solana_rpc_url.clone(),
+        Arc::clone(&game_db),
+    ));
+    let session_binding = Arc::new(McpSessionBinding::new(game_db));
+
+    let (rpc_url_mainnet, rpc_url_devnet) = load_per_network_rpcs(&cfg).await;
+
+    let shared = Arc::new(SharedState {
+        orchestrator: OrchestratorProxy::new(cfg.orchestrator_url.clone()),
+        game_api: GameApiProxy::new(cfg.game_api_url.clone())?,
+        solana_rpc_url: cfg.solana_rpc_url.clone(),
+        rpc_client,
+        game_sessions,
+        challenge_manager: ChallengeManager::new(),
+        session_binding,
+        listings: Arc::clone(&listings_state),
+    });
+
+    let ct = tokio_util::sync::CancellationToken::new();
+    let service = StreamableHttpService::new(
+        move || Ok(SwarmTipsMcp::new(shared.clone())),
+        LocalSessionManager::default().into(),
+        StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token()),
+    );
+
+    let router = build_router(
+        listings_state,
+        discovery_state,
+        rpc_url_mainnet,
+        rpc_url_devnet,
+        service,
+    );
+
+    let bind_addr = format!("{}:{}", cfg.host, cfg.port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    tracing::info!(service = "mcp-server", addr = %bind_addr, "MCP server ready");
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            ct.cancel();
+        })
+        .await?;
+    Ok(())
+}
+
+fn init_tracing() {
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(
@@ -51,18 +125,36 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+}
 
+async fn load_startup_config() -> anyhow::Result<StartupConfig> {
     let gcp_project_id = load_env_or("GCP_PROJECT_ID", "coordination-game-prod");
     let orchestrator_url = load_env_or("ORCHESTRATOR_URL", "http://shillbot-orchestrator:8080");
     let game_api_url = load_env_or("GAME_API_URL", "http://game-api:8080");
-    // Prefer Secret Manager for the RPC URL (cross-repo standard: direct Secret
-    // Manager reads for runtime secrets, never K8s Secrets as a bridge). Falls
-    // back to SOLANA_RPC_URL env var for local dev, then to public devnet.
     let network = load_env_or("SOLANA_NETWORK", "mainnet");
+    let solana_rpc_url = load_solana_rpc_url(&gcp_project_id, &network).await;
+    let host = load_env_or("HOST", DEFAULT_HOST);
+    let port: u16 = load_env_or("PORT", &DEFAULT_PORT.to_string())
+        .parse()
+        .context("PORT must be a valid u16")?;
+    Ok(StartupConfig {
+        gcp_project_id,
+        orchestrator_url,
+        game_api_url,
+        solana_rpc_url,
+        network,
+        host,
+        port,
+    })
+}
+
+/// Prefer Secret Manager for the RPC URL (cross-repo standard: direct
+/// Secret Manager reads for runtime secrets, never K8s Secrets as a
+/// bridge). Falls back to SOLANA_RPC_URL env var for local dev, then to
+/// public devnet.
+async fn load_solana_rpc_url(gcp_project_id: &str, network: &str) -> String {
     let rpc_secret = format!("solana-rpc-url-{network}");
-    let solana_rpc_url = if let Some(url) =
-        config::load_optional_secret(&gcp_project_id, &rpc_secret).await
-    {
+    if let Some(url) = config::load_optional_secret(gcp_project_id, &rpc_secret).await {
         tracing::info!(service = "mcp-server", network = %network, "loaded Solana RPC URL from Secret Manager");
         url
     } else {
@@ -73,39 +165,36 @@ async fn main() -> anyhow::Result<()> {
             "solana-rpc-url not in Secret Manager — falling back to env/devnet"
         );
         fallback
-    };
-    let host = load_env_or("HOST", DEFAULT_HOST);
-    let port: u16 = load_env_or("PORT", &DEFAULT_PORT.to_string())
-        .parse()
-        .context("PORT must be a valid u16")?;
+    }
+}
 
+fn log_startup(cfg: &StartupConfig) {
     tracing::info!(
         service = "mcp-server",
-        orchestrator_url = %orchestrator_url,
-        game_api_url = %game_api_url,
-        host = %host,
-        port = %port,
+        orchestrator_url = %cfg.orchestrator_url,
+        game_api_url = %cfg.game_api_url,
+        host = %cfg.host,
+        port = %cfg.port,
         "starting MCP server"
     );
+}
 
-    let challenge_manager = ChallengeManager::new();
-
-    let rpc_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("reqwest client must build")?;
-
-    // Firestore client for listings persistence
-    let db = FirestoreDb::new(&gcp_project_id)
+async fn open_firestore(project_id: &str) -> FirestoreDb {
+    FirestoreDb::new(project_id)
         .await
-        .expect("Firestore client must initialize at startup");
+        .expect("Firestore client must initialize at startup")
+}
 
-    let listings_state = Arc::new(ListingsState::new(db, rpc_client.clone()));
-
-    // Discovery (MCP mining engine) needs its own Firestore client + the
-    // shared HTTP client. Best-effort: if Firestore init fails the discovery
-    // routes will return empty data instead of crashing the whole server.
-    let discovery_db = match FirestoreDb::new(&gcp_project_id).await {
+/// Discovery (MCP mining engine) is best-effort: if Firestore init fails
+/// the discovery routes return empty data rather than crashing the server.
+/// Layer 2 LLM classifier is optional — enabled only if `xai-api-key` is
+/// available in GCP Secret Manager (no env-var fallback per the
+/// "Three secret categories, three homes" rule).
+async fn build_discovery_state(
+    gcp_project_id: &str,
+    rpc_client: &reqwest::Client,
+) -> Option<Arc<DiscoveryState>> {
+    let discovery_db = match FirestoreDb::new(gcp_project_id).await {
         Ok(db) => Some(db),
         Err(e) => {
             tracing::error!(
@@ -115,13 +204,8 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
-    // Optional Layer 2 LLM classifier — enabled if `xai-api-key` is available
-    // in GCP Secret Manager. Without it, refresh + earning-candidates work as
-    // before; the /internal/mcp/llm-classify endpoint returns 503. Reads
-    // directly from Secret Manager via Workload Identity — never from K8s
-    // Secrets or env vars. See `config.rs` + the "Three secret categories,
-    // three homes" rule in `swarm/CLAUDE.md`.
-    let xai_api_key = config::load_optional_secret(&gcp_project_id, "xai-api-key").await;
+
+    let xai_api_key = config::load_optional_secret(gcp_project_id, "xai-api-key").await;
     if xai_api_key.is_none() {
         tracing::warn!(
             service = "mcp-server",
@@ -131,72 +215,109 @@ async fn main() -> anyhow::Result<()> {
     let llm_classifier = xai_api_key
         .map(|key| crate::discovery::llm_classify::LlmClassifier::new(key, rpc_client.clone()));
 
-    let discovery_state = discovery_db
-        .map(|db| Arc::new(DiscoveryState::new(db, rpc_client.clone(), llm_classifier)));
+    discovery_db.map(|db| Arc::new(DiscoveryState::new(db, rpc_client.clone(), llm_classifier)))
+}
 
-    // Second Firestore client for game session persistence (cheap client wrapper).
-    let game_db = FirestoreDb::new(&gcp_project_id)
-        .await
-        .expect("Firestore client for game sessions must initialize");
-    let game_db = Arc::new(game_db);
-    let game_sessions = Arc::new(GameSessionManager::new(
-        game_api_url.clone(),
-        solana_rpc_url.clone(),
-        Arc::clone(&game_db),
-    ));
-
-    // MCP HTTP session binding — `Mcp-Session-Id → wallet` lookup so a pod
-    // restart doesn't strand an active agent. Shares the game-session
-    // Firestore client because both are cheap wrappers around the same
-    // underlying connection pool.
-    let session_binding = Arc::new(McpSessionBinding::new(game_db));
-
-    // Load both per-network RPC URLs. build-verify-tx runs on whichever RPC
-    // the request specifies (mainnet by default, devnet when `network:
-    // "devnet"` is set on the body); without the right URL the Switchboard
-    // feed lookup hits the wrong cluster and fails.
-    let rpc_url_mainnet = if network == "mainnet" {
-        solana_rpc_url.clone()
+/// Per-network RPC URLs for `/internal/build-verify-tx`: the request body
+/// picks one (mainnet by default, devnet when `network: "devnet"` is set);
+/// without the right URL the Switchboard feed lookup hits the wrong
+/// cluster and fails.
+async fn load_per_network_rpcs(cfg: &StartupConfig) -> (String, String) {
+    let mainnet = if cfg.network == "mainnet" {
+        cfg.solana_rpc_url.clone()
     } else {
-        config::load_optional_secret(&gcp_project_id, "solana-rpc-url-mainnet")
+        config::load_optional_secret(&cfg.gcp_project_id, "solana-rpc-url-mainnet")
             .await
             .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string())
     };
-    let rpc_url_devnet = if network == "devnet" {
-        solana_rpc_url.clone()
+    let devnet = if cfg.network == "devnet" {
+        cfg.solana_rpc_url.clone()
     } else {
-        config::load_optional_secret(&gcp_project_id, "solana-rpc-url-devnet")
+        config::load_optional_secret(&cfg.gcp_project_id, "solana-rpc-url-devnet")
             .await
             .unwrap_or_else(|| "https://api.devnet.solana.com".to_string())
     };
-    let rpc_url_mainnet_for_verify = rpc_url_mainnet.clone();
-    let rpc_url_devnet_for_verify = rpc_url_devnet.clone();
-    let shared = Arc::new(SharedState {
-        orchestrator: OrchestratorProxy::new(orchestrator_url),
-        game_api: GameApiProxy::new(game_api_url)?,
-        solana_rpc_url,
-        rpc_client,
-        game_sessions,
-        challenge_manager,
-        session_binding,
-        listings: Arc::clone(&listings_state),
-    });
+    (mainnet, devnet)
+}
 
-    let ct = tokio_util::sync::CancellationToken::new();
+fn build_router(
+    listings_state: Arc<ListingsState>,
+    discovery_state: Option<Arc<DiscoveryState>>,
+    rpc_url_mainnet: String,
+    rpc_url_devnet: String,
+    mcp_service: StreamableHttpService<SwarmTipsMcp, LocalSessionManager>,
+) -> axum::Router {
+    let mainnet_for_verify = rpc_url_mainnet.clone();
+    let devnet_for_verify = rpc_url_devnet.clone();
 
-    let service = StreamableHttpService::new(
-        move || Ok(SwarmTipsMcp::new(shared.clone())),
-        LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token()),
-    );
+    let mut router = axum::Router::new()
+        .route("/health", axum::routing::get(build_health_handler()))
+        .route(
+            "/internal/listings",
+            listings::listings_handler(listings_state),
+        )
+        .route(
+            "/internal/build-verify-tx",
+            axum::routing::post(move |body: axum::Json<serde_json::Value>| {
+                let mainnet = mainnet_for_verify.clone();
+                let devnet = devnet_for_verify.clone();
+                async move {
+                    let net = body["network"].as_str().unwrap_or("mainnet");
+                    let rpc = if net == "devnet" { &devnet } else { &mainnet };
+                    build_verify_tx_handler(body, rpc).await
+                }
+            })
+            .options(|| async {
+                // CORS preflight for browser requests from shillbot.org
+                axum::http::Response::builder()
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "POST, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "content-type")
+                    .header("Access-Control-Max-Age", "3600")
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }),
+        );
 
+    if let Some(state) = discovery_state {
+        router = router
+            .route(
+                "/internal/mcp/earning-candidates",
+                discovery::earning_candidates_handler(state.clone()),
+            )
+            .route(
+                "/internal/mcp/primitives",
+                discovery::primitives_handler(state.clone()),
+            )
+            .route(
+                "/internal/mcp/refresh",
+                discovery::refresh_handler(state.clone()),
+            )
+            .route(
+                "/internal/mcp/llm-classify",
+                discovery::llm_classify_handler(state.clone()),
+            )
+            .route(
+                "/internal/mcp/deep-analyze",
+                discovery::deep_analyze_handler(state),
+            );
+    }
+
+    router.nest_service("/mcp", mcp_service)
+}
+
+fn build_health_handler() -> impl Fn() -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = (axum::http::StatusCode, &'static str)> + Send + 'static>,
+> + Clone
+       + Send
+       + 'static {
     let health_rpc_url = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
     let health_game_url = load_env_or("GAME_API_URL", "http://game-api:8080");
     let started_at = std::time::Instant::now();
-    let health_handler = move || {
+    move || {
         let rpc_url = health_rpc_url.clone();
         let game_url = health_game_url.clone();
-        async move {
+        Box::pin(async move {
             // 60s grace period for Autopilot WI token warmup
             if started_at.elapsed() < std::time::Duration::from_secs(60) {
                 return (axum::http::StatusCode::OK, "ok (startup grace)");
@@ -207,7 +328,6 @@ async fn main() -> anyhow::Result<()> {
                 .build()
                 .unwrap_or_default();
 
-            // Check game-api
             let game_ok = client
                 .get(format!("{game_url}/health"))
                 .send()
@@ -215,7 +335,6 @@ async fn main() -> anyhow::Result<()> {
                 .map(|r| r.status().is_success())
                 .unwrap_or(false);
 
-            // Check Solana RPC
             let rpc_ok = client
                 .post(&rpc_url)
                 .json(&serde_json::json!({
@@ -241,79 +360,8 @@ async fn main() -> anyhow::Result<()> {
                     "solana rpc unreachable",
                 )
             }
-        }
-    };
-
-    let mut router = axum::Router::new()
-        .route("/health", axum::routing::get(health_handler))
-        .route(
-            "/internal/listings",
-            listings::listings_handler(listings_state),
-        )
-        .route(
-            "/internal/build-verify-tx",
-            axum::routing::post(move |body: axum::Json<serde_json::Value>| {
-                let mainnet = rpc_url_mainnet_for_verify.clone();
-                let devnet = rpc_url_devnet_for_verify.clone();
-                async move {
-                    // Pick the right network's RPC based on the body's
-                    // optional `network` field. Defaults to mainnet so
-                    // production calls without the field hit prod RPC.
-                    let net = body["network"].as_str().unwrap_or("mainnet");
-                    let rpc = if net == "devnet" { &devnet } else { &mainnet };
-                    build_verify_tx_handler(body, rpc).await
-                }
-            })
-            .options(|| async {
-                // CORS preflight for browser requests from shillbot.org
-                axum::http::Response::builder()
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "content-type")
-                    .header("Access-Control-Max-Age", "3600")
-                    .body(axum::body::Body::empty())
-                    .unwrap()
-            }),
-        );
-
-    if let Some(discovery_state) = discovery_state {
-        router = router
-            .route(
-                "/internal/mcp/earning-candidates",
-                discovery::earning_candidates_handler(discovery_state.clone()),
-            )
-            .route(
-                "/internal/mcp/primitives",
-                discovery::primitives_handler(discovery_state.clone()),
-            )
-            .route(
-                "/internal/mcp/refresh",
-                discovery::refresh_handler(discovery_state.clone()),
-            )
-            .route(
-                "/internal/mcp/llm-classify",
-                discovery::llm_classify_handler(discovery_state.clone()),
-            )
-            .route(
-                "/internal/mcp/deep-analyze",
-                discovery::deep_analyze_handler(discovery_state),
-            );
-    }
-
-    let router = router.nest_service("/mcp", service);
-    let bind_addr = format!("{host}:{port}");
-    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-
-    tracing::info!(service = "mcp-server", addr = %bind_addr, "MCP server ready");
-
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            ct.cancel();
         })
-        .await?;
-
-    Ok(())
+    }
 }
 
 /// HTTP handler for `/internal/build-verify-tx`.
