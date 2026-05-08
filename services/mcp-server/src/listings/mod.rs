@@ -191,41 +191,94 @@ fn apply_backoff_update(bk: &mut SourceBackoff, result: &FetchResult, now: DateT
 }
 
 /// Fetch listings, update Firestore, return filtered results.
-/// This is called by the GET /internal/listings endpoint.
+/// Called by GET /internal/listings.
 pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, anyhow::Error> {
-    // Check cache with jittered TTL. sha(cached.fetched_at) mod (2*jitter)
-    // gives a deterministic [-J, +J] offset so the *same* cached blob gets
-    // the same TTL every call — we just want different pods to stagger, not
-    // flap.
-    {
-        let cache = state.cache.lock().await;
-        if let Some(ref cached) = *cache {
-            let age = Utc::now()
-                .signed_duration_since(cached.fetched_at)
-                .num_seconds();
-            let effective_ttl = jittered_ttl(cached.fetched_at);
-            if age < effective_ttl {
-                tracing::debug!(
-                    cache_age_secs = age,
-                    effective_ttl = effective_ttl,
-                    "serving listings from cache"
-                );
-                return Ok(cached.listings.clone());
-            }
-        }
+    if let Some(cached) = read_cache(state).await {
+        return Ok(cached);
     }
 
-    // Fetch from all sources in parallel — but skip any source currently in
-    // backoff (see SourceBackoff). Sources that have been failing repeatedly
-    // are parked for BACKOFF_WINDOW_SECS so we're not hammering Cloudflare-
-    // blocked endpoints every 5 min. Skipped sources get a synthetic
-    // `status_code = 0, error = "skipped_backoff"` health entry so we don't
-    // mistake them for a successful empty response.
-    //
-    // ClawTasks was removed 2026-04-08 (centralized API was returning HTTP
-    // 500 on every endpoint and the strategic shift to
-    // unified-list-tools-with-redirect retired centralized full-CRUD
-    // proxies). See docs/analysis/2026-04-08-unified-list-tools-strategic-shift.md.
+    let fetch_results = fetch_all_sources(state).await;
+    update_backoff(state, &fetch_results).await;
+
+    let config = load_ingestion_config(&state.db).await;
+    let all_raw = dedupe_raw_listings(&fetch_results);
+    tracing::info!(
+        total_fetched = all_raw.len(),
+        "fetched from external sources"
+    );
+
+    let existing = load_existing_listings(&state.db).await;
+    let now = Utc::now();
+    let (mut result_listings, active_doc_ids) =
+        upsert_active_listings(&state.db, &all_raw, &existing, &config, now).await;
+
+    let successful_sources: HashSet<&str> = fetch_results
+        .iter()
+        .filter(|r| is_fetch_success(r))
+        .map(|r| r.source.as_str())
+        .collect();
+
+    sweep_disappeared(
+        &state.db,
+        &existing,
+        &active_doc_ids,
+        &successful_sources,
+        now,
+    )
+    .await;
+    keep_failed_source_listings(
+        &existing,
+        &active_doc_ids,
+        &successful_sources,
+        &mut result_listings,
+    );
+
+    for result in &fetch_results {
+        record_source_health(&state.db, &result.source, &result.health).await;
+    }
+
+    result_listings.sort_by(|a, b| b.posted_at.cmp(&a.posted_at));
+    let agent_jobs: Vec<AgentJob> = result_listings.iter().map(AgentJob::from).collect();
+    write_cache(state, &agent_jobs, now).await;
+    tracing::info!(returned = agent_jobs.len(), "listings ingestion complete");
+    Ok(agent_jobs)
+}
+
+/// Jittered TTL: sha(cached.fetched_at) mod (2*jitter) gives a
+/// deterministic [-J, +J] offset so the *same* cached blob gets the same
+/// TTL every call — we want pods to stagger, not flap.
+async fn read_cache(state: &Arc<ListingsState>) -> Option<Vec<AgentJob>> {
+    let cache = state.cache.lock().await;
+    let cached = cache.as_ref()?;
+    let age = Utc::now()
+        .signed_duration_since(cached.fetched_at)
+        .num_seconds();
+    let effective_ttl = jittered_ttl(cached.fetched_at);
+    if age < effective_ttl {
+        tracing::debug!(
+            cache_age_secs = age,
+            effective_ttl = effective_ttl,
+            "serving listings from cache"
+        );
+        Some(cached.listings.clone())
+    } else {
+        None
+    }
+}
+
+async fn write_cache(state: &Arc<ListingsState>, agent_jobs: &[AgentJob], now: DateTime<Utc>) {
+    let mut cache = state.cache.lock().await;
+    *cache = Some(ListingsCache {
+        listings: agent_jobs.to_vec(),
+        fetched_at: now,
+    });
+}
+
+/// Fetch all upstream sources, skipping ones in backoff. Real browsers
+/// don't fire five cross-origin requests in lockstep; bots do. Each source
+/// starts 300-800ms after the previous one so upstreams see irregular
+/// spacing. Shillbot (our own) runs first without delay.
+async fn fetch_all_sources(state: &Arc<ListingsState>) -> Vec<sources::FetchResult> {
     let client = &state.http_client;
     let skipped = {
         let bk = state.backoff.lock().await;
@@ -238,13 +291,7 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
         }
         set
     };
-
-    // Stagger source fetches instead of firing all 5 at the same microsecond.
-    // A real browser loading a page doesn't make five cross-origin requests
-    // in lockstep; bots do. Each source starts 400-900ms after the previous
-    // one (small random jitter), so the upstream sees irregular spacing.
-    // Shillbot (our own) runs first without delay.
-    let fetch_results = vec![
+    vec![
         fetch_if_not_skipped(&skipped, "shillbot", sources::fetch_shillbot(client)).await,
         {
             random_sleep_ms(300, 800).await;
@@ -272,148 +319,150 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
             )
             .await
         },
-    ];
+    ]
+}
 
-    // Update backoff state from this cycle's results.
-    {
-        let mut bk = state.backoff.lock().await;
-        let now = Utc::now();
-        for result in &fetch_results {
-            let was_parked = bk.skip_until.contains_key(&result.source);
-            apply_backoff_update(&mut bk, result, now);
-            let is_parked = bk.skip_until.contains_key(&result.source);
-            if !was_parked && is_parked {
-                tracing::warn!(
-                    source = %result.source,
-                    "source parked in backoff"
-                );
-            }
+async fn update_backoff(state: &Arc<ListingsState>, fetch_results: &[sources::FetchResult]) {
+    let mut bk = state.backoff.lock().await;
+    let now = Utc::now();
+    for result in fetch_results {
+        let was_parked = bk.skip_until.contains_key(&result.source);
+        apply_backoff_update(&mut bk, result, now);
+        let is_parked = bk.skip_until.contains_key(&result.source);
+        if !was_parked && is_parked {
+            tracing::warn!(source = %result.source, "source parked in backoff");
         }
     }
+}
 
-    // Load ingestion config (fallback to defaults if not in Firestore)
-    let config = load_ingestion_config(&state.db).await;
-
-    // Collect all raw listings and deduplicate
-    let mut seen = std::collections::HashSet::new();
+fn dedupe_raw_listings(fetch_results: &[sources::FetchResult]) -> Vec<RawListing> {
+    let mut seen = HashSet::new();
     let mut all_raw: Vec<RawListing> = Vec::new();
-    for result in &fetch_results {
+    for result in fetch_results {
         for listing in &result.listings {
-            let key = listing.doc_id();
-            if seen.insert(key) {
+            if seen.insert(listing.doc_id()) {
                 all_raw.push(listing.clone());
             }
         }
     }
+    all_raw
+}
 
-    tracing::info!(
-        total_fetched = all_raw.len(),
-        "fetched listings from external sources"
-    );
-
-    // Load existing listings from Firestore for diffing
-    let existing = load_existing_listings(&state.db).await;
-
-    // Process each listing: filter, upsert, emit events
-    let now = Utc::now();
-    let mut active_doc_ids = std::collections::HashSet::new();
+/// For each fetched listing, build (or update) its `ListingDoc`, write to
+/// Firestore, and return the docs that should appear in the response plus
+/// the set of doc IDs we saw this cycle.
+async fn upsert_active_listings(
+    db: &FirestoreDb,
+    all_raw: &[RawListing],
+    existing: &HashMap<String, ListingDoc>,
+    config: &IngestionConfig,
+    now: DateTime<Utc>,
+) -> (Vec<ListingDoc>, HashSet<String>) {
+    let mut active_doc_ids = HashSet::new();
     let mut result_listings: Vec<ListingDoc> = Vec::new();
-
-    for raw in &all_raw {
-        let filter_result = filters::apply_filters(raw, &config);
+    for raw in all_raw {
+        let filter_result = filters::apply_filters(raw, config);
         let doc_id = raw.doc_id();
         active_doc_ids.insert(doc_id.clone());
-
-        let doc = if let Some(existing_doc) = existing.get(&doc_id) {
-            // Existing listing: update last_seen_at, possibly reappear
-            let mut updated = existing_doc.clone();
-            updated.last_seen_at = now;
-            updated.filtered = filter_result.filtered;
-            updated.filter_reason = filter_result.reason;
-            // Update fields that may have changed at source
-            updated.title.clone_from(&raw.title);
-            updated.description.clone_from(&raw.description);
-            updated.reward_amount.clone_from(&raw.reward_amount);
-            updated.reward_usd_estimate = raw.reward_usd_estimate;
-
-            if updated.status == "disappeared" {
-                updated.status = "open".to_string();
-                updated.disappeared_at = None;
-                emit_event(&state.db, &doc_id, "reappeared", None, Some("open")).await;
-            }
-
-            updated
-        } else {
-            // New listing
-            let doc = ListingDoc {
-                source: raw.source.clone(),
-                source_id: raw.source_id.clone(),
-                source_url: raw.source_url.clone(),
-                title: raw.title.clone(),
-                description: raw.description.clone(),
-                category: raw.category.clone(),
-                tags: raw.tags.clone(),
-                reward_amount: raw.reward_amount.clone(),
-                reward_token: raw.reward_token.clone(),
-                reward_chain: raw.reward_chain.clone(),
-                reward_usd_estimate: raw.reward_usd_estimate,
-                payment_model: raw.payment_model.clone(),
-                escrow: raw.escrow,
-                posted_at: raw.posted_at,
-                deadline: raw.deadline,
-                status: "open".to_string(),
-                first_seen_at: now,
-                last_seen_at: now,
-                disappeared_at: None,
-                filtered: filter_result.filtered,
-                filter_reason: filter_result.reason,
-            };
-            emit_event(&state.db, &doc_id, "first_seen", None, None).await;
-            doc
-        };
-
-        // Upsert to Firestore
-        upsert_listing(&state.db, &doc).await;
-
+        let doc = build_listing_doc(db, raw, &doc_id, existing, &filter_result, now).await;
+        upsert_listing(db, &doc).await;
         if !doc.filtered && doc.status == "open" {
             result_listings.push(doc);
         }
     }
+    (result_listings, active_doc_ids)
+}
 
-    // Mark disappeared listings — but ONLY for sources that actually
-    // succeeded this cycle. If moltlaunch returned 429 and we parsed its
-    // empty response, we must not interpret "moltlaunch had no listings this
-    // round" as "every moltlaunch listing disappeared." Previously we did,
-    // and a single Cloudflare block would wipe all known moltlaunch listings
-    // from the swarm.tips frontend.
-    let successful_sources: HashSet<&str> = fetch_results
-        .iter()
-        .filter(|r| is_fetch_success(r))
-        .map(|r| r.source.as_str())
-        .collect();
+async fn build_listing_doc(
+    db: &FirestoreDb,
+    raw: &RawListing,
+    doc_id: &str,
+    existing: &HashMap<String, ListingDoc>,
+    filter_result: &filters::FilterResult,
+    now: DateTime<Utc>,
+) -> ListingDoc {
+    if let Some(existing_doc) = existing.get(doc_id) {
+        let mut updated = existing_doc.clone();
+        updated.last_seen_at = now;
+        updated.filtered = filter_result.filtered;
+        updated.filter_reason = filter_result.reason.clone();
+        updated.title.clone_from(&raw.title);
+        updated.description.clone_from(&raw.description);
+        updated.reward_amount.clone_from(&raw.reward_amount);
+        updated.reward_usd_estimate = raw.reward_usd_estimate;
+        if updated.status == "disappeared" {
+            updated.status = "open".to_string();
+            updated.disappeared_at = None;
+            emit_event(db, doc_id, "reappeared", None, Some("open")).await;
+        }
+        updated
+    } else {
+        let doc = ListingDoc {
+            source: raw.source.clone(),
+            source_id: raw.source_id.clone(),
+            source_url: raw.source_url.clone(),
+            title: raw.title.clone(),
+            description: raw.description.clone(),
+            category: raw.category.clone(),
+            tags: raw.tags.clone(),
+            reward_amount: raw.reward_amount.clone(),
+            reward_token: raw.reward_token.clone(),
+            reward_chain: raw.reward_chain.clone(),
+            reward_usd_estimate: raw.reward_usd_estimate,
+            payment_model: raw.payment_model.clone(),
+            escrow: raw.escrow,
+            posted_at: raw.posted_at,
+            deadline: raw.deadline,
+            status: "open".to_string(),
+            first_seen_at: now,
+            last_seen_at: now,
+            disappeared_at: None,
+            filtered: filter_result.filtered,
+            filter_reason: filter_result.reason.clone(),
+        };
+        emit_event(db, doc_id, "first_seen", None, None).await;
+        doc
+    }
+}
 
-    for (doc_id, existing_doc) in &existing {
+/// Mark listings as `disappeared` only when the source responded 2xx this
+/// cycle. Failed/skipped sources keep their last-known state — otherwise a
+/// single Cloudflare 429 wipes all that source's listings from the
+/// frontend.
+async fn sweep_disappeared(
+    db: &FirestoreDb,
+    existing: &HashMap<String, ListingDoc>,
+    active_doc_ids: &HashSet<String>,
+    successful_sources: &HashSet<&str>,
+    now: DateTime<Utc>,
+) {
+    for (doc_id, existing_doc) in existing {
         if existing_doc.status != "open" {
             continue;
         }
         if active_doc_ids.contains(doc_id) {
             continue;
         }
-        // Guard: only sweep listings whose source actually responded 2xx
-        // this cycle. Failed/skipped sources keep their last-known state.
         if !successful_sources.contains(existing_doc.source.as_str()) {
             continue;
         }
         let mut disappeared = existing_doc.clone();
         disappeared.status = "disappeared".to_string();
         disappeared.disappeared_at = Some(now);
-        upsert_listing(&state.db, &disappeared).await;
-        emit_event(&state.db, doc_id, "disappeared", Some("open"), None).await;
+        upsert_listing(db, &disappeared).await;
+        emit_event(db, doc_id, "disappeared", Some("open"), None).await;
     }
+}
 
-    // Include last-known listings from sources that failed this cycle so the
-    // frontend keeps showing them instead of going silent on a single 429.
-    for (doc_id, existing_doc) in &existing {
+/// Surface last-known listings from sources that failed this cycle so the
+/// frontend keeps showing them instead of going silent on a single 429.
+fn keep_failed_source_listings(
+    existing: &HashMap<String, ListingDoc>,
+    active_doc_ids: &HashSet<String>,
+    successful_sources: &HashSet<&str>,
+    result_listings: &mut Vec<ListingDoc>,
+) {
+    for (doc_id, existing_doc) in existing {
         if existing_doc.status != "open" {
             continue;
         }
@@ -426,30 +475,10 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
         if !existing_doc.filtered {
             result_listings.push(existing_doc.clone());
         }
+        // doc_id is informational here; the function reads its discriminator
+        // through existing_doc fields.
+        let _ = doc_id;
     }
-
-    // Record source health
-    for result in &fetch_results {
-        record_source_health(&state.db, &result.source, &result.health).await;
-    }
-
-    // Sort: most recent first
-    result_listings.sort_by(|a, b| b.posted_at.cmp(&a.posted_at));
-
-    let agent_jobs: Vec<AgentJob> = result_listings.iter().map(AgentJob::from).collect();
-
-    // Update cache
-    {
-        let mut cache = state.cache.lock().await;
-        *cache = Some(ListingsCache {
-            listings: agent_jobs.clone(),
-            fetched_at: now,
-        });
-    }
-
-    tracing::info!(returned = agent_jobs.len(), "listings ingestion complete");
-
-    Ok(agent_jobs)
 }
 
 // -- Firestore helpers --
