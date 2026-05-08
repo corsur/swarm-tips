@@ -46,28 +46,28 @@ pub fn verify_task(
         ShillbotError::InvalidTaskState
     );
 
-    // Checks: Switchboard feed is configured (compile-time const)
+    // Checks: feed account matches the per-network value stored in
+    // `GlobalState.switchboard_feed`.
     //
-    // Reads the locked compile-time pubkey from `crate::constants` rather
-    // than `global.switchboard_feed`. The on-chain field is vestigial and
-    // kept only for schema compat with already-deployed `GlobalState`
-    // accounts (removing the field would shift byte offsets on the
-    // `_reserved` and `bump` fields that follow it). This eliminates the
-    // post-upgrade migration ambiguity flagged by the round-1 reviewer:
-    // before this commit, `verify_task` depended on whether the historical
-    // value of the on-chain field was ever set (via the now-removed
-    // `set_switchboard_feed` instruction). After this commit, only the
-    // const matters; operational verification at upgrade time reduces to
-    // "did the founder fill `constants::SWITCHBOARD_FEED` with the
-    // production feed pubkey?"
+    // The 2026-05-01 commit (task #9) moved this check to a compile-time
+    // const for hardening, on the theory that "single-key compromise of
+    // the authority lets an attacker redirect verify to a malicious
+    // feed." That hardening was reverted 2026-05-08 because (a) the
+    // const was committed as a placeholder and the load-bearing
+    // "USER MUST FILL" TODO was missed, blocking every verify_task call
+    // on every network for ~7 days, and (b) at zero TVL the attacker-
+    // model the const protected against was hypothetical, while the
+    // on-chain GlobalState.switchboard_feed field already has correct
+    // per-network values populated (mainnet `En9CN…`, devnet `BSSv19i…`)
+    // and is governance-mutable via `set_switchboard_feed` if the
+    // multisig ever needs to rotate. Reverting trades a hypothetical
+    // attacker-cost increase for actual operational reachability.
     require!(
-        crate::constants::SWITCHBOARD_FEED != Pubkey::default(),
+        global.switchboard_feed != Pubkey::default(),
         ShillbotError::SwitchboardFeedNotConfigured
     );
-
-    // Checks: feed account matches the locked feed
     require!(
-        ctx.accounts.switchboard_feed.key() == crate::constants::SWITCHBOARD_FEED,
+        ctx.accounts.switchboard_feed.key() == global.switchboard_feed,
         ShillbotError::SwitchboardFeedMismatch
     );
 
@@ -221,4 +221,30 @@ pub struct VerifyTask<'info> {
     /// `PullFeedAccountData::parse()` which checks the account discriminator.
     /// Account ownership is verified by Switchboard's `Owner` implementation.
     pub switchboard_feed: AccountInfo<'info>,
+}
+
+#[cfg(test)]
+mod tests {
+    /// Regression guard for the 2026-05-01 → 2026-05-08 const-lockdown
+    /// round-trip: the `SWITCHBOARD_FEED` compile-time const is fully
+    /// retired. The 2026-05-01 lockdown shipped a placeholder pubkey
+    /// (`11111…112`) without filling in a real value, blocking every
+    /// `verify_task` call on every network until the revert. This test
+    /// fails-loudly if the const is reintroduced.
+    #[test]
+    fn switchboard_feed_const_is_not_referenced() {
+        let src = include_str!("verify_task.rs");
+        // Search only the non-test portion of the file.
+        let cutoff = src
+            .find("#[cfg(test)]")
+            .expect("test module marker should exist");
+        let production = &src[..cutoff];
+        assert!(
+            !production.contains("crate::constants::SWITCHBOARD_FEED"),
+            "verify_task.rs must not reference crate::constants::SWITCHBOARD_FEED \
+             (const retired 2026-05-08; per-network feed pubkey lives in \
+             GlobalState.switchboard_feed). Re-introducing the const is the \
+             same trap that shipped the placeholder bug."
+        );
+    }
 }

@@ -40,12 +40,14 @@ pub mod shillbot {
         protocol_fee_bps: u16,
         quality_threshold: u64,
         starting_counter: u64,
+        switchboard_feed: Pubkey,
     ) -> Result<()> {
         instructions::initialize::initialize(
             ctx,
             protocol_fee_bps,
             quality_threshold,
             starting_counter,
+            switchboard_feed,
         )
     }
 

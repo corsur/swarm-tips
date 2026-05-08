@@ -15,6 +15,7 @@ pub fn initialize(
     protocol_fee_bps: u16,
     quality_threshold: u64,
     starting_counter: u64,
+    switchboard_feed: Pubkey,
 ) -> Result<()> {
     // Checks
     require!(
@@ -28,6 +29,16 @@ pub fn initialize(
     require!(
         quality_threshold <= shared::MAX_SCORE,
         ShillbotError::QualityThresholdBoundsExceeded
+    );
+    // The Switchboard feed must be set at initialize so verify_task has
+    // a valid feed to check against from the first task. Operators
+    // pre-deploy a Switchboard pull feed for the target network and
+    // pass its pubkey here. Pubkey::default() is rejected — the field
+    // serves as a "deployment is incomplete" tripwire (verify_task
+    // refuses to run if the feed is zero).
+    require!(
+        switchboard_feed != Pubkey::default(),
+        ShillbotError::SwitchboardFeedNotConfigured
     );
 
     // Effects
@@ -47,12 +58,11 @@ pub fn initialize(
     global.oracle_authority = ctx.accounts.authority.key();
     global.paused = false;
     global.paused_platforms = 0;
-    // Initialize the (now-vestigial) field. `verify_task` reads
-    // `crate::constants::SWITCHBOARD_FEED` directly; this assignment
-    // exists only so on-chain readers (off-chain indexers, IDL
-    // consumers) see a sensible value rather than zeros. Future
-    // GlobalState v2 may drop the field entirely.
-    global.switchboard_feed = crate::constants::SWITCHBOARD_FEED;
+    // Switchboard feed is set from the per-network arg above (validated
+    // non-default). Operators pre-deploy a feed for each target network
+    // and pass its pubkey at initialize. Rotation post-deploy requires
+    // a program upgrade until `set_switchboard_feed` is re-added.
+    global.switchboard_feed = switchboard_feed;
     // D3 (2026-05-07): rate-limit defaults match the pre-D3 const values
     // so initialize-then-update_params is a clean transition.
     // The D2 `min_escrow_lamports` slot stays zero — the gate was removed

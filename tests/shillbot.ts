@@ -171,7 +171,16 @@ describe("shillbot", () => {
   describe("initialize", () => {
     it("creates GlobalState with authority, fee, and threshold", async () => {
       await program.methods
-        .initialize(PROTOCOL_FEE_BPS, QUALITY_THRESHOLD, new BN(0))
+        .initialize(
+          PROTOCOL_FEE_BPS,
+          QUALITY_THRESHOLD,
+          new BN(0),
+          // Use the authority pubkey as the configured "Switchboard feed"
+          // for these tests. The verify_task tests further down pass
+          // authority.publicKey when they want a valid feed and an
+          // `imposter.publicKey` when they want the rejection path.
+          authority.publicKey
+        )
         .accountsPartial({
           globalState: globalPda,
           authority: authority.publicKey,

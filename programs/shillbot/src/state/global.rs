@@ -33,12 +33,13 @@ pub struct GlobalState {
     /// Bitmask of paused platforms (bit N = PlatformType with value N).
     pub paused_platforms: u16,
     /// Switchboard pull feed account that provides oracle-attested
-    /// composite scores. **Vestigial as of Phase 3 blocker #1 Path A**:
-    /// the field is no longer read by any instruction. `verify_task`
-    /// reads `crate::constants::SWITCHBOARD_FEED` instead. Kept on the
-    /// struct for schema compatibility (removing it would shift byte
-    /// offsets on `_reserved` and `bump`, breaking deserialization of
-    /// already-deployed accounts). Future GlobalState v2 may drop it.
+    /// composite scores. Read by `verify_task` to validate the feed
+    /// passed in by the caller. Different per-network (mainnet
+    /// `En9CN…T6qQ`, devnet `BSSv19i…`); rotated via the multisig if
+    /// needed (re-adding `set_switchboard_feed` is a follow-up). The
+    /// 2026-05-01 lock-down to a compile-time const was reverted on
+    /// 2026-05-08 because the const shipped as a placeholder and the
+    /// load-bearing TODO was missed — see `verify_task.rs` comment.
     pub switchboard_feed: Pubkey,
     /// Minimum task escrow in lamports (Phase 3 blocker #2 — D2).
     /// Carved from `_reserved` 2026-05-07. Pre-D2 was a compile-time

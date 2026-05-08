@@ -197,7 +197,12 @@ async function initializeGlobal(
   globalPda: PublicKey
 ): Promise<void> {
   await program.methods
-    .initialize(PROTOCOL_FEE_BPS, QUALITY_THRESHOLD, new BN(0))
+    .initialize(
+      PROTOCOL_FEE_BPS,
+      QUALITY_THRESHOLD,
+      new BN(0),
+      DUMMY_SWITCHBOARD_FEED
+    )
     .accountsPartial({
       globalState: globalPda,
       authority: authority.publicKey,
@@ -207,10 +212,9 @@ async function initializeGlobal(
     .signers([authority])
     .rpc();
 
-  // Phase 3 blocker #1 Path A removed `setSwitchboardFeed`. `initialize`
-  // sets `global.switchboard_feed` to `constants::SWITCHBOARD_FEED`
-  // (which equals `DUMMY_SWITCHBOARD_FEED` here). No further setup
-  // needed for verify_task to pass the feed-account check.
+  // `initialize` sets `global.switchboard_feed` to the per-network feed
+  // pubkey (here, `DUMMY_SWITCHBOARD_FEED` — a bankrun-mocked account
+  // set up below). The 2026-05-01 const lockdown was reverted 2026-05-08.
 }
 
 async function createTask(

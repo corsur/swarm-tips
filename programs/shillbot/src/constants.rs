@@ -7,23 +7,16 @@
 //! Switchboard feed (which would let them post arbitrary scores and
 //! drain task escrows).
 
-use anchor_lang::prelude::*;
-
-/// Switchboard pull feed account that provides oracle-attested
-/// composite scores. Verified at every `verify_task` call against the
-/// account passed by the caller.
-///
-/// **USER MUST FILL before mainnet program upgrade:** the value below is
-/// a placeholder (System Program + 1). The real production feed pubkey
-/// must be inserted here, the program rebuilt, and the upgrade signed
-/// by the upgrade authority. Without this swap, `verify_task` will
-/// silently reject every attestation because the feed account passed
-/// in won't match the placeholder.
-///
-/// Test setups that exercise `verify_task` create a bankrun account at
-/// this exact pubkey so the validation passes — see
-/// `tests/shillbot-lifecycle.ts` for the pattern.
-pub const SWITCHBOARD_FEED: Pubkey = pubkey!("11111111111111111111111111111112");
+// SWITCHBOARD_FEED const removed 2026-05-08. The compile-time-locked feed
+// pubkey was added 2026-05-01 (task #9) as anti-compromise hardening:
+// "single-key compromise of the authority lets an attacker redirect verify
+// to a malicious feed." Reverted because the const shipped as a placeholder
+// (`11111…112`) and the load-bearing "USER MUST FILL" TODO was missed,
+// blocking every `verify_task` call on every network for ~7 days. The
+// per-network feed pubkey now lives in `GlobalState.switchboard_feed`,
+// already populated correctly on both networks (mainnet `En9CN…`, devnet
+// `BSSv19i…`). Multisig can rotate via `set_switchboard_feed` when
+// re-added — until then, rotation requires a program upgrade.
 
 // MIN_ESCROW_LAMPORTS (and the bound consts MIN_ESCROW_LAMPORTS_FLOOR,
 // MIN_ESCROW_LAMPORTS_CEILING) removed 2026-05-07. The 0.36 SOL per-task
