@@ -34,8 +34,7 @@ fn session_id_from_parts(parts: Option<&http::request::Parts>) -> Option<String>
 pub struct SharedState {
     pub orchestrator: OrchestratorProxy,
     /// Reserved adapter for future game-api flows (auth_challenge,
-    /// join_queue). The leaderboard path that previously consumed it
-    /// was removed in 0-FU-3 — see `game_proxy.rs` for context.
+    /// join_queue). No live tool currently consumes it.
     #[allow(dead_code)]
     pub game_api: GameApiProxy,
     pub solana_rpc_url: String,
@@ -539,7 +538,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_approve_task",
-        description = "[STATE] (CLIENT-SIDE) Approve agent-submitted content for a Shillbot task you funded (Phase 3 blocker #3a client review gate). Returns an unsigned base64 Solana transaction the campaign client signs locally with their wallet, then submits via shillbot_submit_tx with action=\"approve\". Only the original task client may call this — the on-chain instruction enforces the wallet match. The verification timeout is anchored on submitted_at, NOT approved_at, so approving and then never funding oracle verification still returns the escrow at T+verification_timeout (no freeze attack). Use shillbot_list_pending_approval to find tasks awaiting your review.",
+        description = "[STATE] (CLIENT-SIDE) Approve agent-submitted content for a Shillbot task you funded. Returns an unsigned base64 Solana transaction the campaign client signs locally with their wallet, then submits via shillbot_submit_tx with action=\"approve\". Only the original task client may call this — the on-chain instruction enforces the wallet match. The verification timeout is anchored on submitted_at, NOT approved_at, so approving and then never funding oracle verification still returns the escrow at T+verification_timeout (no freeze attack). Use shillbot_list_pending_approval to find tasks awaiting your review.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_approve_task(
@@ -576,7 +575,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_reject_task",
-        description = "[READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is tracked as a Phase 3 blocker #3a follow-up; once it ships, this tool will route through it instead.",
+        description = "[READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is on the roadmap; once it ships, this tool will route through it instead.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_reject_task(
@@ -644,7 +643,7 @@ impl SwarmTipsMcp {
             "verification_timeout_secs": DEFAULT_VERIFICATION_TIMEOUT_SECS,
             "guidance": "v1 reject is implicit: do NOT call shillbot_approve_task. The agent's submitted content stays in 'submitted' state. At T+verification_timeout (~14 days from the agent's submitted_at), expire_task can be cranked permissionlessly by anyone (including the campaign client) and the full escrow returns to the campaign's client wallet. The agent is paid nothing.",
             "next_step": "Wait until expires_at, then call expire_task (out-of-band crank — no MCP tool today; use solana CLI or the orchestrator's expire endpoint when available). Use the expires_at timestamp to schedule a follow-up reminder.",
-            "future_work": "A first-class reject_task on-chain instruction with reason capture is tracked as Phase 3 blocker #3a follow-up. When it ships, this tool will route through it and shorten the rejection window.",
+            "future_work": "A first-class reject_task on-chain instruction with reason capture is on the roadmap. When it ships, this tool will route through it and shorten the rejection window.",
         });
         Ok(text_result(&result))
     }
@@ -910,7 +909,7 @@ impl SwarmTipsMcp {
                 // submitted_at yet (state mismatch / stale read).
                 "not_before": escrow_expires_iso,
                 "hint": format!(
-                    "Task is awaiting CLIENT review (Phase 3 blocker #3a gate). If you are the campaign client, call shillbot_approve_task. If you are the agent, there is nothing for you to do until the client approves or the verification timeout returns the escrow at {}.",
+                    "Task is awaiting CLIENT review. If you are the campaign client, call shillbot_approve_task. If you are the agent, there is nothing for you to do until the client approves or the verification timeout returns the escrow at {}.",
                     if escrow_expires_iso.is_empty() {
                         "submitted_at + ~14 days".to_string()
                     } else {
@@ -1534,15 +1533,8 @@ impl SwarmTipsMcp {
         let tournament_id = args.tournament_id.unwrap_or(1);
         let limit = args.limit.unwrap_or(20).min(100) as usize;
 
-        // 0-FU-3 (2026-05-07): read PlayerProfile PDAs directly from
-        // Solana RPC instead of calling game-api's
-        // /tournaments/{id}/leaderboard endpoint. That endpoint never
-        // existed (verified via Q6 game-api source read end-to-end);
-        // the prior `game_api.get_leaderboard()` call was always 401-ing
-        // because game-api's protected_routes auth-middleware
-        // fall-through caught the unmatched path. PlayerProfile data
-        // lives entirely on-chain — the RPC hop was unnecessary
-        // indirection.
+        // PlayerProfile data lives entirely on-chain; we read the PDAs
+        // directly via RPC instead of going through game-api.
         let mut entries = crate::solana_reads::read_all_player_profiles_for_tournament(
             &self.state.rpc_client,
             &self.state.solana_rpc_url,
@@ -1858,16 +1850,9 @@ impl SwarmTipsMcp {
     /// Returns None if no binding exists. Caller surfaces the standard
     /// "no game session: call register_wallet first" error.
     ///
-    /// Q4 fix (2026-05-07): removed the prior `get_any_wallet()`
-    /// fallback. That fallback returned the FIRST wallet in the
-    /// in-memory HashMap regardless of which agent was calling — a
-    /// privacy leak across MCP sessions on the same pod. A fresh
-    /// session that hadn't called register_wallet would silently
-    /// resolve to whatever wallet the pod had previously registered
-    /// for some other agent, then proceed through tool calls (balance
-    /// preflights, agent_profile reads, etc.) against that other
-    /// wallet. The fallback was a pre-session-binding leftover; with
-    /// the Firestore binding shipped, it's strictly a leak.
+    /// No "first wallet in the map" fallback — that pattern leaked wallets
+    /// across MCP sessions sharing a pod. A fresh session must call
+    /// register_wallet to bind, otherwise this returns None.
     async fn resolve_wallet(&self, parts: Option<&http::request::Parts>) -> Option<String> {
         let session_id = session_id_from_parts(parts)?;
         let wallet = self.state.session_binding.resolve(&session_id).await?;
@@ -1910,7 +1895,7 @@ Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multi
 This server exposes 31 tools across five categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
-- **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work, Phase 3 blocker #3a/#3c): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
+- **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (4 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters), `search_mcp_servers` (Layer 3 curated MCP-server directory — 30 entries with tier-aware trust framing).
 - **profile** (2 tools, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate). `agent_trust_score` consumes the same on-chain reads + optional curator-tier + optional Hyperspace AgentRank and returns a single composite 0..1 trust score with a confidence count and per-signal breakdown for transparency.
@@ -1942,7 +1927,7 @@ How to play (after register_wallet):
 8. game_get_leaderboard — tournament rankings (read-only)
 
 ## Shillbot (shillbot.org) — content-creation marketplace, mainnet
-Two-sided market: AGENTS earn SOL by creating content for paying CLIENTS. The full earn lifecycle is escrow → claim → submit → CLIENT REVIEW → oracle verify → finalize. Phase 3 blocker #3a inserted client review between submit and verify — a brand client now has a hard gate to reject off-brand or unsafe content before any payment can flow.
+Two-sided market: AGENTS earn SOL by creating content for paying CLIENTS. The full earn lifecycle is escrow → claim → submit → CLIENT REVIEW → oracle verify → finalize. Client review sits between submit and verify — a brand client has a hard gate to reject off-brand or unsafe content before any payment can flow.
 
 ### Agent flow (earn SOL)
 1. shillbot_list_available_tasks — browse open tasks (or use list_earning_opportunities for cross-source aggregation)

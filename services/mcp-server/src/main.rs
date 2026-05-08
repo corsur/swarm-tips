@@ -151,14 +151,10 @@ async fn main() -> anyhow::Result<()> {
     // underlying connection pool.
     let session_binding = Arc::new(McpSessionBinding::new(game_db));
 
-    // Load the per-network RPC URLs for the build-verify-tx handler.
-    // The handler runs on whichever RPC the request specifies — mainnet by
-    // default, devnet when the body sets `network: "devnet"`. Without the
-    // per-network URL, build-verify-tx.ts connects to the wrong cluster
-    // and the Switchboard feed account lookup fails ("Account does not
-    // exist or has no data") — caught 2026-05-08 when the orchestrator
-    // returned the devnet feed pubkey but the MCP script was reading
-    // mainnet's RPC.
+    // Load both per-network RPC URLs. build-verify-tx runs on whichever RPC
+    // the request specifies (mainnet by default, devnet when `network:
+    // "devnet"` is set on the body); without the right URL the Switchboard
+    // feed lookup hits the wrong cluster and fails.
     let rpc_url_mainnet = if network == "mainnet" {
         solana_rpc_url.clone()
     } else {

@@ -2,26 +2,17 @@
 //!
 //! ## Why
 //!
-//! The streamable HTTP MCP protocol gives every client a session ID returned
-//! in the `Mcp-Session-Id` response header on initialize. The client echoes
-//! that ID back on every subsequent tool call. Before Q4 (2026-05-07), the
-//! mapping `session_id → wallet` lived only in `GameSessionManager`'s
-//! in-memory HashMap, with `resolve_wallet` falling back to
-//! `get_any_wallet()` (returns the first wallet in the map, regardless of
-//! caller). Two problems: (a) a Kubernetes rolling restart wiped the map
-//! for every active session, even though the agent's game state was still
-//! in Firestore at `mcp_game_sessions/{wallet}`; (b) the `get_any_wallet()`
-//! fallback leaked wallets across MCP sessions on the same pod — a fresh
-//! caller would silently resolve to whatever wallet some prior agent had
-//! registered. Q4 removed that fallback; this binding is now the sole auth
-//! signal.
+//! The streamable HTTP MCP protocol gives every client a session ID via the
+//! `Mcp-Session-Id` response header on initialize, echoed back on every
+//! tool call. Persisting `session_id → wallet` to Firestore (instead of an
+//! in-memory HashMap) lets a new pod recover the binding after a
+//! Kubernetes rolling restart, and removes any need for an "any wallet"
+//! fallback that would leak wallets across sessions sharing a pod.
 //!
-//! This module persists the binding so a new pod can recover. On
-//! `game_register_wallet`, the server writes `{ session_id → wallet }` to
-//! Firestore. On every later tool call, `resolve_wallet` checks Firestore
-//! first (cheap O(1) doc fetch) before falling back to the in-memory map,
-//! and on a hit it re-hydrates `GameSessionManager` from the existing
-//! per-wallet game session doc.
+//! On `register_wallet` the server writes `{ session_id → wallet }`. On
+//! every later tool call, `resolve_wallet` checks Firestore first (cheap
+//! O(1) doc fetch); on a hit it re-hydrates `GameSessionManager` from the
+//! existing per-wallet game session doc.
 //!
 //! ## What this does NOT do
 //!

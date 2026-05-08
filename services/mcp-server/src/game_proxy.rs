@@ -3,15 +3,10 @@ use crate::errors::McpServiceError;
 // Re-export shared types used by tools.rs
 pub use game_api_client::QueueJoinResponse;
 
-/// Thin adapter around the shared `GameApiClient` that maps errors to `McpServiceError`.
-///
-/// The MCP server only uses a subset of the shared client's methods (auth_challenge,
-/// join_queue). This wrapper provides the same method signatures
-/// that tools.rs expects while delegating to the shared crate.
-/// `get_leaderboard` was removed in 0-FU-3 (2026-05-07): the underlying
-/// `/tournaments/{id}/leaderboard` endpoint never existed in game-api;
-/// the leaderboard is now read directly from on-chain PlayerProfile
-/// PDAs in `solana_reads::read_all_player_profiles_for_tournament`.
+/// Thin adapter around the shared `GameApiClient` that maps errors to
+/// `McpServiceError`. The leaderboard is read directly from on-chain
+/// PlayerProfile PDAs (see `solana_reads::read_all_player_profiles_for_tournament`),
+/// not through this proxy.
 pub struct GameApiProxy {
     client: game_api_client::GameApiClient,
 }
@@ -25,9 +20,8 @@ impl GameApiProxy {
     }
 
     /// Request an auth challenge nonce for a wallet. Currently unused at the
-    /// MCP tool layer (the previous `game_join_queue` tool that consumed it
-    /// was retired 2026-04-08), but kept on the proxy as a reusable adapter
-    /// for any future pattern that needs the challenge/sign/JWT flow.
+    /// MCP tool layer; kept as a reusable adapter for any future pattern that
+    /// needs the challenge/sign/JWT flow.
     #[allow(dead_code)]
     pub async fn auth_challenge(
         &self,
@@ -60,8 +54,6 @@ impl GameApiProxy {
             .await
             .map_err(map_game_api_error)
     }
-
-    // get_leaderboard was removed 2026-05-07 — see struct doc.
 }
 
 /// Map shared crate errors to MCP server errors with structured logging.
@@ -73,8 +65,3 @@ fn map_game_api_error(err: game_api_client::GameApiError) -> McpServiceError {
     );
     McpServiceError::GameApiError(err.to_string())
 }
-
-// Test for the removed get_leaderboard() proxy was deleted in 0-FU-3
-// (2026-05-07) along with the dead HTTP path. The leaderboard's on-chain
-// reader now lives in solana_reads::read_all_player_profiles_for_tournament,
-// where it has its own coverage.

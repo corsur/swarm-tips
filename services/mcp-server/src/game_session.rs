@@ -276,13 +276,6 @@ impl GameSessionManager {
         }
     }
 
-    // get_any_wallet was removed in Q4 (2026-05-07): it returned the
-    // first wallet in the HashMap regardless of caller, which leaked
-    // across MCP sessions on the same pod. The Firestore session-
-    // binding (session_binding.rs) is the only legitimate auth signal
-    // now; resolve_wallet returns None when no binding exists rather
-    // than falling back to anyone's wallet.
-
     /// Whether the in-memory session map already holds a session for
     /// `wallet`. Used by `resolve_wallet` to skip the heavy
     /// `register_wallet` re-hydrate path on every tool call — only the

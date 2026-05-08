@@ -200,15 +200,10 @@ pub async fn read_player_profile(
 
 /// Read all PlayerProfile accounts for a given tournament_id via
 /// `getProgramAccounts` with a discriminator + tournament_id memcmp
-/// filter. Decodes each into `PlayerProfileData` and returns sorted by
-/// `score` descending (the leaderboard order).
-///
-/// Used by the `game_get_leaderboard` MCP tool. Replaces the dead
-/// `game_api_client::get_leaderboard` HTTP path that pointed at a
-/// game-api endpoint that never existed (0b-FINDING-1, 2026-05-07
-/// audit). Reading on-chain directly is the right architectural
-/// answer because PlayerProfile data lives entirely on-chain — the
-/// game-api hop was an unnecessary indirection.
+/// filter. Decodes each into `PlayerProfileData` and returns them sorted
+/// by `score` descending (the leaderboard order). Used by the
+/// `game_get_leaderboard` MCP tool — PlayerProfile data lives entirely
+/// on-chain, so we go directly to RPC instead of through game-api.
 pub async fn read_all_player_profiles_for_tournament(
     client: &reqwest::Client,
     rpc_url: &str,

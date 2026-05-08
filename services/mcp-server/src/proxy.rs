@@ -121,7 +121,7 @@ pub struct VerificationDataResponse {
 pub enum ConfirmAction {
     Claim,
     Submit,
-    /// Phase 3 blocker #3a: client signed `approve_task` on-chain.
+    /// Client signed `approve_task` on-chain.
     Approve,
     Verify,
     Finalize,
@@ -482,11 +482,11 @@ impl OrchestratorProxy {
         })
     }
 
-    /// Phase 3 blocker #3c: request the orchestrator build an unsigned
-    /// `approve_task` Solana transaction for the campaign client. The
-    /// orchestrator verifies the calling wallet IS the campaign's client
-    /// (mirrors on-chain `NotTaskClient` enforcement) and returns a
-    /// base64-encoded unsigned transaction the client signs locally.
+    /// Request the orchestrator build an unsigned `approve_task` Solana
+    /// transaction for the campaign client. The orchestrator verifies the
+    /// calling wallet IS the campaign's client (mirrors the on-chain
+    /// `NotTaskClient` check) and returns a base64-encoded unsigned
+    /// transaction the client signs locally.
     pub async fn approve_task(
         &self,
         task_id: &str,
@@ -577,12 +577,10 @@ impl OrchestratorProxy {
     }
 
     /// AAS v0: fetch the portable attestation tuple by on-chain Task PDA.
-    /// The PDA is the canonical AAS identifier — derivable from any
-    /// public indexer of the `TaskCreated` event, no orchestrator
-    /// access needed. Closes the portability gap surfaced in the
-    /// 2026-05-04 E2E test: the legacy `task_id` route resolved against
-    /// the orchestrator's Firestore document id, which third-party
-    /// verifiers cannot know.
+    /// The PDA is the canonical AAS identifier — derivable from any public
+    /// indexer of the `TaskCreated` event, so third-party verifiers don't
+    /// need orchestrator access (unlike the legacy task_id route, which
+    /// resolved against Firestore document IDs they couldn't know).
     pub async fn get_attestation_by_pda(
         &self,
         task_pda: &str,
@@ -627,9 +625,8 @@ impl OrchestratorProxy {
         })
     }
 
-    /// Phase 3 blocker #3c: list pending-approval tasks across all of
-    /// the calling client's campaigns. Mirrors orchestrator
-    /// `GET /client/pending-approval`.
+    /// List pending-approval tasks across all of the calling client's
+    /// campaigns. Mirrors orchestrator `GET /client/pending-approval`.
     pub async fn list_pending_approval(
         &self,
         wallet_pubkey: &str,
@@ -983,11 +980,9 @@ mod tests {
             serde_json::to_value(ConfirmAction::Submit).unwrap(),
             serde_json::Value::String("submit".to_string())
         );
-        // Phase 3 blocker #3c: approve action must round-trip the same
-        // snake_case form the orchestrator's enum expects (`"approve"`,
-        // not `"Approve"`). A casing drift here would route the confirm
-        // call into the orchestrator's serde-deserialization fallthrough
-        // and silently break the client review gate.
+        // approve must serialize as `"approve"` (snake_case) to match the
+        // orchestrator enum; a casing drift would silently route confirm
+        // calls into serde's fallthrough and break the client review gate.
         assert_eq!(
             serde_json::to_value(ConfirmAction::Approve).unwrap(),
             serde_json::Value::String("approve".to_string())
