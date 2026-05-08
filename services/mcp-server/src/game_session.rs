@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use firestore::FirestoreDb;
 use futures_util::SinkExt;
 use game_api_client::ws::{MatchFoundMsg, ServerMessage, WsConnection, WsSink};
@@ -169,6 +170,12 @@ pub struct GameSessionManager {
     game_api_url: String,
     solana_rpc_url: String,
     db: Arc<FirestoreDb>,
+}
+
+fn decode_signed_tx(signed_tx_b64: &str) -> Result<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD
+        .decode(signed_tx_b64)
+        .context("invalid base64 signed transaction")
 }
 
 impl GameSessionManager {
@@ -477,33 +484,60 @@ impl GameSessionManager {
         Ok(unsigned)
     }
 
-    /// Submit a signed game transaction and handle post-submission logic.
-    ///
-    /// After deposit_stake: authenticates with game-api via the tx signature,
-    /// connects WebSocket if needed, and joins the matchmaking queue.
-    /// Submit a signed game transaction and handle action-specific post-submission logic.
+    /// Submit a signed game transaction and run action-specific
+    /// post-submission logic. Each action's branch lives in its own helper
+    /// (after_deposit_stake, after_join_game, etc.).
     pub async fn submit_signed_game_tx(
         &self,
         wallet: &str,
         signed_tx_b64: &str,
         action: &str,
     ) -> Result<serde_json::Value> {
+        let signed_bytes = decode_signed_tx(signed_tx_b64)?;
+        let sig_str = self.broadcast_signed(wallet, action, &signed_bytes).await?;
+
+        let session = self
+            .sessions
+            .read()
+            .await
+            .get(wallet)
+            .context("no session for wallet")?
+            .clone();
+
+        match action {
+            "deposit_stake" => self.after_deposit_stake(wallet, &sig_str, &session).await?,
+            "join_game" => self.after_join_game(wallet, &session).await?,
+            "commit_guess" => self.after_commit_guess(wallet, &session).await?,
+            "reveal_guess" => self.after_reveal_guess(wallet, &session).await,
+            "create_game" => self.after_create_game(wallet, &session).await?,
+            other => {
+                tracing::warn!(wallet = %wallet, action = other, "unknown action for game_submit_tx");
+            }
+        }
+
+        Ok(serde_json::json!({
+            "tx_signature": sig_str,
+            "status": "submitted",
+        }))
+    }
+
+    /// Submit the signed bytes through the per-wallet `GameTxBuilder` and
+    /// return the resulting signature as a base58 string.
+    async fn broadcast_signed(
+        &self,
+        wallet: &str,
+        action: &str,
+        signed_bytes: &[u8],
+    ) -> Result<String> {
         let builders = self.tx_builders.read().await;
         let tx_builder = builders.get(wallet).context("no session for wallet")?;
-
-        use base64::Engine;
-        let signed_bytes = base64::engine::general_purpose::STANDARD
-            .decode(signed_tx_b64)
-            .context("invalid base64 signed transaction")?;
-
         tracing::info!(
             wallet = %wallet,
             action = %action,
             tx_len = signed_bytes.len(),
             "submitting signed transaction"
         );
-
-        let sig = match tx_builder.submit_signed(&signed_bytes).await {
+        let sig = match tx_builder.submit_signed(signed_bytes).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(
@@ -523,152 +557,153 @@ impl GameSessionManager {
             sig = %sig_str,
             "signed transaction confirmed"
         );
+        Ok(sig_str)
+    }
 
-        let session = self
-            .sessions
-            .read()
-            .await
-            .get(wallet)
-            .context("no session for wallet")?
-            .clone();
-
-        // Action-specific post-submission logic.
-        match action {
-            "deposit_stake" => {
-                // Always re-authenticate after a deposit_stake submission. The
-                // JWT we have (if any) was issued for a *previous* stake; the
-                // game-api ties session_id to a specific deposit, so reusing
-                // an old JWT against a new stake hits an ExpiredSignature or
-                // wrong-session 401 once the original token TTL elapses. The
-                // fresh stake we just broadcast IS the auth credential.
-                if !session.lock().await.jwt.is_empty() {
-                    if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
-                        token.cancel();
-                    }
-                    self.ws_sinks.write().await.remove(wallet);
-                    session.lock().await.jwt.clear();
-                }
-                {
-                    let api_client = GameApiClient::new(&self.game_api_url)?;
-                    let auth_resp = api_client.session_auth(wallet, &sig_str).await?;
-                    let jwt = auth_resp.token.clone();
-
-                    let ws = WsConnection::connect(&self.game_api_url, &jwt).await?;
-                    let (sink, stream) = ws.into_split();
-                    let ws_sink = Arc::new(Mutex::new(sink));
-
-                    let session_clone = Arc::clone(&session);
-                    let sink_clone = Arc::clone(&ws_sink);
-                    let api_url = self.game_api_url.clone();
-                    let cancel_token = CancellationToken::new();
-                    let token_clone = cancel_token.clone();
-                    tokio::spawn(async move {
-                        ws_listener_with_reconnect(
-                            session_clone,
-                            stream,
-                            sink_clone,
-                            api_url,
-                            token_clone,
-                        )
-                        .await;
-                    });
-
-                    self.ws_sinks
-                        .write()
-                        .await
-                        .insert(wallet.to_string(), ws_sink);
-                    self.ws_cancel_tokens
-                        .write()
-                        .await
-                        .insert(wallet.to_string(), cancel_token);
-                    session.lock().await.jwt = jwt;
-
-                    // Persist after auth.
-                    {
-                        let s = session.lock().await;
-                        self.persist_session(&s).await?;
-                    }
-
-                    tracing::info!(wallet = %wallet, "authenticated via deposit_stake tx");
-                }
-
-                // Join the queue.
-                let (jwt, tournament_id) = {
-                    let s = session.lock().await;
-                    (s.jwt.clone(), s.tournament_id)
-                };
-                if let Some(tid) = tournament_id {
-                    self.join_queue_after_stake(wallet, &jwt, tid).await?;
-                }
+    /// After deposit_stake: always re-authenticate. Reusing a previous
+    /// stake's JWT against a fresh stake hits an ExpiredSignature /
+    /// wrong-session 401 once the prior token TTL elapses — the fresh
+    /// stake we just broadcast IS the auth credential.
+    async fn after_deposit_stake(
+        &self,
+        wallet: &str,
+        sig_str: &str,
+        session: &Arc<Mutex<GameSession>>,
+    ) -> Result<()> {
+        if !session.lock().await.jwt.is_empty() {
+            if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
+                token.cancel();
             }
-            "join_game" => {
-                let (jwt, session_id) = {
-                    let mut s = session.lock().await;
-                    s.state = GameSessionState::InGame;
-                    (s.jwt.clone(), s.session_id.clone().unwrap_or_default())
-                };
-                {
-                    let s = session.lock().await;
-                    self.persist_session(&s).await?;
-                }
-                let game_id = session.lock().await.game_id.unwrap_or(0);
-                if !session_id.is_empty() {
-                    let api_client = GameApiClient::new(&self.game_api_url)?;
-                    api_client
-                        .post_games_joined(&jwt, game_id, &session_id)
-                        .await?;
-                }
-                tracing::info!(wallet = %wallet, game_id, "P2 joined game on-chain");
-            }
-            "commit_guess" => {
-                let mut s = session.lock().await;
-                s.state = GameSessionState::Committed;
-                // CRITICAL: persist preimage so it survives pod restarts.
-                self.persist_session(&s).await?;
-                let jwt = s.jwt.clone();
-                let session_id = s.session_id.clone().unwrap_or_default();
-                drop(s);
-                if !session_id.is_empty() {
-                    let api_client = GameApiClient::new(&self.game_api_url)?;
-                    if let Err(e) = api_client.post_games_committed(&jwt, &session_id).await {
-                        tracing::warn!(wallet = %wallet, error = %e, "post_games_committed failed (non-fatal)");
-                    }
-                }
-                tracing::info!(wallet = %wallet, "committed guess on-chain");
-            }
-            "reveal_guess" => {
-                session.lock().await.state = GameSessionState::Resolved;
-                tracing::info!(wallet = %wallet, "revealed guess on-chain");
-                // Cleanup runs after the response is sent — see below.
-            }
-            "create_game" => {
-                let (jwt, session_id, game_id) = {
-                    let mut s = session.lock().await;
-                    s.state = GameSessionState::InGame;
-                    let gid = s.game_id.unwrap_or(0);
-                    (s.jwt.clone(), s.session_id.clone().unwrap_or_default(), gid)
-                };
-                {
-                    let s = session.lock().await;
-                    self.persist_session(&s).await?;
-                }
-                if !session_id.is_empty() {
-                    let api_client = GameApiClient::new(&self.game_api_url)?;
-                    api_client
-                        .post_games_started(&jwt, game_id, &session_id)
-                        .await?;
-                }
-                tracing::info!(wallet = %wallet, game_id, "P1 created game on-chain");
-            }
-            _ => {
-                tracing::warn!(wallet = %wallet, action, "unknown action for game_submit_tx");
-            }
+            self.ws_sinks.write().await.remove(wallet);
+            session.lock().await.jwt.clear();
         }
 
-        Ok(serde_json::json!({
-            "tx_signature": sig_str,
-            "status": "submitted",
-        }))
+        let api_client = GameApiClient::new(&self.game_api_url)?;
+        let auth_resp = api_client.session_auth(wallet, sig_str).await?;
+        let jwt = auth_resp.token.clone();
+        self.spawn_ws_listener(wallet, &jwt, session).await?;
+        session.lock().await.jwt = jwt;
+        {
+            let s = session.lock().await;
+            self.persist_session(&s).await?;
+        }
+        tracing::info!(wallet = %wallet, "authenticated via deposit_stake tx");
+
+        let (jwt, tournament_id) = {
+            let s = session.lock().await;
+            (s.jwt.clone(), s.tournament_id)
+        };
+        if let Some(tid) = tournament_id {
+            self.join_queue_after_stake(wallet, &jwt, tid).await?;
+        }
+        Ok(())
+    }
+
+    async fn spawn_ws_listener(
+        &self,
+        wallet: &str,
+        jwt: &str,
+        session: &Arc<Mutex<GameSession>>,
+    ) -> Result<()> {
+        let ws = WsConnection::connect(&self.game_api_url, jwt).await?;
+        let (sink, stream) = ws.into_split();
+        let ws_sink = Arc::new(Mutex::new(sink));
+
+        let session_clone = Arc::clone(session);
+        let sink_clone = Arc::clone(&ws_sink);
+        let api_url = self.game_api_url.clone();
+        let cancel_token = CancellationToken::new();
+        let token_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            ws_listener_with_reconnect(session_clone, stream, sink_clone, api_url, token_clone)
+                .await;
+        });
+
+        self.ws_sinks
+            .write()
+            .await
+            .insert(wallet.to_string(), ws_sink);
+        self.ws_cancel_tokens
+            .write()
+            .await
+            .insert(wallet.to_string(), cancel_token);
+        Ok(())
+    }
+
+    async fn after_join_game(&self, wallet: &str, session: &Arc<Mutex<GameSession>>) -> Result<()> {
+        let (jwt, session_id) = {
+            let mut s = session.lock().await;
+            s.state = GameSessionState::InGame;
+            (s.jwt.clone(), s.session_id.clone().unwrap_or_default())
+        };
+        {
+            let s = session.lock().await;
+            self.persist_session(&s).await?;
+        }
+        let game_id = session.lock().await.game_id.unwrap_or(0);
+        if !session_id.is_empty() {
+            let api_client = GameApiClient::new(&self.game_api_url)?;
+            api_client
+                .post_games_joined(&jwt, game_id, &session_id)
+                .await?;
+        }
+        tracing::info!(wallet = %wallet, game_id, "P2 joined game on-chain");
+        Ok(())
+    }
+
+    async fn after_commit_guess(
+        &self,
+        wallet: &str,
+        session: &Arc<Mutex<GameSession>>,
+    ) -> Result<()> {
+        // Must persist preimage before we drop the lock — it has to survive a
+        // pod restart between commit and reveal.
+        let (jwt, session_id) = {
+            let mut s = session.lock().await;
+            s.state = GameSessionState::Committed;
+            self.persist_session(&s).await?;
+            (s.jwt.clone(), s.session_id.clone().unwrap_or_default())
+        };
+        if !session_id.is_empty() {
+            let api_client = GameApiClient::new(&self.game_api_url)?;
+            if let Err(e) = api_client.post_games_committed(&jwt, &session_id).await {
+                tracing::warn!(wallet = %wallet, error = %e, "post_games_committed failed (non-fatal)");
+            }
+        }
+        tracing::info!(wallet = %wallet, "committed guess on-chain");
+        Ok(())
+    }
+
+    async fn after_reveal_guess(&self, wallet: &str, session: &Arc<Mutex<GameSession>>) {
+        // Cleanup of WS sink + cancel token runs after the response is sent
+        // by the caller (see callers of submit_signed_game_tx).
+        session.lock().await.state = GameSessionState::Resolved;
+        tracing::info!(wallet = %wallet, "revealed guess on-chain");
+    }
+
+    async fn after_create_game(
+        &self,
+        wallet: &str,
+        session: &Arc<Mutex<GameSession>>,
+    ) -> Result<()> {
+        let (jwt, session_id, game_id) = {
+            let mut s = session.lock().await;
+            s.state = GameSessionState::InGame;
+            let gid = s.game_id.unwrap_or(0);
+            (s.jwt.clone(), s.session_id.clone().unwrap_or_default(), gid)
+        };
+        {
+            let s = session.lock().await;
+            self.persist_session(&s).await?;
+        }
+        if !session_id.is_empty() {
+            let api_client = GameApiClient::new(&self.game_api_url)?;
+            api_client
+                .post_games_started(&jwt, game_id, &session_id)
+                .await?;
+        }
+        tracing::info!(wallet = %wallet, game_id, "P1 created game on-chain");
+        Ok(())
     }
 
     /// Internal: join the matchmaking queue after stake deposit.
