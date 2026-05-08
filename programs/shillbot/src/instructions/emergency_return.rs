@@ -5,7 +5,7 @@ use crate::events::EmergencyReturn;
 use crate::state::{GlobalState, Task, TaskState};
 use crate::MAX_EMERGENCY_RETURN_ACCOUNTS;
 
-/// Squads multisig only. Returns escrow for Open/Claimed tasks.
+/// Authority only. Returns escrow for Open/Claimed tasks.
 /// Accepts task accounts as remaining_accounts.
 ///
 /// KNOWN LIMITATION: For Claimed tasks, the agent's AgentState.claimed_count is

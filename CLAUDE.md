@@ -139,7 +139,7 @@ Use `init` exclusively for the shillbot program (prevents PDA account resurrecti
 
 ### Deployment
 
-`anchor deploy` from a local machine is forbidden on mainnet. All mainnet deployments go through CI with the upgrade authority check (assert Squads multisig, fail if EOA). Devnet deployments from local machines are acceptable during development.
+`anchor deploy` from a local machine is forbidden on mainnet. All mainnet deployments go through CI. Devnet deployments from local machines are acceptable during development.
 
 ---
 

@@ -121,8 +121,8 @@ reading our wire formats):
 - Wire-format change (AAS, SDK, REST API) → version bump per
   the format's versioning rules; the spec at `docs/specs/aas-v1.md`
   pins the AAS rules.
-- Admin action → public proposal trail in Squads + a one-line
-  summary on shillbot.org's status page (or equivalent).
+- Admin action → a one-line summary on shillbot.org's status page
+  (or equivalent).
 
 If the change is purely internal (a refactor that preserves wire
 format and behavior): document this and check the box. Internal-
@@ -141,7 +141,7 @@ the next reviewer doesn't assume it was forgotten.
 - [ ] **3. Tests.** Happy + every failure mode. Test file: <path>.
 - [ ] **4. Runbook entry.** Failure mode / action recipe in: <RUNBOOK.md section>.
 - [ ] **5. Devnet rehearsal.** TX signatures / evidence: <link>.
-- [ ] **6. Public disclosure plan.** Channel: <release notes / spec bump / Squads / status page / internal-only>.
+- [ ] **6. Public disclosure plan.** Channel: <release notes / spec bump / status page / internal-only>.
 ```
 
 If an item is genuinely N/A for the change (e.g., item 4 for a

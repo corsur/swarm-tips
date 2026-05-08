@@ -4,7 +4,7 @@ use anchor_lang::prelude::*;
 pub struct GlobalState {
     /// Monotonic counter incremented on each create_task.
     pub task_counter: u64,
-    /// Squads multisig (mainnet) or EOA (devnet).
+    /// Single upgrade authority key (EOA on both devnet and mainnet for v1).
     pub authority: Pubkey,
     /// Treasury account for protocol fee collection.
     pub treasury: Pubkey,

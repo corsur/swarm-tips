@@ -7,7 +7,7 @@ pub const MAX_TREASURY_SPLIT_BPS: u16 = 8_000; // 80%
 /// Seeds: `["global_config"]`
 #[account]
 pub struct GlobalConfig {
-    /// Governance authority (EOA for v1, Squads multisig later).
+    /// Governance authority (EOA for v1).
     pub authority: Pubkey,
     /// Authorized matchmaker that gates `create_game`.
     pub matchmaker: Pubkey,

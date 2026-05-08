@@ -188,7 +188,7 @@ All arithmetic uses checked operations with u128 intermediates. `payment + fee <
 
 ### Challenge System
 
-Anyone can challenge a verified task during the 24-hour challenge window by posting a bond (2-5x task escrow). The Squads multisig resolves disputes:
+Anyone can challenge a verified task during the 24-hour challenge window by posting a bond (2-5x task escrow). The upgrade authority resolves disputes:
 
 - **Challenger wins:** escrow returned to client, bond returned to challenger
 - **Agent wins:** payment released, bond slashed (50/50 to agent and treasury)
@@ -202,13 +202,11 @@ Anyone can challenge a verified task during the 24-hour challenge window by post
 - **No `.unwrap()`/`.expect()`** — all errors propagated via `?` or explicit match
 - **Account ownership** verified via Anchor typed accounts
 - **Signer checks** via Anchor `Signer` type
-- **Upgrade authority** — Squads multisig on mainnet with 48h timelock; EOA on devnet
+- **Upgrade authority** — single authority key (EOA) on devnet and mainnet for v1
 
 ## Deployment
 
-CI deploys to devnet on merge to `main` after all tests pass. Mainnet deployment requires Squads multisig approval.
-
-The CI pipeline asserts the upgrade authority matches the expected Squads address on mainnet (fails if EOA).
+CI deploys to devnet on merge to `main` after all tests pass. Mainnet deployment is gated through CI as well.
 
 ## Code Standards
 

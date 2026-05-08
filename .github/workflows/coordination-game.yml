@@ -161,8 +161,7 @@ jobs:
             --cluster devnet \
             --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi
         env:
-          EXPECTED_MULTISIG_PUBKEY: ${{ vars.EXPECTED_MULTISIG_PUBKEY }}
-          ALLOW_EOA_AUTHORITY: ${{ vars.ALLOW_EOA_AUTHORITY }}
+          EXPECTED_AUTHORITY_PUBKEY: ${{ vars.EXPECTED_AUTHORITY_PUBKEY }}
 
       - name: Publish SDK to GitHub Packages
         run: |
@@ -239,5 +238,4 @@ jobs:
             --cluster mainnet-beta \
             --program-id 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P
         env:
-          EXPECTED_MULTISIG_PUBKEY: ${{ vars.EXPECTED_MULTISIG_PUBKEY }}
-          ALLOW_EOA_AUTHORITY: ${{ vars.ALLOW_EOA_AUTHORITY }}
+          EXPECTED_AUTHORITY_PUBKEY: ${{ vars.EXPECTED_AUTHORITY_PUBKEY }}

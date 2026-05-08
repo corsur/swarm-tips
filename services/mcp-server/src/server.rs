@@ -940,7 +940,7 @@ impl SwarmTipsMcp {
             "disputed" => serde_json::json!({
                 "next_action": "wait",
                 "wait_for": "challenge_resolution",
-                "hint": "Task is under dispute. Authority (Squads multisig) will call resolve_challenge. No agent / client action required — the resolution path is multisig-driven.",
+                "hint": "Task is under dispute. The upgrade authority will call resolve_challenge. No agent / client action required.",
             }),
             "resolved" => serde_json::json!({
                 "next_action": "done",

@@ -5,7 +5,7 @@ use crate::events::ChallengeResolved;
 use crate::state::{AgentState, Challenge, GlobalState, Task, TaskState};
 use crate::transfers::transfer_lamports;
 
-/// Squads multisig resolves a dispute.
+/// Authority resolves a dispute.
 /// If challenger won: escrow returned to client, bond returned to challenger, agent gets $0.
 /// If agent won: payment to agent, bond slashed (portion to agent, portion to treasury),
 /// remainder escrow to client.
