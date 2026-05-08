@@ -1,0 +1,115 @@
+{
+  "tournament_id": 1,
+  "prize_lamports": 1375000000,
+  "merkle_root": "e668cc49d281e928444f52bd609870b734e6a39c91132f4e0a4d87a9057c4305",
+  "min_games": 5,
+  "generated_at": "2026-05-08T14:57:20.899Z",
+  "claims": [
+    {
+      "wallet": "2FBaHkvxL5gJ8rFxKpa87PeSvrHF5FG4489H3ofDVG2f",
+      "amount": 91666666,
+      "proof": [
+        "39d9c7b0a9ec4e7cbf1fbea4740c6f27662184c79ba43e413830c89728bbc2a7",
+        "1ee2c7cc0abd18b5f7e4db9deaf4079d7855624ab8946c950f9ab2fde266e6d9",
+        "27320c48170f8822562baf3ea7b5591504e69ed8ea6b37fb5719671a408b3867",
+        "53f44ce26c836ca29c4e0735a2cde8e12076f15e7777c4576b1c87bd3047058d"
+      ]
+    },
+    {
+      "wallet": "76Y1MZraCjPwyHGjPW8eqgHsG3gP8XRcBkaYpm1Q9f1i",
+      "amount": 0,
+      "proof": [
+        "d7e901b9bda783d70f15ba244e4e859871971b868d1b379d410fa9f6d28cf823",
+        "1ee2c7cc0abd18b5f7e4db9deaf4079d7855624ab8946c950f9ab2fde266e6d9",
+        "27320c48170f8822562baf3ea7b5591504e69ed8ea6b37fb5719671a408b3867",
+        "53f44ce26c836ca29c4e0735a2cde8e12076f15e7777c4576b1c87bd3047058d"
+      ]
+    },
+    {
+      "wallet": "8FRAnqSgA4DLSVXtisu8sUygzRyz8TCABFKWaAR4yGHK",
+      "amount": 0,
+      "proof": [
+        "9b55110607582866fa7d0907a9b4a1ec8cd2fe215daf485b9b60da596bdc17a0",
+        "cb544e0690cd1a0af54f890509e60c3582a3c7706abf01cca4a4cb7d097f1aca",
+        "27320c48170f8822562baf3ea7b5591504e69ed8ea6b37fb5719671a408b3867",
+        "53f44ce26c836ca29c4e0735a2cde8e12076f15e7777c4576b1c87bd3047058d"
+      ]
+    },
+    {
+      "wallet": "8MWWBuEBDyMgecKjCHmPZrdj1kuEPdJEsPm2CExeYGNK",
+      "amount": 91666666,
+      "proof": [
+        "b355f00aeb564b78f79ee9e3ff978354b67c0e5e5e8f224fd059f9b609b9fb54",
+        "cb544e0690cd1a0af54f890509e60c3582a3c7706abf01cca4a4cb7d097f1aca",
+        "27320c48170f8822562baf3ea7b5591504e69ed8ea6b37fb5719671a408b3867",
+        "53f44ce26c836ca29c4e0735a2cde8e12076f15e7777c4576b1c87bd3047058d"
+      ]
+    },
+    {
+      "wallet": "93C9jkDQihEcZTtiBTtbNuvJHZJD3KThSvWfxxJQQDba",
+      "amount": 0,
+      "proof": [
+        "537d1c65b600c7d52ed4d0f9b8510a46375200a1242f6615fe265231cf45cd14",
+        "4c7c2a1e8a054a9a0c47eed58e613d7a8139982c1fb0fad4e28c41131132aa37",
+        "30c6ca8bea9e5686e256e803e6fac33a8b4a6a13b5f537495b782ce3763d99ac",
+        "53f44ce26c836ca29c4e0735a2cde8e12076f15e7777c4576b1c87bd3047058d"
+      ]
+    },
+    {
+      "wallet": "BeNZj1XgfTVRP3AmDtX1K8HqTedKh5huabc399JhN84u",
+      "amount": 0,
+      "proof": [
+        "46fd2bb4b11030237a9588f8770a9b9b34a863341ec25f4b9a1de4f1473cd799",
+        "4c7c2a1e8a054a9a0c47eed58e613d7a8139982c1fb0fad4e28c41131132aa37",
+        "30c6ca8bea9e5686e256e803e6fac33a8b4a6a13b5f537495b782ce3763d99ac",
+        "53f44ce26c836ca29c4e0735a2cde8e12076f15e7777c4576b1c87bd3047058d"
+      ]
+    },
+    {
+      "wallet": "ByYgmMuLM5T6V6LHb4EZBSXd7s3pbFKcWPA5sWtQmt8k",
+      "amount": 91666666,
+      "proof": [
+        "b8228e045f16cc39eb8f701ecea61617ce4f6b533a3463ce7377329fc2052b02",
+        "e01c0da645bc29f6f3cabff3075f24d945ecb581d29ec5b965dca656c82e34a1",
+        "30c6ca8bea9e5686e256e803e6fac33a8b4a6a13b5f537495b782ce3763d99ac",
+        "53f44ce26c836ca29c4e0735a2cde8e12076f15e7777c4576b1c87bd3047058d"
+      ]
+    },
+    {
+      "wallet": "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY",
+      "amount": 733333336,
+      "proof": [
+        "5f1f6198775c4685fce2c72a22f4c4f48cacaa06c10990550f2381f31f6f0352",
+        "e01c0da645bc29f6f3cabff3075f24d945ecb581d29ec5b965dca656c82e34a1",
+        "30c6ca8bea9e5686e256e803e6fac33a8b4a6a13b5f537495b782ce3763d99ac",
+        "53f44ce26c836ca29c4e0735a2cde8e12076f15e7777c4576b1c87bd3047058d"
+      ]
+    },
+    {
+      "wallet": "FhNRghZ9uXkhww68QJEzJKpSW7s1MLuvhKQLUpfeQqRp",
+      "amount": 275000000,
+      "proof": [
+        "4e9f67c697ae1a09c1817ef308fc9b15a6e1d96a413e111a691a24d16558ae2e",
+        "0ba2cf2a010b0f36a986ddaa51cbe200d1aaacd731b17e57813d081c0f592bdf",
+        "7a9f1eff40676f16e02e640c48fc536ae8135549ede17d40aca4416d1ad80364"
+      ]
+    },
+    {
+      "wallet": "GvnaUjZwD9Bten1GXehFDXnZaD2TmqN5tT2NsxmHfS8Q",
+      "amount": 0,
+      "proof": [
+        "a368f3a64bb5e984b7e244463db3be583fa8208d2e28773cdf4a774c72268958",
+        "0ba2cf2a010b0f36a986ddaa51cbe200d1aaacd731b17e57813d081c0f592bdf",
+        "7a9f1eff40676f16e02e640c48fc536ae8135549ede17d40aca4416d1ad80364"
+      ]
+    },
+    {
+      "wallet": "hLXbxeX7sJkLxrFqNDE3pHU6Sddn6fWchw36hzimgHv",
+      "amount": 91666666,
+      "proof": [
+        "11355f6da117405b85d67a854fadbd491d0204eb8dde59cbc3d68808ecf2b7b2",
+        "7a9f1eff40676f16e02e640c48fc536ae8135549ede17d40aca4416d1ad80364"
+      ]
+    }
+  ]
+}
