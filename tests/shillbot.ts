@@ -323,9 +323,9 @@ describe("shillbot", () => {
           })
           .signers([client])
           .rpc();
-        assert.fail("Expected ArithmeticOverflow error");
+        assert.fail("Expected InvalidParameter error");
       } catch (e: any) {
-        assert.include(e.toString(), "ArithmeticOverflow");
+        assert.include(e.toString(), "InvalidParameter");
       }
     });
 
