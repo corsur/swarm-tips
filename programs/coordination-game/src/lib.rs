@@ -105,6 +105,10 @@ pub mod coordination_game {
         instructions::claim_reward::claim_reward(ctx, amount, proof)
     }
 
+    pub fn sweep_unclaimed_to_next(ctx: Context<SweepUnclaimedToNext>) -> Result<()> {
+        instructions::sweep_unclaimed::sweep_unclaimed_to_next(ctx)
+    }
+
     pub fn close_game(ctx: Context<CloseGame>) -> Result<()> {
         instructions::close_game::close_game(ctx)
     }

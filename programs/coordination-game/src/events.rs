@@ -100,3 +100,10 @@ pub struct ConfigUpdated {
     pub authority: Pubkey,
     pub treasury_split_bps: u16,
 }
+
+#[event]
+pub struct UnclaimedSwept {
+    pub src_tournament_id: u64,
+    pub dest_tournament_id: u64,
+    pub amount: u64,
+}

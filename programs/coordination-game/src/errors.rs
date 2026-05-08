@@ -89,4 +89,10 @@ pub enum CoordinationError {
     // Transfer
     #[msg("Source account has insufficient lamports for transfer")]
     InsufficientLamports,
+
+    // Sweep
+    #[msg("Unclaimed grace period has not elapsed (T+90 days from end_time)")]
+    UnclaimedGracePeriodNotElapsed,
+    #[msg("Destination tournament is invalid (same as source, finalized, or outside its active window)")]
+    DestTournamentInvalid,
 }
