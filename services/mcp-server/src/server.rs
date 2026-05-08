@@ -434,63 +434,13 @@ impl SwarmTipsMcp {
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        // Spawn build-verify-tx.ts to build the bundled crank+verify unsigned tx
-        let rpc_url = &self.state.solana_rpc_url;
-        // In Docker: scripts live at ~/scripts/. Locally: next to Cargo.toml.
-        let script_path = std::env::var("BUILD_VERIFY_SCRIPT")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("scripts")
-                    .join("build-verify-tx.ts")
-            });
-
-        // Run tsx from the script's directory so it finds node_modules
-        let script_dir = script_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let output = tokio::process::Command::new("tsx")
-            .current_dir(script_dir)
-            .arg(&script_path)
-            .arg("--task-id")
-            .arg(&args.task_id)
-            .arg("--payer")
-            .arg(&wallet_pubkey)
-            .arg("--score")
-            .arg(vdata.composite_score.to_string())
-            .arg("--hash")
-            .arg(&vdata.verification_hash)
-            .arg("--task-pda")
-            .arg(&vdata.task_pda)
-            .arg("--feed")
-            .arg(&vdata.switchboard_feed)
-            .arg("--global-state")
-            .arg(&vdata.global_state)
-            .arg("--rpc")
-            .arg(rpc_url)
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!(service = "mcp-server", error = %e, "failed to spawn build-verify-tx.ts");
-                McpError::internal_error(format!("failed to spawn build-verify-tx: {e}"), None)
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::error!(service = "mcp-server", stderr = %stderr, "build-verify-tx.ts failed");
-            return Err(McpError::internal_error(
-                format!("build-verify-tx failed: {stderr}"),
-                None,
-            ));
-        }
-
-        let unsigned_tx = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if unsigned_tx.is_empty() {
-            return Err(McpError::internal_error(
-                "build-verify-tx produced empty output".to_string(),
-                None,
-            ));
-        }
+        let unsigned_tx = run_build_verify_tx(
+            &args.task_id,
+            &wallet_pubkey,
+            &vdata,
+            &self.state.solana_rpc_url,
+        )
+        .await?;
 
         let result = serde_json::json!({
             "action": "verify",
@@ -609,23 +559,7 @@ impl SwarmTipsMcp {
             )));
         }
 
-        // Compute the deadline at which `expire_task` becomes callable for
-        // this task: `submitted_at + verification_timeout_secs`. The default
-        // verification timeout in the orchestrator is 14 days (matches the
-        // on-chain `DEFAULT_VERIFICATION_TIMEOUT_SECONDS = 1_209_600`). The
-        // task may carry a `verification_timeout_override` on-chain that
-        // shortens this — the orchestrator doesn't surface that field today,
-        // so we use the default and document the conservative-upper-bound
-        // semantics in the response.
-        const DEFAULT_VERIFICATION_TIMEOUT_SECS: i64 = 1_209_600;
-        let expires_at = task.submitted_at.as_deref().and_then(|s| {
-            chrono::DateTime::parse_from_rfc3339(s).ok().and_then(|dt| {
-                dt.with_timezone(&chrono::Utc)
-                    .checked_add_signed(chrono::Duration::seconds(
-                        DEFAULT_VERIFICATION_TIMEOUT_SECS,
-                    ))
-            })
-        });
+        let expires_at = compute_expire_task_deadline(task.submitted_at.as_deref());
 
         tracing::info!(
             task_id = %args.task_id,
@@ -634,17 +568,8 @@ impl SwarmTipsMcp {
             "shillbot_reject_task: v1 stub — no on-chain action, escrow returns at expire_task"
         );
 
-        let result = serde_json::json!({
-            "action": "reject_v1_stub",
-            "task_id": args.task_id,
-            "on_chain_action": "none",
-            "submitted_at": task.submitted_at,
-            "expires_at": expires_at.map(|dt| dt.to_rfc3339()),
-            "verification_timeout_secs": DEFAULT_VERIFICATION_TIMEOUT_SECS,
-            "guidance": "v1 reject is implicit: do NOT call shillbot_approve_task. The agent's submitted content stays in 'submitted' state. At T+verification_timeout (~14 days from the agent's submitted_at), expire_task can be cranked permissionlessly by anyone (including the campaign client) and the full escrow returns to the campaign's client wallet. The agent is paid nothing.",
-            "next_step": "Wait until expires_at, then call expire_task (out-of-band crank — no MCP tool today; use solana CLI or the orchestrator's expire endpoint when available). Use the expires_at timestamp to schedule a follow-up reminder.",
-            "future_work": "A first-class reject_task on-chain instruction with reason capture is on the roadmap. When it ships, this tool will route through it and shorten the rejection window.",
-        });
+        let result =
+            build_reject_v1_stub_response(&args.task_id, task.submitted_at.as_deref(), expires_at);
         Ok(text_result(&result))
     }
 
@@ -699,31 +624,16 @@ impl SwarmTipsMcp {
         if args.signed_transaction.is_empty() {
             return Err(invalid_input("signed_transaction is required"));
         }
-        let action = match args.action.as_str() {
-            "claim" => crate::proxy::ConfirmAction::Claim,
-            "submit" => crate::proxy::ConfirmAction::Submit,
-            "approve" => crate::proxy::ConfirmAction::Approve,
-            "verify" => crate::proxy::ConfirmAction::Verify,
-            "finalize" => crate::proxy::ConfirmAction::Finalize,
-            other => {
-                return Err(invalid_input(&format!(
-                    "action must be \"claim\", \"submit\", \"approve\", \"verify\", or \"finalize\", got {other:?}"
-                )));
-            }
-        };
+        let action = parse_confirm_action(&args.action)?;
 
         let wallet_pubkey = self
             .resolve_wallet(Some(&parts))
             .await
             .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
 
-        let tx_signature = solana_tx::broadcast_signed_b64(
-            &self.state.rpc_client,
-            &self.state.solana_rpc_url,
-            &args.signed_transaction,
-        )
-        .await
-        .map_err(|e| to_mcp_error(&e))?;
+        let tx_signature = self
+            .broadcast_and_wait_for_confirmation(&args.signed_transaction)
+            .await?;
 
         tracing::info!(
             task_id = %args.task_id,
@@ -732,18 +642,6 @@ impl SwarmTipsMcp {
             sig = %tx_signature,
             "shillbot_submit_tx: tx broadcast"
         );
-
-        // Wait for the orchestrator's RPC view to see the tx before calling
-        // confirm — avoids the "transaction not found — it may not be
-        // confirmed yet" race in shillbot-orchestrator::solana::verify_tx_confirmed.
-        solana_tx::wait_for_signature_confirmed(
-            &self.state.rpc_client,
-            &self.state.solana_rpc_url,
-            &tx_signature,
-            30,
-        )
-        .await
-        .map_err(|e| to_mcp_error(&e))?;
 
         let confirm = self
             .state
@@ -872,15 +770,7 @@ impl SwarmTipsMcp {
         // them on TaskSummary, so we use the conservative-upper-bound
         // default and let the agent re-confirm via
         // `shillbot_get_task_details` if they need finer precision.
-        const DEFAULT_VERIFICATION_TIMEOUT_SECS: i64 = 1_209_600;
-        let escrow_expires_at = task.submitted_at.as_deref().and_then(|s| {
-            chrono::DateTime::parse_from_rfc3339(s).ok().and_then(|dt| {
-                dt.with_timezone(&chrono::Utc)
-                    .checked_add_signed(chrono::Duration::seconds(
-                        DEFAULT_VERIFICATION_TIMEOUT_SECS,
-                    ))
-            })
-        });
+        let escrow_expires_at = compute_expire_task_deadline(task.submitted_at.as_deref());
         let escrow_expires_iso = escrow_expires_at
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_default();
@@ -940,76 +830,17 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<AgentProfileArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        // Resolve target wallet: explicit arg, else the caller's
-        // registered wallet.
-        let target_wallet = match args.wallet.as_deref() {
-            Some(w) if !w.is_empty() => w.to_string(),
-            _ => self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
-                invalid_input(
-                    "wallet arg omitted AND no registered wallet — call register_wallet first or pass wallet explicitly",
-                )
-            })?,
-        };
+        let target_wallet = self
+            .resolve_target_wallet(args.wallet.as_deref(), Some(&parts))
+            .await?;
         let tournament_id = args.tournament_id.unwrap_or(1);
 
-        // Fan out the two reads concurrently — they target different
-        // programs / accounts so they're independent.
-        let (agent_state, player_profile) = tokio::join!(
-            crate::solana_reads::read_agent_state(
-                &self.state.rpc_client,
-                &self.state.solana_rpc_url,
-                &target_wallet,
-            ),
-            crate::solana_reads::read_player_profile(
-                &self.state.rpc_client,
-                &self.state.solana_rpc_url,
-                &target_wallet,
-                tournament_id,
-            ),
-        );
+        let (agent_state, player_profile) = self
+            .read_agent_and_player_profile(&target_wallet, tournament_id)
+            .await?;
 
-        let agent_state = agent_state.map_err(|e| to_mcp_error(&e))?;
-        let player_profile = player_profile.map_err(|e| to_mcp_error(&e))?;
-
-        // Derived metrics. Each is `null` when the denominator is zero
-        // (no division-by-zero noise into the response).
-        let derived = match &agent_state {
-            None => serde_json::json!({}),
-            Some(s) => {
-                let avg_score = if s.total_completed > 0 {
-                    Some((s.total_score_sum as f64) / (s.total_completed as f64))
-                } else {
-                    None
-                };
-                let completion_rate = if s.total_tasks_claimed > 0 {
-                    Some((s.total_completed as f64) / (s.total_tasks_claimed as f64))
-                } else {
-                    None
-                };
-                let dispute_rate = if s.total_completed > 0 {
-                    Some((s.total_challenges_lost as f64) / (s.total_completed as f64))
-                } else {
-                    None
-                };
-                serde_json::json!({
-                    "average_score": avg_score,
-                    "completion_rate": completion_rate,
-                    "dispute_rate": dispute_rate,
-                })
-            }
-        };
-
-        let game_derived = match &player_profile {
-            None => serde_json::json!({}),
-            Some(p) => {
-                let win_rate = if p.total_games > 0 {
-                    Some((p.wins as f64) / (p.total_games as f64))
-                } else {
-                    None
-                };
-                serde_json::json!({ "win_rate": win_rate })
-            }
-        };
+        let derived = compute_shillbot_derived(agent_state.as_ref());
+        let game_derived = compute_game_derived(player_profile.as_ref());
 
         let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
@@ -1049,88 +880,20 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<AgentTrustScoreArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        // Resolve target wallet (same shape as agent_profile).
-        let target_wallet = match args.wallet.as_deref() {
-            Some(w) if !w.is_empty() => w.to_string(),
-            _ => self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
-                invalid_input(
-                    "wallet arg omitted AND no registered wallet — call register_wallet first or pass wallet explicitly",
-                )
-            })?,
-        };
+        let target_wallet = self
+            .resolve_target_wallet(args.wallet.as_deref(), Some(&parts))
+            .await?;
         let tournament_id = args.tournament_id.unwrap_or(1);
 
-        // Fan out the on-chain reads concurrently — same pattern as
-        // agent_profile.
-        let (agent_state_res, player_profile_res) = tokio::join!(
-            crate::solana_reads::read_agent_state(
-                &self.state.rpc_client,
-                &self.state.solana_rpc_url,
-                &target_wallet,
-            ),
-            crate::solana_reads::read_player_profile(
-                &self.state.rpc_client,
-                &self.state.solana_rpc_url,
-                &target_wallet,
-                tournament_id,
-            ),
-        );
-        let agent_state = agent_state_res.map_err(|e| to_mcp_error(&e))?;
-        let player_profile = player_profile_res.map_err(|e| to_mcp_error(&e))?;
+        let (agent_state, player_profile) = self
+            .read_agent_and_player_profile(&target_wallet, tournament_id)
+            .await?;
 
-        // Build composite-trust inputs from the on-chain reads.
-        use shillbot_scorer::composite_trust::{
-            compute_trust, CuratorTier, GameInput, ShillbotInput, TrustInputs,
-        };
+        use shillbot_scorer::composite_trust::{compute_trust, TrustInputs};
 
-        let shillbot_input = agent_state.as_ref().map(|s| {
-            let avg = if s.total_completed > 0 {
-                Some((s.total_score_sum as f64) / (s.total_completed as f64))
-            } else {
-                None
-            };
-            let completion = if s.total_tasks_claimed > 0 {
-                Some((s.total_completed as f64) / (s.total_tasks_claimed as f64))
-            } else {
-                None
-            };
-            ShillbotInput {
-                average_score: avg,
-                // MAX_SCORE = 1_000_000 per shared::MAX_SCORE; hardcoded
-                // here to avoid pulling that crate as a dep, mirroring
-                // the orchestrator's same hardcode at the AAS attestation
-                // surface (#16). Drift risk: if the on-chain MAX_SCORE
-                // ever changes (it hasn't since v0), this constant
-                // updates in lockstep with the on-chain commit.
-                score_max: 1_000_000,
-                completion_rate: completion,
-                total_completed: s.total_completed,
-            }
-        });
-
-        let game_input = player_profile.as_ref().map(|p| {
-            let win_rate = if p.total_games > 0 {
-                Some((p.wins as f64) / (p.total_games as f64))
-            } else {
-                None
-            };
-            GameInput {
-                win_rate,
-                total_games: p.total_games,
-            }
-        });
-
-        let curator = match args.curator_tier.as_deref() {
-            Some("first-party") => Some(CuratorTier::FirstParty),
-            Some("vetted") => Some(CuratorTier::Vetted),
-            Some("discovered") => Some(CuratorTier::Discovered),
-            None | Some("") => None,
-            Some(other) => {
-                return Err(invalid_input(&format!(
-                    "curator_tier must be \"first-party\", \"vetted\", \"discovered\", or omitted; got {other:?}"
-                )));
-            }
-        };
+        let shillbot_input = build_shillbot_trust_input(agent_state.as_ref());
+        let game_input = build_game_trust_input(player_profile.as_ref());
+        let curator = parse_curator_tier(args.curator_tier.as_deref())?;
 
         let inputs = TrustInputs {
             shillbot: shillbot_input,
@@ -1140,28 +903,15 @@ impl SwarmTipsMcp {
         };
         let trust = compute_trust(&inputs);
 
-        let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let result = serde_json::json!({
-            "wallet": target_wallet,
-            "tournament_id": tournament_id,
-            // Wire-format-stable formula version. v0 weights are pre-
-            // calibration heuristics — they will change once we have
-            // ≥100 unique client-agent pairs (the EigenTrust threshold
-            // from the spec). Integrators should pin behavior to a
-            // specific version and re-validate on bumps. Filed in
-            // execution-v5/tasks.md as D5.
-            "trust_score_version": "v0",
-            "trust_score": trust.score,
-            "confidence": trust.confidence,
-            "breakdown": trust.breakdown,
-            "inputs_present": {
-                "shillbot": agent_state.is_some(),
-                "game": player_profile.is_some(),
-                "curator": curator.is_some(),
-                "agent_rank": args.agent_rank.is_some(),
-            },
-            "last_updated": now_iso,
-        });
+        let result = build_trust_score_response(
+            &target_wallet,
+            tournament_id,
+            &trust,
+            agent_state.is_some(),
+            player_profile.is_some(),
+            curator.is_some(),
+            args.agent_rank.is_some(),
+        );
 
         tracing::info!(
             wallet = %target_wallet,
@@ -1324,16 +1074,7 @@ impl SwarmTipsMcp {
     ) -> Result<CallToolResult, McpError> {
         // Validate intent up front so the caller gets a clean rejection
         // for typos rather than a silent "search both" fallback.
-        let intent = match args.intent.as_deref() {
-            None | Some("") => None,
-            Some("earn") => Some("earn"),
-            Some("spend") => Some("spend"),
-            Some(other) => {
-                return Err(invalid_input(&format!(
-                    "intent must be \"earn\", \"spend\", or omitted; got {other:?}"
-                )));
-            }
-        };
+        let intent = parse_discover_intent(args.intent.as_deref())?;
 
         let category_needle = args.category.as_deref().map(|s| s.to_lowercase());
         let keyword_needle = args.keyword.as_deref().map(|s| s.to_lowercase());
@@ -1350,45 +1091,22 @@ impl SwarmTipsMcp {
             let listings = get_listings(&self.state.listings)
                 .await
                 .map_err(|e| McpError::internal_error(format!("get_listings failed: {e}"), None))?;
-            for mut listing in listings {
-                if listing.source == "shillbot" {
-                    listing.claim_via = Some("shillbot_claim_task".to_string());
-                }
-                if !category_matches(&listing.category, category_needle.as_deref()) {
-                    continue;
-                }
-                if !keyword_matches_earn(&listing, keyword_needle.as_deref()) {
-                    continue;
-                }
-                let mut value = serde_json::to_value(&listing).unwrap_or(serde_json::Value::Null);
-                if let Some(obj) = value.as_object_mut() {
-                    obj.insert(
-                        "vertical".to_string(),
-                        serde_json::Value::String("earn".to_string()),
-                    );
-                }
-                merged.push(value);
-            }
+            collect_earn_entries(
+                listings,
+                category_needle.as_deref(),
+                keyword_needle.as_deref(),
+                &mut merged,
+            );
         }
 
         if intent.map(|i| i == "spend").unwrap_or(true) {
             let opportunities = get_spending_opportunities(&self.state.rpc_client).await;
-            for opp in opportunities {
-                if !category_matches(&opp.category, category_needle.as_deref()) {
-                    continue;
-                }
-                if !keyword_matches_spend(&opp, keyword_needle.as_deref()) {
-                    continue;
-                }
-                let mut value = serde_json::to_value(&opp).unwrap_or(serde_json::Value::Null);
-                if let Some(obj) = value.as_object_mut() {
-                    obj.insert(
-                        "vertical".to_string(),
-                        serde_json::Value::String("spend".to_string()),
-                    );
-                }
-                merged.push(value);
-            }
+            collect_spend_entries(
+                opportunities,
+                category_needle.as_deref(),
+                keyword_needle.as_deref(),
+                &mut merged,
+            );
         }
 
         let limit = args.limit.unwrap_or(50).min(200) as usize;
@@ -1816,6 +1534,98 @@ impl SwarmTipsMcp {
             .await
             .ok_or_else(|| invalid_input("no game session: call register_wallet first"))
     }
+
+    /// Resolve the wallet to query for `agent_profile` / `agent_trust_score`.
+    /// Prefers the explicit `wallet` arg; falls back to the registered wallet
+    /// for the current MCP session. Returns a 400 if neither is available.
+    async fn resolve_target_wallet(
+        &self,
+        explicit: Option<&str>,
+        parts: Option<&http::request::Parts>,
+    ) -> Result<String, McpError> {
+        match explicit {
+            Some(w) if !w.is_empty() => Ok(w.to_string()),
+            _ => self.resolve_wallet(parts).await.ok_or_else(|| {
+                invalid_input(
+                    "wallet arg omitted AND no registered wallet — call register_wallet first or pass wallet explicitly",
+                )
+            }),
+        }
+    }
+
+    /// Concurrently read AgentState (Shillbot) and PlayerProfile (Coordination
+    /// Game) for a wallet. The two PDAs live in different programs so the reads
+    /// fan out under `tokio::join!`. Either may return `None` if the PDA is
+    /// uninitialized.
+    async fn read_agent_and_player_profile(
+        &self,
+        target_wallet: &str,
+        tournament_id: u64,
+    ) -> Result<
+        (
+            Option<crate::solana_reads::AgentStateData>,
+            Option<crate::solana_reads::PlayerProfileData>,
+        ),
+        McpError,
+    > {
+        // Precondition: the caller must already have validated the wallet form.
+        debug_assert!(!target_wallet.is_empty(), "target_wallet must be non-empty");
+        let (agent_state, player_profile) = tokio::join!(
+            crate::solana_reads::read_agent_state(
+                &self.state.rpc_client,
+                &self.state.solana_rpc_url,
+                target_wallet,
+            ),
+            crate::solana_reads::read_player_profile(
+                &self.state.rpc_client,
+                &self.state.solana_rpc_url,
+                target_wallet,
+                tournament_id,
+            ),
+        );
+        let agent_state = agent_state.map_err(|e| to_mcp_error(&e))?;
+        let player_profile = player_profile.map_err(|e| to_mcp_error(&e))?;
+        // Postcondition: a successful read returns the typed Option, never panics.
+        Ok((agent_state, player_profile))
+    }
+
+    /// Broadcast a base64-encoded signed transaction, then wait until the
+    /// orchestrator's RPC view sees it confirmed. Returns the tx signature on
+    /// success. The wait avoids the "transaction not found" race in
+    /// `shillbot-orchestrator::solana::verify_tx_confirmed`.
+    async fn broadcast_and_wait_for_confirmation(
+        &self,
+        signed_b64: &str,
+    ) -> Result<String, McpError> {
+        // Precondition: caller validated non-empty input at the handler boundary.
+        debug_assert!(
+            !signed_b64.is_empty(),
+            "signed transaction must be non-empty at broadcast time"
+        );
+        let tx_signature = solana_tx::broadcast_signed_b64(
+            &self.state.rpc_client,
+            &self.state.solana_rpc_url,
+            signed_b64,
+        )
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+
+        solana_tx::wait_for_signature_confirmed(
+            &self.state.rpc_client,
+            &self.state.solana_rpc_url,
+            &tx_signature,
+            30,
+        )
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+        // Postcondition: a non-empty signature is returned only when both
+        // broadcast and confirmation succeeded.
+        debug_assert!(
+            !tx_signature.is_empty(),
+            "broadcast returned empty signature"
+        );
+        Ok(tx_signature)
+    }
 }
 
 // -- Constants --
@@ -1936,6 +1746,360 @@ More info: https://swarm.tips/developers";
 
 // -- Error helpers --
 
+/// Compute the `derived` block of `agent_profile`'s Shillbot section. Each
+/// rate is `null` when the denominator is zero, to keep division-by-zero
+/// noise out of the response.
+fn compute_shillbot_derived(
+    agent_state: Option<&crate::solana_reads::AgentStateData>,
+) -> serde_json::Value {
+    let s = match agent_state {
+        None => return serde_json::json!({}),
+        Some(s) => s,
+    };
+    // Precondition: completed-task count never exceeds claimed-task count
+    // (each completion was once a claim). Asserting this guards against
+    // future on-chain accounting changes that swap the two counters.
+    debug_assert!(
+        s.total_completed <= s.total_tasks_claimed,
+        "total_completed must not exceed total_tasks_claimed"
+    );
+    let avg_score = if s.total_completed > 0 {
+        Some((s.total_score_sum as f64) / (s.total_completed as f64))
+    } else {
+        None
+    };
+    let completion_rate = if s.total_tasks_claimed > 0 {
+        Some((s.total_completed as f64) / (s.total_tasks_claimed as f64))
+    } else {
+        None
+    };
+    let dispute_rate = if s.total_completed > 0 {
+        Some((s.total_challenges_lost as f64) / (s.total_completed as f64))
+    } else {
+        None
+    };
+    // Postcondition: every rate is either None or a finite ratio.
+    debug_assert!(
+        completion_rate.map(|v| v.is_finite()).unwrap_or(true),
+        "completion_rate must be finite when present"
+    );
+    serde_json::json!({
+        "average_score": avg_score,
+        "completion_rate": completion_rate,
+        "dispute_rate": dispute_rate,
+    })
+}
+
+/// Compute the `derived` block of `agent_profile`'s Coordination Game section.
+/// `win_rate` is `null` when the player has zero recorded games.
+fn compute_game_derived(
+    player_profile: Option<&crate::solana_reads::PlayerProfileData>,
+) -> serde_json::Value {
+    let p = match player_profile {
+        None => return serde_json::json!({}),
+        Some(p) => p,
+    };
+    // Precondition: a player cannot have won more games than they played.
+    debug_assert!(p.wins <= p.total_games, "wins must not exceed total_games");
+    let win_rate = if p.total_games > 0 {
+        Some((p.wins as f64) / (p.total_games as f64))
+    } else {
+        None
+    };
+    debug_assert!(
+        win_rate.map(|v| (0.0..=1.0).contains(&v)).unwrap_or(true),
+        "win_rate must be in [0, 1] when present"
+    );
+    serde_json::json!({ "win_rate": win_rate })
+}
+
+/// Build the `ShillbotInput` half of `TrustInputs` from an on-chain AgentState.
+/// Returns `None` if AgentState is absent (PDA uninitialized). Uses the same
+/// zero-denominator-as-None convention as `compute_shillbot_derived`.
+fn build_shillbot_trust_input(
+    agent_state: Option<&crate::solana_reads::AgentStateData>,
+) -> Option<shillbot_scorer::composite_trust::ShillbotInput> {
+    let s = agent_state?;
+    let avg = if s.total_completed > 0 {
+        Some((s.total_score_sum as f64) / (s.total_completed as f64))
+    } else {
+        None
+    };
+    let completion = if s.total_tasks_claimed > 0 {
+        Some((s.total_completed as f64) / (s.total_tasks_claimed as f64))
+    } else {
+        None
+    };
+    // Postcondition: ratios are finite when present.
+    debug_assert!(
+        avg.map(|v| v.is_finite()).unwrap_or(true),
+        "avg must be finite when present"
+    );
+    debug_assert!(
+        completion.map(|v| v.is_finite()).unwrap_or(true),
+        "completion must be finite when present"
+    );
+    Some(shillbot_scorer::composite_trust::ShillbotInput {
+        average_score: avg,
+        // MAX_SCORE = 1_000_000 per shared::MAX_SCORE; hardcoded here to
+        // avoid pulling that crate as a dep, mirroring the orchestrator's
+        // same hardcode at the AAS attestation surface (#16). Drift risk:
+        // if the on-chain MAX_SCORE ever changes (it hasn't since v0),
+        // this constant updates in lockstep with the on-chain commit.
+        score_max: 1_000_000,
+        completion_rate: completion,
+        total_completed: s.total_completed,
+    })
+}
+
+/// Build the `GameInput` half of `TrustInputs` from an on-chain PlayerProfile.
+/// Returns `None` if the player has no profile yet (PDA uninitialized).
+fn build_game_trust_input(
+    player_profile: Option<&crate::solana_reads::PlayerProfileData>,
+) -> Option<shillbot_scorer::composite_trust::GameInput> {
+    let p = player_profile?;
+    let win_rate = if p.total_games > 0 {
+        Some((p.wins as f64) / (p.total_games as f64))
+    } else {
+        None
+    };
+    debug_assert!(
+        win_rate.map(|v| (0.0..=1.0).contains(&v)).unwrap_or(true),
+        "win_rate must be in [0, 1] when present"
+    );
+    Some(shillbot_scorer::composite_trust::GameInput {
+        win_rate,
+        total_games: p.total_games,
+    })
+}
+
+/// Format the JSON wire response for `agent_trust_score`. The shape is
+/// versioned via `trust_score_version` — integrators should pin to a known
+/// version and re-validate on bumps.
+fn build_trust_score_response(
+    target_wallet: &str,
+    tournament_id: u64,
+    trust: &shillbot_scorer::composite_trust::TrustScore,
+    shillbot_present: bool,
+    game_present: bool,
+    curator_present: bool,
+    agent_rank_present: bool,
+) -> serde_json::Value {
+    debug_assert!(!target_wallet.is_empty(), "target_wallet must be non-empty");
+    debug_assert!(
+        (0.0..=1.0).contains(&trust.score),
+        "trust.score must be in [0, 1]"
+    );
+    let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    serde_json::json!({
+        "wallet": target_wallet,
+        "tournament_id": tournament_id,
+        // Wire-format-stable formula version. v0 weights are pre-
+        // calibration heuristics — they will change once we have
+        // ≥100 unique client-agent pairs (the EigenTrust threshold
+        // from the spec). Integrators should pin behavior to a
+        // specific version and re-validate on bumps. Filed in
+        // execution-v5/tasks.md as D5.
+        "trust_score_version": "v0",
+        "trust_score": trust.score,
+        "confidence": trust.confidence,
+        "breakdown": trust.breakdown,
+        "inputs_present": {
+            "shillbot": shillbot_present,
+            "game": game_present,
+            "curator": curator_present,
+            "agent_rank": agent_rank_present,
+        },
+        "last_updated": now_iso,
+    })
+}
+
+/// Parse the `curator_tier` argument for `agent_trust_score`. Returns
+/// `Ok(None)` for empty/omitted, `Ok(Some(tier))` for the three valid tokens,
+/// or a 400-shaped MCP error for any other string.
+fn parse_curator_tier(
+    raw: Option<&str>,
+) -> Result<Option<shillbot_scorer::composite_trust::CuratorTier>, McpError> {
+    use shillbot_scorer::composite_trust::CuratorTier;
+    let result = match raw {
+        Some("first-party") => Some(CuratorTier::FirstParty),
+        Some("vetted") => Some(CuratorTier::Vetted),
+        Some("discovered") => Some(CuratorTier::Discovered),
+        None | Some("") => None,
+        Some(other) => {
+            return Err(invalid_input(&format!(
+                "curator_tier must be \"first-party\", \"vetted\", \"discovered\", or omitted; got {other:?}"
+            )));
+        }
+    };
+    Ok(result)
+}
+
+/// Resolve the build-verify-tx.ts script path. In Docker the script lives at
+/// `~/scripts/`; locally it sits next to `Cargo.toml`. The `BUILD_VERIFY_SCRIPT`
+/// env var lets tests / one-offs override the resolution.
+fn resolve_build_verify_script_path() -> std::path::PathBuf {
+    std::env::var("BUILD_VERIFY_SCRIPT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts")
+                .join("build-verify-tx.ts")
+        })
+}
+
+/// Spawn `tsx build-verify-tx.ts` with the verification-data flags and return
+/// the unsigned transaction (base64) the script prints to stdout. Surfaces
+/// spawn-failure, non-zero-exit, and empty-output as separate MCP errors so
+/// the agent gets actionable diagnostics.
+async fn run_build_verify_tx(
+    task_id: &str,
+    payer: &str,
+    vdata: &crate::proxy::VerificationDataResponse,
+    rpc_url: &str,
+) -> Result<String, McpError> {
+    // Preconditions: identifying inputs must be non-empty so the spawned
+    // script doesn't fail mid-arg-parse with a confusing error.
+    debug_assert!(!task_id.is_empty(), "task_id must be non-empty");
+    debug_assert!(!payer.is_empty(), "payer must be non-empty");
+
+    let script_path = resolve_build_verify_script_path();
+    let script_dir = script_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    let output = tokio::process::Command::new("tsx")
+        .current_dir(script_dir)
+        .arg(&script_path)
+        .arg("--task-id")
+        .arg(task_id)
+        .arg("--payer")
+        .arg(payer)
+        .arg("--score")
+        .arg(vdata.composite_score.to_string())
+        .arg("--hash")
+        .arg(&vdata.verification_hash)
+        .arg("--task-pda")
+        .arg(&vdata.task_pda)
+        .arg("--feed")
+        .arg(&vdata.switchboard_feed)
+        .arg("--global-state")
+        .arg(&vdata.global_state)
+        .arg("--rpc")
+        .arg(rpc_url)
+        .output()
+        .await
+        .map_err(|e| {
+            tracing::error!(service = "mcp-server", error = %e, "failed to spawn build-verify-tx.ts");
+            McpError::internal_error(format!("failed to spawn build-verify-tx: {e}"), None)
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::error!(service = "mcp-server", stderr = %stderr, "build-verify-tx.ts failed");
+        return Err(McpError::internal_error(
+            format!("build-verify-tx failed: {stderr}"),
+            None,
+        ));
+    }
+
+    let unsigned_tx = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if unsigned_tx.is_empty() {
+        return Err(McpError::internal_error(
+            "build-verify-tx produced empty output".to_string(),
+            None,
+        ));
+    }
+    // Postcondition: the function only returns Ok on success+non-empty stdout.
+    debug_assert!(
+        !unsigned_tx.is_empty(),
+        "unsigned_tx must be non-empty on Ok path"
+    );
+    Ok(unsigned_tx)
+}
+
+/// Parse the action discriminator passed to `shillbot_submit_tx`. Returns a
+/// typed `ConfirmAction` or a 400-shaped MCP error listing the valid values.
+fn parse_confirm_action(action: &str) -> Result<crate::proxy::ConfirmAction, McpError> {
+    // Precondition: callers strip empty strings at the boundary; we still
+    // produce a clear error rather than silently mapping `""` to a default.
+    debug_assert!(!action.is_empty(), "action must be non-empty at parse time");
+    let result = match action {
+        "claim" => crate::proxy::ConfirmAction::Claim,
+        "submit" => crate::proxy::ConfirmAction::Submit,
+        "approve" => crate::proxy::ConfirmAction::Approve,
+        "verify" => crate::proxy::ConfirmAction::Verify,
+        "finalize" => crate::proxy::ConfirmAction::Finalize,
+        other => {
+            return Err(invalid_input(&format!(
+                "action must be \"claim\", \"submit\", \"approve\", \"verify\", or \"finalize\", got {other:?}"
+            )));
+        }
+    };
+    // Postcondition: parse succeeded only for the five allowed strings above.
+    Ok(result)
+}
+
+/// Default on-chain `expire_task` window for the v1 reject stub. Matches the
+/// Anchor program's `DEFAULT_VERIFICATION_TIMEOUT_SECONDS = 1_209_600` (14 days).
+/// Per-task on-chain overrides can shorten this; the orchestrator doesn't
+/// surface them today so we use the conservative upper bound.
+const DEFAULT_VERIFICATION_TIMEOUT_SECS: i64 = 1_209_600;
+
+/// Compute the wall-clock deadline at which `expire_task` becomes callable
+/// for a Submitted-state task: `submitted_at + DEFAULT_VERIFICATION_TIMEOUT_SECS`.
+/// Returns `None` if `submitted_at` is missing or unparseable.
+fn compute_expire_task_deadline(
+    submitted_at: Option<&str>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let raw = submitted_at?;
+    // Precondition: caller passes a non-empty timestamp.
+    debug_assert!(
+        !raw.is_empty(),
+        "submitted_at must be non-empty when present"
+    );
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+    let result = parsed
+        .with_timezone(&chrono::Utc)
+        .checked_add_signed(chrono::Duration::seconds(DEFAULT_VERIFICATION_TIMEOUT_SECS));
+    // Postcondition: if we returned Some(t), t is strictly after the parsed input.
+    debug_assert!(
+        result
+            .map(|t| t > parsed.with_timezone(&chrono::Utc))
+            .unwrap_or(true),
+        "computed deadline must follow submitted_at"
+    );
+    result
+}
+
+/// Build the v1 reject stub response payload for `shillbot_reject_task`.
+/// Pure formatting — kept separate so the handler stays focused on auth +
+/// state validation.
+fn build_reject_v1_stub_response(
+    task_id: &str,
+    submitted_at: Option<&str>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> serde_json::Value {
+    // Preconditions: identifying input must be non-empty and the timeout
+    // constant must be the canonical value (mirrors the on-chain default).
+    debug_assert!(!task_id.is_empty(), "task_id must be non-empty");
+    debug_assert_eq!(
+        DEFAULT_VERIFICATION_TIMEOUT_SECS, 1_209_600,
+        "DEFAULT_VERIFICATION_TIMEOUT_SECS must match on-chain default"
+    );
+    serde_json::json!({
+        "action": "reject_v1_stub",
+        "task_id": task_id,
+        "on_chain_action": "none",
+        "submitted_at": submitted_at,
+        "expires_at": expires_at.map(|dt| dt.to_rfc3339()),
+        "verification_timeout_secs": DEFAULT_VERIFICATION_TIMEOUT_SECS,
+        "guidance": "v1 reject is implicit: do NOT call shillbot_approve_task. The agent's submitted content stays in 'submitted' state. At T+verification_timeout (~14 days from the agent's submitted_at), expire_task can be cranked permissionlessly by anyone (including the campaign client) and the full escrow returns to the campaign's client wallet. The agent is paid nothing.",
+        "next_step": "Wait until expires_at, then call expire_task (out-of-band crank — no MCP tool today; use solana CLI or the orchestrator's expire endpoint when available). Use the expires_at timestamp to schedule a follow-up reminder.",
+        "future_work": "A first-class reject_task on-chain instruction with reason capture is on the roadmap. When it ships, this tool will route through it and shorten the rejection window.",
+    })
+}
+
 /// Build the "next action" hint block for `shillbot_complete_task` based on
 /// the task's current state. Extracted so the handler stays under the 60-line
 /// rule and so the per-state logic is easy to scan.
@@ -2019,6 +2183,89 @@ fn to_mcp_error(err: &McpServiceError) -> McpError {
 
 fn invalid_input(msg: &str) -> McpError {
     McpError::invalid_params(msg.to_string(), None)
+}
+
+/// Parse the `intent` discriminator passed to `discover_opportunities`.
+/// Returns `Ok(Some("earn"))`, `Ok(Some("spend"))`, or `Ok(None)` for the
+/// "search both" omitted case. Rejects unknown values with a 400-shaped MCP
+/// error so typos don't silently fall back to a wide scan.
+fn parse_discover_intent(raw: Option<&str>) -> Result<Option<&'static str>, McpError> {
+    let result = match raw {
+        None | Some("") => None,
+        Some("earn") => Some("earn"),
+        Some("spend") => Some("spend"),
+        Some(other) => {
+            return Err(invalid_input(&format!(
+                "intent must be \"earn\", \"spend\", or omitted; got {other:?}"
+            )));
+        }
+    };
+    // Postcondition: a Some(_) result is exactly one of the two valid tokens.
+    debug_assert!(
+        matches!(result, None | Some("earn") | Some("spend")),
+        "intent must be earn/spend/None"
+    );
+    Ok(result)
+}
+
+/// Filter, annotate, and append earning listings to `merged`. Mutates each
+/// listing in place to attach `claim_via` for first-party (`shillbot`) entries.
+fn collect_earn_entries(
+    listings: Vec<crate::listings::models::AgentJob>,
+    category_needle: Option<&str>,
+    keyword_needle: Option<&str>,
+    merged: &mut Vec<serde_json::Value>,
+) {
+    let initial_len = merged.len();
+    for mut listing in listings {
+        if listing.source == "shillbot" {
+            listing.claim_via = Some("shillbot_claim_task".to_string());
+        }
+        if !category_matches(&listing.category, category_needle) {
+            continue;
+        }
+        if !keyword_matches_earn(&listing, keyword_needle) {
+            continue;
+        }
+        let mut value = serde_json::to_value(&listing).unwrap_or(serde_json::Value::Null);
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "vertical".to_string(),
+                serde_json::Value::String("earn".to_string()),
+            );
+        }
+        merged.push(value);
+    }
+    // Postcondition: we never shrink the merged vector and never panic.
+    debug_assert!(merged.len() >= initial_len, "merged must only grow");
+}
+
+/// Filter, annotate, and append spending opportunities to `merged`.
+fn collect_spend_entries(
+    opportunities: Vec<crate::listings::spending::SpendingOpportunity>,
+    category_needle: Option<&str>,
+    keyword_needle: Option<&str>,
+    merged: &mut Vec<serde_json::Value>,
+) {
+    let initial_len = merged.len();
+    for opp in opportunities {
+        if !category_matches(&opp.category, category_needle) {
+            continue;
+        }
+        if !keyword_matches_spend(&opp, keyword_needle) {
+            continue;
+        }
+        let mut value = serde_json::to_value(&opp).unwrap_or(serde_json::Value::Null);
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "vertical".to_string(),
+                serde_json::Value::String("spend".to_string()),
+            );
+        }
+        merged.push(value);
+    }
+    // Postcondition: we never shrink the merged vector and never panic.
+    debug_assert!(merged.len() >= initial_len, "merged must only grow");
 }
 
 /// `discover_opportunities` filter helper — entry's category contains

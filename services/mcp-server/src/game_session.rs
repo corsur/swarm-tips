@@ -172,10 +172,188 @@ pub struct GameSessionManager {
     db: Arc<FirestoreDb>,
 }
 
+/// Inputs assembled from the in-memory session for `build_reveal_tx`.
+/// Only constructed once all four fields are present — the loader returns
+/// `None` while still waiting for the opponent's reveal_data.
+struct RevealInputs {
+    game_id: u64,
+    tournament_id: u64,
+    preimage: [u8; 32],
+    r_matchup: [u8; 32],
+}
+
 fn decode_signed_tx(signed_tx_b64: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(signed_tx_b64)
         .context("invalid base64 signed transaction")
+}
+
+/// Parse a hex-encoded `[u8; 32]` `r_matchup` reveal value. Used by
+/// `build_reveal_tx` to convert the websocket-delivered hex string back into
+/// the fixed-size byte array the on-chain instruction expects.
+fn parse_r_matchup_hex(reveal_hex: &str) -> Result<[u8; 32]> {
+    debug_assert!(!reveal_hex.is_empty(), "reveal_hex must be non-empty");
+    let bytes = hex::decode(reveal_hex).context("invalid hex in r_matchup")?;
+    let len = bytes.len();
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("r_matchup must be 32 bytes, got {}", len))?;
+    // Postcondition: array length is exactly 32 bytes (enforced by type).
+    debug_assert_eq!(arr.len(), 32, "r_matchup must be 32 bytes");
+    Ok(arr)
+}
+
+/// Read the matchmaker pubkey from the GlobalConfig PDA on-chain.
+///
+/// `GlobalConfig` layout: 8-byte discriminator + 32-byte authority +
+/// 32-byte matchmaker + ... — we slice `[40..72]` to extract the matchmaker.
+async fn read_matchmaker_pubkey(tx_builder: &GameTxBuilder) -> Result<solana_sdk::pubkey::Pubkey> {
+    let (global_config_pda, _) = game_chain::pda::global_config_pda();
+    let config_data = tx_builder
+        .rpc()
+        .get_account_data(&global_config_pda)
+        .await
+        .context("failed to read global_config")?;
+    // Precondition: account data must contain at least disc + authority + matchmaker.
+    anyhow::ensure!(config_data.len() >= 72, "global_config data too short");
+    let matchmaker =
+        solana_sdk::pubkey::Pubkey::try_from(&config_data[40..72]).context("parse matchmaker")?;
+    // Postcondition: a real on-chain matchmaker is non-default.
+    debug_assert!(
+        matchmaker != solana_sdk::pubkey::Pubkey::default(),
+        "matchmaker must not be the default pubkey"
+    );
+    Ok(matchmaker)
+}
+
+/// Read the next-allocated game id from the game_counter PDA. Used by P1 to
+/// know what `game_id` the create_game tx will assign.
+async fn read_next_game_id(tx_builder: &GameTxBuilder) -> Result<u64> {
+    let (counter_pda, _) = game_chain::pda::game_counter_pda();
+    let counter_data = tx_builder
+        .rpc()
+        .get_account_data(&counter_pda)
+        .await
+        .context("failed to read game_counter")?;
+    // Precondition: data must contain at least the 8-byte disc + u64 counter.
+    anyhow::ensure!(counter_data.len() >= 16, "game_counter data too short");
+    let game_id = u64::from_le_bytes(counter_data[8..16].try_into().context("parse count")?);
+    Ok(game_id)
+}
+
+/// Pump the Queued → Matched state transition once `match_found` has arrived
+/// over the WebSocket. Idempotent for any non-Queued state. Reads from
+/// `match_found` and writes `session_id`, `role`, and `state` on the session.
+fn advance_queued_to_matched(s: &mut GameSession) -> Result<()> {
+    debug_assert!(
+        s.match_found.is_some(),
+        "advance requires match_found populated"
+    );
+    if s.state != GameSessionState::Queued {
+        return Ok(());
+    }
+    let (sid, role) = {
+        let mf = s.match_found.as_ref().context("match_found missing")?;
+        (mf.session_id.clone(), mf.role)
+    };
+    s.session_id = Some(sid);
+    s.role = Some(role);
+    s.state = GameSessionState::Matched;
+    // Postcondition: state advanced and identifying fields are populated.
+    debug_assert_eq!(
+        s.state,
+        GameSessionState::Matched,
+        "state must be Matched after advance"
+    );
+    Ok(())
+}
+
+/// Construct the "matched but no tx yet" `check_match` response — the agent
+/// is matched on-chain but check_match doesn't need to return an unsigned tx
+/// this poll (e.g. P2 still waiting for game_ready).
+fn match_status_matched(game_id: Option<u64>, role: Option<u8>) -> MatchStatus {
+    let status = MatchStatus {
+        status: "matched".to_string(),
+        game_id,
+        role,
+        unsigned_tx: None,
+        action: None,
+        matchmaker_signature: None,
+        blockhash: None,
+    };
+    debug_assert!(status.unsigned_tx.is_none(), "matched must not carry a tx");
+    status
+}
+
+/// Construct the "already in_game" `check_match` response (no transaction work needed).
+fn match_status_in_game(game_id: Option<u64>, role: Option<u8>) -> MatchStatus {
+    // Postcondition: an in_game status only exposes session metadata, never a tx.
+    let status = MatchStatus {
+        status: "in_game".to_string(),
+        game_id,
+        role,
+        unsigned_tx: None,
+        action: None,
+        matchmaker_signature: None,
+        blockhash: None,
+    };
+    debug_assert!(status.unsigned_tx.is_none(), "in_game must not carry a tx");
+    status
+}
+
+/// Construct the "still queued" `check_match` response — no match yet.
+fn match_status_queued() -> MatchStatus {
+    let status = MatchStatus {
+        status: "queued".to_string(),
+        game_id: None,
+        role: None,
+        unsigned_tx: None,
+        action: None,
+        matchmaker_signature: None,
+        blockhash: None,
+    };
+    debug_assert!(status.game_id.is_none(), "queued must have no game_id");
+    debug_assert!(status.unsigned_tx.is_none(), "queued must have no tx");
+    status
+}
+
+/// Reconstruct an in-memory `GameSession` from a persisted Firestore document.
+/// Used by `try_restore_persisted_session` to keep the (large) struct
+/// initializer out of the orchestration path.
+fn build_restored_session(
+    wallet: &str,
+    persisted: &PersistedGameSession,
+    state: GameSessionState,
+) -> GameSession {
+    // Precondition: the wallet identifier must already be canonicalized.
+    debug_assert!(!wallet.is_empty(), "wallet must be non-empty");
+    // Postcondition (asserted by usage): when state is past Connected, a
+    // session_id should normally exist — but Resolved sessions are filtered
+    // out by the caller, so we don't enforce that here.
+    let preimage = persisted
+        .commit_preimage_hex
+        .as_ref()
+        .and_then(|h| hex::decode(h).ok())
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+    debug_assert!(
+        state != GameSessionState::Resolved,
+        "Resolved sessions must not be restored"
+    );
+    GameSession {
+        wallet: wallet.to_string(),
+        jwt: persisted.jwt.clone(),
+        state,
+        game_id: persisted.game_id,
+        tournament_id: persisted.tournament_id,
+        session_id: persisted.session_id.clone(),
+        role: persisted.role,
+        chat_buffer: Vec::new(),
+        match_found: None,
+        matchup_commitment: persisted.matchup_commitment.clone(),
+        commit_preimage: preimage,
+        game_ready: persisted.game_ready,
+        reveal_data: persisted.reveal_data.clone(),
+    }
 }
 
 impl GameSessionManager {
@@ -319,107 +497,142 @@ impl GameSessionManager {
 
         // Check Firestore for an active session from a previous pod lifecycle.
         if let Some(persisted) = self.load_persisted_session(&wallet).await {
-            let state =
-                GameSessionState::from_str(&persisted.state).unwrap_or(GameSessionState::Connected);
-
-            if state != GameSessionState::Resolved {
-                tracing::info!(
-                    wallet = %wallet,
-                    state = persisted.state,
-                    game_id = ?persisted.game_id,
-                    "restoring persisted session from Firestore"
-                );
-
-                let preimage = persisted
-                    .commit_preimage_hex
-                    .as_ref()
-                    .and_then(|h| hex::decode(h).ok())
-                    .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
-
-                let restored = Arc::new(Mutex::new(GameSession {
-                    wallet: wallet.clone(),
-                    jwt: persisted.jwt.clone(),
-                    state,
-                    game_id: persisted.game_id,
-                    tournament_id: persisted.tournament_id,
-                    session_id: persisted.session_id.clone(),
-                    role: persisted.role,
-                    chat_buffer: Vec::new(),
-                    match_found: None,
-                    matchup_commitment: persisted.matchup_commitment,
-                    commit_preimage: preimage,
-                    game_ready: persisted.game_ready,
-                    reveal_data: persisted.reveal_data,
-                }));
-
-                self.sessions
-                    .write()
-                    .await
-                    .insert(wallet.clone(), restored.clone());
-                self.tx_builders
-                    .write()
-                    .await
-                    .insert(wallet.clone(), tx_builder);
-
-                // Re-establish WS if JWT is available (with timeout — JWT may be expired).
-                if !persisted.jwt.is_empty() {
-                    let ws_result = tokio::time::timeout(
-                        tokio::time::Duration::from_secs(10),
-                        WsConnection::connect(&self.game_api_url, &persisted.jwt),
-                    )
-                    .await;
-                    match ws_result {
-                        Err(_) => {
-                            tracing::warn!(
-                                wallet = %wallet,
-                                "WS connect timed out for restored session (JWT likely expired)"
-                            );
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!(
-                                wallet = %wallet,
-                                error = %e,
-                                "failed to re-establish WS for restored session"
-                            );
-                        }
-                        Ok(Ok(ws)) => {
-                            let (sink, stream) = ws.into_split();
-                            let ws_sink = Arc::new(Mutex::new(sink));
-                            let session_clone = Arc::clone(&restored);
-                            let sink_clone = Arc::clone(&ws_sink);
-                            let api_url = self.game_api_url.clone();
-                            let cancel_token = CancellationToken::new();
-                            let token_clone = cancel_token.clone();
-                            tokio::spawn(async move {
-                                ws_listener_with_reconnect(
-                                    session_clone,
-                                    stream,
-                                    sink_clone,
-                                    api_url,
-                                    token_clone,
-                                )
-                                .await;
-                            });
-                            self.ws_sinks.write().await.insert(wallet.clone(), ws_sink);
-                            self.ws_cancel_tokens
-                                .write()
-                                .await
-                                .insert(wallet.clone(), cancel_token);
-                            tracing::info!(wallet = %wallet, "WS re-established for restored session");
-                        }
-                    }
-                }
-
-                return Ok((wallet, balance));
+            if let Some(restored_balance) = self
+                .try_restore_persisted_session(&wallet, persisted, tx_builder, balance)
+                .await
+            {
+                return Ok((wallet, restored_balance));
             }
-
-            // Session was resolved — clean it up and proceed with fresh registration.
-            self.delete_persisted_session(&wallet).await;
+            // try_restore returned None → session was Resolved and the
+            // tx_builder was consumed; recreate it for the fresh-register path.
         }
 
-        // Build session without JWT — auth happens after deposit_stake.
+        let tx_builder = GameTxBuilder::new(&self.solana_rpc_url, pubkey);
+        self.register_fresh_session(&wallet, tx_builder, balance)
+            .await;
+        Ok((wallet, balance))
+    }
+
+    /// Try to restore a persisted Firestore game session for `wallet`.
+    /// Returns `Some(balance)` when the session was active and was
+    /// re-hydrated into the in-memory map (with a best-effort WS reconnect).
+    /// Returns `None` when the session was Resolved (already cleaned up by
+    /// this function) and the caller should fall through to fresh registration.
+    async fn try_restore_persisted_session(
+        &self,
+        wallet: &str,
+        persisted: PersistedGameSession,
+        tx_builder: GameTxBuilder,
+        balance: u64,
+    ) -> Option<u64> {
+        // Precondition: the wallet string is the canonical pubkey form.
+        debug_assert!(!wallet.is_empty(), "wallet must be non-empty");
+        let state =
+            GameSessionState::from_str(&persisted.state).unwrap_or(GameSessionState::Connected);
+
+        if state == GameSessionState::Resolved {
+            // Session was resolved — clean it up so the caller can register fresh.
+            self.delete_persisted_session(wallet).await;
+            return None;
+        }
+
+        tracing::info!(
+            wallet = %wallet,
+            state = persisted.state,
+            game_id = ?persisted.game_id,
+            "restoring persisted session from Firestore"
+        );
+
+        let restored = Arc::new(Mutex::new(build_restored_session(
+            wallet, &persisted, state,
+        )));
+        self.sessions
+            .write()
+            .await
+            .insert(wallet.to_string(), restored.clone());
+        self.tx_builders
+            .write()
+            .await
+            .insert(wallet.to_string(), tx_builder);
+
+        // Re-establish WS if JWT is available (with timeout — JWT may be expired).
+        if !persisted.jwt.is_empty() {
+            self.spawn_ws_reconnect_for_restored(wallet, &persisted.jwt, &restored)
+                .await;
+        }
+        // Postcondition: in-memory maps now have an entry for this wallet.
+        debug_assert!(
+            self.sessions.read().await.contains_key(wallet),
+            "session must be registered after restore"
+        );
+        Some(balance)
+    }
+
+    /// Connect a WS for a restored session and spawn the read loop. All errors
+    /// are logged and swallowed — the caller already returned `Some(balance)`
+    /// so the agent can retry by calling `register_wallet` again if needed.
+    async fn spawn_ws_reconnect_for_restored(
+        &self,
+        wallet: &str,
+        jwt: &str,
+        restored: &Arc<Mutex<GameSession>>,
+    ) {
+        let ws_result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(10),
+            WsConnection::connect(&self.game_api_url, jwt),
+        )
+        .await;
+        match ws_result {
+            Err(_) => {
+                tracing::warn!(
+                    wallet = %wallet,
+                    "WS connect timed out for restored session (JWT likely expired)"
+                );
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    wallet = %wallet,
+                    error = %e,
+                    "failed to re-establish WS for restored session"
+                );
+            }
+            Ok(Ok(ws)) => {
+                let (sink, stream) = ws.into_split();
+                let ws_sink = Arc::new(Mutex::new(sink));
+                let session_clone = Arc::clone(restored);
+                let sink_clone = Arc::clone(&ws_sink);
+                let api_url = self.game_api_url.clone();
+                let cancel_token = CancellationToken::new();
+                let token_clone = cancel_token.clone();
+                tokio::spawn(async move {
+                    ws_listener_with_reconnect(
+                        session_clone,
+                        stream,
+                        sink_clone,
+                        api_url,
+                        token_clone,
+                    )
+                    .await;
+                });
+                self.ws_sinks
+                    .write()
+                    .await
+                    .insert(wallet.to_string(), ws_sink);
+                self.ws_cancel_tokens
+                    .write()
+                    .await
+                    .insert(wallet.to_string(), cancel_token);
+                tracing::info!(wallet = %wallet, "WS re-established for restored session");
+            }
+        }
+    }
+
+    /// Register a brand-new game session (no persisted state). JWT is empty —
+    /// auth happens later when the agent submits a signed deposit_stake tx.
+    async fn register_fresh_session(&self, wallet: &str, tx_builder: GameTxBuilder, balance: u64) {
+        debug_assert!(!wallet.is_empty(), "wallet must be non-empty");
         let session = Arc::new(Mutex::new(GameSession {
-            wallet: wallet.clone(),
+            wallet: wallet.to_string(),
             jwt: String::new(), // populated after stake-as-auth
             state: GameSessionState::Connected,
             game_id: None,
@@ -434,11 +647,14 @@ impl GameSessionManager {
             reveal_data: None,
         }));
 
-        self.sessions.write().await.insert(wallet.clone(), session);
+        self.sessions
+            .write()
+            .await
+            .insert(wallet.to_string(), session);
         self.tx_builders
             .write()
             .await
-            .insert(wallet.clone(), tx_builder);
+            .insert(wallet.to_string(), tx_builder);
 
         tracing::info!(
             service = "coordination-mcp-server",
@@ -446,8 +662,11 @@ impl GameSessionManager {
             balance,
             "wallet registered (pubkey only, non-custodial)"
         );
-
-        Ok((wallet, balance))
+        // Postcondition: the session is queryable via `is_registered`.
+        debug_assert!(
+            self.sessions.read().await.contains_key(wallet),
+            "fresh session must be registered"
+        );
     }
 
     /// Build an unsigned deposit_stake transaction for the agent to sign.
@@ -772,40 +991,16 @@ impl GameSessionManager {
 
         // Already in game — return current state.
         if s.state == GameSessionState::InGame {
-            return Ok(MatchStatus {
-                status: "in_game".to_string(),
-                game_id: s.game_id,
-                role: s.role,
-                unsigned_tx: None,
-                action: None,
-                matchmaker_signature: None,
-                blockhash: None,
-            });
+            return Ok(match_status_in_game(s.game_id, s.role));
         }
 
         // Still waiting for match.
         if s.match_found.is_none() {
-            return Ok(MatchStatus {
-                status: "queued".to_string(),
-                game_id: None,
-                role: None,
-                unsigned_tx: None,
-                action: None,
-                matchmaker_signature: None,
-                blockhash: None,
-            });
+            return Ok(match_status_queued());
         }
 
-        // Match found but not yet processed.
-        if s.state == GameSessionState::Queued {
-            let (sid, role) = {
-                let mf = s.match_found.as_ref().context("match_found missing")?;
-                (mf.session_id.clone(), mf.role)
-            };
-            s.session_id = Some(sid);
-            s.role = Some(role);
-            s.state = GameSessionState::Matched;
-        }
+        // Match found but not yet processed — advance Queued → Matched.
+        advance_queued_to_matched(&mut s)?;
 
         let role = s.role.unwrap_or(1);
         let tournament_id = s.tournament_id.context("tournament_id not set")?;
@@ -813,32 +1008,14 @@ impl GameSessionManager {
         let jwt = s.jwt.clone();
 
         if role == 0 {
-            // Player 1: create the game on-chain.
             let commitment_hex = s
                 .matchup_commitment
                 .clone()
                 .context("role=0 but no matchup_commitment received")?;
-
-            // Drop lock before I/O.
             drop(s);
-
-            let (unsigned, matchmaker_sig, game_id) = self
-                .build_create_game_tx(wallet, tournament_id, &commitment_hex, &jwt)
-                .await?;
-
-            // Store game_id but don't transition to InGame — that happens after submit.
-            let mut s = session.lock().await;
-            s.game_id = Some(game_id);
-
-            return Ok(MatchStatus {
-                status: "needs_signature".to_string(),
-                game_id: Some(game_id),
-                role: Some(0),
-                unsigned_tx: Some(unsigned.transaction_b64),
-                action: Some("create_game".to_string()),
-                matchmaker_signature: Some(matchmaker_sig),
-                blockhash: Some(unsigned.blockhash),
-            });
+            return self
+                .check_match_player_one(wallet, tournament_id, &commitment_hex, &jwt, &session)
+                .await;
         }
 
         // Player 2: wait for game_ready, then join.
@@ -851,39 +1028,80 @@ impl GameSessionManager {
         if let Some(game_id) = s.game_ready {
             if s.state == GameSessionState::Matched {
                 drop(s);
-
-                let chain = self.tx_builders.read().await;
-                let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
-                let unsigned = tx_builder.build_join_game(game_id, tournament_id).await?;
-
-                // Store game_id but don't transition to InGame yet —
-                // that happens after the agent submits the signed tx.
-                let mut s = session.lock().await;
-                s.game_id = Some(game_id);
-
-                tracing::info!(wallet = %wallet, game_id, "P2 join_game tx built (needs signing)");
-
-                // Return the unsigned tx in the match status
-                return Ok(MatchStatus {
-                    status: "needs_signature".to_string(),
-                    game_id: Some(game_id),
-                    role: Some(1),
-                    unsigned_tx: Some(unsigned.transaction_b64),
-                    action: Some("join_game".to_string()),
-                    matchmaker_signature: None,
-                    blockhash: Some(unsigned.blockhash),
-                });
+                return self
+                    .check_match_player_two(wallet, tournament_id, game_id, &session)
+                    .await;
             }
         }
 
+        Ok(match_status_matched(s.game_id, s.role))
+    }
+
+    /// Player 1 branch of `check_match`: build the create_game tx (with
+    /// matchmaker cosignature), record the resulting game_id on the session,
+    /// and return the `needs_signature` MatchStatus.
+    async fn check_match_player_one(
+        &self,
+        wallet: &str,
+        tournament_id: u64,
+        commitment_hex: &str,
+        jwt: &str,
+        session: &Arc<Mutex<GameSession>>,
+    ) -> Result<MatchStatus> {
+        debug_assert!(!wallet.is_empty(), "wallet must be non-empty");
+        debug_assert!(
+            !commitment_hex.is_empty(),
+            "commitment_hex must be non-empty for P1"
+        );
+        let (unsigned, matchmaker_sig, game_id) = self
+            .build_create_game_tx(wallet, tournament_id, commitment_hex, jwt)
+            .await?;
+
+        // Store game_id but don't transition to InGame — that happens after submit.
+        let mut s = session.lock().await;
+        s.game_id = Some(game_id);
+
         Ok(MatchStatus {
-            status: "matched".to_string(),
-            game_id: s.game_id,
-            role: s.role,
-            unsigned_tx: None,
-            action: None,
+            status: "needs_signature".to_string(),
+            game_id: Some(game_id),
+            role: Some(0),
+            unsigned_tx: Some(unsigned.transaction_b64),
+            action: Some("create_game".to_string()),
+            matchmaker_signature: Some(matchmaker_sig),
+            blockhash: Some(unsigned.blockhash),
+        })
+    }
+
+    /// Player 2 branch of `check_match`: build the join_game tx, store the
+    /// game_id on the session, and return the `needs_signature` MatchStatus.
+    async fn check_match_player_two(
+        &self,
+        wallet: &str,
+        tournament_id: u64,
+        game_id: u64,
+        session: &Arc<Mutex<GameSession>>,
+    ) -> Result<MatchStatus> {
+        debug_assert!(!wallet.is_empty(), "wallet must be non-empty");
+        debug_assert!(game_id > 0, "game_id must be a real on-chain id");
+        let chain = self.tx_builders.read().await;
+        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
+        let unsigned = tx_builder.build_join_game(game_id, tournament_id).await?;
+
+        // Store game_id but don't transition to InGame yet —
+        // that happens after the agent submits the signed tx.
+        let mut s = session.lock().await;
+        s.game_id = Some(game_id);
+
+        tracing::info!(wallet = %wallet, game_id, "P2 join_game tx built (needs signing)");
+
+        Ok(MatchStatus {
+            status: "needs_signature".to_string(),
+            game_id: Some(game_id),
+            role: Some(1),
+            unsigned_tx: Some(unsigned.transaction_b64),
+            action: Some("join_game".to_string()),
             matchmaker_signature: None,
-            blockhash: None,
+            blockhash: Some(unsigned.blockhash),
         })
     }
 
@@ -986,24 +1204,16 @@ impl GameSessionManager {
             .context("no session for wallet")?
             .clone();
 
-        let s = session.lock().await;
-        let game_id = s.game_id.context("no active game")?;
-        let tournament_id = s.tournament_id.context("tournament_id not set")?;
-        let preimage = s
-            .commit_preimage
-            .context("no commit preimage — call game_commit_guess first")?;
-
-        // Check if reveal_data has arrived via WebSocket.
-        let reveal_hex = match &s.reveal_data {
-            None => return Ok(None), // still waiting
-            Some(hex) => hex.clone(),
+        let reveal_inputs = match self.load_reveal_inputs(&session).await? {
+            Some(inputs) => inputs,
+            None => return Ok(None), // still waiting for opponent
         };
-        drop(s);
-
-        let r_matchup_bytes = hex::decode(&reveal_hex).context("invalid hex in r_matchup")?;
-        let r_matchup: [u8; 32] = r_matchup_bytes
-            .try_into()
-            .map_err(|v: Vec<u8>| anyhow::anyhow!("r_matchup must be 32 bytes, got {}", v.len()))?;
+        let RevealInputs {
+            game_id,
+            tournament_id,
+            preimage,
+            r_matchup,
+        } = reveal_inputs;
 
         let chain = self.tx_builders.read().await;
         let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
@@ -1039,6 +1249,37 @@ impl GameSessionManager {
 
         tracing::info!(wallet = %wallet, game_id, "built unsigned reveal_guess tx");
         Ok(Some(unsigned))
+    }
+
+    /// Drain the inputs needed to build the reveal_guess transaction from
+    /// the in-memory session. Returns `Ok(None)` when the opponent's
+    /// reveal_data hasn't arrived yet (the agent should poll again).
+    /// Errors only when the session is missing data the prior tool calls
+    /// were responsible for populating (game_id, preimage, etc).
+    async fn load_reveal_inputs(
+        &self,
+        session: &Arc<Mutex<GameSession>>,
+    ) -> Result<Option<RevealInputs>> {
+        let s = session.lock().await;
+        let game_id = s.game_id.context("no active game")?;
+        let tournament_id = s.tournament_id.context("tournament_id not set")?;
+        let preimage = s
+            .commit_preimage
+            .context("no commit preimage — call game_commit_guess first")?;
+        let reveal_hex = match &s.reveal_data {
+            None => return Ok(None),
+            Some(hex) => hex.clone(),
+        };
+        drop(s);
+        // Postcondition: when we return Ok(Some), every input is present.
+        let r_matchup = parse_r_matchup_hex(&reveal_hex)?;
+        debug_assert_eq!(r_matchup.len(), 32, "r_matchup must be 32 bytes");
+        Ok(Some(RevealInputs {
+            game_id,
+            tournament_id,
+            preimage,
+            r_matchup,
+        }))
     }
 
     /// Read on-chain game state.
@@ -1101,18 +1342,7 @@ impl GameSessionManager {
             .unwrap_or(0);
         tracing::info!(wallet = %wallet, balance_lamports = balance, "creating game as P1");
 
-        // Read the matchmaker pubkey from GlobalConfig on-chain.
-
-        let (global_config_pda, _) = game_chain::pda::global_config_pda();
-        let config_data = tx_builder
-            .rpc()
-            .get_account_data(&global_config_pda)
-            .await
-            .context("failed to read global_config")?;
-        // GlobalConfig layout: 8-byte discriminator + 32-byte authority + 32-byte matchmaker + ...
-        anyhow::ensure!(config_data.len() >= 72, "global_config data too short");
-        let matchmaker = solana_sdk::pubkey::Pubkey::try_from(&config_data[40..72])
-            .context("parse matchmaker")?;
+        let matchmaker = read_matchmaker_pubkey(tx_builder).await?;
 
         let stake: u64 = 50_000_000; // 0.05 SOL — matches FIXED_STAKE_LAMPORTS on-chain
 
@@ -1130,15 +1360,7 @@ impl GameSessionManager {
             .await
             .map_err(|e| anyhow::anyhow!("cosign request failed: {e}"))?;
 
-        // Read the game counter to get the expected game_id.
-        let (counter_pda, _) = game_chain::pda::game_counter_pda();
-        let counter_data = tx_builder
-            .rpc()
-            .get_account_data(&counter_pda)
-            .await
-            .context("failed to read game_counter")?;
-        anyhow::ensure!(counter_data.len() >= 16, "game_counter data too short");
-        let game_id = u64::from_le_bytes(counter_data[8..16].try_into().context("parse count")?);
+        let game_id = read_next_game_id(tx_builder).await?;
 
         tracing::info!(
             wallet = %wallet,

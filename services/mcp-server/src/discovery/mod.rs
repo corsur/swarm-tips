@@ -81,6 +81,62 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
     // Pull from all sources in parallel. Each source is best-effort — partial
     // failures degrade to empty vecs with an `error!` log so the rest of the
     // refresh still completes.
+    let all_sources = pull_all_discovery_sources(state).await;
+
+    // Merge + classify (synchronous, in-memory). This produces records with
+    // layer2_classification = layer3_analysis = None — we then patch them
+    // back in from existing Firestore docs below so a fresh refresh doesn't
+    // wipe out hours of LLM work.
+    let mut merged = merge_and_classify(all_sources);
+
+    // Preserve Layer 2 + Layer 3 across refresh.
+    let (preserved_layer2, preserved_layer3) =
+        preserve_layer_classifications(&state.db, &mut merged).await;
+
+    let total = merged.len();
+    let earning_count = merged.iter().filter(|s| s.is_earning_candidate()).count();
+
+    // Persist to Firestore (one doc per server). Best-effort: log + continue
+    // on individual write failures, but the cache update happens regardless
+    // so the in-memory copy is always fresh.
+    let (written, write_errors) = persist_servers_to_firestore(&state.db, &merged).await;
+
+    // Update in-memory cache
+    {
+        let mut cache = state.cache.lock().await;
+        *cache = Some(DiscoveryCache {
+            servers: merged,
+            last_refreshed_at: chrono::Utc::now(),
+        });
+    }
+
+    let elapsed_ms = started.elapsed().as_millis();
+    tracing::info!(
+        total,
+        earning_count,
+        preserved_layer2,
+        preserved_layer3,
+        written,
+        write_errors,
+        elapsed_ms,
+        "refresh_discovery complete"
+    );
+
+    Ok(RefreshSummary {
+        total,
+        earning_count,
+        firestore_writes: written,
+        firestore_write_errors: write_errors,
+        elapsed_ms: elapsed_ms as u64,
+    })
+}
+
+/// Pull every upstream discovery source in parallel and bundle the successes
+/// into one outer vec. Each source is best-effort: failures log at `error!`
+/// and degrade to "no entries from this source" without aborting the refresh.
+async fn pull_all_discovery_sources(
+    state: &Arc<DiscoveryState>,
+) -> Vec<Vec<crate::discovery::models::RawServer>> {
     let (official, wong2, appcypher, best_of) = tokio::join!(
         pull_official_registry(&state.http),
         pull_awesome_mcp(
@@ -123,20 +179,25 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
             }
         }
     }
+    // Postcondition: at most one batch per source label. All_sources is bounded
+    // by the static label list above (4) so callers never see unexpected growth.
+    debug_assert!(
+        all_sources.len() <= 4,
+        "expected at most one batch per source"
+    );
+    all_sources
+}
 
-    // Merge + classify (synchronous, in-memory). This produces records with
-    // layer2_classification = layer3_analysis = None — we then patch them
-    // back in from existing Firestore docs below so a fresh refresh doesn't
-    // wipe out hours of LLM work.
-    let mut merged = merge_and_classify(all_sources);
-
-    // Preserve Layer 2 + Layer 3 across refresh: load the current Firestore
-    // docs once, build a slug -> existing-doc map, then for each newly merged
-    // record copy any non-None layer2/layer3 fields onto it. The Firestore
-    // load is best-effort — if it fails the refresh still completes, we just
-    // lose the LLM context (next Layer 2 run regenerates it).
+/// Patch newly-merged records with any pre-existing Layer 2 / Layer 3 LLM
+/// verdicts from Firestore so a fresh refresh doesn't wipe out hours of LLM
+/// work. Returns `(preserved_layer2, preserved_layer3)` counters for logging.
+/// A Firestore load failure is best-effort: degrades to "no preservation".
+async fn preserve_layer_classifications(
+    db: &FirestoreDb,
+    merged: &mut [EnrichedServer],
+) -> (usize, usize) {
     let existing_by_slug: std::collections::HashMap<String, EnrichedServer> =
-        match load_from_firestore(&state.db).await {
+        match load_from_firestore(db).await {
             Ok(docs) => docs.into_iter().map(|d| (d.slug(), d)).collect(),
             Err(e) => {
                 tracing::warn!(error = %e, "could not load existing index for layer2/3 preservation");
@@ -145,7 +206,7 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
         };
     let mut preserved_layer2 = 0usize;
     let mut preserved_layer3 = 0usize;
-    for srv in &mut merged {
+    for srv in merged.iter_mut() {
         if let Some(existing) = existing_by_slug.get(&srv.slug()) {
             if srv.layer2_classification.is_none() && existing.layer2_classification.is_some() {
                 srv.layer2_classification = existing.layer2_classification.clone();
@@ -157,19 +218,30 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
             }
         }
     }
+    // Postcondition: every preserved counter is bounded by the merged slice length.
+    debug_assert!(
+        preserved_layer2 <= merged.len(),
+        "preserved_layer2 must not exceed merged size"
+    );
+    debug_assert!(
+        preserved_layer3 <= merged.len(),
+        "preserved_layer3 must not exceed merged size"
+    );
+    (preserved_layer2, preserved_layer3)
+}
 
-    let total = merged.len();
-    let earning_count = merged.iter().filter(|s| s.is_earning_candidate()).count();
-
-    // Persist to Firestore (one doc per server). Best-effort: log + continue
-    // on individual write failures, but the cache update happens regardless
-    // so the in-memory copy is always fresh.
+/// Persist every server doc to Firestore. Returns `(written, errors)` —
+/// individual write failures are logged and counted but do not abort the
+/// caller (the in-memory cache always updates regardless).
+async fn persist_servers_to_firestore(
+    db: &FirestoreDb,
+    merged: &[EnrichedServer],
+) -> (usize, usize) {
     let mut written = 0usize;
     let mut write_errors = 0usize;
-    for srv in &merged {
+    for srv in merged {
         let slug = srv.slug();
-        match state
-            .db
+        match db
             .fluent()
             .update()
             .in_col(MCP_SERVERS_COLLECTION)
@@ -185,35 +257,13 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
             }
         }
     }
-
-    // Update in-memory cache
-    {
-        let mut cache = state.cache.lock().await;
-        *cache = Some(DiscoveryCache {
-            servers: merged,
-            last_refreshed_at: chrono::Utc::now(),
-        });
-    }
-
-    let elapsed_ms = started.elapsed().as_millis();
-    tracing::info!(
-        total,
-        earning_count,
-        preserved_layer2,
-        preserved_layer3,
-        written,
-        write_errors,
-        elapsed_ms,
-        "refresh_discovery complete"
+    // Postcondition: written + errors == merged.len() (every input was accounted for).
+    debug_assert_eq!(
+        written.saturating_add(write_errors),
+        merged.len(),
+        "every server must be either written or counted as error"
     );
-
-    Ok(RefreshSummary {
-        total,
-        earning_count,
-        firestore_writes: written,
-        firestore_write_errors: write_errors,
-        elapsed_ms: elapsed_ms as u64,
-    })
+    (written, write_errors)
 }
 
 /// Result of a refresh — useful for the admin endpoint that triggers it.
@@ -271,63 +321,7 @@ pub async fn run_layer2_pass(state: &Arc<DiscoveryState>) -> Result<Layer2Summar
         .collect();
 
     let considered = candidates.len();
-    let mut classified = 0usize;
-    let mut new_earning = 0usize;
-    let mut new_primitives = 0usize;
-    let mut writes = 0usize;
-    let mut write_errors = 0usize;
-    let mut grok_errors = 0usize;
-
-    for server in candidates {
-        match llm.classify_server(server).await {
-            Ok(verdict) => {
-                classified = classified.saturating_add(1);
-
-                // Build the updated record with Layer 2 attached.
-                let mut updated = server.clone();
-                let became_earning = matches!(
-                    verdict.cash_flow_direction,
-                    Some(models::CashFlowDirection::EarnsForAgent)
-                ) || matches!(
-                    verdict.value_to_swarm,
-                    Some(models::ValueToSwarm::AggregateListing)
-                );
-                let became_primitive = matches!(
-                    verdict.value_to_swarm,
-                    Some(models::ValueToSwarm::Dependency)
-                );
-                if became_earning && verdict.confidence >= 0.6 {
-                    new_earning = new_earning.saturating_add(1);
-                }
-                if became_primitive && verdict.confidence >= 0.6 {
-                    new_primitives = new_primitives.saturating_add(1);
-                }
-                updated.layer2_classification = Some(verdict);
-
-                let slug = updated.slug();
-                match state
-                    .db
-                    .fluent()
-                    .update()
-                    .in_col(MCP_SERVERS_COLLECTION)
-                    .document_id(&slug)
-                    .object(&updated)
-                    .execute::<()>()
-                    .await
-                {
-                    Ok(_) => writes = writes.saturating_add(1),
-                    Err(e) => {
-                        write_errors = write_errors.saturating_add(1);
-                        tracing::warn!(slug, error = %e, "layer2 write failed");
-                    }
-                }
-            }
-            Err(e) => {
-                grok_errors = grok_errors.saturating_add(1);
-                tracing::warn!(server = %server.name, error = %e, "layer2 Grok call failed");
-            }
-        }
-    }
+    let counts = classify_layer2_candidates(llm, &state.db, &candidates).await;
 
     // Invalidate the in-memory cache so the next earning-candidates query
     // sees the new Layer 2 verdicts.
@@ -339,26 +333,136 @@ pub async fn run_layer2_pass(state: &Arc<DiscoveryState>) -> Result<Layer2Summar
     let elapsed_ms = started.elapsed().as_millis();
     tracing::info!(
         considered,
-        classified,
-        new_earning,
-        new_primitives,
-        writes,
-        write_errors,
-        grok_errors,
+        classified = counts.classified,
+        new_earning = counts.new_earning,
+        new_primitives = counts.new_primitives,
+        writes = counts.writes,
+        write_errors = counts.write_errors,
+        grok_errors = counts.grok_errors,
         elapsed_ms,
         "run_layer2_pass complete"
     );
 
-    Ok(Layer2Summary {
+    Ok(build_layer2_summary(considered, &counts, elapsed_ms as u64))
+}
+
+/// Run the Grok classify call on every candidate, persist results, and
+/// accumulate per-pass counters. Serial by design — Grok is the bottleneck.
+async fn classify_layer2_candidates(
+    llm: &LlmClassifier,
+    db: &FirestoreDb,
+    candidates: &[&EnrichedServer],
+) -> Layer2RunCounts {
+    let mut counts = Layer2RunCounts::default();
+    for server in candidates {
+        match llm.classify_server(server).await {
+            Ok(verdict) => {
+                counts.classified = counts.classified.saturating_add(1);
+                process_layer2_verdict(db, server, verdict, &mut counts).await;
+            }
+            Err(e) => {
+                counts.grok_errors = counts.grok_errors.saturating_add(1);
+                tracing::warn!(server = %server.name, error = %e, "layer2 Grok call failed");
+            }
+        }
+    }
+    // Postcondition: total touches never exceed the candidate count.
+    debug_assert!(
+        counts.classified.saturating_add(counts.grok_errors) <= candidates.len(),
+        "classified + grok_errors must not exceed candidates"
+    );
+    counts
+}
+
+/// Format the public Layer2Summary wire object from the threaded counters.
+fn build_layer2_summary(
+    considered: usize,
+    counts: &Layer2RunCounts,
+    elapsed_ms: u64,
+) -> Layer2Summary {
+    debug_assert!(
+        counts.classified <= considered,
+        "classified must not exceed considered"
+    );
+    Layer2Summary {
         considered,
-        classified,
-        new_earning_candidates: new_earning,
-        new_primitives,
-        firestore_writes: writes,
-        firestore_write_errors: write_errors,
-        grok_call_errors: grok_errors,
-        elapsed_ms: elapsed_ms as u64,
-    })
+        classified: counts.classified,
+        new_earning_candidates: counts.new_earning,
+        new_primitives: counts.new_primitives,
+        firestore_writes: counts.writes,
+        firestore_write_errors: counts.write_errors,
+        grok_call_errors: counts.grok_errors,
+        elapsed_ms,
+    }
+}
+
+/// Per-pass counters threaded through `run_layer2_pass`. Bundled so each
+/// helper can update the relevant counter without expanding the function
+/// signature for every new field.
+#[derive(Default)]
+struct Layer2RunCounts {
+    classified: usize,
+    new_earning: usize,
+    new_primitives: usize,
+    writes: usize,
+    write_errors: usize,
+    grok_errors: usize,
+}
+
+/// Apply a single Layer 2 verdict: tag the server with the new classification,
+/// update the counters for earning/primitive promotions, and persist the
+/// updated record to Firestore. Write failures are logged + counted, never
+/// propagated.
+async fn process_layer2_verdict(
+    db: &FirestoreDb,
+    server: &EnrichedServer,
+    verdict: models::Layer2Classification,
+    counts: &mut Layer2RunCounts,
+) {
+    // Build the updated record with Layer 2 attached.
+    let mut updated = server.clone();
+    let became_earning = matches!(
+        verdict.cash_flow_direction,
+        Some(models::CashFlowDirection::EarnsForAgent)
+    ) || matches!(
+        verdict.value_to_swarm,
+        Some(models::ValueToSwarm::AggregateListing)
+    );
+    let became_primitive = matches!(
+        verdict.value_to_swarm,
+        Some(models::ValueToSwarm::Dependency)
+    );
+    if became_earning && verdict.confidence >= 0.6 {
+        counts.new_earning = counts.new_earning.saturating_add(1);
+    }
+    if became_primitive && verdict.confidence >= 0.6 {
+        counts.new_primitives = counts.new_primitives.saturating_add(1);
+    }
+    updated.layer2_classification = Some(verdict);
+
+    let slug = updated.slug();
+    debug_assert!(!slug.is_empty(), "every server must have a non-empty slug");
+    match db
+        .fluent()
+        .update()
+        .in_col(MCP_SERVERS_COLLECTION)
+        .document_id(&slug)
+        .object(&updated)
+        .execute::<()>()
+        .await
+    {
+        Ok(_) => counts.writes = counts.writes.saturating_add(1),
+        Err(e) => {
+            counts.write_errors = counts.write_errors.saturating_add(1);
+            tracing::warn!(slug, error = %e, "layer2 write failed");
+        }
+    }
+    // Postcondition: every successful classification produces exactly one
+    // touch of the write counters (write or write_error).
+    debug_assert!(
+        counts.writes.saturating_add(counts.write_errors) <= counts.classified,
+        "writes + write_errors must not exceed classified"
+    );
 }
 
 /// Get the current composable-primitives list. Same caching strategy as

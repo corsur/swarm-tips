@@ -740,11 +740,7 @@ impl OrchestratorProxy {
         tx_signature: Option<&str>,
     ) -> Result<serde_json::Value, McpServiceError> {
         let endpoint = format!("{}/shorts/create-crypto", self.base_url);
-
-        let mut body = serde_json::json!({ "prompt": prompt });
-        if let Some(u) = url {
-            body["url"] = serde_json::Value::String(u.to_string());
-        }
+        let body = build_create_short_body(prompt, url);
 
         let mut req = self.client.post(&endpoint).json(&body);
 
@@ -757,32 +753,10 @@ impl OrchestratorProxy {
             req = req.header("Payment-Signature", sig);
         }
 
-        let response = req.send().await.map_err(|e| {
-            // The Display impl on reqwest::Error::Builder collapses the underlying
-            // cause to literally "builder error" with no source field. Walk the
-            // std::error::Error::source chain so we can see WHICH step inside the
-            // builder actually failed (header validation, URL parse, body serde,
-            // etc.) and log the full Debug representation alongside.
-            let mut chain = String::new();
-            let mut src: Option<&dyn std::error::Error> = std::error::Error::source(&e);
-            while let Some(s) = src {
-                if !chain.is_empty() {
-                    chain.push_str(" -> ");
-                }
-                chain.push_str(&s.to_string());
-                src = s.source();
-            }
-            tracing::error!(
-                service = "mcp-server",
-                error = %e,
-                error_debug = ?e,
-                error_chain = %chain,
-                payment_header_present = tx_signature.is_some(),
-                payment_header_len = tx_signature.map(str::len).unwrap_or(0),
-                "orchestrator create_short_crypto failed"
-            );
-            McpServiceError::OrchestratorError(format!("request failed: {e} ({chain})"))
-        })?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| log_create_short_request_failure(&e, tx_signature))?;
 
         let status = response.status();
 
@@ -791,43 +765,7 @@ impl OrchestratorProxy {
         // We surface them to the agent in the same `payment_details` shape the
         // tool's wrapper uses, so the MCP `generate_video` contract is stable.
         if status.as_u16() == 402 {
-            let header = response
-                .headers()
-                .get("payment-required")
-                .ok_or_else(|| {
-                    McpServiceError::OrchestratorError(
-                        "402 response missing Payment-Required header (expected x402 v2 shape)"
-                            .to_string(),
-                    )
-                })?
-                .to_str()
-                .map_err(|e| {
-                    McpServiceError::OrchestratorError(format!(
-                        "Payment-Required header is not valid UTF-8: {e}"
-                    ))
-                })?
-                .to_string();
-
-            use base64::Engine;
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(&header)
-                .map_err(|e| {
-                    McpServiceError::OrchestratorError(format!(
-                        "Payment-Required header is not valid base64: {e}"
-                    ))
-                })?;
-            let payment_details: serde_json::Value =
-                serde_json::from_slice(&decoded).map_err(|e| {
-                    McpServiceError::OrchestratorError(format!(
-                        "Payment-Required body is not valid JSON: {e}"
-                    ))
-                })?;
-
-            return Ok(serde_json::json!({
-                "status": "payment_required",
-                "instructions": "Pay 5 USDC to the address below, then call generate_video again with your tx_signature (a base64-encoded x402 v2 PaymentPayload).",
-                "payment_details": payment_details,
-            }));
+            return parse_payment_required_response(response).await;
         }
 
         let body: serde_json::Value = response
@@ -877,6 +815,96 @@ impl OrchestratorProxy {
 
         Ok(result)
     }
+}
+
+/// Build the JSON body for `POST /shorts/create-crypto`. Always includes the
+/// prompt; conditionally includes the URL when present.
+fn build_create_short_body(prompt: &str, url: Option<&str>) -> serde_json::Value {
+    debug_assert!(
+        !prompt.is_empty(),
+        "prompt must be non-empty by handler validation"
+    );
+    let mut body = serde_json::json!({ "prompt": prompt });
+    if let Some(u) = url {
+        body["url"] = serde_json::Value::String(u.to_string());
+    }
+    debug_assert!(body.get("prompt").is_some(), "body must contain prompt");
+    body
+}
+
+/// Walk the `std::error::Error::source` chain on a reqwest builder/transport
+/// error so logs surface the underlying cause (`reqwest::Error::Builder`'s
+/// `Display` impl collapses to literally "builder error" with no source). The
+/// returned `McpServiceError` carries both the top-level message and the chain.
+fn log_create_short_request_failure(
+    e: &reqwest::Error,
+    tx_signature: Option<&str>,
+) -> McpServiceError {
+    let mut chain = String::new();
+    let mut src: Option<&dyn std::error::Error> = std::error::Error::source(e);
+    while let Some(s) = src {
+        if !chain.is_empty() {
+            chain.push_str(" -> ");
+        }
+        chain.push_str(&s.to_string());
+        src = s.source();
+    }
+    tracing::error!(
+        service = "mcp-server",
+        error = %e,
+        error_debug = ?e,
+        error_chain = %chain,
+        payment_header_present = tx_signature.is_some(),
+        payment_header_len = tx_signature.map(str::len).unwrap_or(0),
+        "orchestrator create_short_crypto failed"
+    );
+    McpServiceError::OrchestratorError(format!("request failed: {e} ({chain})"))
+}
+
+/// Parse an x402 v2 `402 Payment Required` response. The v2 protocol carries
+/// the requirements in the `Payment-Required` response header (base64-encoded
+/// JSON) with an empty body. Returns the canonical `payment_required` JSON
+/// envelope so the MCP `generate_video` tool surface stays stable.
+async fn parse_payment_required_response(
+    response: reqwest::Response,
+) -> Result<serde_json::Value, McpServiceError> {
+    let header = response
+        .headers()
+        .get("payment-required")
+        .ok_or_else(|| {
+            McpServiceError::OrchestratorError(
+                "402 response missing Payment-Required header (expected x402 v2 shape)".to_string(),
+            )
+        })?
+        .to_str()
+        .map_err(|e| {
+            McpServiceError::OrchestratorError(format!(
+                "Payment-Required header is not valid UTF-8: {e}"
+            ))
+        })?
+        .to_string();
+    debug_assert!(
+        !header.is_empty(),
+        "Payment-Required header must be non-empty"
+    );
+
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&header)
+        .map_err(|e| {
+            McpServiceError::OrchestratorError(format!(
+                "Payment-Required header is not valid base64: {e}"
+            ))
+        })?;
+    let payment_details: serde_json::Value = serde_json::from_slice(&decoded).map_err(|e| {
+        McpServiceError::OrchestratorError(format!("Payment-Required body is not valid JSON: {e}"))
+    })?;
+    // Postcondition: the returned envelope always carries the payment_required marker.
+    Ok(serde_json::json!({
+        "status": "payment_required",
+        "instructions": "Pay 5 USDC to the address below, then call generate_video again with your tx_signature (a base64-encoded x402 v2 PaymentPayload).",
+        "payment_details": payment_details,
+    }))
 }
 
 #[cfg(test)]
