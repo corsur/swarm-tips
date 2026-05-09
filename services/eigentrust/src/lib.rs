@@ -58,7 +58,7 @@
 //! - Not a service. Caller decides when to recompute and where to
 //!   store scores.
 //! - Not the composite trust score. See
-//!   `services/shillbot-scorer/src/composite_trust.rs` for the
+//!   `services/mcp-server/src/composite_trust.rs` for the
 //!   per-agent composite that combines EigenTrust with Shillbot
 //!   counters, Coordination Game performance, and curator-tier
 //!   ascription.

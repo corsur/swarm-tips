@@ -972,7 +972,7 @@ impl SwarmTipsMcp {
             .read_agent_and_player_profile(&target_wallet, tournament_id)
             .await?;
 
-        use shillbot_scorer::composite_trust::{compute_trust, TrustInputs};
+        use crate::composite_trust::{compute_trust, TrustInputs};
 
         let shillbot_input = build_shillbot_trust_input(agent_state.as_ref());
         let game_input = build_game_trust_input(player_profile.as_ref());
@@ -1919,7 +1919,7 @@ fn compute_game_derived(
 /// zero-denominator-as-None convention as `compute_shillbot_derived`.
 fn build_shillbot_trust_input(
     agent_state: Option<&crate::solana_reads::AgentStateData>,
-) -> Option<shillbot_scorer::composite_trust::ShillbotInput> {
+) -> Option<crate::composite_trust::ShillbotInput> {
     let s = agent_state?;
     let avg = if s.total_completed > 0 {
         Some((s.total_score_sum as f64) / (s.total_completed as f64))
@@ -1940,7 +1940,7 @@ fn build_shillbot_trust_input(
         completion.map(|v| v.is_finite()).unwrap_or(true),
         "completion must be finite when present"
     );
-    Some(shillbot_scorer::composite_trust::ShillbotInput {
+    Some(crate::composite_trust::ShillbotInput {
         average_score: avg,
         // MAX_SCORE = 1_000_000 per shared::MAX_SCORE; hardcoded here to
         // avoid pulling that crate as a dep, mirroring the orchestrator's
@@ -1957,7 +1957,7 @@ fn build_shillbot_trust_input(
 /// Returns `None` if the player has no profile yet (PDA uninitialized).
 fn build_game_trust_input(
     player_profile: Option<&crate::solana_reads::PlayerProfileData>,
-) -> Option<shillbot_scorer::composite_trust::GameInput> {
+) -> Option<crate::composite_trust::GameInput> {
     let p = player_profile?;
     let win_rate = if p.total_games > 0 {
         Some((p.wins as f64) / (p.total_games as f64))
@@ -1968,7 +1968,7 @@ fn build_game_trust_input(
         win_rate.map(|v| (0.0..=1.0).contains(&v)).unwrap_or(true),
         "win_rate must be in [0, 1] when present"
     );
-    Some(shillbot_scorer::composite_trust::GameInput {
+    Some(crate::composite_trust::GameInput {
         win_rate,
         total_games: p.total_games,
     })
@@ -1980,7 +1980,7 @@ fn build_game_trust_input(
 fn build_trust_score_response(
     target_wallet: &str,
     tournament_id: u64,
-    trust: &shillbot_scorer::composite_trust::TrustScore,
+    trust: &crate::composite_trust::TrustScore,
     shillbot_present: bool,
     game_present: bool,
     curator_present: bool,
@@ -2020,8 +2020,8 @@ fn build_trust_score_response(
 /// or a 400-shaped MCP error for any other string.
 fn parse_curator_tier(
     raw: Option<&str>,
-) -> Result<Option<shillbot_scorer::composite_trust::CuratorTier>, McpError> {
-    use shillbot_scorer::composite_trust::CuratorTier;
+) -> Result<Option<crate::composite_trust::CuratorTier>, McpError> {
+    use crate::composite_trust::CuratorTier;
     let result = match raw {
         Some("first-party") => Some(CuratorTier::FirstParty),
         Some("vetted") => Some(CuratorTier::Vetted),

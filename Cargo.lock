@@ -2696,7 +2696,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "shillbot-scorer",
  "solana-sdk",
  "thiserror 1.0.69",
  "tokio",
@@ -4256,19 +4255,6 @@ dependencies = [
  "shared",
  "solana-sha256-hasher",
  "switchboard-on-demand",
-]
-
-[[package]]
-name = "shillbot-scorer"
-version = "0.1.0"
-dependencies = [
- "hex",
- "regex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 1.0.69",
- "tracing",
 ]
 
 [[package]]

@@ -3,6 +3,7 @@
 #![deny(clippy::all)]
 #![deny(clippy::arithmetic_side_effects)]
 
+mod composite_trust;
 mod config;
 mod discovery;
 mod errors;

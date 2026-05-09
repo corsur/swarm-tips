@@ -20,7 +20,6 @@ crates/
 
 services/
 ├── mcp-server/              # Unified MCP server exposing tools for AI agents (see its own CLAUDE.md)
-├── shillbot-scorer/         # Public scoring + brand-safety library (composite score, anti-gaming)
 ├── eigentrust/              # Reputation library crate (Phase 2 future-defense)
 └── listings-scraper/        # Sidecar HTTP fetcher (BoringSSL fingerprint, kept out of mcp-server's link graph)
 
