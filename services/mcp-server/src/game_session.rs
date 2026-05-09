@@ -226,6 +226,30 @@ fn pick_rpc_url_for_network<'a>(
     }
 }
 
+/// `MATCHUP_TYPE_UNSET` from the on-chain `Game` struct. Mirrored here
+/// so we don't take a build-time dep on the program crate just to read
+/// one constant. The on-chain value is the source of truth — see
+/// `programs/coordination-game/src/state/game.rs`.
+const MATCHUP_TYPE_UNSET: u8 = 255;
+
+/// Decide whether to pass `r_matchup` on the reveal_guess transaction
+/// based on the current on-chain matchup_type.
+///
+/// `Some(r_matchup)` when we are the first revealer (`matchup_type ==
+/// MATCHUP_TYPE_UNSET`); `None` when the opponent already revealed
+/// (`matchup_type` is now 0 or 1) — the on-chain program rejects with
+/// `RMatchupMismatch` (error 6032) if the second revealer passes
+/// r_matchup. Pure function so the contract is tested without the
+/// validator. Mirrors the same guard in the browser's
+/// `frontend/coordination-game/src/hooks/reveal-tx.ts:submitRevealTx`.
+fn pick_reveal_matchup_arg(matchup_type: u8, r_matchup: [u8; 32]) -> Option<[u8; 32]> {
+    if matchup_type == MATCHUP_TYPE_UNSET {
+        Some(r_matchup)
+    } else {
+        None
+    }
+}
+
 /// Parse a hex-encoded `[u8; 32]` `r_matchup` reveal value. Used by
 /// `build_reveal_tx` to convert the websocket-delivered hex string back into
 /// the fixed-size byte array the on-chain instruction expects.
@@ -1480,12 +1504,30 @@ impl GameSessionManager {
             return Ok(None);
         }
 
+        // The on-chain reveal_guess program requires that ONLY the first
+        // revealer pass r_matchup; the second revealer must pass None or
+        // the program rejects with `RMatchupMismatch` (error 6032).
+        // Without this branch the human-vs-mcp-agent e2e race
+        // deterministically fails when the browser-human reveals first
+        // and the MCP agent's reveal then trips RMatchupMismatch —
+        // leaving the game stuck in Revealing forever. Mirrors the same
+        // guard in the browser's
+        // `frontend/coordination-game/src/hooks/reveal-tx.ts:submitRevealTx`.
+        let r_matchup_arg = pick_reveal_matchup_arg(game.matchup_type, r_matchup);
+        if r_matchup_arg.is_none() {
+            tracing::info!(
+                wallet = %wallet,
+                game_id,
+                matchup_type = game.matchup_type,
+                "matchup already revealed by opponent, omitting r_matchup"
+            );
+        }
         let unsigned = tx_builder
             .build_reveal_guess(
                 game_id,
                 tournament_id,
                 preimage,
-                Some(r_matchup),
+                r_matchup_arg,
                 game.player_one,
                 game.player_two,
             )
@@ -1840,6 +1882,44 @@ mod tests {
             pick_rpc_url_for_network(Some("stagenet"), default, mainnet, devnet),
             default
         );
+    }
+
+    /// Regression: 2026-05-09 devnet human-vs-mcp-agent E2E. When the
+    /// browser-human reveals first, the on-chain matchup_type flips
+    /// from MATCHUP_TYPE_UNSET (255) to 0 or 1. If the MCP agent's
+    /// reveal then unconditionally passes r_matchup, the program
+    /// rejects with `RMatchupMismatch` (error 6032) and the game stays
+    /// in Revealing forever — browser stuck waiting for outcome,
+    /// 120s assertion times out. The browser's `submitRevealTx` has
+    /// the same race-aware logic; the MCP server must match.
+    #[test]
+    fn pick_reveal_matchup_arg_passes_when_unset() {
+        let r_matchup = [42u8; 32];
+        assert_eq!(
+            pick_reveal_matchup_arg(MATCHUP_TYPE_UNSET, r_matchup),
+            Some(r_matchup),
+        );
+    }
+
+    #[test]
+    fn pick_reveal_matchup_arg_omits_when_already_revealed_same_team() {
+        let r_matchup = [42u8; 32];
+        // matchup_type=0 means same team — opponent already revealed.
+        assert_eq!(pick_reveal_matchup_arg(0, r_matchup), None);
+    }
+
+    #[test]
+    fn pick_reveal_matchup_arg_omits_when_already_revealed_diff_team() {
+        let r_matchup = [42u8; 32];
+        // matchup_type=1 means different teams — opponent already revealed.
+        assert_eq!(pick_reveal_matchup_arg(1, r_matchup), None);
+    }
+
+    #[test]
+    fn pick_reveal_matchup_arg_unset_sentinel_is_255() {
+        // Pin the on-chain sentinel so a future refactor can't silently
+        // drift from `programs/coordination-game/src/state/game.rs`.
+        assert_eq!(MATCHUP_TYPE_UNSET, 255);
     }
 
     #[test]
