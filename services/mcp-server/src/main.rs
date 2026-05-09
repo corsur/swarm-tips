@@ -315,7 +315,12 @@ fn build_router(
             );
     }
 
-    router.nest_service("/mcp", mcp_service)
+    // Apply body limit to the internal HTTP surface ONLY. The MCP
+    // streamable-http transport at /mcp manages its own framing; layering
+    // a body limit before nest_service excludes it from the cap.
+    router
+        .layer(axum::extract::DefaultBodyLimit::max(1_048_576))
+        .nest_service("/mcp", mcp_service)
 }
 
 fn build_health_handler() -> impl Fn() -> std::pin::Pin<
