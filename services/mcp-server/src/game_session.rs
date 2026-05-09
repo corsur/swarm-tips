@@ -1316,8 +1316,12 @@ impl GameSessionManager {
         let (preimage, commitment) =
             game_chain::commit::generate_commit_secret(guess).map_err(|e| anyhow::anyhow!(e))?;
 
-        let chain = self.tx_builders.read().await;
-        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
+        // Use the session's pinned network (set in build_find_match_tx)
+        // so the blockhash on the unsigned commit_guess tx is fresh on
+        // the same cluster the agent will broadcast to.
+        let network = session.lock().await.network.clone();
+        let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
+        let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
         let unsigned = tx_builder.build_commit_guess(game_id, commitment).await?;
 
         // Store preimage for the reveal step and persist to Firestore.
@@ -1364,8 +1368,12 @@ impl GameSessionManager {
             r_matchup,
         } = reveal_inputs;
 
-        let chain = self.tx_builders.read().await;
-        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
+        // Same network-routing fix as build_commit_guess_tx — read the
+        // session's pinned network so the on-chain Game read + reveal
+        // blockhash both come from the right cluster.
+        let network = session.lock().await.network.clone();
+        let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
+        let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
 
         // Read the game to get player pubkeys and verify state.
         let game = tx_builder
@@ -1441,12 +1449,13 @@ impl GameSessionManager {
             .context("no session for wallet")?
             .clone();
 
-        let s = session.lock().await;
-        let game_id = s.game_id.context("no active game")?;
-        drop(s);
+        let (game_id, network) = {
+            let s = session.lock().await;
+            (s.game_id.context("no active game")?, s.network.clone())
+        };
 
-        let chain = self.tx_builders.read().await;
-        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
+        let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
+        let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
         let game = tx_builder
             .read_game(game_id)
             .await?
