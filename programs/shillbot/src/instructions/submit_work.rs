@@ -10,77 +10,90 @@ use crate::MAX_CONTENT_ID_LENGTH;
 /// Decrements the agent's concurrent claim count.
 pub fn submit_work(ctx: Context<SubmitWork>, content_id: Vec<u8>) -> Result<()> {
     let clock = Clock::get()?;
-    let task = &ctx.accounts.task;
+    let agent_key = ctx.accounts.agent.key();
 
-    // Checks: protocol not paused
-    require!(
-        !ctx.accounts.global_state.paused,
-        ShillbotError::ProtocolPaused
-    );
+    // Checks: protocol-pause + content-id bound + state + agent identity +
+    // deadline-minus-margin + agent_state agent match + claimed_count > 0.
+    validate_submit_common(
+        &ctx.accounts.global_state,
+        &ctx.accounts.task,
+        &agent_key,
+        content_id.len(),
+        &ctx.accounts.agent_state,
+        clock.unix_timestamp,
+    )?;
 
-    // Checks: content_id length bound (instruction input validation)
+    let content_id_hash: [u8; 32] = solana_sha256_hasher::hash(&content_id).to_bytes();
+
+    // Effects.
+    commit_submit_state(
+        &mut ctx.accounts.agent_state,
+        &mut ctx.accounts.task,
+        content_id_hash,
+        clock.unix_timestamp,
+    )?;
+
+    // Interactions: none
+    emit!(WorkSubmitted {
+        task_id: ctx.accounts.task.task_id,
+        agent: agent_key,
+        content_id_hash,
+    });
+
+    Ok(())
+}
+
+/// Common validation shared between `submit_work` and `submit_work_session`.
+/// Pure check phase — caller passes the agent pubkey to match (the wallet
+/// variant uses `agent.key()`; the session variant uses `session.agent`).
+pub(crate) fn validate_submit_common(
+    global: &GlobalState,
+    task: &Task,
+    expected_agent: &Pubkey,
+    content_id_len: usize,
+    agent_state: &AgentState,
+    now: i64,
+) -> Result<()> {
+    require!(!global.paused, ShillbotError::ProtocolPaused);
     require!(
-        content_id.len() <= MAX_CONTENT_ID_LENGTH,
+        content_id_len <= MAX_CONTENT_ID_LENGTH,
         ShillbotError::ContentIdTooLong
     );
-
-    // Checks: state
     require!(
         task.state == TaskState::Claimed,
         ShillbotError::InvalidTaskState
     );
-
-    // Checks: agent identity
-    require!(
-        ctx.accounts.agent.key() == task.agent,
-        ShillbotError::NotTaskAgent
-    );
-
-    // Checks: submission before deadline minus margin
+    require!(*expected_agent == task.agent, ShillbotError::NotTaskAgent);
     let submission_deadline = task
         .deadline
         .checked_sub(task.submit_margin)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     require!(
-        clock.unix_timestamp < submission_deadline,
+        now < submission_deadline,
         ShillbotError::SubmitMarginInsufficient
     );
-
-    // Checks: agent_state belongs to this agent
     require!(
-        ctx.accounts.agent_state.agent == ctx.accounts.agent.key(),
+        agent_state.agent == *expected_agent,
         ShillbotError::NotTaskAgent
     );
+    require!(agent_state.claimed_count > 0, ShillbotError::NoActiveClaim);
+    Ok(())
+}
 
-    // Checks: claimed_count > 0 (postcondition of claim_task)
-    require!(
-        ctx.accounts.agent_state.claimed_count > 0,
-        ShillbotError::NoActiveClaim
-    );
-
-    // Compute content ID hash
-    let content_id_hash: [u8; 32] = solana_sha256_hasher::hash(&content_id).to_bytes();
-
-    // Effects: decrement agent's concurrent claim count
-    let agent_state = &mut ctx.accounts.agent_state;
+/// Common effect phase — decrement claimed_count and write task fields.
+pub(crate) fn commit_submit_state(
+    agent_state: &mut AgentState,
+    task: &mut Task,
+    content_id_hash: [u8; 32],
+    now: i64,
+) -> Result<()> {
     agent_state.claimed_count = agent_state
         .claimed_count
         .checked_sub(1)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-
-    // Effects: update task
-    let task = &mut ctx.accounts.task;
     task.content_id_hash = content_id_hash;
-    task.submitted_at = clock.unix_timestamp;
+    task.submitted_at = now;
     task.state = TaskState::Submitted;
-
-    // Interactions: none
-    emit!(WorkSubmitted {
-        task_id: task.task_id,
-        agent: ctx.accounts.agent.key(),
-        content_id_hash,
-    });
-
     Ok(())
 }
 

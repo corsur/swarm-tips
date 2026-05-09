@@ -1,14 +1,11 @@
-use crate::errors::CoordinationError;
 use crate::events::{GameResolved, GuessRevealed};
 use crate::instructions::utils::{
     apply_finalize_effects, compute_finalization, distribute_finalize_lamports,
 };
 use crate::state::{
-    Game, GameState, GlobalConfig, PlayerProfile, SessionAuthority, Tournament, GUESS_UNREVEALED,
-    MATCHUP_TYPE_UNSET,
+    Game, GlobalConfig, PlayerProfile, SessionAuthority, Tournament, GUESS_UNREVEALED,
 };
 use anchor_lang::prelude::*;
-use solana_sha256_hasher::hashv;
 
 /// Session-delegated variant of `reveal_guess`. The session key signs instead
 /// of the player wallet. The first revealer must also provide `r_matchup` to
@@ -24,73 +21,29 @@ pub fn reveal_guess_session(
         &ctx.accounts.session_signer.key(),
     )?;
 
-    require!(
-        ctx.accounts.game.state == GameState::Revealing,
-        CoordinationError::InvalidGameState,
-    );
-
     let player_key = ctx.accounts.player.key();
-    let game = &ctx.accounts.game;
-    let is_p1 = player_key == game.player_one;
-    let is_p2 = player_key == game.player_two;
-    require!(is_p1 || is_p2, CoordinationError::NotAParticipant);
 
-    if is_p1 {
-        require!(
-            game.p1_guess == GUESS_UNREVEALED,
-            CoordinationError::AlreadyRevealed
-        );
-    } else {
-        require!(
-            game.p2_guess == GUESS_UNREVEALED,
-            CoordinationError::AlreadyRevealed
-        );
-    }
+    // Checks: state + participant + commitment match. Helpers live in
+    // `reveal_guess.rs`; the session variant differs only in account
+    // structure (UncheckedAccount player + session_signer), not in the
+    // commit/reveal protocol.
+    let is_p1 =
+        crate::instructions::reveal_guess::validate_revealer(&ctx.accounts.game, &player_key)?;
+    let guess =
+        crate::instructions::reveal_guess::verify_and_extract_guess(&ctx.accounts.game, is_p1, &r)?;
 
-    // Verify commitment: SHA-256(r) via sol_sha256 syscall
-    let computed: [u8; 32] = hashv(&[r.as_ref()]).to_bytes();
-    let stored = if is_p1 {
-        game.p1_commit
-    } else {
-        game.p2_commit
-    };
-    require!(computed == stored, CoordinationError::CommitmentMismatch);
-
-    // Extract guess from the last bit of r
-    let guess = r[31] & 1;
-    require!(guess <= 1, CoordinationError::InvalidGuessValue);
-
+    // Effects.
     let game = &mut ctx.accounts.game;
-    if is_p1 {
-        game.p1_guess = guess;
-    } else {
-        game.p2_guess = guess;
-    }
-
-    // Reveal matchup type if still unset (first revealer provides r_matchup)
-    if game.matchup_type == MATCHUP_TYPE_UNSET {
-        let r_mu = r_matchup.ok_or(error!(CoordinationError::InvalidGameState))?;
-        let computed_commitment: [u8; 32] = hashv(&[r_mu.as_ref()]).to_bytes();
-        require!(
-            computed_commitment == game.matchup_commitment,
-            CoordinationError::CommitmentMismatch
-        );
-        let matchup_type = r_mu[31] & 1;
-        require!(matchup_type <= 1, CoordinationError::InvalidGameState);
-        game.matchup_type = matchup_type;
-    } else {
-        // See `reveal_guess.rs` for the rationale: simpler rule, second
-        // revealer must NOT pass r_matchup.
-        require!(r_matchup.is_none(), CoordinationError::RMatchupMismatch);
-    }
+    crate::instructions::reveal_guess::record_revealed_guess(game, is_p1, guess);
+    crate::instructions::reveal_guess::reveal_matchup_if_first(game, r_matchup)?;
 
     emit!(GuessRevealed {
         game_id: game.game_id,
         player: player_key,
     });
 
+    // Interactions.
     let both_revealed = game.p1_guess != GUESS_UNREVEALED && game.p2_guess != GUESS_UNREVEALED;
-
     if both_revealed {
         finalize_game_session(ctx)?;
     }

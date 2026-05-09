@@ -29,6 +29,43 @@ pub fn verify_task(
     let task = &ctx.accounts.task;
     let global = &ctx.accounts.global_state;
     // Checks
+    validate_verify_inputs(task, composite_score, verification_hash)?;
+    validate_switchboard_feed(global, &ctx.accounts.switchboard_feed)?;
+    validate_attestation_staleness(task, global, clock.unix_timestamp)?;
+    let feed_score = read_switchboard_score(&ctx.accounts.switchboard_feed, clock.slot)?;
+    require!(
+        feed_score == composite_score,
+        ShillbotError::SwitchboardScoreMismatch
+    );
+    // Effects: payment+fee pinned at verification time so finalize/resolve
+    // use the fee that was in effect now, not the current GlobalState fee.
+    let (payment_amount, fee_amount) = compute_payment_amounts(task, global, composite_score)?;
+    commit_verify_state(
+        &mut ctx.accounts.task,
+        global,
+        composite_score,
+        verification_hash,
+        payment_amount,
+        fee_amount,
+        clock.unix_timestamp,
+    )?;
+    // Interactions: none
+    emit!(TaskVerified {
+        task_id: ctx.accounts.task.task_id,
+        composite_score,
+        payment_amount,
+        fee_amount,
+        verification_hash,
+    });
+    Ok(())
+}
+
+/// Pure check phase — required state, score bounds, non-zero hash.
+fn validate_verify_inputs(
+    task: &Task,
+    composite_score: u64,
+    verification_hash: [u8; 32],
+) -> Result<()> {
     let required_state = if task.requires_approval == 1 {
         TaskState::Approved
     } else {
@@ -46,41 +83,34 @@ pub fn verify_task(
         verification_hash != [0u8; 32],
         ShillbotError::InvalidVerificationHash
     );
-    validate_switchboard_feed(global, &ctx.accounts.switchboard_feed)?;
-    validate_attestation_staleness(task, global, clock.unix_timestamp)?;
-    let feed_score = read_switchboard_score(&ctx.accounts.switchboard_feed, clock.slot)?;
-    require!(
-        feed_score == composite_score,
-        ShillbotError::SwitchboardScoreMismatch
-    );
-    // Effects: compute payment + fee (stored so finalize/resolve use the
-    // fee that was in effect at verification time, not the current
-    // GlobalState fee), then commit task fields.
-    let (payment_amount, fee_amount) = compute_payment_amounts(task, global, composite_score)?;
-    let task = &mut ctx.accounts.task;
+    Ok(())
+}
+
+/// Pure effect phase — write verification fields and the Verified
+/// transition. Resolves the per-task `challenge_window` override.
+fn commit_verify_state(
+    task: &mut Task,
+    global: &GlobalState,
+    composite_score: u64,
+    verification_hash: [u8; 32],
+    payment_amount: u64,
+    fee_amount: u64,
+    now: i64,
+) -> Result<()> {
     task.composite_score = composite_score;
     task.payment_amount = payment_amount;
     task.fee_amount = fee_amount;
-    task.verified_at = clock.unix_timestamp;
+    task.verified_at = now;
     task.verification_hash = verification_hash;
     let challenge_window = if task.challenge_window_override > 0 {
         i64::from(task.challenge_window_override)
     } else {
         global.challenge_window_seconds
     };
-    task.challenge_deadline = clock
-        .unix_timestamp
+    task.challenge_deadline = now
         .checked_add(challenge_window)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     task.state = TaskState::Verified;
-    // Interactions: none
-    emit!(TaskVerified {
-        task_id: task.task_id,
-        composite_score,
-        payment_amount,
-        fee_amount,
-        verification_hash,
-    });
     Ok(())
 }
 

@@ -2163,6 +2163,555 @@ describe("shillbot", () => {
   // Additional error path tests
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // Authority rotation handlers (transfer_authority / update_oracle_authority /
+  // update_treasury). Each happy-path rotates and restores so the rest of the
+  // suite continues to see the original (authority, oracle_authority, treasury)
+  // triple — the suite's other tests assume `authority.publicKey` is the
+  // current authority for shillbot_global. Restoration uses the rotated key
+  // as the signer of the put-back tx.
+  // ---------------------------------------------------------------------------
+
+  describe("transfer_authority", () => {
+    it("rotates authority and restores it", async () => {
+      const newAuthority = Keypair.generate();
+      await airdrop(
+        provider.connection,
+        newAuthority.publicKey,
+        LAMPORTS_PER_SOL
+      );
+
+      await program.methods
+        .transferAuthority(newAuthority.publicKey)
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .rpc();
+
+      const rotated = await program.account.globalState.fetch(globalPda);
+      assert.equal(
+        rotated.authority.toString(),
+        newAuthority.publicKey.toString()
+      );
+
+      // Restore — the new authority signs the put-back so it actually rotates.
+      await program.methods
+        .transferAuthority(authority.publicKey)
+        .accountsPartial({
+          globalState: globalPda,
+          authority: newAuthority.publicKey,
+        })
+        .signers([newAuthority])
+        .rpc();
+
+      const restored = await program.account.globalState.fetch(globalPda);
+      assert.equal(
+        restored.authority.toString(),
+        authority.publicKey.toString()
+      );
+    });
+
+    it("rejects non-authority caller", async () => {
+      const imposter = Keypair.generate();
+      await airdrop(provider.connection, imposter.publicKey, LAMPORTS_PER_SOL);
+      const newAuthority = Keypair.generate();
+
+      try {
+        await program.methods
+          .transferAuthority(newAuthority.publicKey)
+          .accountsPartial({
+            globalState: globalPda,
+            authority: imposter.publicKey,
+          })
+          .signers([imposter])
+          .rpc();
+        assert.fail("Expected NotAuthority");
+      } catch (e: any) {
+        assert.include(e.toString(), "NotAuthority");
+      }
+    });
+
+    it("rejects zero pubkey", async () => {
+      try {
+        await program.methods
+          .transferAuthority(PublicKey.default)
+          .accountsPartial({
+            globalState: globalPda,
+            authority: authority.publicKey,
+          })
+          .rpc();
+        assert.fail("Expected ZeroPubkey");
+      } catch (e: any) {
+        assert.include(e.toString(), "ZeroPubkey");
+      }
+    });
+  });
+
+  describe("update_oracle_authority", () => {
+    it("rotates oracle authority and restores it", async () => {
+      const newOracle = Keypair.generate();
+
+      const before = await program.account.globalState.fetch(globalPda);
+      const originalOracle = before.oracleAuthority;
+
+      await program.methods
+        .updateOracleAuthority(newOracle.publicKey)
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .rpc();
+
+      const rotated = await program.account.globalState.fetch(globalPda);
+      assert.equal(
+        rotated.oracleAuthority.toString(),
+        newOracle.publicKey.toString()
+      );
+
+      await program.methods
+        .updateOracleAuthority(originalOracle)
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .rpc();
+
+      const restored = await program.account.globalState.fetch(globalPda);
+      assert.equal(
+        restored.oracleAuthority.toString(),
+        originalOracle.toString()
+      );
+    });
+
+    it("rejects non-authority caller", async () => {
+      const imposter = Keypair.generate();
+      await airdrop(provider.connection, imposter.publicKey, LAMPORTS_PER_SOL);
+
+      try {
+        await program.methods
+          .updateOracleAuthority(Keypair.generate().publicKey)
+          .accountsPartial({
+            globalState: globalPda,
+            authority: imposter.publicKey,
+          })
+          .signers([imposter])
+          .rpc();
+        assert.fail("Expected NotAuthority");
+      } catch (e: any) {
+        assert.include(e.toString(), "NotAuthority");
+      }
+    });
+
+    it("rejects zero pubkey", async () => {
+      try {
+        await program.methods
+          .updateOracleAuthority(PublicKey.default)
+          .accountsPartial({
+            globalState: globalPda,
+            authority: authority.publicKey,
+          })
+          .rpc();
+        assert.fail("Expected ZeroPubkey");
+      } catch (e: any) {
+        assert.include(e.toString(), "ZeroPubkey");
+      }
+    });
+  });
+
+  describe("update_treasury", () => {
+    it("rotates treasury and restores it", async () => {
+      const newTreasury = Keypair.generate();
+
+      const before = await program.account.globalState.fetch(globalPda);
+      const originalTreasury = before.treasury;
+
+      await program.methods
+        .updateTreasury(newTreasury.publicKey)
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .rpc();
+
+      const rotated = await program.account.globalState.fetch(globalPda);
+      assert.equal(
+        rotated.treasury.toString(),
+        newTreasury.publicKey.toString()
+      );
+
+      await program.methods
+        .updateTreasury(originalTreasury)
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .rpc();
+
+      const restored = await program.account.globalState.fetch(globalPda);
+      assert.equal(restored.treasury.toString(), originalTreasury.toString());
+    });
+
+    it("rejects non-authority caller", async () => {
+      const imposter = Keypair.generate();
+      await airdrop(provider.connection, imposter.publicKey, LAMPORTS_PER_SOL);
+
+      try {
+        await program.methods
+          .updateTreasury(Keypair.generate().publicKey)
+          .accountsPartial({
+            globalState: globalPda,
+            authority: imposter.publicKey,
+          })
+          .signers([imposter])
+          .rpc();
+        assert.fail("Expected NotAuthority");
+      } catch (e: any) {
+        assert.include(e.toString(), "NotAuthority");
+      }
+    });
+
+    it("rejects zero pubkey", async () => {
+      try {
+        await program.methods
+          .updateTreasury(PublicKey.default)
+          .accountsPartial({
+            globalState: globalPda,
+            authority: authority.publicKey,
+          })
+          .rpc();
+        assert.fail("Expected ZeroPubkey");
+      } catch (e: any) {
+        assert.include(e.toString(), "ZeroPubkey");
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Session-delegated handler coverage (claim_task_session / submit_work_session).
+  // The session-delegate creation/revocation paths are covered in "session
+  // delegate" above; these tests exercise the actual on-chain ix the delegate
+  // is authorized to call. Pre-mainnet scope — adds coverage on the privileged
+  // path that lets the MCP server claim/submit on an agent's behalf.
+  // ---------------------------------------------------------------------------
+
+  describe("session-delegated handlers", () => {
+    const sessionAgent = Keypair.generate();
+    const fullDelegate = Keypair.generate();
+    const claimOnlyDelegate = Keypair.generate();
+    let fullSessionPda: PublicKey;
+    let claimOnlySessionPda: PublicKey;
+    let sessionTaskPda: PublicKey;
+
+    before(async () => {
+      // Fresh agent for these tests — keeps the existing `agent` from the
+      // earlier "claim_task" / "submit_work" describe blocks isolated.
+      await airdrop(
+        provider.connection,
+        sessionAgent.publicKey,
+        2 * LAMPORTS_PER_SOL
+      );
+      await airdrop(
+        provider.connection,
+        fullDelegate.publicKey,
+        LAMPORTS_PER_SOL
+      );
+      await airdrop(
+        provider.connection,
+        claimOnlyDelegate.publicKey,
+        LAMPORTS_PER_SOL
+      );
+
+      // 0x03 = claim + submit permissions
+      [fullSessionPda] = sessionPda(
+        sessionAgent.publicKey,
+        fullDelegate.publicKey,
+        program.programId
+      );
+      await program.methods
+        .createSession(0x03, new BN(86_400))
+        .accountsPartial({
+          sessionDelegate: fullSessionPda,
+          agent: sessionAgent.publicKey,
+          delegate: fullDelegate.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([sessionAgent])
+        .rpc();
+
+      // 0x01 = claim ONLY (used to verify submit_work_session bitmask check)
+      [claimOnlySessionPda] = sessionPda(
+        sessionAgent.publicKey,
+        claimOnlyDelegate.publicKey,
+        program.programId
+      );
+      await program.methods
+        .createSession(0x01, new BN(86_400))
+        .accountsPartial({
+          sessionDelegate: claimOnlySessionPda,
+          agent: sessionAgent.publicKey,
+          delegate: claimOnlyDelegate.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([sessionAgent])
+        .rpc();
+    });
+
+    it("claim_task_session: delegate claims a task on behalf of the agent", async () => {
+      const now = await getClockTimestamp(provider.connection);
+      const global = await program.account.globalState.fetch(globalPda);
+      const [openTaskPda] = taskPda(
+        global.taskCounter,
+        client.publicKey,
+        program.programId
+      );
+
+      await program.methods
+        .createTask(
+          ESCROW_LAMPORTS,
+          contentHash("session claim happy") as any,
+          new BN(now + 86_400 * 30),
+          new BN(3600),
+          new BN(14_400),
+          0,
+          0,
+          0,
+          0,
+          true
+        )
+        .accountsPartial({
+          globalState: globalPda,
+          task: openTaskPda,
+          client: client.publicKey,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([client])
+        .rpc();
+
+      const [agentPda] = agentStatePda(
+        sessionAgent.publicKey,
+        program.programId
+      );
+
+      await program.methods
+        .claimTaskSession()
+        .accountsPartial({
+          task: openTaskPda,
+          globalState: globalPda,
+          agentState: agentPda,
+          sessionDelegate: fullSessionPda,
+          delegate: fullDelegate.publicKey,
+          payer: fullDelegate.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([fullDelegate])
+        .rpc();
+
+      const task = await program.account.task.fetch(openTaskPda);
+      assert.deepEqual(task.state, { claimed: {} });
+      assert.equal(
+        task.agent.toString(),
+        sessionAgent.publicKey.toString(),
+        "task.agent must be the agent (not the delegate)"
+      );
+
+      const agentState = await program.account.agentState.fetch(agentPda);
+      assert.equal(
+        agentState.agent.toString(),
+        sessionAgent.publicKey.toString()
+      );
+      assert.isAtLeast(agentState.claimedCount, 1);
+
+      sessionTaskPda = openTaskPda;
+    });
+
+    it("claim_task_session: rejects delegate without claim permission", async () => {
+      // claimOnlyDelegate has 0x01 (claim) — to test the rejection we need a
+      // delegate whose bitmask LACKS bit 0. Make a submit-only delegate.
+      const submitOnlyDelegate = Keypair.generate();
+      await airdrop(
+        provider.connection,
+        submitOnlyDelegate.publicKey,
+        LAMPORTS_PER_SOL
+      );
+      const [submitOnlySessionPda] = sessionPda(
+        sessionAgent.publicKey,
+        submitOnlyDelegate.publicKey,
+        program.programId
+      );
+      await program.methods
+        .createSession(0x02, new BN(86_400))
+        .accountsPartial({
+          sessionDelegate: submitOnlySessionPda,
+          agent: sessionAgent.publicKey,
+          delegate: submitOnlyDelegate.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([sessionAgent])
+        .rpc();
+
+      const now = await getClockTimestamp(provider.connection);
+      const global = await program.account.globalState.fetch(globalPda);
+      const [taskForRejection] = taskPda(
+        global.taskCounter,
+        client.publicKey,
+        program.programId
+      );
+
+      await program.methods
+        .createTask(
+          ESCROW_LAMPORTS,
+          contentHash("session claim no-perm") as any,
+          new BN(now + 86_400 * 30),
+          new BN(3600),
+          new BN(14_400),
+          0,
+          0,
+          0,
+          0,
+          true
+        )
+        .accountsPartial({
+          globalState: globalPda,
+          task: taskForRejection,
+          client: client.publicKey,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([client])
+        .rpc();
+
+      const [agentPda] = agentStatePda(
+        sessionAgent.publicKey,
+        program.programId
+      );
+
+      try {
+        await program.methods
+          .claimTaskSession()
+          .accountsPartial({
+            task: taskForRejection,
+            globalState: globalPda,
+            agentState: agentPda,
+            sessionDelegate: submitOnlySessionPda,
+            delegate: submitOnlyDelegate.publicKey,
+            payer: submitOnlyDelegate.publicKey,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([submitOnlyDelegate])
+          .rpc();
+        assert.fail("Expected InvalidSessionDelegate");
+      } catch (e: any) {
+        assert.include(e.toString(), "InvalidSessionDelegate");
+      }
+    });
+
+    it("submit_work_session: delegate submits work on behalf of the agent", async () => {
+      // Reuses the task claimed in the first test (sessionTaskPda).
+      assert.isOk(
+        sessionTaskPda,
+        "previous claim_task_session test must have run first"
+      );
+      const [agentPda] = agentStatePda(
+        sessionAgent.publicKey,
+        program.programId
+      );
+
+      await program.methods
+        .submitWorkSession(Buffer.from("video-id-session-test"))
+        .accountsPartial({
+          task: sessionTaskPda,
+          globalState: globalPda,
+          agentState: agentPda,
+          sessionDelegate: fullSessionPda,
+          delegate: fullDelegate.publicKey,
+        })
+        .signers([fullDelegate])
+        .rpc();
+
+      const task = await program.account.task.fetch(sessionTaskPda);
+      assert.deepEqual(task.state, { submitted: {} });
+      assert.isTrue(
+        task.submittedAt.toNumber() > 0,
+        "submitted_at should be set"
+      );
+    });
+
+    it("submit_work_session: rejects delegate without submit permission", async () => {
+      // claimOnlyDelegate has bitmask 0x01 (claim, no submit). Reuse the
+      // claim-only delegate to claim+submit and expect submit rejection.
+      const now = await getClockTimestamp(provider.connection);
+      const global = await program.account.globalState.fetch(globalPda);
+      const [taskForClaimOnly] = taskPda(
+        global.taskCounter,
+        client.publicKey,
+        program.programId
+      );
+
+      await program.methods
+        .createTask(
+          ESCROW_LAMPORTS,
+          contentHash("session submit no-perm") as any,
+          new BN(now + 86_400 * 30),
+          new BN(3600),
+          new BN(14_400),
+          0,
+          0,
+          0,
+          0,
+          true
+        )
+        .accountsPartial({
+          globalState: globalPda,
+          task: taskForClaimOnly,
+          client: client.publicKey,
+          slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([client])
+        .rpc();
+
+      const [agentPda] = agentStatePda(
+        sessionAgent.publicKey,
+        program.programId
+      );
+
+      // Claim with claim-only delegate (passes bit 0).
+      await program.methods
+        .claimTaskSession()
+        .accountsPartial({
+          task: taskForClaimOnly,
+          globalState: globalPda,
+          agentState: agentPda,
+          sessionDelegate: claimOnlySessionPda,
+          delegate: claimOnlyDelegate.publicKey,
+          payer: claimOnlyDelegate.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([claimOnlyDelegate])
+        .rpc();
+
+      // Submit with claim-only delegate — should fail because bit 1 is unset.
+      try {
+        await program.methods
+          .submitWorkSession(Buffer.from("video-id-no-perm"))
+          .accountsPartial({
+            task: taskForClaimOnly,
+            globalState: globalPda,
+            agentState: agentPda,
+            sessionDelegate: claimOnlySessionPda,
+            delegate: claimOnlyDelegate.publicKey,
+          })
+          .signers([claimOnlyDelegate])
+          .rpc();
+        assert.fail("Expected InvalidSessionDelegate");
+      } catch (e: any) {
+        assert.include(e.toString(), "InvalidSessionDelegate");
+      }
+    });
+  });
+
   describe("submit_work error paths", () => {
     it("rejects submit on Open task (not claimed)", async () => {
       const now = await getClockTimestamp(provider.connection);

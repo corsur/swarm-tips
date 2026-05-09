@@ -16,30 +16,53 @@ pub fn reveal_guess(
     r: [u8; 32],
     r_matchup: Option<[u8; 32]>,
 ) -> Result<()> {
-    require!(
-        ctx.accounts.game.state == GameState::Revealing,
-        CoordinationError::InvalidGameState,
-    );
-
     let player_key = ctx.accounts.player.key();
-    let game = &ctx.accounts.game;
-    let is_p1 = player_key == game.player_one;
-    let is_p2 = player_key == game.player_two;
-    require!(is_p1 || is_p2, CoordinationError::NotAParticipant);
 
-    if is_p1 {
-        require!(
-            game.p1_guess == GUESS_UNREVEALED,
-            CoordinationError::AlreadyRevealed
-        );
-    } else {
-        require!(
-            game.p2_guess == GUESS_UNREVEALED,
-            CoordinationError::AlreadyRevealed
-        );
+    // Checks: state + participant + commitment match.
+    let is_p1 = validate_revealer(&ctx.accounts.game, &player_key)?;
+    let guess = verify_and_extract_guess(&ctx.accounts.game, is_p1, &r)?;
+
+    // Effects: record the player's guess and (if first revealer) the matchup.
+    let game = &mut ctx.accounts.game;
+    record_revealed_guess(game, is_p1, guess);
+    reveal_matchup_if_first(game, r_matchup)?;
+
+    emit!(GuessRevealed {
+        game_id: game.game_id,
+        player: player_key
+    });
+
+    // Interactions: if both revealed, finalize (transfers + state).
+    let both_revealed = game.p1_guess != GUESS_UNREVEALED && game.p2_guess != GUESS_UNREVEALED;
+    if both_revealed {
+        finalize_game(ctx)?;
     }
 
-    // Verify commitment: SHA-256(r) via sol_sha256 syscall
+    Ok(())
+}
+
+/// Pure check: game is in the right state, the caller is a participant, and
+/// they haven't revealed yet. Returns `true` if the caller is player_one.
+pub(crate) fn validate_revealer(game: &Game, player_key: &Pubkey) -> Result<bool> {
+    require!(
+        game.state == GameState::Revealing,
+        CoordinationError::InvalidGameState,
+    );
+    let is_p1 = *player_key == game.player_one;
+    let is_p2 = *player_key == game.player_two;
+    require!(is_p1 || is_p2, CoordinationError::NotAParticipant);
+    let already_revealed = if is_p1 {
+        game.p1_guess != GUESS_UNREVEALED
+    } else {
+        game.p2_guess != GUESS_UNREVEALED
+    };
+    require!(!already_revealed, CoordinationError::AlreadyRevealed);
+    Ok(is_p1)
+}
+
+/// Verify the caller's commitment matches `sha256(r)` and extract the
+/// guess bit. Returns the 0/1 guess.
+pub(crate) fn verify_and_extract_guess(game: &Game, is_p1: bool, r: &[u8; 32]) -> Result<u8> {
     let computed: [u8; 32] = hashv(&[r.as_ref()]).to_bytes();
     let stored = if is_p1 {
         game.p1_commit
@@ -47,19 +70,24 @@ pub fn reveal_guess(
         game.p2_commit
     };
     require!(computed == stored, CoordinationError::CommitmentMismatch);
-
-    // Extract guess from the last bit of r — always in {0, 1} by construction
     let guess = r[31] & 1;
     require!(guess <= 1, CoordinationError::InvalidGuessValue);
+    Ok(guess)
+}
 
-    let game = &mut ctx.accounts.game;
+/// Pure effect: store the revealed guess on the correct player slot.
+pub(crate) fn record_revealed_guess(game: &mut Game, is_p1: bool, guess: u8) {
     if is_p1 {
         game.p1_guess = guess;
     } else {
         game.p2_guess = guess;
     }
+}
 
-    // Reveal matchup type if still unset (first revealer provides r_matchup)
+/// First revealer provides `r_matchup` to reveal the matchup type. Second
+/// revealer MUST pass `None` — the simpler rule (reject any r_matchup the
+/// second revealer passes) prevents a class of "what if it disagrees" bugs.
+pub(crate) fn reveal_matchup_if_first(game: &mut Game, r_matchup: Option<[u8; 32]>) -> Result<()> {
     if game.matchup_type == MATCHUP_TYPE_UNSET {
         let r_mu = r_matchup.ok_or(error!(CoordinationError::InvalidGameState))?;
         let computed_commitment: [u8; 32] = hashv(&[r_mu.as_ref()]).to_bytes();
@@ -71,25 +99,8 @@ pub fn reveal_guess(
         require!(matchup_type <= 1, CoordinationError::InvalidGameState);
         game.matchup_type = matchup_type;
     } else {
-        // Matchup is already set — second revealer must NOT pass
-        // r_matchup. The simpler rule (reject any r_matchup the second
-        // revealer passes) prevents a class of "what if it disagrees"
-        // bugs at the cost of a stricter caller contract. The first
-        // revealer's r_matchup is the only one that ever gets used.
         require!(r_matchup.is_none(), CoordinationError::RMatchupMismatch);
     }
-
-    emit!(GuessRevealed {
-        game_id: game.game_id,
-        player: player_key
-    });
-
-    let both_revealed = game.p1_guess != GUESS_UNREVEALED && game.p2_guess != GUESS_UNREVEALED;
-
-    if both_revealed {
-        finalize_game(ctx)?;
-    }
-
     Ok(())
 }
 

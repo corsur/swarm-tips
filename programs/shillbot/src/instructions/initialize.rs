@@ -18,6 +18,46 @@ pub fn initialize(
     switchboard_feed: Pubkey,
 ) -> Result<()> {
     // Checks
+    validate_initialize_inputs(protocol_fee_bps, quality_threshold, switchboard_feed)?;
+
+    // Effects
+    init_global_state(
+        &mut ctx.accounts.global_state,
+        ctx.accounts.authority.key(),
+        ctx.accounts.treasury.key(),
+        protocol_fee_bps,
+        quality_threshold,
+        starting_counter,
+        switchboard_feed,
+        ctx.bumps.global_state,
+    );
+
+    // Postconditions: bump is correctly stored (so subsequent instructions
+    // re-derive the same PDA) and the authority slot reflects the caller.
+    let global = &ctx.accounts.global_state;
+    require!(
+        global.bump == ctx.bumps.global_state,
+        ShillbotError::InvalidTaskState
+    );
+    require!(
+        global.authority == ctx.accounts.authority.key(),
+        ShillbotError::NotAuthority
+    );
+
+    Ok(())
+}
+
+/// Pure check phase. Bounds + non-default-feed.
+///
+/// The Switchboard feed must be non-default at initialize so `verify_task`
+/// has a valid feed from the first task. Operators pre-deploy a feed for
+/// the target network and pass its pubkey here; `Pubkey::default()` is
+/// rejected as a "deployment is incomplete" tripwire.
+fn validate_initialize_inputs(
+    protocol_fee_bps: u16,
+    quality_threshold: u64,
+    switchboard_feed: Pubkey,
+) -> Result<()> {
     require!(
         protocol_fee_bps >= shared::MIN_PROTOCOL_FEE_BPS,
         ShillbotError::ProtocolFeeBoundsExceeded
@@ -30,22 +70,32 @@ pub fn initialize(
         quality_threshold <= shared::MAX_SCORE,
         ShillbotError::QualityThresholdBoundsExceeded
     );
-    // The Switchboard feed must be set at initialize so verify_task has
-    // a valid feed to check against from the first task. Operators
-    // pre-deploy a Switchboard pull feed for the target network and
-    // pass its pubkey here. Pubkey::default() is rejected — the field
-    // serves as a "deployment is incomplete" tripwire (verify_task
-    // refuses to run if the feed is zero).
     require!(
         switchboard_feed != Pubkey::default(),
         ShillbotError::SwitchboardFeedNotConfigured
     );
+    Ok(())
+}
 
-    // Effects
-    let global = &mut ctx.accounts.global_state;
+/// Pure effect phase. Writes every field of the freshly-initialized
+/// GlobalState PDA. `oracle_authority` defaults to the deploy authority;
+/// rotate via `update_oracle_authority` after deploy. The `min_escrow_lamports`
+/// slot is preserved at zero for binary compat with the 227-byte layout
+/// even though no instruction reads it post-2026-05-07.
+#[allow(clippy::too_many_arguments)]
+fn init_global_state(
+    global: &mut GlobalState,
+    authority: Pubkey,
+    treasury: Pubkey,
+    protocol_fee_bps: u16,
+    quality_threshold: u64,
+    starting_counter: u64,
+    switchboard_feed: Pubkey,
+    bump: u8,
+) {
     global.task_counter = starting_counter;
-    global.authority = ctx.accounts.authority.key();
-    global.treasury = ctx.accounts.treasury.key();
+    global.authority = authority;
+    global.treasury = treasury;
     global.protocol_fee_bps = protocol_fee_bps;
     global.quality_threshold = quality_threshold;
     global.challenge_window_seconds = DEFAULT_CHALLENGE_WINDOW_SECONDS;
@@ -55,37 +105,15 @@ pub fn initialize(
     global.max_concurrent_claims = DEFAULT_MAX_CONCURRENT_CLAIMS;
     global.challenge_bond_multiplier_bps = DEFAULT_CHALLENGE_BOND_MULTIPLIER as u16;
     global.bond_slash_treasury_bps = DEFAULT_BOND_SLASH_TREASURY_BPS;
-    global.oracle_authority = ctx.accounts.authority.key();
+    global.oracle_authority = authority;
     global.paused = false;
     global.paused_platforms = 0;
-    // Switchboard feed is set from the per-network arg above (validated
-    // non-default). Operators pre-deploy a feed for each target network
-    // and pass its pubkey at initialize. Rotation post-deploy requires
-    // a program upgrade until `set_switchboard_feed` is re-added.
     global.switchboard_feed = switchboard_feed;
-    // D3 (2026-05-07): rate-limit defaults match the pre-D3 const values
-    // so initialize-then-update_params is a clean transition.
-    // The D2 `min_escrow_lamports` slot stays zero — the gate was removed
-    // 2026-05-07 in favor of the EigenTrust reputation-graph defense.
     global.min_escrow_lamports = 0;
     global.rate_limit_window_seconds = crate::constants::RATE_LIMIT_WINDOW_SECONDS;
     global.max_tasks_per_rate_window = crate::constants::MAX_TASKS_PER_RATE_WINDOW;
     global._reserved = [0u8; 12];
-    global.bump = ctx.bumps.global_state;
-
-    // Postconditions: bump is correctly stored (so subsequent instructions
-    // re-derive the same PDA) and the authority and treasury slots reflect
-    // what the caller passed in.
-    require!(
-        global.bump == ctx.bumps.global_state,
-        ShillbotError::InvalidTaskState
-    );
-    require!(
-        global.authority == ctx.accounts.authority.key(),
-        ShillbotError::NotAuthority
-    );
-
-    Ok(())
+    global.bump = bump;
 }
 
 #[derive(Accounts)]
