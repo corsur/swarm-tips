@@ -925,8 +925,8 @@ impl GameSessionManager {
             session.lock().await.jwt.clear();
         }
 
-        let api_client = GameApiClient::new(&self.game_api_url)?
-            .with_network(network.map(str::to_string));
+        let api_client =
+            GameApiClient::new(&self.game_api_url)?.with_network(network.map(str::to_string));
         let auth_resp = api_client.session_auth(wallet, sig_str).await?;
         let jwt = auth_resp.token.clone();
         self.spawn_ws_listener(wallet, &jwt, session).await?;
