@@ -989,8 +989,9 @@ impl GameSessionManager {
             self.persist_session(&s).await?;
         }
         let game_id = session.lock().await.game_id.unwrap_or(0);
+        let network = session.lock().await.network.clone();
         if !session_id.is_empty() {
-            let api_client = GameApiClient::new(&self.game_api_url)?;
+            let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
             api_client
                 .post_games_joined(&jwt, game_id, &session_id)
                 .await?;
@@ -1012,8 +1013,9 @@ impl GameSessionManager {
             self.persist_session(&s).await?;
             (s.jwt.clone(), s.session_id.clone().unwrap_or_default())
         };
+        let network = session.lock().await.network.clone();
         if !session_id.is_empty() {
-            let api_client = GameApiClient::new(&self.game_api_url)?;
+            let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
             if let Err(e) = api_client.post_games_committed(&jwt, &session_id).await {
                 tracing::warn!(wallet = %wallet, error = %e, "post_games_committed failed (non-fatal)");
             }
@@ -1044,8 +1046,9 @@ impl GameSessionManager {
             let s = session.lock().await;
             self.persist_session(&s).await?;
         }
+        let network = session.lock().await.network.clone();
         if !session_id.is_empty() {
-            let api_client = GameApiClient::new(&self.game_api_url)?;
+            let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
             api_client
                 .post_games_started(&jwt, game_id, &session_id)
                 .await?;
