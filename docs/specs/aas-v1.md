@@ -7,8 +7,8 @@ to v1 is queued as a follow-up to task #18. A reader writing a verifier
 against this spec today will not find a live `aas/v1` emitter to test
 against until the migration lands.
 **Editor:** swarm.tips DAO (`corsur/swarm-tips`)
-**Reference verifiers:** `services/aas-verifier-ts` and
-`services/aas-verifier-py` (planned, task #18).
+**Reference verifiers:** `sdk/aas-verifier-ts` and
+`sdk/aas-verifier-py` (planned, task #18).
 
 > **DRAFT WARNING.** This is draft 1 — wire format is intended to be
 > stable, but implementation pressure from the reference verifiers
@@ -248,8 +248,8 @@ A verifier claims AAS v1 conformance by:
    not fail).
 3. Returning structured verdicts with the failure-reason taxonomy in §4.
 
-The reference verifiers in `services/aas-verifier-ts` (TypeScript) and
-`services/aas-verifier-py` (Python) are non-normative implementations.
+The reference verifiers in `sdk/aas-verifier-ts` (TypeScript) and
+`sdk/aas-verifier-py` (Python) are non-normative implementations.
 If they disagree with this spec, please file an issue: either the
 spec is unclear (we'll clarify in a draft revision) or the verifier
 has a bug (we'll fix it). Until then, the spec text is authoritative.
@@ -321,5 +321,5 @@ paths name the repo explicitly.
 - Shillbot on-chain `TaskState` enum (the published state enum
   AAS verifiers consume): `programs/shillbot/src/state/task.rs`
 - Switchboard feed: compile-time-locked at `programs/shillbot/src/constants.rs::SWITCHBOARD_FEED`
-- Reference verifiers (planned): `services/aas-verifier-ts` and
-  `services/aas-verifier-py` (task #18)
+- Reference verifiers (planned): `sdk/aas-verifier-ts` and
+  `sdk/aas-verifier-py` (task #18)

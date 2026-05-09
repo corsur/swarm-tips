@@ -1,4 +1,3 @@
-use crate::auth::ChallengeManager;
 use crate::errors::McpServiceError;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
@@ -52,8 +51,6 @@ pub struct SharedState {
     pub solana_rpc_url_devnet: String,
     pub rpc_client: reqwest::Client,
     pub game_sessions: Arc<GameSessionManager>,
-    #[allow(dead_code)]
-    pub challenge_manager: Arc<ChallengeManager>,
     pub session_binding: Arc<McpSessionBinding>,
     /// Aggregated bounty/listing pipeline. Powers the unified
     /// `list_earning_opportunities` MCP tool by reading from the same

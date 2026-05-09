@@ -112,7 +112,7 @@ export type ValidStates = (accountKind: string) => readonly string[];
 
 /**
  * The three pluggable hooks a non-Shillbot protocol passes when calling
- * the verifier. For Shillbot, `services/aas-verifier-ts/src/decoders/shillbot.ts`
+ * the verifier. For Shillbot, `sdk/aas-verifier-ts/src/decoders/shillbot.ts`
  * exports all three with the canonical Task layout, TaskState enum,
  * and the `["verified"]`-only attestation policy.
  */

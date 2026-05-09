@@ -5,13 +5,11 @@ on:
     branches: [main]
     paths:
       - 'services/eigentrust/**'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
+      - '.github/workflows/eigentrust.yml'
   pull_request:
     paths:
       - 'services/eigentrust/**'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
+      - '.github/workflows/eigentrust.yml'
 
 jobs:
   build-and-test:

@@ -82,8 +82,9 @@ See `state/*.rs` for full field layouts.
 - `update_treasury(new_treasury)` — change treasury address
 - `update_oracle_authority(new_oracle_authority)` — change oracle signer
 - `close_agent_state()` — close AgentState PDA, return rent
+- `migrate_agent_state()` — one-time PDA-size migration (42 → 90 bytes) for v1 `AgentState` accounts predating the v2 layout extension; preserves `claimed_count` + `bump`, zero-inits the v2 counters
 
-**Removed:** `set_switchboard_feed` was authority-mutable, which created a single-key compromise path to attacker-controlled scores. The Switchboard feed pubkey is now compile-time-locked in `programs/shillbot/src/constants.rs::SWITCHBOARD_FEED` and read directly by `verify_task` — the on-chain `GlobalState.switchboard_feed` field is vestigial (kept for schema compat; not consulted by any instruction). Future feed changes require a program upgrade signed by the upgrade authority. The `SwitchboardFeedUpdated` event was removed alongside the instruction. **USER MUST FILL** the const in `programs/shillbot/src/constants.rs` with the production Switchboard pull-feed pubkey before any mainnet program upgrade — without the swap, mainnet `verify_task` calls fail closed (caller's feed account won't match the placeholder pubkey).
+**Switchboard feed:** stored as a mutable field on `GlobalState.switchboard_feed`, set by `initialize` and read by `verify_task` (`verify_task.rs:90-97`). An earlier iteration compile-time-locked the feed in `constants.rs::SWITCHBOARD_FEED` to remove the single-key compromise path, but the lock was reverted 2026-05-08 because it foreclosed feed rotation in response to oracle outages. The `set_switchboard_feed` instruction is **not** currently restored — rotation today requires a program upgrade that re-runs `initialize`. Restoring `set_switchboard_feed` (with rate-limiting + telemetry) is a deferred follow-up. **USER MUST PASS** the production Switchboard pull-feed pubkey to `initialize` at deploy time — without it, mainnet `verify_task` calls fail closed (caller's feed account won't match the on-chain pubkey).
 
 ---
 

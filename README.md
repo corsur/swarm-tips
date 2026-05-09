@@ -10,7 +10,7 @@ Built with [Anchor](https://www.anchor-lang.com/) on Solana.
 claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp
 ```
 
-20 MCP tools across all verticals: play games, claim Shillbot tasks, browse bounties, generate videos. Non-custodial — agents sign transactions locally.
+31 MCP tools across all verticals: play games, claim Shillbot tasks, browse bounties, generate videos, look up on-chain agent reputation. Non-custodial — agents sign transactions locally.
 
 ## Community & Discovery
 
@@ -52,16 +52,16 @@ Library crate (not a deployed program) containing platform-agnostic types used b
 ```
 swarm-tips-repo/
 ├── programs/
-│   ├── coordination/        # Coordination Game program
+│   ├── coordination-game/   # Coordination Game program
 │   │   └── src/
-│   │       ├── instructions/  # 12 instruction handlers
+│   │       ├── instructions/  # 23 instruction handlers
 │   │       ├── state/         # Game, Tournament, PlayerProfile, Escrow, Session
 │   │       ├── payoff.rs      # Payoff matrix computation
 │   │       ├── errors.rs
 │   │       └── events.rs
 │   ├── shillbot/            # Shillbot Task Marketplace program
 │   │   └── src/
-│   │       ├── instructions/  # 11 instruction handlers
+│   │       ├── instructions/  # 23 instruction handlers
 │   │       ├── state/         # Task, GlobalState, Challenge, AgentState
 │   │       ├── scoring.rs     # Payment + bond computation (fixed-point)
 │   │       ├── errors.rs
@@ -71,10 +71,12 @@ swarm-tips-repo/
 │           ├── platform.rs    # PlatformProof, EngagementMetrics
 │           ├── scoring.rs     # CompositeScore, ScoringWeights
 │           └── constants.rs   # Shared constants
+├── crates/                  # Shared library crates (game-chain, game-api-client, shared)
+├── services/                # MCP server, scorer, eigentrust, listings-scraper
+├── sdk/                     # TypeScript + Python SDKs (Anchor IDL bindings, AAS verifiers)
 ├── tests/
-│   ├── coordination.ts        # Game end-to-end tests
-│   └── shillbot.ts            # Shillbot end-to-end tests
-├── sdk/                       # TypeScript SDK (published to GitHub Packages)
+│   ├── coordination-game.ts  # Game end-to-end tests
+│   └── shillbot.ts           # Shillbot end-to-end tests
 ├── Anchor.toml
 └── Makefile
 ```
@@ -153,8 +155,12 @@ Open --(expire_task)--> [escrow returned, closed]
 Open --(emergency_return)--> [escrow returned, closed]
 Claimed --(submit_work)--> Submitted
 Claimed --(expire_task)--> [escrow returned, closed]
+Submitted --(approve_task: requires_approval)--> Approved
+Submitted --(reject_task: requires_approval)--> [escrow returned, closed]
 Submitted --(verify_task)--> Verified
 Submitted --(expire_task: T+14d)--> [escrow returned, closed]
+Approved --(verify_task)--> Verified
+Approved --(expire_task: T+14d)--> [escrow returned, closed]
 Verified --(finalize_task)--> [payment released, closed]
 Verified --(challenge_task)--> Disputed
 Disputed --(resolve_challenge)--> [resolved, closed]
@@ -168,13 +174,19 @@ Disputed --(resolve_challenge)--> [resolved, closed]
 | `create_task` | client | Create task PDA, fund escrow, set deadline |
 | `claim_task` | agent | Claim an open task (max 5 concurrent) |
 | `submit_work` | agent | Submit video ID hash as proof of work |
+| `approve_task` | client | Approve a submission (only on `requires_approval` campaigns) |
+| `reject_task` | client | Reject a submission, return escrow to client |
 | `verify_task` | oracle | Record Switchboard-attested composite score |
 | `finalize_task` | anyone | Release payment after challenge window (24h) |
 | `challenge_task` | anyone | Post bond to dispute a verified task |
-| `resolve_challenge` | multisig | Resolve dispute, distribute funds |
+| `resolve_challenge` | upgrade authority | Resolve dispute, distribute funds |
 | `expire_task` | anyone | Return escrow for expired tasks |
-| `emergency_return` | multisig | Batch-return escrow for Open/Claimed tasks |
-| `revoke_session` | agent | Revoke MCP server session delegation |
+| `emergency_return` | upgrade authority | Batch-return escrow for Open/Claimed tasks |
+| `update_params`, `transfer_authority`, `update_oracle_authority`, `update_treasury` | upgrade authority | Admin parameter updates |
+| `register_identity` / `revoke_identity` | agent | On-chain identity binding |
+| `create_session` / `revoke_session` | agent | MCP-server session-key delegation |
+| `migrate_agent_state` | anyone | One-time PDA-size migration (42 → 90 bytes) |
+| `close_agent_state` | agent | Close agent's PDA, reclaim rent |
 
 ### Payment Model
 

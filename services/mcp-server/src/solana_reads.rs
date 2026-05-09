@@ -12,7 +12,7 @@
 //! wrong address that happened to host a different account type,
 //! length matching alone could let parsing proceed against garbage.
 //! The discriminator check (`sha256("account:<Name>")[0..8]`,
-//! mirroring `services/aas-verifier-ts/src/discriminator.ts`)
+//! mirroring `sdk/aas-verifier-ts/src/discriminator.ts`)
 //! fails fast with a clear error instead. See
 //! `fetch_account_data`.
 
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn anchor_discriminator_matches_canonical() {
         // sha256("account:Task")[0..8] — same value that the AAS
-        // verifier in `services/aas-verifier-{ts,py}` computes. The
+        // verifier in `sdk/aas-verifier-{ts,py}` computes. The
         // bytes themselves aren't documented anywhere as a
         // hardcoded constant; we just verify determinism + length
         // here. The cross-language cross-check happens in the AAS

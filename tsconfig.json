@@ -11,6 +11,6 @@
     "node_modules",
     "target",
     ".anchor",
-    "services/aas-verifier-ts"
+    "sdk/aas-verifier-ts"
   ]
 }

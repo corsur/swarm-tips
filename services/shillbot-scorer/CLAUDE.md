@@ -170,23 +170,22 @@ This data feeds the future anti-gaming systems: cross-post correlation, statisti
 
 ---
 
-## API (Internal, Called by Verifier)
+## API (Library, called by Verifier)
 
-```
-POST /score
-  Input: {
-    metrics: { views, likes, comments },
-    task_brief: { topic, blocklist, keywords },
-    video_metadata: { title, description, transcript, nonce },
-    experiment_config: { weights, threshold, scale_factors }
-  }
-  Output: {
-    composite_score: u64,
-    screening_passed: bool,
-    screening_details: { nonce, blocklist, relevance, duplicate, ai_label },
-    flags: [ "view_velocity_anomaly", ... ],
-    payment_amount: u64 (computed from score + threshold + task price)
-  }
+shillbot-scorer ships as a **library crate**, not an HTTP service. The verifier imports it directly (`shillbot_scorer::*`) and calls the public scoring entry point in-process. There is no `POST /score` endpoint and no axum router — earlier docs claimed an HTTP shape, but the architecture settled on direct linkage to avoid an extra hop on every verification.
+
+Function signature (paraphrased):
+
+```rust
+pub fn score_submission(
+    metrics: EngagementMetrics,
+    task_brief: TaskBrief,
+    video_metadata: VideoMetadata,
+    experiment_config: ExperimentConfig,
+) -> ScoringResult {
+    /* composite_score, screening_passed, screening_details,
+       flags, payment_amount */
+}
 ```
 
 ---

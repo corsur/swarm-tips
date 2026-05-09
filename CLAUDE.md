@@ -19,9 +19,12 @@ crates/
 └── game-api-client/         # HTTP/WS client for off-chain game-api backend
 
 services/
-└── coordination-mcp-server/ # MCP server exposing tools for AI agents (see its own CLAUDE.md)
+├── mcp-server/              # Unified MCP server exposing tools for AI agents (see its own CLAUDE.md)
+├── shillbot-scorer/         # Public scoring + brand-safety library (composite score, anti-gaming)
+├── eigentrust/              # Reputation library crate (Phase 2 future-defense)
+└── listings-scraper/        # Sidecar HTTP fetcher (BoringSSL fingerprint, kept out of mcp-server's link graph)
 
-sdk/                         # TypeScript SDK (auto-generated Anchor IDL types)
+sdk/                         # TypeScript / Python SDKs (Anchor IDL types + AAS reference verifiers)
 tests/                       # End-to-end TypeScript tests against local validator
 ```
 

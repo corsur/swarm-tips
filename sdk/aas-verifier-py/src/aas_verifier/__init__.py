@@ -1,7 +1,7 @@
 """AAS v1 reference verifier (Python).
 
 Public API mirrors the TypeScript reference at
-``services/aas-verifier-ts``. Spec lives at
+``sdk/aas-verifier-ts``. Spec lives at
 ``docs/specs/aas-v1.md``.
 """
 

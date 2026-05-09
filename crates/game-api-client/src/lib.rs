@@ -100,7 +100,7 @@ pub struct GameStatusResponse {
 
 /// HTTP client for the coordination game backend API.
 ///
-/// Covers all endpoints used by grok-agent and coordination-mcp-server.
+/// Covers all endpoints used by grok-agent and mcp-server.
 /// Auth endpoints (`request_challenge`, `verify_challenge`) do not require a
 /// bearer token; all other endpoints take `token: &str`.
 pub struct GameApiClient {

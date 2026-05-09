@@ -55,6 +55,7 @@ See `state/*.rs` for full field layouts.
 - `create_tournament(tournament_id, start_time, end_time)` — anyone can create
 - `finalize_tournament(merkle_root)` — authority posts merkle root of (player, entitlement) pairs after end_time
 - `claim_reward(amount, proof)` — player claims prize via merkle proof; requires finalized + minimum 5 games
+- `sweep_unclaimed_to_next(dest_tournament_id)` — authority sweeps the unclaimed prize-pool remainder of a finalized tournament into another tournament's pool after a 90-day grace period (`UNCLAIMED_GRACE_SECS`); guards: dest must exist and accept inbound, source must have elapsed grace
 
 ### Stake Management
 - `deposit_stake()` — player deposits SOL to tournament escrow PDA
@@ -142,6 +143,7 @@ The program emits one Anchor event per state transition. The exact field set is 
 | `TimeoutSlash` | `resolve_timeout` | `game_id`, `slashed_player`, `slash_amount` |
 | `TournamentFinalized` | `finalize_tournament` | `tournament_id`, `prize_snapshot`, `merkle_root` |
 | `RewardClaimed` | `claim_reward` | `tournament_id`, `player`, `amount` |
+| `UnclaimedSwept` | `sweep_unclaimed_to_next` | `source_tournament_id`, `dest_tournament_id`, `amount` |
 | `StakeDeposited` | `deposit_stake` / `deposit_stake_session` | `player`, `tournament_id`, `amount` |
 | `StakeWithdrawn` | `withdraw_stake` | `wallet`, `tournament_id`, `amount` |
 | `SessionCreated` | `create_player_session` | `player`, `session_key`, `expires_at` |
@@ -160,4 +162,6 @@ The program emits one Anchor event per state transition. The exact field set is 
 
 ## Tournament `is_active` boundary
 
-`Tournament::is_active(now)` returns true when `start_time <= now <= end_time` — **both bounds inclusive**. Games may be created exactly at `start_time` and exactly at `end_time` (the second `<=` is intentional). `finalize_tournament` separately requires `now > end_time` (strict greater), so the tournament cannot be finalized in the same Unix-second that a final game is created.
+`Tournament::is_active(now)` returns true when `start_time <= now <= end_time` — both bounds inclusive on the `is_active` check. **`create_game` additionally requires** (`instructions/utils.rs::validate_tournament_cutoff`) that `now + (commit_timeout_slots + reveal_timeout_slots) / 2 < end_time` so a game can't be created so close to `end_time` that resolution would fall after it. With default 7,200 / 14,400 slot timeouts at ~400 ms/slot, that's roughly 72 minutes of buffer before `end_time` during which `is_active` is true but `create_game` is rejected. `finalize_tournament` separately requires `now > end_time` (strict greater), so the tournament cannot be finalized in the same Unix-second that a final game is created.
+
+A late-resolution fallback in `instructions/utils.rs::compute_finalization` exists for safety: if a game somehow reaches resolution after `tournament_end_time` (e.g., via timeout paths), payouts collapse to a full-refund (`p1_return = p2_return = stake`, `tournament_gain = 0`) and neither player is counted as a winner. This is defense in depth — the cutoff check above is meant to make this path unreachable.

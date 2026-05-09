@@ -1,6 +1,6 @@
 """AAS v1 verifier — pure-step unit tests.
 
-Mirrors ``services/aas-verifier-ts/__tests__/verify.test.ts`` for the
+Mirrors ``sdk/aas-verifier-ts/__tests__/verify.test.ts`` for the
 schema and on-chain steps. Step 2-5 are exercised against a stub RPC
 fetcher (no network).
 """

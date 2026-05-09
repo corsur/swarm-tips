@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 20 tools live: Coordination Game (10, including the cross-product `register_wallet`), Shillbot marketplace (6, mainnet, all `shillbot_*`-prefixed), video generation (2), and two universal opportunity-discovery tools (`list_earning_opportunities`, `list_spending_opportunities`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 31 tools live: Coordination Game (9), cross-product `register_wallet` (1), Shillbot marketplace (13, mainnet, all `shillbot_*`-prefixed), video generation (2), universal opportunity discovery (2: `list_earning_opportunities`, `list_spending_opportunities`), MCP-ecosystem discovery (2: `discover_opportunities`, `search_mcp_servers`), and on-chain agent reputation (2: `agent_profile`, `agent_trust_score`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -16,13 +16,13 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 20 tools live: Coordinatio
 | Status | active |
 | Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
 
-v0.1.3 was published on 2026-04-08 with the 20-tool description ("20 tools: play games, claim Shillbot tasks, generate videos, browse bounties. Non-custodial."). To re-publish after future tool-surface changes: run `mcp-publisher publish` from `services/mcp-server/` (if OAuth tokens expire, run `mcp-publisher login github` first for the interactive browser flow).
+v0.1.3 was published on 2026-04-08 with a 20-tool description; the registry copy is stale relative to the current 31-tool surface. The local `server.json` description has been updated; run `mcp-publisher publish` from `services/mcp-server/` to push the refreshed inventory + description (if OAuth tokens expire, run `mcp-publisher login github` first for the interactive browser flow).
 
 **Auth tokens** are stored in `services/mcp-server/.mcpregistry_github_token` and `.mcpregistry_registry_token` (gitignored). Both expire periodically.
 
 **Other directories:** ClawHub publishing flow lives at `https://clawhub.ai/publish-skill` — manual form submission requiring GitHub OAuth sign-in. The skill artifact lives at `swarm-tips-repo/skill/SKILL.md` (in its own directory because ClawHub expects a folder, not a single file, per the OpenClaw convention "each skill is a directory containing a SKILL.md"). Re-submit any time the underlying tool surface or product framing changes meaningfully (rename, removal, addition of a vertical). PulseMCP auto-pulls from the official MCP registry daily; no submission needed once the registry has the new version. SkillHub auto-indexes from GitHub on its own. Not yet submitted to mcp.so, Glama, SkillsMP, or LobeHub.
 
-**Discovery sources (read-side):** `src/discovery/sources.rs` pulls from four upstream catalogs: the official MCP registry, `wong2/awesome-mcp-servers`, `appcypher/awesome-mcp-servers`, and `tolkonepiu/best-of-mcp-servers`. All four run in parallel inside `refresh_discovery` with per-source error degradation. PulseMCP is gated on credentials (email `api@pulsemcp.com`); Smithery requires API surface verification before integration. The first DefiLlama meta-discovery scan landed 2026-04-07 — see `docs/analysis/2026-04-07-defillama-discovery-survey.md` for findings and `src/listings/sources.rs::fetch_defillama_ai_agents` for the source.
+**Discovery sources (read-side):** `src/discovery/sources.rs` pulls from four upstream catalogs: the official MCP registry, `wong2/awesome-mcp-servers`, `appcypher/awesome-mcp-servers`, and `tolkonepiu/best-of-mcp-servers`. All four run in parallel inside `refresh_discovery` with per-source error degradation. PulseMCP is gated on credentials (email `api@pulsemcp.com`); Smithery requires API surface verification before integration. DefiLlama meta-discovery is wired in via `src/listings/sources.rs::fetch_defillama_ai_agents` (AI Agents + Decentralized AI categories).
 
 **Tool descriptions** include cash-flow tags (`[READ]`, `[STAKE: ...]`, `[EARN: ...]`, `[SPEND: ...]`, `[STATE]`) so AI agents running a business can reason about inflows vs outflows from descriptions alone.
 
@@ -50,14 +50,14 @@ v0.1.3 was published on 2026-04-08 with the 20-tool description ("20 tools: play
 
 **When to apply:** before writing any new `fetch_*` source. Also retroactively: if a source we already integrated stops passing the test (parser success rate drops, listings disappear without ever being claimed, social signal turns negative), document the disposition and remove the source.
 
-**Where the verification lives:** for now, in survey docs at `swarm-tips-repo/docs/analysis/`. After 3-5 manual applications the patterns will be clear enough to formalize as a `verify_payout` function in `src/discovery/deep_analysis.rs`. Don't build that abstraction before the patterns exist.
+**Where the verification lives:** inline as the one-line verdicts below. After 3-5 manual applications the patterns will be clear enough to formalize as a `verify_payout` function in `src/discovery/deep_analysis.rs`. Don't build that abstraction before the patterns exist.
 
 **Reference applications** (chronological):
-- 2026-04-07: workprotocol.ai → **Fail**. See `docs/analysis/2026-04-07-arbitrage-survey.md`.
-- 2026-04-07: Chutes → **Uncertain**. See `docs/analysis/2026-04-07-defillama-discovery-survey.md`.
-- 2026-04-08: ClawTasks → **Removed** (broken API + pattern mismatch). See `docs/analysis/2026-04-08-unified-list-tools-strategic-shift.md`.
-- 2026-04-08: BotBounty MCP tools → **Removed**, `fetch_botbounty` listing source kept. Same doc.
-- 2026-04-08: Moltlaunch (retroactive) → **Pass**. 172 completed tasks, ~196 ETH lifetime earnings across 43 active agents. Initial false-fail was a misread of the gigs endpoint schema (offers vs. escrows). See `docs/analysis/2026-04-08-pulsemcp-earning-sweep.md`.
+- 2026-04-07: workprotocol.ai → **Fail** (vaporware: open jobs but no completed bounties or payment evidence).
+- 2026-04-07: Chutes → **Uncertain** (real platform with revenue, but bounty mechanism specifically lacks documented payout evidence).
+- 2026-04-08: ClawTasks → **Removed** (API returning HTTP 500 + pattern mismatch with the unified-list-tools shift).
+- 2026-04-08: BotBounty MCP tools → **Removed** as part of the same shift; `fetch_botbounty` listing source kept.
+- 2026-04-08: Moltlaunch (retroactive) → **Pass**. 172 completed tasks, ~196 ETH lifetime earnings across 43 active agents. Initial false-fail was a misread of the gigs endpoint schema (offers vs. escrows) — `/api/agents/{id}` is the authoritative completion-count endpoint, not `/api/gigs`.
 - 2026-04-08: BotBounty (retroactive) → **Pass**. 42 completed bounties, $2,418 lifetime via `/api/stats`. Currently quiet (0 open bounties) but real.
 - 2026-04-08: Algora → **Fail** (Stripe Connect fiat rail — agents can't claim).
 - 2026-04-08: ArcAgent → **Fail** (Stripe Escrow fiat rail).
@@ -66,7 +66,7 @@ v0.1.3 was published on 2026-04-08 with the 20-tool description ("20 tools: play
 - 2026-04-08: Gitcoin Bounties → **Dead** (product discontinued, URL redirects to homepage).
 - 2026-04-08: OnlyDust → **Dead** (company shut down — explicit closure notice on app.onlydust.com).
 - 2026-04-08: Layer3 → **Pivoted** (no public quest API, wallet-gated only).
-- 2026-04-08: PulseMCP exhaustive sweep (466 servers, 53 queries) → 0 new earning sources for integration. See `docs/analysis/2026-04-08-pulsemcp-earning-sweep.md`.
+- 2026-04-08: PulseMCP exhaustive sweep (466 servers, 53 queries) → 0 new earning sources for integration.
 
 ---
 
@@ -121,11 +121,19 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (20 active)
+## Tools (31 active)
 
 ### Universal opportunity discovery (2 tools)
 - `list_earning_opportunities` — aggregated earning entries across `fetch_*` sources (Shillbot, Bountycaster, Moltlaunch, BotBounty). First-party entries (`source = "shillbot"`) include a `claim_via` field naming the in-MCP tool to call. External entries have a direct `source_url` redirect — agents claim off-platform.
 - `list_spending_opportunities` — aggregated paid services. v1 hardcoded with `generate_video` (first-party, 5 USDC). External sources (Chutes inference, x402-paywalled APIs) are deferred to follow-up integrations.
+
+### MCP-ecosystem discovery (2 tools)
+- `discover_opportunities` — surface MCP servers across the Layer 1-3 discovery pipeline that match a query (`vetted` / `verified` / `all` tiers).
+- `search_mcp_servers` — keyword search across the indexed MCP-server catalog with vetting-tier filters.
+
+### On-chain agent reputation (2 tools, mainnet, read-only)
+- `agent_profile` — trustless lookup of an agent's `AgentState` and `PlayerProfile` PDAs directly from Solana via `getAccountInfo`. No orchestrator hop, no Firestore cache.
+- `agent_trust_score` — composite trust score (0..=4 confidence) over Shillbot completion + game win rate + Layer 3 curator tier; foundation for the future EigenTrust layer.
 
 ### Wallet registration (1 tool, cross-product)
 - `register_wallet` — register your Solana pubkey (non-custodial, no private key). One registration covers every product (Coordination Game + Shillbot + video). Persisted via `Mcp-Session-Id` → wallet binding in Firestore so a pod restart doesn't strand the agent. Was previously named `game_register_wallet`; renamed 2026-04-08 to reflect cross-product use.
@@ -140,22 +148,29 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `game_reveal_guess` — poll until resolved, returns unsigned reveal tx
 - `game_get_result` — read game outcome
 
-### Shillbot (6 tools, Solana mainnet, on-chain escrow)
+### Shillbot (13 tools, Solana mainnet, on-chain escrow)
 - `shillbot_list_available_tasks` — browse tasks (Shillbot-specific deep query; for cross-source aggregation use `list_earning_opportunities`)
 - `shillbot_get_task_details` — full task brief, blocklist, brand voice
-- `shillbot_claim_task` — claim via session key (returns unsigned tx)
-- `shillbot_submit_work` — submit content ID proof (returns unsigned tx)
-- `shillbot_submit_tx` — submit any signed Shillbot tx (claim, submit) — non-custodial path
+- `shillbot_list_pending_approval` — list submissions awaiting client approval (for `requires_approval` campaigns)
+- `shillbot_claim_task` — returns unsigned claim tx (non-custodial)
+- `shillbot_submit_work` — returns unsigned submit-work tx with content_id proof
+- `shillbot_approve_task` — client approves a submission (returns unsigned tx; only for `requires_approval` campaigns)
+- `shillbot_reject_task` — client rejects a submission (returns unsigned tx)
+- `shillbot_verify_task` — record Switchboard-attested score (returns unsigned tx)
+- `shillbot_finalize_task` — release payment after challenge window (returns unsigned tx)
+- `shillbot_complete_task` — next-action dispatcher: returns the next signed-tx step the caller should take, or a wait directive
+- `shillbot_get_attestation` — emit an AAS attestation for a verified task
+- `shillbot_submit_tx` — broadcast any signed Shillbot tx (claim, submit, approve, reject, verify, finalize) — non-custodial path
 - `shillbot_check_earnings` — agent earnings summary
 
 ### Video Generation (2 tools, 5 USDC per video)
 - `generate_video` — create short-form video from prompt/URL (two-step: first call returns payment instructions including `payment_details: {chain, address, amount, memo}`, second call with `tx_signature` triggers generation)
 - `check_video_status` — poll by session_id until video_url is returned (read-only)
 
-### Removed 2026-04-08 (net change: 28 → 20 = −10 removed + 2 added)
-- `clawtasks_*` (4 tools): API was returning HTTP 500, didn't fit the unified-tools strategic shift. See `docs/analysis/2026-04-08-unified-list-tools-strategic-shift.md`.
+### Removed 2026-04-08 (net change after this audit: 28 → 31 = −10 removed + 13 added)
+- `clawtasks_*` (4 tools): API was returning HTTP 500, didn't fit the unified-tools strategic shift.
 - `botbounty_*` (4 tools): MCP CRUD proxy retired, `fetch_botbounty` listing source kept (entries still appear in `list_earning_opportunities`).
-- `game_info` (1 tool): the `GAME_INFO_JSON` content (rules, stake, how_to_play, rules_for_agents) was duplicated by the `INSTRUCTIONS` field served in the MCP `initialize` response. Content was merged into `INSTRUCTIONS` and the tool was removed. See `docs/analysis/2026-04-08-round-2-polish-survey.md`.
+- `game_info` (1 tool): the `GAME_INFO_JSON` content (rules, stake, how_to_play, rules_for_agents) was duplicated by the `INSTRUCTIONS` field served in the MCP `initialize` response. Content was merged into `INSTRUCTIONS` and the tool was removed.
 - `game_join_queue` (1 tool): deprecated by its own description ("For a simpler flow, use register_wallet + game_find_match instead"). Removed as the deprecation note shipped as a live tool.
 - `game_register_wallet` (1 tool): renamed to `register_wallet` (no `game_` prefix) since it serves as the registration entry point for both Coordination Game and Shillbot tools.
 

@@ -20,7 +20,7 @@ source means:
 
 - Agents can simulate the score for hypothetical metrics before claiming
   a task.
-- Third-party implementations of the AAS verifier (`services/aas-verifier-{ts,py}`)
+- Third-party implementations of the AAS verifier (`sdk/aas-verifier-{ts,py}`)
   can re-derive `composite_score` from on-chain metrics if a future
   AAS revision surfaces them, instead of trusting the on-chain
   `verification_hash` blindly.

@@ -3,10 +3,6 @@
 #![deny(clippy::all)]
 #![deny(clippy::arithmetic_side_effects)]
 
-// auth and session modules are used by Shillbot tools (hidden until mainnet).
-// Remove #[allow(dead_code)] when re-enabling #[tool] attributes in server.rs.
-#[allow(dead_code)]
-mod auth;
 mod config;
 mod discovery;
 mod errors;
@@ -20,7 +16,6 @@ mod session_binding;
 mod solana_reads;
 mod solana_tx;
 
-use crate::auth::ChallengeManager;
 use crate::discovery::DiscoveryState;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
@@ -87,7 +82,6 @@ async fn main() -> anyhow::Result<()> {
         solana_rpc_url_devnet: rpc_url_devnet.clone(),
         rpc_client,
         game_sessions,
-        challenge_manager: ChallengeManager::new(),
         session_binding,
         listings: Arc::clone(&listings_state),
     });
