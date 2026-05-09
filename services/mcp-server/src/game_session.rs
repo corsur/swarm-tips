@@ -1044,6 +1044,78 @@ impl GameSessionManager {
         // by the caller (see callers of submit_signed_game_tx).
         session.lock().await.state = GameSessionState::Resolved;
         tracing::info!(wallet = %wallet, "revealed guess on-chain");
+
+        // Notify game-api so the backend broadcasts the WS
+        // `game_resolved` message to the OPPONENT's browser/agent. Pre-fix
+        // (commit pre-2026-05-09) this notification was missing, so a
+        // human-vs-mcp-agent flow where the agent revealed second left
+        // the human's browser stranded in the "Revealing" phase until
+        // useGamePoll's 60s tick fired. The human-vs-agent e2e test then
+        // timed out at the 120s outcome assertion. Best-effort — any
+        // failure here is logged but doesn't override the on-chain
+        // result.
+        if let Err(e) = self.notify_game_resolved(wallet, session).await {
+            tracing::warn!(
+                wallet = %wallet,
+                error = %e,
+                "after_reveal_guess: failed to notify backend (non-fatal)"
+            );
+        }
+    }
+
+    /// Read the on-chain Game state and, if Resolved, POST /games/resolved
+    /// so the backend broadcasts to all session WS connections.
+    async fn notify_game_resolved(
+        &self,
+        wallet: &str,
+        session: &Arc<Mutex<GameSession>>,
+    ) -> Result<()> {
+        use std::str::FromStr;
+        let (game_id, session_id, jwt, network) = {
+            let s = session.lock().await;
+            (
+                s.game_id.unwrap_or(0),
+                s.session_id.clone().unwrap_or_default(),
+                s.jwt.clone(),
+                s.network.clone(),
+            )
+        };
+        if game_id == 0 || session_id.is_empty() || jwt.is_empty() {
+            return Ok(());
+        }
+        let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet)
+            .context("after_reveal_guess: invalid wallet")?;
+        let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
+        let game = tx_builder
+            .read_game(game_id)
+            .await?
+            .context("after_reveal_guess: game account not found")?;
+        if game.state != game_chain::GameState::Resolved {
+            // Opponent hasn't revealed yet — nothing to broadcast.
+            return Ok(());
+        }
+        let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
+        api_client
+            .post_games_resolved(
+                &jwt,
+                game_id,
+                game.p1_guess,
+                game.p2_guess,
+                0,
+                0,
+                game.matchup_type,
+                game.first_committer,
+                None,
+                None,
+            )
+            .await
+            .context("after_reveal_guess: post_games_resolved failed")?;
+        tracing::info!(
+            wallet = %wallet,
+            game_id,
+            "notified backend of game resolution"
+        );
+        Ok(())
     }
 
     async fn after_create_game(
