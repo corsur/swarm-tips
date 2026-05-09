@@ -14,46 +14,27 @@ pub fn deposit_stake_session(ctx: Context<DepositStakeSession>) -> Result<()> {
         &ctx.accounts.player.key(),
         &ctx.accounts.session_signer.key(),
     )?;
-
     let now = Clock::get()?.unix_timestamp;
     require!(
         ctx.accounts.tournament.is_active(now),
         CoordinationError::OutsideTournamentWindow,
     );
-
-    let escrow = &mut ctx.accounts.escrow;
-
-    // Idempotent: if the escrow already has an unconsumed funded deposit at the
-    // correct amount, no-op. If the amount doesn't match, fall through to re-deposit.
-    if !escrow.consumed && escrow.amount > 0 {
-        require!(
-            escrow.player == ctx.accounts.player.key(),
-            CoordinationError::InvalidGameState,
-        );
-        if escrow.amount == FIXED_STAKE_LAMPORTS {
-            msg!("deposit_stake_session: escrow already active, no-op");
-            return Ok(());
-        }
-        msg!("deposit_stake_session: stake amount changed, re-depositing");
+    let player_key = ctx.accounts.player.key();
+    let tournament_id = ctx.accounts.tournament.tournament_id;
+    // Idempotent: if escrow is already valid for this game, no-op (avoids
+    // re-transferring lamports). Otherwise (re-)init the escrow fields.
+    if escrow_already_active(&ctx.accounts.escrow, &player_key)? {
+        msg!("deposit_stake_session: escrow already active, no-op");
+        return Ok(());
     }
-    escrow.player = ctx.accounts.player.key();
-    escrow.tournament_id = ctx.accounts.tournament.tournament_id;
-    escrow.amount = FIXED_STAKE_LAMPORTS;
-    escrow.consumed = false;
-    escrow.bump = ctx.bumps.escrow;
-
-    // Postconditions
-    require!(
-        escrow.player == ctx.accounts.player.key(),
-        CoordinationError::InvalidGameState,
-    );
-    require!(
-        escrow.amount == FIXED_STAKE_LAMPORTS,
-        CoordinationError::StakeMismatch,
-    );
-
-    // Transfer stake from the session signer (funded keypair) to escrow PDA.
-    // The session signer was pre-funded by the player in the session setup tx.
+    init_escrow_fields(
+        &mut ctx.accounts.escrow,
+        player_key,
+        tournament_id,
+        ctx.bumps.escrow,
+    )?;
+    // Interactions: transfer stake from session signer to escrow PDA. The
+    // signer was pre-funded by the player at session-setup time.
     anchor_lang::system_program::transfer(
         CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
@@ -64,12 +45,53 @@ pub fn deposit_stake_session(ctx: Context<DepositStakeSession>) -> Result<()> {
         ),
         FIXED_STAKE_LAMPORTS,
     )?;
-
     emit!(StakeDeposited {
-        player: ctx.accounts.player.key(),
-        tournament_id: ctx.accounts.tournament.tournament_id,
+        player: player_key,
+        tournament_id,
         amount: FIXED_STAKE_LAMPORTS,
     });
+    Ok(())
+}
+
+/// Checks if the escrow is already an unconsumed deposit for this player
+/// at the current FIXED_STAKE_LAMPORTS. Returns true if the handler should
+/// no-op (don't re-transfer); false if re-init + transfer is required.
+/// Errors only if the escrow is funded but bound to a different player.
+fn escrow_already_active(escrow: &StakeEscrow, player_key: &Pubkey) -> Result<bool> {
+    if escrow.consumed || escrow.amount == 0 {
+        return Ok(false);
+    }
+    require!(
+        escrow.player == *player_key,
+        CoordinationError::InvalidGameState,
+    );
+    if escrow.amount == FIXED_STAKE_LAMPORTS {
+        return Ok(true);
+    }
+    msg!("deposit_stake_session: stake amount changed, re-depositing");
+    Ok(false)
+}
+
+/// Pure effect: write the escrow fields for a fresh (or re-init) deposit.
+fn init_escrow_fields(
+    escrow: &mut StakeEscrow,
+    player_key: Pubkey,
+    tournament_id: u64,
+    bump: u8,
+) -> Result<()> {
+    escrow.player = player_key;
+    escrow.tournament_id = tournament_id;
+    escrow.amount = FIXED_STAKE_LAMPORTS;
+    escrow.consumed = false;
+    escrow.bump = bump;
+    require!(
+        escrow.player == player_key,
+        CoordinationError::InvalidGameState,
+    );
+    require!(
+        escrow.amount == FIXED_STAKE_LAMPORTS,
+        CoordinationError::StakeMismatch,
+    );
     Ok(())
 }
 

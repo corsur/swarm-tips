@@ -76,16 +76,7 @@ pub fn create_task(
         now,
     );
     // Interactions: transfer escrow from client to task PDA.
-    system_program::transfer(
-        CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            system_program::Transfer {
-                from: ctx.accounts.client.to_account_info(),
-                to: ctx.accounts.task.to_account_info(),
-            },
-        ),
-        escrow_lamports,
-    )?;
+    transfer_escrow_to_task(&ctx, escrow_lamports)?;
     emit!(TaskCreated {
         task_id,
         client: client_key,
@@ -95,6 +86,20 @@ pub fn create_task(
         platform,
     });
     Ok(())
+}
+
+/// CPI: transfer `escrow_lamports` from the client wallet into the Task PDA.
+fn transfer_escrow_to_task(ctx: &Context<CreateTask>, escrow_lamports: u64) -> Result<()> {
+    system_program::transfer(
+        CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            system_program::Transfer {
+                from: ctx.accounts.client.to_account_info(),
+                to: ctx.accounts.task.to_account_info(),
+            },
+        ),
+        escrow_lamports,
+    )
 }
 
 /// Validate every input that does not depend on Task / ClientState mutation.

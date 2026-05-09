@@ -24,22 +24,74 @@ pub const UNCLAIMED_GRACE_SECS: i64 = 90 * 24 * 60 * 60;
 ///   dest.prize_lamports += sweepable
 pub fn sweep_unclaimed_to_next(ctx: Context<SweepUnclaimedToNext>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
-
     // Checks
+    validate_sweep_inputs(
+        &ctx.accounts.authority.key(),
+        &ctx.accounts.global_config,
+        &ctx.accounts.src_tournament,
+        &ctx.accounts.dest_tournament,
+        now,
+    )?;
+    // Compute the sweep amount (lamports above rent floor).
+    let rent_minimum = Rent::get()?.minimum_balance(Tournament::SPACE);
+    let sweepable = ctx
+        .accounts
+        .src_tournament
+        .to_account_info()
+        .lamports()
+        .checked_sub(rent_minimum)
+        .ok_or(CoordinationError::EmptyPrizePool)?;
+    require!(sweepable > 0, CoordinationError::EmptyPrizePool);
+    let src_id = ctx.accounts.src_tournament.tournament_id;
+    let dest_id = ctx.accounts.dest_tournament.tournament_id;
+    // Effects: update dest accounting first (CEI ordering).
+    ctx.accounts.dest_tournament.prize_lamports = ctx
+        .accounts
+        .dest_tournament
+        .prize_lamports
+        .checked_add(sweepable)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    // Interactions: move lamports. Single absolute write of src balance to
+    // rent_minimum + add sweepable to dest. Express the sweep directly so a
+    // future reader doesn't need to verify that two reads agree.
+    let src_info = ctx.accounts.src_tournament.to_account_info();
+    let dest_info = ctx.accounts.dest_tournament.to_account_info();
+    let dest_new = dest_info
+        .lamports()
+        .checked_add(sweepable)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    **src_info.try_borrow_mut_lamports()? = rent_minimum;
+    **dest_info.try_borrow_mut_lamports()? = dest_new;
     require!(
-        ctx.accounts.authority.key() == ctx.accounts.global_config.authority,
+        src_info.lamports() == rent_minimum,
+        CoordinationError::InvalidGameState,
+    );
+    emit!(UnclaimedSwept {
+        src_tournament_id: src_id,
+        dest_tournament_id: dest_id,
+        amount: sweepable,
+    });
+    Ok(())
+}
+
+/// Pure check phase. Authority match, distinct tournaments, src finalized,
+/// grace period elapsed, dest not yet finalized, dest is_active.
+fn validate_sweep_inputs(
+    caller_key: &Pubkey,
+    global_config: &GlobalConfig,
+    src: &Tournament,
+    dest: &Tournament,
+    now: i64,
+) -> Result<()> {
+    require!(
+        *caller_key == global_config.authority,
         CoordinationError::NotAuthority,
     );
-
-    let src = &ctx.accounts.src_tournament;
-    let dest = &ctx.accounts.dest_tournament;
-
     require!(
         src.tournament_id != dest.tournament_id,
         CoordinationError::DestTournamentInvalid,
     );
     require!(src.finalized, CoordinationError::TournamentNotFinalized);
-
     let grace_deadline = src
         .end_time
         .checked_add(UNCLAIMED_GRACE_SECS)
@@ -48,61 +100,11 @@ pub fn sweep_unclaimed_to_next(ctx: Context<SweepUnclaimedToNext>) -> Result<()>
         now > grace_deadline,
         CoordinationError::UnclaimedGracePeriodNotElapsed,
     );
-
-    require!(!dest.finalized, CoordinationError::DestTournamentInvalid,);
+    require!(!dest.finalized, CoordinationError::DestTournamentInvalid);
     require!(
         dest.is_active(now),
         CoordinationError::DestTournamentInvalid,
     );
-
-    let rent = Rent::get()?;
-    let rent_minimum = rent.minimum_balance(Tournament::SPACE);
-    let src_info = src.to_account_info();
-    let src_lamports = src_info.lamports();
-    let sweepable = src_lamports
-        .checked_sub(rent_minimum)
-        .ok_or(CoordinationError::EmptyPrizePool)?;
-    require!(sweepable > 0, CoordinationError::EmptyPrizePool);
-
-    let src_id = src.tournament_id;
-    let dest_id = dest.tournament_id;
-
-    // Effects: update dest accounting first (CEI ordering)
-    let dest_mut = &mut ctx.accounts.dest_tournament;
-    dest_mut.prize_lamports = dest_mut
-        .prize_lamports
-        .checked_add(sweepable)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-
-    // Interactions: move lamports.
-    //
-    // Single read of the dest balance, single absolute write of the src
-    // balance. The sweep is structurally "set src to rent_minimum, add
-    // sweepable to dest" — express that directly so a future reader
-    // doesn't need to verify that the two reads agree.
-    let src_info = ctx.accounts.src_tournament.to_account_info();
-    let dest_info = ctx.accounts.dest_tournament.to_account_info();
-
-    let dest_new = dest_info
-        .lamports()
-        .checked_add(sweepable)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-
-    **src_info.try_borrow_mut_lamports()? = rent_minimum;
-    **dest_info.try_borrow_mut_lamports()? = dest_new;
-
-    // Postcondition: src is exactly at the rent floor.
-    require!(
-        src_info.lamports() == rent_minimum,
-        CoordinationError::InvalidGameState,
-    );
-
-    emit!(UnclaimedSwept {
-        src_tournament_id: src_id,
-        dest_tournament_id: dest_id,
-        amount: sweepable,
-    });
-
     Ok(())
 }
 

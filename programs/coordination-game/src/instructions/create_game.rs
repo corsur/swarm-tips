@@ -37,40 +37,20 @@ pub fn create_game(
         tournament_id,
         now,
     )?;
-    // Effects: assign game_id, init Game + PlayerProfile, consume escrow.
-    let counter = &mut ctx.accounts.game_counter;
-    let game_id = counter.count;
-    counter.count = counter
-        .count
-        .checked_add(1)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    init_game(
+    // Effects
+    let game_id = commit_creation_state(
+        &mut ctx.accounts.game_counter,
         &mut ctx.accounts.game,
-        game_id,
+        &mut ctx.accounts.player_profile,
+        &mut ctx.accounts.escrow,
         tournament_id,
         player_key,
         stake_lamports,
         matchup_commitment,
         now,
         ctx.bumps.game,
-    );
-    ctx.accounts
-        .player_profile
-        .init_if_new(player_key, tournament_id, ctx.bumps.player_profile);
-    require!(
-        ctx.accounts.player_profile.tournament_id == tournament_id,
-        CoordinationError::ProfileTournamentMismatch,
-    );
-    ctx.accounts.escrow.consumed = true;
-    // Postconditions
-    require!(
-        ctx.accounts.game.state == GameState::Pending,
-        CoordinationError::InvalidGameState
-    );
-    require!(
-        ctx.accounts.game.matchup_type == MATCHUP_TYPE_UNSET,
-        CoordinationError::InvalidGameState
-    );
+        ctx.bumps.player_profile,
+    )?;
     // Interactions: move the stake from escrow to the Game PDA.
     transfer_lamports(
         &ctx.accounts.escrow.to_account_info(),
@@ -86,11 +66,11 @@ pub fn create_game(
     Ok(())
 }
 
-/// Pure check phase shared between `create_game` and (logically — same
-/// rules) `create_game_session`. The session variant has its own
-/// `validate_session_authority` step so that one stays inline.
+/// Pure check phase shared between `create_game` and `create_game_session`
+/// (the session variant has its own `validate_session_authority` step in
+/// front; the rule set after that is identical).
 #[allow(clippy::too_many_arguments)]
-fn validate_create_inputs(
+pub(crate) fn validate_create_inputs(
     stake_lamports: u64,
     matchup_commitment: [u8; 32],
     matchmaker_key: Pubkey,
@@ -123,6 +103,56 @@ fn validate_create_inputs(
         CoordinationError::EscrowInvalid,
     );
     Ok(())
+}
+
+/// Pure effect phase shared between `create_game` and `create_game_session`.
+/// Increments the global counter, inits the Game PDA, inits or refreshes
+/// the PlayerProfile, consumes the escrow, asserts the postconditions
+/// (Pending state + UNSET matchup). Returns the assigned `game_id`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_creation_state(
+    counter: &mut GameCounter,
+    game: &mut Game,
+    player_profile: &mut PlayerProfile,
+    escrow: &mut StakeEscrow,
+    tournament_id: u64,
+    player_key: Pubkey,
+    stake_lamports: u64,
+    matchup_commitment: [u8; 32],
+    now: i64,
+    game_bump: u8,
+    profile_bump: u8,
+) -> Result<u64> {
+    let game_id = counter.count;
+    counter.count = counter
+        .count
+        .checked_add(1)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    init_game(
+        game,
+        game_id,
+        tournament_id,
+        player_key,
+        stake_lamports,
+        matchup_commitment,
+        now,
+        game_bump,
+    );
+    player_profile.init_if_new(player_key, tournament_id, profile_bump);
+    require!(
+        player_profile.tournament_id == tournament_id,
+        CoordinationError::ProfileTournamentMismatch,
+    );
+    escrow.consumed = true;
+    require!(
+        game.state == GameState::Pending,
+        CoordinationError::InvalidGameState
+    );
+    require!(
+        game.matchup_type == MATCHUP_TYPE_UNSET,
+        CoordinationError::InvalidGameState
+    );
+    Ok(game_id)
 }
 
 #[derive(Accounts)]

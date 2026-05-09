@@ -9,74 +9,84 @@ use crate::state::{AgentState, GlobalState, SessionDelegate, Task, TaskState};
 /// claim_task permission bit (0x01) set.
 pub fn claim_task_session(ctx: Context<ClaimTaskSession>) -> Result<()> {
     let clock = Clock::get()?;
-    let task = &ctx.accounts.task;
-    let agent_state = &ctx.accounts.agent_state;
-    let session = &ctx.accounts.session_delegate;
-    let global = &ctx.accounts.global_state;
+    let agent_key = ctx.accounts.session_delegate.agent;
+    // Checks
+    validate_claim_session_inputs(
+        &ctx.accounts.global_state,
+        &ctx.accounts.session_delegate,
+        &ctx.accounts.task,
+        &ctx.accounts.agent_state,
+        clock.unix_timestamp,
+    )?;
+    // Effects
+    commit_claim_state(
+        &mut ctx.accounts.agent_state,
+        &mut ctx.accounts.task,
+        agent_key,
+        ctx.bumps.agent_state,
+    )?;
+    // Interactions: none
+    emit!(TaskClaimed {
+        task_id: ctx.accounts.task.task_id,
+        agent: agent_key,
+    });
+    Ok(())
+}
 
-    // Checks: protocol not paused
+/// Pure check phase. Protocol-paused, session-bitmask-has-claim,
+/// session-not-expired, task-Open, claim-buffer satisfied,
+/// concurrent-claim-limit not exceeded.
+fn validate_claim_session_inputs(
+    global: &GlobalState,
+    session: &SessionDelegate,
+    task: &Task,
+    agent_state: &AgentState,
+    now: i64,
+) -> Result<()> {
     require!(!global.paused, ShillbotError::ProtocolPaused);
-
-    // Checks: session has claim_task permission (bit 0)
     require!(
         session.allowed_instructions & 0x01 != 0,
         ShillbotError::InvalidSessionDelegate
     );
-
-    // Checks: session not expired (expires_at == 0 means no expiry)
     if session.expires_at > 0 {
-        require!(
-            clock.unix_timestamp < session.expires_at,
-            ShillbotError::SessionExpired
-        );
+        require!(now < session.expires_at, ShillbotError::SessionExpired);
     }
-
-    // Checks: state
     require!(
         task.state == TaskState::Open,
         ShillbotError::InvalidTaskState
     );
-
-    // Checks: minimum time buffer before deadline
-    let earliest_claim_deadline = clock
-        .unix_timestamp
+    let earliest_claim_deadline = now
         .checked_add(task.claim_buffer)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     require!(
         earliest_claim_deadline < task.deadline,
         ShillbotError::ClaimBufferInsufficient
     );
-
-    // Checks: concurrent claim limit via AgentState counter (read from GlobalState)
     require!(
         agent_state.claimed_count < global.max_concurrent_claims,
         ShillbotError::MaxConcurrentClaimsExceeded
     );
+    Ok(())
+}
 
-    // Effects: update agent state
-    let agent_state = &mut ctx.accounts.agent_state;
-    let agent_key = session.agent;
-    // Only set agent and bump on first initialization (freshly zeroed account)
+/// Pure effect phase. Initialize the AgentState slots on first claim,
+/// increment claimed_count, transition task → Claimed.
+fn commit_claim_state(
+    agent_state: &mut AgentState,
+    task: &mut Task,
+    agent_key: Pubkey,
+    agent_state_bump: u8,
+) -> Result<()> {
     if agent_state.agent == Pubkey::default() {
         agent_state.agent = agent_key;
-        agent_state.bump = ctx.bumps.agent_state;
+        agent_state.bump = agent_state_bump;
     }
     agent_state.claimed_count = agent_state
         .claimed_count
         .checked_add(1)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-
-    // Effects: update task
-    let task = &mut ctx.accounts.task;
     task.agent = agent_key;
     task.state = TaskState::Claimed;
-
-    // Interactions: none
-    emit!(TaskClaimed {
-        task_id: task.task_id,
-        agent: agent_key,
-    });
-
     Ok(())
 }
 

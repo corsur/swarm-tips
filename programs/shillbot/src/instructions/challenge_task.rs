@@ -10,47 +10,26 @@ use crate::state::{Challenge, GlobalState, Task, TaskState};
 /// All challengers (including the task's client) pay the standard bond.
 pub fn challenge_task(ctx: Context<ChallengeTask>) -> Result<()> {
     let clock = Clock::get()?;
+    let challenger_key = ctx.accounts.challenger.key();
     let task = &ctx.accounts.task;
     let global = &ctx.accounts.global_state;
-    let challenger_key = ctx.accounts.challenger.key();
-
-    // Checks: protocol not paused
-    require!(!global.paused, ShillbotError::ProtocolPaused);
-
-    // Checks: task must be in Verified state
-    require!(
-        task.state == TaskState::Verified,
-        ShillbotError::InvalidTaskState
-    );
-
-    // Checks: must be within challenge window
-    require!(
-        clock.unix_timestamp < task.challenge_deadline,
-        ShillbotError::ChallengeWindowClosed
-    );
-
-    // Compute bond — all challengers pay the standard bond
-    // Bond multiplier is read from GlobalState (stored as raw u8, e.g. 2 = 2x)
+    // Checks
+    validate_challenge_inputs(global, task, clock.unix_timestamp)?;
+    // Compute bond + classify caller
     let is_client_challenge = challenger_key == task.client;
     let multiplier = u8::try_from(global.challenge_bond_multiplier_bps)
         .map_err(|_| error!(ShillbotError::ArithmeticOverflow))?;
     let bond_lamports = compute_challenge_bond(task.escrow_lamports, multiplier)?;
-
-    // Effects: initialize challenge PDA
-    let challenge = &mut ctx.accounts.challenge;
-    challenge.task_id = task.task_id;
-    challenge.challenger = challenger_key;
-    challenge.bond_lamports = bond_lamports;
-    challenge.is_client_challenge = is_client_challenge;
-    challenge.created_at = clock.unix_timestamp;
-    challenge.resolved = false;
-    challenge.challenger_won = false;
-    challenge.bump = ctx.bumps.challenge;
-
-    // Effects: transition task to Disputed
-    let task = &mut ctx.accounts.task;
-    task.state = TaskState::Disputed;
-
+    // Effects
+    init_challenge_state(
+        &mut ctx.accounts.challenge,
+        &mut ctx.accounts.task,
+        challenger_key,
+        bond_lamports,
+        is_client_challenge,
+        clock.unix_timestamp,
+        ctx.bumps.challenge,
+    );
     // Interactions: transfer bond from challenger to challenge PDA
     system_program::transfer(
         CpiContext::new(
@@ -62,15 +41,51 @@ pub fn challenge_task(ctx: Context<ChallengeTask>) -> Result<()> {
         ),
         bond_lamports,
     )?;
-
     emit!(TaskChallenged {
-        task_id: task.task_id,
+        task_id: ctx.accounts.task.task_id,
         challenger: challenger_key,
         bond_lamports,
         is_client_challenge,
     });
-
     Ok(())
+}
+
+/// Pure check phase. Protocol-not-paused, task is Verified, within
+/// challenge window.
+fn validate_challenge_inputs(global: &GlobalState, task: &Task, now: i64) -> Result<()> {
+    require!(!global.paused, ShillbotError::ProtocolPaused);
+    require!(
+        task.state == TaskState::Verified,
+        ShillbotError::InvalidTaskState
+    );
+    require!(
+        now < task.challenge_deadline,
+        ShillbotError::ChallengeWindowClosed
+    );
+    Ok(())
+}
+
+/// Pure effect phase. Init the Challenge PDA and transition the task to
+/// Disputed.
+#[allow(clippy::too_many_arguments)]
+fn init_challenge_state(
+    challenge: &mut Challenge,
+    task: &mut Task,
+    challenger_key: Pubkey,
+    bond_lamports: u64,
+    is_client_challenge: bool,
+    now: i64,
+    bump: u8,
+) {
+    challenge.task_id = task.task_id;
+    challenge.challenger = challenger_key;
+    challenge.bond_lamports = bond_lamports;
+    challenge.is_client_challenge = is_client_challenge;
+    challenge.created_at = now;
+    challenge.resolved = false;
+    challenge.challenger_won = false;
+    challenge.bump = bump;
+    task.state = TaskState::Disputed;
 }
 
 #[derive(Accounts)]

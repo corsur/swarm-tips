@@ -1,86 +1,56 @@
-use crate::errors::CoordinationError;
 use crate::events::GameStarted;
+use crate::instructions::join_game::{
+    commit_join_state, init_player_profile_if_new, validate_join_inputs,
+};
 use crate::instructions::session_utils::validate_session_authority;
 use crate::instructions::utils::transfer_lamports;
-use crate::state::{Game, GameState, PlayerProfile, SessionAuthority, StakeEscrow, Tournament};
+use crate::state::{Game, PlayerProfile, SessionAuthority, StakeEscrow, Tournament};
 use anchor_lang::prelude::*;
 
-/// Session-delegated variant of `join_game`. The session key signs instead
-/// of the player wallet.
+/// Session-delegated variant of `join_game`. Session key signs instead of
+/// the player wallet. Helpers live in `join_game.rs`; the session variant
+/// differs only in the account structure (UncheckedAccount player +
+/// session_signer + payer change).
 pub fn join_game_session(ctx: Context<JoinGameSession>) -> Result<()> {
     validate_session_authority(
         &ctx.accounts.session_authority,
         &ctx.accounts.player.key(),
         &ctx.accounts.session_signer.key(),
     )?;
-
-    let game = &ctx.accounts.game;
-    require!(
-        game.state == GameState::Pending,
-        CoordinationError::InvalidGameState
-    );
-    require!(
-        ctx.accounts.player.key() != game.player_one,
-        CoordinationError::CannotJoinOwnGame,
-    );
-
     let now = Clock::get()?.unix_timestamp;
-    require!(
-        ctx.accounts.tournament.is_active(now),
-        CoordinationError::OutsideTournamentWindow,
-    );
-
-    // Validate the player's escrow has an unconsumed deposit
+    let player_key = ctx.accounts.player.key();
     let tournament_id = ctx.accounts.tournament.tournament_id;
-    require!(
-        ctx.accounts
-            .escrow
-            .validate_for_game(&ctx.accounts.player.key(), tournament_id),
-        CoordinationError::EscrowInvalid,
-    );
-
-    // Init player profile if needed
-    ctx.accounts.player_profile.init_if_new(
-        ctx.accounts.player.key(),
+    // Checks
+    validate_join_inputs(
+        &ctx.accounts.game,
+        &ctx.accounts.tournament,
+        &ctx.accounts.escrow,
+        &player_key,
+        now,
+    )?;
+    init_player_profile_if_new(
+        &mut ctx.accounts.player_profile,
+        player_key,
         tournament_id,
         ctx.bumps.player_profile,
-    );
-    require!(
-        ctx.accounts.player_profile.tournament_id == tournament_id,
-        CoordinationError::ProfileTournamentMismatch,
-    );
-
+    )?;
+    // Effects
     let stake_lamports = ctx.accounts.game.stake_lamports;
-    let player_key = ctx.accounts.player.key();
     let current_slot = Clock::get()?.slot;
-
-    // Effects: commit state before the transfer
-    ctx.accounts.game.player_two = player_key;
-    ctx.accounts.game.state = GameState::Active;
-    ctx.accounts.game.activated_at_slot = current_slot;
-    ctx.accounts.escrow.consumed = true;
-
-    // Postcondition: game must now be Active with both players set
-    require!(
-        ctx.accounts.game.state == GameState::Active,
-        CoordinationError::InvalidGameState
-    );
-    require!(
-        ctx.accounts.game.player_two != Pubkey::default(),
-        CoordinationError::InvalidGameState
-    );
-
-    // Capture values needed for the event before transfer borrows accounts
+    commit_join_state(
+        &mut ctx.accounts.game,
+        &mut ctx.accounts.escrow,
+        player_key,
+        current_slot,
+    )?;
     let game_id = ctx.accounts.game.game_id;
     let player_one = ctx.accounts.game.player_one;
-
-    // Interactions: transfer player 2 stake from escrow into the game PDA
+    // Interactions
     transfer_lamports(
         &ctx.accounts.escrow.to_account_info(),
         &ctx.accounts.game.to_account_info(),
         stake_lamports,
     )?;
-
     emit!(GameStarted {
         game_id,
         tournament_id,

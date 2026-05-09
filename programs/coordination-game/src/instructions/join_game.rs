@@ -7,81 +7,113 @@ use anchor_lang::prelude::*;
 /// Player 2 joins an existing game. P1 is set at create_game time, so this
 /// instruction is P2-only. Transitions the game from Pending to Active.
 pub fn join_game(ctx: Context<JoinGame>) -> Result<()> {
-    let game = &ctx.accounts.game;
-    require!(
-        game.state == GameState::Pending,
-        CoordinationError::InvalidGameState
-    );
-
     let now = Clock::get()?.unix_timestamp;
-    require!(
-        ctx.accounts.tournament.is_active(now),
-        CoordinationError::OutsideTournamentWindow,
-    );
-
-    // Cannot join your own game
-    require!(
-        ctx.accounts.player.key() != game.player_one,
-        CoordinationError::CannotJoinOwnGame,
-    );
-
-    // Validate the player's escrow has an unconsumed deposit
+    let player_key = ctx.accounts.player.key();
     let tournament_id = ctx.accounts.tournament.tournament_id;
-    require!(
-        ctx.accounts
-            .escrow
-            .validate_for_game(&ctx.accounts.player.key(), tournament_id),
-        CoordinationError::EscrowInvalid,
-    );
-
-    // Init player profile if needed
-    ctx.accounts.player_profile.init_if_new(
-        ctx.accounts.player.key(),
+    // Checks
+    validate_join_inputs(
+        &ctx.accounts.game,
+        &ctx.accounts.tournament,
+        &ctx.accounts.escrow,
+        &player_key,
+        now,
+    )?;
+    init_player_profile_if_new(
+        &mut ctx.accounts.player_profile,
+        player_key,
         tournament_id,
         ctx.bumps.player_profile,
-    );
-    require!(
-        ctx.accounts.player_profile.tournament_id == tournament_id,
-        CoordinationError::ProfileTournamentMismatch,
-    );
-
+    )?;
+    // Effects
     let stake_lamports = ctx.accounts.game.stake_lamports;
-    let player_key = ctx.accounts.player.key();
     let current_slot = Clock::get()?.slot;
-
-    // Effects: set P2, transition to Active
-    ctx.accounts.game.player_two = player_key;
-    ctx.accounts.game.state = GameState::Active;
-    ctx.accounts.game.activated_at_slot = current_slot;
-    ctx.accounts.escrow.consumed = true;
-
-    // Postcondition: game must now be Active with both players set
-    require!(
-        ctx.accounts.game.state == GameState::Active,
-        CoordinationError::InvalidGameState
-    );
-    require!(
-        ctx.accounts.game.player_two != Pubkey::default(),
-        CoordinationError::InvalidGameState
-    );
-
+    commit_join_state(
+        &mut ctx.accounts.game,
+        &mut ctx.accounts.escrow,
+        player_key,
+        current_slot,
+    )?;
     let game_id = ctx.accounts.game.game_id;
     let player_one = ctx.accounts.game.player_one;
-
-    // Transfer P2 stake from escrow to game PDA
+    // Interactions
     transfer_lamports(
         &ctx.accounts.escrow.to_account_info(),
         &ctx.accounts.game.to_account_info(),
         stake_lamports,
     )?;
-
     emit!(GameStarted {
         game_id,
         tournament_id,
         player_one,
         player_two: player_key,
     });
+    Ok(())
+}
 
+/// Pure check phase: state, tournament window, not-self-join, escrow valid.
+pub(crate) fn validate_join_inputs(
+    game: &Game,
+    tournament: &Tournament,
+    escrow: &StakeEscrow,
+    player_key: &Pubkey,
+    now: i64,
+) -> Result<()> {
+    require!(
+        game.state == GameState::Pending,
+        CoordinationError::InvalidGameState
+    );
+    require!(
+        tournament.is_active(now),
+        CoordinationError::OutsideTournamentWindow,
+    );
+    require!(
+        *player_key != game.player_one,
+        CoordinationError::CannotJoinOwnGame,
+    );
+    require!(
+        escrow.validate_for_game(player_key, tournament.tournament_id),
+        CoordinationError::EscrowInvalid,
+    );
+    Ok(())
+}
+
+/// Initialize the PlayerProfile PDA the first time this player participates
+/// in this tournament. Returns Ok if the profile is already initialized for
+/// this tournament; errors if it's set to a DIFFERENT tournament.
+pub(crate) fn init_player_profile_if_new(
+    profile: &mut PlayerProfile,
+    player_key: Pubkey,
+    tournament_id: u64,
+    bump: u8,
+) -> Result<()> {
+    profile.init_if_new(player_key, tournament_id, bump);
+    require!(
+        profile.tournament_id == tournament_id,
+        CoordinationError::ProfileTournamentMismatch,
+    );
+    Ok(())
+}
+
+/// Pure effect phase. Sets P2, transitions to Active, consumes escrow.
+/// Asserts the postcondition (Active state + both player slots filled).
+pub(crate) fn commit_join_state(
+    game: &mut Game,
+    escrow: &mut StakeEscrow,
+    player_key: Pubkey,
+    current_slot: u64,
+) -> Result<()> {
+    game.player_two = player_key;
+    game.state = GameState::Active;
+    game.activated_at_slot = current_slot;
+    escrow.consumed = true;
+    require!(
+        game.state == GameState::Active,
+        CoordinationError::InvalidGameState
+    );
+    require!(
+        game.player_two != Pubkey::default(),
+        CoordinationError::InvalidGameState
+    );
     Ok(())
 }
 
