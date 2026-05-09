@@ -80,16 +80,13 @@ pub struct WsConnection {
 ///
 /// Converts `http://` to `ws://` and `https://` to `wss://`, strips trailing
 /// slashes, and appends `/ws?token={jwt}`.
-fn build_ws_url(base_url: &str, jwt: &str) -> String {
-    build_ws_url_with_network(base_url, jwt, None)
-}
-
-/// Same as `build_ws_url`, but appends `&network=<n>` when `network`
-/// is `Some(non-empty)`. Required for the devnet-routed flow — game-api
-/// uses the WebSocket URL's `network` param to bind the connection to
-/// the correct queue. Without it, all WebSocket connections land on
-/// the mainnet queue.
-fn build_ws_url_with_network(base_url: &str, jwt: &str, network: Option<&str>) -> String {
+/// Build the per-request WebSocket URL. Appends `&network=<n>` when
+/// `network` is `Some(non-empty)`. Required for the devnet-routed
+/// flow — game-api uses the URL's `network` param to bind the
+/// connection to the correct per-network queue. Without it, all
+/// WebSocket connections land on the mainnet queue regardless of
+/// where the caller's HTTP queue join went.
+fn build_ws_url(base_url: &str, jwt: &str, network: Option<&str>) -> String {
     let ws_url = base_url
         .replacen("http://", "ws://", 1)
         .replacen("https://", "wss://", 1);
@@ -153,7 +150,7 @@ impl WsConnection {
         jwt: &str,
         network: Option<&str>,
     ) -> Result<Self> {
-        let url = build_ws_url_with_network(base_url, jwt, network);
+        let url = build_ws_url(base_url, jwt, network);
         let (ws_stream, _) = connect_async(&url)
             .await
             .context("WebSocket connect failed")?;
@@ -312,44 +309,69 @@ mod tests {
 
     #[test]
     fn build_ws_url_converts_http_to_ws() {
-        let url = build_ws_url("http://localhost:8080", "my-jwt");
+        let url = build_ws_url("http://localhost:8080", "my-jwt", None);
         assert_eq!(url, "ws://localhost:8080/ws?token=my-jwt");
     }
 
     #[test]
     fn build_ws_url_converts_https_to_wss() {
-        let url = build_ws_url("https://api.example.com", "tok123");
+        let url = build_ws_url("https://api.example.com", "tok123", None);
         assert_eq!(url, "wss://api.example.com/ws?token=tok123");
     }
 
     #[test]
     fn build_ws_url_strips_trailing_slash() {
-        let url = build_ws_url("http://localhost:8080/", "jwt");
+        let url = build_ws_url("http://localhost:8080/", "jwt", None);
         assert_eq!(url, "ws://localhost:8080/ws?token=jwt");
     }
 
     #[test]
     fn build_ws_url_strips_multiple_trailing_slashes() {
-        let url = build_ws_url("https://api.example.com///", "jwt");
+        let url = build_ws_url("https://api.example.com///", "jwt", None);
         assert_eq!(url, "wss://api.example.com/ws?token=jwt");
     }
 
     #[test]
     fn build_ws_url_preserves_path() {
-        let url = build_ws_url("http://localhost:8080/api/v1", "jwt");
+        let url = build_ws_url("http://localhost:8080/api/v1", "jwt", None);
         assert_eq!(url, "ws://localhost:8080/api/v1/ws?token=jwt");
     }
 
     #[test]
     fn build_ws_url_only_replaces_first_http_occurrence() {
-        let url = build_ws_url("http://host/http://other", "jwt");
+        let url = build_ws_url("http://host/http://other", "jwt", None);
         assert_eq!(url, "ws://host/http://other/ws?token=jwt");
     }
 
     #[test]
     fn build_ws_url_empty_jwt() {
-        let url = build_ws_url("http://localhost:8080", "");
+        let url = build_ws_url("http://localhost:8080", "", None);
         assert_eq!(url, "ws://localhost:8080/ws?token=");
+    }
+
+    // Regression: 2026-05-09 full-game devnet e2e. MCP server's
+    // WebSocket registered as `network=mainnet` in game-api's
+    // connection map even though its HTTP queue join went to
+    // `network=devnet`. `filter_stale_entries` then treated the
+    // mcp-agent's queue entry as orphaned and dropped it from
+    // pairing candidates — matchmaker paired human-browser with a
+    // stale grok-agent instead.
+    #[test]
+    fn build_ws_url_appends_network_when_set() {
+        let url = build_ws_url("http://localhost:8080", "jwt", Some("devnet"));
+        assert_eq!(url, "ws://localhost:8080/ws?token=jwt&network=devnet");
+    }
+
+    #[test]
+    fn build_ws_url_omits_network_when_empty() {
+        let url = build_ws_url("http://localhost:8080", "jwt", Some(""));
+        assert_eq!(url, "ws://localhost:8080/ws?token=jwt");
+    }
+
+    #[test]
+    fn build_ws_url_omits_network_when_none() {
+        let url = build_ws_url("http://localhost:8080", "jwt", None);
+        assert_eq!(url, "ws://localhost:8080/ws?token=jwt");
     }
 
     // -----------------------------------------------------------------------

@@ -661,9 +661,12 @@ impl GameSessionManager {
         jwt: &str,
         restored: &Arc<Mutex<GameSession>>,
     ) {
+        // Use the session's persisted network so reconnects bind to the
+        // same per-network connection map the original session used.
+        let network = restored.lock().await.network.clone();
         let ws_result = tokio::time::timeout(
             tokio::time::Duration::from_secs(10),
-            WsConnection::connect(&self.game_api_url, jwt),
+            WsConnection::connect_with_network(&self.game_api_url, jwt, network.as_deref()),
         )
         .await;
         match ws_result {
@@ -929,7 +932,7 @@ impl GameSessionManager {
             GameApiClient::new(&self.game_api_url)?.with_network(network.map(str::to_string));
         let auth_resp = api_client.session_auth(wallet, sig_str).await?;
         let jwt = auth_resp.token.clone();
-        self.spawn_ws_listener(wallet, &jwt, session).await?;
+        self.spawn_ws_listener(wallet, &jwt, session, network).await?;
         session.lock().await.jwt = jwt;
         {
             let s = session.lock().await;
@@ -952,8 +955,19 @@ impl GameSessionManager {
         wallet: &str,
         jwt: &str,
         session: &Arc<Mutex<GameSession>>,
+        network: Option<&str>,
     ) -> Result<()> {
-        let ws = WsConnection::connect(&self.game_api_url, jwt).await?;
+        // Carry `network` into the WS connect URL so game-api binds the
+        // ws connection to the right per-network connection map. Without
+        // this, an MCP agent's HTTP queue join lands in `network=devnet`
+        // but its WebSocket registers as `network=mainnet` (the default),
+        // so `filter_stale_entries` treats the queue entry as orphaned
+        // and drops it from candidate pairings — the matchmaker then
+        // pairs the human-browser with a stale grok-agent instead of
+        // the MCP-driven agent. Surfaced 2026-05-09 by full-game devnet
+        // e2e (game-api logs showed `WebSocket upgrade ... network=mainnet`
+        // for an mcp-agent that joined queue as devnet).
+        let ws = WsConnection::connect_with_network(&self.game_api_url, jwt, network).await?;
         let (sink, stream) = ws.into_split();
         let ws_sink = Arc::new(Mutex::new(sink));
 
@@ -1592,7 +1606,10 @@ async fn ws_listener_with_reconnect(
         }
 
         // Attempt reconnect with exponential backoff.
-        let jwt = session.lock().await.jwt.clone();
+        let (jwt, network) = {
+            let s = session.lock().await;
+            (s.jwt.clone(), s.network.clone())
+        };
         let mut reconnected = false;
 
         for attempt in 0..WS_MAX_RECONNECT_ATTEMPTS {
@@ -1606,7 +1623,7 @@ async fn ws_listener_with_reconnect(
             tracing::info!(wallet = %wallet, attempt, delay_secs = delay, "ws reconnecting");
             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
 
-            match WsConnection::connect(&game_api_url, &jwt).await {
+            match WsConnection::connect_with_network(&game_api_url, &jwt, network.as_deref()).await {
                 Ok(ws) => {
                     let (new_sink, new_stream) = ws.into_split();
                     // Swap the sink so send_message uses the new connection.
