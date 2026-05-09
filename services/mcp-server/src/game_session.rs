@@ -124,6 +124,14 @@ pub struct GameSession {
     pub commit_preimage: Option<[u8; 32]>,
     pub game_ready: Option<u64>,
     pub reveal_data: Option<String>,
+    /// Solana network for this session — `Some("devnet")` routes every
+    /// game-api call through `?network=devnet` and every Solana RPC read
+    /// to the devnet endpoint. `None` (the default) is mainnet. Set once
+    /// when `build_find_match_tx` is called with a network, then reused
+    /// for the rest of the session's lifecycle so post-deposit auth,
+    /// queue join, cosign, and game-state notifications all hit the same
+    /// cluster the deposit was broadcast on.
+    pub network: Option<String>,
 }
 
 /// Status returned by `check_match`.
@@ -383,6 +391,10 @@ fn build_restored_session(
         commit_preimage: preimage,
         game_ready: persisted.game_ready,
         reveal_data: persisted.reveal_data.clone(),
+        // Restored sessions don't carry a network — the next per-call tool
+        // (find_match) will set it. Mainnet-default is correct for
+        // restored sessions in production where most traffic is mainnet.
+        network: None,
     }
 }
 
@@ -717,6 +729,7 @@ impl GameSessionManager {
             commit_preimage: None,
             game_ready: None,
             reveal_data: None,
+            network: None,
         }));
 
         self.sessions
@@ -762,6 +775,17 @@ impl GameSessionManager {
         );
         let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
         let tx_builder = self.tx_builder_for_network(pubkey, network);
+
+        // Pin the network on the session so subsequent game-api calls
+        // (auth, queue join, cosign, game-state notifications) all route
+        // to the same cluster the deposit_stake message we're about to
+        // build will land on. Without this, after_deposit_stake would
+        // try to authenticate by tx-signature lookup on the cluster
+        // default RPC — fine on mainnet, but a devnet broadcast can't
+        // be found from a mainnet RPC.
+        if let Some(session) = self.sessions.read().await.get(wallet) {
+            session.lock().await.network = network.map(str::to_string);
+        }
 
         // Check balance before building the stake tx.
         let balance = tx_builder
@@ -813,7 +837,10 @@ impl GameSessionManager {
             .clone();
 
         match action {
-            "deposit_stake" => self.after_deposit_stake(wallet, &sig_str, &session).await?,
+            "deposit_stake" => {
+                self.after_deposit_stake(wallet, &sig_str, &session, network)
+                    .await?
+            }
             "join_game" => self.after_join_game(wallet, &session).await?,
             "commit_guess" => self.after_commit_guess(wallet, &session).await?,
             "reveal_guess" => self.after_reveal_guess(wallet, &session).await,
@@ -878,11 +905,17 @@ impl GameSessionManager {
     /// stake's JWT against a fresh stake hits an ExpiredSignature /
     /// wrong-session 401 once the prior token TTL elapses — the fresh
     /// stake we just broadcast IS the auth credential.
+    ///
+    /// `network` must match the network the deposit_stake was broadcast on
+    /// — the game-api fetches the tx by signature from the matching RPC
+    /// to verify wallet ownership; mismatched network = "transaction not
+    /// found".
     async fn after_deposit_stake(
         &self,
         wallet: &str,
         sig_str: &str,
         session: &Arc<Mutex<GameSession>>,
+        network: Option<&str>,
     ) -> Result<()> {
         if !session.lock().await.jwt.is_empty() {
             if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
@@ -892,7 +925,8 @@ impl GameSessionManager {
             session.lock().await.jwt.clear();
         }
 
-        let api_client = GameApiClient::new(&self.game_api_url)?;
+        let api_client = GameApiClient::new(&self.game_api_url)?
+            .with_network(network.map(str::to_string));
         let auth_resp = api_client.session_auth(wallet, sig_str).await?;
         let jwt = auth_resp.token.clone();
         self.spawn_ws_listener(wallet, &jwt, session).await?;
@@ -1027,8 +1061,21 @@ impl GameSessionManager {
         jwt: &str,
         tournament_id: u64,
     ) -> Result<()> {
+        // Read the session's pinned network so this queue join routes to
+        // the same cluster the deposit_stake landed on.
+        let network = self
+            .sessions
+            .read()
+            .await
+            .get(wallet)
+            .ok_or_else(|| anyhow::anyhow!("no session for wallet"))?
+            .lock()
+            .await
+            .network
+            .clone();
+
         // Clear stale queue entry from previous crash.
-        let api_client = GameApiClient::new(&self.game_api_url)?;
+        let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
         if let Err(e) = api_client.leave_queue(jwt, tournament_id).await {
             tracing::warn!(
                 service = "coordination-mcp-server",

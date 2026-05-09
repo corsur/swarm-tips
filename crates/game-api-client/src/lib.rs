@@ -103,15 +103,25 @@ pub struct GameStatusResponse {
 /// Covers all endpoints used by grok-agent and mcp-server.
 /// Auth endpoints (`request_challenge`, `verify_challenge`) do not require a
 /// bearer token; all other endpoints take `token: &str`.
+///
+/// `network` is appended as `?network=devnet` to every request URL. The
+/// game-api routes Solana RPC reads (tx lookup for auth, account reads for
+/// queue/cosign) by this param. Without it every call defaults to mainnet,
+/// which breaks devnet flows: a deposit_stake tx broadcast on devnet
+/// returns `transaction not found` from a mainnet tx-signature lookup.
+/// Surfaced 2026-05-09 by the human-vs-agent devnet E2E.
 pub struct GameApiClient {
     inner: reqwest::Client,
     base_url: String,
+    network: Option<String>,
 }
 
 impl GameApiClient {
     /// Create a new client pointing at `base_url` (e.g. `http://localhost:8080`).
     ///
-    /// Trailing slashes are stripped from the base URL.
+    /// Trailing slashes are stripped from the base URL. The client defaults
+    /// to mainnet routing — call `with_network` to attach a non-default
+    /// `?network=` query param to every request.
     pub fn new(base_url: &str) -> Result<Self, GameApiError> {
         assert!(!base_url.is_empty(), "game-api base_url must not be empty");
 
@@ -123,7 +133,25 @@ impl GameApiClient {
         Ok(Self {
             inner,
             base_url: base_url.trim_end_matches('/').to_string(),
+            network: None,
         })
+    }
+
+    /// Attach a `?network=` query param to every outgoing request. `None`
+    /// (the default) sends without the param so production traffic stays
+    /// exactly as before.
+    pub fn with_network(mut self, network: Option<String>) -> Self {
+        self.network = network;
+        self
+    }
+
+    /// Build the per-request URL with the network query param appended.
+    fn url(&self, path: &str) -> String {
+        debug_assert!(path.starts_with('/'), "path must start with /");
+        match self.network.as_deref() {
+            Some(n) if !n.is_empty() => format!("{}{}?network={}", self.base_url, path, n),
+            _ => format!("{}{}", self.base_url, path),
+        }
     }
 
     // -- Auth (no token required) ------------------------------------------
@@ -137,7 +165,7 @@ impl GameApiClient {
             wallet: &'a str,
         }
 
-        let url = format!("{}/auth/challenge", self.base_url);
+        let url = self.url("/auth/challenge");
         let resp = self.inner.post(&url).json(&Body { wallet }).send().await?;
 
         Self::check_status(resp)
@@ -161,7 +189,7 @@ impl GameApiClient {
             signature: &'a str,
         }
 
-        let url = format!("{}/auth/verify", self.base_url);
+        let url = self.url("/auth/verify");
         let resp = self
             .inner
             .post(&url)
@@ -197,7 +225,7 @@ impl GameApiClient {
             tx_signature: &'a str,
         }
 
-        let url = format!("{}/auth/session", self.base_url);
+        let url = self.url("/auth/session");
         let resp = self
             .inner
             .post(&url)
@@ -223,7 +251,7 @@ impl GameApiClient {
         token: &str,
         request: &QueueJoinRequest<'_>,
     ) -> Result<QueueJoinResponse, GameApiError> {
-        let url = format!("{}/queue/join", self.base_url);
+        let url = self.url("/queue/join");
         let resp = self
             .inner
             .post(&url)
@@ -248,7 +276,7 @@ impl GameApiClient {
             tournament_id: u64,
         }
 
-        let url = format!("{}/queue/leave", self.base_url);
+        let url = self.url("/queue/leave");
         let resp = self
             .inner
             .post(&url)
@@ -277,7 +305,7 @@ impl GameApiClient {
             session_id: &'a str,
         }
 
-        let url = format!("{}/games/committed", self.base_url);
+        let url = self.url("/games/committed");
         let resp = self
             .inner
             .post(&url)
@@ -303,7 +331,7 @@ impl GameApiClient {
             session_id: &'a str,
         }
 
-        let url = format!("{}/games/joined", self.base_url);
+        let url = self.url("/games/joined");
         let resp = self
             .inner
             .post(&url)
@@ -335,7 +363,7 @@ impl GameApiClient {
             session_id: &'a str,
         }
 
-        let url = format!("{}/games/started", self.base_url);
+        let url = self.url("/games/started");
         let resp = self
             .inner
             .post(&url)
@@ -365,7 +393,7 @@ impl GameApiClient {
             message: &'a str,
         }
 
-        let url = format!("{}/games/cosign", self.base_url);
+        let url = self.url("/games/cosign");
         let resp = self
             .inner
             .post(&url)
@@ -414,7 +442,7 @@ impl GameApiClient {
             agent_guess_source: Option<&'a str>,
         }
 
-        let url = format!("{}/games/resolved", self.base_url);
+        let url = self.url("/games/resolved");
         let resp = self
             .inner
             .post(&url)
@@ -448,10 +476,13 @@ impl GameApiClient {
         limit: Option<u32>,
     ) -> Result<LeaderboardResponse, GameApiError> {
         let effective_limit = limit.unwrap_or(20).min(100);
-        let url = format!(
-            "{}/tournaments/{tournament_id}/leaderboard?limit={effective_limit}",
-            self.base_url,
-        );
+        let path = format!("/tournaments/{tournament_id}/leaderboard");
+        // Manual URL build because this endpoint already has a `?limit=`
+        // query param — `self.url(path)` would conflict with `?` placement.
+        let mut url = format!("{}{}?limit={}", self.base_url, path, effective_limit);
+        if let Some(n) = self.network.as_deref().filter(|n| !n.is_empty()) {
+            url.push_str(&format!("&network={n}"));
+        }
 
         let resp = self.inner.get(&url).send().await?;
         Self::check_status(resp)
