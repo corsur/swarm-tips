@@ -148,9 +148,51 @@ jobs:
           anchor idl close --provider.cluster devnet 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi || true
 
       - name: Deploy both programs to devnet
+        # Use `solana program deploy` directly instead of `anchor deploy`.
+        # The latter bundles bytecode upload with an idl upgrade that fails
+        # on devnet with 0xbc4 / AccountNotInitialized when the on-chain IDL
+        # is in an inconsistent state — the prior `anchor idl close` step
+        # silently fails for both programs (`|| true`) and leaves the IDL
+        # account stuck. The IDL stick caused the 2026-05-09 gameplay E2E
+        # outage: devnet bytecode drifted from mainnet because deploy CI
+        # had been failing on the IDL step for weeks, accounts created with
+        # the new IDL failed to deserialize on-chain. Bypass the IDL step
+        # so bytecode keeps flowing; IDL is best-effort below.
         run: |
-          anchor deploy -p coordination_game --provider.cluster devnet
-          anchor deploy -p shillbot --provider.cluster devnet
+          solana program deploy \
+            --url https://api.devnet.solana.com \
+            --upgrade-authority ~/.config/solana/id.json \
+            --program-id 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P \
+            target/deploy/coordination_game.so
+          solana program deploy \
+            --url https://api.devnet.solana.com \
+            --upgrade-authority ~/.config/solana/id.json \
+            --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi \
+            target/deploy/shillbot.so
+
+      - name: Initialize / upgrade on-chain IDL (best effort)
+        # Off-chain consumers use the SDK's bundled IDL, not the on-chain
+        # copy, so the program runs correctly even if these calls fail.
+        run: |
+          (anchor idl init --provider.cluster devnet \
+            --filepath target/idl/coordination_game.json \
+            2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P || \
+           anchor idl upgrade --provider.cluster devnet \
+            --filepath target/idl/coordination_game.json \
+            2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P) || \
+          echo "coordination_game IDL update failed; bytecode is the load-bearing step"
+          (anchor idl init --provider.cluster devnet \
+            --filepath target/idl/shillbot.json \
+            2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi || \
+           anchor idl upgrade --provider.cluster devnet \
+            --filepath target/idl/shillbot.json \
+            2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi) || \
+          echo "shillbot IDL update failed; bytecode is the load-bearing step"
+
+      - name: Verify program parity across mainnet and devnet
+        # Catches the same drift that caused this CI fix in the first place.
+        # Fails CI if devnet bytecode falls out of sync with mainnet again.
+        run: bash scripts/check-program-parity.sh
 
       - name: Verify upgrade authority (post-deploy)
         run: |
