@@ -81,10 +81,23 @@ pub struct WsConnection {
 /// Converts `http://` to `ws://` and `https://` to `wss://`, strips trailing
 /// slashes, and appends `/ws?token={jwt}`.
 fn build_ws_url(base_url: &str, jwt: &str) -> String {
+    build_ws_url_with_network(base_url, jwt, None)
+}
+
+/// Same as `build_ws_url`, but appends `&network=<n>` when `network`
+/// is `Some(non-empty)`. Required for the devnet-routed flow — game-api
+/// uses the WebSocket URL's `network` param to bind the connection to
+/// the correct queue. Without it, all WebSocket connections land on
+/// the mainnet queue.
+fn build_ws_url_with_network(base_url: &str, jwt: &str, network: Option<&str>) -> String {
     let ws_url = base_url
         .replacen("http://", "ws://", 1)
         .replacen("https://", "wss://", 1);
-    format!("{}/ws?token={}", ws_url.trim_end_matches('/'), jwt)
+    let base = format!("{}/ws?token={}", ws_url.trim_end_matches('/'), jwt);
+    match network {
+        Some(n) if !n.is_empty() => format!("{}&network={}", base, n),
+        _ => base,
+    }
 }
 
 /// Parse a raw WebSocket text frame into a `ServerMessage`.
@@ -129,7 +142,18 @@ pub fn parse_server_message(text: &str) -> ServerMessage {
 
 impl WsConnection {
     pub async fn connect(base_url: &str, jwt: &str) -> Result<Self> {
-        let url = build_ws_url(base_url, jwt);
+        Self::connect_with_network(base_url, jwt, None).await
+    }
+
+    /// Connect with an optional `network` query param. Use this from
+    /// devnet-routed callers so game-api binds the WebSocket connection
+    /// to the devnet queue instead of mainnet.
+    pub async fn connect_with_network(
+        base_url: &str,
+        jwt: &str,
+        network: Option<&str>,
+    ) -> Result<Self> {
+        let url = build_ws_url_with_network(base_url, jwt, network);
         let (ws_stream, _) = connect_async(&url)
             .await
             .context("WebSocket connect failed")?;
