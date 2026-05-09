@@ -22,6 +22,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -160,6 +161,17 @@ pub struct GameResult {
 // ---------------------------------------------------------------------------
 
 /// Manages all active game sessions. Thread-safe, shared across MCP tool calls.
+///
+/// Holds RPC URLs for both networks (mainnet + devnet) so per-call tools
+/// (`game_find_match`, `game_submit_tx`) can route to the cluster the
+/// caller specifies. The cached `tx_builders` is keyed by wallet only and
+/// uses the cluster-default URL — matched the original mainnet-only flow.
+/// Anything that needs a non-default network builds an ephemeral
+/// GameTxBuilder via `tx_builder_for_network`. See the 2026-05-09 devnet
+/// gameplay E2E sweep: human-vs-agent's MCP-driven agent submitted its
+/// deposit_stake to mainnet (the only RPC the cached builder knew about)
+/// while the test was running on devnet → AccountNotInitialized for the
+/// devnet-only Tournament PDA.
 pub struct GameSessionManager {
     sessions: RwLock<HashMap<String, Arc<Mutex<GameSession>>>>,
     ws_sinks: RwLock<HashMap<String, Arc<Mutex<WsSink>>>>,
@@ -169,6 +181,8 @@ pub struct GameSessionManager {
     ws_cancel_tokens: RwLock<HashMap<String, CancellationToken>>,
     game_api_url: String,
     solana_rpc_url: String,
+    solana_rpc_url_mainnet: String,
+    solana_rpc_url_devnet: String,
     db: Arc<FirestoreDb>,
 }
 
@@ -186,6 +200,22 @@ fn decode_signed_tx(signed_tx_b64: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(signed_tx_b64)
         .context("invalid base64 signed transaction")
+}
+
+/// Pure function: route a per-call network argument to one of the three
+/// configured RPC URLs. Extracted so `GameSessionManager::pick_rpc_url`
+/// can be tested without standing up a real `FirestoreDb`.
+fn pick_rpc_url_for_network<'a>(
+    network: Option<&str>,
+    default: &'a str,
+    mainnet: &'a str,
+    devnet: &'a str,
+) -> &'a str {
+    match network {
+        Some("devnet") => devnet,
+        Some("mainnet") => mainnet,
+        _ => default,
+    }
 }
 
 /// Parse a hex-encoded `[u8; 32]` `r_matchup` reveal value. Used by
@@ -357,11 +387,25 @@ fn build_restored_session(
 }
 
 impl GameSessionManager {
-    pub fn new(game_api_url: String, solana_rpc_url: String, db: Arc<FirestoreDb>) -> Self {
+    pub fn new(
+        game_api_url: String,
+        solana_rpc_url: String,
+        solana_rpc_url_mainnet: String,
+        solana_rpc_url_devnet: String,
+        db: Arc<FirestoreDb>,
+    ) -> Self {
         assert!(!game_api_url.is_empty(), "game_api_url must not be empty");
         assert!(
             !solana_rpc_url.is_empty(),
             "solana_rpc_url must not be empty"
+        );
+        assert!(
+            !solana_rpc_url_mainnet.is_empty(),
+            "solana_rpc_url_mainnet must not be empty"
+        );
+        assert!(
+            !solana_rpc_url_devnet.is_empty(),
+            "solana_rpc_url_devnet must not be empty"
         );
         Self {
             sessions: RwLock::new(HashMap::new()),
@@ -370,8 +414,36 @@ impl GameSessionManager {
             ws_cancel_tokens: RwLock::new(HashMap::new()),
             game_api_url,
             solana_rpc_url,
+            solana_rpc_url_mainnet,
+            solana_rpc_url_devnet,
             db,
         }
+    }
+
+    /// Resolve the RPC URL for a per-call network argument. `None` and
+    /// `Some("mainnet")` both map to the configured mainnet URL; `Some("devnet")`
+    /// to devnet. Anything else falls back to the cluster default —
+    /// matches the existing `?network=` semantics on the orchestrator.
+    fn pick_rpc_url(&self, network: Option<&str>) -> &str {
+        pick_rpc_url_for_network(
+            network,
+            &self.solana_rpc_url,
+            &self.solana_rpc_url_mainnet,
+            &self.solana_rpc_url_devnet,
+        )
+    }
+
+    /// Build an ephemeral GameTxBuilder for the requested network. The
+    /// cached `tx_builders` map is kept for backward compat (cluster-default
+    /// network only) and used by paths that don't yet take a network arg.
+    /// Tools that DO take a network arg (`game_find_match`, `game_submit_tx`)
+    /// call this so the broadcast lands on the right cluster.
+    fn tx_builder_for_network(
+        &self,
+        wallet_pubkey: solana_sdk::pubkey::Pubkey,
+        network: Option<&str>,
+    ) -> GameTxBuilder {
+        GameTxBuilder::new(self.pick_rpc_url(network), wallet_pubkey)
     }
 
     // -- Firestore persistence helpers --
@@ -671,15 +743,25 @@ impl GameSessionManager {
 
     /// Build an unsigned deposit_stake transaction for the agent to sign.
     ///
-    /// Returns the unsigned transaction. The agent signs locally and submits
-    /// via `submit_signed_game_tx`, which handles queue join and auth.
+    /// `network` selects which RPC to read game_counter from and which
+    /// blockhash to use. `None` falls back to the cluster default;
+    /// `Some("devnet")` / `Some("mainnet")` route explicitly. The agent
+    /// signs locally then submits via `submit_signed_game_tx` (which must
+    /// be passed the same `network` so the broadcast lands on the same
+    /// cluster).
     pub async fn build_find_match_tx(
         &self,
         wallet: &str,
         tournament_id: u64,
+        network: Option<&str>,
     ) -> Result<game_chain::client::UnsignedTx> {
-        let builders = self.tx_builders.read().await;
-        let tx_builder = builders.get(wallet).context("no session for wallet")?;
+        // Existence in the cache is the proxy for "wallet is registered".
+        anyhow::ensure!(
+            self.tx_builders.read().await.contains_key(wallet),
+            "no session for wallet"
+        );
+        let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
+        let tx_builder = self.tx_builder_for_network(pubkey, network);
 
         // Check balance before building the stake tx.
         let balance = tx_builder
@@ -706,14 +788,21 @@ impl GameSessionManager {
     /// Submit a signed game transaction and run action-specific
     /// post-submission logic. Each action's branch lives in its own helper
     /// (after_deposit_stake, after_join_game, etc.).
+    ///
+    /// `network` must match the network used to build the unsigned tx:
+    /// the broadcast goes to that cluster's RPC. Passing the wrong network
+    /// here will make the RPC reject the tx with `BlockhashNotFound`.
     pub async fn submit_signed_game_tx(
         &self,
         wallet: &str,
         signed_tx_b64: &str,
         action: &str,
+        network: Option<&str>,
     ) -> Result<serde_json::Value> {
         let signed_bytes = decode_signed_tx(signed_tx_b64)?;
-        let sig_str = self.broadcast_signed(wallet, action, &signed_bytes).await?;
+        let sig_str = self
+            .broadcast_signed(wallet, action, &signed_bytes, network)
+            .await?;
 
         let session = self
             .sessions
@@ -740,20 +829,26 @@ impl GameSessionManager {
         }))
     }
 
-    /// Submit the signed bytes through the per-wallet `GameTxBuilder` and
-    /// return the resulting signature as a base58 string.
+    /// Submit the signed bytes through a `GameTxBuilder` for the requested
+    /// network and return the resulting signature as a base58 string.
     async fn broadcast_signed(
         &self,
         wallet: &str,
         action: &str,
         signed_bytes: &[u8],
+        network: Option<&str>,
     ) -> Result<String> {
-        let builders = self.tx_builders.read().await;
-        let tx_builder = builders.get(wallet).context("no session for wallet")?;
+        anyhow::ensure!(
+            self.tx_builders.read().await.contains_key(wallet),
+            "no session for wallet"
+        );
+        let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
+        let tx_builder = self.tx_builder_for_network(pubkey, network);
         tracing::info!(
             wallet = %wallet,
             action = %action,
             tx_len = signed_bytes.len(),
+            network = ?network,
             "submitting signed transaction"
         );
         let sig = match tx_builder.submit_signed(signed_bytes).await {
@@ -1542,6 +1637,38 @@ mod tests {
         assert_ne!(GameSessionState::Connected, GameSessionState::Queued);
         assert_ne!(GameSessionState::Queued, GameSessionState::Matched);
         assert_ne!(GameSessionState::InGame, GameSessionState::Resolved);
+    }
+
+    /// Regression: 2026-05-09 devnet gameplay E2E sweep. The MCP server's
+    /// game tools used to broadcast every signed tx through the cached
+    /// per-wallet GameTxBuilder, which was constructed from the cluster
+    /// default RPC URL only. The human-vs-agent test ran against devnet
+    /// (T1001), but the agent's deposit_stake landed on mainnet RPC where
+    /// T1001 doesn't exist → AccountNotInitialized. The router now picks
+    /// per-call so `Some("devnet")` ≠ `Some("mainnet")` ≠ default.
+    #[test]
+    fn pick_rpc_url_for_network_routes_per_arg() {
+        let default = "https://default.example";
+        let mainnet = "https://mainnet.example";
+        let devnet = "https://devnet.example";
+        assert_eq!(
+            pick_rpc_url_for_network(Some("devnet"), default, mainnet, devnet),
+            devnet
+        );
+        assert_eq!(
+            pick_rpc_url_for_network(Some("mainnet"), default, mainnet, devnet),
+            mainnet
+        );
+        assert_eq!(
+            pick_rpc_url_for_network(None, default, mainnet, devnet),
+            default
+        );
+        // Unknown network falls through to default — never silently picks
+        // mainnet or devnet from an arbitrary string.
+        assert_eq!(
+            pick_rpc_url_for_network(Some("stagenet"), default, mainnet, devnet),
+            default
+        );
     }
 
     #[test]

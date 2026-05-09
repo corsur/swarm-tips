@@ -66,14 +66,15 @@ async fn main() -> anyhow::Result<()> {
     let discovery_state = build_discovery_state(&cfg.gcp_project_id, &rpc_client).await;
 
     let game_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
+    let (rpc_url_mainnet, rpc_url_devnet) = load_per_network_rpcs(&cfg).await;
     let game_sessions = Arc::new(GameSessionManager::new(
         cfg.game_api_url.clone(),
         cfg.solana_rpc_url.clone(),
+        rpc_url_mainnet.clone(),
+        rpc_url_devnet.clone(),
         Arc::clone(&game_db),
     ));
     let session_binding = Arc::new(McpSessionBinding::new(game_db));
-
-    let (rpc_url_mainnet, rpc_url_devnet) = load_per_network_rpcs(&cfg).await;
 
     let shared = Arc::new(SharedState {
         orchestrator: OrchestratorProxy::new(cfg.orchestrator_url.clone()),

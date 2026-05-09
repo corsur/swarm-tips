@@ -208,6 +208,12 @@ pub struct CheckVideoStatusArgs {
 pub struct GameFindMatchArgs {
     /// Tournament ID to join. Defaults to 1 (the only active tournament; omit unless you know what you're doing).
     pub tournament_id: Option<u64>,
+    /// Solana network. `"mainnet"` (default) or `"devnet"`. Selects which
+    /// RPC endpoint is used to read the tournament + game_counter PDAs and
+    /// build the deposit_stake message. Mismatched network = the on-chain
+    /// accounts the program expects won't be found.
+    #[serde(default)]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -216,6 +222,11 @@ pub struct GameSubmitTxArgs {
     pub signed_transaction: String,
     /// The action this transaction performs: "deposit_stake", "join_game", "commit_guess", "reveal_guess", "create_game".
     pub action: String,
+    /// Solana network. `"mainnet"` (default) or `"devnet"`. Must match the
+    /// network used to build the unsigned tx — broadcasting to the wrong
+    /// cluster = `BlockhashNotFound` rejection.
+    #[serde(default)]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -1348,7 +1359,7 @@ impl SwarmTipsMcp {
         let unsigned = self
             .state
             .game_sessions
-            .build_find_match_tx(&wallet, tournament_id)
+            .build_find_match_tx(&wallet, tournament_id, args.network.as_deref())
             .await
             .map_err(|e| McpError::internal_error(format!("find_match failed: {e}"), None))?;
 
@@ -1380,7 +1391,12 @@ impl SwarmTipsMcp {
         let result = self
             .state
             .game_sessions
-            .submit_signed_game_tx(&wallet, &args.signed_transaction, &args.action)
+            .submit_signed_game_tx(
+                &wallet,
+                &args.signed_transaction,
+                &args.action,
+                args.network.as_deref(),
+            )
             .await
             .map_err(|e| {
                 tracing::error!(wallet = %wallet, action = %args.action, error = %e, "game_submit_tx: failed");
