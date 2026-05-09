@@ -932,7 +932,8 @@ impl GameSessionManager {
             GameApiClient::new(&self.game_api_url)?.with_network(network.map(str::to_string));
         let auth_resp = api_client.session_auth(wallet, sig_str).await?;
         let jwt = auth_resp.token.clone();
-        self.spawn_ws_listener(wallet, &jwt, session, network).await?;
+        self.spawn_ws_listener(wallet, &jwt, session, network)
+            .await?;
         session.lock().await.jwt = jwt;
         {
             let s = session.lock().await;
@@ -1623,7 +1624,8 @@ async fn ws_listener_with_reconnect(
             tracing::info!(wallet = %wallet, attempt, delay_secs = delay, "ws reconnecting");
             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
 
-            match WsConnection::connect_with_network(&game_api_url, &jwt, network.as_deref()).await {
+            match WsConnection::connect_with_network(&game_api_url, &jwt, network.as_deref()).await
+            {
                 Ok(ws) => {
                     let (new_sink, new_stream) = ws.into_split();
                     // Swap the sink so send_message uses the new connection.
