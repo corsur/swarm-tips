@@ -1270,14 +1270,12 @@ describe("coordination-game", () => {
           sessionKey.publicKey
         );
 
-        const builder = program.methods
-          .createPlayerSession()
-          .accountsPartial({
-            sessionAuthority: sessionAuthorityPda,
-            player: principalKey,
-            sessionKey: sessionKey.publicKey,
-            systemProgram: SystemProgram.programId,
-          });
+        const builder = program.methods.createPlayerSession().accountsPartial({
+          sessionAuthority: sessionAuthorityPda,
+          player: principalKey,
+          sessionKey: sessionKey.publicKey,
+          systemProgram: SystemProgram.programId,
+        });
         // For matchmaker (the provider wallet) the provider auto-signs;
         // for p1 / p2 we explicitly sign.
         if (principal === matchmaker) {
@@ -1286,8 +1284,9 @@ describe("coordination-game", () => {
           await builder.signers([principal as Keypair]).rpc();
         }
 
-        const session =
-          await program.account.sessionAuthority.fetch(sessionAuthorityPda);
+        const session = await program.account.sessionAuthority.fetch(
+          sessionAuthorityPda
+        );
         assert.equal(
           session.player.toString(),
           principalKey.toString(),
@@ -1339,10 +1338,7 @@ describe("coordination-game", () => {
       const counter = await program.account.gameCounter.fetch(gameCounterPda);
       sessionGameId = counter.count as BN;
       [sessionGamePda] = PublicKey.findProgramAddressSync(
-        [
-          Buffer.from("game"),
-          sessionGameId.toArrayLike(Buffer, "le", 8),
-        ],
+        [Buffer.from("game"), sessionGameId.toArrayLike(Buffer, "le", 8)],
         program.programId
       );
       const [profilePda] = PublicKey.findProgramAddressSync(
