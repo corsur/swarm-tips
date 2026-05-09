@@ -1225,8 +1225,12 @@ impl GameSessionManager {
     ) -> Result<MatchStatus> {
         debug_assert!(!wallet.is_empty(), "wallet must be non-empty");
         debug_assert!(game_id > 0, "game_id must be a real on-chain id");
-        let chain = self.tx_builders.read().await;
-        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
+        // Same network-routing fix as build_create_game_tx: build the
+        // join_game tx with the session's network so its blockhash matches
+        // the cluster the agent will broadcast to.
+        let network = session.lock().await.network.clone();
+        let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
+        let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
         let unsigned = tx_builder.build_join_game(game_id, tournament_id).await?;
 
         // Store game_id but don't transition to InGame yet —
@@ -1473,8 +1477,24 @@ impl GameSessionManager {
             anyhow::anyhow!("commitment must be 32 bytes, got {}", v.len())
         })?;
 
-        let chain = self.tx_builders.read().await;
-        let tx_builder = chain.get(wallet).context("no tx builder for wallet")?;
+        // Use the session's pinned network (set in `build_find_match_tx`)
+        // so the blockhash + game_counter read come from the same RPC the
+        // agent's deposit_stake landed on. The cached tx_builder is
+        // cluster-default — using it here would put a mainnet blockhash
+        // into a tx that the agent then submits to devnet → "Blockhash
+        // not found". Surfaced 2026-05-09 by the human-vs-agent E2E.
+        let network = self
+            .sessions
+            .read()
+            .await
+            .get(wallet)
+            .ok_or_else(|| anyhow::anyhow!("no session for wallet"))?
+            .lock()
+            .await
+            .network
+            .clone();
+        let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
+        let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
 
         // Log balance before create_game for debugging.
         let balance = tx_builder
@@ -1482,9 +1502,9 @@ impl GameSessionManager {
             .get_balance(&tx_builder.pubkey())
             .await
             .unwrap_or(0);
-        tracing::info!(wallet = %wallet, balance_lamports = balance, "creating game as P1");
+        tracing::info!(wallet = %wallet, balance_lamports = balance, network = ?network, "creating game as P1");
 
-        let matchmaker = read_matchmaker_pubkey(tx_builder).await?;
+        let matchmaker = read_matchmaker_pubkey(&tx_builder).await?;
 
         let stake: u64 = 50_000_000; // 0.05 SOL — matches FIXED_STAKE_LAMPORTS on-chain
 
@@ -1493,16 +1513,17 @@ impl GameSessionManager {
             .build_create_game(tournament_id, stake, matchup_commitment, &matchmaker)
             .await?;
 
-        // Get matchmaker cosignature from game-api.
+        // Get matchmaker cosignature from game-api. Same network as the
+        // tx so the cosign endpoint reads the right tournament PDA.
         use base64::Engine;
         let msg_b64 = base64::engine::general_purpose::STANDARD.encode(&unsigned.message);
-        let api_client = GameApiClient::new(&self.game_api_url)?;
+        let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network.clone());
         let cosign_resp = api_client
             .request_cosign(jwt, &msg_b64)
             .await
             .map_err(|e| anyhow::anyhow!("cosign request failed: {e}"))?;
 
-        let game_id = read_next_game_id(tx_builder).await?;
+        let game_id = read_next_game_id(&tx_builder).await?;
 
         tracing::info!(
             wallet = %wallet,
