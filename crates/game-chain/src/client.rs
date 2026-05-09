@@ -272,7 +272,12 @@ impl GameTxBuilder {
             attempts = 3,
             "transaction failed after all retries"
         );
-        Err(last_err.unwrap()).context("send_and_confirm_transaction: all retries exhausted")
+        match last_err {
+            Some(e) => Err(e).context("send_and_confirm_transaction: all retries exhausted"),
+            None => Err(anyhow::anyhow!(
+                "send_and_confirm_transaction: retry loop exited without recording an error"
+            )),
+        }
     }
 
     // -- Read-only operations --------------------------------------------------
