@@ -81,12 +81,18 @@ pub struct TaskListResponse {
 /// `TaskSummary` deserializer rather than maintaining a parallel struct.
 pub type TaskDetails = TaskSummary;
 
+/// Mirrors `shillbot-orchestrator::models::subsidy::EarningsResponse`
+/// at `coordination-app/backend/shillbot-orchestrator/src/models/subsidy.rs`.
+/// Field-for-field match is required — any drift breaks
+/// `shillbot_check_earnings` over MCP. The old shape (`total_earned`,
+/// `pending_tasks`) was stale; the orchestrator never returned those
+/// fields, just nobody was hitting this path over MCP until 2026-05-11.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EarningsResponse {
-    pub total_earned: u64,
-    pub tasks_completed: u32,
-    pub average_score: u64,
-    pub pending_tasks: u32,
+    pub total_earned_lamports: u64,
+    pub total_subsidy_lamports: u64,
+    pub tasks_completed: u64,
+    pub average_score: f64,
 }
 
 /// Mirrors `shillbot-orchestrator::models::task::TransactionResponse`. Returned
@@ -317,7 +323,7 @@ impl OrchestratorProxy {
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
-        if earnings.tasks_completed == 0 && earnings.average_score != 0 {
+        if earnings.tasks_completed == 0 && earnings.average_score != 0.0 {
             tracing::warn!(
                 wallet = %wallet_pubkey,
                 average_score = earnings.average_score,
@@ -1107,16 +1113,18 @@ mod tests {
     #[test]
     fn test_earnings_response_serialization() {
         let earnings = EarningsResponse {
-            total_earned: 10_000_000,
+            total_earned_lamports: 10_000_000,
+            total_subsidy_lamports: 1_000_000,
             tasks_completed: 5,
-            average_score: 750_000,
-            pending_tasks: 2,
+            average_score: 0.75,
         };
 
         let json = serde_json::to_string(&earnings).unwrap();
         let parsed: EarningsResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.total_earned, 10_000_000);
+        assert_eq!(parsed.total_earned_lamports, 10_000_000);
+        assert_eq!(parsed.total_subsidy_lamports, 1_000_000);
         assert_eq!(parsed.tasks_completed, 5);
+        assert_eq!(parsed.average_score, 0.75);
     }
 
     /// Flow tests: every Shillbot proxy method must forward
@@ -1385,10 +1393,10 @@ mod tests {
                 .and(path("/agent/earnings"))
                 .and(query_param("network", "devnet"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "total_earned": 0u64,
-                    "tasks_completed": 0u32,
-                    "average_score": 0u64,
-                    "pending_tasks": 0u32,
+                    "total_earned_lamports": 0u64,
+                    "total_subsidy_lamports": 0u64,
+                    "tasks_completed": 0u64,
+                    "average_score": 0.0,
                 })))
                 .expect(1)
                 .mount(&server)
