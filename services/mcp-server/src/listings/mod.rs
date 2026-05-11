@@ -27,6 +27,17 @@ const CACHE_TTL_SECS: i64 = 300; // 5 minutes
 /// effective TTL is ~4-6 minutes.
 const CACHE_TTL_JITTER_SECS: i64 = 60;
 
+/// Drop listings whose source hasn't successfully responded in this long.
+/// `keep_failed_source_listings` (rightly) preserves Firestore docs across
+/// transient outages so a single Cloudflare 429 doesn't wipe a source.
+/// But "transient" needs a ceiling — stale listings bait agents into
+/// claiming work whose external state is unknown. Surfaced 2026-05-11 when
+/// Moltlaunch's `/api/gigs` had been returning 500 for 8 days and we were
+/// still surfacing their 8-day-old listings. 24h is short enough that
+/// agents never see >1-day-old links, long enough to ride out weekend
+/// maintenance windows on third-party sources.
+const STALENESS_THRESHOLD_SECS: i64 = 24 * 60 * 60;
+
 /// Number of consecutive failures before we back a source off.
 const BACKOFF_FAILURE_THRESHOLD: u32 = 3;
 
@@ -235,6 +246,36 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
 
     for result in &fetch_results {
         record_source_health(&state.db, &result.source, &result.health).await;
+    }
+
+    // Drop listings whose source last responded successfully more than
+    // STALENESS_THRESHOLD_SECS ago. See the constant's doc-comment for
+    // the rationale.
+    // checked_sub_signed: STALENESS_THRESHOLD_SECS is a small constant so
+    // wraparound is impossible — fall back to `now` if it ever happened,
+    // which would mean "keep nothing" (safer than panicking).
+    let stale_cutoff = now
+        .checked_sub_signed(chrono::Duration::seconds(STALENESS_THRESHOLD_SECS))
+        .unwrap_or(now);
+    let mut dropped_by_source: HashMap<String, usize> = HashMap::new();
+    result_listings.retain(|doc| {
+        if doc.last_seen_at < stale_cutoff {
+            let entry = dropped_by_source.entry(doc.source.clone()).or_insert(0);
+            *entry = entry.saturating_add(1);
+            false
+        } else {
+            true
+        }
+    });
+    if !dropped_by_source.is_empty() {
+        let dropped_total: usize = dropped_by_source
+            .values()
+            .fold(0usize, |a, b| a.saturating_add(*b));
+        tracing::warn!(
+            dropped_total,
+            by_source = ?dropped_by_source,
+            "dropped stale listings (sources unreachable beyond staleness threshold)"
+        );
     }
 
     result_listings.sort_by(|a, b| b.posted_at.cmp(&a.posted_at));
