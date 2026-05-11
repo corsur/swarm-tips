@@ -6,32 +6,23 @@ pub struct FilterResult {
     pub reason: Option<String>,
 }
 
-/// First-party sources we operate end-to-end. Skipped by the USD-floor
-/// quality filter because we already gate their payouts ourselves
-/// (escrow + scoring) and legitimate below-$1 campaigns (e.g. a 0.005
-/// SOL ≈ $0.75 referral) should still surface. Surfaced 2026-05-11
-/// when all 3 mainnet shillbot referral campaigns got silently
-/// filtered out of swarm.tips.
-const FIRST_PARTY_SOURCES: &[&str] = &["shillbot"];
-
 /// Apply uniform quality filters to a raw listing.
 /// Returns whether the listing should be filtered out and why.
 pub fn apply_filters(listing: &RawListing, config: &IngestionConfig) -> FilterResult {
-    let is_first_party = FIRST_PARTY_SOURCES.contains(&listing.source.as_str());
-
-    // Check reward: must have a USD estimate above minimum.
-    // First-party sources bypass — their payouts are already gated.
-    if !is_first_party {
-        let usd_estimate = listing.reward_usd_estimate.unwrap_or(0.0);
-        if usd_estimate < config.min_reward_usd {
-            return FilterResult {
-                filtered: true,
-                reason: Some(format!(
-                    "reward_below_minimum: ${:.2} < ${:.2}",
-                    usd_estimate, config.min_reward_usd
-                )),
-            };
-        }
+    // Check reward: must have a USD estimate above minimum. Applies
+    // uniformly to first-party AND external sources — if our own
+    // listings drop below the $1 floor (sub-dollar referral campaign,
+    // for example), they SHOULD get filtered out. The fix is to bump
+    // the campaign's per-task payout, not to bypass the filter.
+    let usd_estimate = listing.reward_usd_estimate.unwrap_or(0.0);
+    if usd_estimate < config.min_reward_usd {
+        return FilterResult {
+            filtered: true,
+            reason: Some(format!(
+                "reward_below_minimum: ${:.2} < ${:.2}",
+                usd_estimate, config.min_reward_usd
+            )),
+        };
     }
 
     // Check description length
