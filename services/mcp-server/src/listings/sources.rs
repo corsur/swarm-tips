@@ -450,14 +450,13 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
         .take(500)
         .collect::<String>();
 
-    // task_id is already namespaced as "{campaign_id}:{task_uuid}"; strip the
-    // campaign half for a cleaner public URL.
-    let url_id = task_id.split(':').next_back().unwrap_or(&task_id);
-
+    // The shillbot.org frontend only routes /tasks (the TaskBoard); there's
+    // no per-task detail page. Linking to /tasks/{id} 404s. Send agents to
+    // the public board where they can browse + claim. Surfaced 2026-05-11.
     Some(RawListing {
         source: "shillbot".to_string(),
         source_id: task_id.clone(),
-        source_url: format!("https://shillbot.org/tasks/{url_id}"),
+        source_url: "https://shillbot.org/tasks".to_string(),
         title: topic,
         description,
         category: "content".to_string(),
@@ -863,7 +862,7 @@ mod tests {
         // not the old "youtube short" wording.
         assert!(listing.description.contains("coordination.game"));
         assert!(listing.tags.contains(&"game-play".to_string()));
-        assert!(listing.source_url.ends_with("/task-uuid"));
+        assert_eq!(listing.source_url, "https://shillbot.org/tasks");
         assert!(listing.escrow);
     }
 
