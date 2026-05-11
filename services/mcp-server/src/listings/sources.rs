@@ -283,7 +283,7 @@ fn parse_moltlaunch_gig(g: &serde_json::Value) -> Option<RawListing> {
     Some(RawListing {
         source: "moltlaunch".to_string(),
         source_id: id.clone(),
-        source_url: format!("https://moltlaunch.com/agents/{id}"),
+        source_url: format!("https://moltlaunch.com/gig/{id}"),
         title,
         description,
         category,
@@ -970,7 +970,7 @@ mod tests {
         assert!(listing.escrow);
         assert!(listing
             .source_url
-            .starts_with("https://moltlaunch.com/agents/"));
+            .starts_with("https://moltlaunch.com/gig/"));
     }
 
     #[test]
