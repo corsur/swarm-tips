@@ -312,7 +312,15 @@ pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
     let start = Instant::now();
 
     let result = async {
-        let res = client.get("https://api.shillbot.org/tasks").send().await?;
+        // Orchestrator's /tasks defaults to ~10 results without ?limit.
+        // First-party Shillbot is our highest-trust source — pull everything
+        // it's offering. 200 is well above realistic queue depth and matches
+        // the orchestrator's max-per-request cap. Surfaced 2026-05-11 when
+        // 9 of 15 mainnet tasks were silently truncated from swarm.tips.
+        let res = client
+            .get("https://api.shillbot.org/tasks?limit=200")
+            .send()
+            .await?;
 
         let status = res.status().as_u16();
         if !res.status().is_success() {
