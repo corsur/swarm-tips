@@ -62,6 +62,36 @@ pub struct TaskSummary {
     /// (`expires_at = submitted_at + verification_timeout_secs`).
     #[serde(default)]
     pub submitted_at: Option<String>,
+    /// Agent wallet that claimed this task. `null` until claim_task confirms.
+    /// Surfaced 2026-05-11 by the mcp-shillbot-lifecycle e2e — without this
+    /// field, agents calling shillbot_get_task_details couldn't see who
+    /// claimed the task they just claimed.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// ISO-8601 timestamp of claim_task on-chain confirmation.
+    #[serde(default)]
+    pub claimed_at: Option<String>,
+    /// ISO-8601 timestamp of approve_task on-chain confirmation (for
+    /// `requires_approval` campaigns).
+    #[serde(default)]
+    pub approved_at: Option<String>,
+    /// Agent-submitted proof: YouTube video ID, tweet ID, game session
+    /// ID, etc. Populated once submit_work confirms.
+    #[serde(default)]
+    pub content_id: Option<String>,
+    /// Switchboard-attested score (0..=1_000_000 scaled). Populated after
+    /// the verifier records the oracle attestation.
+    #[serde(default)]
+    pub composite_score: Option<u64>,
+    /// Lamports paid out to the agent. Populated after finalize_task
+    /// confirms — `payment_amount > 0` is the canonical "did this task
+    /// actually pay" signal for downstream callers.
+    #[serde(default)]
+    pub payment_amount: Option<u64>,
+    /// Per-task scoring weights (platform-specific shape). Kept raw so the
+    /// MCP layer doesn't have to track scoring-config schema drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring_scales: Option<serde_json::Value>,
     /// Full campaign brief if the orchestrator joined it in. Kept as a raw
     /// JSON value because the brief shape varies by platform and we just want
     /// to forward it to the agent verbatim.
