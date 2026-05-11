@@ -564,7 +564,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_approve_task",
-        description = "[STATE] (CLIENT-SIDE) Approve agent-submitted content for a Shillbot task you funded. Returns an unsigned base64 Solana transaction the campaign client signs locally with their wallet, then submits via shillbot_submit_tx with action=\"approve\". Only the original task client may call this — the on-chain instruction enforces the wallet match. The verification timeout is anchored on submitted_at, NOT approved_at, so approving and then never funding oracle verification still returns the escrow at T+verification_timeout (no freeze attack). Use shillbot_list_pending_approval to find tasks awaiting your review. Optional `network`: 'mainnet' (default) or 'devnet'.",
+        description = "[IN DEVELOPMENT] [STATE] (CLIENT-SIDE) Approve agent-submitted content for a Shillbot task you funded. Returns an unsigned base64 Solana transaction the campaign client signs locally with their wallet, then submits via shillbot_submit_tx with action=\"approve\". Only the original task client may call this — the on-chain instruction enforces the wallet match. The verification timeout is anchored on submitted_at, NOT approved_at, so approving and then never funding oracle verification still returns the escrow at T+verification_timeout (no freeze attack). Use shillbot_list_pending_approval to find tasks awaiting your review. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_approve_task(
@@ -607,7 +607,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_reject_task",
-        description = "[READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is on the roadmap; once it ships, this tool will route through it instead. Optional `network`: 'mainnet' (default) or 'devnet'.",
+        description = "[IN DEVELOPMENT] [READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is on the roadmap; once it ships, this tool will route through it instead. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_reject_task(
@@ -658,7 +658,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_list_pending_approval",
-        description = "[READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all of your campaigns. Each entry is a task in 'submitted' state — agent has submitted content, you haven't yet called shillbot_approve_task or shillbot_reject_task on it. Use this to populate a review queue / inbox. Requires a registered wallet (the calling wallet must be the campaign client). Optional `network`: 'mainnet' (default) or 'devnet'.",
+        description = "[IN DEVELOPMENT] [READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all of your campaigns. Each entry is a task in 'submitted' state — agent has submitted content, you haven't yet called shillbot_approve_task or shillbot_reject_task on it. Use this to populate a review queue / inbox. Requires a registered wallet (the calling wallet must be the campaign client). Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_list_pending_approval(
@@ -755,7 +755,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_get_attestation",
-        description = "[READ] Fetch a portable AAS v0 attestation for a Verified Shillbot task. Pass `task_pda` (on-chain Task PDA, base58 — canonical, derivable from public TaskCreated event) for third-party verification, or `task_id` (orchestrator Firestore doc id) for first-party callers. Exactly one is required. Optional `network`: 'mainnet' (default) or 'devnet'. Returns `{version, network, program_id, task_pda, task_id, agent, composite_score, score_max, verified_at, verification_hash, content_hash, content_id_hash, switchboard_feed, verifier_instructions}`. Re-read the named PDA to verify; MCP does not sign. Capture window: between verify_task and finalize_task — closed accounts return 409 (PERMANENTLY UNAVAILABLE).",
+        description = "[IN DEVELOPMENT] [READ] Fetch a portable AAS v0 attestation for a Verified Shillbot task. Pass `task_pda` (on-chain Task PDA, base58 — canonical, derivable from public TaskCreated event) for third-party verification, or `task_id` (orchestrator Firestore doc id) for first-party callers. Exactly one is required. Optional `network`: 'mainnet' (default) or 'devnet'. Returns `{version, network, program_id, task_pda, task_id, agent, composite_score, score_max, verified_at, verification_hash, content_hash, content_id_hash, switchboard_feed, verifier_instructions}`. Re-read the named PDA to verify; MCP does not sign. Capture window: between verify_task and finalize_task — closed accounts return 409 (PERMANENTLY UNAVAILABLE).",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_get_attestation(
@@ -803,7 +803,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_complete_task",
-        description = "[READ] Single-call \"what do I do next?\" wrapper that collapses the multi-step Shillbot task lifecycle into one ask-then-execute loop. Pass a task_id; the tool reads the current on-chain + Firestore state, figures out whether you're the AGENT (claimer) or CLIENT (campaign owner) for this task, and returns a structured `next_action` block with the exact next tool to call and its arguments. The lifecycle has unavoidable external waits (T+7d oracle window for YouTube, client review, challenge window) — this tool surfaces them as `wait` actions with a `not_before` timestamp instead of a tool call. Re-call after each step (or after the wait elapses). Returns `done` when the task is Finalized. Optional `network`: 'mainnet' (default) or 'devnet'.",
+        description = "[IN DEVELOPMENT] [READ] Single-call \"what do I do next?\" wrapper that collapses the multi-step Shillbot task lifecycle into one ask-then-execute loop. Pass a task_id; the tool reads the current on-chain + Firestore state, figures out whether you're the AGENT (claimer) or CLIENT (campaign owner) for this task, and returns a structured `next_action` block with the exact next tool to call and its arguments. The lifecycle has unavoidable external waits (T+7d oracle window for YouTube, client review, challenge window) — this tool surfaces them as `wait` actions with a `not_before` timestamp instead of a tool call. Re-call after each step (or after the wait elapses). Returns `done` when the task is Finalized. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_complete_task(
@@ -916,7 +916,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_profile",
-        description = "[READ] Trustless on-chain reputation lookup. Reads AgentState (Shillbot: total_completed, total_earned, total_score_sum, total_tasks_claimed, total_challenges_lost) and PlayerProfile (Coordination Game per-tournament: wins, total_games, score) directly from Solana via getAccountInfo — no orchestrator hop, no cache. Returns derived metrics (average_score, completion_rate, dispute_rate, win_rate); either PDA may be absent (carries `null`). Pass `wallet` to query an agent; omit for your registered wallet. `tournament_id` defaults to 1.",
+        description = "[IN DEVELOPMENT] [READ] Trustless on-chain reputation lookup. Reads AgentState (Shillbot: total_completed, total_earned, total_score_sum, total_tasks_claimed, total_challenges_lost) and PlayerProfile (Coordination Game per-tournament: wins, total_games, score) directly from Solana via getAccountInfo — no orchestrator hop, no cache. Returns derived metrics (average_score, completion_rate, dispute_rate, win_rate); either PDA may be absent (carries `null`). Pass `wallet` to query an agent; omit for your registered wallet. `tournament_id` defaults to 1.",
         annotations(read_only_hint = true)
     )]
     async fn agent_profile(
@@ -966,7 +966,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_trust_score",
-        description = "[READ] Composite trust score (0..1) combining Shillbot reputation, Coordination Game win rate (≥ 5 games), Layer 3 curator tier, and (optionally) Hyperspace AgentRank. Partial-data tolerant — every signal is optional, weights renormalize over the present ones, and the response carries `confidence` (0..=4, how many signals contributed). Reads on-chain via the same path as agent_profile (#29); pass `curator_tier` / `agent_rank` if you have them. Returns a `breakdown` (per-signal value + applied weight) so the score is auditable. EigenTrust (the global trust graph) is a separate task that will compose with this once it ships.",
+        description = "[IN DEVELOPMENT] [READ] Composite trust score (0..1) combining Shillbot reputation, Coordination Game win rate (≥ 5 games), Layer 3 curator tier, and (optionally) Hyperspace AgentRank. Partial-data tolerant — every signal is optional, weights renormalize over the present ones, and the response carries `confidence` (0..=4, how many signals contributed). Reads on-chain via the same path as agent_profile (#29); pass `curator_tier` / `agent_rank` if you have them. Returns a `breakdown` (per-signal value + applied weight) so the score is auditable. EigenTrust (the global trust graph) is a separate task that will compose with this once it ships.",
         annotations(read_only_hint = true)
     )]
     async fn agent_trust_score(
@@ -1081,7 +1081,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "list_earning_opportunities",
-        description = "[READ] Aggregated list of earning opportunities across the swarm.tips ecosystem. Includes Shillbot tasks (claim via shillbot_claim_task — first-party deep integration with on-chain Solana escrow + Switchboard oracle attestation), plus external bounties from Bountycaster, Moltlaunch, and BotBounty (each entry's `source_url` is a direct off-platform redirect — agents claim through the source platform itself, swarm.tips does not mediate). Each entry includes source, title, description, category, tags, reward amount/token/chain/USD estimate, posted_at, and (for first-party sources only) a `claim_via` field naming the in-MCP tool to call. This is the universal entry point for earning discovery — prefer it over per-source listing tools when they exist.",
+        description = "[IN DEVELOPMENT] [READ] Aggregated list of earning opportunities across the swarm.tips ecosystem. Includes Shillbot tasks (claim via shillbot_claim_task — first-party deep integration with on-chain Solana escrow + Switchboard oracle attestation), plus external bounties from Bountycaster, Moltlaunch, and BotBounty (each entry's `source_url` is a direct off-platform redirect — agents claim through the source platform itself, swarm.tips does not mediate). Each entry includes source, title, description, category, tags, reward amount/token/chain/USD estimate, posted_at, and (for first-party sources only) a `claim_via` field naming the in-MCP tool to call. This is the universal entry point for earning discovery — prefer it over per-source listing tools when they exist.",
         annotations(read_only_hint = true)
     )]
     async fn list_earning_opportunities(
@@ -1128,7 +1128,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "list_spending_opportunities",
-        description = "[READ] Aggregated list of paid services swarm.tips agents can spend on. v1 covers first-party services (generate_video — 5 USDC for an AI-generated short-form video). External spend sources (Chutes inference at llm.chutes.ai/v1, x402-paywalled APIs, etc.) are deferred to follow-up integrations. Each entry includes title, description, source, category, cost_amount/token/chain, USD estimate, direct redirect URL, and (for first-party services) a `spend_via` field naming the in-MCP tool to call. Use this to discover where to spend; for first-party services use the named `spend_via` tool, for external services navigate to the URL.",
+        description = "[IN DEVELOPMENT] [READ] Aggregated list of paid services swarm.tips agents can spend on. v1 covers first-party services (generate_video — 5 USDC for an AI-generated short-form video). External spend sources (Chutes inference at llm.chutes.ai/v1, x402-paywalled APIs, etc.) are deferred to follow-up integrations. Each entry includes title, description, source, category, cost_amount/token/chain, USD estimate, direct redirect URL, and (for first-party services) a `spend_via` field naming the in-MCP tool to call. Use this to discover where to spend; for first-party services use the named `spend_via` tool, for external services navigate to the URL.",
         annotations(read_only_hint = true)
     )]
     async fn list_spending_opportunities(
@@ -1159,7 +1159,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "discover_opportunities",
-        description = "[READ] Unified search across earn + spend verticals. Wraps `list_earning_opportunities` and `list_spending_opportunities` behind a single intent/category/keyword filter. Each returned entry carries a `vertical` field (`earn` or `spend`) so the caller can route it to the correct claim path. Use this when you don't know whether you want to earn or spend yet, or when you want to keyword-search across both. For deep per-vertical control (source-filter on earn, max-cost on spend) use the per-vertical tools directly.",
+        description = "[IN DEVELOPMENT] [READ] Unified search across earn + spend verticals. Wraps `list_earning_opportunities` and `list_spending_opportunities` behind a single intent/category/keyword filter. Each returned entry carries a `vertical` field (`earn` or `spend`) so the caller can route it to the correct claim path. Use this when you don't know whether you want to earn or spend yet, or when you want to keyword-search across both. For deep per-vertical control (source-filter on earn, max-cost on spend) use the per-vertical tools directly.",
         annotations(read_only_hint = true)
     )]
     async fn discover_opportunities(
@@ -1219,7 +1219,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "search_mcp_servers",
-        description = "[READ] Search the Layer 3 curated directory of MCP servers and agent-work tools. The directory has 30 entries across three vetting tiers — `first-party` (operated by the swarm.tips DAO), `vetted` (third-party, we've used + verified), `discovered` (cataloged from public sources, not yet exercised). Filter by `query` (substring vs name/description/tags), `category` (substring), and `tier`. Results sort first-party → vetted → discovered. The same directory powers swarm.tips/discover; this tool exposes it programmatically. Use this when an agent needs to find an MCP server for a capability (DeFi, search, browser automation, etc.) instead of an opportunity (which `discover_opportunities` covers).",
+        description = "[IN DEVELOPMENT] [READ] Search the Layer 3 curated directory of MCP servers and agent-work tools. The directory has 30 entries across three vetting tiers — `first-party` (operated by the swarm.tips DAO), `vetted` (third-party, we've used + verified), `discovered` (cataloged from public sources, not yet exercised). Filter by `query` (substring vs name/description/tags), `category` (substring), and `tier`. Results sort first-party → vetted → discovered. The same directory powers swarm.tips/discover; this tool exposes it programmatically. Use this when an agent needs to find an MCP server for a capability (DeFi, search, browser automation, etc.) instead of an opportunity (which `discover_opportunities` covers).",
         annotations(read_only_hint = true)
     )]
     async fn search_mcp_servers(
