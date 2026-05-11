@@ -390,6 +390,17 @@ async fn build_listing_doc(
         updated.description.clone_from(&raw.description);
         updated.reward_amount.clone_from(&raw.reward_amount);
         updated.reward_usd_estimate = raw.reward_usd_estimate;
+        // Refresh derived URL fields on every cycle. Without this, a scraper
+        // fix to a source's URL pattern (e.g. Moltlaunch /agents/ → /task/)
+        // never propagates because the existing Firestore doc pins the stale
+        // URL. The other "derived from source" fields (category, tags,
+        // reward_*) follow the same logic — they're updated above. Surfaced
+        // by the Moltlaunch URL fix on 2026-05-11 where the deployed pod
+        // had the new code but every listings response still showed the old
+        // /agents/{uuid} URL.
+        updated.source_url.clone_from(&raw.source_url);
+        updated.category.clone_from(&raw.category);
+        updated.tags.clone_from(&raw.tags);
         if updated.status == "disappeared" {
             updated.status = "open".to_string();
             updated.disappeared_at = None;
