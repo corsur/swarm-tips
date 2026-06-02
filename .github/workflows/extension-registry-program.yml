@@ -1,0 +1,117 @@
+name: Extension Registry Program
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'programs/extension-registry/**'
+      - 'tests/extension-registry.ts'
+      - 'tsconfig.json'
+      - 'package.json'
+      - 'Anchor.toml'
+      - '.github/workflows/extension-registry-program.yml'
+  pull_request:
+    paths:
+      - 'programs/extension-registry/**'
+      - 'tests/extension-registry.ts'
+      - 'tsconfig.json'
+      - 'package.json'
+      - 'Anchor.toml'
+      - '.github/workflows/extension-registry-program.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+      - run: cargo fmt -p extension-registry -- --check
+      - run: cargo clippy -p extension-registry --all-targets -- -D warnings
+
+      - name: Generate throwaway keypair for local validator
+        run: |
+          mkdir -p ~/.config/solana
+          solana-keygen new --no-bip39-passphrase --silent -o ~/.config/solana/id.json
+
+      - name: Build program
+        run: anchor build -p extension-registry
+
+      - name: Start local validator
+        run: |
+          solana-test-validator \
+            --bpf-program H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j target/deploy/extension_registry.so \
+            --reset --quiet &
+          sleep 8
+          solana config set --url localhost --keypair /home/runner/.config/solana/id.json
+          solana airdrop 100
+
+      - name: Run extension-registry tests
+        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/extension-registry.ts"
+        env:
+          ANCHOR_PROVIDER_URL: http://localhost:8899
+          ANCHOR_WALLET: /home/runner/.config/solana/id.json
+
+      - name: Stop local validator
+        if: always()
+        run: pkill -f solana-test-validator || true
+
+  deploy-devnet:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
+
+      - name: Write deploy + program keypairs
+        run: |
+          mkdir -p ~/.config/solana target/deploy
+          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
+          echo '${{ secrets.EXTENSION_REGISTRY_PROGRAM_KEYPAIR }}' > target/deploy/extension_registry-keypair.json
+
+      - name: Build program
+        run: anchor build -p extension-registry
+
+      - name: Deploy to devnet
+        run: |
+          solana program deploy \
+            --url https://api.devnet.solana.com \
+            --upgrade-authority ~/.config/solana/id.json \
+            --program-id H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j \
+            target/deploy/extension_registry.so

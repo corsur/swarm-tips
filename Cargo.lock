@@ -1457,6 +1457,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "extension-registry"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+]
+
+[[package]]
 name = "faster-hex"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
