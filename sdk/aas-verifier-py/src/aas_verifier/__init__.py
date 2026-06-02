@@ -23,6 +23,14 @@ from .decoders.shillbot import (
     resolve_shillbot_state,
     SHILLBOT_PROTOCOL,
 )
+from .decoders.extension import (
+    decode_extension,
+    resolve_extension_type,
+    ExtensionRecord,
+    EXTENSION_ACCOUNT_KIND,
+    EXTENSION_MIN_BODY_LEN,
+    EXTENSION_ACTIVE_STATE,
+)
 
 __all__ = [
     "AasV1Attestation",
@@ -37,4 +45,10 @@ __all__ = [
     "decode_shillbot_task",
     "resolve_shillbot_state",
     "SHILLBOT_PROTOCOL",
+    "decode_extension",
+    "resolve_extension_type",
+    "ExtensionRecord",
+    "EXTENSION_ACCOUNT_KIND",
+    "EXTENSION_MIN_BODY_LEN",
+    "EXTENSION_ACTIVE_STATE",
 ]

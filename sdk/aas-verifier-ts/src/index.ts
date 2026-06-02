@@ -17,3 +17,12 @@ export {
   resolveShillbotState,
   shillbotProtocol,
 } from "./decoders/shillbot.js";
+
+export type { ExtensionRecord } from "./decoders/extension.js";
+export {
+  decodeExtension,
+  resolveExtensionType,
+  EXTENSION_ACCOUNT_KIND,
+  EXTENSION_MIN_BODY_LEN,
+  EXTENSION_ACTIVE_STATE,
+} from "./decoders/extension.js";
