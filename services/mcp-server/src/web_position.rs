@@ -72,6 +72,45 @@ pub fn compute_web_positions(extensions: &[ExtensionEdge], root: &str) -> HashMa
         .collect()
 }
 
+/// Root of trust for web-position (B6 — the deploy / treasury wallet). All
+/// positions are computed relative to it.
+pub const WEB_POSITION_ROOT: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+
+/// Read the live extension graph from `rpc_url` and return
+/// `(web_position, received_extension_count)` for `agent`. Shared by the
+/// `agent_trust_score` MCP tool and the `/internal/agent-reputation` HTTP
+/// endpoint. Returns `(None, 0)` on RPC error, no extensions, or an agent that
+/// has received none.
+pub async fn agent_web_position(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    agent: &str,
+) -> (Option<f64>, u64) {
+    let extensions = match crate::solana_reads::read_all_extensions(client, rpc_url).await {
+        Ok(e) => e,
+        Err(_) => return (None, 0),
+    };
+    if extensions.is_empty() {
+        return (None, 0);
+    }
+    let received = extensions.iter().filter(|e| e.recipient == agent).count() as u64;
+    if received == 0 {
+        return (None, 0);
+    }
+    let edges: Vec<ExtensionEdge> = extensions
+        .into_iter()
+        .map(|e| ExtensionEdge {
+            extender: e.extender,
+            recipient: e.recipient,
+            bond_lamports: e.bond_lamports,
+        })
+        .collect();
+    let position = compute_web_positions(&edges, WEB_POSITION_ROOT)
+        .get(agent)
+        .copied();
+    (position, received)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

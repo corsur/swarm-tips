@@ -291,6 +291,37 @@ fn build_router(
                     .body(axum::body::Body::empty())
                     .unwrap()
             }),
+        )
+        .route(
+            // Plain-HTTP reputation read for the swarm.tips/reputation page
+            // (B8). Defaults to devnet, where extension-registry is deployed.
+            "/internal/agent-reputation",
+            axum::routing::get({
+                let mainnet = rpc_url_mainnet.clone();
+                let devnet = rpc_url_devnet.clone();
+                move |q: axum::extract::Query<std::collections::HashMap<String, String>>| {
+                    let mainnet = mainnet.clone();
+                    let devnet = devnet.clone();
+                    async move {
+                        let wallet = q.get("wallet").cloned().unwrap_or_default();
+                        let net = q.get("network").map(String::as_str).unwrap_or("devnet");
+                        let rpc = if net == "mainnet" { &mainnet } else { &devnet };
+                        let client = reqwest::Client::new();
+                        let (web_position, extensions_received) =
+                            crate::web_position::agent_web_position(&client, rpc, &wallet).await;
+                        (
+                            [("Access-Control-Allow-Origin", "*")],
+                            axum::Json(serde_json::json!({
+                                "wallet": wallet,
+                                "web_position": web_position,
+                                "extensions_received": extensions_received,
+                                "has_standing": web_position.is_some()
+                                    && extensions_received >= 1,
+                            })),
+                        )
+                    }
+                }
+            }),
         );
 
     if let Some(state) = discovery_state {

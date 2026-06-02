@@ -1779,38 +1779,16 @@ impl SwarmTipsMcp {
         &self,
         target_wallet: &str,
     ) -> Option<crate::composite_trust::CreditWebInput> {
-        // Root of trust for web-position (B6 — the deploy / treasury wallet).
-        const WEB_POSITION_ROOT: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
-        use crate::web_position::{compute_web_positions, ExtensionEdge};
-
-        let extensions = crate::solana_reads::read_all_extensions(
+        // Shared with the /internal/agent-reputation HTTP endpoint.
+        let (position, extensions_count) = crate::web_position::agent_web_position(
             &self.state.rpc_client,
             &self.state.solana_rpc_url,
+            target_wallet,
         )
-        .await
-        .ok()?;
-        if extensions.is_empty() {
-            return None;
-        }
-        // Confidence gate: extensions the target agent has RECEIVED.
-        let extensions_count = extensions
-            .iter()
-            .filter(|e| e.recipient == target_wallet)
-            .count() as u64;
+        .await;
         if extensions_count == 0 {
             return None;
         }
-        let edges: Vec<ExtensionEdge> = extensions
-            .into_iter()
-            .map(|e| ExtensionEdge {
-                extender: e.extender,
-                recipient: e.recipient,
-                bond_lamports: e.bond_lamports,
-            })
-            .collect();
-        let position = compute_web_positions(&edges, WEB_POSITION_ROOT)
-            .get(target_wallet)
-            .copied();
         Some(crate::composite_trust::CreditWebInput {
             position,
             extensions_count,
