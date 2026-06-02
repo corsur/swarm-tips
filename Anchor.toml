@@ -17,11 +17,13 @@ shillbot = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
 extension_registry = "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j"
 extension_credit = "GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm"
 
+# Mainnet-eligible programs ONLY — this list IS the mainnet gate. A program
+# absent here has no mainnet ID configured, so `anchor deploy --provider.cluster
+# mainnet` cannot deploy it. extension_registry / extension_credit are
+# devnet-only (in development) and deliberately excluded. See MAINNET_DEPLOY.md.
 [programs.mainnet]
 coordination_game = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 shillbot = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
-extension_registry = "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j"
-extension_credit = "GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm"
 
 [registry]
 url = "https://api.apr.dev"

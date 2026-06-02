@@ -12,6 +12,13 @@ policy removes.)
 
 ## Cleared for mainnet
 
+**The canonical allowlist is `Anchor.toml`'s `[programs.mainnet]` section.**
+`anchor deploy --provider.cluster mainnet` can only deploy a program that has an
+ID configured there, so a program absent from `[programs.mainnet]` cannot be
+deployed to mainnet at all. To make a new program mainnet-eligible you must add
+it to `[programs.mainnet]` (a reviewable diff). This table mirrors that list and
+adds status:
+
 | Program | Program ID | Status |
 |---|---|---|
 | `coordination_game` | `2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P` | ✅ Live. Deploy manually when releasing a reviewed change. |
