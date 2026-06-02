@@ -11,11 +11,6 @@
 //! Firestore-cached, Workflow-recomputed indexer is the scale-time evolution
 //! (deferred, mirroring EigenTrust task #35 for the output-reputation graph).
 
-// Wired into `agent_trust_score` once the on-chain Extension reader lands (the
-// next B2 chunk): the handler reads active Extension accounts via
-// getProgramAccounts, builds the edge list, and populates `credit_web`.
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 
 use eigentrust::{compute_eigentrust, EigenTrustConfig, TrustEdge};
@@ -77,14 +72,6 @@ pub fn compute_web_positions(extensions: &[ExtensionEdge], root: &str) -> HashMa
         .collect()
 }
 
-/// The web-position for a single agent (0.0 if the agent has no standing).
-pub fn web_position_for(extensions: &[ExtensionEdge], root: &str, agent: &str) -> f64 {
-    compute_web_positions(extensions, root)
-        .get(agent)
-        .copied()
-        .unwrap_or(0.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,11 +113,5 @@ mod tests {
         for s in ["s_a", "s_b"] {
             assert!(pos.get(s).copied().unwrap_or(0.0) < 0.01, "{s} near zero");
         }
-    }
-
-    #[test]
-    fn web_position_for_absent_agent_is_zero() {
-        let exts = vec![ext(ROOT, "a")];
-        assert_eq!(web_position_for(&exts, ROOT, "nobody"), 0.0);
     }
 }

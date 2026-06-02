@@ -989,14 +989,17 @@ impl SwarmTipsMcp {
         let game_input = build_game_trust_input(player_profile.as_ref());
         let curator = parse_curator_tier(args.curator_tier.as_deref())?;
 
+        // credit_web (B2): on-demand extension-credit web-position, read from
+        // the same cluster as the other on-chain reads (empty/None on clusters
+        // where extension-registry isn't deployed).
+        let credit_web = self.read_credit_web_input(&target_wallet).await;
+
         let inputs = TrustInputs {
             shillbot: shillbot_input,
             game: game_input,
             curator,
             agent_rank: args.agent_rank,
-            // credit_web (B4): populated once the extension-credit web-position
-            // indexer (B2) lands; None until then.
-            credit_web: None,
+            credit_web,
         };
         let trust = compute_trust(&inputs);
 
@@ -1689,6 +1692,54 @@ impl SwarmTipsMcp {
         let player_profile = player_profile.map_err(|e| to_mcp_error(&e))?;
         // Postcondition: a successful read returns the typed Option, never panics.
         Ok((agent_state, player_profile))
+    }
+
+    /// Compute the `credit_web` trust input (B2) for `target_wallet`: read all
+    /// active extensions from the same cluster, compute the web-position graph
+    /// anchored to the root, and surface the agent's normalized position +
+    /// received-extension count. Returns `None` (signal absent) on any RPC
+    /// error, when no extensions exist, or when the agent has received none —
+    /// never fails the whole trust-score call.
+    async fn read_credit_web_input(
+        &self,
+        target_wallet: &str,
+    ) -> Option<crate::composite_trust::CreditWebInput> {
+        // Root of trust for web-position (B6 — the deploy / treasury wallet).
+        const WEB_POSITION_ROOT: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+        use crate::web_position::{compute_web_positions, ExtensionEdge};
+
+        let extensions = crate::solana_reads::read_all_extensions(
+            &self.state.rpc_client,
+            &self.state.solana_rpc_url,
+        )
+        .await
+        .ok()?;
+        if extensions.is_empty() {
+            return None;
+        }
+        // Confidence gate: extensions the target agent has RECEIVED.
+        let extensions_count = extensions
+            .iter()
+            .filter(|e| e.recipient == target_wallet)
+            .count() as u64;
+        if extensions_count == 0 {
+            return None;
+        }
+        let edges: Vec<ExtensionEdge> = extensions
+            .into_iter()
+            .map(|e| ExtensionEdge {
+                extender: e.extender,
+                recipient: e.recipient,
+                bond_lamports: e.bond_lamports,
+            })
+            .collect();
+        let position = compute_web_positions(&edges, WEB_POSITION_ROOT)
+            .get(target_wallet)
+            .copied();
+        Some(crate::composite_trust::CreditWebInput {
+            position,
+            extensions_count,
+        })
     }
 
     /// Resolve the RPC URL the broadcast and on-chain bundle-script paths

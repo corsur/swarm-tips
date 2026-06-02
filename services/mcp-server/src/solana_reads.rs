@@ -26,6 +26,23 @@ const SHILLBOT_PROGRAM_ID_BASE58: &str = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EA
 /// Coordination Game program ID.
 const COORDINATION_GAME_PROGRAM_ID_BASE58: &str = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P";
 
+/// Extension-registry program ID (B1). Deployed to devnet; not on mainnet, so
+/// `read_all_extensions` returns an empty vec there (no web-position data).
+const EXTENSION_REGISTRY_PROGRAM_ID_BASE58: &str = "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j";
+
+/// `Extension` body (after the 8-byte discriminator), per
+/// `programs/extension-registry/src/state/extension.rs`:
+///   off size field
+///     0   32  extender
+///    32   32  recipient
+///    64    1  extension_type
+///    65    8  bond_lamports
+///    73    8  created_at
+///    81    1  bump
+///    82   16  _reserved
+/// Total body = 98 bytes; with discriminator = 106.
+const EXTENSION_MIN_BODY_LEN: usize = 98;
+
 /// Anchor account discriminator: `sha256("account:" + name)[0..8]`.
 /// Used by `fetch_account_data` to defense-in-depth-verify the read
 /// landed on the right account type before parsing field offsets.
@@ -304,6 +321,110 @@ pub async fn read_all_player_profiles_for_tournament(
     // Leaderboard order: highest score first. Stable secondary sort by
     // wallet to keep ordering deterministic across calls when scores tie.
     out.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.wallet.cmp(&b.wallet)));
+    Ok(out)
+}
+
+/// The fields of an active `Extension` the web-position graph needs.
+#[derive(Debug, Clone)]
+pub struct ExtensionData {
+    pub extender: String,
+    pub recipient: String,
+    pub bond_lamports: u64,
+}
+
+/// Read all active `Extension` accounts from the extension-registry program via
+/// `getProgramAccounts` (discriminator memcmp filter). Returns an empty vec if
+/// the program has no accounts on this cluster (e.g. mainnet, where it isn't
+/// deployed) — the caller treats that as "no web-position data".
+pub async fn read_all_extensions(
+    client: &reqwest::Client,
+    rpc_url: &str,
+) -> Result<Vec<ExtensionData>, McpServiceError> {
+    let expected_disc = anchor_discriminator("Extension");
+    let disc_b58 = bs58::encode(expected_disc).into_string();
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getProgramAccounts",
+        "params": [
+            EXTENSION_REGISTRY_PROGRAM_ID_BASE58,
+            {
+                "encoding": "base64",
+                "commitment": "confirmed",
+                "filters": [
+                    { "memcmp": { "offset": 0, "bytes": disc_b58 } },
+                ],
+            },
+        ],
+    });
+
+    let resp = client
+        .post(rpc_url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| {
+            McpServiceError::OrchestratorError(format!(
+                "getProgramAccounts(extensions) failed: {e}"
+            ))
+        })?;
+    if !resp.status().is_success() {
+        return Err(McpServiceError::OrchestratorError(format!(
+            "getProgramAccounts(extensions) RPC status {}",
+            resp.status()
+        )));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| {
+        McpServiceError::OrchestratorError(format!("getProgramAccounts(extensions) JSON: {e}"))
+    })?;
+    let result_arr = body
+        .get("result")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            McpServiceError::OrchestratorError(format!(
+                "getProgramAccounts(extensions) no result: {body}"
+            ))
+        })?;
+
+    let mut out = Vec::with_capacity(result_arr.len());
+    for entry in result_arr {
+        let b64 = match entry
+            .get("account")
+            .and_then(|a| a.get("data"))
+            .and_then(|d| d.as_array())
+            .and_then(|d| d.first())
+            .and_then(|v| v.as_str())
+        {
+            Some(s) => s,
+            None => continue,
+        };
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let raw = match STANDARD.decode(b64) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if raw.len() < 8 || raw[..8] != expected_disc {
+            continue;
+        }
+        let bb = &raw[8..];
+        if bb.len() < EXTENSION_MIN_BODY_LEN {
+            continue;
+        }
+        let extender: [u8; 32] = match bb[0..32].try_into() {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        let recipient: [u8; 32] = match bb[32..64].try_into() {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        out.push(ExtensionData {
+            extender: bs58::encode(extender).into_string(),
+            recipient: bs58::encode(recipient).into_string(),
+            bond_lamports: read_u64_le(&bb[65..73])?,
+        });
+    }
     Ok(out)
 }
 
