@@ -90,7 +90,8 @@ jobs:
         run: pkill -f solana-test-validator || true
 
   deploy-devnet:
-    if: github.ref == 'refs/heads/main'
+    # Manual only — conserve the rate-limited devnet faucet. See MAINNET_DEPLOY.md.
+    if: github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -240,7 +241,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
 
   deploy-mainnet:
-    if: github.ref == 'refs/heads/main'
+    # Manual only — never auto-deploy to mainnet on push (real SOL churn +
+    # unreviewed-change risk). See MAINNET_DEPLOY.md.
+    if: github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-latest
     steps:
