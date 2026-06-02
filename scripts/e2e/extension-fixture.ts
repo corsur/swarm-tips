@@ -6,8 +6,11 @@
  *   npx tsx scripts/e2e/extension-fixture.ts open    # submit_extension (if absent)
  *   npx tsx scripts/e2e/extension-fixture.ts close   # attest_return_substance (if present)
  *
- * Signers: id.json = root (= web-position root); test.json = agent (recipient).
- * Prints the agent pubkey on `open` so the runner can pass it to Playwright.
+ * Signers: id.json = root (= web-position root). The recipient never signs
+ * (only the extender attests), so it can be any pubkey: defaults to test.json,
+ * override with RECIPIENT_PUBKEY=<base58> (used to open the permanent dogfood
+ * extension the human reputation-UI CI reads). Prints the agent pubkey on `open`
+ * so the runner can pass it to Playwright.
  */
 import * as anchor from "@coral-xyz/anchor";
 import { BN } from "@coral-xyz/anchor";
@@ -23,12 +26,15 @@ const BOND = new BN(5_000_000);
 
 function loadKeypair(path: string): Keypair {
   return Keypair.fromSecretKey(
-    Uint8Array.from(JSON.parse(readFileSync(path, "utf8")) as number[]),
+    Uint8Array.from(JSON.parse(readFileSync(path, "utf8")) as number[])
   );
 }
 function loadIdl(name: string): anchor.Idl {
   return JSON.parse(
-    readFileSync(join(__dirname, "..", "..", "target", "idl", `${name}.json`), "utf8"),
+    readFileSync(
+      join(__dirname, "..", "..", "target", "idl", `${name}.json`),
+      "utf8"
+    )
   ) as anchor.Idl;
 }
 
@@ -38,33 +44,49 @@ async function main(): Promise<void> {
     throw new Error("usage: extension-fixture.ts <open|close>");
   }
   const root = loadKeypair(join(homedir(), ".config/solana/id.json"));
-  const agent = loadKeypair(join(homedir(), ".config/solana/test.json"));
+  // Recipient is account-only (never a signer): prefer RECIPIENT_PUBKEY, else
+  // fall back to the test.json keypair's pubkey.
+  const recipientPubkey = process.env.RECIPIENT_PUBKEY
+    ? new PublicKey(process.env.RECIPIENT_PUBKEY)
+    : loadKeypair(join(homedir(), ".config/solana/test.json")).publicKey;
   const connection = new Connection(DEVNET, "confirmed");
-  const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(root), {
-    commitment: "confirmed",
-  });
+  const provider = new anchor.AnchorProvider(
+    connection,
+    new anchor.Wallet(root),
+    {
+      commitment: "confirmed",
+    }
+  );
   anchor.setProvider(provider);
   const registry = new anchor.Program(
     loadIdl("extension_registry"),
-    provider,
+    provider
   ) as unknown as anchor.Program<ExtensionRegistry>;
 
   const [globalState] = PublicKey.findProgramAddressSync(
     [Buffer.from("extension_global")],
-    registry.programId,
+    registry.programId
   );
   try {
     await registry.methods
       .initialize(root.publicKey, root.publicKey)
-      .accountsPartial({ globalState, payer: root.publicKey, systemProgram: SystemProgram.programId })
+      .accountsPartial({
+        globalState,
+        payer: root.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
       .rpc({ commitment: "confirmed" });
   } catch {
     /* already initialized */
   }
 
   const [extension] = PublicKey.findProgramAddressSync(
-    [Buffer.from("extension"), root.publicKey.toBuffer(), agent.publicKey.toBuffer()],
-    registry.programId,
+    [
+      Buffer.from("extension"),
+      root.publicKey.toBuffer(),
+      recipientPubkey.toBuffer(),
+    ],
+    registry.programId
   );
   const exists = (await connection.getAccountInfo(extension)) !== null;
 
@@ -75,20 +97,24 @@ async function main(): Promise<void> {
         .accountsPartial({
           extension,
           extender: root.publicKey,
-          recipient: agent.publicKey,
+          recipient: recipientPubkey,
           systemProgram: SystemProgram.programId,
         })
         .rpc({ commitment: "confirmed" });
     }
     // Stdout contract: the agent pubkey, for the runner to export.
-    console.log(agent.publicKey.toBase58());
+    console.log(recipientPubkey.toBase58());
     return;
   }
 
   if (exists) {
     await registry.methods
       .attestReturnSubstance()
-      .accountsPartial({ extension, extender: root.publicKey, recipient: agent.publicKey })
+      .accountsPartial({
+        extension,
+        extender: root.publicKey,
+        recipient: recipientPubkey,
+      })
       .rpc({ commitment: "confirmed" });
   }
   console.error("extension closed");

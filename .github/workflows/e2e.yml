@@ -25,6 +25,12 @@ on:
       - '.github/workflows/e2e.yml'
   workflow_dispatch:
 
+# One devnet e2e run per ref at a time — a newer push supersedes an in-flight
+# run rather than racing it on the same devnet extension PDA.
+concurrency:
+  group: reputation-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   mcp-reputation-e2e:
     runs-on: ubuntu-latest
