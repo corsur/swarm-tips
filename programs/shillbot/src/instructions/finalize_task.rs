@@ -189,10 +189,14 @@ pub struct FinalizeTask<'info> {
         bump = global_state.bump,
     )]
     pub global_state: Account<'info, GlobalState>,
-    /// CHECK: Validated as task.agent in handler.
+    /// CHECK: Payment recipient (C2 — extension-credit routing). Equals
+    /// `task.agent` when `task.payout_to` is unset (zero); otherwise it must be
+    /// `task.payout_to` (e.g. an extension-credit splitter vault). Reputation
+    /// still accrues to `task.agent` (see `update_agent_stats`), so routing the
+    /// payout never moves the agent's on-chain stats.
     #[account(
         mut,
-        constraint = agent.key() == task.agent @ ShillbotError::NotTaskAgent,
+        constraint = agent.key() == if task.payout_to == Pubkey::default() { task.agent } else { task.payout_to } @ ShillbotError::NotTaskAgent,
     )]
     pub agent: AccountInfo<'info>,
     /// CHECK: Validated as task.client.

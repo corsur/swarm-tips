@@ -105,6 +105,14 @@ pub struct Task {
     /// `requires_approval`).
     pub _reserved: [u8; 19],
     pub bump: u8,
+    /// Payment-routing override (C2 — extension-credit). `Pubkey::default()`
+    /// (zero) = pay the agent (`task.agent`); otherwise `finalize_task` pays
+    /// THIS account instead, while reputation still accrues to `task.agent`.
+    /// Set by `set_payout_to` (agent-only) — e.g. an extension-credit splitter
+    /// vault. Appended AFTER `bump` (32 bytes > the 19 reserved) so existing
+    /// on-chain accounts stay bytewise-identical for bytes [0..315); the
+    /// `migrate_task` ix reallocs 315 → 347 and zero-fills the tail.
+    pub payout_to: Pubkey,
 }
 
 impl Task {
@@ -134,8 +142,10 @@ impl Task {
         + 32   // verification_hash
         + 1    // requires_approval         (D1 — was reserved)
         + 19   // _reserved (was 20, carved 1 by D1)
-        + 1; // bump
-             // Total = 315 (unchanged); bytewise-compatible with v4 layout.
+        + 1    // bump
+        + 32; // payout_to (C2 — appended after bump; realloc 315 → 347)
+              // Total = 347. Existing accounts are bytewise-identical for
+              // bytes [0..315); migrate_task reallocs + zero-fills the tail.
 }
 
 #[cfg(test)]
@@ -143,8 +153,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn task_space_is_315() {
-        assert_eq!(Task::SPACE, 315);
+    fn task_space_is_347() {
+        assert_eq!(Task::SPACE, 347);
     }
 
     #[test]

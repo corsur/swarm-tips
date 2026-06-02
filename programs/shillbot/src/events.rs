@@ -128,3 +128,13 @@ pub struct IdentityRevoked {
     pub agent: Pubkey,
     pub platform: u8,
 }
+
+/// Emitted when the agent sets a payment-routing override (C2 —
+/// extension-credit). `finalize_task` will pay `payout_to` instead of the
+/// agent wallet; reputation is unaffected.
+#[event]
+pub struct PayoutRouteSet {
+    pub task_id: u64,
+    pub agent: Pubkey,
+    pub payout_to: Pubkey,
+}

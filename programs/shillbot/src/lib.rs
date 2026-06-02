@@ -127,6 +127,18 @@ pub mod shillbot {
         instructions::migrate_agent_state::migrate_agent_state(ctx)
     }
 
+    /// One-shot realloc of legacy 315-byte Task accounts to the 347-byte
+    /// payout_to layout (C2). Permissionless + idempotent.
+    pub fn migrate_task(ctx: Context<MigrateTask>) -> Result<()> {
+        instructions::migrate_task::migrate_task(ctx)
+    }
+
+    /// Agent routes this task's finalize payment to `payout_to` (e.g. an
+    /// extension-credit splitter vault). Reputation stays on `task.agent`.
+    pub fn set_payout_to(ctx: Context<SetPayoutTo>, payout_to: Pubkey) -> Result<()> {
+        instructions::set_payout_to::set_payout_to(ctx, payout_to)
+    }
+
     pub fn submit_work(ctx: Context<SubmitWork>, content_id: Vec<u8>) -> Result<()> {
         instructions::submit_work::submit_work(ctx, content_id)
     }
