@@ -16,6 +16,7 @@ mod server;
 mod session_binding;
 mod solana_reads;
 mod solana_tx;
+mod web_position;
 
 use crate::discovery::DiscoveryState;
 use crate::game_proxy::GameApiProxy;
