@@ -1457,6 +1457,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "extension-credit"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+]
+
+[[package]]
 name = "extension-registry"
 version = "0.1.0"
 dependencies = [

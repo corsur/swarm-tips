@@ -9,16 +9,19 @@ skip-lint = false
 coordination_game = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 shillbot = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
 extension_registry = "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j"
+extension_credit = "GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm"
 
 [programs.devnet]
 coordination_game = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 shillbot = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
 extension_registry = "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j"
+extension_credit = "GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm"
 
 [programs.mainnet]
 coordination_game = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 shillbot = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
 extension_registry = "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j"
+extension_credit = "GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm"
 
 [registry]
 url = "https://api.apr.dev"
