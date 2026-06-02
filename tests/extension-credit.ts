@@ -1,7 +1,12 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program, BN } from "@coral-xyz/anchor";
 import { ExtensionCredit } from "../target/types/extension_credit";
-import { Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram } from "@solana/web3.js";
+import {
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  SystemProgram,
+} from "@solana/web3.js";
 import { assert } from "chai";
 
 const MIN_ADVANCE_LAMPORTS = 1_000_000;
@@ -26,7 +31,8 @@ describe("extension-credit", () => {
   // The provider wallet (id.json) is the backer and pays tx fees.
   const backer = provider.wallet.publicKey;
 
-  const bal = (pk: PublicKey) => provider.connection.getBalance(pk, "confirmed");
+  const bal = (pk: PublicKey) =>
+    provider.connection.getBalance(pk, "confirmed");
 
   async function airdrop(pk: PublicKey, lamports: number): Promise<void> {
     const sig = await provider.connection.requestAirdrop(pk, lamports);
@@ -43,13 +49,19 @@ describe("extension-credit", () => {
 
   it("open → route_and_recoup: backer recouped first, recipient gets the surplus (conservation)", async () => {
     const recipient = Keypair.generate();
-    const [advance] = advancePda(backer, recipient.publicKey, program.programId);
+    const [advance] = advancePda(
+      backer,
+      recipient.publicKey,
+      program.programId
+    );
     const rentFloor =
-      await provider.connection.getMinimumBalanceForRentExemption(ADVANCE_SPACE);
+      await provider.connection.getMinimumBalanceForRentExemption(
+        ADVANCE_SPACE
+      );
 
     await program.methods
       .openAdvance(ADVANCE)
-      .accounts({
+      .accountsPartial({
         advance,
         backer,
         recipient: recipient.publicKey,
@@ -79,7 +91,7 @@ describe("extension-credit", () => {
 
     const sig = await program.methods
       .routeAndRecoup()
-      .accounts({ advance, backer, recipient: recipient.publicKey })
+      .accountsPartial({ advance, backer, recipient: recipient.publicKey })
       .rpc({ commitment: "confirmed" });
     const fee = await feeOf(sig);
 
@@ -98,12 +110,16 @@ describe("extension-credit", () => {
     );
     // Vault drained back to the rent floor; all routed earnings distributed.
     assert.closeTo(await bal(advance), rentFloor, 100, "vault drained to rent");
-    assert.equal(toBacker + toRecipient, available, "all routed earnings distributed");
+    assert.equal(
+      toBacker + toRecipient,
+      available,
+      "all routed earnings distributed"
+    );
 
     // Fully recouped → close, rent returns to backer.
     await program.methods
       .closeAdvance()
-      .accounts({ advance, backer, recipient: recipient.publicKey })
+      .accountsPartial({ advance, backer, recipient: recipient.publicKey })
       .rpc({ commitment: "confirmed" });
     assert.isNull(
       await provider.connection.getAccountInfo(advance),
@@ -113,13 +129,19 @@ describe("extension-credit", () => {
 
   it("open → mark_default sweeps the vault to the backer and closes", async () => {
     const recipient = Keypair.generate();
-    const [advance] = advancePda(backer, recipient.publicKey, program.programId);
+    const [advance] = advancePda(
+      backer,
+      recipient.publicKey,
+      program.programId
+    );
     const rentFloor =
-      await provider.connection.getMinimumBalanceForRentExemption(ADVANCE_SPACE);
+      await provider.connection.getMinimumBalanceForRentExemption(
+        ADVANCE_SPACE
+      );
 
     await program.methods
       .openAdvance(ADVANCE)
-      .accounts({
+      .accountsPartial({
         advance,
         backer,
         recipient: recipient.publicKey,
@@ -134,7 +156,7 @@ describe("extension-credit", () => {
 
     const sig = await program.methods
       .markDefault()
-      .accounts({ advance, backer, recipient: recipient.publicKey })
+      .accountsPartial({ advance, backer, recipient: recipient.publicKey })
       .rpc({ commitment: "confirmed" });
     const fee = await feeOf(sig);
 
@@ -153,11 +175,15 @@ describe("extension-credit", () => {
 
   it("rejects an advance below the minimum", async () => {
     const recipient = Keypair.generate();
-    const [advance] = advancePda(backer, recipient.publicKey, program.programId);
+    const [advance] = advancePda(
+      backer,
+      recipient.publicKey,
+      program.programId
+    );
     try {
       await program.methods
         .openAdvance(new BN(MIN_ADVANCE_LAMPORTS - 1))
-        .accounts({
+        .accountsPartial({
           advance,
           backer,
           recipient: recipient.publicKey,
@@ -175,7 +201,7 @@ describe("extension-credit", () => {
     try {
       await program.methods
         .openAdvance(ADVANCE)
-        .accounts({
+        .accountsPartial({
           advance,
           backer,
           recipient: backer,
@@ -190,10 +216,14 @@ describe("extension-credit", () => {
 
   it("rejects closing before fully recouped", async () => {
     const recipient = Keypair.generate();
-    const [advance] = advancePda(backer, recipient.publicKey, program.programId);
+    const [advance] = advancePda(
+      backer,
+      recipient.publicKey,
+      program.programId
+    );
     await program.methods
       .openAdvance(ADVANCE)
-      .accounts({
+      .accountsPartial({
         advance,
         backer,
         recipient: recipient.publicKey,
@@ -203,7 +233,7 @@ describe("extension-credit", () => {
     try {
       await program.methods
         .closeAdvance()
-        .accounts({ advance, backer, recipient: recipient.publicKey })
+        .accountsPartial({ advance, backer, recipient: recipient.publicKey })
         .rpc({ commitment: "confirmed" });
       assert.fail("expected NotFullyRecouped");
     } catch (e) {

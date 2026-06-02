@@ -1,7 +1,12 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program, BN } from "@coral-xyz/anchor";
 import { ExtensionRegistry } from "../target/types/extension_registry";
-import { Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram } from "@solana/web3.js";
+import {
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  SystemProgram,
+} from "@solana/web3.js";
 import { assert } from "chai";
 
 // Constants matching the on-chain program (constants.rs).
@@ -36,7 +41,8 @@ async function fund(
 describe("extension-registry", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
-  const program = anchor.workspace.extensionRegistry as Program<ExtensionRegistry>;
+  const program = anchor.workspace
+    .extensionRegistry as Program<ExtensionRegistry>;
   // The provider wallet (id.json) becomes the registry authority + treasury.
   const authority = provider.wallet.publicKey;
   const [globalState] = PublicKey.findProgramAddressSync(
@@ -44,13 +50,14 @@ describe("extension-registry", () => {
     program.programId
   );
 
-  const bal = (pk: PublicKey) => provider.connection.getBalance(pk, "confirmed");
+  const bal = (pk: PublicKey) =>
+    provider.connection.getBalance(pk, "confirmed");
 
   before(async () => {
     try {
       await program.methods
         .initialize(authority, authority)
-        .accounts({
+        .accountsPartial({
           globalState,
           payer: authority,
           systemProgram: SystemProgram.programId,
@@ -75,7 +82,7 @@ describe("extension-registry", () => {
 
     await program.methods
       .submitExtension(TYPE_CAPABILITY_VALIDATION, BOND)
-      .accounts({
+      .accountsPartial({
         extension,
         extender: extender.publicKey,
         recipient: recipient.publicKey,
@@ -90,7 +97,7 @@ describe("extension-registry", () => {
 
     await program.methods
       .attestReturnSubstance()
-      .accounts({
+      .accountsPartial({
         extension,
         extender: extender.publicKey,
         recipient: recipient.publicKey,
@@ -124,7 +131,7 @@ describe("extension-registry", () => {
 
     await program.methods
       .submitExtension(TYPE_CAPABILITY_VALIDATION, BOND)
-      .accounts({
+      .accountsPartial({
         extension,
         extender: extender.publicKey,
         recipient: recipient.publicKey,
@@ -141,7 +148,7 @@ describe("extension-registry", () => {
     // treasury wallet is ALSO the fee payer; account for that fee exactly.
     const sig = await program.methods
       .defaultExtension()
-      .accounts({
+      .accountsPartial({
         extension,
         globalState,
         authority,
@@ -197,7 +204,7 @@ describe("extension-registry", () => {
     try {
       await program.methods
         .submitExtension(TYPE_MENTORSHIP, BOND)
-        .accounts({
+        .accountsPartial({
           extension,
           extender: extender.publicKey,
           recipient: recipient.publicKey,
@@ -222,8 +229,11 @@ describe("extension-registry", () => {
     );
     try {
       await program.methods
-        .submitExtension(TYPE_CAPABILITY_VALIDATION, new BN(MIN_BOND_LAMPORTS - 1))
-        .accounts({
+        .submitExtension(
+          TYPE_CAPABILITY_VALIDATION,
+          new BN(MIN_BOND_LAMPORTS - 1)
+        )
+        .accountsPartial({
           extension,
           extender: extender.publicKey,
           recipient: recipient.publicKey,
@@ -248,7 +258,7 @@ describe("extension-registry", () => {
     try {
       await program.methods
         .submitExtension(TYPE_CAPABILITY_VALIDATION, BOND)
-        .accounts({
+        .accountsPartial({
           extension,
           extender: extender.publicKey,
           recipient: extender.publicKey,
@@ -276,7 +286,7 @@ describe("extension-registry", () => {
 
     await program.methods
       .submitExtension(TYPE_CAPABILITY_VALIDATION, BOND)
-      .accounts({
+      .accountsPartial({
         extension,
         extender: extender.publicKey,
         recipient: recipient.publicKey,
@@ -288,7 +298,7 @@ describe("extension-registry", () => {
     try {
       await program.methods
         .defaultExtension()
-        .accounts({
+        .accountsPartial({
           extension,
           globalState,
           authority: intruder.publicKey,

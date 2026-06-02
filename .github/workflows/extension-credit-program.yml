@@ -80,7 +80,7 @@ jobs:
         run: pkill -f solana-test-validator || true
 
   deploy-devnet:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-latest
     steps:
