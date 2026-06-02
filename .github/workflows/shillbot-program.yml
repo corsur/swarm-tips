@@ -64,6 +64,10 @@ jobs:
         run: |
           anchor build -p coordination-game
           anchor build -p shillbot
+          # extension programs too: `pnpm run lint` runs repo-wide `tsc`, which
+          # typechecks tests/extension-*.ts and needs their generated types.
+          anchor build -p extension-registry
+          anchor build -p extension-credit
 
       - run: pnpm run lint
 
