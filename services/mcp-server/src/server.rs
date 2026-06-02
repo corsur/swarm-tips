@@ -994,6 +994,9 @@ impl SwarmTipsMcp {
             game: game_input,
             curator,
             agent_rank: args.agent_rank,
+            // credit_web (B4): populated once the extension-credit web-position
+            // indexer (B2) lands; None until then.
+            credit_web: None,
         };
         let trust = compute_trust(&inputs);
 

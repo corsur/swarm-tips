@@ -28,8 +28,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Per-signal weights when ALL four signals are present. Renormalized
-/// when any are missing. Tuning rationale:
+/// Per-signal weights when ALL five signals are present. Renormalized
+/// when any are missing (the absolute values are relative — only their
+/// ratios matter). Tuning rationale:
 ///
 /// - Shillbot 0.45 — biggest single weight because it's the only
 ///   signal grounded in oracle-attested verified work.
@@ -41,12 +42,17 @@ use serde::{Deserialize, Serialize};
 /// - Curator 0.15 — DAO-side ascription. Smaller weight because it's
 ///   a categorical bin (first-party / vetted / discovered) rather
 ///   than a fine-grained metric.
+/// - Credit-web 0.20 — non-financial reputation: the agent's position
+///   in the extension-credit web (who vouched for it, weighted by the
+///   voucher's own standing). The novel positive-reputation signal
+///   (mund-creanc-witer); B4.
 const WEIGHT_SHILLBOT: f64 = 0.45;
 const WEIGHT_AGENT_RANK: f64 = 0.25;
 const WEIGHT_GAME: f64 = 0.15;
 const WEIGHT_CURATOR: f64 = 0.15;
+const WEIGHT_CREDIT_WEB: f64 = 0.20;
 
-/// All four input signals to the composite trust formula. Each is
+/// All five input signals to the composite trust formula. Each is
 /// `Option<...>`; missing signals don't contribute and don't
 /// penalize. Populate from:
 /// - `shillbot`: `agent_profile.shillbot.derived` (#29 tool)
@@ -54,12 +60,15 @@ const WEIGHT_CURATOR: f64 = 0.15;
 /// - `curator`: Layer 3 directory tier (#25, #30)
 /// - `agent_rank`: Hyperspace AgentRank API (deferred — pass `None`
 ///   until that integration ships)
+/// - `credit_web`: extension-credit web-position (B4); `None` until
+///   the web-position indexer ships.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TrustInputs {
     pub shillbot: Option<ShillbotInput>,
     pub game: Option<GameInput>,
     pub curator: Option<CuratorTier>,
     pub agent_rank: Option<f64>,
+    pub credit_web: Option<CreditWebInput>,
 }
 
 /// Shillbot reputation inputs (`agent_profile.shillbot.derived`).
@@ -84,6 +93,17 @@ pub struct GameInput {
     /// isn't meaningful; we require ≥ 5 games for the signal to
     /// contribute.
     pub total_games: u64,
+}
+
+/// Extension-credit web-position inputs (B4). `position` is the agent's
+/// recursive-trust-weighted standing in the extension web, already
+/// normalized to 0..1 by the web-position indexer.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct CreditWebInput {
+    pub position: Option<f64>,
+    /// Raw extension count — confidence gate. An agent with zero recorded
+    /// extensions has no web position; we require ≥ 1 to contribute.
+    pub extensions_count: u64,
 }
 
 /// Layer 3 curator tier discriminant. Maps to a fixed 0..1 ascription:
@@ -112,7 +132,7 @@ impl CuratorTier {
 pub struct TrustScore {
     /// Weighted average of the present signals, in 0..1.
     pub score: f64,
-    /// Number of signals that contributed (0..=4). Lower numbers
+    /// Number of signals that contributed (0..=5). Lower numbers
     /// mean less reliable composite.
     pub confidence: u8,
     /// Per-signal breakdown for transparency. Each entry is a
@@ -201,6 +221,21 @@ pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
         });
     }
 
+    // Credit-web (B4) — extension-credit web-position. Contributes only when
+    // the agent has ≥ 1 recorded extension (confidence gate), so a
+    // never-extended agent doesn't get a spurious signal.
+    if let Some(cw) = &inputs.credit_web {
+        if let Some(pos) = cw.position {
+            if cw.extensions_count >= 1 {
+                signals.push(TrustContribution {
+                    signal: "credit_web".to_string(),
+                    value: pos.clamp(0.0, 1.0),
+                    weight: WEIGHT_CREDIT_WEB,
+                });
+            }
+        }
+    }
+
     if signals.is_empty() {
         return TrustScore {
             score: 0.0,
@@ -247,6 +282,67 @@ mod tests {
         assert_eq!(result.score, 0.0);
         assert_eq!(result.confidence, 0);
         assert!(result.breakdown.is_empty());
+    }
+
+    #[test]
+    fn credit_web_contributes_only_above_the_gate() {
+        // extensions_count = 0 → gated out (no contribution).
+        let gated = compute_trust(&TrustInputs {
+            credit_web: Some(CreditWebInput {
+                position: Some(0.8),
+                extensions_count: 0,
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            gated.confidence, 0,
+            "credit_web gated out below 1 extension"
+        );
+
+        // extensions_count ≥ 1 → contributes; single signal renormalizes to 1.
+        let active = compute_trust(&TrustInputs {
+            credit_web: Some(CreditWebInput {
+                position: Some(0.8),
+                extensions_count: 3,
+            }),
+            ..Default::default()
+        });
+        assert_eq!(active.confidence, 1);
+        assert!(approx_eq(active.score, 0.8));
+        assert_eq!(active.breakdown[0].signal, "credit_web");
+        assert!(approx_eq(active.breakdown[0].weight, 1.0));
+    }
+
+    #[test]
+    fn credit_web_renormalizes_alongside_shillbot() {
+        // shillbot (0.45) + credit_web (0.20) → weights renormalize over 0.65.
+        let result = compute_trust(&TrustInputs {
+            shillbot: Some(ShillbotInput {
+                average_score: Some(1_000_000.0),
+                score_max: 1_000_000,
+                completion_rate: Some(1.0),
+                total_completed: 5,
+            }),
+            credit_web: Some(CreditWebInput {
+                position: Some(0.5),
+                extensions_count: 2,
+            }),
+            ..Default::default()
+        });
+        assert_eq!(result.confidence, 2);
+        let total = 0.45 + 0.20;
+        let sb = result
+            .breakdown
+            .iter()
+            .find(|c| c.signal == "shillbot")
+            .unwrap();
+        let cw = result
+            .breakdown
+            .iter()
+            .find(|c| c.signal == "credit_web")
+            .unwrap();
+        assert!(approx_eq(sb.weight, 0.45 / total));
+        assert!(approx_eq(cw.weight, 0.20 / total));
     }
 
     #[test]
@@ -371,10 +467,14 @@ mod tests {
             }),
             curator: Some(CuratorTier::FirstParty),
             agent_rank: Some(1.0),
+            credit_web: Some(CreditWebInput {
+                position: Some(1.0),
+                extensions_count: 5,
+            }),
         });
-        assert_eq!(result.confidence, 4);
+        assert_eq!(result.confidence, 5);
         assert!(approx_eq(result.score, 1.0));
-        // Weights sum to 1.0 across all four signals.
+        // Weights sum to 1.0 across all five signals.
         let weight_sum: f64 = result.breakdown.iter().map(|c| c.weight).sum();
         assert!(approx_eq(weight_sum, 1.0));
     }
@@ -428,6 +528,10 @@ mod tests {
             }),
             curator: Some(CuratorTier::FirstParty),
             agent_rank: Some(5.0),
+            credit_web: Some(CreditWebInput {
+                position: Some(5.0),
+                extensions_count: 1,
+            }),
         });
         assert!(result.score <= 1.0);
         for c in &result.breakdown {
