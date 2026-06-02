@@ -278,6 +278,20 @@ pub struct AgentProfileArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct CreditWebScoreArgs {
+    /// Agent wallet (base58). Omit to use your registered wallet.
+    pub wallet: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema, Default)]
+pub struct ListExtensionsArgs {
+    /// Filter to extensions where this wallet is the extender (base58).
+    pub extender: Option<String>,
+    /// Filter to extensions where this wallet is the recipient (base58).
+    pub recipient: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct AgentTrustScoreArgs {
     /// Wallet pubkey to score. Omit to query the caller's
     /// currently-registered wallet.
@@ -1021,6 +1035,67 @@ impl SwarmTipsMcp {
             "agent_trust_score served"
         );
 
+        Ok(text_result(&result))
+    }
+
+    // -- Extension-credit tools (B5) --
+
+    #[tool(
+        name = "query_agent_credit_web_score",
+        description = "[READ] Extension-credit web-position for an agent (0..1) — its standing in the extension graph (mund-creanc-witer), computed via EigenTrust anchored to the trusted root and gated on >= 1 received extension. Returns { wallet, position, extensions_received, has_standing }. This is the same signal that feeds credit_web in agent_trust_score. Empty/0 on clusters where extension-registry isn't deployed.",
+        annotations(read_only_hint = true)
+    )]
+    async fn query_agent_credit_web_score(
+        &self,
+        Parameters(args): Parameters<CreditWebScoreArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let target_wallet = self
+            .resolve_target_wallet(args.wallet.as_deref(), Some(&parts))
+            .await?;
+        let cw = self.read_credit_web_input(&target_wallet).await;
+        let (position, extensions_received) = match &cw {
+            Some(c) => (c.position, c.extensions_count),
+            None => (None, 0),
+        };
+        let result = serde_json::json!({
+            "wallet": target_wallet,
+            "position": position,
+            "extensions_received": extensions_received,
+            "has_standing": position.is_some() && extensions_received >= 1,
+        });
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "list_extensions",
+        description = "[READ] List active extension-credit obligations (extender -> recipient vouches backed by a bonded SOL stake). Optionally filter by `extender` or `recipient` wallet (base58). Returns { extensions: [{ extender, recipient, bond_lamports }], count }. Empty on clusters where extension-registry isn't deployed.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_extensions(
+        &self,
+        Parameters(args): Parameters<ListExtensionsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let extensions = crate::solana_reads::read_all_extensions(
+            &self.state.rpc_client,
+            &self.state.solana_rpc_url,
+        )
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+        let filtered: Vec<serde_json::Value> = extensions
+            .into_iter()
+            .filter(|e| args.extender.as_deref().is_none_or(|x| e.extender == x))
+            .filter(|e| args.recipient.as_deref().is_none_or(|x| e.recipient == x))
+            .map(|e| {
+                serde_json::json!({
+                    "extender": e.extender,
+                    "recipient": e.recipient,
+                    "bond_lamports": e.bond_lamports,
+                })
+            })
+            .collect();
+        let count = filtered.len();
+        let result = serde_json::json!({ "extensions": filtered, "count": count });
         Ok(text_result(&result))
     }
 
