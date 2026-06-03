@@ -1,18 +1,17 @@
 name: Reputation E2E (devnet)
 
-# Real end-to-end test of the reputation / credit-web path against LIVE devnet.
-# This is the AGENT-facing e2e: agents consume swarm.tips through the MCP server,
-# so it drives the real /mcp transport (not a browser) against the deployed
-# extension-registry program on devnet. Deliberately a network job (like the
-# deploy-devnet jobs) — the unit/clippy/fmt jobs stay network-free.
+# Automated, SOL-FREE end-to-end test of the reputation / credit-web path. This
+# is the AGENT-facing e2e: agents consume swarm.tips through the MCP server, so
+# it boots the real mcp-server pointed at devnet and drives the /mcp transport
+# (not a browser), asserting READ-ONLY against the permanent dogfood extension
+# on devnet. It creates no on-chain state and spends NO SOL — safe to run on
+# every push. The write path (submit/attest/default + bond conservation) is
+# covered by the program's free localnet anchor tests.
 #
-# Requires (repo settings):
-#   - vars.GCP_WORKLOAD_IDENTITY_PROVIDER / vars.GCP_SERVICE_ACCOUNT — so the
-#     mcp-server boots its Firestore client via ADC (the reputation tools read
-#     devnet directly, but the server opens Firestore at startup).
-#   - secrets.SOLANA_DEPLOY_KEYPAIR — the devnet admin/upgrade-authority wallet.
-#     It MUST be the web-position root (CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY,
-#     web_position.rs WEB_POSITION_ROOT); the e2e vouches from it so the agent scores.
+# Requires (repo settings): vars.GCP_WORKLOAD_IDENTITY_PROVIDER /
+# vars.GCP_SERVICE_ACCOUNT — so the mcp-server boots its Firestore client via
+# ADC at startup (the reputation tools themselves read devnet directly). No
+# wallet/secret needed; nothing is signed.
 
 on:
   push:
@@ -21,12 +20,11 @@ on:
       - 'programs/extension-registry/**'
       - 'programs/extension-credit/**'
       - 'services/mcp-server/**'
-      - 'scripts/e2e/**'
+      - 'scripts/e2e/mcp-reputation-devnet.ts'
+      - 'scripts/e2e/run-mcp-reputation-devnet.sh'
       - '.github/workflows/e2e.yml'
   workflow_dispatch:
 
-# One devnet e2e run per ref at a time — a newer push supersedes an in-flight
-# run rather than racing it on the same devnet extension PDA.
 concurrency:
   group: reputation-e2e-${{ github.ref }}
   cancel-in-progress: true
@@ -54,14 +52,6 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
 
-      - name: Install Solana CLI
-        run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
-
-      - name: Install Anchor CLI
-        run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
-
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -73,27 +63,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Install root + agent keypairs
-        run: |
-          mkdir -p ~/.config/solana
-          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
-          # The agent (recipient) signs nothing in this e2e — a throwaway is fine.
-          solana-keygen new --no-bip39-passphrase --silent -o ~/.config/solana/test.json
-          solana config set --url https://api.devnet.solana.com --keypair ~/.config/solana/id.json
-
-      - name: Ensure the root wallet has devnet SOL
-        run: |
-          solana airdrop 1 --url https://api.devnet.solana.com || true
-          BAL=$(solana balance --url https://api.devnet.solana.com | awk '{print $1}')
-          echo "root devnet balance: $BAL SOL"
-          # The e2e nets only ~0.00001 SOL gas/run (the bond is returned), but the
-          # wallet must hold enough to lock the bond mid-flow.
-          awk -v b="$BAL" 'BEGIN { if (b+0 < 0.02) { print "::error::root devnet balance too low (" b " SOL) and the faucet is rate-limited; top it up."; exit 1 } }'
-
-      - name: Build extension-registry (generates the IDL the e2e loads)
-        run: anchor build -p extension-registry
-
-      - name: Run the MCP reputation e2e (boots devnet server, drives /mcp, tears down)
+      - name: Run the MCP reputation e2e (boots devnet server, drives /mcp read-only, tears down)
         run: bash scripts/e2e/run-mcp-reputation-devnet.sh
         env:
           GCP_PROJECT_ID: coordination-game-prod
