@@ -390,7 +390,7 @@ pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
 /// orchestrator/verifier (which diverged from the original PlatformType
 /// *names* in the shared crate — only the discriminant numbers are the
 /// contract). Keep this table in sync with
-/// `coordination-app/backend/shillbot-orchestrator/src/services/campaign_service.rs::default_cohort_for_platform`.
+/// `coordination-app/backend/shillbot-api/src/services/campaign_service.rs::default_cohort_for_platform`.
 fn shillbot_platform_label(platform: i64) -> &'static str {
     match platform {
         0 => "youtube",

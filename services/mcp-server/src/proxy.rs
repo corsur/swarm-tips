@@ -38,7 +38,7 @@ pub struct OrchestratorProxy {
 
 /// One task as returned by the orchestrator's `GET /tasks` and
 /// `GET /tasks/:id` endpoints. Field names mirror the orchestrator's wire
-/// format (`shillbot-orchestrator::models::task::TaskResponse`) so serde can
+/// format (`shillbot-api::models::task::TaskResponse`) so serde can
 /// deserialize directly. Optional fields are defaulted so a missing key from
 /// the upstream doesn't fail the whole response.
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,8 +111,8 @@ pub struct TaskListResponse {
 /// `TaskSummary` deserializer rather than maintaining a parallel struct.
 pub type TaskDetails = TaskSummary;
 
-/// Mirrors `shillbot-orchestrator::models::subsidy::EarningsResponse`
-/// at `coordination-app/backend/shillbot-orchestrator/src/models/subsidy.rs`.
+/// Mirrors `shillbot-api::models::subsidy::EarningsResponse`
+/// at `coordination-app/backend/shillbot-api/src/models/subsidy.rs`.
 /// Field-for-field match is required — any drift breaks
 /// `shillbot_check_earnings` over MCP. The old shape (`total_earned`,
 /// `pending_tasks`) was stale; the orchestrator never returned those
@@ -125,7 +125,7 @@ pub struct EarningsResponse {
     pub average_score: f64,
 }
 
-/// Mirrors `shillbot-orchestrator::models::task::TransactionResponse`. Returned
+/// Mirrors `shillbot-api::models::task::TransactionResponse`. Returned
 /// by `POST /tasks/:id/claim` and `POST /tasks/:id/submit` — the orchestrator
 /// builds the unsigned Solana transaction and the agent signs locally.
 #[derive(Debug, Serialize, Deserialize)]
@@ -140,7 +140,7 @@ pub struct TransactionResponse {
 }
 
 /// AAS v0 attestation — mirrors orchestrator
-/// `shillbot-orchestrator::models::task::AttestationResponse`. A portable,
+/// `shillbot-api::models::task::AttestationResponse`. A portable,
 /// structured proof an agent earned a specific composite score on a
 /// specific Task PDA. Verifiable off-chain by re-reading the named PDA.
 #[derive(Debug, Serialize, Deserialize)]
@@ -165,7 +165,7 @@ pub struct AttestationResponse {
 }
 
 /// Verification data needed to build a bundled crank+verify transaction.
-/// Mirrors `shillbot-orchestrator::models::task::VerificationDataResponse`.
+/// Mirrors `shillbot-api::models::task::VerificationDataResponse`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VerificationDataResponse {
     pub task_id: String,
@@ -177,7 +177,7 @@ pub struct VerificationDataResponse {
 }
 
 /// Action discriminator for `POST /tasks/:id/confirm`. Mirrors
-/// `shillbot-orchestrator::models::task::ConfirmAction` — must serialize as
+/// `shillbot-api::models::task::ConfirmAction` — must serialize as
 /// snake_case to match the orchestrator's `#[serde(rename_all = "snake_case")]`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -190,7 +190,7 @@ pub enum ConfirmAction {
     Finalize,
 }
 
-/// Mirrors `shillbot-orchestrator::models::task::ConfirmTaskResponse`.
+/// Mirrors `shillbot-api::models::task::ConfirmTaskResponse`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConfirmTaskResponse {
     pub task_id: String,
@@ -996,7 +996,7 @@ mod tests {
     #[test]
     fn task_summary_parses_orchestrator_wire_format() {
         // This is a real (trimmed) response from
-        // shillbot-orchestrator GET /tasks. Regression guard against the
+        // shillbot-api GET /tasks. Regression guard against the
         // proxy's TaskSummary drifting away from the orchestrator's
         // TaskResponse shape — that mismatch caused the
         // "error decoding response body" bug in the live MCP server.
@@ -1080,7 +1080,7 @@ mod tests {
 
     #[test]
     fn confirm_action_serializes_snake_case() {
-        // Must match shillbot-orchestrator's
+        // Must match shillbot-api's
         // #[serde(rename_all = "snake_case")] on ConfirmAction.
         assert_eq!(
             serde_json::to_value(ConfirmAction::Claim).unwrap(),

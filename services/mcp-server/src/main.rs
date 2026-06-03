@@ -128,7 +128,7 @@ fn init_tracing() {
 
 async fn load_startup_config() -> anyhow::Result<StartupConfig> {
     let gcp_project_id = load_env_or("GCP_PROJECT_ID", "coordination-game-prod");
-    let orchestrator_url = load_env_or("ORCHESTRATOR_URL", "http://shillbot-orchestrator:8080");
+    let orchestrator_url = load_env_or("ORCHESTRATOR_URL", "http://shillbot-api:8080");
     let game_api_url = load_env_or("GAME_API_URL", "http://game-api:8080");
     let network = load_env_or("SOLANA_NETWORK", "mainnet");
     let solana_rpc_url = load_solana_rpc_url(&gcp_project_id, &network).await;

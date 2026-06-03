@@ -1822,7 +1822,7 @@ impl SwarmTipsMcp {
     /// Broadcast a base64-encoded signed transaction, then wait until the
     /// orchestrator's RPC view sees it confirmed. Returns the tx signature on
     /// success. The wait avoids the "transaction not found" race in
-    /// `shillbot-orchestrator::solana::verify_tx_confirmed`.
+    /// `shillbot-api::solana::verify_tx_confirmed`.
     async fn broadcast_and_wait_for_confirmation(
         &self,
         signed_b64: &str,
