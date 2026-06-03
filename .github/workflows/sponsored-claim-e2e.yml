@@ -50,7 +50,13 @@ jobs:
           echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
 
       - name: Build shillbot (generates the IDL the e2e loads)
-        run: anchor build -p shillbot
+        run: |
+          anchor build -p shillbot
+          anchor build -p extension-registry
+          anchor build -p extension-credit
 
       - name: Run the sponsored-claim devnet e2e
         run: npx tsx scripts/e2e/sponsored-claim-devnet.ts
+
+      - name: Run the zero-funds onboarding devnet e2e
+        run: npx tsx scripts/e2e/zero-funds-onboarding-devnet.ts
