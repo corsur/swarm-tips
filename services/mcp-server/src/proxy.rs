@@ -34,6 +34,12 @@ fn network_query_suffix(network: Option<&str>) -> String {
 pub struct OrchestratorProxy {
     client: reqwest::Client,
     base_url: String,
+    /// Base URL for the shorts/video service (shorts-api), which was split out
+    /// of shillbot-api. The mcp-server is in-cluster and calls services
+    /// directly, so it bypasses the edge path-routing and must target shorts-api
+    /// explicitly for the `/shorts/*` endpoints (generate_video,
+    /// check_video_status). Task/campaign endpoints still use `base_url`.
+    shorts_base_url: String,
 }
 
 /// One task as returned by the orchestrator's `GET /tasks` and
@@ -199,10 +205,14 @@ pub struct ConfirmTaskResponse {
 }
 
 impl OrchestratorProxy {
-    pub fn new(base_url: String) -> Self {
+    pub fn new(base_url: String, shorts_base_url: String) -> Self {
         assert!(
             !base_url.is_empty(),
             "orchestrator base_url must not be empty"
+        );
+        assert!(
+            !shorts_base_url.is_empty(),
+            "shorts base_url must not be empty"
         );
 
         // 60s timeout: most orchestrator endpoints respond in <500ms, but
@@ -220,7 +230,11 @@ impl OrchestratorProxy {
             .build()
             .unwrap_or_default();
 
-        Self { client, base_url }
+        Self {
+            client,
+            base_url,
+            shorts_base_url,
+        }
     }
 
     /// List available tasks from the orchestrator.
@@ -821,7 +835,7 @@ impl OrchestratorProxy {
         url: Option<&str>,
         tx_signature: Option<&str>,
     ) -> Result<serde_json::Value, McpServiceError> {
-        let endpoint = format!("{}/shorts/create-crypto", self.base_url);
+        let endpoint = format!("{}/shorts/create-crypto", self.shorts_base_url);
         let body = build_create_short_body(prompt, url);
 
         let mut req = self.client.post(&endpoint).json(&body);
@@ -875,7 +889,7 @@ impl OrchestratorProxy {
             ));
         }
 
-        let url = format!("{}/shorts/{session_id}", self.base_url);
+        let url = format!("{}/shorts/{session_id}", self.shorts_base_url);
 
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, session_id = %session_id, "orchestrator get_short_status failed");
@@ -1206,7 +1220,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             let result = proxy
                 .list_tasks(None, None, Some("devnet"))
                 .await
@@ -1229,7 +1243,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             // Verify the request URL had no `network` param. Wiremock
             // doesn't expose a "missing param" matcher cleanly, so we
             // pull the request log and assert it directly.
@@ -1256,7 +1270,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             let task = proxy
                 .get_task_details("c:t", Some("devnet"))
                 .await
@@ -1276,7 +1290,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             let resp = proxy
                 .claim_task("c:t", "wallet1", Some("devnet"))
                 .await
@@ -1295,7 +1309,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             let resp = proxy
                 .submit_task("c:t", "wallet1", "yt-abc", Some("devnet"))
                 .await
@@ -1321,7 +1335,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             let resp = proxy
                 .get_verification_data("c:t", "wallet1", Some("devnet"))
                 .await
@@ -1341,7 +1355,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             proxy
                 .build_finalize("c:t", "wallet1", Some("devnet"))
                 .await
@@ -1359,7 +1373,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             proxy
                 .approve_task("c:t", "wallet1", Some("devnet"))
                 .await
@@ -1380,7 +1394,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             let resp = proxy
                 .list_pending_approval("wallet1", Some("devnet"))
                 .await
@@ -1403,7 +1417,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             proxy
                 .confirm_task(
                     "c:t",
@@ -1432,7 +1446,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             proxy
                 .get_earnings("wallet1", Some("devnet"))
                 .await
@@ -1485,7 +1499,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             proxy
                 .claim_task("c:t", "wallet1", Some("devnet"))
                 .await

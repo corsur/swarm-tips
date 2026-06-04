@@ -42,6 +42,7 @@ fn load_env_or(var: &str, default: &str) -> String {
 struct StartupConfig {
     gcp_project_id: String,
     orchestrator_url: String,
+    shorts_api_url: String,
     game_api_url: String,
     solana_rpc_url: String,
     network: String,
@@ -78,7 +79,10 @@ async fn main() -> anyhow::Result<()> {
     let session_binding = Arc::new(McpSessionBinding::new(game_db));
 
     let shared = Arc::new(SharedState {
-        orchestrator: OrchestratorProxy::new(cfg.orchestrator_url.clone()),
+        orchestrator: OrchestratorProxy::new(
+            cfg.orchestrator_url.clone(),
+            cfg.shorts_api_url.clone(),
+        ),
         game_api: GameApiProxy::new(cfg.game_api_url.clone())?,
         solana_rpc_url: cfg.solana_rpc_url.clone(),
         solana_rpc_url_mainnet: rpc_url_mainnet.clone(),
@@ -129,6 +133,10 @@ fn init_tracing() {
 async fn load_startup_config() -> anyhow::Result<StartupConfig> {
     let gcp_project_id = load_env_or("GCP_PROJECT_ID", "coordination-game-prod");
     let orchestrator_url = load_env_or("ORCHESTRATOR_URL", "http://shillbot-api:8080");
+    // shorts-api was split out of shillbot-api; the in-cluster mcp-server must
+    // call it directly for the /shorts/* (video) endpoints since it bypasses
+    // the edge path-routing.
+    let shorts_api_url = load_env_or("SHORTS_API_URL", "http://shorts-api");
     let game_api_url = load_env_or("GAME_API_URL", "http://game-api:8080");
     let network = load_env_or("SOLANA_NETWORK", "mainnet");
     let solana_rpc_url = load_solana_rpc_url(&gcp_project_id, &network).await;
@@ -139,6 +147,7 @@ async fn load_startup_config() -> anyhow::Result<StartupConfig> {
     Ok(StartupConfig {
         gcp_project_id,
         orchestrator_url,
+        shorts_api_url,
         game_api_url,
         solana_rpc_url,
         network,
