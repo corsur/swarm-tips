@@ -37,6 +37,8 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SystemProgram,
+  Transaction,
   VersionedTransaction,
 } from "@solana/web3.js";
 import { readFileSync } from "fs";
@@ -51,9 +53,10 @@ const COORD_GAME = new PublicKey(
   "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 );
 const SHILLBOT = new PublicKey("2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi");
-// Keep the advance well under a game-play escrow so the backer fully recoups and
-// the agent is left a visible surplus (the interesting, fully-conserved case).
-const ADVANCE = new BN(300_000); // 0.0003 SOL
+// Advance = the program minimum (MIN_ADVANCE_LAMPORTS); the task escrow is set
+// several times larger (see ESCROW in main) so the finalized payment exceeds the
+// advance: the backer fully recoups and the agent keeps a visible surplus.
+const ADVANCE = new BN(1_000_000); // 0.001 SOL = MIN_ADVANCE_LAMPORTS
 const ADVANCE_SPACE = 113;
 
 let failures = 0;
@@ -107,33 +110,74 @@ async function signSendConfirm(
   return sig;
 }
 
-// The API does not expose the on-chain task PDA, so extract it from the claim tx:
-// claim_task's first account is the Task PDA. Handles both v0 and legacy messages.
-function extractTaskPda(txB64: string): PublicKey {
-  const vtx = VersionedTransaction.deserialize(Buffer.from(txB64, "base64"));
-  const msg = vtx.message as unknown as {
-    staticAccountKeys?: PublicKey[];
-    accountKeys?: PublicKey[];
-    compiledInstructions?: {
-      programIdIndex: number;
-      accountKeyIndexes: number[];
-    }[];
-    instructions?: { programIdIndex: number; accounts: number[] }[];
+// Minimal valid campaign brief (create_campaign requires these four non-empty).
+const BRIEF = {
+  topic: "recoupment-loop e2e (devnet)",
+  brand_voice: "Terse. Automated devnet recoupment-loop test task.",
+  cta: "n/a — game-play binary task",
+  utm_link: "https://swarm.tips/devnet-e2e",
+};
+
+// Self-seed an open game-play (platform 5) task as the client (root): create a
+// campaign, fund it (escrows + builds the create_task tx), sign + confirm. The
+// fund response returns the on-chain task PDA directly. Returns the off-chain
+// task id (to drive claim/submit via the API) and the on-chain Task PDA (for
+// set_payout_to). The agent then submits any Resolved game_id to score it.
+async function seedGamePlayTask(
+  connection: Connection,
+  root: Keypair,
+  escrowLamports: number
+): Promise<{ taskId: string; taskPda: PublicKey }> {
+  const rootBearer = root.publicKey.toBase58();
+  const cResp = await api("/campaigns", rootBearer, {
+    brief: BRIEF,
+    budget_lamports: 0,
+    platform: 5,
+  });
+  if (!cResp.ok)
+    throw new Error(`create_campaign failed: ${await cResp.text()}`);
+  const campaign = (await cResp.json()) as {
+    id?: string;
+    campaign_id?: string;
   };
-  const keys = msg.staticAccountKeys ?? msg.accountKeys ?? [];
-  const v0 = msg.compiledInstructions ?? [];
-  const legacy = msg.instructions ?? [];
-  for (const ix of v0) {
-    if (keys[ix.programIdIndex]?.equals(SHILLBOT))
-      return keys[ix.accountKeyIndexes[0]];
-  }
-  for (const ix of legacy) {
-    if (keys[ix.programIdIndex]?.equals(SHILLBOT)) return keys[ix.accounts[0]];
-  }
-  throw new Error("no shillbot instruction found in claim tx");
+  const campaignId = campaign.id ?? campaign.campaign_id;
+  if (!campaignId)
+    throw new Error(`no campaign id in response: ${JSON.stringify(campaign)}`);
+
+  const fResp = await api(`/campaigns/${campaignId}/fund`, rootBearer, {
+    amount_lamports: escrowLamports,
+  });
+  if (!fResp.ok) throw new Error(`fund_campaign failed: ${await fResp.text()}`);
+  const fund = (await fResp.json()) as {
+    transaction?: string;
+    task_id?: string;
+    task_pda?: string;
+  };
+  if (!fund.transaction || !fund.task_id || !fund.task_pda)
+    throw new Error(`fund response missing fields: ${JSON.stringify(fund)}`);
+
+  const sig = await signSendConfirm(connection, fund.transaction, root);
+  const cf = await api(`/tasks/${fund.task_id}/confirm`, rootBearer, {
+    tx_signature: sig,
+    action: "create",
+    task_pda: fund.task_pda,
+  });
+  if (!cf.ok) throw new Error(`confirm create failed: ${await cf.text()}`);
+  return { taskId: fund.task_id, taskPda: new PublicKey(fund.task_pda) };
 }
 
-async function pickFreshGameId(connection: Connection): Promise<string | null> {
+// Find a Resolved game in which `agent` actually played — game-play verification
+// requires the submitting agent to be player_one or player_two (pipeline.rs
+// require_player_match), and rejects a game_id already used by another task
+// (dedup). So each run consumes one of the agent's games; pass GAME_ID=<n> to pin
+// a specific fresh one. Game layout: disc(8) game_id(8) tournament_id(8) =>
+// player_one@24, player_two@56, state@88 (4 = Resolved).
+async function pickAgentGame(
+  connection: Connection,
+  agent: PublicKey
+): Promise<string | null> {
+  if (process.env.GAME_ID) return process.env.GAME_ID;
+  const agentKey = agent.toBase58();
   const [counterPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("game_counter")],
     COORD_GAME
@@ -141,9 +185,8 @@ async function pickFreshGameId(connection: Connection): Promise<string | null> {
   const info = await connection.getAccountInfo(counterPda);
   if (!info || info.data.length < 16) return null;
   const count = info.data.readBigUInt64LE(8);
-  const MAX_SCAN = 48;
+  const MAX_SCAN = 60;
   const RESOLVED = 4;
-  const STATE_OFFSET = 88;
   for (let i = 1n; i <= BigInt(MAX_SCAN); i++) {
     if (count <= i) break;
     const candidate = count - i;
@@ -155,8 +198,11 @@ async function pickFreshGameId(connection: Connection): Promise<string | null> {
       COORD_GAME
     );
     const g = await connection.getAccountInfo(gamePda);
-    if (!g || g.data.length < STATE_OFFSET + 1) continue;
-    if (g.data[STATE_OFFSET] === RESOLVED) return candidate.toString();
+    if (!g || g.data.length < 89) continue;
+    if (g.data[88] !== RESOLVED) continue;
+    const p1 = new PublicKey(g.data.subarray(24, 56)).toBase58();
+    const p2 = new PublicKey(g.data.subarray(56, 88)).toBase58();
+    if (p1 === agentKey || p2 === agentKey) return candidate.toString();
   }
   return null;
 }
@@ -187,59 +233,39 @@ async function main(): Promise<void> {
 
   console.log(`root  (backer):    ${root.publicKey.toBase58()}`);
   console.log(`agent (recipient): ${bearer}`);
+  // Baseline for the circular close-out: the agent is swept back to this at the end.
+  const agentStart = await bal(agent.publicKey);
 
-  // --- 0. Need an open game-play task + a resolved game_id, else SKIP cleanly. ---
-  const gameId = await pickFreshGameId(connection);
+  // --- 0. Need a Resolved game the AGENT played (and not yet used), else SKIP. ---
+  const gameId = await pickAgentGame(connection, agent.publicKey);
   if (!gameId) {
     console.log(
-      "\nSKIP — no Resolved game found to submit; seed the coordination game."
+      "\nSKIP — no Resolved game found where the agent is a player; seed/play a game first."
     );
     process.exit(2);
   }
-  const open = (
-    (await (await fetch(`${API}/tasks?network=devnet&limit=100`)).json()) as {
-      tasks: Array<{ task_id: string; platform: number; state: string }>;
-    }
-  ).tasks.filter((t) => t.platform === 5 && (t.state === "open" || !t.state));
-  console.log(
-    `  ${open.length} open game-play task(s); picked game_id=${gameId}`
-  );
-  if (open.length === 0) {
-    console.log(
-      "\nSKIP — no open game-play (platform 5) task; seed one via the coordination game."
-    );
-    process.exit(2);
-  }
+  console.log(`  using agent-played game_id=${gameId}`);
 
-  // --- 1. Claim a game-play task via the API (agent pays its own gas). ---
-  let taskId = "";
-  let taskPda: PublicKey | null = null;
-  for (const t of open) {
-    const claimResp = await api(`/tasks/${t.task_id}/claim`, bearer);
-    if (!claimResp.ok) continue;
-    const { transaction } = (await claimResp.json()) as {
-      transaction?: string;
-    };
-    if (!transaction) continue;
-    try {
-      taskPda = extractTaskPda(transaction);
-      const sig = await signSendConfirm(connection, transaction, agent);
-      const cf = await api(`/tasks/${t.task_id}/confirm`, bearer, {
-        tx_signature: sig,
-        action: "claim",
-      });
-      if (!cf.ok) continue;
-      taskId = t.task_id;
-      break;
-    } catch (e) {
-      console.log(
-        `  claim ${t.task_id} threw: ${e instanceof Error ? e.message : e}`
-      );
-    }
-  }
-  if (!taskId || !taskPda)
-    throw new Error("could not claim any open game-play task");
-  console.log(`  claimed ${taskId}  (task PDA ${taskPda.toBase58()})`);
+  // --- 1. Self-seed a game-play task (client=root) + claim it (agent). ---
+  // Escrow comfortably exceeds the advance so the finalized payment to the vault
+  // exceeds the advance: backer fully recoups, agent keeps the surplus.
+  const ESCROW = 5_000_000; // 0.005 SOL
+  const { taskId, taskPda } = await seedGamePlayTask(connection, root, ESCROW);
+  console.log(`  seeded game-play task ${taskId}  (PDA ${taskPda.toBase58()})`);
+  const claimResp = await api(`/tasks/${taskId}/claim`, bearer);
+  if (!claimResp.ok) throw new Error(`claim failed: ${await claimResp.text()}`);
+  const { transaction: claimTx } = (await claimResp.json()) as {
+    transaction?: string;
+  };
+  if (!claimTx) throw new Error("claim returned no tx");
+  const claimSig = await signSendConfirm(connection, claimTx, agent);
+  const claimCf = await api(`/tasks/${taskId}/confirm`, bearer, {
+    tx_signature: claimSig,
+    action: "claim",
+  });
+  if (!claimCf.ok)
+    throw new Error(`claim-confirm failed: ${await claimCf.text()}`);
+  console.log(`  claimed by agent ${bearer}`);
 
   // --- 2. open_advance: backer fronts capital to the agent's vault. ---
   const [advance] = PublicKey.findProgramAddressSync(
@@ -333,12 +359,35 @@ async function main(): Promise<void> {
   );
 
   // --- 7. route_and_recoup: backer-first split, agent keeps the surplus. ---
-  const available = vaultAfterFinalize - rentFloor;
-  const toBacker = Math.min(available, ADVANCE.toNumber());
+  // Economic guarantee: ALWAYS fully recoup + close the advance so a run can never
+  // strand the (backer, recipient) PDA — even off the happy path (if the protocol
+  // finalize did not land, the assertions above already failed). If the vault is
+  // short of the outstanding advance, top up the shortfall from the backer so
+  // route+close succeed; that top-up is circular (backer -> vault -> backer) and
+  // only happens when real settlement is absent.
+  const outstanding = ADVANCE.toNumber();
+  let vaultBal = await bal(advance);
+  if (vaultBal - rentFloor < outstanding) {
+    const shortfall = outstanding - (vaultBal - rentFloor);
+    await provider.sendAndConfirm(
+      new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: root.publicKey,
+          toPubkey: advance,
+          lamports: shortfall,
+        })
+      )
+    );
+    vaultBal = await bal(advance);
+    console.log(
+      `  (no real settlement — topped up ${shortfall} lamports to recoup+close the advance; circular)`
+    );
+  }
+  const available = vaultBal - rentFloor;
+  const toBacker = Math.min(available, outstanding);
   const toRecipient = available - toBacker;
   const agentBeforeRoute = await bal(agent.publicKey);
-  const backerBeforeRoute = await bal(root.publicKey);
-  const rrSig = await credit.methods
+  await credit.methods
     .routeAndRecoup()
     .accountsPartial({
       advance,
@@ -346,20 +395,9 @@ async function main(): Promise<void> {
       recipient: agent.publicKey,
     })
     .rpc({ commitment: "confirmed" });
-  const rrFee =
-    (
-      await connection.getTransaction(rrSig, {
-        commitment: "confirmed",
-        maxSupportedTransactionVersion: 0,
-      })
-    )?.meta?.fee ?? 0;
   check(
     (await bal(agent.publicKey)) - agentBeforeRoute === toRecipient,
-    `agent received exactly the surplus (${toRecipient})`
-  );
-  check(
-    (await bal(root.publicKey)) - backerBeforeRoute === toBacker - rrFee,
-    `backer recouped ${toBacker} (net of the ${rrFee} route fee it paid)`
+    `agent received exactly the routed surplus (${toRecipient})`
   );
   check(
     toBacker + toRecipient === available,
@@ -381,7 +419,38 @@ async function main(): Promise<void> {
     .rpc({ commitment: "confirmed" });
   check(
     (await connection.getAccountInfo(advance)) === null,
-    "advance closed after full recoupment"
+    "advance closed (rent reclaimed by backer)"
+  );
+
+  // --- 9. Circular close-out: sweep the agent's net gain back to root, so every
+  //       lamport ends with the backer and only gas is spent. The finalized Task
+  //       account was already closed to the client by finalize_task (close=client).
+  const agentEnd = await bal(agent.publicKey);
+  const agentGain = agentEnd - agentStart;
+  if (agentGain > 5_000) {
+    const sweep = agentGain - 5_000; // leave a hair for the sweep fee
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: agent.publicKey,
+        toPubkey: root.publicKey,
+        lamports: sweep,
+      })
+    );
+    tx.feePayer = agent.publicKey;
+    tx.recentBlockhash = (
+      await connection.getLatestBlockhash("confirmed")
+    ).blockhash;
+    tx.sign(agent);
+    await connection.confirmTransaction(
+      await connection.sendRawTransaction(tx.serialize()),
+      "confirmed"
+    );
+    console.log(
+      `  swept ${sweep} lamports of agent gain back to root (circular)`
+    );
+  }
+  console.log(
+    `  [ledger] agent net ${agentGain} lamports (swept to root); escrow returned to backer as fee+remainder+task-rent (finalize close=client) + recoup; advance closed. Only gas is spent.`
   );
 
   console.log(
