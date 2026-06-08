@@ -10,12 +10,12 @@
  * Signers: id.json = root (authority / treasury / backer); test.json = agent
  * (recipient — receives funds, signs nothing).
  *
- * The shillbot claim -> finalize -> payout_to step is oracle-gated on devnet
- * (verify_task needs the Switchboard feed; the existing scripts/e2e lifecycle
- * skips it for the same reason), so a "finalized payout" routed to the advance
- * vault is simulated with a direct transfer — exactly how the localnet anchor
- * tests model it. The payout_to routing itself is proven by the shillbot
- * localnet anchor tests.
+ * Here the "finalized payout" routed to the advance vault is simulated with a
+ * direct transfer, keeping this test fast and self-contained. The REAL end-to-end
+ * version — a live game-play task whose protocol-cranked finalize_task routes its
+ * escrow INTO the vault — is recoupment-loop-devnet.ts (added once the protocol-
+ * funded verify crank made on-chain verify_task reachable on devnet). The payout_to
+ * routing itself is also proven by the shillbot localnet anchor tests.
  *
  * Run: npx tsx scripts/e2e/credit-flow-devnet.ts   (exit 0 = pass)
  */
