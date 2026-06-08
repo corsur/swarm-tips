@@ -116,9 +116,7 @@ async function main(): Promise<void> {
   }
 
   // ===== Extension: submit -> attest (bond conservation) =====
-  console.log(
-    "\n[extension-registry] submit_extension -> withdraw_extension"
-  );
+  console.log("\n[extension-registry] submit_extension -> withdraw_extension");
   const [extension] = PublicKey.findProgramAddressSync(
     [
       Buffer.from("extension"),

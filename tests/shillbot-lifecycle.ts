@@ -2125,7 +2125,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
         PROTOCOL_FEE_BPS
       );
       const vaultDelta =
-        Number(await getBalance(context, vault.publicKey)) - Number(vaultBefore);
+        Number(await getBalance(context, vault.publicKey)) -
+        Number(vaultBefore);
       const agentDelta =
         Number(await getBalance(context, aKp.publicKey)) - Number(agentBefore);
       assert.equal(
@@ -2194,7 +2195,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
       const bond = ESCROW_LAMPORTS.toNumber() * MIN_CHALLENGE_BOND_MULTIPLIER;
       const bondHalf = Math.floor(bond / 2);
       const vaultDelta =
-        Number(await getBalance(context, vault.publicKey)) - Number(vaultBefore);
+        Number(await getBalance(context, vault.publicKey)) -
+        Number(vaultBefore);
       const agentDelta =
         Number(await getBalance(context, aKp.publicKey)) - Number(agentBefore);
       assert.equal(

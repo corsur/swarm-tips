@@ -55,20 +55,28 @@ async function main(): Promise<void> {
   const sponsor = Keypair.generate();
   const agent = Keypair.generate();
   const connection = new Connection(DEVNET, "confirmed");
-  const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(client), {
-    commitment: "confirmed",
-  });
+  const provider = new anchor.AnchorProvider(
+    connection,
+    new anchor.Wallet(client),
+    {
+      commitment: "confirmed",
+    }
+  );
   anchor.setProvider(provider);
   const program = anchor.workspace.Shillbot
     ? (anchor.workspace.Shillbot as anchor.Program<Shillbot>)
     : (new anchor.Program(
         JSON.parse(
-          readFileSync(join(__dirname, "..", "..", "target", "idl", "shillbot.json"), "utf8")
+          readFileSync(
+            join(__dirname, "..", "..", "target", "idl", "shillbot.json"),
+            "utf8"
+          )
         ) as anchor.Idl,
         provider
       ) as unknown as anchor.Program<Shillbot>);
 
-  const bal = (pk: PublicKey): Promise<number> => connection.getBalance(pk, "confirmed");
+  const bal = (pk: PublicKey): Promise<number> =>
+    connection.getBalance(pk, "confirmed");
   console.log(`client (escrow):  ${client.publicKey.toBase58()}`);
   console.log(`sponsor (gas):    ${sponsor.publicKey.toBase58()}`);
   console.log(`agent (claimer):  ${agent.publicKey.toBase58()}`);
@@ -99,13 +107,30 @@ async function main(): Promise<void> {
   const globalBefore = await program.account.globalState.fetch(globalPda);
   const counter = globalBefore.taskCounter as BN;
   const [taskPda] = PublicKey.findProgramAddressSync(
-    [Buffer.from("task"), counter.toArrayLike(Buffer, "le", 8), client.publicKey.toBuffer()],
+    [
+      Buffer.from("task"),
+      counter.toArrayLike(Buffer, "le", 8),
+      client.publicKey.toBuffer(),
+    ],
     program.programId
   );
-  const content = Array.from(createHash("sha256").update(randomBytes(16)).digest());
+  const content = Array.from(
+    createHash("sha256").update(randomBytes(16)).digest()
+  );
   const deadline = new BN(Math.floor(Date.now() / 1000) + 86_400 * 30);
   await program.methods
-    .createTask(ESCROW, content as never, deadline, new BN(3600), new BN(14_400), 0, 0, 0, 0, false)
+    .createTask(
+      ESCROW,
+      content as never,
+      deadline,
+      new BN(3600),
+      new BN(14_400),
+      0,
+      0,
+      0,
+      0,
+      false
+    )
     .accountsPartial({
       globalState: globalPda,
       task: taskPda,
@@ -116,12 +141,15 @@ async function main(): Promise<void> {
     .signers([client])
     .rpc({ commitment: "confirmed" });
   check(
-    JSON.stringify((await program.account.task.fetch(taskPda)).state) === JSON.stringify({ open: {} }),
+    JSON.stringify((await program.account.task.fetch(taskPda)).state) ===
+      JSON.stringify({ open: {} }),
     "task created in Open state"
   );
 
   // --- the SPONSORED claim: sponsor = fee-payer, agent co-signs the authority ---
-  console.log("\n[claim] sponsored claim_task — sponsor pays gas, agent co-signs");
+  console.log(
+    "\n[claim] sponsored claim_task — sponsor pays gas, agent co-signs"
+  );
   const [agentState] = PublicKey.findProgramAddressSync(
     [Buffer.from("agent_state"), agent.publicKey.toBuffer()],
     program.programId
@@ -137,7 +165,9 @@ async function main(): Promise<void> {
     })
     .transaction();
   tx.feePayer = sponsor.publicKey; // sponsor pays the fee
-  tx.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash;
+  tx.recentBlockhash = (
+    await connection.getLatestBlockhash("confirmed")
+  ).blockhash;
   tx.partialSign(sponsor); // fee-payer signs
   tx.partialSign(agent); // agent co-signs the claim authority
 
@@ -157,15 +187,26 @@ async function main(): Promise<void> {
     JSON.stringify(task.state) === JSON.stringify({ claimed: {} }),
     "task is now Claimed"
   );
-  check(task.agent.toString() === agent.publicKey.toBase58(), "task.agent == the agent");
   check(
-    (txInfo?.transaction.message.staticAccountKeys?.[0] ?? txInfo?.transaction.message.accountKeys?.[0])?.toString() ===
-      sponsor.publicKey.toBase58(),
+    task.agent.toString() === agent.publicKey.toBase58(),
+    "task.agent == the agent"
+  );
+  check(
+    (
+      txInfo?.transaction.message.staticAccountKeys?.[0] ??
+      // Legacy (non-v0) messages expose `accountKeys` instead; the union type
+      // only declares `staticAccountKeys`, so reach the legacy field via `any`.
+      (txInfo?.transaction.message as unknown as { accountKeys?: PublicKey[] })
+        .accountKeys?.[0]
+    )?.toString() === sponsor.publicKey.toBase58(),
     "fee-payer (account[0]) is the sponsor"
   );
   const sponsorDelta = sponsorBefore - (await bal(sponsor.publicKey));
   const agentDelta = agentBefore - (await bal(agent.publicKey));
-  check(sponsorDelta === fee, `sponsor paid exactly the gas fee (${fee} lamports)`);
+  check(
+    sponsorDelta === fee,
+    `sponsor paid exactly the gas fee (${fee} lamports)`
+  );
   const agentStateRent = await connection.getMinimumBalanceForRentExemption(
     (await connection.getAccountInfo(agentState))?.data.length ?? 0
   );
@@ -173,7 +214,10 @@ async function main(): Promise<void> {
     agentDelta === agentStateRent,
     `agent paid only the AgentState rent (${agentDelta}), NOT the gas fee`
   );
-  check(agentDelta !== 0 && sponsorDelta < agentDelta, "agent never paid gas — the sponsor did");
+  check(
+    agentDelta !== 0 && sponsorDelta < agentDelta,
+    "agent never paid gas — the sponsor did"
+  );
 
   // --- cleanup: drain the fresh sponsor + agent leftovers back to id.json ---
   console.log("\n[cleanup] drain sponsor + agent leftovers back to id.json");
@@ -189,7 +233,9 @@ async function main(): Promise<void> {
         })
       );
       sweepTx.feePayer = kp.publicKey;
-      sweepTx.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash;
+      sweepTx.recentBlockhash = (
+        await connection.getLatestBlockhash("confirmed")
+      ).blockhash;
       sweepTx.sign(kp);
       const sweepSig = await connection.sendRawTransaction(sweepTx.serialize());
       await connection.confirmTransaction(sweepSig, "confirmed");
@@ -216,7 +262,9 @@ async function main(): Promise<void> {
     "no SOL lost beyond the locked escrow/rent + gas"
   );
 
-  console.log(`\n${failures === 0 ? "PASS" : "FAIL"} — ${failures} failed check(s)`);
+  console.log(
+    `\n${failures === 0 ? "PASS" : "FAIL"} — ${failures} failed check(s)`
+  );
   process.exit(failures === 0 ? 0 : 1);
 }
 
