@@ -20,8 +20,16 @@
  *      advance) and the task lands Claimed by the agent.
  *
  * The recoupment leg (agent earnings repay the advance) is the already-proven
- * route_and_recoup (credit-flow-devnet.ts). Run manually (workflow_dispatch);
- * locks a little recoverable devnet SOL. Run: npx tsx scripts/e2e/zero-funds-onboarding-devnet.ts
+ * route_and_recoup (credit-flow-devnet.ts). Run manually (workflow_dispatch).
+ *
+ * Economic close-out: the run recovers everything recoverable in-run — task
+ * escrow + Task rent (emergency_return), both vouch bonds + rent
+ * (withdraw_extension), and the advance principal + PDA rent (recoup + close).
+ * The ONLY un-recovered lamports are the $0 agent's AgentState rent: a Claimed
+ * task can't reset claimed_count, so close_agent_state can't run in the same
+ * pass. That residual keeps this DEVNET-ONLY (free SOL); the mainnet-clean tests
+ * are the cycle-complete recoupment-loop-devnet.ts / credit-flow-devnet.ts.
+ * Run: npx tsx scripts/e2e/zero-funds-onboarding-devnet.ts
  */
 import * as anchor from "@coral-xyz/anchor";
 import { BN } from "@coral-xyz/anchor";
@@ -301,9 +309,90 @@ async function main(): Promise<void> {
     `agent's only SOL ever was the fronted advance (now ${agentRemaining} after paying rent) — it brought $0`
   );
 
+  // === recover everything recoverable in-run ===
+  // Only the $0 agent's AgentState rent is irreducible: a Claimed task can't
+  // reset claimed_count, so close_agent_state can't run in the same pass — which
+  // keeps this a DEVNET-ONLY test. Everything else comes back: the task escrow +
+  // Task rent (emergency_return), both vouch bonds + rent (withdraw_extension),
+  // and the advance principal + PDA rent (recoup + close).
+  console.log(
+    "\n[recover] emergency_return + withdraw both vouches + recoup/close the advance"
+  );
+  const agentStateRent = await connection.getMinimumBalanceForRentExemption(
+    (await connection.getAccountInfo(agentState))?.data.length ?? 0
+  );
+  await shillbot.methods
+    .emergencyReturn()
+    .accountsPartial({ globalState: sbGlobal, authority: root.publicKey })
+    .remainingAccounts([
+      { pubkey: taskPda, isWritable: true, isSigner: false },
+      { pubkey: root.publicKey, isWritable: true, isSigner: false },
+    ])
+    .rpc({ commitment: "confirmed" });
+  await registry.methods
+    .withdrawExtension()
+    .accountsPartial({
+      extension: extPda(onbAuth.publicKey, agent.publicKey),
+      extender: onbAuth.publicKey,
+      recipient: agent.publicKey,
+    })
+    .signers([onbAuth])
+    .rpc({ commitment: "confirmed" });
+  await registry.methods
+    .withdrawExtension()
+    .accountsPartial({
+      extension: extPda(root.publicKey, onbAuth.publicKey),
+      extender: root.publicKey,
+      recipient: onbAuth.publicKey,
+    })
+    .rpc({ commitment: "confirmed" });
+  // Recoup + close the advance: simulate exactly the outstanding so the backer
+  // (onbAuth) fully recoups and the PDA rent is reclaimed (circular). onbAuth is
+  // the transfer source, so it pays + signs this one directly.
+  const simTx = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: onbAuth.publicKey,
+      toPubkey: advancePda,
+      lamports: ADVANCE.toNumber(),
+    })
+  );
+  simTx.feePayer = onbAuth.publicKey;
+  simTx.recentBlockhash = (
+    await connection.getLatestBlockhash("confirmed")
+  ).blockhash;
+  simTx.sign(onbAuth);
+  await connection.confirmTransaction(
+    await connection.sendRawTransaction(simTx.serialize()),
+    "confirmed"
+  );
+  // route_and_recoup's backer is not a signer (split is recorded on the advance);
+  // the provider wallet (root) pays the fee.
+  await credit.methods
+    .routeAndRecoup()
+    .accountsPartial({
+      advance: advancePda,
+      backer: onbAuth.publicKey,
+      recipient: agent.publicKey,
+    })
+    .rpc({ commitment: "confirmed" });
+  await credit.methods
+    .closeAdvance()
+    .accountsPartial({
+      advance: advancePda,
+      backer: onbAuth.publicKey,
+      recipient: agent.publicKey,
+    })
+    .signers([onbAuth])
+    .rpc({ commitment: "confirmed" });
+  check(
+    (await connection.getAccountInfo(taskPda)) === null &&
+      (await connection.getAccountInfo(advancePda)) === null,
+    "task + advance closed; escrow, both bonds, and advance rent recovered"
+  );
+
   // === best-effort cleanup (drain the throwaway wallets) ===
   console.log(
-    "\n[cleanup] sweep onbAuth + agent leftovers back to root (bonds/advance/escrow stay locked, recoverable)"
+    "\n[cleanup] sweep onbAuth + agent leftovers back to root (only the agent's AgentState rent stays locked)"
   );
   for (const kp of [agent, onbAuth]) {
     try {
@@ -333,7 +422,12 @@ async function main(): Promise<void> {
   }
   const rootNet = rootStart - (await bal(root.publicKey));
   console.log(
-    `[ledger] root net out ${rootNet} lamports (bonds + advance + task escrow/rent locked on-chain, recoverable via attest/route/expire; rest is gas).`
+    `[ledger] root net out ${rootNet} lamports — bonds, advance principal+rent, and task escrow+rent all recovered. ` +
+      `Irreducible residual: the $0 agent's AgentState rent ${agentStateRent} (devnet-only). Rest is gas.`
+  );
+  check(
+    rootNet <= agentStateRent + 400_000,
+    "no SOL lost beyond the AgentState residual + gas"
   );
 
   console.log(
