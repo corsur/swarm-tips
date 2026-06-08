@@ -6,11 +6,11 @@ import { PublicKey } from "@solana/web3.js";
  * stake). Mirrors `programs/extension-registry/src/state/extension.rs` exactly.
  *
  * Unlike Shillbot's `Task`, an `Extension` has NO on-chain state enum: the
- * account exists only while the obligation is ACTIVE. Both terminal transitions
- * close it — `attest_return_substance` (success) and `default_extension` (slash
- * to treasury) — emitting `ReturnSubstanceAttested` / `ExtensionDefaulted`
- * events. So a present account is always "active"; a closed one is terminal and
- * un-attestable (the verifier returns `account_closed`), exactly mirroring a
+ * account exists only while the vouch is LIVE. Both terminal transitions
+ * close it — `withdraw_extension` (extender reclaims bond) and
+ * `default_extension` (slash to treasury) — emitting `ExtensionWithdrawn` /
+ * `ExtensionDefaulted` events. So a present account is always "active"; a closed
+ * one is terminal (the verifier returns `account_closed`), exactly mirroring a
  * finalized Task. The durable terminal history is the event stream, not an
  * account.
  *

@@ -246,10 +246,15 @@ pub struct ResolveChallenge<'info> {
     )]
     pub global_state: Account<'info, GlobalState>,
     pub authority: Signer<'info>,
-    /// CHECK: Validated as task.agent.
+    /// CHECK: Payment recipient on the agent-won branch (C2 — extension-credit
+    /// routing, mirroring `finalize_task`). Equals `task.agent` when
+    /// `task.payout_to` is unset; otherwise it must be `task.payout_to` (the
+    /// credit vault). Without this, a won challenge would pay the agent wallet
+    /// directly and bypass recoupment. Reputation/`total_challenges_lost` keys
+    /// off `task.agent` independently, so routing never moves on-chain stats.
     #[account(
         mut,
-        constraint = agent.key() == task.agent @ ShillbotError::NotTaskAgent,
+        constraint = agent.key() == if task.payout_to == Pubkey::default() { task.agent } else { task.payout_to } @ ShillbotError::NotTaskAgent,
     )]
     pub agent: AccountInfo<'info>,
     /// CHECK: Validated as task.client.

@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
 
-/// An active extension obligation. Exists only while the obligation is
-/// outstanding; closed on `attest_return_substance` or `default_extension`.
+/// A live vouch edge. Exists only while the extender is actively backing the
+/// recipient; closed on `withdraw_extension` (extender reclaims it) or
+/// `default_extension` (authority slashes a default).
 /// Holds the extender's bond (rent-exempt minimum + `bond_lamports`).
 ///
 /// Seeds: `["extension", extender, recipient]` — one active extension per
@@ -13,7 +14,7 @@ use anchor_lang::prelude::*;
 pub struct Extension {
     /// The agent extending standing (locks the bond).
     pub extender: Pubkey,
-    /// The agent receiving the extension (owes return-substance).
+    /// The agent receiving the vouch (holds borrowed standing while it's live).
     pub recipient: Pubkey,
     /// Extension type discriminant (see `constants`). MVP: CapabilityValidation.
     pub extension_type: u8,

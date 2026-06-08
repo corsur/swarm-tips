@@ -4,7 +4,7 @@
  * render. Idempotent.
  *
  *   npx tsx scripts/e2e/extension-fixture.ts open    # submit_extension (if absent)
- *   npx tsx scripts/e2e/extension-fixture.ts close   # attest_return_substance (if present)
+ *   npx tsx scripts/e2e/extension-fixture.ts close   # withdraw_extension (if present)
  *
  * Signers: id.json = root (= web-position root). The recipient never signs
  * (only the extender attests), so it can be any pubkey: defaults to test.json,
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
 
   if (exists) {
     await registry.methods
-      .attestReturnSubstance()
+      .withdrawExtension()
       .accountsPartial({
         extension,
         extender: root.publicKey,

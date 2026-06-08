@@ -147,4 +147,10 @@ pub enum ShillbotError {
 
     #[msg("AgentState cannot be closed while it has active claims")]
     AgentStateHasActiveClaims,
+
+    #[msg("Payout route is already set and cannot be changed (one-shot, set early and locked)")]
+    PayoutRouteLocked,
+
+    #[msg("Payout route target is invalid (must not be zero, the task PDA, or the client)")]
+    InvalidPayoutTarget,
 }

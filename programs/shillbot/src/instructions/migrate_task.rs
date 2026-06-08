@@ -52,11 +52,19 @@ pub fn migrate_task(ctx: Context<MigrateTask>) -> Result<()> {
     // Append-only layout means the existing 315 bytes are preserved as-is.
     task_info.resize(CURRENT_TASK_SIZE)?;
 
-    // Postcondition: the account deserializes cleanly at the new size.
+    // Postcondition: the account deserializes cleanly at the new size, and the
+    // grown 32-byte tail (`payout_to`) is zero-filled by the runtime. Assert the
+    // latter explicitly — if a future runtime/toolchain change ever broke the
+    // resize zero-fill contract, this fails loudly instead of silently leaving a
+    // garbage (non-default) payout route on a migrated task.
     {
         let data = task_info.try_borrow_data()?;
-        let _t = Task::try_deserialize(&mut &data[..])
+        let t = Task::try_deserialize(&mut &data[..])
             .map_err(|_| error!(ShillbotError::InvalidTaskState))?;
+        require!(
+            t.payout_to == Pubkey::default(),
+            ShillbotError::InvalidPayoutTarget
+        );
     }
     msg!(
         "migrated Task from {} to {} bytes",

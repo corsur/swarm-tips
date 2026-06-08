@@ -399,8 +399,16 @@ impl OrchestratorProxy {
             ));
         }
 
+        // Always request `sponsor=auto`: a vouched (root-reachable) agent is
+        // gasless by default; the orchestrator silently falls back to the agent
+        // paying its own gas when it lacks standing (never an error). This is the
+        // C3 gasless-onboarding path surfaced to agents transparently.
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/claim{qs}", self.base_url);
+        let sep = if qs.is_empty() { "?" } else { "&" };
+        let url = format!(
+            "{}/tasks/{task_id}/claim{qs}{sep}sponsor=auto",
+            self.base_url
+        );
         let response = self
             .client
             .post(&url)
@@ -460,8 +468,13 @@ impl OrchestratorProxy {
             ));
         }
 
+        // See claim_task: gasless-by-default via `sponsor=auto`, self-pay fallback.
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/submit{qs}", self.base_url);
+        let sep = if qs.is_empty() { "?" } else { "&" };
+        let url = format!(
+            "{}/tasks/{task_id}/submit{qs}{sep}sponsor=auto",
+            self.base_url
+        );
         let body = serde_json::json!({ "content_id": content_id });
         let response = self
             .client
@@ -1284,6 +1297,7 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/tasks/c:t/claim"))
                 .and(query_param("network", "devnet"))
+                .and(query_param("sponsor", "auto"))
                 .and(header("authorization", "Bearer wallet1"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
                 .expect(1)
@@ -1304,6 +1318,7 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/tasks/c:t/submit"))
                 .and(query_param("network", "devnet"))
+                .and(query_param("sponsor", "auto"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
                 .expect(1)
                 .mount(&server)

@@ -3,17 +3,19 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 //! Extension-registry — the on-chain edge log for the extension-credit
-//! reputation graph (mund-creanc-witer). An *extension* is a bonded,
-//! obligation-creating vouch: an extender locks a SOL bond and records that
-//! a recipient owes return-substance. Off-chain, the web-position score is
+//! reputation graph (mund-creanc-witer). An *extension* is a bonded vouch: an
+//! extender locks a SOL bond to back a recipient, granting it borrowed standing
+//! in the web for as long as the vouch is live. Off-chain, the web-position score is
 //! computed from these events (see `services` web-position indexer); on-chain
 //! this program only holds the bond and emits the edge events.
 //!
 //! Accounts are intentionally ephemeral: an `Extension` PDA exists only while
-//! the obligation is *active*. `attest_return_substance` (fulfilled) and
-//! `default_extension` (defaulted) both close it. The durable graph is the
-//! emitted event stream — `ExtensionSubmitted`, `ReturnSubstanceAttested`,
-//! `ExtensionDefaulted` — which the indexer consumes.
+//! the vouch is *live*. A vouch is a live, collateralized edge — the recipient
+//! holds borrowed standing while it exists. `withdraw_extension` (extender
+//! reclaims its vouch + bond) and `default_extension` (authority slashes a
+//! defaulted recipient) both close it. The durable graph is the emitted event
+//! stream — `ExtensionSubmitted`, `ExtensionWithdrawn`, `ExtensionDefaulted` —
+//! which the indexer consumes.
 
 use anchor_lang::prelude::*;
 
@@ -48,10 +50,11 @@ pub mod extension_registry {
         instructions::submit_extension::submit_extension(ctx, extension_type, bond_lamports)
     }
 
-    /// Extender attests the recipient fulfilled the return-obligation; the bond
-    /// (and the account's rent) is returned to the extender and the edge closes.
-    pub fn attest_return_substance(ctx: Context<AttestReturnSubstance>) -> Result<()> {
-        instructions::attest_return_substance::attest_return_substance(ctx)
+    /// Extender withdraws its vouch: the edge closes, the recipient's borrowed
+    /// standing drops, and the bond (plus the account's rent) returns to the
+    /// extender. Makes no claim that the recipient "fulfilled" anything.
+    pub fn withdraw_extension(ctx: Context<WithdrawExtension>) -> Result<()> {
+        instructions::withdraw_extension::withdraw_extension(ctx)
     }
 
     /// Authority arbitrates a default: the bond is slashed to the treasury, the

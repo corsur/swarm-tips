@@ -1977,4 +1977,236 @@ describe("shillbot-lifecycle (bankrun)", () => {
       }
     });
   });
+
+  // -------------------------------------------------------------------------
+  // set_payout_to — the C2 / extension-credit recoupment binding.
+  //
+  // A backer who fronts an advance routes the agent's payout to its Advance
+  // vault. These tests enforce the binding the adversarial settlement review
+  // surfaced as previously evadable:
+  //   - the route is set ONCE, early, and locked (no post-verify redirect);
+  //   - it cannot target the zero pubkey, the task PDA, or the client;
+  //   - BOTH settlement paths honor it — `finalize_task` and the agent-won
+  //     branch of `resolve_challenge` pay the vault, not the agent wallet.
+  // -------------------------------------------------------------------------
+  describe("set_payout_to: recoupment binding (C2)", () => {
+    async function freshClaimed(): Promise<{
+      setup: TaskSetup;
+      cKp: Keypair;
+      aKp: Keypair;
+    }> {
+      const cKp = Keypair.generate();
+      const aKp = Keypair.generate();
+      await fundAccount(provider, cKp.publicKey, 50 * LAMPORTS_PER_SOL);
+      await fundAccount(provider, aKp.publicKey, 10 * LAMPORTS_PER_SOL);
+      const clock = await context.banksClient.getClock();
+      const deadline = new BN(Number(clock.unixTimestamp) + 86_400 * 60);
+      const setup = await createTask(program, cKp, globalPda, deadline);
+      await claimTask(program, aKp, setup.taskPda);
+      return { setup, cKp, aKp };
+    }
+
+    async function setPayoutTo(
+      aKp: Keypair,
+      taskPdaAddr: PublicKey,
+      payoutTo: PublicKey
+    ): Promise<void> {
+      await program.methods
+        .setPayoutTo(payoutTo)
+        .accountsPartial({ task: taskPdaAddr, agent: aKp.publicKey })
+        .signers([aKp])
+        .rpc();
+    }
+
+    async function driveToVerified(
+      setup: TaskSetup,
+      cKp: Keypair,
+      aKp: Keypair,
+      score: number,
+      videoId: string
+    ): Promise<void> {
+      await submitWork(program, aKp, setup.taskPda, videoId);
+      const t = await program.account.task.fetch(setup.taskPda);
+      await warpToTimestamp(
+        context,
+        t.submittedAt.toNumber() + SEVEN_DAYS_SECONDS
+      );
+      await approveTask(program, cKp, setup.taskPda);
+      await verifyTask(
+        program,
+        authority,
+        setup.taskPda,
+        globalPda,
+        new BN(score),
+        context
+      );
+    }
+
+    it("sets the route and then locks it (one-shot)", async () => {
+      const { setup, aKp } = await freshClaimed();
+      const vault = Keypair.generate().publicKey;
+      await setPayoutTo(aKp, setup.taskPda, vault);
+      const t = await program.account.task.fetch(setup.taskPda);
+      assert.equal(
+        t.payoutTo.toBase58(),
+        vault.toBase58(),
+        "payout_to should be set to the vault"
+      );
+      try {
+        await setPayoutTo(aKp, setup.taskPda, Keypair.generate().publicKey);
+        assert.fail("expected PayoutRouteLocked on re-set");
+      } catch (e: any) {
+        assert.match(String(e), /PayoutRouteLocked/, `got: ${e}`);
+      }
+    });
+
+    it("rejects invalid targets (zero, task PDA, client)", async () => {
+      const { setup, cKp, aKp } = await freshClaimed();
+      const cases: [string, PublicKey][] = [
+        ["zero", PublicKey.default],
+        ["task PDA", setup.taskPda],
+        ["client", cKp.publicKey],
+      ];
+      for (const [label, target] of cases) {
+        try {
+          await setPayoutTo(aKp, setup.taskPda, target);
+          assert.fail(`expected InvalidPayoutTarget for ${label}`);
+        } catch (e: any) {
+          assert.match(String(e), /InvalidPayoutTarget/, `${label}: ${e}`);
+        }
+      }
+      // None of the above succeeded, so a valid target still works.
+      const vault = Keypair.generate().publicKey;
+      await setPayoutTo(aKp, setup.taskPda, vault);
+      const t = await program.account.task.fetch(setup.taskPda);
+      assert.equal(t.payoutTo.toBase58(), vault.toBase58());
+    });
+
+    it("rejects once the task is Verified (no post-verify redirect)", async () => {
+      const { setup, cKp, aKp } = await freshClaimed();
+      await driveToVerified(setup, cKp, aKp, 800_000, "late-route");
+      try {
+        await setPayoutTo(aKp, setup.taskPda, Keypair.generate().publicKey);
+        assert.fail("expected InvalidTaskState in Verified");
+      } catch (e: any) {
+        assert.match(String(e), /InvalidTaskState/, `got: ${e}`);
+      }
+    });
+
+    it("finalize_task routes the payout to the vault, not the agent wallet", async () => {
+      const { setup, cKp, aKp } = await freshClaimed();
+      const vault = Keypair.generate();
+      await fundAccount(provider, vault.publicKey, 1 * LAMPORTS_PER_SOL);
+      await setPayoutTo(aKp, setup.taskPda, vault.publicKey);
+
+      const score = 800_000;
+      await driveToVerified(setup, cKp, aKp, score, "recoup-finalize");
+      const verified = await program.account.task.fetch(setup.taskPda);
+      await warpToTimestamp(context, verified.challengeDeadline.toNumber() + 1);
+
+      const vaultBefore = await getBalance(context, vault.publicKey);
+      const agentBefore = await getBalance(context, aKp.publicKey);
+
+      await program.methods
+        .finalizeTask()
+        .accountsPartial({
+          task: setup.taskPda,
+          globalState: globalPda,
+          agent: vault.publicKey,
+          client: cKp.publicKey,
+          treasury: treasury.publicKey,
+        })
+        .rpc();
+
+      const [expectedPayment] = computeExpectedPayment(
+        score,
+        QUALITY_THRESHOLD.toNumber(),
+        ESCROW_LAMPORTS.toNumber(),
+        PROTOCOL_FEE_BPS
+      );
+      const vaultDelta =
+        Number(await getBalance(context, vault.publicKey)) - Number(vaultBefore);
+      const agentDelta =
+        Number(await getBalance(context, aKp.publicKey)) - Number(agentBefore);
+      assert.equal(
+        vaultDelta,
+        expectedPayment,
+        "vault (payout_to) must receive the payment"
+      );
+      assert.equal(
+        agentDelta,
+        0,
+        "agent wallet must receive nothing — payout routed to the vault"
+      );
+    });
+
+    it("resolve_challenge (agent wins) routes the payout to the vault", async () => {
+      const { setup, cKp, aKp } = await freshClaimed();
+      const vault = Keypair.generate();
+      await fundAccount(provider, vault.publicKey, 1 * LAMPORTS_PER_SOL);
+      await setPayoutTo(aKp, setup.taskPda, vault.publicKey);
+
+      const score = 800_000;
+      await driveToVerified(setup, cKp, aKp, score, "recoup-dispute");
+
+      const challenger2 = Keypair.generate();
+      await fundAccount(provider, challenger2.publicKey, 10 * LAMPORTS_PER_SOL);
+      const [challPda] = challengePda(
+        setup.taskId,
+        challenger2.publicKey,
+        program.programId
+      );
+      await program.methods
+        .challengeTask()
+        .accountsPartial({
+          task: setup.taskPda,
+          challenge: challPda,
+          challenger: challenger2.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([challenger2])
+        .rpc();
+
+      const vaultBefore = await getBalance(context, vault.publicKey);
+      const agentBefore = await getBalance(context, aKp.publicKey);
+
+      await program.methods
+        .resolveChallenge(false) // challenger_won = false => agent wins
+        .accountsPartial({
+          task: setup.taskPda,
+          challenge: challPda,
+          globalState: globalPda,
+          authority: authority.publicKey,
+          agent: vault.publicKey,
+          client: cKp.publicKey,
+          challenger: challenger2.publicKey,
+          treasury: treasury.publicKey,
+        })
+        .signers([authority])
+        .rpc();
+
+      const [expectedPayment] = computeExpectedPayment(
+        score,
+        QUALITY_THRESHOLD.toNumber(),
+        ESCROW_LAMPORTS.toNumber(),
+        PROTOCOL_FEE_BPS
+      );
+      const bond = ESCROW_LAMPORTS.toNumber() * MIN_CHALLENGE_BOND_MULTIPLIER;
+      const bondHalf = Math.floor(bond / 2);
+      const vaultDelta =
+        Number(await getBalance(context, vault.publicKey)) - Number(vaultBefore);
+      const agentDelta =
+        Number(await getBalance(context, aKp.publicKey)) - Number(agentBefore);
+      assert.equal(
+        vaultDelta,
+        expectedPayment + bondHalf,
+        "vault must receive payment + half the slashed bond (routed, not to the agent wallet)"
+      );
+      assert.equal(
+        agentDelta,
+        0,
+        "agent wallet must receive nothing — routed to the vault"
+      );
+    });
+  });
 });

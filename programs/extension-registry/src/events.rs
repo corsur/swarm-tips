@@ -19,10 +19,11 @@ pub struct ExtensionSubmitted {
     pub created_at: i64,
 }
 
-/// Emitted when the extender attests the recipient fulfilled the obligation.
-/// Positive terminal signal — the edge resolved successfully.
+/// Emitted when the extender withdraws its vouch (reclaiming bond + rent). The
+/// off-chain web-position indexer treats this as removal of the directed edge
+/// extender → recipient, so the recipient's borrowed standing recomputes.
 #[event]
-pub struct ReturnSubstanceAttested {
+pub struct ExtensionWithdrawn {
     pub extender: Pubkey,
     pub recipient: Pubkey,
     pub bond_lamports: u64,

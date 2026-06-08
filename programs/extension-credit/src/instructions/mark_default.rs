@@ -26,13 +26,17 @@ pub fn mark_default(ctx: Context<MarkDefault>) -> Result<()> {
         ExtensionCreditError::InvalidRecipient
     );
 
-    // Effects: record the swept amount as recoupment.
+    // Effects: record recoupment, capped at the principal. On default the backer
+    // sweeps ALL routed earnings (even beyond the advance) as a penalty, but
+    // `recouped_lamports` is the principal-recoupment counter and must never
+    // exceed `advance_lamports` — otherwise the `total_recouped` it feeds into
+    // the event over-reports. The true swept amount is `swept_to_backer` below.
     let total_recouped = {
         let advance = &mut ctx.accounts.advance;
         advance.recouped_lamports = advance
             .recouped_lamports
-            .checked_add(available)
-            .ok_or(ExtensionCreditError::ArithmeticOverflow)?;
+            .saturating_add(available)
+            .min(advance.advance_lamports);
         advance.recouped_lamports
     };
 

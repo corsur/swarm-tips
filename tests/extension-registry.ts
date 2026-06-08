@@ -68,7 +68,7 @@ describe("extension-registry", () => {
     }
   });
 
-  it("submit → attest returns the full bond + rent to the extender (conservation)", async () => {
+  it("submit → withdraw returns the full bond + rent to the extender (conservation)", async () => {
     const extender = Keypair.generate();
     const recipient = Keypair.generate();
     await fund(provider, extender.publicKey, 1);
@@ -96,7 +96,7 @@ describe("extension-registry", () => {
     assert.isAbove(pdaBal, BOND.toNumber(), "PDA holds bond + rent");
 
     await program.methods
-      .attestReturnSubstance()
+      .withdrawExtension()
       .accountsPartial({
         extension,
         extender: extender.publicKey,

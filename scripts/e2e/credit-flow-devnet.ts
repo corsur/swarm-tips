@@ -2,7 +2,7 @@
  * Devnet e2e — the on-chain extension-credit flow against the LIVE devnet
  * programs (extension-registry + extension-credit), with a money-conservation
  * ledger. Proves:
- *   - submit_extension locks a bond; attest_return_substance returns bond + rent
+ *   - submit_extension locks a bond; withdraw_extension returns bond + rent
  *     (no leak)
  *   - open_advance fronts capital; route_and_recoup splits routed earnings
  *     backer-first, the agent getting the surplus; all earnings accounted for
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
 
   // ===== Extension: submit -> attest (bond conservation) =====
   console.log(
-    "\n[extension-registry] submit_extension -> attest_return_substance"
+    "\n[extension-registry] submit_extension -> withdraw_extension"
   );
   const [extension] = PublicKey.findProgramAddressSync(
     [
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
   );
 
   const s2 = await registry.methods
-    .attestReturnSubstance()
+    .withdrawExtension()
     .accountsPartial({
       extension,
       extender: root.publicKey,
