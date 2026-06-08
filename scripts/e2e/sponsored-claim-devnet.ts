@@ -11,11 +11,15 @@
  * (a C1 credit advance would front that); the sponsor pays the per-tx gas — the
  * complementary split by design.
  *
- * Money accounting: the agent + sponsor leftovers are drained back to id.json at
- * the end. The task escrow + the agent's AgentState rent stay locked on devnet
- * (reclaimable only by the shillbot authority via emergency_return / by
- * expire_task after the deadline) — kept tiny and printed in the ledger. Run
- * manually (workflow_dispatch); not on every push.
+ * Money accounting: the run recovers everything it can in-run. emergency_return
+ * (authority = id.json) closes the claimed task and returns its escrow + PDA rent
+ * to the client; the fresh sponsor + agent leftovers are swept back to id.json.
+ * The ONLY un-recovered lamports are the throwaway agent's AgentState rent — a
+ * Claimed task can't reset claimed_count, so close_agent_state (which needs
+ * claimed_count == 0) can't run in the same pass. That residual keeps this a
+ * DEVNET-ONLY test (free SOL); the mainnet-clean tests are the cycle-complete
+ * ones (recoupment-loop-devnet.ts, credit-flow-devnet.ts). Run manually
+ * (workflow_dispatch); not on every push.
  *
  * Run: npx tsx scripts/e2e/sponsored-claim-devnet.ts   (exit 0 = pass)
  */
@@ -219,6 +223,31 @@ async function main(): Promise<void> {
     "agent never paid gas — the sponsor did"
   );
 
+  // --- recover the escrow: emergency_return closes the Claimed task and returns
+  //     its escrow + PDA rent to the client (authority = id.json). The only
+  //     residual is the throwaway agent's AgentState rent — close_agent_state
+  //     requires claimed_count == 0, which emergency_return cannot reset on a
+  //     Claimed task, so this test stays devnet-only (the residual is free SOL). ---
+  const taskRent = await connection.getMinimumBalanceForRentExemption(
+    (await connection.getAccountInfo(taskPda))?.data.length ?? 0
+  );
+  console.log(
+    "\n[recover] emergency_return — escrow + Task rent back to the client"
+  );
+  await program.methods
+    .emergencyReturn()
+    .accountsPartial({ globalState: globalPda, authority: client.publicKey })
+    .remainingAccounts([
+      { pubkey: taskPda, isWritable: true, isSigner: false },
+      { pubkey: client.publicKey, isWritable: true, isSigner: false },
+    ])
+    .signers([client])
+    .rpc({ commitment: "confirmed" });
+  check(
+    (await connection.getAccountInfo(taskPda)) === null,
+    "task closed + escrow returned via emergency_return"
+  );
+
   // --- cleanup: drain the fresh sponsor + agent leftovers back to id.json ---
   console.log("\n[cleanup] drain sponsor + agent leftovers back to id.json");
   for (const kp of [sponsor, agent]) {
@@ -245,21 +274,17 @@ async function main(): Promise<void> {
   // --- accounting ledger ---
   const clientEnd = await bal(client.publicKey);
   const netClientLoss = clientStart - clientEnd;
-  // Locked on-chain (all recoverable when the task closes via finalize/expire/
-  // emergency_return, or by closing AgentState): the task escrow, the Task PDA's
-  // rent, and the agent's AgentState rent.
-  const taskRent = await connection.getMinimumBalanceForRentExemption(
-    (await connection.getAccountInfo(taskPda))?.data.length ?? 0
-  );
-  const lockedOnChain = ESCROW.toNumber() + taskRent + agentStateRent;
+  // After emergency_return, the escrow + Task PDA rent are back with the client.
+  // The only un-recovered lamports are the throwaway agent's AgentState rent
+  // (irreducible: close_agent_state needs claimed_count == 0). Rest is gas.
   console.log(
-    `\n[ledger] client net loss ${netClientLoss} lamports; of which ${lockedOnChain} is locked on-chain ` +
-      `(escrow ${ESCROW.toNumber()} + Task rent ${taskRent} + AgentState rent ${agentStateRent}), ` +
-      `remainder is gas across the run's txs.`
+    `\n[ledger] client net loss ${netClientLoss} lamports; escrow (${ESCROW.toNumber()}) + Task rent (${taskRent}) ` +
+      `recovered via emergency_return. Irreducible residual: AgentState rent ${agentStateRent} on the throwaway ` +
+      `agent PDA (devnet-only). Remainder is gas across the run's txs.`
   );
   check(
-    netClientLoss <= lockedOnChain + 100_000,
-    "no SOL lost beyond the locked escrow/rent + gas"
+    netClientLoss <= agentStateRent + 200_000,
+    "no SOL lost beyond the AgentState residual + gas"
   );
 
   console.log(
