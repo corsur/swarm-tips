@@ -104,50 +104,56 @@ pub fn xpool_withdraw(ctx: Context<XPoolWithdraw>, amount: u64) -> Result<()> {
 // Match lifecycle — funding and locking
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
+/// Args for `create_xmatch`, bundled so the instruction stays within the
+/// argument-count budget.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct CreateXMatchArgs {
+    pub tournament_id: u64,
+    pub player_is_p1: bool,
+    pub session_key: [u8; 20],
+    pub counter_session_key: [u8; 20],
+    pub stake_lamports: u64,
+    pub fund_deadline: i64,
+    pub match_deadline: i64,
+}
+
 pub fn create_xmatch(
     ctx: Context<CreateXMatch>,
     match_id: [u8; 32],
-    tournament_id: u64,
-    player_is_p1: bool,
-    session_key: [u8; 20],
-    counter_session_key: [u8; 20],
-    stake_lamports: u64,
-    fund_deadline: i64,
-    match_deadline: i64,
+    args: CreateXMatchArgs,
 ) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     require!(
         ctx.accounts.matchmaker.key() == ctx.accounts.global_config.matchmaker,
         CoordinationError::NotMatchmaker
     );
-    require!(stake_lamports > 0, CoordinationError::XBadConfig);
+    require!(args.stake_lamports > 0, CoordinationError::XBadConfig);
     require!(
-        session_key != [0u8; 20] && counter_session_key != [0u8; 20],
+        args.session_key != [0u8; 20] && args.counter_session_key != [0u8; 20],
         CoordinationError::XBadConfig
     );
     // Distinct seats: equivocation + dual-signature model assume two parties.
     require!(
-        session_key != counter_session_key,
+        args.session_key != args.counter_session_key,
         CoordinationError::XBadConfig
     );
     require!(
-        fund_deadline > now && match_deadline > fund_deadline,
+        args.fund_deadline > now && args.match_deadline > args.fund_deadline,
         CoordinationError::XDeadlinePassed
     );
 
     let player_key = ctx.accounts.player.key();
     let m = &mut ctx.accounts.xmatch;
     m.match_id = match_id;
-    m.tournament_id = tournament_id;
+    m.tournament_id = args.tournament_id;
     m.player = player_key;
-    m.player_is_p1 = u8::from(player_is_p1);
-    m.session_key = session_key;
-    m.counter_session_key = counter_session_key;
-    m.stake_lamports = stake_lamports;
+    m.player_is_p1 = u8::from(args.player_is_p1);
+    m.session_key = args.session_key;
+    m.counter_session_key = args.counter_session_key;
+    m.stake_lamports = args.stake_lamports;
     m.tranche_lamports = 0;
-    m.fund_deadline = fund_deadline;
-    m.match_deadline = match_deadline;
+    m.fund_deadline = args.fund_deadline;
+    m.match_deadline = args.match_deadline;
     m.best_step_count = 0;
     m.best_outcome_kind = 0;
     m.local_equivocated = false;
@@ -164,7 +170,7 @@ pub fn create_xmatch(
                 to: ctx.accounts.xmatch.to_account_info(),
             },
         ),
-        stake_lamports,
+        args.stake_lamports,
     )?;
     require!(
         ctx.accounts.xmatch.status == XChainStatus::Funded,
@@ -173,7 +179,7 @@ pub fn create_xmatch(
     emit!(XMatchCreated {
         match_id,
         player: player_key,
-        stake_lamports,
+        stake_lamports: args.stake_lamports,
     });
     Ok(())
 }

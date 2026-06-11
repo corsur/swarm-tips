@@ -38,7 +38,10 @@ pub fn emergency_return(ctx: Context<EmergencyReturnAccounts>) -> Result<()> {
         .len()
         .checked_div(2)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-    require!(accounts.len() % 2 == 0, ShillbotError::InvalidAccountPairs);
+    require!(
+        accounts.len().is_multiple_of(2),
+        ShillbotError::InvalidAccountPairs
+    );
 
     let mut task_ids: Vec<u64> = Vec::with_capacity(pair_count);
 

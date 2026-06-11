@@ -191,29 +191,12 @@ pub mod coordination_game {
         instructions::xchain::xpool_withdraw(ctx, amount)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn create_xmatch(
         ctx: Context<CreateXMatch>,
         match_id: [u8; 32],
-        tournament_id: u64,
-        player_is_p1: bool,
-        session_key: [u8; 20],
-        counter_session_key: [u8; 20],
-        stake_lamports: u64,
-        fund_deadline: i64,
-        match_deadline: i64,
+        args: instructions::xchain::CreateXMatchArgs,
     ) -> Result<()> {
-        instructions::xchain::create_xmatch(
-            ctx,
-            match_id,
-            tournament_id,
-            player_is_p1,
-            session_key,
-            counter_session_key,
-            stake_lamports,
-            fund_deadline,
-            match_deadline,
-        )
+        instructions::xchain::create_xmatch(ctx, match_id, args)
     }
 
     pub fn lock_xtranche(

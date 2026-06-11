@@ -206,16 +206,15 @@ describe("coordination-game cross-chain (xchain)", () => {
 
     // create_xmatch — player + matchmaker co-sign.
     await program.methods
-      .createXmatch(
-        matchId,
-        TOURNAMENT_ID,
-        true, // player_is_p1
-        toArray(localSigner.address),
-        toArray(counterSigner.address),
-        STAKE,
+      .createXmatch(matchId, {
+        tournamentId: TOURNAMENT_ID,
+        playerIsP1: true,
+        sessionKey: toArray(localSigner.address),
+        counterSessionKey: toArray(counterSigner.address),
+        stakeLamports: STAKE,
         fundDeadline,
         matchDeadline,
-      )
+      })
       .accountsPartial({
         xmatch: xmatchPda,
         globalConfig: globalConfigPda,
@@ -331,16 +330,15 @@ describe("coordination-game cross-chain (xchain)", () => {
     const fundDeadline = cnow + 2;
 
     await program.methods
-      .createXmatch(
-        matchId,
-        TOURNAMENT_ID,
-        true,
-        toArray(localSigner.address),
-        toArray(counterSigner.address),
-        STAKE,
-        new BN(fundDeadline), // fund deadline 2s out (chain time)
-        new BN(cnow + 7200),
-      )
+      .createXmatch(matchId, {
+        tournamentId: TOURNAMENT_ID,
+        playerIsP1: true,
+        sessionKey: toArray(localSigner.address),
+        counterSessionKey: toArray(counterSigner.address),
+        stakeLamports: STAKE,
+        fundDeadline: new BN(fundDeadline), // 2s out (chain time)
+        matchDeadline: new BN(cnow + 7200),
+      })
       .accountsPartial({
         xmatch: xmatchPda,
         globalConfig: globalConfigPda,

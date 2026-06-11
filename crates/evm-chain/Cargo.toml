@@ -1,0 +1,26 @@
+[package]
+name = "evm-chain"
+version = "0.1.0"
+edition = "2021"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+arithmetic_side_effects = "deny"
+
+[dependencies]
+# alloy-core (sol-types + primitives) for type-safe ABI encoding of the
+# CrossChainGame calldata — the decision.md EVM library. We intentionally
+# depend ONLY on the encoding layer, not alloy's consensus/rpc/provider
+# crates: the backend (game-api) owns RPC/signing/submission, and the
+# heavier alloy crates raise the workspace MSRV. This crate stays a pure,
+# no-network calldata builder (mirrors game-chain's non-custodial split).
+alloy-sol-types = "1"
+alloy-primitives = "1"
+chain-core = { path = "../chain-core" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+chain-core = { path = "../chain-core", features = ["keccak"] }
