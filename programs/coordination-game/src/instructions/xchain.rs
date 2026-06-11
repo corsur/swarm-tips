@@ -228,6 +228,13 @@ pub fn settle_xmatch(
         outcome.match_live_digest == live_digest && outcome.match_id == cert.match_id,
         CoordinationError::XCertMismatch
     );
+    // Reject out-of-range kinds at the boundary: the cert digest normalizes
+    // unknown kinds, so an explicit range check keeps the signed value and
+    // the executed value the same.
+    require!(
+        outcome.outcome_kind <= XKIND_TIMEOUT_BOTH_FORFEIT,
+        CoordinationError::XBadOutcome
+    );
     require!(
         outcome.step_count == TERMINAL_STEP_COUNT || is_timeout_kind(outcome.outcome_kind),
         CoordinationError::XBadOutcome
@@ -651,6 +658,15 @@ fn execute_xleg<'info>(
     let tranche_consumed = tranche
         .checked_sub(r.tranche_released)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let from_match = r
+        .to_treasury
+        .checked_add(r.to_pool_reimburse)
+        .and_then(|v| v.checked_add(r.to_prize))
+        .and_then(|v| v.checked_add(r.to_player.checked_sub(tranche_consumed)?))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    // Postcondition: the match PDA pays out EXACTLY its stake (never its
+    // rent reserve), and the pool pays exactly the consumed tranche.
+    require!(from_match == stake, CoordinationError::ArithmeticOverflow);
     if tranche_consumed > 0 {
         transfer_lamports(&pool.to_account_info(), player, tranche_consumed)?;
     }
@@ -796,7 +812,7 @@ pub struct SettleXMatch<'info> {
     pub pool: Account<'info, XPayoutPool>,
     #[account(
         mut,
-        seeds = [b"tournament", tournament.tournament_id.to_le_bytes().as_ref()],
+        seeds = [b"tournament", xmatch.tournament_id.to_le_bytes().as_ref()],
         bump = tournament.bump,
     )]
     pub tournament: Account<'info, Tournament>,
@@ -878,7 +894,7 @@ pub struct SettleXClaim<'info> {
     pub pool: Account<'info, XPayoutPool>,
     #[account(
         mut,
-        seeds = [b"tournament", tournament.tournament_id.to_le_bytes().as_ref()],
+        seeds = [b"tournament", xmatch.tournament_id.to_le_bytes().as_ref()],
         bump = tournament.bump,
     )]
     pub tournament: Account<'info, Tournament>,
