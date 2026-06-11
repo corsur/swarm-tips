@@ -1,0 +1,14 @@
+[package]
+name = "chain-registry"
+version = "0.1.0"
+edition = "2021"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+arithmetic_side_effects = "deny"
+
+[dependencies]
+chain-core = { path = "../chain-core" }

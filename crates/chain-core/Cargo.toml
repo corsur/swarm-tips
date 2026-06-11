@@ -1,0 +1,24 @@
+[package]
+name = "chain-core"
+version = "0.1.0"
+edition = "2021"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+arithmetic_side_effects = "deny"
+
+[features]
+default = []
+# Off-chain keccak256 digests for cert payloads. The on-chain consumers
+# (Anchor program via the keccak syscall, EVM via Solidity keccak256) hash
+# the same payload bytes themselves — this feature must stay OFF in the
+# program dependency so no hashing crate is pulled into BPF.
+keccak = ["dep:tiny-keccak"]
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+tiny-keccak = { version = "2", features = ["keccak"], optional = true }
