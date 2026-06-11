@@ -24,6 +24,11 @@ custom-panic = []
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 solana-keccak-hasher = "2"
 solana-sha256-hasher = "2"
+solana-secp256k1-recover = "2"
+# Reused for the cross-chain certificate byte layout — the SAME encoder the
+# backend and golden vectors use, so the on-chain digest is byte-identical to
+# the EVM CertLib. Default features only (no host keccak pulled into BPF).
+chain-core = { path = "../../crates/chain-core" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

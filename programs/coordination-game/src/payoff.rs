@@ -184,6 +184,174 @@ pub fn resolve_game(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cross-chain per-leg payoff (mirrors evm/src/CrossChainGame.sol _classify +
+// _execute). Each chain settles only ITS leg of a co-signed certificate from
+// the locally-recorded stake/tranche. Outcome-kind values are the cross-chain
+// wire format defined in crates/chain-core cert_schema — never reorder.
+// ---------------------------------------------------------------------------
+
+pub const XKIND_HOMOG_BOTH_CORRECT: u8 = 0;
+pub const XKIND_HOMOG_P1_CORRECT: u8 = 1;
+pub const XKIND_HOMOG_P2_CORRECT: u8 = 2;
+pub const XKIND_BOTH_WRONG: u8 = 3;
+pub const XKIND_HETERO_P1_WINS: u8 = 4;
+pub const XKIND_HETERO_P2_WINS: u8 = 5;
+pub const XKIND_TIMEOUT_P1_WINS: u8 = 6;
+pub const XKIND_TIMEOUT_P2_WINS: u8 = 7;
+pub const XKIND_TIMEOUT_BOTH_FORFEIT: u8 = 8;
+
+/// The local player's result on this leg.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum XResult {
+    WinAll,            // own stake + opponent counter-value (from tranche)
+    LoseAll,           // full forfeit: treasury cut + pool reimbursement
+    KeepStake,         // homogeneous both-correct
+    HalfBack,          // homogeneous, locally correct
+    ForfeitToTreasury, // both-wrong / both-forfeit: treasury + prize pool
+}
+
+/// How a cross-chain leg routes its escrowed stake and locked tranche.
+/// Conservation invariant (asserted): `stake + tranche == to_player +
+/// to_treasury + to_prize + to_pool_reimburse + tranche_released`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct XLegResolution {
+    pub to_player: u64,
+    pub to_treasury: u64,
+    pub to_prize: u64,
+    pub to_pool_reimburse: u64,
+    pub tranche_released: u64,
+}
+
+fn classify_xleg(outcome_kind: u8, local_is_p1: bool) -> Result<XResult> {
+    let result = match outcome_kind {
+        XKIND_HOMOG_BOTH_CORRECT => XResult::KeepStake,
+        XKIND_BOTH_WRONG | XKIND_TIMEOUT_BOTH_FORFEIT => XResult::ForfeitToTreasury,
+        XKIND_HOMOG_P1_CORRECT => {
+            if local_is_p1 {
+                XResult::HalfBack
+            } else {
+                XResult::ForfeitToTreasury
+            }
+        }
+        XKIND_HOMOG_P2_CORRECT => {
+            if local_is_p1 {
+                XResult::ForfeitToTreasury
+            } else {
+                XResult::HalfBack
+            }
+        }
+        XKIND_HETERO_P1_WINS | XKIND_TIMEOUT_P1_WINS => {
+            if local_is_p1 {
+                XResult::WinAll
+            } else {
+                XResult::LoseAll
+            }
+        }
+        XKIND_HETERO_P2_WINS | XKIND_TIMEOUT_P2_WINS => {
+            if local_is_p1 {
+                XResult::LoseAll
+            } else {
+                XResult::WinAll
+            }
+        }
+        _ => return Err(error!(CoordinationError::InvalidGameState)),
+    };
+    Ok(result)
+}
+
+/// Split `amount` into the treasury cut and its remainder. The remainder
+/// (which absorbs rounding dust) always goes to the complementary bucket.
+fn treasury_cut(amount: u64, treasury_split_bps: u16) -> Result<(u64, u64)> {
+    let cut = amount
+        .checked_mul(treasury_split_bps as u64)
+        .and_then(|v| v.checked_div(10_000))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let remainder = amount
+        .checked_sub(cut)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    Ok((cut, remainder))
+}
+
+/// Route one cross-chain leg's funds. `treasury_split_bps` must be in
+/// [MIN, MAX] (same bound as same-chain). Asserts conservation on exit.
+pub fn resolve_xleg(
+    outcome_kind: u8,
+    local_is_p1: bool,
+    stake: u64,
+    tranche: u64,
+    treasury_split_bps: u16,
+) -> Result<XLegResolution> {
+    require!(stake > 0, CoordinationError::ArithmeticOverflow);
+    require!(
+        (crate::state::MIN_TREASURY_SPLIT_BPS..=crate::state::MAX_TREASURY_SPLIT_BPS)
+            .contains(&treasury_split_bps),
+        CoordinationError::InvalidGameState
+    );
+
+    let mut res = XLegResolution {
+        to_player: 0,
+        to_treasury: 0,
+        to_prize: 0,
+        to_pool_reimburse: 0,
+        tranche_released: tranche, // released unless a win consumes it
+    };
+
+    match classify_xleg(outcome_kind, local_is_p1)? {
+        XResult::WinAll => {
+            // Winner takes own stake + the cross-chain counter-value of the
+            // opponent's stake, paid from the locked tranche.
+            res.to_player = stake
+                .checked_add(tranche)
+                .ok_or(CoordinationError::ArithmeticOverflow)?;
+            res.tranche_released = 0;
+        }
+        XResult::LoseAll => {
+            // Full local forfeit: treasury cut funds the flywheel, the
+            // remainder reimburses the operator pool.
+            let (cut, remainder) = treasury_cut(stake, treasury_split_bps)?;
+            res.to_treasury = cut;
+            res.to_pool_reimburse = remainder;
+        }
+        XResult::KeepStake => res.to_player = stake,
+        XResult::HalfBack => {
+            // Half the local stake back; the rest forfeits to treasury +
+            // local prize pool (same shape as same-chain homogeneous). The
+            // odd-stake dust lands in the forfeit and is conserved.
+            let half = stake
+                .checked_div(2)
+                .ok_or(CoordinationError::ArithmeticOverflow)?;
+            let forfeit = stake
+                .checked_sub(half)
+                .ok_or(CoordinationError::ArithmeticOverflow)?;
+            let (cut, remainder) = treasury_cut(forfeit, treasury_split_bps)?;
+            res.to_player = half;
+            res.to_treasury = cut;
+            res.to_prize = remainder;
+        }
+        XResult::ForfeitToTreasury => {
+            let (cut, remainder) = treasury_cut(stake, treasury_split_bps)?;
+            res.to_treasury = cut;
+            res.to_prize = remainder;
+        }
+    }
+
+    // Postcondition: every lamport of stake + locked tranche routed once.
+    let out = res
+        .to_player
+        .checked_add(res.to_treasury)
+        .and_then(|v| v.checked_add(res.to_prize))
+        .and_then(|v| v.checked_add(res.to_pool_reimburse))
+        .and_then(|v| v.checked_add(res.tranche_released))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let total = stake
+        .checked_add(tranche)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    require!(out == total, CoordinationError::ArithmeticOverflow);
+
+    Ok(res)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +559,120 @@ mod tests {
     #[test]
     fn resolve_game_invalid_matchup_type_errors() {
         assert!(resolve_game(2, GUESS_SAME_TEAM, GUESS_SAME_TEAM, 1_000_000, 1).is_err());
+    }
+
+    // ---------------------------------------------------------------------------
+    // resolve_xleg — cross-chain per-leg payoff
+    // ---------------------------------------------------------------------------
+
+    fn assert_xleg_conserved(r: &XLegResolution, stake: u64, tranche: u64) {
+        let out = r
+            .to_player
+            .checked_add(r.to_treasury)
+            .and_then(|v| v.checked_add(r.to_prize))
+            .and_then(|v| v.checked_add(r.to_pool_reimburse))
+            .and_then(|v| v.checked_add(r.tranche_released))
+            .unwrap();
+        assert_eq!(
+            out,
+            stake.checked_add(tranche).unwrap(),
+            "xleg lamports must be conserved"
+        );
+    }
+
+    #[test]
+    fn xleg_win_pays_stake_plus_tranche_and_consumes_tranche() {
+        let stake = 50_000_000;
+        let tranche = 40_000_000;
+        // Local is P1, hetero P1 wins.
+        let r = resolve_xleg(XKIND_HETERO_P1_WINS, true, stake, tranche, 5000).unwrap();
+        assert_eq!(r.to_player, stake + tranche);
+        assert_eq!(r.tranche_released, 0);
+        assert_eq!(r.to_pool_reimburse, 0);
+        assert_xleg_conserved(&r, stake, tranche);
+    }
+
+    #[test]
+    fn xleg_loss_splits_treasury_and_reimburses_pool_releasing_tranche() {
+        let stake = 50_000_000;
+        let tranche = 40_000_000;
+        // Local is P1, hetero P2 wins → local loses.
+        let r = resolve_xleg(XKIND_HETERO_P2_WINS, true, stake, tranche, 5000).unwrap();
+        assert_eq!(r.to_player, 0);
+        assert_eq!(r.to_treasury, stake / 2); // 50% split
+        assert_eq!(r.to_pool_reimburse, stake - stake / 2);
+        assert_eq!(
+            r.tranche_released, tranche,
+            "loss never consumes the tranche"
+        );
+        assert_xleg_conserved(&r, stake, tranche);
+    }
+
+    #[test]
+    fn xleg_timeout_winner_mapping_respects_seat() {
+        let stake = 1_000_000;
+        let tranche = 1_000_000;
+        // P2 timeout-wins; local is P2 → win.
+        let r = resolve_xleg(XKIND_TIMEOUT_P2_WINS, false, stake, tranche, 5000).unwrap();
+        assert_eq!(r.to_player, stake + tranche);
+        // P2 timeout-wins; local is P1 → lose.
+        let r2 = resolve_xleg(XKIND_TIMEOUT_P2_WINS, true, stake, tranche, 5000).unwrap();
+        assert_eq!(r2.to_player, 0);
+        assert_xleg_conserved(&r, stake, tranche);
+        assert_xleg_conserved(&r2, stake, tranche);
+    }
+
+    #[test]
+    fn xleg_homogeneous_outcomes_never_touch_the_pool() {
+        let stake = 1_000_001; // odd → exercises dust
+        let tranche = 7_000_000;
+        for (kind, local_is_p1) in [
+            (XKIND_HOMOG_BOTH_CORRECT, true),
+            (XKIND_HOMOG_P1_CORRECT, true),
+            (XKIND_HOMOG_P2_CORRECT, false),
+            (XKIND_BOTH_WRONG, true),
+            (XKIND_TIMEOUT_BOTH_FORFEIT, false),
+        ] {
+            let r = resolve_xleg(kind, local_is_p1, stake, tranche, 5000).unwrap();
+            assert_eq!(
+                r.to_pool_reimburse, 0,
+                "homogeneous must not reimburse pool"
+            );
+            assert_eq!(
+                r.tranche_released, tranche,
+                "homogeneous releases full tranche"
+            );
+            assert_xleg_conserved(&r, stake, tranche);
+        }
+    }
+
+    #[test]
+    fn xleg_conserved_across_all_kinds_seats_and_splits() {
+        for stake in [1u64, 999, 50_000_000, 10_000_000_000] {
+            for tranche in [0u64, 1, 40_000_000] {
+                for kind in 0u8..=8 {
+                    for local_is_p1 in [true, false] {
+                        for bps in [2000u16, 5000, 8000] {
+                            let r = resolve_xleg(kind, local_is_p1, stake, tranche, bps).unwrap();
+                            assert_xleg_conserved(&r, stake, tranche);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn xleg_rejects_bad_inputs() {
+        assert!(resolve_xleg(9, true, 1, 1, 5000).is_err(), "unknown kind");
+        assert!(resolve_xleg(0, true, 0, 1, 5000).is_err(), "zero stake");
+        assert!(
+            resolve_xleg(0, true, 1, 1, 1999).is_err(),
+            "split below min"
+        );
+        assert!(
+            resolve_xleg(0, true, 1, 1, 8001).is_err(),
+            "split above max"
+        );
     }
 }

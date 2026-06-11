@@ -1067,7 +1067,9 @@ name = "coordination-game"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "chain-core",
  "solana-keccak-hasher",
+ "solana-secp256k1-recover",
  "solana-sha256-hasher",
 ]
 
