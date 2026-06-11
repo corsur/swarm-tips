@@ -590,9 +590,26 @@ impl GameSessionManager {
     ///
     /// Returns `(wallet_pubkey, balance_lamports)`.
     pub async fn register_wallet(&self, pubkey_b58: &str) -> Result<(String, u64)> {
-        let pubkey: solana_sdk::pubkey::Pubkey = pubkey_b58
-            .parse()
-            .map_err(|e| anyhow::anyhow!("invalid pubkey: {e}"))?;
+        let pubkey: solana_sdk::pubkey::Pubkey = match pubkey_b58.parse() {
+            Ok(pk) => pk,
+            Err(e) => {
+                // Multichain deployment-trigger instrumentation: EVM-shaped
+                // registrations are the demand signal gating mainnet EVM work
+                // (multichain/decision.md §6 bounce counter).
+                if is_evm_shaped_address(pubkey_b58) {
+                    tracing::warn!(
+                        event = "register_wallet_bounce",
+                        format = "eip155",
+                        "EVM address rejected at register_wallet; counted as non-Solana demand"
+                    );
+                    anyhow::bail!(
+                        "invalid pubkey: EVM (0x…) addresses are not supported yet — \
+                         register a Solana pubkey (base58)"
+                    );
+                }
+                anyhow::bail!("invalid pubkey: {e}");
+            }
+        };
         let wallet = pubkey.to_string();
 
         let tx_builder = GameTxBuilder::new(&self.solana_rpc_url, pubkey);
@@ -1840,9 +1857,40 @@ async fn run_ws_read_loop(
     }
 }
 
+/// True when the input looks like an EVM (EIP-155) address: `0x` + 40 hex
+/// chars. Used by the register_wallet bounce counter — the demand signal
+/// gating mainnet EVM work (multichain/decision.md §6).
+fn is_evm_shaped_address(input: &str) -> bool {
+    let hex = match input.strip_prefix("0x") {
+        Some(h) => h,
+        None => return false,
+    };
+    hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evm_shaped_address_detection() {
+        // Real EVM address shape → bounce.
+        assert!(is_evm_shaped_address(
+            "0x996213ed4099707059b8b5d7489ffF23dAC9770d"
+        ));
+        // Solana base58 pubkey → not EVM-shaped.
+        assert!(!is_evm_shaped_address(
+            "CKsZf8gZzfPdEXHxLUEPvAi5C5sXBV9aDhqmsM7yTipv"
+        ));
+        // 0x-prefixed but wrong length (32-byte value, e.g. a private key
+        // or hash) → not an address; must not count as address demand.
+        assert!(!is_evm_shaped_address(&format!("0x{}", "ab".repeat(32))));
+        // Non-hex chars after 0x → not EVM-shaped.
+        assert!(!is_evm_shaped_address(&format!("0x{}", "zz".repeat(20))));
+        // Empty and bare-0x inputs.
+        assert!(!is_evm_shaped_address(""));
+        assert!(!is_evm_shaped_address("0x"));
+    }
 
     #[test]
     fn session_state_transitions() {
