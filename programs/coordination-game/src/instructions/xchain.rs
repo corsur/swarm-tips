@@ -1,0 +1,520 @@
+//! Cross-chain match instructions — the Solana leg of Solana↔EVM matches.
+//! The Solana program is ALWAYS leg A in the certificate (the EVM contract
+//! is leg B). This module mirrors evm/src/CrossChainGame.sol, translated to
+//! Anchor; the cryptographic core (cert digest + signer recovery) and the
+//! payoff core (resolve_xleg) live in `crate::cert` / `crate::payoff` and
+//! are unit-tested against the same golden vectors as the EVM side.
+
+use crate::cert::{require_signer, MatchLiveCertArg, OutcomeCertArg};
+use crate::errors::CoordinationError;
+use crate::events::{XMatchCreated, XMatchSettled, XTrancheLocked};
+use crate::instructions::utils::transfer_lamports;
+use crate::payoff::{resolve_xleg, XLegResolution};
+use crate::state::{
+    GlobalConfig, PlayerProfile, Tournament, XChainMatch, XChainStatus, XPayoutPool,
+};
+use anchor_lang::prelude::*;
+
+const TERMINAL_STEP_COUNT: u8 = 4;
+const XKIND_TIMEOUT_P1_WINS: u8 = 6;
+const XKIND_TIMEOUT_P2_WINS: u8 = 7;
+const XKIND_TIMEOUT_BOTH_FORFEIT: u8 = 8;
+
+fn is_timeout_kind(kind: u8) -> bool {
+    matches!(
+        kind,
+        XKIND_TIMEOUT_P1_WINS | XKIND_TIMEOUT_P2_WINS | XKIND_TIMEOUT_BOTH_FORFEIT
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Pool initialization + float management
+// ---------------------------------------------------------------------------
+
+pub fn initialize_xpool(
+    ctx: Context<InitializeXPool>,
+    operator: Pubkey,
+    operator_signer: [u8; 20],
+    max_tranche_lamports: u64,
+    max_claim_window_secs: u32,
+    skew_margin_secs: u32,
+) -> Result<()> {
+    require!(operator != Pubkey::default(), CoordinationError::XBadConfig);
+    require!(operator_signer != [0u8; 20], CoordinationError::XBadConfig);
+    require!(skew_margin_secs > 0, CoordinationError::XBadConfig);
+    let pool = &mut ctx.accounts.pool;
+    pool.operator = operator;
+    pool.operator_signer = operator_signer;
+    pool.free_lamports = 0;
+    pool.locked_lamports = 0;
+    pool.max_tranche_lamports = max_tranche_lamports;
+    pool.max_claim_window_secs = max_claim_window_secs;
+    pool.skew_margin_secs = skew_margin_secs;
+    pool.bump = ctx.bumps.pool;
+    require!(pool.locked_lamports == 0, CoordinationError::XBadConfig);
+    Ok(())
+}
+
+pub fn xpool_deposit(ctx: Context<XPoolDeposit>, amount: u64) -> Result<()> {
+    require!(amount > 0, CoordinationError::XBadConfig);
+    transfer_lamports(
+        &ctx.accounts.funder.to_account_info(),
+        &ctx.accounts.pool.to_account_info(),
+        amount,
+    )?;
+    let pool = &mut ctx.accounts.pool;
+    pool.free_lamports = pool
+        .free_lamports
+        .checked_add(amount)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    Ok(())
+}
+
+pub fn xpool_withdraw(ctx: Context<XPoolWithdraw>, amount: u64) -> Result<()> {
+    let pool = &mut ctx.accounts.pool;
+    require!(
+        amount <= pool.free_lamports,
+        CoordinationError::XPoolInsufficient
+    );
+    pool.free_lamports = pool
+        .free_lamports
+        .checked_sub(amount)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    transfer_lamports(
+        &pool.to_account_info(),
+        &ctx.accounts.operator.to_account_info(),
+        amount,
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Match lifecycle — funding and locking
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_xmatch(
+    ctx: Context<CreateXMatch>,
+    match_id: [u8; 32],
+    tournament_id: u64,
+    player_is_p1: bool,
+    session_key: [u8; 20],
+    counter_session_key: [u8; 20],
+    stake_lamports: u64,
+    fund_deadline: i64,
+    match_deadline: i64,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    require!(
+        ctx.accounts.matchmaker.key() == ctx.accounts.global_config.matchmaker,
+        CoordinationError::NotMatchmaker
+    );
+    require!(stake_lamports > 0, CoordinationError::XBadConfig);
+    require!(
+        session_key != [0u8; 20] && counter_session_key != [0u8; 20],
+        CoordinationError::XBadConfig
+    );
+    // Distinct seats: equivocation + dual-signature model assume two parties.
+    require!(
+        session_key != counter_session_key,
+        CoordinationError::XBadConfig
+    );
+    require!(
+        fund_deadline > now && match_deadline > fund_deadline,
+        CoordinationError::XDeadlinePassed
+    );
+
+    let m = &mut ctx.accounts.xmatch;
+    m.match_id = match_id;
+    m.tournament_id = tournament_id;
+    m.player = ctx.accounts.player.key();
+    m.player_is_p1 = u8::from(player_is_p1);
+    m.session_key = session_key;
+    m.counter_session_key = counter_session_key;
+    m.stake_lamports = stake_lamports;
+    m.tranche_lamports = 0;
+    m.fund_deadline = fund_deadline;
+    m.match_deadline = match_deadline;
+    m.best_step_count = 0;
+    m.best_outcome_kind = 0;
+    m.local_equivocated = false;
+    m.counter_equivocated = false;
+    m.status = XChainStatus::Funded;
+    m.bump = ctx.bumps.xmatch;
+
+    transfer_lamports(
+        &ctx.accounts.player.to_account_info(),
+        &m.to_account_info(),
+        stake_lamports,
+    )?;
+    require!(
+        m.status == XChainStatus::Funded,
+        CoordinationError::XInvalidStatus
+    );
+    emit!(XMatchCreated {
+        match_id,
+        player: m.player,
+        stake_lamports,
+    });
+    Ok(())
+}
+
+pub fn lock_xtranche(
+    ctx: Context<LockXTranche>,
+    _match_id: [u8; 32],
+    tranche_lamports: u64,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let pool = &mut ctx.accounts.pool;
+    let m = &mut ctx.accounts.xmatch;
+    require!(
+        m.status == XChainStatus::Funded,
+        CoordinationError::XInvalidStatus
+    );
+    require!(
+        tranche_lamports <= pool.max_tranche_lamports,
+        CoordinationError::XTrancheTooLarge
+    );
+    require!(
+        tranche_lamports <= pool.free_lamports,
+        CoordinationError::XPoolInsufficient
+    );
+    pool.free_lamports = pool
+        .free_lamports
+        .checked_sub(tranche_lamports)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    pool.locked_lamports = pool
+        .locked_lamports
+        .checked_add(tranche_lamports)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    m.tranche_lamports = tranche_lamports;
+    m.locked_at = now;
+    m.status = XChainStatus::Locked;
+    emit!(XTrancheLocked {
+        match_id: m.match_id,
+        tranche_lamports,
+    });
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Settlement — terminal certificates (instant path)
+// ---------------------------------------------------------------------------
+
+pub fn settle_xmatch(
+    ctx: Context<SettleXMatch>,
+    cert: MatchLiveCertArg,
+    outcome: OutcomeCertArg,
+    live_sigs: [[u8; 65]; 3],
+    oc_sigs: [[u8; 65]; 3],
+) -> Result<()> {
+    // Checks (read-only).
+    require!(
+        ctx.accounts.xmatch.status == XChainStatus::Locked,
+        CoordinationError::XInvalidStatus
+    );
+    let live_digest = verify_match_live(
+        &ctx.accounts.xmatch,
+        &cert,
+        &live_sigs,
+        &ctx.accounts.pool,
+        solana_chain_tag(),
+    )?;
+    require!(
+        outcome.match_live_digest == live_digest && outcome.match_id == cert.match_id,
+        CoordinationError::XCertMismatch
+    );
+    require!(
+        outcome.step_count == TERMINAL_STEP_COUNT || is_timeout_kind(outcome.outcome_kind),
+        CoordinationError::XBadOutcome
+    );
+    let oc_digest = outcome.digest();
+    require_signer(&oc_digest, &oc_sigs[0], &cert.leg_a.session_key)?;
+    require_signer(&oc_digest, &oc_sigs[1], &cert.leg_b.session_key)?;
+    require_signer(&oc_digest, &oc_sigs[2], &ctx.accounts.pool.operator_signer)?;
+
+    // Effects.
+    ctx.accounts.xmatch.status = XChainStatus::Settled;
+    ctx.accounts.xmatch.match_live_digest = live_digest;
+
+    // Interactions.
+    execute_xleg(
+        outcome.outcome_kind,
+        &ctx.accounts.xmatch,
+        &mut ctx.accounts.pool,
+        &mut ctx.accounts.tournament,
+        &mut ctx.accounts.player_profile,
+        &ctx.accounts.global_config,
+        &ctx.accounts.treasury,
+        &ctx.accounts.player,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Shared verification + execution
+// ---------------------------------------------------------------------------
+
+/// keccak256 of this leg's CAIP-2 chain string — the chain tag a cert's
+/// leg A must carry. Mirrors crates/chain-registry (Solana devnet row); a
+/// cert for any other chain fails the leg-A check. The program ID is the
+/// contract binding.
+fn solana_chain_tag() -> [u8; 32] {
+    crate::cert::keccak256(b"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+}
+
+/// Verify the match-live cert's leg A against locally recorded escrow state
+/// (existence != agreement), domain binding, quote freshness, and the three
+/// signatures (both session keys + operator). Returns the cert digest.
+fn verify_match_live(
+    m: &XChainMatch,
+    cert: &MatchLiveCertArg,
+    sigs: &[[u8; 65]; 3],
+    pool: &XPayoutPool,
+    chain_tag: [u8; 32],
+) -> Result<[u8; 32]> {
+    let leg = &cert.leg_a; // leg A is ALWAYS the Solana leg
+    let program_id = crate::ID.to_bytes();
+    require!(
+        leg.chain_tag == chain_tag
+            && leg.contract == program_id
+            && leg.player == m.player.to_bytes()
+            && leg.session_key == m.session_key
+            && cert.leg_b.session_key == m.counter_session_key
+            && u64::try_from(leg.stake).unwrap_or(u64::MAX) == m.stake_lamports
+            && u64::try_from(leg.tranche).unwrap_or(u64::MAX) == m.tranche_lamports
+            && cert.match_deadline == u64::try_from(m.match_deadline).unwrap_or(0)
+            && (cert.a_is_p1 == 1) == (m.player_is_p1 == 1),
+        CoordinationError::XCertMismatch
+    );
+    // Quote freshness: quoted no earlier than max_age before the lock.
+    let quote_ok = u128::from(cert.quote_timestamp)
+        .checked_add(u128::from(cert.quote_max_age_secs))
+        .ok_or(CoordinationError::ArithmeticOverflow)?
+        >= u128::try_from(m.locked_at).unwrap_or(0);
+    require!(quote_ok, CoordinationError::XStaleQuote);
+    let _ = pool;
+
+    let digest = cert.digest();
+    require_signer(&digest, &sigs[0], &cert.leg_a.session_key)?;
+    require_signer(&digest, &sigs[1], &cert.leg_b.session_key)?;
+    require_signer(&digest, &sigs[2], &pool.operator_signer)?;
+    Ok(digest)
+}
+
+/// Route one leg's funds per `resolve_xleg` and move lamports (CEI: state
+/// already advanced by the caller). Stake lives in the match PDA, tranche in
+/// the pool PDA; winners draw from both, forfeits split treasury/pool/prize.
+#[allow(clippy::too_many_arguments)]
+fn execute_xleg<'info>(
+    outcome_kind: u8,
+    xmatch: &Account<'info, XChainMatch>,
+    pool: &mut Account<'info, XPayoutPool>,
+    tournament: &mut Account<'info, Tournament>,
+    player_profile: &mut Account<'info, PlayerProfile>,
+    global_config: &GlobalConfig,
+    treasury: &AccountInfo<'info>,
+    player: &AccountInfo<'info>,
+) -> Result<()> {
+    let stake = xmatch.stake_lamports;
+    let tranche = xmatch.tranche_lamports;
+    let local_is_p1 = xmatch.player_is_p1 == 1;
+    let r: XLegResolution = resolve_xleg(
+        outcome_kind,
+        local_is_p1,
+        stake,
+        tranche,
+        global_config.treasury_split_bps,
+    )?;
+
+    // Pool accounting: the locked tranche always leaves `locked`; the
+    // released portion plus any reimbursement returns to `free`.
+    pool.locked_lamports = pool
+        .locked_lamports
+        .checked_sub(tranche)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let back_to_free = r
+        .tranche_released
+        .checked_add(r.to_pool_reimburse)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    pool.free_lamports = pool
+        .free_lamports
+        .checked_add(back_to_free)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+
+    // Lamport moves. The tranche consumed by a win comes from the pool PDA;
+    // everything else comes from the match PDA's stake.
+    let tranche_consumed = tranche
+        .checked_sub(r.tranche_released)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    if tranche_consumed > 0 {
+        transfer_lamports(&pool.to_account_info(), player, tranche_consumed)?;
+    }
+    let from_match_to_player = r
+        .to_player
+        .checked_sub(tranche_consumed)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    if from_match_to_player > 0 {
+        transfer_lamports(&xmatch.to_account_info(), player, from_match_to_player)?;
+    }
+    if r.to_treasury > 0 {
+        transfer_lamports(&xmatch.to_account_info(), treasury, r.to_treasury)?;
+    }
+    if r.to_pool_reimburse > 0 {
+        transfer_lamports(
+            &xmatch.to_account_info(),
+            &pool.to_account_info(),
+            r.to_pool_reimburse,
+        )?;
+    }
+    if r.to_prize > 0 {
+        transfer_lamports(
+            &xmatch.to_account_info(),
+            &tournament.to_account_info(),
+            r.to_prize,
+        )?;
+        tournament.prize_lamports = tournament
+            .prize_lamports
+            .checked_add(r.to_prize)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+    }
+
+    // Update the local player's profile (the counterparty's profile updates
+    // on the other leg from the identical cert).
+    let won = r.to_player > stake;
+    player_profile.update_after_game(won, xmatch.tournament_id)?;
+
+    emit!(XMatchSettled {
+        match_id: xmatch.match_id,
+        outcome_kind,
+        to_player: r.to_player,
+        to_treasury: r.to_treasury,
+    });
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Account contexts
+// ---------------------------------------------------------------------------
+
+#[derive(Accounts)]
+pub struct InitializeXPool<'info> {
+    #[account(
+        init,
+        payer = authority,
+        space = XPayoutPool::SPACE,
+        seeds = [b"xpool"],
+        bump,
+    )]
+    pub pool: Account<'info, XPayoutPool>,
+    #[account(
+        seeds = [b"global_config"],
+        bump = global_config.bump,
+        constraint = global_config.authority == authority.key() @ CoordinationError::XBadConfig,
+    )]
+    pub global_config: Account<'info, GlobalConfig>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct XPoolDeposit<'info> {
+    #[account(mut, seeds = [b"xpool"], bump = pool.bump)]
+    pub pool: Account<'info, XPayoutPool>,
+    #[account(mut)]
+    pub funder: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct XPoolWithdraw<'info> {
+    #[account(
+        mut,
+        seeds = [b"xpool"],
+        bump = pool.bump,
+        constraint = pool.operator == operator.key() @ CoordinationError::XBadConfig,
+    )]
+    pub pool: Account<'info, XPayoutPool>,
+    #[account(mut)]
+    pub operator: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(match_id: [u8; 32])]
+pub struct CreateXMatch<'info> {
+    #[account(
+        init,
+        payer = player,
+        space = XChainMatch::SPACE,
+        seeds = [b"xmatch", match_id.as_ref()],
+        bump,
+    )]
+    pub xmatch: Account<'info, XChainMatch>,
+    #[account(seeds = [b"global_config"], bump = global_config.bump)]
+    pub global_config: Account<'info, GlobalConfig>,
+    /// Matchmaker co-signs; does not pay gas.
+    pub matchmaker: Signer<'info>,
+    #[account(mut)]
+    pub player: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(match_id: [u8; 32])]
+pub struct LockXTranche<'info> {
+    #[account(
+        mut,
+        seeds = [b"xmatch", match_id.as_ref()],
+        bump = xmatch.bump,
+    )]
+    pub xmatch: Account<'info, XChainMatch>,
+    #[account(
+        mut,
+        seeds = [b"xpool"],
+        bump = pool.bump,
+        constraint = pool.operator == operator.key() @ CoordinationError::XBadConfig,
+    )]
+    pub pool: Account<'info, XPayoutPool>,
+    pub operator: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(cert: MatchLiveCertArg)]
+pub struct SettleXMatch<'info> {
+    #[account(
+        mut,
+        seeds = [b"xmatch", cert.match_id.as_ref()],
+        bump = xmatch.bump,
+    )]
+    pub xmatch: Account<'info, XChainMatch>,
+    #[account(mut, seeds = [b"xpool"], bump = pool.bump)]
+    pub pool: Account<'info, XPayoutPool>,
+    #[account(
+        mut,
+        seeds = [b"tournament", tournament.tournament_id.to_le_bytes().as_ref()],
+        bump = tournament.bump,
+    )]
+    pub tournament: Account<'info, Tournament>,
+    #[account(
+        mut,
+        seeds = [
+            b"player",
+            xmatch.tournament_id.to_le_bytes().as_ref(),
+            xmatch.player.as_ref(),
+        ],
+        bump,
+    )]
+    pub player_profile: Account<'info, PlayerProfile>,
+    #[account(
+        seeds = [b"global_config"],
+        bump = global_config.bump,
+        constraint = global_config.treasury == treasury.key() @ CoordinationError::XCertMismatch,
+    )]
+    pub global_config: Account<'info, GlobalConfig>,
+    /// CHECK: validated to equal global_config.treasury above.
+    #[account(mut)]
+    pub treasury: AccountInfo<'info>,
+    /// CHECK: validated to equal the recorded match player below.
+    #[account(mut, constraint = player.key() == xmatch.player @ CoordinationError::XCertMismatch)]
+    pub player: AccountInfo<'info>,
+}

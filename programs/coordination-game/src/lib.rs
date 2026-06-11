@@ -162,4 +162,75 @@ pub mod coordination_game {
     ) -> Result<()> {
         instructions::reveal_guess_session::reveal_guess_session(ctx, r, r_matchup)
     }
+
+    // ----- Cross-chain (Solana↔EVM) match instructions -----
+
+    pub fn initialize_xpool(
+        ctx: Context<InitializeXPool>,
+        operator: Pubkey,
+        operator_signer: [u8; 20],
+        max_tranche_lamports: u64,
+        max_claim_window_secs: u32,
+        skew_margin_secs: u32,
+    ) -> Result<()> {
+        instructions::xchain::initialize_xpool(
+            ctx,
+            operator,
+            operator_signer,
+            max_tranche_lamports,
+            max_claim_window_secs,
+            skew_margin_secs,
+        )
+    }
+
+    pub fn xpool_deposit(ctx: Context<XPoolDeposit>, amount: u64) -> Result<()> {
+        instructions::xchain::xpool_deposit(ctx, amount)
+    }
+
+    pub fn xpool_withdraw(ctx: Context<XPoolWithdraw>, amount: u64) -> Result<()> {
+        instructions::xchain::xpool_withdraw(ctx, amount)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_xmatch(
+        ctx: Context<CreateXMatch>,
+        match_id: [u8; 32],
+        tournament_id: u64,
+        player_is_p1: bool,
+        session_key: [u8; 20],
+        counter_session_key: [u8; 20],
+        stake_lamports: u64,
+        fund_deadline: i64,
+        match_deadline: i64,
+    ) -> Result<()> {
+        instructions::xchain::create_xmatch(
+            ctx,
+            match_id,
+            tournament_id,
+            player_is_p1,
+            session_key,
+            counter_session_key,
+            stake_lamports,
+            fund_deadline,
+            match_deadline,
+        )
+    }
+
+    pub fn lock_xtranche(
+        ctx: Context<LockXTranche>,
+        match_id: [u8; 32],
+        tranche_lamports: u64,
+    ) -> Result<()> {
+        instructions::xchain::lock_xtranche(ctx, match_id, tranche_lamports)
+    }
+
+    pub fn settle_xmatch(
+        ctx: Context<SettleXMatch>,
+        cert: cert::MatchLiveCertArg,
+        outcome: cert::OutcomeCertArg,
+        live_sigs: [[u8; 65]; 3],
+        oc_sigs: [[u8; 65]; 3],
+    ) -> Result<()> {
+        instructions::xchain::settle_xmatch(ctx, cert, outcome, live_sigs, oc_sigs)
+    }
 }
