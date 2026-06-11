@@ -1,0 +1,19 @@
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+script = "script"
+libs = ["lib"]
+solc = "0.8.30"
+optimizer = true
+optimizer_runs = 200
+# Cross-chain certs are large calldata structs; via-IR avoids stack-too-deep
+# in the settle/claim verification paths and is the modern default.
+via_ir = true
+fuzz = { runs = 512 }
+invariant = { runs = 64, depth = 32 }
+# Golden cert vectors authored by chain-core live one level up.
+fs_permissions = [{ access = "read", path = "../tests/fixtures" }]
+
+[rpc_endpoints]
+base_sepolia = "https://sepolia.base.org"

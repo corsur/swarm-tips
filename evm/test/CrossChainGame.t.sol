@@ -1,0 +1,552 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {Test} from "forge-std/Test.sol";
+import {CrossChainGame} from "../src/CrossChainGame.sol";
+import {CertLib} from "../src/CertLib.sol";
+
+/// @notice Behavioral suite for the EVM leg: state machine, the panel's
+///         eight flagged gaps (double-claim, inert cert, stale quote,
+///         equivocation, refund-vs-skew timing, tranche clamp), payoff
+///         conservation (fuzzed), and pool accounting (invariant).
+contract CrossChainGameTest is Test {
+    CrossChainGame internal game;
+
+    bytes32 internal constant CHAIN_TAG = keccak256("eip155:84532");
+    uint128 internal constant STAKE = 0.0025 ether;
+    uint128 internal constant MAX_TRANCHE = 0.005 ether;
+    uint32 internal constant CLAIM_WINDOW = 3600;
+    uint32 internal constant SKEW = 900;
+    uint16 internal constant SPLIT_BPS = 5000;
+
+    address internal owner = makeAddr("owner");
+    address internal treasury = makeAddr("treasury");
+    address internal player = makeAddr("player");
+
+    uint256 internal operatorPk = 0xA11CE;
+    address internal operatorSigner;
+    uint256 internal localSessionPk = 0xB0B;
+    address internal localSession;
+    uint256 internal counterSessionPk = 0xCa7;
+    address internal counterSession;
+
+    function setUp() public {
+        // Realistic 2026 unix time so quote/deadline math never underflows
+        // against Foundry's default block.timestamp of 1.
+        vm.warp(1_765_000_000);
+        operatorSigner = vm.addr(operatorPk);
+        localSession = vm.addr(localSessionPk);
+        counterSession = vm.addr(counterSessionPk);
+
+        vm.prank(owner);
+        game = new CrossChainGame(
+            CHAIN_TAG, owner, operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, SKEW
+        );
+
+        vm.deal(owner, 100 ether);
+        vm.deal(player, 10 ether);
+        vm.prank(owner);
+        game.poolDeposit{value: 10 ether}();
+    }
+
+    // --- helpers ---------------------------------------------------------
+
+    function _fund(bytes32 matchId, bool playerIsP1) internal {
+        vm.prank(player);
+        game.createMatch{value: STAKE}(
+            matchId,
+            localSession,
+            counterSession,
+            playerIsP1,
+            uint64(block.timestamp + 1 days),
+            uint64(block.timestamp + 2 days)
+        );
+    }
+
+    function _lock(bytes32 matchId, uint128 tranche) internal {
+        vm.prank(owner);
+        game.lockTranche(matchId, tranche);
+    }
+
+    /// Build a match-live cert whose EVM leg (legB) matches the recorded
+    /// escrow terms for `matchId`.
+    function _cert(bytes32 matchId, bool playerIsP1, uint128 tranche)
+        internal
+        view
+        returns (CertLib.MatchLiveCert memory cert)
+    {
+        CertLib.Leg memory legA = CertLib.Leg({
+            chainTag: keccak256("solana:devnet"),
+            contractId: keccak256("solana-program"),
+            player: keccak256("solana-player"),
+            sessionKey: counterSession,
+            stake: 0.05 ether,
+            tranche: tranche
+        });
+        CertLib.Leg memory legB = CertLib.Leg({
+            chainTag: CHAIN_TAG,
+            contractId: bytes32(uint256(uint160(address(game)))),
+            player: bytes32(uint256(uint160(player))),
+            sessionKey: localSession,
+            stake: STAKE,
+            tranche: tranche
+        });
+        cert = CertLib.MatchLiveCert({
+            matchId: matchId,
+            tournamentId: 1,
+            matchupCommitment: keccak256("commitment"),
+            legA: legA,
+            legB: legB,
+            quoteTimestamp: uint64(block.timestamp),
+            quoteMaxAgeSecs: 300,
+            matchDeadline: uint64(block.timestamp + 2 days),
+            claimWindowSecs: CLAIM_WINDOW,
+            aIsP1: playerIsP1 ? 0 : 1
+        });
+    }
+
+    function _sign(uint256 pk, bytes32 digest) internal view returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _liveSigs(CertLib.MatchLiveCert memory cert) internal view returns (bytes[3] memory) {
+        bytes32 d = CertLib.matchLiveDigest(cert);
+        return [_sign(counterSessionPk, d), _sign(localSessionPk, d), _sign(operatorPk, d)];
+    }
+
+    function _outcome(bytes32 matchId, bytes32 liveDigest, uint8 kind)
+        internal
+        pure
+        returns (CertLib.OutcomeCert memory)
+    {
+        return CertLib.OutcomeCert({
+            matchId: matchId,
+            matchLiveDigest: liveDigest,
+            outcomeKind: kind,
+            stepCount: CertLib.TERMINAL_STEP_COUNT,
+            p1Guess: 1,
+            p2Guess: 0,
+            firstCommitter: 1,
+            matchupType: 1,
+            transcriptHash: keccak256("transcript")
+        });
+    }
+
+    function _ocSigs(CertLib.OutcomeCert memory oc) internal view returns (bytes[3] memory) {
+        bytes32 d = CertLib.outcomeDigest(oc);
+        return [_sign(counterSessionPk, d), _sign(localSessionPk, d), _sign(operatorPk, d)];
+    }
+
+    function _settle(bytes32 matchId, bool playerIsP1, uint128 tranche, uint8 kind) internal {
+        CertLib.MatchLiveCert memory cert = _cert(matchId, playerIsP1, tranche);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        CertLib.OutcomeCert memory oc = _outcome(matchId, liveDigest, kind);
+        game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
+    }
+
+    /// Read just the status (field 0) of a match without destructuring all
+    /// 16 fields.
+    function _status(bytes32 matchId) internal view returns (CrossChainGame.Status) {
+        (CrossChainGame.Status status,,,,,,,,,,,,,,,) = game.matches(matchId);
+        return status;
+    }
+
+    /// The claim window is anchored to matchDeadline (= fund time + 2 days),
+    /// not to file time. Tests fund and open claims at ~setUp time, so warp
+    /// past matchDeadline + CLAIM_WINDOW to reach the settle window.
+    function _warpPastClaimWindow() internal {
+        vm.warp(block.timestamp + 2 days + CLAIM_WINDOW + 1);
+    }
+
+    // --- state machine ---------------------------------------------------
+
+    function test_happyPath_winnerTakesStakePlusTranche() public {
+        bytes32 id = keccak256("m1");
+        uint128 tranche = STAKE; // counter-value of opponent stake
+        _fund(id, true);
+        _lock(id, tranche);
+
+        uint256 before = player.balance;
+        // Local player is P1 and wins the heterogeneous match.
+        _settle(id, true, tranche, CertLib.HETERO_P1_WINS);
+
+        assertEq(player.balance, before + STAKE + tranche, "winner gets stake + tranche");
+        assertEq(uint256(_status(id)), uint256(CrossChainGame.Status.Settled));
+    }
+
+    function test_loserForfeit_splitsTreasuryAndPool() public {
+        bytes32 id = keccak256("m2");
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+
+        uint256 poolBefore = game.poolFree();
+        uint256 treBefore = treasury.balance;
+        // Local P1 loses → P2 wins.
+        _settle(id, true, tranche, CertLib.HETERO_P2_WINS);
+
+        assertEq(treasury.balance - treBefore, STAKE * SPLIT_BPS / 10000, "treasury cut");
+        // Tranche released back + pool reimbursed with the post-treasury remainder.
+        uint256 reimburse = STAKE - (STAKE * SPLIT_BPS / 10000);
+        assertEq(game.poolFree(), poolBefore + tranche + reimburse, "tranche + reimbursement");
+    }
+
+    // --- panel gap: double-claim is structurally impossible --------------
+
+    function test_doubleSettle_sameCert_reverts() public {
+        bytes32 id = keccak256("m3");
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+        _settle(id, true, tranche, CertLib.HETERO_P1_WINS);
+
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        CertLib.OutcomeCert memory oc = _outcome(id, liveDigest, CertLib.HETERO_P1_WINS);
+        vm.expectRevert(CrossChainGame.InvalidStatus.selector);
+        game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
+    }
+
+    // --- panel gap: cert without a lock is inert -------------------------
+
+    function test_settle_withoutLock_reverts() public {
+        bytes32 id = keccak256("m4");
+        _fund(id, true); // funded, never locked
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        CertLib.OutcomeCert memory oc = _outcome(id, liveDigest, CertLib.HETERO_P1_WINS);
+        vm.expectRevert(CrossChainGame.InvalidStatus.selector);
+        game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
+    }
+
+    // --- panel gap: cert-term mismatch rejected --------------------------
+
+    function test_settle_wrongStakeInCert_reverts() public {
+        bytes32 id = keccak256("m5");
+        _fund(id, true);
+        _lock(id, STAKE);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        cert.legB.stake = STAKE + 1; // tampered
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        CertLib.OutcomeCert memory oc = _outcome(id, liveDigest, CertLib.HETERO_P1_WINS);
+        vm.expectRevert(CrossChainGame.CertMismatch.selector);
+        game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
+    }
+
+    function test_settle_wrongChainTag_reverts() public {
+        bytes32 id = keccak256("m5b");
+        _fund(id, true);
+        _lock(id, STAKE);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        cert.legB.chainTag = keccak256("eip155:1"); // different chain
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        CertLib.OutcomeCert memory oc = _outcome(id, liveDigest, CertLib.HETERO_P1_WINS);
+        vm.expectRevert(CrossChainGame.CertMismatch.selector);
+        game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
+    }
+
+    // --- panel gap: stale quote rejected ---------------------------------
+
+    function test_settle_staleQuote_reverts() public {
+        bytes32 id = keccak256("m6");
+        _fund(id, true);
+        _lock(id, STAKE);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        // Quote far enough in the past that quote + maxAge < lockedAt.
+        cert.quoteTimestamp = uint64(block.timestamp - 1000);
+        cert.quoteMaxAgeSecs = 300;
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        CertLib.OutcomeCert memory oc = _outcome(id, liveDigest, CertLib.HETERO_P1_WINS);
+        vm.expectRevert(CrossChainGame.StaleQuote.selector);
+        game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
+    }
+
+    // --- panel gap: bad signature rejected -------------------------------
+
+    function test_settle_forgedOperatorSig_reverts() public {
+        bytes32 id = keccak256("m7");
+        _fund(id, true);
+        _lock(id, STAKE);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        bytes[3] memory sigs =
+            [_sign(counterSessionPk, liveDigest), _sign(localSessionPk, liveDigest), _sign(0xDEAD, liveDigest)];
+        CertLib.OutcomeCert memory oc = _outcome(id, liveDigest, CertLib.HETERO_P1_WINS);
+        vm.expectRevert(CrossChainGame.BadSignature.selector);
+        game.settle(cert, oc, sigs, _ocSigs(oc));
+    }
+
+    // --- panel gap: tranche clamp ----------------------------------------
+
+    function test_lockTranche_overMax_reverts() public {
+        bytes32 id = keccak256("m8");
+        _fund(id, true);
+        vm.prank(owner);
+        vm.expectRevert(CrossChainGame.TrancheTooLarge.selector);
+        game.lockTranche(id, MAX_TRANCHE + 1);
+    }
+
+    function test_lockTranche_overPool_reverts() public {
+        // Drain pool to below the tranche. Read poolFree BEFORE the prank
+        // so the prank lands on poolWithdraw, not the view call.
+        uint256 free = game.poolFree();
+        vm.prank(owner);
+        game.poolWithdraw(free);
+        bytes32 id = keccak256("m8b");
+        _fund(id, true);
+        vm.prank(owner);
+        vm.expectRevert(CrossChainGame.PoolInsufficient.selector);
+        game.lockTranche(id, STAKE);
+    }
+
+    // --- panel gap: refund timing vs skew --------------------------------
+
+    function test_refundNoCert_onlyAfterFundDeadline() public {
+        bytes32 id = keccak256("m9");
+        _fund(id, true);
+        vm.expectRevert(CrossChainGame.DeadlineNotReached.selector);
+        game.refundNoCert(id);
+
+        vm.warp(block.timestamp + 1 days + 1);
+        uint256 before = player.balance;
+        game.refundNoCert(id);
+        assertEq(player.balance, before + STAKE);
+    }
+
+    function test_refundTimeout_releasesTrancheAfterSkew() public {
+        bytes32 id = keccak256("m10");
+        _fund(id, true);
+        _lock(id, STAKE);
+        uint256 lockedBefore = game.poolLocked();
+        assertEq(lockedBefore, STAKE);
+
+        // Too early: matchDeadline + claimWindow + 2*skew not yet reached.
+        vm.warp(block.timestamp + 2 days + CLAIM_WINDOW + SKEW);
+        vm.expectRevert(CrossChainGame.DeadlineNotReached.selector);
+        game.refundTimeout(id);
+
+        vm.warp(block.timestamp + 2 * SKEW);
+        uint256 before = player.balance;
+        game.refundTimeout(id);
+        assertEq(player.balance, before + STAKE, "stake refunded");
+        assertEq(game.poolLocked(), 0, "tranche released");
+    }
+
+    // --- claim path ------------------------------------------------------
+
+    function _checkpoint(bytes32 liveDigest, uint8 stepCount, uint8 p1Guess, uint8 p2Guess, uint8 firstCommitter)
+        internal
+        pure
+        returns (CertLib.Checkpoint memory)
+    {
+        return CertLib.Checkpoint({
+            matchLiveDigest: liveDigest,
+            stepCount: stepCount,
+            p1Commit: keccak256("p1c"),
+            p2Commit: keccak256("p2c"),
+            p1Guess: p1Guess,
+            p2Guess: p2Guess,
+            firstCommitter: firstCommitter,
+            matchupType: 1,
+            transcriptHash: keccak256("t")
+        });
+    }
+
+    function _cpSigs(CertLib.Checkpoint memory cp) internal view returns (bytes[2] memory) {
+        bytes32 d = CertLib.checkpointDigest(cp);
+        return [_sign(counterSessionPk, d), _sign(localSessionPk, d)];
+    }
+
+    function test_claimPath_committerWinsAfterWindow() public {
+        bytes32 id = keccak256("m11");
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        // step 1: only first committer (P1 = local) committed.
+        CertLib.Checkpoint memory cp = _checkpoint(liveDigest, 1, 255, 255, 1);
+        game.openClaim(cert, cp, _liveSigs(cert), _cpSigs(cp));
+
+        vm.expectRevert(CrossChainGame.DeadlineNotReached.selector);
+        game.settleClaim(id);
+
+        _warpPastClaimWindow();
+        uint256 before = player.balance;
+        game.settleClaim(id);
+        // P1 (local) wins both stakes: own stake + tranche.
+        assertEq(player.balance, before + STAKE + tranche);
+    }
+
+    function test_supersede_higherStepCountReplacesClaim() public {
+        bytes32 id = keccak256("m12");
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+
+        // Open with step 1 (P1 committer wins).
+        CertLib.Checkpoint memory cp1 = _checkpoint(liveDigest, 1, 255, 255, 1);
+        game.openClaim(cert, cp1, _liveSigs(cert), _cpSigs(cp1));
+
+        // Supersede with terminal step 4 where P2 actually won.
+        CertLib.Checkpoint memory cp4 = _checkpoint(liveDigest, 4, 0, 1, 1); // p2 correct
+        game.supersedeClaim(cert, cp4, _cpSigs(cp4));
+
+        _warpPastClaimWindow();
+        uint256 before = player.balance;
+        game.settleClaim(id);
+        // Local P1 lost the superseding terminal outcome → no payout.
+        assertEq(player.balance, before, "superseded to a loss");
+    }
+
+    function test_supersede_lowerStepCount_reverts() public {
+        bytes32 id = keccak256("m13");
+        _fund(id, true);
+        _lock(id, STAKE);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        CertLib.Checkpoint memory cp3 = _checkpoint(liveDigest, 3, 1, 255, 1);
+        game.openClaim(cert, cp3, _liveSigs(cert), _cpSigs(cp3));
+        CertLib.Checkpoint memory cp1 = _checkpoint(liveDigest, 1, 255, 255, 1);
+        vm.expectRevert(CrossChainGame.BadOutcome.selector);
+        game.supersedeClaim(cert, cp1, _cpSigs(cp1));
+    }
+
+    // --- equivocation ----------------------------------------------------
+
+    function test_equivocation_localPlayerForfeits() public {
+        bytes32 id = keccak256("m14");
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+
+        // Two distinct step-2 checkpoints both signed by the local session key.
+        CertLib.Checkpoint memory a = _checkpoint(liveDigest, 2, 255, 255, 1);
+        CertLib.Checkpoint memory b = _checkpoint(liveDigest, 2, 255, 255, 2); // differs
+        bytes memory sigA = _sign(localSessionPk, CertLib.checkpointDigest(a));
+        bytes memory sigB = _sign(localSessionPk, CertLib.checkpointDigest(b));
+
+        game.submitEquivocationProof(cert, a, b, sigA, sigB);
+        _warpPastClaimWindow();
+        uint256 before = player.balance;
+        game.settleClaim(id);
+        // Local P1 equivocated → forfeits; no payout.
+        assertEq(player.balance, before, "equivocator forfeits");
+    }
+
+    /// Regression (review finding): when BOTH parties equivocate, the
+    /// verdict must be both-forfeit REGARDLESS of proof order. The old code
+    /// inferred prior equivocation from bestOutcomeKind, so counterparty-then-
+    /// local order wrongly left the counterparty as outright winner.
+    function test_equivocation_bothForfeit_orderIndependent() public {
+        _assertBothEquivocateForfeit(keccak256("eqA"), true); // counter first
+        _assertBothEquivocateForfeit(keccak256("eqB"), false); // local first
+    }
+
+    function _assertBothEquivocateForfeit(bytes32 id, bool counterFirst) internal {
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 ld = CertLib.matchLiveDigest(cert);
+
+        CertLib.Checkpoint memory a = _checkpoint(ld, 2, 255, 255, 1);
+        CertLib.Checkpoint memory b = _checkpoint(ld, 2, 255, 255, 2);
+        bytes memory localA = _sign(localSessionPk, CertLib.checkpointDigest(a));
+        bytes memory localB = _sign(localSessionPk, CertLib.checkpointDigest(b));
+        bytes memory counterA = _sign(counterSessionPk, CertLib.checkpointDigest(a));
+        bytes memory counterB = _sign(counterSessionPk, CertLib.checkpointDigest(b));
+
+        if (counterFirst) {
+            game.submitEquivocationProof(cert, a, b, counterA, counterB);
+            game.submitEquivocationProof(cert, a, b, localA, localB);
+        } else {
+            game.submitEquivocationProof(cert, a, b, localA, localB);
+            game.submitEquivocationProof(cert, a, b, counterA, counterB);
+        }
+        _warpPastClaimWindow();
+        uint256 treBefore = treasury.balance;
+        uint256 before = player.balance;
+        game.settleClaim(id);
+        // Both forfeit: player gets nothing, the whole stake splits to
+        // treasury+prize, and the tranche returns to the pool.
+        assertEq(player.balance, before, "both-forfeit pays player nothing");
+        assertEq(treasury.balance - treBefore, STAKE * SPLIT_BPS / 10000, "treasury cut on forfeit");
+    }
+
+    /// Regression (review finding): an honest player who legitimately filed a
+    /// claim that currently shows them LOSING on timeout must still WIN if the
+    /// counterparty is then proven to equivocate — the old localAlreadySlashed
+    /// heuristic wrongly downgraded this to both-forfeit.
+    function test_counterEquivocation_afterLosingClaim_localStillWins() public {
+        bytes32 id = keccak256("eqC");
+        uint128 tranche = STAKE;
+        _fund(id, true); // local is P1
+        _lock(id, tranche);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 ld = CertLib.matchLiveDigest(cert);
+
+        // Open a claim that shows local (P1) losing: step-1 where the
+        // counterparty (P2) was the sole committer → TIMEOUT_P2_WINS.
+        CertLib.Checkpoint memory losing = _checkpoint(ld, 1, 255, 255, 2);
+        game.openClaim(cert, losing, _liveSigs(cert), _cpSigs(losing));
+
+        // Now prove the COUNTERPARTY equivocated.
+        CertLib.Checkpoint memory a = _checkpoint(ld, 2, 255, 255, 1);
+        CertLib.Checkpoint memory b = _checkpoint(ld, 2, 255, 255, 2);
+        game.submitEquivocationProof(
+            cert,
+            a,
+            b,
+            _sign(counterSessionPk, CertLib.checkpointDigest(a)),
+            _sign(counterSessionPk, CertLib.checkpointDigest(b))
+        );
+
+        _warpPastClaimWindow();
+        uint256 before = player.balance;
+        game.settleClaim(id);
+        // Local P1 should WIN outright: own stake + tranche.
+        assertEq(player.balance, before + STAKE + tranche, "honest local wins on counter-equivocation");
+    }
+
+    // --- fuzz: every terminal outcome conserves value --------------------
+
+    function testFuzz_conservation_acrossAllOutcomes(uint8 rawKind, bool playerIsP1, uint128 trancheSeed) public {
+        uint8 kind = rawKind % 9; // 0..8 valid outcome kinds
+        uint128 tranche = uint128(bound(trancheSeed, 0, MAX_TRANCHE));
+        bytes32 id = keccak256(abi.encode(rawKind, playerIsP1, trancheSeed));
+
+        _fund(id, playerIsP1);
+        _lock(id, tranche);
+
+        uint256 contractBefore = address(game).balance;
+        uint256 playerBefore = player.balance;
+        uint256 treBefore = treasury.balance;
+
+        CertLib.MatchLiveCert memory cert = _cert(id, playerIsP1, tranche);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        CertLib.OutcomeCert memory oc = _outcome(id, liveDigest, kind);
+        oc.stepCount = CertLib.TERMINAL_STEP_COUNT;
+        game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
+
+        // Value leaving the contract == stake + tranche consumed by a win,
+        // or only the treasury cut for a forfeit. Conservation: the
+        // contract's balance drop equals exactly what players+treasury
+        // received, never more.
+        uint256 paidOut = (player.balance - playerBefore) + (treasury.balance - treBefore);
+        uint256 contractDrop = contractBefore - address(game).balance;
+        assertEq(paidOut, contractDrop, "no value created or destroyed");
+        // Internal pool accounting stays solvent.
+        assertEq(
+            address(game).balance,
+            game.poolFree() + game.poolLocked() + game.prizePoolWei(),
+            "tracked balances reconcile"
+        );
+    }
+}

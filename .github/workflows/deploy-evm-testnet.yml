@@ -1,0 +1,49 @@
+name: Deploy EVM Testnet
+
+# Manual-only: deploying a fresh contract orphans prior state, so a redeploy
+# is always an explicit decision. The deployed address is recorded back into
+# crates/chain-registry (the single source of truth) in a follow-up commit.
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: 'Target network (must exist in foundry.toml rpc_endpoints)'
+        required: true
+        default: base_sepolia
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Deploy CrossChainGame
+        env:
+          # CI-only deploy key (per CLAUDE.md: CI values → GitHub Secrets).
+          # TESTNET-ONLY — must be rotated before any mainnet deploy.
+          DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
+          # Constructor params mirror crates/chain-registry (Base Sepolia row).
+          XCHAIN_CHAIN_TAG: '0x8a9a9c58b754a98f1ff302a7ead652cfd23eb36a5791767b5d185067dd9481c2'
+          XCHAIN_OWNER: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
+          XCHAIN_OPERATOR_SIGNER: ${{ secrets.EVM_OPERATOR_SIGNER_ADDR }}
+          XCHAIN_TREASURY: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
+          XCHAIN_TREASURY_BPS: '5000'
+          XCHAIN_STAKE_WEI: '2500000000000000'
+          XCHAIN_MAX_TRANCHE_WEI: '5000000000000000'
+          XCHAIN_CLAIM_WINDOW: '3600'
+          XCHAIN_SKEW_MARGIN: '900'
+        run: |
+          forge script script/Deploy.s.sol \
+            --rpc-url ${{ github.event.inputs.network }} \
+            --private-key "$DEPLOYER_PK" \
+            --broadcast

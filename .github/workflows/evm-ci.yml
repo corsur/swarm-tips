@@ -1,0 +1,55 @@
+name: EVM Contracts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'evm/**'
+      - 'crates/chain-core/**'
+      - 'tests/fixtures/cert-vectors.json'
+      - '.github/workflows/evm-ci.yml'
+  pull_request:
+    paths:
+      - 'evm/**'
+      - 'crates/chain-core/**'
+      - 'tests/fixtures/cert-vectors.json'
+      - '.github/workflows/evm-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  forge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Format check
+        run: forge fmt --check
+
+      - name: Build
+        run: forge build --sizes
+
+      - name: Test (unit + fuzz + invariant)
+        run: forge test -vvv
+
+  cert-schema-parity:
+    # Belt-and-suspenders: regenerate the golden vectors from the Rust
+    # encoder and fail if they differ from what's committed. The forge job
+    # above proves Solidity matches the committed file; this proves the
+    # committed file still matches Rust — together they pin both encoders.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify cert vectors are current
+        run: cargo test -p chain-core --features keccak --test golden_vectors verify_vectors
