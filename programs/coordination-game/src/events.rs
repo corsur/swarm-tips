@@ -107,3 +107,43 @@ pub struct UnclaimedSwept {
     pub dest_tournament_id: u64,
     pub amount: u64,
 }
+
+#[event]
+pub struct XMatchCreated {
+    pub match_id: [u8; 32],
+    pub player: Pubkey,
+    pub stake_lamports: u64,
+}
+
+#[event]
+pub struct XTrancheLocked {
+    pub match_id: [u8; 32],
+    pub tranche_lamports: u64,
+}
+
+#[event]
+pub struct XMatchSettled {
+    pub match_id: [u8; 32],
+    pub outcome_kind: u8,
+    pub to_player: u64,
+    pub to_treasury: u64,
+}
+
+#[event]
+pub struct XClaimOpened {
+    pub match_id: [u8; 32],
+    pub claimed_outcome: u8,
+    pub claim_window_end: i64,
+}
+
+#[event]
+pub struct XEquivocationProven {
+    pub match_id: [u8; 32],
+    pub new_best_outcome: u8,
+}
+
+#[event]
+pub struct XMatchRefunded {
+    pub match_id: [u8; 32],
+    pub to_player: u64,
+}

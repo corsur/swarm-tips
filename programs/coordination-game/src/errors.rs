@@ -99,4 +99,26 @@ pub enum CoordinationError {
     // Reveal
     #[msg("r_matchup must not be passed once the matchup type is already revealed in the Game account")]
     RMatchupMismatch,
+
+    // Cross-chain
+    #[msg("Cross-chain match is in the wrong status for this instruction")]
+    XInvalidStatus,
+    #[msg("Certificate terms do not match the recorded escrow state")]
+    XCertMismatch,
+    #[msg("Certificate signature did not recover the expected signer")]
+    XBadSignature,
+    #[msg("Rate quote is stale relative to the tranche lock")]
+    XStaleQuote,
+    #[msg("Deadline has not been reached yet")]
+    XDeadlineNotReached,
+    #[msg("Deadline has already passed")]
+    XDeadlinePassed,
+    #[msg("Payout pool has insufficient free balance")]
+    XPoolInsufficient,
+    #[msg("Tranche exceeds the configured maximum")]
+    XTrancheTooLarge,
+    #[msg("Cross-chain configuration is invalid")]
+    XBadConfig,
+    #[msg("Outcome kind is not valid for this settlement path")]
+    XBadOutcome,
 }
