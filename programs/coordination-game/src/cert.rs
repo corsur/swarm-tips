@@ -72,6 +72,42 @@ impl MatchLiveCertArg {
     }
 }
 
+/// Match-live certificate WITHOUT leg A — used by `settle_xmatch` to stay
+/// under Solana's 1232-byte transaction limit. Leg A is the Solana leg and
+/// is fully determined by on-chain match state, so the program reconstructs
+/// it rather than carrying its 148 bytes over the wire. This also removes
+/// the tamper surface: leg A is authoritative from state, never the caller.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct MatchLiveCertNoA {
+    pub match_id: [u8; 32],
+    pub tournament_id: u64,
+    pub matchup_commitment: [u8; 32],
+    pub leg_b: CertLegArg,
+    pub quote_timestamp: u64,
+    pub quote_max_age_secs: u32,
+    pub match_deadline: u64,
+    pub claim_window_secs: u32,
+    pub a_is_p1: u8,
+}
+
+impl MatchLiveCertNoA {
+    /// Reattach the reconstructed leg A to form the full certificate.
+    pub fn with_leg_a(self, leg_a: CertLegArg) -> MatchLiveCertArg {
+        MatchLiveCertArg {
+            match_id: self.match_id,
+            tournament_id: self.tournament_id,
+            matchup_commitment: self.matchup_commitment,
+            leg_a,
+            leg_b: self.leg_b,
+            quote_timestamp: self.quote_timestamp,
+            quote_max_age_secs: self.quote_max_age_secs,
+            match_deadline: self.match_deadline,
+            claim_window_secs: self.claim_window_secs,
+            a_is_p1: self.a_is_p1,
+        }
+    }
+}
+
 /// Co-signed transcript checkpoint, as an instruction argument.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct CheckpointArg {

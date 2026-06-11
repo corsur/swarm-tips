@@ -226,12 +226,12 @@ pub mod coordination_game {
 
     pub fn settle_xmatch(
         ctx: Context<SettleXMatch>,
-        cert: cert::MatchLiveCertArg,
+        cert_no_a: cert::MatchLiveCertNoA,
         outcome: cert::OutcomeCertArg,
         live_sigs: [[u8; 65]; 3],
         oc_sigs: [[u8; 65]; 3],
     ) -> Result<()> {
-        instructions::xchain::settle_xmatch(ctx, cert, outcome, live_sigs, oc_sigs)
+        instructions::xchain::settle_xmatch(ctx, cert_no_a, outcome, live_sigs, oc_sigs)
     }
 
     pub fn open_xclaim(

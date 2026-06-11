@@ -6,7 +6,8 @@
 //! are unit-tested against the same golden vectors as the EVM side.
 
 use crate::cert::{
-    recover_eth_address, require_signer, CheckpointArg, MatchLiveCertArg, OutcomeCertArg,
+    recover_eth_address, require_signer, CertLegArg, CheckpointArg, MatchLiveCertArg,
+    MatchLiveCertNoA, OutcomeCertArg,
 };
 use crate::errors::CoordinationError;
 use crate::events::{
@@ -61,9 +62,16 @@ pub fn initialize_xpool(
 
 pub fn xpool_deposit(ctx: Context<XPoolDeposit>, amount: u64) -> Result<()> {
     require!(amount > 0, CoordinationError::XBadConfig);
-    transfer_lamports(
-        &ctx.accounts.funder.to_account_info(),
-        &ctx.accounts.pool.to_account_info(),
+    // Funder is a System-owned wallet: credit the pool PDA via a System CPI
+    // (a program cannot debit an account it does not own).
+    anchor_lang::system_program::transfer(
+        CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            anchor_lang::system_program::Transfer {
+                from: ctx.accounts.funder.to_account_info(),
+                to: ctx.accounts.pool.to_account_info(),
+            },
+        ),
         amount,
     )?;
     let pool = &mut ctx.accounts.pool;
@@ -128,10 +136,11 @@ pub fn create_xmatch(
         CoordinationError::XDeadlinePassed
     );
 
+    let player_key = ctx.accounts.player.key();
     let m = &mut ctx.accounts.xmatch;
     m.match_id = match_id;
     m.tournament_id = tournament_id;
-    m.player = ctx.accounts.player.key();
+    m.player = player_key;
     m.player_is_p1 = u8::from(player_is_p1);
     m.session_key = session_key;
     m.counter_session_key = counter_session_key;
@@ -146,18 +155,24 @@ pub fn create_xmatch(
     m.status = XChainStatus::Funded;
     m.bump = ctx.bumps.xmatch;
 
-    transfer_lamports(
-        &ctx.accounts.player.to_account_info(),
-        &m.to_account_info(),
+    // Player is a System-owned wallet: credit the match PDA via a System CPI.
+    anchor_lang::system_program::transfer(
+        CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            anchor_lang::system_program::Transfer {
+                from: ctx.accounts.player.to_account_info(),
+                to: ctx.accounts.xmatch.to_account_info(),
+            },
+        ),
         stake_lamports,
     )?;
     require!(
-        m.status == XChainStatus::Funded,
+        ctx.accounts.xmatch.status == XChainStatus::Funded,
         CoordinationError::XInvalidStatus
     );
     emit!(XMatchCreated {
         match_id,
-        player: m.player,
+        player: player_key,
         stake_lamports,
     });
     Ok(())
@@ -207,7 +222,7 @@ pub fn lock_xtranche(
 
 pub fn settle_xmatch(
     ctx: Context<SettleXMatch>,
-    cert: MatchLiveCertArg,
+    cert_no_a: MatchLiveCertNoA,
     outcome: OutcomeCertArg,
     live_sigs: [[u8; 65]; 3],
     oc_sigs: [[u8; 65]; 3],
@@ -217,6 +232,9 @@ pub fn settle_xmatch(
         ctx.accounts.xmatch.status == XChainStatus::Locked,
         CoordinationError::XInvalidStatus
     );
+    // Reconstruct leg A from authoritative on-chain state (saves 148 bytes
+    // and removes the leg-A tamper surface entirely).
+    let cert = cert_no_a.with_leg_a(rebuild_leg_a(&ctx.accounts.xmatch, solana_chain_tag()));
     let live_digest = verify_match_live(
         &ctx.accounts.xmatch,
         &cert,
@@ -247,6 +265,11 @@ pub fn settle_xmatch(
     // Effects.
     ctx.accounts.xmatch.status = XChainStatus::Settled;
     ctx.accounts.xmatch.match_live_digest = live_digest;
+    ctx.accounts.player_profile.init_if_new(
+        ctx.accounts.xmatch.player,
+        ctx.accounts.xmatch.tournament_id,
+        ctx.bumps.player_profile,
+    );
 
     // Interactions.
     execute_xleg(
@@ -446,6 +469,11 @@ pub fn settle_xclaim(ctx: Context<SettleXClaim>) -> Result<()> {
     );
     let kind = ctx.accounts.xmatch.best_outcome_kind;
     ctx.accounts.xmatch.status = XChainStatus::ClaimSettled;
+    ctx.accounts.player_profile.init_if_new(
+        ctx.accounts.xmatch.player,
+        ctx.accounts.xmatch.tournament_id,
+        ctx.bumps.player_profile,
+    );
     execute_xleg(
         kind,
         &ctx.accounts.xmatch,
@@ -572,6 +600,20 @@ fn verify_checkpoint(
 /// contract binding.
 fn solana_chain_tag() -> [u8; 32] {
     crate::cert::keccak256(b"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+}
+
+/// Reconstruct leg A (the Solana leg) from authoritative on-chain match
+/// state. Every field is determined by the program ID + recorded match, so
+/// the caller never supplies it — `settle_xmatch` rebuilds it here.
+fn rebuild_leg_a(m: &XChainMatch, chain_tag: [u8; 32]) -> CertLegArg {
+    CertLegArg {
+        chain_tag,
+        contract: crate::ID.to_bytes(),
+        player: m.player.to_bytes(),
+        session_key: m.session_key,
+        stake: u128::from(m.stake_lamports),
+        tranche: u128::from(m.tranche_lamports),
+    }
 }
 
 /// Verify the match-live cert's leg A against locally recorded escrow state
@@ -817,7 +859,9 @@ pub struct SettleXMatch<'info> {
     )]
     pub tournament: Account<'info, Tournament>,
     #[account(
-        mut,
+        init_if_needed,
+        payer = cranker,
+        space = PlayerProfile::SPACE,
         seeds = [
             b"player",
             xmatch.tournament_id.to_le_bytes().as_ref(),
@@ -838,6 +882,11 @@ pub struct SettleXMatch<'info> {
     /// CHECK: validated to equal the recorded match player below.
     #[account(mut, constraint = player.key() == xmatch.player @ CoordinationError::XCertMismatch)]
     pub player: AccountInfo<'info>,
+    /// Pays profile rent if the cross-chain player has none yet for this
+    /// tournament. Settle stays permissionless — anyone can crank.
+    #[account(mut)]
+    pub cranker: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 /// Terminal match whose stake/tranche have been distributed: reclaim rent.
@@ -899,7 +948,9 @@ pub struct SettleXClaim<'info> {
     )]
     pub tournament: Account<'info, Tournament>,
     #[account(
-        mut,
+        init_if_needed,
+        payer = cranker,
+        space = PlayerProfile::SPACE,
         seeds = [
             b"player",
             xmatch.tournament_id.to_le_bytes().as_ref(),
@@ -920,6 +971,11 @@ pub struct SettleXClaim<'info> {
     /// CHECK: validated to equal the recorded match player below.
     #[account(mut, constraint = player.key() == xmatch.player @ CoordinationError::XCertMismatch)]
     pub player: AccountInfo<'info>,
+    /// Pays profile rent if the cross-chain player has none yet for this
+    /// tournament. Settle stays permissionless — anyone can crank.
+    #[account(mut)]
+    pub cranker: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
