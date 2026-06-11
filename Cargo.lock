@@ -1241,6 +1241,7 @@ dependencies = [
 name = "chain-core"
 version = "0.1.0"
 dependencies = [
+ "k256",
  "serde",
  "tiny-keccak",
 ]

@@ -18,7 +18,15 @@ default = []
 # program dependency so no hashing crate is pulled into BPF.
 keccak = ["dep:tiny-keccak"]
 serde = ["dep:serde"]
+# Operator-side certificate co-signing (backend only — never in BPF). Pulls
+# k256 for secp256k1 ECDSA with recovery, producing the [r||s||v] form the
+# on-chain `secp256k1_recover` and EVM `ecrecover` both accept.
+cosign = ["keccak", "dep:k256"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
 tiny-keccak = { version = "2", features = ["keccak"], optional = true }
+k256 = { version = "0.13", default-features = false, features = [
+    "ecdsa",
+    "std",
+], optional = true }
