@@ -230,7 +230,10 @@ mod tests {
     fn lock_tranche_is_non_payable() {
         let tx = build_lock_tranche(C, [0xBB; 32], 5_000_000_000_000_000);
         assert_eq!(tx.value, U256::ZERO);
-        assert_eq!(&tx.data[..4], &CrossChainGame::lockTrancheCall::SELECTOR[..]);
+        assert_eq!(
+            &tx.data[..4],
+            &CrossChainGame::lockTrancheCall::SELECTOR[..]
+        );
     }
 
     #[test]

@@ -108,8 +108,7 @@ fn build_json() -> String {
 }
 
 fn fixture_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/cert-vectors.json")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/cert-vectors.json")
 }
 
 #[test]
