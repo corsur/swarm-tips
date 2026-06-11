@@ -32,14 +32,20 @@ jobs:
           # CI-only deploy key (per CLAUDE.md: CI values → GitHub Secrets).
           # TESTNET-ONLY — must be rotated before any mainnet deploy.
           DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
-          # Constructor params mirror crates/chain-registry (Base Sepolia row).
+          # chainTag mirrors crates/chain-registry (Base Sepolia row). Stakes
+          # are deliberately TINY for the live-testnet smoke test — the goal is
+          # to prove the mechanism end-to-end on real chains, not USD parity.
+          # The registry's 0.0025 ETH production value is impractical to fund
+          # via the CDP faucet (0.0001 ETH/drip); 0.00001 ETH stakes let one
+          # faucet top-up cover many full match lifecycles. Production parity
+          # values apply only at the (separately-gated) mainnet deploy.
           XCHAIN_CHAIN_TAG: '0x8a9a9c58b754a98f1ff302a7ead652cfd23eb36a5791767b5d185067dd9481c2'
           XCHAIN_OWNER: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
           XCHAIN_OPERATOR_SIGNER: ${{ secrets.EVM_OPERATOR_SIGNER_ADDR }}
           XCHAIN_TREASURY: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
           XCHAIN_TREASURY_BPS: '5000'
-          XCHAIN_STAKE_WEI: '2500000000000000'
-          XCHAIN_MAX_TRANCHE_WEI: '5000000000000000'
+          XCHAIN_STAKE_WEI: '10000000000000' # 0.00001 ETH (smoke-test stake)
+          XCHAIN_MAX_TRANCHE_WEI: '20000000000000' # 0.00002 ETH
           XCHAIN_CLAIM_WINDOW: '3600'
           XCHAIN_SKEW_MARGIN: '900'
         run: |
