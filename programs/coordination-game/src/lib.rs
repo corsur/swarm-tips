@@ -233,4 +233,50 @@ pub mod coordination_game {
     ) -> Result<()> {
         instructions::xchain::settle_xmatch(ctx, cert, outcome, live_sigs, oc_sigs)
     }
+
+    pub fn open_xclaim(
+        ctx: Context<OpenXClaim>,
+        cert: cert::MatchLiveCertArg,
+        cp: cert::CheckpointArg,
+        live_sigs: [[u8; 65]; 3],
+        cp_sigs: [[u8; 65]; 2],
+    ) -> Result<()> {
+        instructions::xchain::open_xclaim(ctx, cert, cp, live_sigs, cp_sigs)
+    }
+
+    pub fn supersede_xclaim(
+        ctx: Context<SupersedeXClaim>,
+        cert: cert::MatchLiveCertArg,
+        cp: cert::CheckpointArg,
+        cp_sigs: [[u8; 65]; 2],
+    ) -> Result<()> {
+        instructions::xchain::supersede_xclaim(ctx, cert, cp, cp_sigs)
+    }
+
+    pub fn submit_equivocation_proof(
+        ctx: Context<SubmitEquivocation>,
+        cert: cert::MatchLiveCertArg,
+        cp_a: cert::CheckpointArg,
+        cp_b: cert::CheckpointArg,
+        sig_a: [u8; 65],
+        sig_b: [u8; 65],
+    ) -> Result<()> {
+        instructions::xchain::submit_equivocation_proof(ctx, cert, cp_a, cp_b, sig_a, sig_b)
+    }
+
+    pub fn settle_xclaim(ctx: Context<SettleXClaim>) -> Result<()> {
+        instructions::xchain::settle_xclaim(ctx)
+    }
+
+    pub fn refund_xmatch_nocert(ctx: Context<RefundXMatch>) -> Result<()> {
+        instructions::xchain::refund_xmatch_nocert(ctx)
+    }
+
+    pub fn refund_xmatch_timeout(ctx: Context<RefundXMatchTimeout>) -> Result<()> {
+        instructions::xchain::refund_xmatch_timeout(ctx)
+    }
+
+    pub fn close_xmatch(ctx: Context<CloseXMatch>) -> Result<()> {
+        instructions::xchain::close_xmatch(ctx)
+    }
 }

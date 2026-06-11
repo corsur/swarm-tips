@@ -5,9 +5,13 @@
 //! payoff core (resolve_xleg) live in `crate::cert` / `crate::payoff` and
 //! are unit-tested against the same golden vectors as the EVM side.
 
-use crate::cert::{require_signer, MatchLiveCertArg, OutcomeCertArg};
+use crate::cert::{
+    recover_eth_address, require_signer, CheckpointArg, MatchLiveCertArg, OutcomeCertArg,
+};
 use crate::errors::CoordinationError;
-use crate::events::{XMatchCreated, XMatchSettled, XTrancheLocked};
+use crate::events::{
+    XClaimOpened, XEquivocationProven, XMatchCreated, XMatchRefunded, XMatchSettled, XTrancheLocked,
+};
 use crate::instructions::utils::transfer_lamports;
 use crate::payoff::{resolve_xleg, XLegResolution};
 use crate::state::{
@@ -251,8 +255,309 @@ pub fn settle_xmatch(
 }
 
 // ---------------------------------------------------------------------------
+// Settlement — contested / timeout claims (optimistic path)
+// ---------------------------------------------------------------------------
+
+/// The claim window closes at match_deadline + claim_window_secs — anchored
+/// to the deadline (shared by both legs via the cert), NOT file time, so a
+/// claim on one leg can never race a refund on the other. Bounded by the
+/// pool's max so the refund backstop always strictly follows it.
+fn claim_window_end(
+    match_deadline: i64,
+    claim_window_secs: u32,
+    pool: &XPayoutPool,
+) -> Result<i64> {
+    require!(
+        claim_window_secs <= pool.max_claim_window_secs,
+        CoordinationError::XBadConfig
+    );
+    match_deadline
+        .checked_add(i64::from(claim_window_secs))
+        .ok_or(error!(CoordinationError::ArithmeticOverflow))
+}
+
+pub fn open_xclaim(
+    ctx: Context<OpenXClaim>,
+    cert: MatchLiveCertArg,
+    cp: CheckpointArg,
+    live_sigs: [[u8; 65]; 3],
+    cp_sigs: [[u8; 65]; 2],
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    require!(
+        ctx.accounts.xmatch.status == XChainStatus::Locked,
+        CoordinationError::XInvalidStatus
+    );
+    let window_end = claim_window_end(
+        ctx.accounts.xmatch.match_deadline,
+        cert.claim_window_secs,
+        &ctx.accounts.pool,
+    )?;
+    require!(now <= window_end, CoordinationError::XDeadlinePassed);
+
+    let live_digest = verify_match_live(
+        &ctx.accounts.xmatch,
+        &cert,
+        &live_sigs,
+        &ctx.accounts.pool,
+        solana_chain_tag(),
+    )?;
+    require!(
+        cp.match_live_digest == live_digest,
+        CoordinationError::XCertMismatch
+    );
+    verify_checkpoint(&cert, &cp, &cp_sigs)?;
+
+    let m = &mut ctx.accounts.xmatch;
+    m.status = XChainStatus::Claiming;
+    m.match_live_digest = live_digest;
+    m.best_step_count = cp.step_count;
+    m.best_outcome_kind = cp.derive_claim_outcome();
+    m.claim_window_end = window_end;
+    emit!(XClaimOpened {
+        match_id: m.match_id,
+        claimed_outcome: m.best_outcome_kind,
+        claim_window_end: window_end,
+    });
+    Ok(())
+}
+
+pub fn supersede_xclaim(
+    ctx: Context<SupersedeXClaim>,
+    cert: MatchLiveCertArg,
+    cp: CheckpointArg,
+    cp_sigs: [[u8; 65]; 2],
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let m = &ctx.accounts.xmatch;
+    require!(
+        m.status == XChainStatus::Claiming,
+        CoordinationError::XInvalidStatus
+    );
+    require!(
+        now <= m.claim_window_end,
+        CoordinationError::XDeadlinePassed
+    );
+    require!(
+        cert.digest() == m.match_live_digest && cp.match_live_digest == m.match_live_digest,
+        CoordinationError::XCertMismatch
+    );
+    // An equivocation verdict (best_step_count == MAX) is final.
+    require!(m.best_step_count != u8::MAX, CoordinationError::XBadOutcome);
+    require!(
+        cp.step_count > m.best_step_count,
+        CoordinationError::XBadOutcome
+    );
+    verify_checkpoint(&cert, &cp, &cp_sigs)?;
+
+    let m = &mut ctx.accounts.xmatch;
+    m.best_step_count = cp.step_count;
+    m.best_outcome_kind = cp.derive_claim_outcome();
+    Ok(())
+}
+
+/// Two distinct co-signed checkpoints at the same step from the same session
+/// key = equivocation. The verdict is computed from explicit per-party flags
+/// (order-independent; never inferred from the current claim outcome).
+pub fn submit_equivocation_proof(
+    ctx: Context<SubmitEquivocation>,
+    cert: MatchLiveCertArg,
+    cp_a: CheckpointArg,
+    cp_b: CheckpointArg,
+    sig_a: [u8; 65],
+    sig_b: [u8; 65],
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let m = &ctx.accounts.xmatch;
+    require!(
+        m.status == XChainStatus::Locked || m.status == XChainStatus::Claiming,
+        CoordinationError::XInvalidStatus
+    );
+    let live_digest = cert.digest();
+    require!(
+        cert.match_deadline == u64::try_from(m.match_deadline).unwrap_or(0),
+        CoordinationError::XCertMismatch
+    );
+    let window_end =
+        claim_window_end(m.match_deadline, cert.claim_window_secs, &ctx.accounts.pool)?;
+    require!(now <= window_end, CoordinationError::XDeadlinePassed);
+    require!(
+        cp_a.match_live_digest == live_digest && cp_b.match_live_digest == live_digest,
+        CoordinationError::XCertMismatch
+    );
+    if m.status == XChainStatus::Claiming {
+        require!(
+            m.match_live_digest == live_digest,
+            CoordinationError::XCertMismatch
+        );
+    }
+    require!(
+        cp_a.step_count == cp_b.step_count,
+        CoordinationError::XBadOutcome
+    );
+    let digest_a = cp_a.digest();
+    let digest_b = cp_b.digest();
+    require!(digest_a != digest_b, CoordinationError::XBadOutcome);
+
+    let signer_a = recover_eth_address(&digest_a, &sig_a)?;
+    let signer_b = recover_eth_address(&digest_b, &sig_b)?;
+    require!(signer_a == signer_b, CoordinationError::XBadSignature);
+
+    let local_is_p1 = m.player_is_p1 == 1;
+    let session_key = m.session_key;
+    let counter_session_key = m.counter_session_key;
+    let m = &mut ctx.accounts.xmatch;
+    if signer_a == session_key {
+        m.local_equivocated = true;
+    } else if signer_a == counter_session_key {
+        m.counter_equivocated = true;
+    } else {
+        return Err(error!(CoordinationError::XBadSignature));
+    }
+    m.status = XChainStatus::Claiming;
+    m.match_live_digest = live_digest;
+    m.claim_window_end = window_end;
+    m.best_outcome_kind =
+        equivocation_outcome(local_is_p1, m.local_equivocated, m.counter_equivocated);
+    m.best_step_count = u8::MAX; // equivocation verdict is final
+    emit!(XEquivocationProven {
+        match_id: m.match_id,
+        new_best_outcome: m.best_outcome_kind,
+    });
+    Ok(())
+}
+
+pub fn settle_xclaim(ctx: Context<SettleXClaim>) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    require!(
+        ctx.accounts.xmatch.status == XChainStatus::Claiming,
+        CoordinationError::XInvalidStatus
+    );
+    require!(
+        now > ctx.accounts.xmatch.claim_window_end,
+        CoordinationError::XDeadlineNotReached
+    );
+    let kind = ctx.accounts.xmatch.best_outcome_kind;
+    ctx.accounts.xmatch.status = XChainStatus::ClaimSettled;
+    execute_xleg(
+        kind,
+        &ctx.accounts.xmatch,
+        &mut ctx.accounts.pool,
+        &mut ctx.accounts.tournament,
+        &mut ctx.accounts.player_profile,
+        &ctx.accounts.global_config,
+        &ctx.accounts.treasury,
+        &ctx.accounts.player,
+    )
+}
+
+/// local-only → local forfeits (counterparty wins this leg); counter-only →
+/// local wins; both → both forfeit.
+fn equivocation_outcome(local_is_p1: bool, local_eq: bool, counter_eq: bool) -> u8 {
+    if local_eq && counter_eq {
+        return XKIND_TIMEOUT_BOTH_FORFEIT;
+    }
+    if local_eq {
+        return if local_is_p1 {
+            XKIND_TIMEOUT_P2_WINS
+        } else {
+            XKIND_TIMEOUT_P1_WINS
+        };
+    }
+    if local_is_p1 {
+        XKIND_TIMEOUT_P1_WINS
+    } else {
+        XKIND_TIMEOUT_P2_WINS
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Refund paths — every non-happy path conserves value
+// ---------------------------------------------------------------------------
+
+pub fn refund_xmatch_nocert(ctx: Context<RefundXMatch>) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let m = &ctx.accounts.xmatch;
+    require!(
+        m.status == XChainStatus::Funded,
+        CoordinationError::XInvalidStatus
+    );
+    require!(
+        now > m.fund_deadline,
+        CoordinationError::XDeadlineNotReached
+    );
+    let amount = m.stake_lamports;
+    ctx.accounts.xmatch.status = XChainStatus::RefundedNoCert;
+    transfer_lamports(
+        &ctx.accounts.xmatch.to_account_info(),
+        &ctx.accounts.player,
+        amount,
+    )?;
+    emit!(XMatchRefunded {
+        match_id: ctx.accounts.xmatch.match_id,
+        to_player: amount,
+    });
+    Ok(())
+}
+
+pub fn refund_xmatch_timeout(ctx: Context<RefundXMatchTimeout>) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let pool = &ctx.accounts.pool;
+    let m = &ctx.accounts.xmatch;
+    require!(
+        m.status == XChainStatus::Locked || m.status == XChainStatus::Claiming,
+        CoordinationError::XInvalidStatus
+    );
+    // Opens at match_deadline + max_claim_window + 2*skew — strictly after
+    // any leg's settle window (claim_window_secs <= max_claim_window).
+    let opens_at = i128::from(m.match_deadline)
+        .checked_add(i128::from(pool.max_claim_window_secs))
+        .and_then(|v| v.checked_add(2i128.checked_mul(i128::from(pool.skew_margin_secs))?))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    require!(
+        i128::from(now) > opens_at,
+        CoordinationError::XDeadlineNotReached
+    );
+
+    let tranche = m.tranche_lamports;
+    let amount = m.stake_lamports;
+    ctx.accounts.xmatch.status = XChainStatus::RefundedTimeout;
+    // Release the locked tranche back to the pool's free balance.
+    let pool = &mut ctx.accounts.pool;
+    pool.locked_lamports = pool
+        .locked_lamports
+        .checked_sub(tranche)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    pool.free_lamports = pool
+        .free_lamports
+        .checked_add(tranche)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    transfer_lamports(
+        &ctx.accounts.xmatch.to_account_info(),
+        &ctx.accounts.player,
+        amount,
+    )?;
+    emit!(XMatchRefunded {
+        match_id: ctx.accounts.xmatch.match_id,
+        to_player: amount,
+    });
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Shared verification + execution
 // ---------------------------------------------------------------------------
+
+fn verify_checkpoint(
+    cert: &MatchLiveCertArg,
+    cp: &CheckpointArg,
+    sigs: &[[u8; 65]; 2],
+) -> Result<()> {
+    let digest = cp.digest();
+    require_signer(&digest, &sigs[0], &cert.leg_a.session_key)?;
+    require_signer(&digest, &sigs[1], &cert.leg_b.session_key)?;
+    Ok(())
+}
 
 /// keccak256 of this leg's CAIP-2 chain string — the chain tag a cert's
 /// leg A must carry. Mirrors crates/chain-registry (Solana devnet row); a
@@ -515,6 +820,130 @@ pub struct SettleXMatch<'info> {
     #[account(mut)]
     pub treasury: AccountInfo<'info>,
     /// CHECK: validated to equal the recorded match player below.
+    #[account(mut, constraint = player.key() == xmatch.player @ CoordinationError::XCertMismatch)]
+    pub player: AccountInfo<'info>,
+}
+
+/// Terminal match whose stake/tranche have been distributed: reclaim rent.
+/// Permissionless; rent returns to the recorded player.
+pub fn close_xmatch(ctx: Context<CloseXMatch>) -> Result<()> {
+    let status = ctx.accounts.xmatch.status;
+    require!(
+        matches!(
+            status,
+            XChainStatus::Settled
+                | XChainStatus::ClaimSettled
+                | XChainStatus::RefundedNoCert
+                | XChainStatus::RefundedTimeout
+        ),
+        CoordinationError::XInvalidStatus
+    );
+    Ok(())
+}
+
+#[derive(Accounts)]
+#[instruction(cert: MatchLiveCertArg)]
+pub struct OpenXClaim<'info> {
+    #[account(mut, seeds = [b"xmatch", cert.match_id.as_ref()], bump = xmatch.bump)]
+    pub xmatch: Account<'info, XChainMatch>,
+    #[account(seeds = [b"xpool"], bump = pool.bump)]
+    pub pool: Account<'info, XPayoutPool>,
+}
+
+#[derive(Accounts)]
+#[instruction(cert: MatchLiveCertArg)]
+pub struct SupersedeXClaim<'info> {
+    #[account(mut, seeds = [b"xmatch", cert.match_id.as_ref()], bump = xmatch.bump)]
+    pub xmatch: Account<'info, XChainMatch>,
+}
+
+#[derive(Accounts)]
+#[instruction(cert: MatchLiveCertArg)]
+pub struct SubmitEquivocation<'info> {
+    #[account(mut, seeds = [b"xmatch", cert.match_id.as_ref()], bump = xmatch.bump)]
+    pub xmatch: Account<'info, XChainMatch>,
+    #[account(seeds = [b"xpool"], bump = pool.bump)]
+    pub pool: Account<'info, XPayoutPool>,
+}
+
+#[derive(Accounts)]
+pub struct SettleXClaim<'info> {
+    #[account(
+        mut,
+        seeds = [b"xmatch", xmatch.match_id.as_ref()],
+        bump = xmatch.bump,
+    )]
+    pub xmatch: Account<'info, XChainMatch>,
+    #[account(mut, seeds = [b"xpool"], bump = pool.bump)]
+    pub pool: Account<'info, XPayoutPool>,
+    #[account(
+        mut,
+        seeds = [b"tournament", tournament.tournament_id.to_le_bytes().as_ref()],
+        bump = tournament.bump,
+    )]
+    pub tournament: Account<'info, Tournament>,
+    #[account(
+        mut,
+        seeds = [
+            b"player",
+            xmatch.tournament_id.to_le_bytes().as_ref(),
+            xmatch.player.as_ref(),
+        ],
+        bump,
+    )]
+    pub player_profile: Account<'info, PlayerProfile>,
+    #[account(
+        seeds = [b"global_config"],
+        bump = global_config.bump,
+        constraint = global_config.treasury == treasury.key() @ CoordinationError::XCertMismatch,
+    )]
+    pub global_config: Account<'info, GlobalConfig>,
+    /// CHECK: validated to equal global_config.treasury above.
+    #[account(mut)]
+    pub treasury: AccountInfo<'info>,
+    /// CHECK: validated to equal the recorded match player below.
+    #[account(mut, constraint = player.key() == xmatch.player @ CoordinationError::XCertMismatch)]
+    pub player: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct RefundXMatch<'info> {
+    #[account(
+        mut,
+        seeds = [b"xmatch", xmatch.match_id.as_ref()],
+        bump = xmatch.bump,
+    )]
+    pub xmatch: Account<'info, XChainMatch>,
+    /// CHECK: validated to equal the recorded match player.
+    #[account(mut, constraint = player.key() == xmatch.player @ CoordinationError::XCertMismatch)]
+    pub player: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct RefundXMatchTimeout<'info> {
+    #[account(
+        mut,
+        seeds = [b"xmatch", xmatch.match_id.as_ref()],
+        bump = xmatch.bump,
+    )]
+    pub xmatch: Account<'info, XChainMatch>,
+    #[account(mut, seeds = [b"xpool"], bump = pool.bump)]
+    pub pool: Account<'info, XPayoutPool>,
+    /// CHECK: validated to equal the recorded match player.
+    #[account(mut, constraint = player.key() == xmatch.player @ CoordinationError::XCertMismatch)]
+    pub player: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CloseXMatch<'info> {
+    #[account(
+        mut,
+        seeds = [b"xmatch", xmatch.match_id.as_ref()],
+        bump = xmatch.bump,
+        close = player,
+    )]
+    pub xmatch: Account<'info, XChainMatch>,
+    /// CHECK: rent recipient, validated to equal the recorded match player.
     #[account(mut, constraint = player.key() == xmatch.player @ CoordinationError::XCertMismatch)]
     pub player: AccountInfo<'info>,
 }
