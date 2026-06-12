@@ -122,6 +122,18 @@ pub fn all() -> impl Iterator<Item = &'static ChainEntry> {
     REGISTRY.iter()
 }
 
+/// The Solana leg of the testnet cross-chain game (devnet) — the partner chain
+/// for the EVM testnet leg (Base Sepolia). Cross-chain is testnet-only until
+/// the mainnet gate (decision.md §6), so callers resolving a base58 Solana
+/// wallet to a CAIP-2 chain use this single source of truth rather than
+/// hardcoding the devnet id. Returns `None` only if the devnet entry is ever
+/// removed.
+pub fn cross_chain_solana() -> Option<&'static ChainEntry> {
+    ChainId::parse("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+        .ok()
+        .and_then(|id| entry(&id))
+}
+
 /// All registered chains in a namespace.
 pub fn entries_for(namespace: Namespace) -> impl Iterator<Item = &'static ChainEntry> {
     REGISTRY.iter().filter(move |e| {
@@ -156,6 +168,15 @@ mod tests {
                 e.rpc_urls.len()
             );
         }
+    }
+
+    #[test]
+    fn cross_chain_solana_is_a_registered_devnet_entry() {
+        let e = cross_chain_solana().expect("devnet solana registered");
+        assert_eq!(e.native_symbol, "SOL");
+        assert_eq!(e.display_name, "Solana Devnet");
+        // Must be a real registry entry (not mainnet).
+        assert!(e.x402_network.is_none(), "cross-chain solana leg is devnet");
     }
 
     #[test]

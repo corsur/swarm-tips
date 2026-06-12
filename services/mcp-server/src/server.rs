@@ -205,6 +205,15 @@ pub struct CheckVideoStatusArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct XchainFindMatchArgs {
+    /// 0x eth address of your per-match secp256k1 session key. You generate
+    /// and hold the private key locally; the server only sees the address.
+    pub session_key: String,
+    /// Tournament ID to join. Defaults to 1.
+    pub tournament_id: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameFindMatchArgs {
     /// Tournament ID to join. Defaults to 1 (the only active tournament; omit unless you know what you're doing).
     pub tournament_id: Option<u64>,
@@ -1466,6 +1475,76 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "xchain_find_match",
+        description = "[STATE] Join the cross-chain Coordination Game queue and get matched with a player on the opposite chain (Solana ↔ EVM). You first generate a per-match secp256k1 session key locally (the server never sees its private key) and pass its 0x address here; the operator co-signs the match certificate against it. Requires a registered wallet (register_wallet — Solana base58 or EVM 0x). Returns status 'waiting' (poll xchain_match_status) or 'matched' with the co-signed match payload: both legs' contracts, stakes, deadlines, and the operator signature you need to fund your leg and settle. tournament_id defaults to 1. Testnet only (Solana devnet ↔ Base Sepolia).",
+        annotations(destructive_hint = true)
+    )]
+    async fn xchain_find_match(
+        &self,
+        Parameters(args): Parameters<XchainFindMatchArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.session_key.is_empty() {
+            return Err(invalid_input("session_key (0x address) is required"));
+        }
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound).ok_or_else(|| {
+            invalid_input("registered wallet is not a cross-chain wallet (Solana base58 or EVM 0x)")
+        })?;
+        let tournament_id = args.tournament_id.unwrap_or(1);
+
+        let resp = self
+            .state
+            .game_api
+            .xqueue_join(&address, &chain, &args.session_key, tournament_id)
+            .await
+            .map_err(|e| McpError::internal_error(format!("xqueue_join failed: {e}"), None))?;
+
+        tracing::info!(
+            event = "xchain_find_match",
+            wallet = %address,
+            chain = %chain,
+            status = %resp.status,
+            "cross-chain queue join"
+        );
+        Ok(text_result(&serde_json::json!({
+            "status": resp.status,
+            "match": resp.match_payload,
+            "chain": chain,
+            "wallet": address,
+            "next": "If 'waiting', poll xchain_match_status. If 'matched', use the returned match payload to fund your leg (build + sign the createMatch / create_xmatch tx) and later sign the outcome certificate with your session key.",
+        })))
+    }
+
+    #[tool(
+        name = "xchain_match_status",
+        description = "[READ] Poll for your cross-chain match. Returns 'waiting' if not yet paired, or 'matched' with the co-signed match payload once an opposite-chain opponent joined. Call after xchain_find_match returned 'waiting'. Requires a registered wallet.",
+        annotations(read_only_hint = true)
+    )]
+    async fn xchain_match_status(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+
+        let resp = self
+            .state
+            .game_api
+            .xqueue_status(&address)
+            .await
+            .map_err(|e| McpError::internal_error(format!("xqueue_status failed: {e}"), None))?;
+
+        Ok(text_result(&serde_json::json!({
+            "status": resp.status,
+            "match": resp.match_payload,
+            "chain": chain,
+            "wallet": address,
+        })))
+    }
+
+    #[tool(
         name = "game_find_match",
         description = "[SPEND: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. Requires a registered wallet (call register_wallet first). Tournament ID defaults to 1 (the only active tournament; omit unless you know what you're doing).",
         annotations(destructive_hint = true)
@@ -1754,6 +1833,24 @@ impl SwarmTipsMcp {
         self.resolve_wallet(parts)
             .await
             .ok_or_else(|| invalid_input("no game session: call register_wallet first"))
+    }
+
+    /// Resolve the session-bound wallet without hydrating a Solana game
+    /// session — the cross-chain tools work for EVM wallets too, where the
+    /// Solana hydration in `resolve_wallet` would warn harmlessly on every
+    /// call. Returns the bound wallet string (CAIP-10 for EVM, base58 for
+    /// Solana) or an MCP error if the session isn't registered.
+    async fn require_bound_wallet(
+        &self,
+        parts: Option<&http::request::Parts>,
+    ) -> Result<String, McpError> {
+        let session_id =
+            session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
+        self.state
+            .session_binding
+            .resolve(&session_id)
+            .await
+            .ok_or_else(|| invalid_input("no wallet registered: call register_wallet first"))
     }
 
     /// Resolve the wallet to query for `agent_profile` / `agent_trust_score`.

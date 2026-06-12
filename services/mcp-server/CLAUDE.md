@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 32 tools live: Coordination Game (9), cross-chain game discovery (1: `xchain_supported_chains`), cross-product `register_wallet` (1), Shillbot marketplace (13, mainnet, all `shillbot_*`-prefixed), video generation (2), universal opportunity discovery (2: `list_earning_opportunities`, `list_spending_opportunities`), MCP-ecosystem discovery (2: `discover_opportunities`, `search_mcp_servers`), and on-chain agent reputation (2: `agent_profile`, `agent_trust_score`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 34 tools live: Coordination Game (9), cross-chain game (3: `xchain_supported_chains`, `xchain_find_match`, `xchain_match_status`), cross-product `register_wallet` (1), Shillbot marketplace (13, mainnet, all `shillbot_*`-prefixed), video generation (2), universal opportunity discovery (2: `list_earning_opportunities`, `list_spending_opportunities`), MCP-ecosystem discovery (2: `discover_opportunities`, `search_mcp_servers`), and on-chain agent reputation (2: `agent_profile`, `agent_trust_score`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -121,10 +121,12 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (32 active)
+## Tools (34 active)
 
-### Cross-chain game discovery (1 tool, read-only)
-- `xchain_supported_chains` — registry-driven discovery of the chains a cross-chain Coordination Game match can run on (CAIP-2 id, native coin, per-match stake/tranche in base units, claim window, deployed game-contract address) plus a plain-language description of the stake + certificate-settlement model. Read-only, no wallet required; the agent-facing entry point an agent calls before `register_wallet` to choose a Solana (base58) vs EVM (`0x`) wallet. Testnet only (Solana devnet ↔ Base Sepolia); mainnet routes gated. Backed by `crates/chain-registry` via `src/xchain.rs`.
+### Cross-chain game (3 tools)
+- `xchain_supported_chains` — [READ] registry-driven discovery of the chains a cross-chain Coordination Game match can run on (CAIP-2 id, native coin, per-match stake/tranche in base units, claim window, deployed game-contract address) plus a plain-language description of the stake + certificate-settlement model. No wallet required; the entry point an agent calls before `register_wallet` to choose a Solana (base58) vs EVM (`0x`) wallet. Backed by `crates/chain-registry` via `src/xchain.rs`.
+- `xchain_find_match` — [STATE] join the cross-chain queue and pair with an opposite-chain player. The agent generates a per-match secp256k1 session key locally and passes its `0x` address (server never sees the private key); the matchmaker co-signs the certificate against it. Resolves the session-bound wallet to `(chain, address)` via `resolve_xchain_wallet`, proxies game-api's `/internal/xqueue/join` through `GameApiProxy::xqueue_join`. Returns `waiting` or `matched` + the co-signed relay payload.
+- `xchain_match_status` — [READ] poll for the match by wallet (the player who was already waiting), proxying `/internal/xqueue/status`. Testnet only (Solana devnet ↔ Base Sepolia); mainnet gated.
 
 ### Universal opportunity discovery (2 tools)
 - `list_earning_opportunities` — aggregated earning entries across `fetch_*` sources (Shillbot, Bountycaster, Moltlaunch, BotBounty). First-party entries (`source = "shillbot"`) include a `claim_via` field naming the in-MCP tool to call. External entries have a direct `source_url` redirect — agents claim off-platform.

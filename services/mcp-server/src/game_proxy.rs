@@ -54,6 +54,37 @@ impl GameApiProxy {
             .await
             .map_err(map_game_api_error)
     }
+
+    /// Join the cross-chain queue (proxies game-api's internal endpoint).
+    pub async fn xqueue_join(
+        &self,
+        wallet: &str,
+        chain: &str,
+        session_key: &str,
+        tournament_id: u64,
+    ) -> Result<game_api_client::XQueueResponse, McpServiceError> {
+        let request = game_api_client::XQueueJoinRequest {
+            wallet,
+            chain,
+            session_key,
+            tournament_id,
+        };
+        self.client
+            .xqueue_join(&request)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Poll for a cross-chain match by chain-native wallet.
+    pub async fn xqueue_status(
+        &self,
+        wallet: &str,
+    ) -> Result<game_api_client::XQueueResponse, McpServiceError> {
+        self.client
+            .xqueue_status(wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
 }
 
 /// Map shared crate errors to MCP server errors with structured logging.

@@ -79,6 +79,26 @@ pub fn evm_account_id(address: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Resolve a session-bound wallet to the `(caip2_chain, chain_native_address)`
+/// the cross-chain queue expects. An EVM registration is bound as its CAIP-10
+/// account (`eip155:84532:0x…`) — split it. A Solana registration is bound as a
+/// raw base58 pubkey — map it to the testnet cross-chain Solana chain (devnet)
+/// from the registry. Returns `None` if neither shape matches.
+pub fn resolve_xchain_wallet(bound: &str) -> Option<(String, String)> {
+    if let Ok(acct) = chain_core::AccountId::parse(bound) {
+        return Some((
+            acct.chain().as_str().to_string(),
+            acct.address().to_string(),
+        ));
+    }
+    // Raw base58 Solana pubkey (the Solana register_wallet path stores this).
+    if !bound.is_empty() && !bound.starts_with("0x") {
+        let chain = chain_registry::cross_chain_solana()?.chain_id;
+        return Some((chain.to_string(), bound.to_string()));
+    }
+    None
+}
+
 /// The `register_wallet` response for an EVM (`0x`) wallet. Unlike the Solana
 /// path it carries no balance: the server holds no EVM RPC client by design
 /// (cross-chain txs are built as unsigned calls the agent's own tooling
@@ -121,6 +141,25 @@ mod tests {
         assert!(evm_account_id("0xZZ6213ed4099707059b8b5d7489ffF23dAC9770d").is_err()); // non-hex
         assert!(evm_account_id("0x996213ed4099707059b8b5d7489ffF23dAC9770d00").is_err());
         // too long
+    }
+
+    #[test]
+    fn resolve_xchain_wallet_splits_evm_caip10_and_maps_solana_base58() {
+        // EVM: CAIP-10 binding splits into (chain, 0x address).
+        let (chain, addr) =
+            resolve_xchain_wallet("eip155:84532:0x996213ed4099707059b8b5d7489ffF23dAC9770d")
+                .expect("evm caip-10");
+        assert_eq!(chain, "eip155:84532");
+        assert_eq!(addr, "0x996213ed4099707059b8b5d7489ffF23dAC9770d");
+
+        // Solana: a raw base58 pubkey maps to the testnet cross-chain chain.
+        let (chain, addr) =
+            resolve_xchain_wallet("CKsZf8gZzfPdEXHxLUEPvAi5C5sXBV9aDhqmsM7yTipv").expect("solana");
+        assert_eq!(chain, "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1");
+        assert_eq!(addr, "CKsZf8gZzfPdEXHxLUEPvAi5C5sXBV9aDhqmsM7yTipv");
+
+        // Empty input is not resolvable.
+        assert!(resolve_xchain_wallet("").is_none());
     }
 
     #[test]
