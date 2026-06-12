@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 34 tools live: Coordination Game (9), cross-chain game (3: `xchain_supported_chains`, `xchain_find_match`, `xchain_match_status`), cross-product `register_wallet` (1), Shillbot marketplace (13, mainnet, all `shillbot_*`-prefixed), video generation (2), universal opportunity discovery (2: `list_earning_opportunities`, `list_spending_opportunities`), MCP-ecosystem discovery (2: `discover_opportunities`, `search_mcp_servers`), and on-chain agent reputation (2: `agent_profile`, `agent_trust_score`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 35 tools live: Coordination Game (9), cross-chain game (4: `xchain_supported_chains`, `xchain_find_match`, `xchain_match_status`, `xchain_build_create_match`), cross-product `register_wallet` (1), Shillbot marketplace (13, mainnet, all `shillbot_*`-prefixed), video generation (2), universal opportunity discovery (2: `list_earning_opportunities`, `list_spending_opportunities`), MCP-ecosystem discovery (2: `discover_opportunities`, `search_mcp_servers`), and on-chain agent reputation (2: `agent_profile`, `agent_trust_score`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -121,9 +121,10 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (34 active)
+## Tools (35 active)
 
-### Cross-chain game (3 tools)
+### Cross-chain game (4 tools)
+- `xchain_build_create_match` — [SPEND] build the unsigned EVM `createMatch` tx (via `crates/evm-chain`) from a matched relay payload so the EVM-leg player can fund their leg. Parses the payload's `leg_b` (contract/session-key/stake) + `leg_a` session key as counterparty, derives `playerIsP1 = (a_is_p1 == 0)` and a `fund_deadline` before `match_deadline`; returns `{to, data, value_wei, chain, fund/match deadlines}` for client-side signing. `build_evm_create_match_call` in `src/xchain.rs`.
 - `xchain_supported_chains` — [READ] registry-driven discovery of the chains a cross-chain Coordination Game match can run on (CAIP-2 id, native coin, per-match stake/tranche in base units, claim window, deployed game-contract address) plus a plain-language description of the stake + certificate-settlement model. No wallet required; the entry point an agent calls before `register_wallet` to choose a Solana (base58) vs EVM (`0x`) wallet. Backed by `crates/chain-registry` via `src/xchain.rs`.
 - `xchain_find_match` — [STATE] join the cross-chain queue and pair with an opposite-chain player. The agent generates a per-match secp256k1 session key locally and passes its `0x` address (server never sees the private key); the matchmaker co-signs the certificate against it. Resolves the session-bound wallet to `(chain, address)` via `resolve_xchain_wallet`, proxies game-api's `/internal/xqueue/join` through `GameApiProxy::xqueue_join`. Returns `waiting` or `matched` + the co-signed relay payload.
 - `xchain_match_status` — [READ] poll for the match by wallet (the player who was already waiting), proxying `/internal/xqueue/status`. Testnet only (Solana devnet ↔ Base Sepolia); mainnet gated.

@@ -123,6 +123,46 @@ fn call(contract: Address, data: Vec<u8>, value: U256) -> UnsignedEvmCall {
     }
 }
 
+impl UnsignedEvmCall {
+    /// `(to, data, value)` as client-ready strings: `to` and `data` are
+    /// `0x`-hex, `value` is decimal wei (lossless — wei exceeds JSON's safe
+    /// integer range). Lets callers (e.g. the MCP server) relay an unsigned
+    /// call without depending on alloy types.
+    pub fn to_hex_parts(&self) -> (String, String, String) {
+        (
+            self.to.to_string(),
+            self.data.to_string(),
+            self.value.to_string(),
+        )
+    }
+}
+
+/// Byte-array variant of [`build_create_match`] for callers that hold raw
+/// 20/32-byte addresses (e.g. parsed from a relay payload) and don't want an
+/// alloy dependency. Addresses are taken as their raw 20 bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn build_create_match_parts(
+    contract: [u8; 20],
+    match_id: [u8; 32],
+    session_key: [u8; 20],
+    counter_session_key: [u8; 20],
+    player_is_p1: bool,
+    fund_deadline: u64,
+    match_deadline: u64,
+    stake_wei: u128,
+) -> UnsignedEvmCall {
+    build_create_match(
+        Address::from(contract),
+        match_id,
+        Address::from(session_key),
+        Address::from(counter_session_key),
+        player_is_p1,
+        fund_deadline,
+        match_deadline,
+        stake_wei,
+    )
+}
+
 /// Build an unsigned `createMatch` call. The player signs and submits it;
 /// `stake_wei` is sent as native ETH.
 #[allow(clippy::too_many_arguments)]
@@ -224,6 +264,43 @@ mod tests {
             &tx.data[..4],
             &CrossChainGame::createMatchCall::SELECTOR[..]
         );
+    }
+
+    #[test]
+    fn create_match_parts_matches_typed_builder_and_serializes_to_hex() {
+        let contract = [0x11u8; 20];
+        let parts = build_create_match_parts(
+            contract,
+            [0xAA; 32],
+            [0x01; 20],
+            [0x02; 20],
+            true,
+            100,
+            200,
+            2_500_000_000_000_000,
+        );
+        // Identical calldata + value to the typed builder.
+        let typed = build_create_match(
+            Address::from(contract),
+            [0xAA; 32],
+            Address::repeat_byte(1),
+            Address::repeat_byte(2),
+            true,
+            100,
+            200,
+            2_500_000_000_000_000,
+        );
+        assert_eq!(parts.data, typed.data);
+        assert_eq!(parts.value, typed.value);
+
+        // Hex parts: to/data are 0x-hex, value is decimal wei.
+        let (to, data, value) = parts.to_hex_parts();
+        assert_eq!(
+            to.to_lowercase(),
+            "0x1111111111111111111111111111111111111111"
+        );
+        assert!(data.starts_with("0x"));
+        assert_eq!(value, "2500000000000000");
     }
 
     #[test]

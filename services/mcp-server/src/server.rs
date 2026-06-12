@@ -214,6 +214,13 @@ pub struct XchainFindMatchArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct XchainBuildCreateMatchArgs {
+    /// The `match` payload object from xchain_find_match / xchain_match_status.
+    #[serde(rename = "match")]
+    pub match_payload: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameFindMatchArgs {
     /// Tournament ID to join. Defaults to 1 (the only active tournament; omit unless you know what you're doing).
     pub tournament_id: Option<u64>,
@@ -1542,6 +1549,20 @@ impl SwarmTipsMcp {
             "chain": chain,
             "wallet": address,
         })))
+    }
+
+    #[tool(
+        name = "xchain_build_create_match",
+        description = "[SPEND] Build the unsigned EVM createMatch transaction to fund your leg of a cross-chain match. Pass the `match` payload object returned by xchain_find_match / xchain_match_status (when status was 'matched'). Returns { to, data, value_wei, chain, fund_deadline, match_deadline }: an EIP-1559 call you sign and submit with your EVM wallet (fill gas/nonce/chainId locally). value_wei is your stake sent as native ETH. EVM-leg players only; the Solana leg uses the Solana create_xmatch path.",
+        annotations(destructive_hint = true)
+    )]
+    async fn xchain_build_create_match(
+        &self,
+        Parameters(args): Parameters<XchainBuildCreateMatchArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let call = crate::xchain::build_evm_create_match_call(&args.match_payload)
+            .map_err(|e| invalid_input(&format!("invalid match payload: {e}")))?;
+        Ok(text_result(&call))
     }
 
     #[tool(

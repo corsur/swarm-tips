@@ -99,6 +99,75 @@ pub fn resolve_xchain_wallet(bound: &str) -> Option<(String, String)> {
     None
 }
 
+/// Seconds before `match_deadline` that the EVM leg's funding window closes.
+/// `createMatch` requires `fundDeadline < matchDeadline`; the cert carries only
+/// `match_deadline`, so the funding deadline is derived here.
+const FUND_WINDOW_BEFORE_DEADLINE: u64 = 300;
+
+fn decode_0x<const N: usize>(s: &str) -> Result<[u8; N], String> {
+    let hexs = s.strip_prefix("0x").ok_or("expected 0x-prefixed hex")?;
+    let bytes = hex::decode(hexs).map_err(|e| format!("bad hex: {e}"))?;
+    // A cert word is 32 bytes (addresses left-padded); take the low N bytes.
+    let start = bytes.len().checked_sub(N).ok_or("hex too short")?;
+    bytes[start..]
+        .try_into()
+        .map_err(|_| "wrong length".to_string())
+}
+
+/// Build the unsigned EVM `createMatch` call for the EVM player from a matched
+/// relay payload (`xchain_find_match`/`status` → `match`). The EVM leg is
+/// `leg_b`; the counterparty session key is the Solana leg's. `playerIsP1` is
+/// `a_is_p1 == 0` (the contract enforces the EVM seat is the complement of leg
+/// A's). The client fills gas/nonce/chainId at submit time.
+pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
+    let leg_b = payload.get("leg_b").ok_or("payload missing leg_b")?;
+    let leg_a = payload.get("leg_a").ok_or("payload missing leg_a")?;
+    let str_at = |v: &Value, k: &str| -> Result<String, String> {
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("missing string field {k}"))
+    };
+
+    let match_id = decode_0x::<32>(&str_at(payload, "match_id")?)?;
+    let contract = decode_0x::<20>(&str_at(leg_b, "contract")?)?;
+    let session_key = decode_0x::<20>(&str_at(leg_b, "session_key")?)?;
+    let counter_session_key = decode_0x::<20>(&str_at(leg_a, "session_key")?)?;
+    let stake_wei: u128 = str_at(leg_b, "stake_base_units")?
+        .parse()
+        .map_err(|e| format!("bad stake: {e}"))?;
+    let match_deadline = payload
+        .get("match_deadline")
+        .and_then(Value::as_u64)
+        .ok_or("missing match_deadline")?;
+    let a_is_p1 = payload.get("a_is_p1").and_then(Value::as_u64).unwrap_or(1);
+    let player_is_p1 = a_is_p1 == 0;
+    let fund_deadline = match_deadline.saturating_sub(FUND_WINDOW_BEFORE_DEADLINE);
+
+    let call = evm_chain::build_create_match_parts(
+        contract,
+        match_id,
+        session_key,
+        counter_session_key,
+        player_is_p1,
+        fund_deadline,
+        match_deadline,
+        stake_wei,
+    );
+    let (to, data, value) = call.to_hex_parts();
+    Ok(json!({
+        "chain": str_at(leg_b, "chain").unwrap_or_default(),
+        "to": to,
+        "data": data,
+        "value_wei": value,
+        "fund_deadline": fund_deadline,
+        "match_deadline": match_deadline,
+        "instructions": "Sign this as an EIP-1559 transaction with your EVM wallet \
+            (fill gas/nonce/chainId/maxFeePerGas locally) and submit it to fund your \
+            leg. value_wei is the stake sent as native ETH.",
+    }))
+}
+
 /// The `register_wallet` response for an EVM (`0x`) wallet. Unlike the Solana
 /// path it carries no balance: the server holds no EVM RPC client by design
 /// (cross-chain txs are built as unsigned calls the agent's own tooling
@@ -141,6 +210,42 @@ mod tests {
         assert!(evm_account_id("0xZZ6213ed4099707059b8b5d7489ffF23dAC9770d").is_err()); // non-hex
         assert!(evm_account_id("0x996213ed4099707059b8b5d7489ffF23dAC9770d00").is_err());
         // too long
+    }
+
+    #[test]
+    fn build_evm_create_match_call_from_relay_payload() {
+        // A relay payload shaped like xchain::cert_relay_payload (leg_b = EVM).
+        let payload = json!({
+            "match_id": format!("0x{}", "aa".repeat(32)),
+            "match_deadline": 1_765_007_200u64,
+            "a_is_p1": 0, // leg A (Solana) is NOT P1 => EVM player IS P1
+            "leg_a": { "session_key": format!("0x{}", "13".repeat(20)) },
+            "leg_b": {
+                "chain": "eip155:84532",
+                "contract": format!("0x{}", format!("{:0>64}", "c2eb26078dd5b1957883e1a9d651a28ef1f62aff")),
+                "session_key": format!("0x{}", "23".repeat(20)),
+                "stake_base_units": "10000000000000",
+            },
+        });
+        let call = build_evm_create_match_call(&payload).expect("valid payload");
+        // value is the stake; to is the unpadded 20-byte contract.
+        assert_eq!(call["value_wei"], "10000000000000");
+        assert_eq!(
+            call["to"].as_str().unwrap().to_lowercase(),
+            "0xc2eb26078dd5b1957883e1a9d651a28ef1f62aff"
+        );
+        // calldata is 0x + createMatch selector + 6 words = 4+192 bytes.
+        let data = call["data"].as_str().unwrap();
+        assert!(data.starts_with("0x"));
+        assert_eq!(data.len(), 2 + (4 + 6 * 32) * 2);
+        // fund_deadline derived strictly before match_deadline.
+        assert!(call["fund_deadline"].as_u64().unwrap() < 1_765_007_200);
+    }
+
+    #[test]
+    fn build_evm_create_match_call_rejects_missing_fields() {
+        assert!(build_evm_create_match_call(&json!({})).is_err());
+        assert!(build_evm_create_match_call(&json!({"leg_a":{},"leg_b":{}})).is_err());
     }
 
     #[test]

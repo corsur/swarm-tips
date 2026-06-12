@@ -3345,6 +3345,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek 2.2.0",
  "eigentrust",
+ "evm-chain",
  "firestore",
  "futures-util",
  "game-api-client",

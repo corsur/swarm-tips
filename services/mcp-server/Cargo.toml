@@ -35,6 +35,7 @@ game-api-client = { workspace = true }
 game-chain = { workspace = true }
 chain-registry = { workspace = true }
 chain-core = { workspace = true }
+evm-chain = { workspace = true }
 eigentrust = { path = "../eigentrust" }
 futures-util = "0.3"
 solana-sdk = "2.2"
