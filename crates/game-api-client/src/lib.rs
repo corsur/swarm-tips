@@ -94,6 +94,28 @@ pub struct GameStatusResponse {
     pub resolved_at: Option<String>,
 }
 
+/// Request body for `POST /internal/xqueue/join` — the cross-chain queue.
+#[derive(Debug, Serialize)]
+pub struct XQueueJoinRequest<'a> {
+    /// Chain-native address: base58 pubkey (Solana) or `0x` address (EVM).
+    pub wallet: &'a str,
+    /// CAIP-2 chain id the player stakes on, e.g. `eip155:84532`.
+    pub chain: &'a str,
+    /// `0x` eth address of the player's per-match secp256k1 session key.
+    pub session_key: &'a str,
+    pub tournament_id: u64,
+}
+
+/// Response from the cross-chain join/status endpoints: `status` is `waiting`
+/// or `matched`; on `matched`, `match_payload` carries the co-signed relay
+/// payload both players need to fund and settle.
+#[derive(Debug, Deserialize)]
+pub struct XQueueResponse {
+    pub status: String,
+    #[serde(default, rename = "match")]
+    pub match_payload: Option<serde_json::Value>,
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -287,6 +309,43 @@ impl GameApiClient {
 
         Self::check_status(resp).await?;
         Ok(())
+    }
+
+    // -- Cross-chain queue (internal; caller is trusted) -------------------
+
+    /// `POST /internal/xqueue/join` — join the cross-chain queue. Internal
+    /// endpoint (no bearer token): the caller (MCP server / BFF) has already
+    /// authenticated the agent. Returns `waiting`, or `matched` with the
+    /// co-signed relay payload.
+    pub async fn xqueue_join(
+        &self,
+        request: &XQueueJoinRequest<'_>,
+    ) -> Result<XQueueResponse, GameApiError> {
+        // Internal endpoints take no `?network=` param — address it directly.
+        let url = format!("{}/internal/xqueue/join", self.base_url);
+        let resp = self.inner.post(&url).json(request).send().await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `GET /internal/xqueue/status?wallet=…` — poll for a cross-chain match
+    /// by chain-native wallet (the player who was already waiting).
+    pub async fn xqueue_status(&self, wallet: &str) -> Result<XQueueResponse, GameApiError> {
+        let url = format!("{}/internal/xqueue/status", self.base_url);
+        let resp = self
+            .inner
+            .get(&url)
+            .query(&[("wallet", wallet)])
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
     }
 
     // -- Games (token required) --------------------------------------------
@@ -535,6 +594,25 @@ mod tests {
     fn new_preserves_url_without_trailing_slash() {
         let client = GameApiClient::new("https://api.example.com").unwrap();
         assert_eq!(client.base_url(), "https://api.example.com");
+    }
+
+    #[test]
+    fn xqueue_response_deserializes_waiting_and_matched() {
+        // Waiting: no `match` field.
+        let waiting: XQueueResponse =
+            serde_json::from_str(r#"{"status":"waiting"}"#).expect("waiting");
+        assert_eq!(waiting.status, "waiting");
+        assert!(waiting.match_payload.is_none());
+
+        // Matched: the `match` JSON key maps to match_payload.
+        let matched: XQueueResponse =
+            serde_json::from_str(r#"{"status":"matched","match":{"match_id":"0xabc"}}"#)
+                .expect("matched");
+        assert_eq!(matched.status, "matched");
+        assert_eq!(
+            matched.match_payload.unwrap()["match_id"],
+            serde_json::json!("0xabc")
+        );
     }
 
     #[test]
