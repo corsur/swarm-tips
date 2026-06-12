@@ -174,6 +174,24 @@ impl GameTxBuilder {
         Ok(unsigned)
     }
 
+    /// Build the unsigned `create_xmatch` transaction (the Solana leg of a
+    /// cross-chain match). Matchmaker-cosigned + player-funded, like
+    /// `create_game`; `match_id` seeds the xmatch escrow PDA. No on-chain read
+    /// is needed — the match id is supplied by the operator, not derived from a
+    /// counter.
+    pub async fn build_create_xmatch(
+        &self,
+        match_id: [u8; 32],
+        args: coordination::instructions::xchain::CreateXMatchArgs,
+        matchmaker: &Pubkey,
+    ) -> Result<UnsignedTx> {
+        anyhow::ensure!(args.tournament_id > 0, "tournament_id must be non-zero");
+        anyhow::ensure!(args.stake_lamports > 0, "stake_lamports must be non-zero");
+        let ix = instructions::build_create_xmatch(match_id, args, &self.player, matchmaker);
+        let unsigned = self.build_unsigned(&[ix]).await?;
+        Ok(unsigned)
+    }
+
     // -- Submit ----------------------------------------------------------------
 
     /// Submit a pre-signed transaction to the network.
