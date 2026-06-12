@@ -192,7 +192,7 @@ export function newSessionSigner(seed?: number): SessionSigner {
  *  with v = recovery id (0 or 1). */
 export function signDigest(
   signer: SessionSigner,
-  digest: Uint8Array,
+  digest: Uint8Array
 ): number[] {
   const sig = secp256k1.sign(digest, signer.privateKey, {
     prehash: false,

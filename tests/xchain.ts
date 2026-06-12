@@ -28,7 +28,7 @@ import {
 const HETERO_P1_WINS = 4;
 
 const SOLANA_CHAIN_TAG = keccak256(
-  new TextEncoder().encode("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"),
+  new TextEncoder().encode("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
 );
 const EVM_CHAIN_TAG = keccak256(new TextEncoder().encode("eip155:84532"));
 
@@ -87,7 +87,7 @@ describe("coordination-game cross-chain (xchain)", () => {
   before(async () => {
     const sig = await provider.connection.requestAirdrop(
       player.publicKey,
-      2 * LAMPORTS_PER_SOL,
+      2 * LAMPORTS_PER_SOL
     );
     await provider.connection.confirmTransaction(sig);
 
@@ -104,7 +104,7 @@ describe("coordination-game cross-chain (xchain)", () => {
           authority: provider.wallet.publicKey,
           systemProgram: SystemProgram.programId,
         })
-        .rpc(),
+        .rpc()
     );
     await ensure(
       program.methods
@@ -116,7 +116,7 @@ describe("coordination-game cross-chain (xchain)", () => {
           treasury: provider.wallet.publicKey,
           systemProgram: SystemProgram.programId,
         })
-        .rpc(),
+        .rpc()
     );
     const now = Math.floor(Date.now() / 1000);
     await ensure(
@@ -127,13 +127,13 @@ describe("coordination-game cross-chain (xchain)", () => {
           authority: provider.wallet.publicKey,
           systemProgram: SystemProgram.programId,
         })
-        .rpc(),
+        .rpc()
     );
   });
 
   it("TS cert encoder agrees with the golden vector (4-way)", () => {
     const golden = JSON.parse(
-      readFileSync("tests/fixtures/cert-vectors.json", "utf8"),
+      readFileSync("tests/fixtures/cert-vectors.json", "utf8")
     );
     const fill = (n: number, len = 32) => new Uint8Array(len).fill(n);
     const leg = (s: number): CertLeg => ({
@@ -156,7 +156,9 @@ describe("coordination-game cross-chain (xchain)", () => {
       claimWindowSecs: 3600,
       aIsP1: 1,
     };
-    const digest = Buffer.from(keccak256(encodeMatchLive(cert))).toString("hex");
+    const digest = Buffer.from(keccak256(encodeMatchLive(cert))).toString(
+      "hex"
+    );
     assert.equal(digest, golden.match_live.digest.replace("0x", ""));
   });
 
@@ -167,7 +169,7 @@ describe("coordination-game cross-chain (xchain)", () => {
         toArray(operatorSigner.address),
         TRANCHE.muln(4), // max_tranche (u64 → BN)
         3600, // max_claim_window (u32 → number)
-        900, // skew_margin (u32 → number)
+        900 // skew_margin (u32 → number)
       )
       .accountsPartial({
         pool: poolPda,
