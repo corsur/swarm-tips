@@ -7,7 +7,10 @@
 
 use anchor_lang::InstructionData;
 use coordination::{
-    instruction::{CommitGuess, CreateGame, CreateXmatch, DepositStake, JoinGame, RevealGuess},
+    cert::{MatchLiveCertNoA, OutcomeCertArg},
+    instruction::{
+        CommitGuess, CreateGame, CreateXmatch, DepositStake, JoinGame, RevealGuess, SettleXmatch,
+    },
     instructions::xchain::CreateXMatchArgs,
     ID as PROGRAM_ID,
 };
@@ -99,6 +102,51 @@ pub fn build_create_xmatch(
             AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
         ],
         data: CreateXmatch { match_id, args }.data(),
+    }
+}
+
+/// Build the permissionless `settle_xmatch` instruction — the Solana leg of a
+/// cross-chain settlement. The cranker pays the player-profile rent (if the
+/// cross-chain player has none for this tournament) but anyone can crank.
+/// `player` is the recorded Solana player (== `xmatch.player`); `treasury`
+/// must equal `global_config.treasury`. Account mut-flags mirror
+/// `SettleXMatch<'info>` exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn build_settle_xmatch(
+    cert_no_a: MatchLiveCertNoA,
+    outcome: OutcomeCertArg,
+    live_sigs: [[u8; 65]; 3],
+    oc_sigs: [[u8; 65]; 3],
+    player: &Pubkey,
+    treasury: &Pubkey,
+    cranker: &Pubkey,
+) -> Instruction {
+    let (xmatch_pda, _) = pda::xmatch_pda(&cert_no_a.match_id);
+    let (xpool_pda, _) = pda::xpool_pda();
+    let (tournament_pda, _) = pda::tournament_pda(cert_no_a.tournament_id);
+    let (profile_pda, _) = pda::player_profile_pda(cert_no_a.tournament_id, player);
+    let (global_config_pda, _) = pda::global_config_pda();
+
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xmatch_pda, false),
+            AccountMeta::new(xpool_pda, false),
+            AccountMeta::new(tournament_pda, false),
+            AccountMeta::new(profile_pda, false),
+            AccountMeta::new_readonly(global_config_pda, false),
+            AccountMeta::new(*treasury, false),
+            AccountMeta::new(*player, false),
+            AccountMeta::new(*cranker, true), // signer + payer
+            AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+        ],
+        data: SettleXmatch {
+            cert_no_a,
+            outcome,
+            live_sigs,
+            oc_sigs,
+        }
+        .data(),
     }
 }
 
@@ -345,5 +393,75 @@ mod tests {
             &Pubkey::new_unique(),
             &Pubkey::new_unique(),
         );
+    }
+
+    fn settle_certs() -> (MatchLiveCertNoA, OutcomeCertArg) {
+        let leg_b = coordination::cert::CertLegArg {
+            chain_tag: [0; 32],
+            contract: [0; 32],
+            player: [0; 32],
+            session_key: [0; 20],
+            stake: 0,
+            tranche: 0,
+        };
+        let cert_no_a = MatchLiveCertNoA {
+            match_id: [0xAB; 32],
+            tournament_id: 1,
+            matchup_commitment: [0; 32],
+            leg_b,
+            quote_timestamp: 0,
+            quote_max_age_secs: 0,
+            match_deadline: 0,
+            claim_window_secs: 0,
+            a_is_p1: 1,
+        };
+        let outcome = OutcomeCertArg {
+            match_id: [0xAB; 32],
+            match_live_digest: [0; 32],
+            outcome_kind: 0,
+            step_count: 4,
+            p1_guess: 0,
+            p2_guess: 0,
+            first_committer: 1,
+            matchup_type: 0,
+            transcript_hash: [0; 32],
+        };
+        (cert_no_a, outcome)
+    }
+
+    #[test]
+    fn build_settle_xmatch_has_correct_accounts_and_mut_flags() {
+        let player = Pubkey::new_unique();
+        let treasury = Pubkey::new_unique();
+        let cranker = Keypair::new();
+        let (cert, outcome) = settle_certs();
+        let ix = build_settle_xmatch(
+            cert,
+            outcome,
+            [[0u8; 65]; 3],
+            [[0u8; 65]; 3],
+            &player,
+            &treasury,
+            &cranker.pubkey(),
+        );
+
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        assert_eq!(ix.accounts.len(), 9, "settle_xmatch must have 9 accounts");
+        // Mut-flags mirror SettleXMatch<'info> exactly.
+        assert!(ix.accounts[0].is_writable, "xmatch writable");
+        assert!(ix.accounts[1].is_writable, "pool writable");
+        assert!(ix.accounts[2].is_writable, "tournament writable");
+        assert!(ix.accounts[3].is_writable, "player_profile writable");
+        assert!(!ix.accounts[4].is_writable, "global_config readonly");
+        assert!(ix.accounts[5].is_writable, "treasury writable");
+        assert_eq!(ix.accounts[5].pubkey, treasury);
+        assert_eq!(ix.accounts[6].pubkey, player);
+        assert!(ix.accounts[6].is_writable, "player writable");
+        assert!(
+            ix.accounts[7].is_signer && ix.accounts[7].is_writable,
+            "cranker is signer + writable"
+        );
+        assert_eq!(ix.accounts[7].pubkey, cranker.pubkey());
+        assert!(!ix.accounts[8].is_writable, "system_program readonly");
     }
 }
