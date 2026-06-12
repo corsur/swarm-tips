@@ -9,7 +9,8 @@ use anchor_lang::InstructionData;
 use coordination::{
     cert::{MatchLiveCertNoA, OutcomeCertArg},
     instruction::{
-        CommitGuess, CreateGame, CreateXmatch, DepositStake, JoinGame, RevealGuess, SettleXmatch,
+        CommitGuess, CreateGame, CreateXmatch, DepositStake, JoinGame, RefundXmatchNocert,
+        RefundXmatchTimeout, RevealGuess, SettleXmatch,
     },
     instructions::xchain::CreateXMatchArgs,
     ID as PROGRAM_ID,
@@ -147,6 +148,40 @@ pub fn build_settle_xmatch(
             oc_sigs,
         }
         .data(),
+    }
+}
+
+/// Build the permissionless `refund_xmatch_nocert` instruction — refunds the
+/// Solana player when a funded cross-chain match never had a certificate
+/// signed (the lock/cosign never happened). No signer account: the fee payer
+/// (anyone) submits. `player` must equal the recorded `xmatch.player`.
+pub fn build_refund_xmatch_nocert(match_id: [u8; 32], player: &Pubkey) -> Instruction {
+    let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xmatch_pda, false),
+            AccountMeta::new(*player, false),
+        ],
+        data: RefundXmatchNocert {}.data(),
+    }
+}
+
+/// Build the permissionless `refund_xmatch_timeout` instruction — refunds the
+/// Solana player after the claim/timeout window closes, releasing any locked
+/// tranche back to the float pool. No signer account; `player` must equal
+/// `xmatch.player`.
+pub fn build_refund_xmatch_timeout(match_id: [u8; 32], player: &Pubkey) -> Instruction {
+    let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+    let (xpool_pda, _) = pda::xpool_pda();
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xmatch_pda, false),
+            AccountMeta::new(xpool_pda, false),
+            AccountMeta::new(*player, false),
+        ],
+        data: RefundXmatchTimeout {}.data(),
     }
 }
 
@@ -463,5 +498,33 @@ mod tests {
         );
         assert_eq!(ix.accounts[7].pubkey, cranker.pubkey());
         assert!(!ix.accounts[8].is_writable, "system_program readonly");
+    }
+
+    #[test]
+    fn build_refund_xmatch_nocert_has_correct_accounts() {
+        let player = Pubkey::new_unique();
+        let ix = build_refund_xmatch_nocert([0x07; 32], &player);
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 2 accounts: xmatch (PDA), player. Both writable, neither a signer
+        // (refund is permissionless — the fee payer submits).
+        assert_eq!(ix.accounts.len(), 2);
+        let (xmatch_pda, _) = pda::xmatch_pda(&[0x07; 32]);
+        assert_eq!(ix.accounts[0].pubkey, xmatch_pda);
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
+        assert_eq!(ix.accounts[1].pubkey, player);
+        assert!(ix.accounts[1].is_writable && !ix.accounts[1].is_signer);
+    }
+
+    #[test]
+    fn build_refund_xmatch_timeout_has_correct_accounts() {
+        let player = Pubkey::new_unique();
+        let ix = build_refund_xmatch_timeout([0x09; 32], &player);
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 3 accounts: xmatch, pool, player — all writable, none signers.
+        assert_eq!(ix.accounts.len(), 3);
+        let (xpool_pda, _) = pda::xpool_pda();
+        assert_eq!(ix.accounts[1].pubkey, xpool_pda);
+        assert!(ix.accounts.iter().all(|a| a.is_writable && !a.is_signer));
+        assert_eq!(ix.accounts[2].pubkey, player);
     }
 }
