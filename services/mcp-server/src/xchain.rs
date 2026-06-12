@@ -168,6 +168,40 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
     }))
 }
 
+/// Build the unsigned EVM refund call (permissionless) for the EVM leg of a
+/// cross-chain match, from a matched relay payload. `kind` is `"timeout"`
+/// (after the claim window) or `"nocert"` (a funded match that never got a
+/// cert). Returns the same client-ready shape as the fund builder.
+pub fn build_evm_refund_call(payload: &Value, kind: &str) -> Result<Value, String> {
+    let leg_b = payload.get("leg_b").ok_or("payload missing leg_b")?;
+    let contract_hex = leg_b
+        .get("contract")
+        .and_then(|x| x.as_str())
+        .ok_or("missing leg_b.contract")?;
+    let match_id_hex = payload
+        .get("match_id")
+        .and_then(|x| x.as_str())
+        .ok_or("missing match_id")?;
+    let contract = decode_0x::<20>(contract_hex)?;
+    let match_id = decode_0x::<32>(match_id_hex)?;
+
+    let call = match kind {
+        "timeout" => evm_chain::build_refund_timeout_parts(contract, match_id),
+        "nocert" => evm_chain::build_refund_no_cert_parts(contract, match_id),
+        other => return Err(format!("unknown refund kind '{other}' (timeout|nocert)")),
+    };
+    let (to, data, value) = call.to_hex_parts();
+    Ok(json!({
+        "chain": leg_b.get("chain").and_then(|x| x.as_str()).unwrap_or_default(),
+        "to": to,
+        "data": data,
+        "value_wei": value,
+        "kind": kind,
+        "instructions": "Sign this as an EIP-1559 transaction with your EVM wallet (refund is \
+            permissionless; you pay only gas) and submit it to reclaim your stake.",
+    }))
+}
+
 /// The `register_wallet` response for an EVM (`0x`) wallet. Unlike the Solana
 /// path it carries no balance: the server holds no EVM RPC client by design
 /// (cross-chain txs are built as unsigned calls the agent's own tooling
@@ -246,6 +280,28 @@ mod tests {
     fn build_evm_create_match_call_rejects_missing_fields() {
         assert!(build_evm_create_match_call(&json!({})).is_err());
         assert!(build_evm_create_match_call(&json!({"leg_a":{},"leg_b":{}})).is_err());
+    }
+
+    #[test]
+    fn build_evm_refund_call_for_timeout_and_nocert() {
+        let payload = json!({
+            "match_id": format!("0x{}", "aa".repeat(32)),
+            "leg_b": {
+                "chain": "eip155:84532",
+                "contract": format!("0x{}", format!("{:0>64}", "c2eb26078dd5b1957883e1a9d651a28ef1f62aff")),
+            },
+        });
+        let timeout = build_evm_refund_call(&payload, "timeout").expect("timeout refund");
+        assert_eq!(timeout["value_wei"], "0");
+        assert_eq!(
+            timeout["to"].as_str().unwrap().to_lowercase(),
+            "0xc2eb26078dd5b1957883e1a9d651a28ef1f62aff"
+        );
+        let nocert = build_evm_refund_call(&payload, "nocert").expect("nocert refund");
+        // Different instruction → different calldata.
+        assert_ne!(timeout["data"], nocert["data"]);
+        // Unknown kind is rejected.
+        assert!(build_evm_refund_call(&payload, "bogus").is_err());
     }
 
     #[test]

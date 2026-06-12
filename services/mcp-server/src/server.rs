@@ -221,6 +221,15 @@ pub struct XchainBuildCreateMatchArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct XchainBuildRefundArgs {
+    /// The `match` payload object from xchain_find_match / xchain_match_status.
+    #[serde(rename = "match")]
+    pub match_payload: serde_json::Value,
+    /// "timeout" (default) or "nocert".
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameFindMatchArgs {
     /// Tournament ID to join. Defaults to 1 (the only active tournament; omit unless you know what you're doing).
     pub tournament_id: Option<u64>,
@@ -1597,6 +1606,21 @@ impl SwarmTipsMcp {
     ) -> Result<CallToolResult, McpError> {
         let call = crate::xchain::build_evm_create_match_call(&args.match_payload)
             .map_err(|e| invalid_input(&format!("invalid match payload: {e}")))?;
+        Ok(text_result(&call))
+    }
+
+    #[tool(
+        name = "xchain_build_refund",
+        description = "[STATE] Build the unsigned EVM refund transaction to reclaim your stake on the EVM leg of a cross-chain match. Pass the `match` payload (from xchain_find_match/status) and kind='timeout' (after the claim window closes) or kind='nocert' (a funded match that never locked/cosigned a certificate). Refund is permissionless — you pay only gas. Returns {to, data, value_wei, chain} to sign and submit with your EVM wallet. EVM-leg only.",
+        annotations(destructive_hint = true)
+    )]
+    async fn xchain_build_refund(
+        &self,
+        Parameters(args): Parameters<XchainBuildRefundArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let kind = args.kind.as_deref().unwrap_or("timeout");
+        let call = crate::xchain::build_evm_refund_call(&args.match_payload, kind)
+            .map_err(|e| invalid_input(&format!("invalid refund request: {e}")))?;
         Ok(text_result(&call))
     }
 

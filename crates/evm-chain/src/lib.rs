@@ -230,6 +230,26 @@ pub fn build_refund_no_cert(contract: Address, match_id: [u8; 32]) -> UnsignedEv
     call(contract, data, U256::ZERO)
 }
 
+/// Build an unsigned `refundTimeout` call (permissionless) — refunds the EVM
+/// player after the claim/timeout window and releases the locked tranche.
+pub fn build_refund_timeout(contract: Address, match_id: [u8; 32]) -> UnsignedEvmCall {
+    let data = CrossChainGame::refundTimeoutCall {
+        matchId: match_id.into(),
+    }
+    .abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variants of the refund builders for callers that hold a raw
+/// 20-byte contract address and don't want an alloy dependency.
+pub fn build_refund_no_cert_parts(contract: [u8; 20], match_id: [u8; 32]) -> UnsignedEvmCall {
+    build_refund_no_cert(Address::from(contract), match_id)
+}
+
+pub fn build_refund_timeout_parts(contract: [u8; 20], match_id: [u8; 32]) -> UnsignedEvmCall {
+    build_refund_timeout(Address::from(contract), match_id)
+}
+
 /// Build an unsigned `poolDeposit` call (operator-signed); funds the float.
 pub fn build_pool_deposit(contract: Address, amount_wei: u128) -> UnsignedEvmCall {
     let data = CrossChainGame::poolDepositCall {}.abi_encode();
@@ -264,6 +284,24 @@ mod tests {
             &tx.data[..4],
             &CrossChainGame::createMatchCall::SELECTOR[..]
         );
+    }
+
+    #[test]
+    fn refund_builders_encode_zero_value_and_correct_selectors() {
+        let nocert = build_refund_no_cert_parts([0x11; 20], [0xAA; 32]);
+        assert_eq!(nocert.value, U256::ZERO);
+        assert_eq!(
+            &nocert.data[..4],
+            &CrossChainGame::refundNoCertCall::SELECTOR[..]
+        );
+        let timeout = build_refund_timeout_parts([0x11; 20], [0xAA; 32]);
+        assert_eq!(timeout.value, U256::ZERO);
+        assert_eq!(
+            &timeout.data[..4],
+            &CrossChainGame::refundTimeoutCall::SELECTOR[..]
+        );
+        // Different instructions → different selectors.
+        assert_ne!(&nocert.data[..4], &timeout.data[..4]);
     }
 
     #[test]
