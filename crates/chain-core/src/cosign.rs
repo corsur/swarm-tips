@@ -49,6 +49,18 @@ pub fn sign_digest(secret_key: &[u8; 32], digest: &[u8; 32]) -> Result<[u8; 65],
     Ok(out)
 }
 
+/// Recover the 20-byte Ethereum address that produced a 65-byte
+/// `[r || s || v]` signature over `digest` — the same operation the Anchor
+/// program's `secp256k1_recover` and the EVM `ecrecover` perform. The
+/// backend uses this to verify players' co-signatures before submitting.
+pub fn recover_address(digest: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 20], CosignError> {
+    let recid = RecoveryId::from_byte(sig[64]).ok_or(CosignError::SigningFailed)?;
+    let signature = Signature::from_slice(&sig[..64]).map_err(|_| CosignError::SigningFailed)?;
+    let vk = VerifyingKey::recover_from_prehash(digest, &signature, recid)
+        .map_err(|_| CosignError::SigningFailed)?;
+    Ok(verifying_key_address(&vk))
+}
+
 /// Co-sign a match-live certificate (used by both players and the operator).
 pub fn sign_match_live(
     secret_key: &[u8; 32],
