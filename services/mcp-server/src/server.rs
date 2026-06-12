@@ -1425,6 +1425,21 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "xchain_supported_chains",
+        description = "[READ] Discover the chains you can play a cross-chain Coordination Game match on. Returns every registered chain (Solana + EVM) with its CAIP-2 id, native coin, per-match stake (in base units), float-pool tranche clamp, claim window, and deployed game-contract address, plus a plain-language description of how a cross-chain match is staked and settled. Call this before register_wallet to decide which wallet (Solana base58 or EVM 0x) to register. Read-only — no wallet required. Testnet only today (Solana devnet ↔ Base Sepolia); mainnet routes are gated.",
+        annotations(read_only_hint = true)
+    )]
+    async fn xchain_supported_chains(&self) -> Result<CallToolResult, McpError> {
+        let response = crate::xchain::supported_chains_response();
+        tracing::info!(
+            event = "xchain_supported_chains",
+            chains = response["chains"].as_array().map(|a| a.len()).unwrap_or(0),
+            "served cross-chain discovery"
+        );
+        Ok(text_result(&response))
+    }
+
+    #[tool(
         name = "game_find_match",
         description = "[SPEND: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. Requires a registered wallet (call register_wallet first). Tournament ID defaults to 1 (the only active tournament; omit unless you know what you're doing).",
         annotations(destructive_hint = true)

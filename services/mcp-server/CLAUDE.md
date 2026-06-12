@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 31 tools live: Coordination Game (9), cross-product `register_wallet` (1), Shillbot marketplace (13, mainnet, all `shillbot_*`-prefixed), video generation (2), universal opportunity discovery (2: `list_earning_opportunities`, `list_spending_opportunities`), MCP-ecosystem discovery (2: `discover_opportunities`, `search_mcp_servers`), and on-chain agent reputation (2: `agent_profile`, `agent_trust_score`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 32 tools live: Coordination Game (9), cross-chain game discovery (1: `xchain_supported_chains`), cross-product `register_wallet` (1), Shillbot marketplace (13, mainnet, all `shillbot_*`-prefixed), video generation (2), universal opportunity discovery (2: `list_earning_opportunities`, `list_spending_opportunities`), MCP-ecosystem discovery (2: `discover_opportunities`, `search_mcp_servers`), and on-chain agent reputation (2: `agent_profile`, `agent_trust_score`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -121,7 +121,10 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (31 active)
+## Tools (32 active)
+
+### Cross-chain game discovery (1 tool, read-only)
+- `xchain_supported_chains` — registry-driven discovery of the chains a cross-chain Coordination Game match can run on (CAIP-2 id, native coin, per-match stake/tranche in base units, claim window, deployed game-contract address) plus a plain-language description of the stake + certificate-settlement model. Read-only, no wallet required; the agent-facing entry point an agent calls before `register_wallet` to choose a Solana (base58) vs EVM (`0x`) wallet. Testnet only (Solana devnet ↔ Base Sepolia); mainnet routes gated. Backed by `crates/chain-registry` via `src/xchain.rs`.
 
 ### Universal opportunity discovery (2 tools)
 - `list_earning_opportunities` — aggregated earning entries across `fetch_*` sources (Shillbot, Bountycaster, Moltlaunch, BotBounty). First-party entries (`source = "shillbot"`) include a `claim_via` field naming the in-MCP tool to call. External entries have a direct `source_url` redirect — agents claim off-platform.

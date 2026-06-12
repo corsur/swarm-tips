@@ -115,6 +115,13 @@ pub fn entry(chain: &ChainId) -> Option<&'static ChainEntry> {
     REGISTRY.iter().find(|e| e.chain_id == chain.as_str())
 }
 
+/// Every registered chain, in registry order. Callers that need cross-chain
+/// discovery (e.g. the MCP `xchain_supported_chains` tool) iterate this rather
+/// than hardcoding the chain set.
+pub fn all() -> impl Iterator<Item = &'static ChainEntry> {
+    REGISTRY.iter()
+}
+
 /// All registered chains in a namespace.
 pub fn entries_for(namespace: Namespace) -> impl Iterator<Item = &'static ChainEntry> {
     REGISTRY.iter().filter(move |e| {
@@ -149,6 +156,18 @@ mod tests {
                 e.rpc_urls.len()
             );
         }
+    }
+
+    #[test]
+    fn all_returns_every_entry() {
+        let count = all().count();
+        assert_eq!(count, REGISTRY.len());
+        // all() must be the union of the per-namespace views.
+        let by_ns = entries_for(Namespace::Solana).count() + entries_for(Namespace::Eip155).count();
+        assert_eq!(
+            count, by_ns,
+            "a chain exists in a namespace all() doesn't sum"
+        );
     }
 
     #[test]

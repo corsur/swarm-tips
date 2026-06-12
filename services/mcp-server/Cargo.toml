@@ -33,6 +33,8 @@ firestore = "0.48"
 gcloud-sdk = { version = "0.29", features = ["google-cloud-secretmanager-v1"] }
 game-api-client = { workspace = true }
 game-chain = { workspace = true }
+chain-registry = { workspace = true }
+chain-core = { workspace = true }
 eigentrust = { path = "../eigentrust" }
 futures-util = "0.3"
 solana-sdk = "2.2"
