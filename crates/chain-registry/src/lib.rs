@@ -103,7 +103,8 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 5_000_000_000_000_000, // 0.005 ETH
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        game_contract: None, // set after the Step 3 testnet deploy
+        // CrossChainGame deployed 2026-06-12 (operatorSigner 0x54a6…9A30 verified on-chain).
+        game_contract: Some("0xC2eb26078dD5B1957883e1a9D651A28Ef1F62AFf"),
         x402_network: Some("base-sepolia"),
     },
 ];
