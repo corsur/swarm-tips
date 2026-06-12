@@ -24,6 +24,7 @@
     "prettier": "^2.6.2",
     "solana-bankrun": "^0.4.0",
     "ts-mocha": "^11.1.0",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "viem": "^2.52.2"
   }
 }
