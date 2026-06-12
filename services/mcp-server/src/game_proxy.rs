@@ -85,6 +85,17 @@ impl GameApiProxy {
             .await
             .map_err(map_game_api_error)
     }
+
+    /// Get the matchmaker-cosigned Solana create_xmatch funding tx.
+    pub async fn xqueue_build_sol_fund(
+        &self,
+        wallet: &str,
+    ) -> Result<game_api_client::XSolFundResponse, McpServiceError> {
+        self.client
+            .xqueue_build_sol_fund(wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
 }
 
 /// Map shared crate errors to MCP server errors with structured logging.

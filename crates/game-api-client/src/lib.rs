@@ -116,6 +116,19 @@ pub struct XQueueResponse {
     pub match_payload: Option<serde_json::Value>,
 }
 
+/// Response from `/internal/xqueue/build-sol-fund`: the matchmaker-cosigned
+/// Solana `create_xmatch` funding tx for the player to sign and submit.
+#[derive(Debug, Deserialize)]
+pub struct XSolFundResponse {
+    /// Base64 unsigned transaction (matchmaker slot to be filled from `matchmaker_signature`).
+    pub unsigned_tx: String,
+    pub blockhash: String,
+    /// Base64 matchmaker ed25519 signature over the tx message.
+    pub matchmaker_signature: String,
+    pub match_id: String,
+    pub action: String,
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -341,6 +354,25 @@ impl GameApiClient {
             .query(&[("wallet", wallet)])
             .send()
             .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `POST /internal/xqueue/build-sol-fund` — matchmaker-cosigned Solana
+    /// `create_xmatch` funding tx for the Solana-leg player to sign + submit.
+    pub async fn xqueue_build_sol_fund(
+        &self,
+        wallet: &str,
+    ) -> Result<XSolFundResponse, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+        }
+        let url = format!("{}/internal/xqueue/build-sol-fund", self.base_url);
+        let resp = self.inner.post(&url).json(&Body { wallet }).send().await?;
         Self::check_status(resp)
             .await?
             .json()

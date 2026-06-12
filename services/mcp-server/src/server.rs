@@ -1552,6 +1552,41 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "xchain_build_create_xmatch",
+        description = "[SPEND: 0.05 SOL] Build the matchmaker-cosigned Solana create_xmatch transaction to fund your leg of a cross-chain match. Solana-leg players only (register a Solana base58 wallet). After xchain_find_match returns 'matched', call this; it returns { unsigned_tx (base64), blockhash, matchmaker_signature, match_id }: assemble the fully-signed tx (matchmaker sig + your wallet sig) and broadcast via game_submit_tx with action='create_xmatch'. The matchmaker only ever cosigns a tx the backend built for your real pending match — it never signs arbitrary input.",
+        annotations(destructive_hint = true)
+    )]
+    async fn xchain_build_create_xmatch(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        if !chain.starts_with("solana:") {
+            return Err(invalid_input(
+                "xchain_build_create_xmatch is for the Solana leg; EVM players use xchain_build_create_match",
+            ));
+        }
+
+        let resp = self
+            .state
+            .game_api
+            .xqueue_build_sol_fund(&address)
+            .await
+            .map_err(|e| McpError::internal_error(format!("build_sol_fund failed: {e}"), None))?;
+
+        Ok(text_result(&serde_json::json!({
+            "action": resp.action,
+            "unsigned_tx": resp.unsigned_tx,
+            "blockhash": resp.blockhash,
+            "matchmaker_signature": resp.matchmaker_signature,
+            "match_id": resp.match_id,
+            "instructions": "Sign this transaction with your Solana wallet (the matchmaker signature is already provided), then broadcast it via game_submit_tx with action='create_xmatch'.",
+        })))
+    }
+
+    #[tool(
         name = "xchain_build_create_match",
         description = "[SPEND] Build the unsigned EVM createMatch transaction to fund your leg of a cross-chain match. Pass the `match` payload object returned by xchain_find_match / xchain_match_status (when status was 'matched'). Returns { to, data, value_wei, chain, fund_deadline, match_deadline }: an EIP-1559 call you sign and submit with your EVM wallet (fill gas/nonce/chainId locally). value_wei is your stake sent as native ETH. EVM-leg players only; the Solana leg uses the Solana create_xmatch path.",
         annotations(destructive_hint = true)
