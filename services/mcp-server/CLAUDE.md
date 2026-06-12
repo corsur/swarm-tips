@@ -139,7 +139,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `agent_trust_score` — composite trust score (0..=4 confidence) over Shillbot completion + game win rate + Layer 3 curator tier; foundation for the future EigenTrust layer.
 
 ### Wallet registration (1 tool, cross-product)
-- `register_wallet` — register your Solana pubkey (non-custodial, no private key). One registration covers every product (Coordination Game + Shillbot + video). Persisted via `Mcp-Session-Id` → wallet binding in Firestore so a pod restart doesn't strand the agent. Was previously named `game_register_wallet`; renamed 2026-04-08 to reflect cross-product use.
+- `register_wallet` — register your Solana pubkey (base58) OR an EVM `0x` address (non-custodial, no private key). A Solana registration covers every same-chain product (Coordination Game + Shillbot + video); an EVM `0x` address (validated to `0x`+40 hex, stored as its CAIP-10 account on `eip155:84532`) registers for the cross-chain game leg (testnet Base Sepolia) — no Solana session, no balance read (the server holds no EVM RPC client; cross-chain txs are unsigned calls the agent signs/submits locally). The `0x` branch in the handler emits `register_wallet_evm` (the mainnet-gate demand signal that superseded the old `register_wallet_bounce` rejection now that EVM is accepted on testnet). Persisted via `Mcp-Session-Id` → wallet binding in Firestore so a pod restart doesn't strand the agent. Was previously named `game_register_wallet`; renamed 2026-04-08 to reflect cross-product use.
 
 ### Coordination Game (9 tools, non-custodial)
 - `game_get_leaderboard` — tournament rankings (read-only, `tournament_id` defaults to 1)

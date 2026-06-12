@@ -56,9 +56,81 @@ pub fn supported_chains_response() -> Value {
     })
 }
 
+/// The active EVM testnet chain for wallet registration. Mainnet EVM is
+/// gated (decision.md §6), so a registered `0x` wallet is scoped to Base
+/// Sepolia until that gate clears.
+const EVM_TESTNET_CHAIN: &str = "eip155:84532";
+
+/// Validate an EVM address and return its CAIP-10 account id on the active
+/// testnet EVM chain. Accepts `0x` + exactly 40 hex chars (case-insensitive;
+/// EIP-55 checksum is not enforced — wallets emit mixed-case but agents may
+/// pass lowercase). Returns `Err(reason)` for malformed input so the boundary
+/// rejects rather than guesses.
+pub fn evm_account_id(address: &str) -> Result<String, String> {
+    let hex = address
+        .strip_prefix("0x")
+        .ok_or("EVM address must start with 0x")?;
+    if hex.len() != 40 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("EVM address must be 0x followed by 40 hex characters".to_string());
+    }
+    let chain = chain_core::ChainId::parse(EVM_TESTNET_CHAIN).map_err(|e| e.to_string())?;
+    chain_core::AccountId::from_parts(&chain, address)
+        .map(|a| a.as_str().to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// The `register_wallet` response for an EVM (`0x`) wallet. Unlike the Solana
+/// path it carries no balance: the server holds no EVM RPC client by design
+/// (cross-chain txs are built as unsigned calls the agent's own tooling
+/// populates and submits), so the agent checks its own balance.
+pub fn evm_registration_response(account_id: &str) -> Value {
+    json!({
+        "account": account_id,
+        "namespace": "eip155",
+        "chain": EVM_TESTNET_CHAIN,
+        "status": "registered",
+        "note": "EVM wallet registered for cross-chain Coordination Game matches on \
+            Base Sepolia (testnet). Call xchain_supported_chains for stake amounts and \
+            the deployed contract; cross-chain match tools return unsigned EVM \
+            transactions you sign and submit locally (the server never holds your key \
+            and never submits on your behalf).",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evm_account_id_accepts_valid_address_and_builds_caip10() {
+        let acct =
+            evm_account_id("0x996213ed4099707059b8b5d7489ffF23dAC9770d").expect("valid address");
+        assert_eq!(
+            acct,
+            "eip155:84532:0x996213ed4099707059b8b5d7489ffF23dAC9770d"
+        );
+        // The CAIP-10 must round-trip through chain-core's parser.
+        let parsed = chain_core::AccountId::parse(&acct).expect("valid CAIP-10");
+        assert_eq!(parsed.chain().as_str(), EVM_TESTNET_CHAIN);
+    }
+
+    #[test]
+    fn evm_account_id_rejects_malformed() {
+        assert!(evm_account_id("996213ed4099707059b8b5d7489ffF23dAC9770d").is_err()); // no 0x
+        assert!(evm_account_id("0x1234").is_err()); // too short
+        assert!(evm_account_id("0xZZ6213ed4099707059b8b5d7489ffF23dAC9770d").is_err()); // non-hex
+        assert!(evm_account_id("0x996213ed4099707059b8b5d7489ffF23dAC9770d00").is_err());
+        // too long
+    }
+
+    #[test]
+    fn evm_registration_response_carries_account_and_chain() {
+        let resp = evm_registration_response("eip155:84532:0xabc");
+        assert_eq!(resp["account"], "eip155:84532:0xabc");
+        assert_eq!(resp["namespace"], "eip155");
+        assert_eq!(resp["chain"], EVM_TESTNET_CHAIN);
+        assert_eq!(resp["status"], "registered");
+    }
 
     #[test]
     fn lists_every_registered_chain_with_required_fields() {

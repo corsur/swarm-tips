@@ -1385,7 +1385,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "register_wallet",
-        description = "[STATE] Register your Solana wallet to use any swarm.tips tool that touches funds. Provide your base58-encoded public key (32 bytes). Non-custodial: your private key never leaves your device. Returns your wallet address and SOL balance. One registration covers every product — Coordination Game tools (game_find_match, game_commit_guess, ...) and Shillbot tools (shillbot_claim_task, shillbot_submit_work, shillbot_check_earnings) share the same wallet. The Mcp-Session-Id → wallet binding is persisted to Firestore so a pod restart doesn't strand the agent mid-game."
+        description = "[STATE] Register your wallet to use any swarm.tips tool that touches funds. Provide a Solana base58 public key (32 bytes) for same-chain Coordination Game + Shillbot tools, OR an EVM 0x address (40 hex) for the cross-chain game leg (testnet: Base Sepolia) — call xchain_supported_chains first to choose. Non-custodial: your private key never leaves your device. Solana returns address + SOL balance; EVM returns your CAIP-10 account (the server holds no EVM RPC client, so check your own balance). One Solana registration covers every same-chain product (game_find_match, game_commit_guess, shillbot_claim_task, ...). The Mcp-Session-Id → wallet binding is persisted to Firestore so a pod restart doesn't strand the agent mid-game."
     )]
     async fn register_wallet(
         &self,
@@ -1394,6 +1394,32 @@ impl SwarmTipsMcp {
     ) -> Result<CallToolResult, McpError> {
         if args.pubkey.is_empty() {
             return Err(invalid_input("pubkey is required"));
+        }
+
+        // EVM (0x) wallets register for the cross-chain game leg. Intercept
+        // before the Solana path: validate, bind the CAIP-10 account to the
+        // session, and return — no Solana GameTxBuilder, no balance read.
+        if args.pubkey.starts_with("0x") {
+            let account_id = crate::xchain::evm_account_id(&args.pubkey)
+                .map_err(|e| invalid_input(&format!("invalid EVM address: {e}")))?;
+            if let Some(session_id) = session_id_from_parts(Some(&parts)) {
+                let _ = self
+                    .state
+                    .session_binding
+                    .bind(&session_id, &account_id)
+                    .await;
+            }
+            // Demand signal for the mainnet-EVM gate (decision.md §6): now that
+            // testnet accepts EVM wallets, the signal graduated from the old
+            // register_wallet_bounce rejection to this acceptance event.
+            tracing::info!(
+                event = "register_wallet_evm",
+                account = %account_id,
+                "EVM wallet registered for cross-chain game"
+            );
+            return Ok(text_result(&crate::xchain::evm_registration_response(
+                &account_id,
+            )));
         }
 
         let (wallet, balance) = self
