@@ -41,7 +41,10 @@ jobs:
           # values apply only at the (separately-gated) mainnet deploy.
           XCHAIN_CHAIN_TAG: '0x8a9a9c58b754a98f1ff302a7ead652cfd23eb36a5791767b5d185067dd9481c2'
           XCHAIN_OWNER: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
-          XCHAIN_OPERATOR_SIGNER: ${{ secrets.EVM_OPERATOR_SIGNER_ADDR }}
+          # Testnet operator cert-signer (public address; private key lives in
+          # GCP Secret Manager as xchain-operator-signer for game-api). Rotate
+          # before mainnet, like the deployer key.
+          XCHAIN_OPERATOR_SIGNER: '0x54a600649C2906f7Bb0D52E74818Ce025afd9A30'
           XCHAIN_TREASURY: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
           XCHAIN_TREASURY_BPS: '5000'
           XCHAIN_STAKE_WEI: '10000000000000' # 0.00001 ETH (smoke-test stake)
