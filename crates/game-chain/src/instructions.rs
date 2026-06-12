@@ -7,7 +7,8 @@
 
 use anchor_lang::InstructionData;
 use coordination::{
-    instruction::{CommitGuess, CreateGame, DepositStake, JoinGame, RevealGuess},
+    instruction::{CommitGuess, CreateGame, CreateXmatch, DepositStake, JoinGame, RevealGuess},
+    instructions::xchain::CreateXMatchArgs,
     ID as PROGRAM_ID,
 };
 use solana_sdk::{
@@ -68,6 +69,36 @@ pub fn build_create_game(
             matchup_commitment,
         }
         .data(),
+    }
+}
+
+/// Build the `create_xmatch` instruction — the Solana leg of a cross-chain
+/// match. Like `create_game` it is co-signed by the matchmaker and funded by
+/// the player; `match_id` is the 32-byte cross-chain match id (seeds the
+/// xmatch PDA). The stake is locked into the xmatch account, which doubles as
+/// the escrow vault.
+pub fn build_create_xmatch(
+    match_id: [u8; 32],
+    args: CreateXMatchArgs,
+    player: &Pubkey,
+    matchmaker: &Pubkey,
+) -> Instruction {
+    assert!(args.tournament_id > 0, "tournament_id must be non-zero");
+    assert!(args.stake_lamports > 0, "stake_lamports must be non-zero");
+
+    let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+    let (global_config_pda, _) = pda::global_config_pda();
+
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xmatch_pda, false),
+            AccountMeta::new_readonly(global_config_pda, false),
+            AccountMeta::new_readonly(*matchmaker, true), // signer (cosigned)
+            AccountMeta::new(*player, true),              // signer + payer
+            AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+        ],
+        data: CreateXmatch { match_id, args }.data(),
     }
 }
 
@@ -261,5 +292,58 @@ mod tests {
     fn build_commit_guess_rejects_zero_game_id() {
         let kp = Keypair::new();
         let _ = build_commit_guess(0, [0u8; 32], &kp.pubkey());
+    }
+
+    fn xmatch_args() -> CreateXMatchArgs {
+        CreateXMatchArgs {
+            tournament_id: 1,
+            player_is_p1: true,
+            session_key: [0x13; 20],
+            counter_session_key: [0x23; 20],
+            stake_lamports: 50_000_000,
+            fund_deadline: 1_765_000_000,
+            match_deadline: 1_765_007_200,
+        }
+    }
+
+    #[test]
+    fn build_create_xmatch_has_correct_accounts_and_signers() {
+        let player = Keypair::new();
+        let matchmaker = Keypair::new();
+        let match_id = [0xAB; 32];
+        let ix = build_create_xmatch(
+            match_id,
+            xmatch_args(),
+            &player.pubkey(),
+            &matchmaker.pubkey(),
+        );
+
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 5 accounts: xmatch, global_config, matchmaker, player, system.
+        assert_eq!(ix.accounts.len(), 5, "create_xmatch must have 5 accounts");
+
+        // xmatch account is the PDA seeded by match_id, writable, not a signer.
+        let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+        assert_eq!(ix.accounts[0].pubkey, xmatch_pda);
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
+
+        // matchmaker signs (readonly), player signs + pays (writable).
+        assert!(ix.accounts[2].is_signer && !ix.accounts[2].is_writable);
+        assert_eq!(ix.accounts[2].pubkey, matchmaker.pubkey());
+        assert!(ix.accounts[3].is_signer && ix.accounts[3].is_writable);
+        assert_eq!(ix.accounts[3].pubkey, player.pubkey());
+    }
+
+    #[test]
+    #[should_panic(expected = "stake_lamports must be non-zero")]
+    fn build_create_xmatch_rejects_zero_stake() {
+        let mut args = xmatch_args();
+        args.stake_lamports = 0;
+        let _ = build_create_xmatch(
+            [1u8; 32],
+            args,
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+        );
     }
 }

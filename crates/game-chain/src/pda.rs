@@ -54,6 +54,12 @@ pub fn game_counter_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"game_counter"], &PROGRAM_ID)
 }
 
+/// Derive the cross-chain match PDA for a 32-byte match id (the Solana leg's
+/// escrow + state account). Seeds: `["xmatch", match_id]`.
+pub fn xmatch_pda(match_id: &[u8; 32]) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"xmatch", match_id], &PROGRAM_ID)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
