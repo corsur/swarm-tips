@@ -97,6 +97,19 @@ impl GameApiProxy {
             .map_err(map_game_api_error)
     }
 
+    /// Get the operator-cosigned cross-chain outcome for settle. The operator
+    /// derives the outcome from the stored co-signed checkpoint and signs only
+    /// that; the agent adds its session-key signature to assemble settle.
+    pub async fn xqueue_outcome_cosign(
+        &self,
+        wallet: &str,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_outcome_cosign(wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
+
     /// Get the unsigned Solana refund tx (permissionless) for the player.
     pub async fn xqueue_build_sol_refund(
         &self,

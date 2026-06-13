@@ -1596,6 +1596,32 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "xchain_build_settle",
+        description = "[STATE] Get the operator-cosigned OUTCOME of your cross-chain match, ready to settle. Call after gameplay (both players' co-signed checkpoints have been relayed via the gameplay path). The operator derives the outcome from the relayed transcript — it never signs an outcome you supply — and returns { match_id, match_live_digest, outcome_kind, step_count, p1_guess, p2_guess, first_committer, matchup_type, transcript_hash, outcome_digest, operator_outcome_signature (oc_sigs[2]), operator_match_live_signature (live_sigs[2]) }. Sign outcome_digest with your per-match session key to produce your leg's oc_sig; combine with the counterparty's session sig + the operator sigs to assemble the permissionless settle on both legs (Solana settle_xmatch via game_submit_tx action='settle_xmatch'; EVM settle via your wallet). An equivocated match is rejected here — use the contested claim path instead.",
+        annotations(read_only_hint = true)
+    )]
+    async fn xchain_build_settle(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+
+        let outcome = self
+            .state
+            .game_api
+            .xqueue_outcome_cosign(&address)
+            .await
+            .map_err(|e| McpError::internal_error(format!("outcome_cosign failed: {e}"), None))?;
+
+        Ok(text_result(&serde_json::json!({
+            "outcome": outcome,
+            "instructions": "Sign `outcome_digest` with your per-match session key to produce your leg's outcome signature (oc_sigs for your seat). Assemble settle with [legA session, legB session, operator] sigs over the outcome digest plus the match-live signatures; submit the Solana settle_xmatch via game_submit_tx with action='settle_xmatch' (permissionless) and the EVM settle from your own wallet.",
+        })))
+    }
+
+    #[tool(
         name = "xchain_build_refund_xmatch",
         description = "[STATE] Build the unsigned Solana refund transaction to reclaim your stake on the Solana leg of a cross-chain match. Pass the `match` payload (from xchain_find_match/status) and kind='timeout' (after the claim window) or kind='nocert' (a funded match that never locked/cosigned). Refund is permissionless — you pay only the network fee. Returns { unsigned_tx, blockhash, match_id }: sign with your Solana wallet and broadcast via game_submit_tx. Solana-leg only; EVM players use xchain_build_refund.",
         annotations(destructive_hint = true)

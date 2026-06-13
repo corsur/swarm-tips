@@ -413,6 +413,28 @@ impl GameApiClient {
             .map_err(Into::into)
     }
 
+    /// `POST /internal/xqueue/outcome-cosign` — operator-cosign the cross-chain
+    /// outcome derived from the stored co-signed checkpoint. Returns the raw
+    /// JSON payload (canonical outcome fields, `outcome_digest`,
+    /// `operator_outcome_signature`, `operator_match_live_signature`) the player
+    /// needs to add their own session-key signature and assemble settle.
+    pub async fn xqueue_outcome_cosign(
+        &self,
+        wallet: &str,
+    ) -> Result<serde_json::Value, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+        }
+        let url = format!("{}/internal/xqueue/outcome-cosign", self.base_url);
+        let resp = self.inner.post(&url).json(&Body { wallet }).send().await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
     // -- Games (token required) --------------------------------------------
 
     /// `POST /games/committed` — notify the backend that this player committed their guess.
