@@ -7,11 +7,11 @@
 
 use anchor_lang::InstructionData;
 use coordination::{
-    cert::{MatchLiveCertNoA, OutcomeCertArg},
+    cert::{CheckpointArg, MatchLiveCertArg, MatchLiveCertNoA, OutcomeCertArg},
     instruction::{
         CommitGuess, CreateGame, CreateXmatch, DepositStake, InitializeXpool, JoinGame,
-        LockXtranche, RefundXmatchNocert, RefundXmatchTimeout, RevealGuess, SettleXmatch,
-        XpoolDeposit,
+        LockXtranche, OpenXclaim, RefundXmatchNocert, RefundXmatchTimeout, RevealGuess,
+        SettleXclaim, SettleXmatch, SubmitEquivocationProof, SupersedeXclaim, XpoolDeposit,
     },
     instructions::xchain::CreateXMatchArgs,
     ID as PROGRAM_ID,
@@ -239,6 +239,120 @@ pub fn build_settle_xmatch(
             oc_sigs,
         }
         .data(),
+    }
+}
+
+/// Build the permissionless `open_xclaim` instruction — opens the optimistic
+/// claim path with a co-signed checkpoint, starting the challenge window. Used
+/// when a match stalls (timeout/forfeit): the outcome is derived ON-CHAIN from
+/// the checkpoint via `derive_claim_outcome`. `live_sigs` are the three
+/// match-live signatures (both session keys + operator); `cp_sigs` are the two
+/// checkpoint co-signatures. No signer account — the fee payer submits. Account
+/// mut-flags mirror `OpenXClaim<'info>`.
+pub fn build_open_xclaim(
+    cert: MatchLiveCertArg,
+    cp: CheckpointArg,
+    live_sigs: [[u8; 65]; 3],
+    cp_sigs: [[u8; 65]; 2],
+) -> Instruction {
+    let (xmatch_pda, _) = pda::xmatch_pda(&cert.match_id);
+    let (xpool_pda, _) = pda::xpool_pda();
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xmatch_pda, false),
+            AccountMeta::new_readonly(xpool_pda, false),
+        ],
+        data: OpenXclaim {
+            cert,
+            cp,
+            live_sigs,
+            cp_sigs,
+        }
+        .data(),
+    }
+}
+
+/// Build the permissionless `supersede_xclaim` instruction — replaces the open
+/// claim's checkpoint with a strictly-higher-`step_count` co-signed checkpoint
+/// (reveals supersede commits) before the window closes. No signer account.
+/// Account mut-flags mirror `SupersedeXClaim<'info>` (only `xmatch`, mut).
+pub fn build_supersede_xclaim(
+    cert: MatchLiveCertArg,
+    cp: CheckpointArg,
+    cp_sigs: [[u8; 65]; 2],
+) -> Instruction {
+    let (xmatch_pda, _) = pda::xmatch_pda(&cert.match_id);
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![AccountMeta::new(xmatch_pda, false)],
+        data: SupersedeXclaim { cert, cp, cp_sigs }.data(),
+    }
+}
+
+/// Build the permissionless `submit_equivocation_proof` instruction — proves a
+/// party signed two DISTINCT checkpoints at the SAME `step_count` (equivocation)
+/// and applies the final equivocation verdict. `cp_a`/`cp_b` are the conflicting
+/// checkpoints; `sig_a`/`sig_b` the offending party's two signatures. No signer
+/// account. Account mut-flags mirror `SubmitEquivocation<'info>`.
+pub fn build_submit_equivocation_proof(
+    cert: MatchLiveCertArg,
+    cp_a: CheckpointArg,
+    cp_b: CheckpointArg,
+    sig_a: [u8; 65],
+    sig_b: [u8; 65],
+) -> Instruction {
+    let (xmatch_pda, _) = pda::xmatch_pda(&cert.match_id);
+    let (xpool_pda, _) = pda::xpool_pda();
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xmatch_pda, false),
+            AccountMeta::new_readonly(xpool_pda, false),
+        ],
+        data: SubmitEquivocationProof {
+            cert,
+            cp_a,
+            cp_b,
+            sig_a,
+            sig_b,
+        }
+        .data(),
+    }
+}
+
+/// Build the permissionless `settle_xclaim` instruction — finalizes the claim
+/// after its window closes, paying out the `best_outcome_kind` recorded on the
+/// match. No instruction args (everything is on-chain state), so `match_id`,
+/// `tournament_id`, and `player` are passed for PDA derivation. The 9 accounts
+/// mirror `SettleXClaim<'info>` exactly (identical layout to `settle_xmatch`).
+pub fn build_settle_xclaim(
+    match_id: [u8; 32],
+    tournament_id: u64,
+    player: &Pubkey,
+    treasury: &Pubkey,
+    cranker: &Pubkey,
+) -> Instruction {
+    let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+    let (xpool_pda, _) = pda::xpool_pda();
+    let (tournament_pda, _) = pda::tournament_pda(tournament_id);
+    let (profile_pda, _) = pda::player_profile_pda(tournament_id, player);
+    let (global_config_pda, _) = pda::global_config_pda();
+
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xmatch_pda, false),
+            AccountMeta::new(xpool_pda, false),
+            AccountMeta::new(tournament_pda, false),
+            AccountMeta::new(profile_pda, false),
+            AccountMeta::new_readonly(global_config_pda, false),
+            AccountMeta::new(*treasury, false),
+            AccountMeta::new(*player, false),
+            AccountMeta::new(*cranker, true), // signer + payer
+            AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+        ],
+        data: SettleXclaim {}.data(),
     }
 }
 
@@ -729,5 +843,109 @@ mod tests {
     #[should_panic(expected = "tranche_lamports must be non-zero")]
     fn build_lock_xtranche_rejects_zero_tranche() {
         let _ = build_lock_xtranche([0x55; 32], 0, &Pubkey::new_unique());
+    }
+
+    fn full_cert() -> MatchLiveCertArg {
+        let leg = |s: u8| coordination::cert::CertLegArg {
+            chain_tag: [s; 32],
+            contract: [s; 32],
+            player: [s; 32],
+            session_key: [s; 20],
+            stake: 0,
+            tranche: 0,
+        };
+        MatchLiveCertArg {
+            match_id: [0xC1; 32],
+            tournament_id: 1,
+            matchup_commitment: [0; 32],
+            leg_a: leg(0x10),
+            leg_b: leg(0x20),
+            quote_timestamp: 0,
+            quote_max_age_secs: 0,
+            match_deadline: 0,
+            claim_window_secs: 0,
+            a_is_p1: 1,
+        }
+    }
+
+    fn checkpoint_arg(step: u8) -> CheckpointArg {
+        CheckpointArg {
+            match_live_digest: [0; 32],
+            step_count: step,
+            p1_commit: [0; 32],
+            p2_commit: [0; 32],
+            p1_guess: 1,
+            p2_guess: 0,
+            first_committer: 1,
+            matchup_type: 1,
+            transcript_hash: [0; 32],
+        }
+    }
+
+    #[test]
+    fn build_open_xclaim_has_correct_accounts() {
+        let ix = build_open_xclaim(
+            full_cert(),
+            checkpoint_arg(4),
+            [[0u8; 65]; 3],
+            [[0u8; 65]; 2],
+        );
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 2 accounts: xmatch (mut, PDA), pool (readonly). Permissionless — no signer.
+        assert_eq!(ix.accounts.len(), 2, "open_xclaim must have 2 accounts");
+        let (xmatch_pda, _) = pda::xmatch_pda(&[0xC1; 32]);
+        assert_eq!(ix.accounts[0].pubkey, xmatch_pda);
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
+        assert!(!ix.accounts[1].is_writable && !ix.accounts[1].is_signer);
+    }
+
+    #[test]
+    fn build_supersede_xclaim_has_single_mut_xmatch() {
+        let ix = build_supersede_xclaim(full_cert(), checkpoint_arg(3), [[0u8; 65]; 2]);
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        assert_eq!(ix.accounts.len(), 1, "supersede_xclaim must have 1 account");
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
+    }
+
+    #[test]
+    fn build_submit_equivocation_proof_has_correct_accounts() {
+        let ix = build_submit_equivocation_proof(
+            full_cert(),
+            checkpoint_arg(2),
+            checkpoint_arg(2),
+            [0u8; 65],
+            [1u8; 65],
+        );
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 2 accounts: xmatch (mut), pool (readonly).
+        assert_eq!(ix.accounts.len(), 2);
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
+        assert!(!ix.accounts[1].is_writable && !ix.accounts[1].is_signer);
+    }
+
+    #[test]
+    fn build_settle_xclaim_mirrors_settle_xmatch_layout() {
+        let player = Pubkey::new_unique();
+        let treasury = Pubkey::new_unique();
+        let cranker = Keypair::new();
+        let ix = build_settle_xclaim([0xC1; 32], 1, &player, &treasury, &cranker.pubkey());
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 9 accounts, identical layout to settle_xmatch.
+        assert_eq!(ix.accounts.len(), 9, "settle_xclaim must have 9 accounts");
+        assert!(ix.accounts[0].is_writable, "xmatch writable");
+        assert!(ix.accounts[1].is_writable, "pool writable");
+        assert!(ix.accounts[2].is_writable, "tournament writable");
+        assert!(ix.accounts[3].is_writable, "player_profile writable");
+        assert!(!ix.accounts[4].is_writable, "global_config readonly");
+        assert!(ix.accounts[5].is_writable, "treasury writable");
+        assert_eq!(ix.accounts[5].pubkey, treasury);
+        assert_eq!(ix.accounts[6].pubkey, player);
+        assert!(ix.accounts[6].is_writable, "player writable");
+        assert!(
+            ix.accounts[7].is_signer && ix.accounts[7].is_writable,
+            "cranker is signer + payer"
+        );
+        assert_eq!(ix.accounts[7].pubkey, cranker.pubkey());
+        assert!(!ix.accounts[8].is_writable, "system_program readonly");
     }
 }
