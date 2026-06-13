@@ -41,6 +41,10 @@ pub const WORD: usize = 32;
 /// A terminal transcript has all four steps: both commits + both reveals.
 pub const TERMINAL_STEP_COUNT: u8 = 4;
 
+/// Sentinel for a guess that has not been revealed (mirrors the on-chain
+/// `UNREVEALED` value and `CertLib.UNREVEALED`).
+pub const UNREVEALED: u8 = 255;
+
 /// One settlement leg of a match — the per-chain escrow terms. Each
 /// chain's verifier checks ITS leg against locally recorded state and
 /// executes only its own leg's amounts.
@@ -237,6 +241,96 @@ impl Checkpoint {
         debug_assert_eq!(out.len(), CHECKPOINT_WORDS.saturating_mul(WORD));
         out
     }
+
+    /// The outcome this checkpoint entitles a claimant to under the timeout
+    /// semantics (committer/revealer wins; neither → both forfeit). The exact
+    /// canonical mapping shared by `CertLib.deriveClaimOutcome` (Solidity) and
+    /// `programs/coordination-game/src/cert.rs::derive_claim_outcome` (BPF) —
+    /// this is the backend/operator/AI-player copy used to build the settle
+    /// `OutcomeCert`. The 4-way agreement is pinned by the golden vectors in
+    /// `tests/fixtures/cert-vectors.json`.
+    pub fn derive_outcome_kind(&self) -> OutcomeKind {
+        if self.step_count == TERMINAL_STEP_COUNT {
+            return self.derive_terminal_outcome();
+        }
+        if self.step_count == 1 {
+            // One commit landed; the committer wins. Inconsistent committer
+            // field → both forfeit.
+            return match self.first_committer {
+                1 => OutcomeKind::TimeoutP1Wins,
+                2 => OutcomeKind::TimeoutP2Wins,
+                _ => OutcomeKind::TimeoutBothForfeit,
+            };
+        }
+        if self.step_count == 3 {
+            // Both committed, exactly one revealed: the revealer wins.
+            // Both-set or both-unset is inconsistent → both forfeit.
+            let p1_revealed = self.p1_guess != UNREVEALED;
+            let p2_revealed = self.p2_guess != UNREVEALED;
+            if p1_revealed == p2_revealed {
+                return OutcomeKind::TimeoutBothForfeit;
+            }
+            return if p1_revealed {
+                OutcomeKind::TimeoutP1Wins
+            } else {
+                OutcomeKind::TimeoutP2Wins
+            };
+        }
+        // step 0 (nobody committed) / step 2 (both committed, none revealed).
+        OutcomeKind::TimeoutBothForfeit
+    }
+
+    /// Recompute the payoff-matrix outcome from a terminal transcript.
+    /// Mirrors `CertLib.deriveTerminalOutcome` / `payoff.rs` same-chain rules.
+    fn derive_terminal_outcome(&self) -> OutcomeKind {
+        let p1_correct = self.p1_guess == self.matchup_type;
+        let p2_correct = self.p2_guess == self.matchup_type;
+        if self.matchup_type == 0 {
+            if p1_correct && p2_correct {
+                return OutcomeKind::HomogBothCorrect;
+            }
+            if p1_correct {
+                return OutcomeKind::HomogP1Correct;
+            }
+            if p2_correct {
+                return OutcomeKind::HomogP2Correct;
+            }
+            return OutcomeKind::BothWrong;
+        }
+        if !p1_correct && !p2_correct {
+            return OutcomeKind::BothWrong;
+        }
+        if p1_correct == p2_correct {
+            return if self.first_committer == 1 {
+                OutcomeKind::HeteroP1Wins
+            } else {
+                OutcomeKind::HeteroP2Wins
+            };
+        }
+        if p1_correct {
+            OutcomeKind::HeteroP1Wins
+        } else {
+            OutcomeKind::HeteroP2Wins
+        }
+    }
+
+    /// Build the `OutcomeCert` this checkpoint resolves to, binding it to the
+    /// given `match_id`. The outcome kind is derived canonically; every other
+    /// field is carried through so the resulting cert's digest matches what the
+    /// players co-signed in the transcript.
+    pub fn to_outcome_cert(&self, match_id: [u8; 32]) -> OutcomeCert {
+        OutcomeCert {
+            match_id,
+            match_live_digest: self.match_live_digest,
+            outcome_kind: self.derive_outcome_kind(),
+            step_count: self.step_count,
+            p1_guess: self.p1_guess,
+            p2_guess: self.p2_guess,
+            first_committer: self.first_committer,
+            matchup_type: self.matchup_type,
+            transcript_hash: self.transcript_hash,
+        }
+    }
 }
 
 impl OutcomeCert {
@@ -369,5 +463,82 @@ mod tests {
         assert_eq!(keccak256(b"SWARM_XCHAIN_MATCH_LIVE"), MATCH_LIVE_MAGIC);
         assert_eq!(keccak256(b"SWARM_XCHAIN_CHECKPOINT"), CHECKPOINT_MAGIC);
         assert_eq!(keccak256(b"SWARM_XCHAIN_OUTCOME"), OUTCOME_MAGIC);
+    }
+
+    fn cp(step: u8, p1: u8, p2: u8, first: u8, matchup: u8) -> Checkpoint {
+        Checkpoint {
+            match_live_digest: [0; 32],
+            step_count: step,
+            p1_commit: [0; 32],
+            p2_commit: [0; 32],
+            p1_guess: p1,
+            p2_guess: p2,
+            first_committer: first,
+            matchup_type: matchup,
+            transcript_hash: [0; 32],
+        }
+    }
+
+    /// Cross-checks the backend copy of the derivation against the EXACT same
+    /// vectors `programs/coordination-game/src/cert.rs` asserts against
+    /// `CertLib.deriveClaimOutcome`. Any drift between the BPF and backend
+    /// copies of this logic surfaces here.
+    #[test]
+    fn derive_outcome_kind_matches_certlib_vectors() {
+        use OutcomeKind::*;
+        // Terminal heterogeneous: correct guess wins.
+        assert_eq!(cp(4, 1, 0, 1, 1).derive_outcome_kind(), HeteroP1Wins);
+        assert_eq!(cp(4, 0, 1, 1, 1).derive_outcome_kind(), HeteroP2Wins);
+        // Both correct → first committer.
+        assert_eq!(cp(4, 1, 1, 2, 1).derive_outcome_kind(), HeteroP2Wins);
+        assert_eq!(cp(4, 0, 0, 1, 1).derive_outcome_kind(), BothWrong);
+        // Terminal homogeneous.
+        assert_eq!(cp(4, 0, 0, 1, 0).derive_outcome_kind(), HomogBothCorrect);
+        assert_eq!(cp(4, 0, 1, 1, 0).derive_outcome_kind(), HomogP1Correct);
+        assert_eq!(cp(4, 1, 0, 1, 0).derive_outcome_kind(), HomogP2Correct);
+        // Timeout step 1: committer wins; bad committer → both forfeit.
+        assert_eq!(cp(1, 255, 255, 1, 1).derive_outcome_kind(), TimeoutP1Wins);
+        assert_eq!(
+            cp(1, 255, 255, 0, 1).derive_outcome_kind(),
+            TimeoutBothForfeit
+        );
+        // Timeout step 3: sole revealer wins; both-set → both forfeit (guard).
+        assert_eq!(cp(3, 1, 255, 1, 1).derive_outcome_kind(), TimeoutP1Wins);
+        assert_eq!(cp(3, 255, 1, 1, 1).derive_outcome_kind(), TimeoutP2Wins);
+        assert_eq!(cp(3, 1, 1, 1, 1).derive_outcome_kind(), TimeoutBothForfeit);
+        // Step 0 / 2: both forfeit.
+        assert_eq!(
+            cp(0, 255, 255, 255, 1).derive_outcome_kind(),
+            TimeoutBothForfeit
+        );
+        assert_eq!(
+            cp(2, 255, 255, 1, 1).derive_outcome_kind(),
+            TimeoutBothForfeit
+        );
+    }
+
+    #[test]
+    fn to_outcome_cert_carries_transcript_and_derives_kind() {
+        let mut checkpoint = cp(4, 1, 0, 1, 1);
+        checkpoint.match_live_digest = [0xAB; 32];
+        checkpoint.transcript_hash = [0xCD; 32];
+        let match_id = [0xEF; 32];
+
+        let oc = checkpoint.to_outcome_cert(match_id);
+        assert_eq!(oc.match_id, match_id);
+        assert_eq!(oc.match_live_digest, [0xAB; 32]);
+        assert_eq!(oc.transcript_hash, [0xCD; 32]);
+        assert_eq!(oc.outcome_kind, OutcomeKind::HeteroP1Wins);
+        assert_eq!(oc.step_count, 4);
+        assert_eq!(oc.p1_guess, 1);
+        assert_eq!(oc.p2_guess, 0);
+        assert_eq!(oc.first_committer, 1);
+        assert_eq!(oc.matchup_type, 1);
+
+        // A non-terminal checkpoint yields a timeout kind whose digest is a
+        // valid, encodable outcome cert (settle accepts timeout kinds at <4).
+        let timeout_oc = cp(1, 255, 255, 2, 1).to_outcome_cert(match_id);
+        assert_eq!(timeout_oc.outcome_kind, OutcomeKind::TimeoutP2Wins);
+        assert_eq!(timeout_oc.encode().len(), 352);
     }
 }
