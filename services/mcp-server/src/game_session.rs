@@ -210,6 +210,53 @@ fn decode_signed_tx(signed_tx_b64: &str) -> Result<Vec<u8>> {
         .context("invalid base64 signed transaction")
 }
 
+/// Whether `action` is a cross-chain (Solana↔EVM) Solana-leg tx submitted via
+/// `game_submit_tx`. These broadcast like any Solana tx but, unlike same-chain
+/// actions, drive no `GameSession` state machine — settlement happens off the
+/// MCP session via checkpoint relay + settle.
+fn is_xchain_solana_action(action: &str) -> bool {
+    matches!(
+        action,
+        "create_xmatch" | "refund_xmatch_nocert" | "refund_xmatch_timeout" | "settle_xmatch"
+    )
+}
+
+/// Emit the critical business event for a confirmed cross-chain Solana-leg tx.
+/// Cross-chain matches have no on-chain `Game` and no MCP session state to
+/// advance, so observability is the entire post-submit responsibility.
+fn log_xchain_solana_action(wallet: &str, action: &str, sig: &str) {
+    let event = match action {
+        "create_xmatch" => "cross-chain Solana leg funded",
+        "refund_xmatch_nocert" => "cross-chain Solana refund (no-cert) settled",
+        "refund_xmatch_timeout" => "cross-chain Solana refund (timeout) settled",
+        "settle_xmatch" => "cross-chain Solana leg settled",
+        _ => "cross-chain Solana action confirmed",
+    };
+    tracing::info!(wallet = %wallet, action = %action, sig = %sig, "{event}");
+}
+
+/// Agent-facing result for a confirmed cross-chain Solana-leg tx, including the
+/// next step the agent should take.
+fn xchain_submit_result(action: &str, sig: &str) -> serde_json::Value {
+    let next_step = match action {
+        "create_xmatch" => {
+            "Your Solana leg is funded. Poll xchain_match_status until the \
+             operator locks both legs, then sign and submit the outcome certificate with \
+             your session key."
+        }
+        "settle_xmatch" => {
+            "Settlement submitted. Read your PlayerProfile / on-chain balance \
+             to confirm the payout."
+        }
+        _ => "Refund submitted; your stake has been returned to your wallet.",
+    };
+    serde_json::json!({
+        "tx_signature": sig,
+        "status": "submitted",
+        "next_step": next_step,
+    })
+}
+
 /// Pure function: route a per-call network argument to one of the three
 /// configured RPC URLs. Extracted so `GameSessionManager::pick_rpc_url`
 /// can be tested without standing up a real `FirestoreDb`.
@@ -875,6 +922,15 @@ impl GameSessionManager {
             "commit_guess" => self.after_commit_guess(wallet, &session).await?,
             "reveal_guess" => self.after_reveal_guess(wallet, &session).await,
             "create_game" => self.after_create_game(wallet, &session).await?,
+            _ if is_xchain_solana_action(action) => {
+                // Cross-chain Solana-leg actions don't drive the same-chain
+                // GameSession state machine (cross-chain resolution happens via
+                // checkpoint relay + settle, not create→commit→reveal). The
+                // broadcast above already landed the tx; here we just emit the
+                // critical business event so it's queryable in Cloud Logging.
+                log_xchain_solana_action(wallet, action, &sig_str);
+                return Ok(xchain_submit_result(action, &sig_str));
+            }
             other => {
                 tracing::warn!(wallet = %wallet, action = other, "unknown action for game_submit_tx");
             }
@@ -2026,5 +2082,55 @@ mod tests {
             .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
 
         assert_eq!(restored_preimage, Some(preimage_bytes));
+    }
+
+    // --- Cross-chain submit wiring (5d-B) ---
+
+    #[test]
+    fn xchain_solana_actions_are_recognized() {
+        for a in [
+            "create_xmatch",
+            "refund_xmatch_nocert",
+            "refund_xmatch_timeout",
+            "settle_xmatch",
+        ] {
+            assert!(is_xchain_solana_action(a), "{a} must be recognized");
+        }
+        // Same-chain actions and the EVM-leg (submitted off-server) are NOT.
+        for a in [
+            "create_game",
+            "join_game",
+            "commit_guess",
+            "reveal_guess",
+            "create_match",
+        ] {
+            assert!(!is_xchain_solana_action(a), "{a} must not be xchain");
+        }
+    }
+
+    #[test]
+    fn xchain_submit_result_routes_next_step_by_action() {
+        let fund = xchain_submit_result("create_xmatch", "sig1");
+        assert_eq!(fund["tx_signature"], "sig1");
+        assert_eq!(fund["status"], "submitted");
+        assert!(fund["next_step"]
+            .as_str()
+            .expect("next_step")
+            .contains("xchain_match_status"));
+
+        let settle = xchain_submit_result("settle_xmatch", "sig2");
+        assert!(settle["next_step"]
+            .as_str()
+            .expect("next_step")
+            .contains("PlayerProfile"));
+
+        // Both refund kinds fall through to the refund guidance.
+        for kind in ["refund_xmatch_nocert", "refund_xmatch_timeout"] {
+            let r = xchain_submit_result(kind, "sig3");
+            assert!(r["next_step"]
+                .as_str()
+                .expect("next_step")
+                .contains("Refund submitted"));
+        }
     }
 }
