@@ -15,6 +15,9 @@ use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 pub enum CosignError {
     BadSecretKey,
     SigningFailed,
+    /// A co-signature recovered successfully but to the wrong address — the
+    /// signer is not the expected session key.
+    SignerMismatch,
 }
 
 /// The 20-byte Ethereum address of a secp256k1 secret key — the
@@ -79,6 +82,28 @@ pub fn sign_checkpoint(secret_key: &[u8; 32], cp: &Checkpoint) -> Result<[u8; 65
     sign_digest(secret_key, &keccak256(&cp.encode()))
 }
 
+/// Verify a checkpoint co-signed by BOTH session keys, exactly as the on-chain
+/// `verify_checkpoint` does: `sigs[0]` must recover to leg A's session key
+/// (the Solana leg) and `sigs[1]` to leg B's (the EVM leg), both over the
+/// canonical checkpoint digest. The backend relay calls this before
+/// storing/relaying a checkpoint; settle assembly calls it before submitting.
+/// Returns the digest on success so callers need not recompute it.
+pub fn verify_cosigned_checkpoint(
+    cp: &Checkpoint,
+    sigs: &[[u8; 65]; 2],
+    leg_a_session_key: &[u8; 20],
+    leg_b_session_key: &[u8; 20],
+) -> Result<[u8; 32], CosignError> {
+    let digest = keccak256(&cp.encode());
+    if recover_address(&digest, &sigs[0])? != *leg_a_session_key {
+        return Err(CosignError::SignerMismatch);
+    }
+    if recover_address(&digest, &sigs[1])? != *leg_b_session_key {
+        return Err(CosignError::SignerMismatch);
+    }
+    Ok(digest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +161,104 @@ mod tests {
     #[test]
     fn rejects_zero_secret_key() {
         assert_eq!(eth_address(&[0u8; 32]), Err(CosignError::BadSecretKey));
+    }
+
+    fn sample_checkpoint() -> Checkpoint {
+        Checkpoint {
+            match_live_digest: [0x11; 32],
+            step_count: 4,
+            p1_commit: [0x22; 32],
+            p2_commit: [0x33; 32],
+            p1_guess: 1,
+            p2_guess: 0,
+            first_committer: 1,
+            matchup_type: 1,
+            transcript_hash: [0x44; 32],
+        }
+    }
+
+    #[test]
+    fn verify_cosigned_checkpoint_accepts_both_session_keys() {
+        let sk_a = secret(0x0a);
+        let sk_b = secret(0x0b);
+        let cp = sample_checkpoint();
+        let sigs = [
+            sign_checkpoint(&sk_a, &cp).unwrap(),
+            sign_checkpoint(&sk_b, &cp).unwrap(),
+        ];
+        let digest = verify_cosigned_checkpoint(
+            &cp,
+            &sigs,
+            &eth_address(&sk_a).unwrap(),
+            &eth_address(&sk_b).unwrap(),
+        )
+        .expect("both signatures valid");
+        assert_eq!(digest, keccak256(&cp.encode()));
+    }
+
+    #[test]
+    fn verify_cosigned_checkpoint_rejects_swapped_signatures() {
+        // sigs[0] must be leg A, sigs[1] leg B — order is part of the contract.
+        let sk_a = secret(0x0a);
+        let sk_b = secret(0x0b);
+        let cp = sample_checkpoint();
+        let swapped = [
+            sign_checkpoint(&sk_b, &cp).unwrap(),
+            sign_checkpoint(&sk_a, &cp).unwrap(),
+        ];
+        assert_eq!(
+            verify_cosigned_checkpoint(
+                &cp,
+                &swapped,
+                &eth_address(&sk_a).unwrap(),
+                &eth_address(&sk_b).unwrap(),
+            ),
+            Err(CosignError::SignerMismatch)
+        );
+    }
+
+    #[test]
+    fn verify_cosigned_checkpoint_rejects_wrong_signer() {
+        let sk_a = secret(0x0a);
+        let sk_b = secret(0x0b);
+        let imposter = secret(0x0c);
+        let cp = sample_checkpoint();
+        let sigs = [
+            sign_checkpoint(&sk_a, &cp).unwrap(),
+            sign_checkpoint(&imposter, &cp).unwrap(),
+        ];
+        assert_eq!(
+            verify_cosigned_checkpoint(
+                &cp,
+                &sigs,
+                &eth_address(&sk_a).unwrap(),
+                &eth_address(&sk_b).unwrap(),
+            ),
+            Err(CosignError::SignerMismatch)
+        );
+    }
+
+    #[test]
+    fn verify_cosigned_checkpoint_rejects_signature_over_different_checkpoint() {
+        // A signature over a DIFFERENT checkpoint recovers to some address but
+        // not the expected session key → mismatch (tamper detection).
+        let sk_a = secret(0x0a);
+        let sk_b = secret(0x0b);
+        let cp = sample_checkpoint();
+        let mut tampered = cp.clone();
+        tampered.step_count = 3;
+        let sigs = [
+            sign_checkpoint(&sk_a, &tampered).unwrap(),
+            sign_checkpoint(&sk_b, &tampered).unwrap(),
+        ];
+        assert_eq!(
+            verify_cosigned_checkpoint(
+                &cp,
+                &sigs,
+                &eth_address(&sk_a).unwrap(),
+                &eth_address(&sk_b).unwrap(),
+            ),
+            Err(CosignError::SignerMismatch)
+        );
     }
 }
