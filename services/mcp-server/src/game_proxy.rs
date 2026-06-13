@@ -96,6 +96,19 @@ impl GameApiProxy {
             .await
             .map_err(map_game_api_error)
     }
+
+    /// Get the unsigned Solana refund tx (permissionless) for the player.
+    pub async fn xqueue_build_sol_refund(
+        &self,
+        wallet: &str,
+        match_id: &str,
+        kind: &str,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_build_sol_refund(wallet, match_id, kind)
+            .await
+            .map_err(map_game_api_error)
+    }
 }
 
 /// Map shared crate errors to MCP server errors with structured logging.

@@ -380,6 +380,39 @@ impl GameApiClient {
             .map_err(Into::into)
     }
 
+    /// `POST /internal/xqueue/build-sol-refund` — unsigned Solana refund tx
+    /// (permissionless) for the player to sign + submit. Returns the raw JSON
+    /// (`unsigned_tx`, `blockhash`, `match_id`, `action`).
+    pub async fn xqueue_build_sol_refund(
+        &self,
+        wallet: &str,
+        match_id: &str,
+        kind: &str,
+    ) -> Result<serde_json::Value, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+            match_id: &'a str,
+            kind: &'a str,
+        }
+        let url = format!("{}/internal/xqueue/build-sol-refund", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body {
+                wallet,
+                match_id,
+                kind,
+            })
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
     // -- Games (token required) --------------------------------------------
 
     /// `POST /games/committed` — notify the backend that this player committed their guess.
