@@ -9,8 +9,9 @@ use anchor_lang::InstructionData;
 use coordination::{
     cert::{MatchLiveCertNoA, OutcomeCertArg},
     instruction::{
-        CommitGuess, CreateGame, CreateXmatch, DepositStake, JoinGame, RefundXmatchNocert,
-        RefundXmatchTimeout, RevealGuess, SettleXmatch,
+        CommitGuess, CreateGame, CreateXmatch, DepositStake, InitializeXpool, JoinGame,
+        LockXtranche, RefundXmatchNocert, RefundXmatchTimeout, RevealGuess, SettleXmatch,
+        XpoolDeposit,
     },
     instructions::xchain::CreateXMatchArgs,
     ID as PROGRAM_ID,
@@ -103,6 +104,96 @@ pub fn build_create_xmatch(
             AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
         ],
         data: CreateXmatch { match_id, args }.data(),
+    }
+}
+
+/// Build the `initialize_xpool` instruction — one-time setup of the operator
+/// float pool that backs every cross-chain match's tranche. Authority-signed
+/// (must equal `global_config.authority`). `operator` is the Solana key allowed
+/// to lock tranches; `operator_signer` is the 20-byte secp256k1 eth-address of
+/// the off-chain cosigner. Account mut-flags mirror `InitializeXPool<'info>`.
+pub fn build_initialize_xpool(
+    operator: &Pubkey,
+    operator_signer: [u8; 20],
+    max_tranche_lamports: u64,
+    max_claim_window_secs: u32,
+    skew_margin_secs: u32,
+    authority: &Pubkey,
+) -> Instruction {
+    assert!(skew_margin_secs > 0, "skew_margin_secs must be non-zero");
+    assert!(
+        operator_signer != [0u8; 20],
+        "operator_signer must not be all zeros"
+    );
+
+    let (xpool_pda, _) = pda::xpool_pda();
+    let (global_config_pda, _) = pda::global_config_pda();
+
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xpool_pda, false),
+            AccountMeta::new_readonly(global_config_pda, false),
+            AccountMeta::new(*authority, true), // signer + payer
+            AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+        ],
+        data: InitializeXpool {
+            operator: *operator,
+            operator_signer,
+            max_tranche_lamports,
+            max_claim_window_secs,
+            skew_margin_secs,
+        }
+        .data(),
+    }
+}
+
+/// Build the `xpool_deposit` instruction — credit `amount` lamports from the
+/// funder wallet into the operator float pool's free balance via a System CPI.
+/// The funder signs and pays. Account mut-flags mirror `XPoolDeposit<'info>`.
+pub fn build_xpool_deposit(amount: u64, funder: &Pubkey) -> Instruction {
+    assert!(amount > 0, "amount must be non-zero");
+
+    let (xpool_pda, _) = pda::xpool_pda();
+
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xpool_pda, false),
+            AccountMeta::new(*funder, true), // signer + funder
+            AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+        ],
+        data: XpoolDeposit { amount }.data(),
+    }
+}
+
+/// Build the `lock_xtranche` instruction — moves `tranche_lamports` from the
+/// pool's free balance into the locked balance and binds it to the funded
+/// match, transitioning it to `Locked` (the precondition for settle). The
+/// operator signs (must equal `pool.operator`); it does not pay rent. Account
+/// mut-flags mirror `LockXTranche<'info>` exactly.
+pub fn build_lock_xtranche(
+    match_id: [u8; 32],
+    tranche_lamports: u64,
+    operator: &Pubkey,
+) -> Instruction {
+    assert!(tranche_lamports > 0, "tranche_lamports must be non-zero");
+
+    let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+    let (xpool_pda, _) = pda::xpool_pda();
+
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xmatch_pda, false),
+            AccountMeta::new(xpool_pda, false),
+            AccountMeta::new_readonly(*operator, true), // signer, not payer
+        ],
+        data: LockXtranche {
+            match_id,
+            tranche_lamports,
+        }
+        .data(),
     }
 }
 
@@ -526,5 +617,117 @@ mod tests {
         assert_eq!(ix.accounts[1].pubkey, xpool_pda);
         assert!(ix.accounts.iter().all(|a| a.is_writable && !a.is_signer));
         assert_eq!(ix.accounts[2].pubkey, player);
+    }
+
+    #[test]
+    fn build_initialize_xpool_has_correct_accounts_and_mut_flags() {
+        let operator = Pubkey::new_unique();
+        let authority = Keypair::new();
+        let ix = build_initialize_xpool(
+            &operator,
+            [0x42; 20],
+            1_000_000_000,
+            86_400,
+            30,
+            &authority.pubkey(),
+        );
+
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 4 accounts: pool (init), global_config, authority (signer+payer), system.
+        assert_eq!(
+            ix.accounts.len(),
+            4,
+            "initialize_xpool must have 4 accounts"
+        );
+        let (xpool_pda, _) = pda::xpool_pda();
+        assert_eq!(ix.accounts[0].pubkey, xpool_pda);
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
+        assert!(!ix.accounts[1].is_writable, "global_config readonly");
+        assert!(
+            ix.accounts[2].is_signer && ix.accounts[2].is_writable,
+            "authority is signer + payer"
+        );
+        assert_eq!(ix.accounts[2].pubkey, authority.pubkey());
+        assert!(!ix.accounts[3].is_writable, "system_program readonly");
+    }
+
+    #[test]
+    #[should_panic(expected = "operator_signer must not be all zeros")]
+    fn build_initialize_xpool_rejects_zero_signer() {
+        let _ = build_initialize_xpool(
+            &Pubkey::new_unique(),
+            [0u8; 20],
+            1,
+            1,
+            30,
+            &Pubkey::new_unique(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "skew_margin_secs must be non-zero")]
+    fn build_initialize_xpool_rejects_zero_skew() {
+        let _ = build_initialize_xpool(
+            &Pubkey::new_unique(),
+            [0x42; 20],
+            1,
+            1,
+            0,
+            &Pubkey::new_unique(),
+        );
+    }
+
+    #[test]
+    fn build_xpool_deposit_has_correct_accounts_and_mut_flags() {
+        let funder = Keypair::new();
+        let ix = build_xpool_deposit(500_000_000, &funder.pubkey());
+
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 3 accounts: pool, funder (signer), system.
+        assert_eq!(ix.accounts.len(), 3, "xpool_deposit must have 3 accounts");
+        let (xpool_pda, _) = pda::xpool_pda();
+        assert_eq!(ix.accounts[0].pubkey, xpool_pda);
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
+        assert!(
+            ix.accounts[1].is_signer && ix.accounts[1].is_writable,
+            "funder is signer + writable"
+        );
+        assert_eq!(ix.accounts[1].pubkey, funder.pubkey());
+        assert!(!ix.accounts[2].is_writable, "system_program readonly");
+    }
+
+    #[test]
+    #[should_panic(expected = "amount must be non-zero")]
+    fn build_xpool_deposit_rejects_zero_amount() {
+        let _ = build_xpool_deposit(0, &Pubkey::new_unique());
+    }
+
+    #[test]
+    fn build_lock_xtranche_has_correct_accounts_and_mut_flags() {
+        let operator = Keypair::new();
+        let match_id = [0x55; 32];
+        let ix = build_lock_xtranche(match_id, 50_000_000, &operator.pubkey());
+
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 3 accounts: xmatch, pool, operator (signer, not payer).
+        assert_eq!(ix.accounts.len(), 3, "lock_xtranche must have 3 accounts");
+        let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+        let (xpool_pda, _) = pda::xpool_pda();
+        assert_eq!(ix.accounts[0].pubkey, xmatch_pda);
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
+        assert_eq!(ix.accounts[1].pubkey, xpool_pda);
+        assert!(ix.accounts[1].is_writable && !ix.accounts[1].is_signer);
+        // Operator signs but does NOT pay rent → readonly signer.
+        assert!(
+            ix.accounts[2].is_signer && !ix.accounts[2].is_writable,
+            "operator is readonly signer"
+        );
+        assert_eq!(ix.accounts[2].pubkey, operator.pubkey());
+    }
+
+    #[test]
+    #[should_panic(expected = "tranche_lamports must be non-zero")]
+    fn build_lock_xtranche_rejects_zero_tranche() {
+        let _ = build_lock_xtranche([0x55; 32], 0, &Pubkey::new_unique());
     }
 }

@@ -192,6 +192,57 @@ impl GameTxBuilder {
         Ok(unsigned)
     }
 
+    /// Build the unsigned `initialize_xpool` transaction — one-time setup of the
+    /// operator float pool. `self.player` is the authority (fee payer + signer)
+    /// and MUST equal `global_config.authority`. `operator` is the Solana key
+    /// allowed to lock tranches; `operator_signer` is the 20-byte secp256k1
+    /// eth-address of the off-chain cosigner.
+    pub async fn build_initialize_xpool(
+        &self,
+        operator: &Pubkey,
+        operator_signer: [u8; 20],
+        max_tranche_lamports: u64,
+        max_claim_window_secs: u32,
+        skew_margin_secs: u32,
+    ) -> Result<UnsignedTx> {
+        anyhow::ensure!(skew_margin_secs > 0, "skew_margin_secs must be non-zero");
+        anyhow::ensure!(
+            operator_signer != [0u8; 20],
+            "operator_signer must not be all zeros"
+        );
+        let ix = instructions::build_initialize_xpool(
+            operator,
+            operator_signer,
+            max_tranche_lamports,
+            max_claim_window_secs,
+            skew_margin_secs,
+            &self.player,
+        );
+        self.build_unsigned(&[ix]).await
+    }
+
+    /// Build the unsigned `xpool_deposit` transaction — credit `amount` lamports
+    /// from `self.player` (the funder + fee payer) into the pool's free balance.
+    pub async fn build_xpool_deposit(&self, amount: u64) -> Result<UnsignedTx> {
+        anyhow::ensure!(amount > 0, "amount must be non-zero");
+        let ix = instructions::build_xpool_deposit(amount, &self.player);
+        self.build_unsigned(&[ix]).await
+    }
+
+    /// Build the unsigned `lock_xtranche` transaction — binds `tranche_lamports`
+    /// from the pool to a funded match, transitioning it to `Locked` (the
+    /// precondition for settle). `self.player` is the operator (signer + fee
+    /// payer) and MUST equal `pool.operator`.
+    pub async fn build_lock_xtranche(
+        &self,
+        match_id: [u8; 32],
+        tranche_lamports: u64,
+    ) -> Result<UnsignedTx> {
+        anyhow::ensure!(tranche_lamports > 0, "tranche_lamports must be non-zero");
+        let ix = instructions::build_lock_xtranche(match_id, tranche_lamports, &self.player);
+        self.build_unsigned(&[ix]).await
+    }
+
     /// Build the unsigned `refund_xmatch_timeout` transaction (Solana leg) —
     /// permissionless; the player (`self.player`) is the fee payer + refund
     /// recipient. Reclaims the stake and releases any locked tranche after the
