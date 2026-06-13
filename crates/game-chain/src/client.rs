@@ -192,6 +192,25 @@ impl GameTxBuilder {
         Ok(unsigned)
     }
 
+    /// Build the unsigned `refund_xmatch_timeout` transaction (Solana leg) —
+    /// permissionless; the player (`self.player`) is the fee payer + refund
+    /// recipient. Reclaims the stake and releases any locked tranche after the
+    /// claim window.
+    pub async fn build_refund_xmatch_timeout(&self, match_id: [u8; 32]) -> Result<UnsignedTx> {
+        let ix = instructions::build_refund_xmatch_timeout(match_id, &self.player);
+        let unsigned = self.build_unsigned(&[ix]).await?;
+        Ok(unsigned)
+    }
+
+    /// Build the unsigned `refund_xmatch_nocert` transaction (Solana leg) —
+    /// permissionless; refunds the player when a funded match never had a
+    /// certificate signed.
+    pub async fn build_refund_xmatch_nocert(&self, match_id: [u8; 32]) -> Result<UnsignedTx> {
+        let ix = instructions::build_refund_xmatch_nocert(match_id, &self.player);
+        let unsigned = self.build_unsigned(&[ix]).await?;
+        Ok(unsigned)
+    }
+
     // -- Submit ----------------------------------------------------------------
 
     /// Submit a pre-signed transaction to the network.
