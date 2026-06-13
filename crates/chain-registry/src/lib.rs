@@ -99,8 +99,15 @@ const REGISTRY: &[ChainEntry] = &[
         finality: Finality::EvmFinalizedTag,
         native_symbol: "ETH",
         native_decimals: 18,
-        stake_base_units: 2_500_000_000_000_000, // 0.0025 ETH
-        max_tranche_base_units: 5_000_000_000_000_000, // 0.005 ETH
+        // Testnet: MUST match the deployed CrossChainGame's stakeWei/maxTrancheWei
+        // (0.00001 / 0.00002 ETH) — the contract was deployed with tiny stakes to
+        // conserve testnet ETH, and createMatch records exactly stakeWei, so the
+        // cert's leg_b.stake must equal it or settle's digest check fails. This
+        // breaks the 0.05-SOL↔ETH parity intended for mainnet; real parity needs
+        // the operator rate-quote mechanism (see decision.md / 5d-H) + a mainnet
+        // contract deployed with the parity stake. Verified on-chain 2026-06-13.
+        stake_base_units: 10_000_000_000_000, // 0.00001 ETH (== deployed stakeWei)
+        max_tranche_base_units: 20_000_000_000_000, // 0.00002 ETH (== deployed maxTrancheWei)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         // CrossChainGame deployed 2026-06-12 (operatorSigner 0x54a6…9A30 verified on-chain).
