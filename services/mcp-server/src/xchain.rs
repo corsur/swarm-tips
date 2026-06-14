@@ -168,6 +168,78 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
     }))
 }
 
+/// Build the unsigned EVM permissionless `lockTranche` call from a matched relay
+/// payload. The operator's match-live signature (`operator_signature`, produced
+/// at pairing) authorizes the lock — no new operator action — and the cert is
+/// reconstructed from the payload (chain tags recomputed as `keccak256(chain id)`,
+/// matching game-api's `chain_tag`). The locked amount is `legB.tranche`. The
+/// client submits + pays gas. Returns the same client-ready shape as the fund
+/// builder.
+pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
+    let leg_a = payload.get("leg_a").ok_or("payload missing leg_a")?;
+    let leg_b = payload.get("leg_b").ok_or("payload missing leg_b")?;
+    let str_at = |v: &Value, k: &str| -> Result<String, String> {
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("missing string field {k}"))
+    };
+    let u64_at = |k: &str| -> Result<u64, String> {
+        payload
+            .get(k)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("missing u64 field {k}"))
+    };
+    let leg_parts = |leg: &Value| -> Result<evm_chain::LegParts, String> {
+        Ok(evm_chain::LegParts {
+            // chain_tag isn't carried in the payload; recompute it the same way
+            // game-api does so the reconstructed cert hashes identically (else the
+            // operator signature won't verify on-chain).
+            chain_tag: chain_core::cert_schema::keccak256(str_at(leg, "chain")?.as_bytes()),
+            contract: decode_0x::<32>(&str_at(leg, "contract")?)?,
+            player: decode_0x::<32>(&str_at(leg, "player")?)?,
+            session_key: decode_0x::<20>(&str_at(leg, "session_key")?)?,
+            stake: str_at(leg, "stake_base_units")?
+                .parse()
+                .map_err(|e| format!("bad stake: {e}"))?,
+            tranche: str_at(leg, "tranche_base_units")?
+                .parse()
+                .map_err(|e| format!("bad tranche: {e}"))?,
+        })
+    };
+
+    let cert = evm_chain::CertParts {
+        match_id: decode_0x::<32>(&str_at(payload, "match_id")?)?,
+        tournament_id: u64_at("tournament_id")?,
+        matchup_commitment: decode_0x::<32>(&str_at(payload, "matchup_commitment")?)?,
+        leg_a: leg_parts(leg_a)?,
+        leg_b: leg_parts(leg_b)?,
+        quote_timestamp: u64_at("quote_timestamp")?,
+        quote_max_age_secs: u32::try_from(u64_at("quote_max_age_secs")?)
+            .map_err(|_| "quote_max_age overflow".to_string())?,
+        match_deadline: u64_at("match_deadline")?,
+        claim_window_secs: u32::try_from(u64_at("claim_window_secs")?)
+            .map_err(|_| "claim_window overflow".to_string())?,
+        a_is_p1: u8::try_from(u64_at("a_is_p1")?).map_err(|_| "a_is_p1 overflow".to_string())?,
+    };
+    let contract = decode_0x::<20>(&str_at(leg_b, "contract")?)?;
+    let operator_sig = decode_0x::<65>(&str_at(payload, "operator_signature")?)?;
+
+    let call = evm_chain::build_lock_tranche_parts(contract, cert, operator_sig);
+    let (to, data, value) = call.to_hex_parts();
+    Ok(json!({
+        "chain": str_at(leg_b, "chain").unwrap_or_default(),
+        "to": to,
+        "data": data,
+        "value_wei": value,
+        "match_id": str_at(payload, "match_id")?,
+        "instructions": "Permissionless lock: sign this as an EIP-1559 transaction \
+            with your EVM wallet (fill gas/nonce/chainId locally) and submit it to \
+            lock your leg's tranche. value_wei is 0; you pay only gas. The operator \
+            signature in the call authorizes it — no operator action needed.",
+    }))
+}
+
 /// Build the unsigned EVM refund call (permissionless) for the EVM leg of a
 /// cross-chain match, from a matched relay payload. `kind` is `"timeout"`
 /// (after the claim window) or `"nocert"` (a funded match that never got a
@@ -280,6 +352,58 @@ mod tests {
     fn build_evm_create_match_call_rejects_missing_fields() {
         assert!(build_evm_create_match_call(&json!({})).is_err());
         assert!(build_evm_create_match_call(&json!({"leg_a":{},"leg_b":{}})).is_err());
+    }
+
+    #[test]
+    fn build_evm_lock_call_from_relay_payload() {
+        let leg = |sk: &str| {
+            json!({
+                "chain": "eip155:84532",
+                "contract": format!("0x{}", "11".repeat(32)),
+                "player": format!("0x{}", "22".repeat(32)),
+                "session_key": format!("0x{}", sk.repeat(20)),
+                "stake_base_units": "10000000000000",
+                "tranche_base_units": "10000000000000",
+            })
+        };
+        let payload = json!({
+            "match_id": format!("0x{}", "aa".repeat(32)),
+            "tournament_id": 2u64,
+            "matchup_commitment": format!("0x{}", "bb".repeat(32)),
+            "match_deadline": 1_765_007_200u64,
+            "claim_window_secs": 3600u64,
+            "quote_timestamp": 1_765_000_000u64,
+            "quote_max_age_secs": 600u64,
+            "a_is_p1": 1,
+            "operator_signature": format!("0x{}", "cd".repeat(65)),
+            "leg_a": leg("13"),
+            "leg_b": {
+                "chain": "eip155:84532",
+                "contract": format!("0x{}", format!("{:0>64}", "c2eb26078dd5b1957883e1a9d651a28ef1f62aff")),
+                "player": format!("0x{}", "22".repeat(32)),
+                "session_key": format!("0x{}", "23".repeat(20)),
+                "stake_base_units": "10000000000000",
+                "tranche_base_units": "10000000000000",
+            },
+        });
+        let call = build_evm_lock_call(&payload).expect("valid payload");
+        // Permissionless lock: pays only gas (value 0); `to` is the EVM contract.
+        assert_eq!(call["value_wei"], "0");
+        assert_eq!(
+            call["to"].as_str().unwrap().to_lowercase(),
+            "0xc2eb26078dd5b1957883e1a9d651a28ef1f62aff"
+        );
+        let data = call["data"].as_str().unwrap();
+        assert!(data.starts_with("0x"));
+        // selector(4) + cert tuple + dynamic operatorSig (65 bytes) → well over 200 bytes.
+        assert!(data.len() > 2 + 200 * 2, "lock calldata unexpectedly short");
+        assert_eq!(call["match_id"], format!("0x{}", "aa".repeat(32)));
+    }
+
+    #[test]
+    fn build_evm_lock_call_rejects_missing_fields() {
+        assert!(build_evm_lock_call(&json!({})).is_err());
+        assert!(build_evm_lock_call(&json!({"leg_a":{},"leg_b":{}})).is_err());
     }
 
     #[test]

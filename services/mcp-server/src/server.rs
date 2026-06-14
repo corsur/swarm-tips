@@ -1673,6 +1673,20 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "xchain_build_lock",
+        description = "[STATE] Build the unsigned EVM permissionless lockTranche transaction to lock your leg's cross-chain payout tranche after both players have funded. Pass the `match` payload (from xchain_find_match/status). The operator's match-live signature carried in the payload authorizes the lock — no operator action needed — and the locked amount is your leg's tranche from the signed cert. Lock is permissionless: you submit and pay only gas. Returns {to, data, value_wei, chain, match_id} to sign with your EVM wallet and submit. Must land before settle (settle requires Locked status). EVM-leg only; the Solana leg locks via its own path.",
+        annotations(destructive_hint = true)
+    )]
+    async fn xchain_build_lock(
+        &self,
+        Parameters(args): Parameters<XchainBuildCreateMatchArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let call = crate::xchain::build_evm_lock_call(&args.match_payload)
+            .map_err(|e| invalid_input(&format!("invalid match payload: {e}")))?;
+        Ok(text_result(&call))
+    }
+
+    #[tool(
         name = "xchain_build_refund",
         description = "[STATE] Build the unsigned EVM refund transaction to reclaim your stake on the EVM leg of a cross-chain match. Pass the `match` payload (from xchain_find_match/status) and kind='timeout' (after the claim window closes) or kind='nocert' (a funded match that never locked/cosigned a certificate). Refund is permissionless — you pay only gas. Returns {to, data, value_wei, chain} to sign and submit with your EVM wallet. EVM-leg only.",
         annotations(destructive_hint = true)
