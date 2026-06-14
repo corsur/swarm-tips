@@ -60,7 +60,7 @@ const SOLANA_RPC = process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com"
 const EVM_RPC = process.env.RPC_URL ?? "https://sepolia.base.org";
 const PROGRAM_ID = new PublicKey("2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P");
 const CONTRACT = (process.env.CONTRACT ??
-  "0xC2eb26078dD5B1957883e1a9D651A28Ef1F62AFf") as `0x${string}`;
+  "0xd585baE48901513202dAEb7d4feE4Af508a96234") as `0x${string}`;
 const SOLANA_CHAIN = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 const EVM_CHAIN = "eip155:84532";
 const IDL_PATH =
