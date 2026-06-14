@@ -63,9 +63,16 @@ contract CrossChainGameTest is Test {
         );
     }
 
+    function _playerIsP1(bytes32 matchId) internal view returns (bool p) {
+        (,,,, p,,,,,,,,,,,) = game.matches(matchId);
+    }
+
+    /// Permissionless lock: build a cert matching the funded match and the
+    /// operator's match-live signature (the same sig relayed at pairing). No
+    /// `owner` prank — anyone may submit + pay gas.
     function _lock(bytes32 matchId, uint128 tranche) internal {
-        vm.prank(owner);
-        game.lockTranche(matchId, tranche);
+        CertLib.MatchLiveCert memory cert = _cert(matchId, _playerIsP1(matchId), tranche);
+        game.lockTranche(cert, _sign(operatorPk, CertLib.matchLiveDigest(cert)));
     }
 
     /// Build a match-live cert whose EVM leg (legB) matches the recorded
@@ -282,9 +289,9 @@ contract CrossChainGameTest is Test {
     function test_lockTranche_overMax_reverts() public {
         bytes32 id = keccak256("m8");
         _fund(id, true);
-        vm.prank(owner);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, MAX_TRANCHE + 1);
         vm.expectRevert(CrossChainGame.TrancheTooLarge.selector);
-        game.lockTranche(id, MAX_TRANCHE + 1);
+        game.lockTranche(cert, _sign(operatorPk, CertLib.matchLiveDigest(cert)));
     }
 
     function test_lockTranche_overPool_reverts() public {
@@ -295,9 +302,53 @@ contract CrossChainGameTest is Test {
         game.poolWithdraw(free);
         bytes32 id = keccak256("m8b");
         _fund(id, true);
-        vm.prank(owner);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
         vm.expectRevert(CrossChainGame.PoolInsufficient.selector);
-        game.lockTranche(id, STAKE);
+        game.lockTranche(cert, _sign(operatorPk, CertLib.matchLiveDigest(cert)));
+    }
+
+    // --- permissionless lock: operator-sig authorizes, caller pays gas -----
+
+    function test_lockTranche_permissionless_anyCallerCanLock() public {
+        bytes32 id = keccak256("m8c");
+        _fund(id, true);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        bytes memory sig = _sign(operatorPk, CertLib.matchLiveDigest(cert));
+        // A random non-owner submits the lock and pays gas — the whole point.
+        vm.prank(makeAddr("randomCranker"));
+        game.lockTranche(cert, sig);
+        assertEq(uint256(_status(id)), uint256(CrossChainGame.Status.Locked));
+    }
+
+    function test_lockTranche_badOperatorSig_reverts() public {
+        bytes32 id = keccak256("m8d");
+        _fund(id, true);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        // Signed by a session key, not the operator → BadSignature.
+        vm.expectRevert(CrossChainGame.BadSignature.selector);
+        game.lockTranche(cert, _sign(localSessionPk, CertLib.matchLiveDigest(cert)));
+    }
+
+    function test_lockTranche_staleQuote_reverts() public {
+        bytes32 id = keccak256("m8e");
+        _fund(id, true);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        // Warp past quoteMaxAgeSecs (300) so the freshness check fails at lock.
+        vm.warp(block.timestamp + 301);
+        vm.expectRevert(CrossChainGame.StaleQuote.selector);
+        game.lockTranche(cert, _sign(operatorPk, CertLib.matchLiveDigest(cert)));
+    }
+
+    function test_lockTranche_tamperedTranche_reverts() public {
+        // Operator signs tranche=STAKE; a caller submits a cert with a larger
+        // tranche. The digest changes, so the operator sig no longer recovers.
+        bytes32 id = keccak256("m8f");
+        _fund(id, true);
+        CertLib.MatchLiveCert memory signed = _cert(id, true, STAKE);
+        bytes memory sig = _sign(operatorPk, CertLib.matchLiveDigest(signed));
+        CertLib.MatchLiveCert memory tampered = _cert(id, true, MAX_TRANCHE);
+        vm.expectRevert(CrossChainGame.BadSignature.selector);
+        game.lockTranche(tampered, sig);
     }
 
     // --- panel gap: refund timing vs skew --------------------------------

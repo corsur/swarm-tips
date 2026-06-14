@@ -58,7 +58,9 @@ contract Handler is Test {
             quoteMaxAgeSecs: 600,
             matchDeadline: uint64(block.timestamp + 2 days),
             claimWindowSecs: CLAIM_WINDOW,
-            aIsP1: 1
+            // Seat invariant: createMatch uses playerIsP1=true, so the EVM leg
+            // (player) is P2 → aIsP1=0 (the contract enforces (aIsP1==1) != playerIsP1).
+            aIsP1: 0
         });
     }
 
@@ -81,7 +83,8 @@ contract Handler is Test {
             uint64(block.timestamp + 1 days),
             uint64(block.timestamp + 2 days)
         );
-        game.lockTranche(id, tranche);
+        CertLib.MatchLiveCert memory cert = _cert(id, tranche);
+        game.lockTranche(cert, _sign(operatorPk, CertLib.matchLiveDigest(cert)));
         openMatches.push(id);
     }
 
@@ -143,13 +146,8 @@ contract CrossChainGameInvariantTest is Test {
         game.poolDeposit{value: 50 ether}();
 
         handler = new Handler(game);
-        // The handler must own the game to call lockTranche; transfer
-        // ownership via the 2-step flow.
-        vm.prank(owner);
-        game.transferOwnership(address(handler));
-        vm.prank(address(handler));
-        game.acceptOwnership();
-
+        // lockTranche is permissionless now (operator-sig authorized), so the
+        // handler no longer needs to own the game.
         targetContract(address(handler));
     }
 

@@ -194,13 +194,36 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         emit MatchCreated(matchId, msg.sender, uint128(msg.value));
     }
 
-    /// @notice Operator locks this match's max cross-chain payout from the
-    ///         float pool. MUST land (and be quorum-verified by clients at
-    ///         the finalized tag) BEFORE any certificate is signed — a cert
-    ///         without a lock is inert because settle requires Locked.
-    function lockTranche(bytes32 matchId, uint128 trancheWei) external onlyOwner whenNotPaused {
-        Match storage m = matches[matchId];
+    /// @notice Permissionless tranche lock. Anyone may submit + pay gas; the
+    ///         authorization is the operator's match-live signature over the
+    ///         cert (the same signature relayed at pairing — no new operator
+    ///         action). The locked amount is `cert.legB.tranche`, so the
+    ///         operator commits the exact tranche by signing the cert. MUST
+    ///         land (and be quorum-verified by clients at the finalized tag)
+    ///         before settle, which requires Locked.
+    /// @dev Gas is the caller's cost by default; the operator never pays to
+    ///      run this. Optional protocol gas subsidy routes through the
+    ///      reputation graph program, not an owner wallet.
+    function lockTranche(CertLib.MatchLiveCert calldata cert, bytes calldata operatorSig) external whenNotPaused {
+        Match storage m = matches[cert.matchId];
         if (m.status != Status.Funded) revert InvalidStatus();
+
+        CertLib.Leg calldata leg = cert.legB; // leg B is ALWAYS the EVM leg
+        // Bind the cert to the funded match — identical to _verifyMatchLive
+        // EXCEPT leg.tranche and m.lockedAt, which THIS call is what sets.
+        if (
+            leg.chainTag != CHAIN_TAG || leg.contractId != bytes32(uint256(uint160(address(this))))
+                || leg.player != bytes32(uint256(uint160(m.player))) || leg.sessionKey != m.sessionKey
+                || cert.legA.sessionKey != m.counterSessionKey || leg.stake != m.stakeWei
+                || cert.matchDeadline != m.matchDeadline || (cert.aIsP1 == 1) == m.playerIsP1
+        ) revert CertMismatch();
+        // Quote freshness anchored at lock time (settle later re-checks vs lockedAt).
+        if (uint256(cert.quoteTimestamp) + cert.quoteMaxAgeSecs < block.timestamp) revert StaleQuote();
+        // Only the operator signature is required — the lock precedes the
+        // players' match-live session signatures.
+        _requireSigner(cert.matchLiveDigest(), operatorSig, operatorSigner);
+
+        uint128 trancheWei = leg.tranche;
         if (trancheWei > maxTrancheWei) revert TrancheTooLarge();
         if (poolFree < trancheWei) revert PoolInsufficient();
 
@@ -209,7 +232,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         m.trancheWei = trancheWei;
         m.lockedAt = uint64(block.timestamp);
         m.status = Status.Locked;
-        emit TrancheLocked(matchId, trancheWei);
+        emit TrancheLocked(cert.matchId, trancheWei);
     }
 
     // ---------------------------------------------------------------------
