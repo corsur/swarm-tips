@@ -7,12 +7,21 @@ on:
       - 'services/mcp-server/**'
       - 'crates/game-api-client/**'
       - 'crates/game-chain/**'
+      # The MCP server builds cross-chain calldata from these crates, so a
+      # registry address change or chain-seam edit must redeploy it.
+      - 'crates/chain-registry/**'
+      - 'crates/chain-core/**'
+      - 'crates/evm-chain/**'
       - 'infra/k8s/mcp-server/**'
   pull_request:
     paths:
       - 'services/mcp-server/**'
       - 'crates/game-api-client/**'
       - 'crates/game-chain/**'
+      - 'crates/chain-registry/**'
+      - 'crates/chain-core/**'
+      - 'crates/evm-chain/**'
+  workflow_dispatch:
 
 jobs:
   build:
