@@ -62,19 +62,27 @@ for entry in "${PROGRAMS[@]}"; do
     drift_count=$((drift_count + 1))
     continue
   fi
-  diff=$((m_size > d_size ? m_size - d_size : d_size - m_size))
-  if (( diff <= 256 )); then
-    echo "OK: $name byte sizes within tolerance (mainnet=$m_size, devnet=$d_size, diff=$diff)"
-  else
-    echo "FAIL: $name programdata size diverged"
-    echo "  mainnet bytecode size: $m_size"
-    echo "  devnet  bytecode size: $d_size"
-    echo "  diff: $diff bytes"
+  # ASYMMETRIC by policy (2026-06-14): allow devnet to run AHEAD of mainnet.
+  # During testnet-first development devnet carries new features (e.g. the
+  # permissionless cross-chain lock) while mainnet stays gated — that is the
+  # intended state, not drift, so a larger devnet is a WARNING, not a failure.
+  # We still FAIL when devnet is meaningfully SMALLER than mainnet: that is the
+  # stale/behind direction (a silently-failed deploy left old bytecode) that
+  # caused the 2026-05-09 `AccountDidNotDeserialize` outage. Size is an imperfect
+  # ahead/behind proxy, but it catches the dangerous case while unblocking
+  # intentional testnet-first deploys.
+  if (( d_size + 256 < m_size )); then
+    echo "FAIL: $name devnet is BEHIND mainnet (devnet=$d_size < mainnet=$m_size, diff=$((m_size - d_size)))"
     echo "  Likely cause: a deploy-devnet CI run failed (often on anchor's"
     echo "  IDL upgrade with 0xbc4 / AccountNotInitialized when the on-chain"
     echo "  IDL is wedged). Bypass the IDL step by using \`solana program"
     echo "  deploy\` directly in CI; do IDL init/upgrade fail-soft afterwards."
     drift_count=$((drift_count + 1))
+  elif (( d_size > m_size + 256 )); then
+    echo "WARN: $name devnet is AHEAD of mainnet by $((d_size - m_size)) bytes" \
+         "(devnet=$d_size, mainnet=$m_size) — expected during testnet-first dev; mainnet gated."
+  else
+    echo "OK: $name byte sizes within tolerance (mainnet=$m_size, devnet=$d_size)"
   fi
 done
 
