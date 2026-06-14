@@ -139,6 +139,35 @@ async function api(path: string, body?: unknown): Promise<any> {
   return text ? JSON.parse(text) : {};
 }
 
+/** Clear any stale cross-chain queue/pending/checkpoint docs so a prior run's
+ *  leftover pending match (with an expired fund deadline) can't be re-paired
+ *  here — otherwise create_xmatch fails with XDeadlinePassed. Mirrors the
+ *  Playwright xchain test's clearQueue. */
+async function clearXQueue(): Promise<void> {
+  const token = execFileSync("gcloud", ["auth", "print-access-token"], {
+    encoding: "utf8",
+  }).trim();
+  const fs =
+    "https://firestore.googleapis.com/v1/projects/coordination-game-prod/databases/(default)/documents";
+  for (const col of [
+    "xmatch_queue_entries",
+    "xmatch_pending",
+    "xmatch_checkpoint",
+  ]) {
+    const res = await fetch(`${fs}/${col}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const j = (await res.json()) as { documents?: { name: string }[] };
+    for (const d of j.documents ?? []) {
+      const path = d.name.split("/documents/")[1];
+      await fetch(`${fs}/${path}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
+  }
+}
+
 function legComponents() {
   return [
     { name: "chainTag", type: "bytes32" },
@@ -322,6 +351,10 @@ function certFromPayload(p: any): MatchLiveCert {
       const solWallet = player.publicKey.toBase58();
       const legA = newSessionSigner(); // Solana leg session key
       const legB = newSessionSigner(); // EVM leg session key
+
+      // 0) Clear stale queue/pending state so a prior run's leftover (expired)
+      //    pending match can't be re-paired here (→ XDeadlinePassed on fund).
+      await clearXQueue();
 
       // 1) Both wallets join the cross-chain queue → game-api pairs + cosigns.
       await api("/internal/xqueue/join", {
