@@ -146,6 +146,34 @@ const SETTLE_ABI = [
     outputs: [],
   },
 ] as const;
+// Permissionless lockTranche(cert, operatorSig).
+const LOCK_ABI = [
+  {
+    type: "function",
+    name: "lockTranche",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "cert",
+        type: "tuple",
+        components: [
+          { name: "matchId", type: "bytes32" },
+          { name: "tournamentId", type: "uint64" },
+          { name: "matchupCommitment", type: "bytes32" },
+          { name: "legA", type: "tuple", components: legComponents() },
+          { name: "legB", type: "tuple", components: legComponents() },
+          { name: "quoteTimestamp", type: "uint64" },
+          { name: "quoteMaxAgeSecs", type: "uint32" },
+          { name: "matchDeadline", type: "uint64" },
+          { name: "claimWindowSecs", type: "uint32" },
+          { name: "aIsP1", type: "uint8" },
+        ],
+      },
+      { name: "operatorSig", type: "bytes" },
+    ],
+    outputs: [],
+  },
+] as const;
 
 function legComponents() {
   return [
@@ -236,30 +264,10 @@ const randBytes32 = (): Uint8Array => {
         "Funded"
       ); // Funded
 
-      // lockTranche: operator locks the cross-chain payout from the float pool.
-      castSend(CONTRACT, [
-        "lockTranche(bytes32,uint128)",
-        matchIdHex,
-        tranche.toString(),
-      ]);
-      await poll(
-        () => matchStatus(matchIdHex),
-        (s) => s === 2,
-        "Locked"
-      ); // Locked
-
-      // Snapshot the pool + contract balance AFTER the lock, right before
-      // settle, so the conservation asserts are deltas (robust to any other
-      // matches locked in the same shared pool).
-      const poolFreePreSettle = await poll(
-        () => readUint("poolFree"),
-        (v) => v === poolFreeStart - tranche,
-        "poolFree debited by tranche"
-      );
-      const poolLockedPreSettle = readUint("poolLocked");
-      const balPreSettle = balanceOf();
-
-      // Build the co-signed cert pair. aIsP1=1 satisfies (aIsP1==1)==playerIsP1.
+      // Build the co-signed cert BEFORE the lock — the operator's match-live
+      // signature over it authorizes the permissionless lock. Leg A is Solana,
+      // leg B is EVM; the EVM player is P1 (createMatch playerIsP1=true) so leg
+      // A's player is NOT P1 → aIsP1=0 (the contract enforces (aIsP1==1) != playerIsP1).
       const cert: MatchLiveCert = {
         matchId,
         tournamentId: 1n,
@@ -286,12 +294,36 @@ const randBytes32 = (): Uint8Array => {
         quoteMaxAgeSecs: 3600,
         matchDeadline: BigInt(matchDeadline),
         claimWindowSecs: 3600,
-        // Leg A is Solana, leg B is EVM. The EVM player here is P1
-        // (createMatch playerIsP1=true), so leg A's player is NOT P1 → aIsP1=0.
-        // The contract enforces (aIsP1==1) != m.playerIsP1.
         aIsP1: 0,
       };
       const liveDigest = matchLiveDigest(cert);
+
+      // lockTranche: PERMISSIONLESS — the operator's match-live sig authorizes;
+      // the cranker (deployer) submits + pays. Locks cert.legB.tranche.
+      castSend(CONTRACT, [
+        encodeFunctionData({
+          abi: LOCK_ABI,
+          functionName: "lockTranche",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          args: [certForAbi(cert) as any, signEvm(operator, liveDigest) as any],
+        }),
+      ]);
+      await poll(
+        () => matchStatus(matchIdHex),
+        (s) => s === 2,
+        "Locked"
+      ); // Locked
+
+      // Snapshot the pool + contract balance AFTER the lock, right before
+      // settle, so the conservation asserts are deltas (robust to any other
+      // matches locked in the same shared pool).
+      const poolFreePreSettle = await poll(
+        () => readUint("poolFree"),
+        (v) => v === poolFreeStart - tranche,
+        "poolFree debited by tranche"
+      );
+      const poolLockedPreSettle = readUint("poolLocked");
+      const balPreSettle = balanceOf();
 
       const oc: OutcomeCert = {
         matchId,
