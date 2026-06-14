@@ -97,6 +97,19 @@ impl GameApiProxy {
             .map_err(map_game_api_error)
     }
 
+    /// Get the unsigned permissionless `lock_xtranche` tx for the Solana-leg
+    /// player. Authorized by the operator's stored match-live signature — no
+    /// matchmaker cosign; the player is the cranker/fee payer.
+    pub async fn xqueue_build_sol_lock(
+        &self,
+        wallet: &str,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_build_sol_lock(wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
+
     /// Get the operator-cosigned cross-chain outcome for settle. The operator
     /// derives the outcome from the stored co-signed checkpoint and signs only
     /// that; the agent adds its session-key signature to assemble settle.

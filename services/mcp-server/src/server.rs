@@ -1687,6 +1687,35 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "xchain_build_lock_xmatch",
+        description = "[STATE] Build the unsigned permissionless Solana lock_xtranche transaction to lock your Solana leg's cross-chain payout tranche after both players have funded. No args — resolves your bound wallet. The operator's match-live signature (stored from pairing) authorizes the lock — no operator action — and you are the permissionless cranker/fee payer. Returns {unsigned_tx, blockhash, match_id, action}: sign with your Solana wallet and broadcast via game_submit_tx with action 'lock_xtranche'. Must land before settle (settle requires Locked). Solana-leg only; EVM players use xchain_build_lock.",
+        annotations(destructive_hint = true)
+    )]
+    async fn xchain_build_lock_xmatch(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        if !chain.starts_with("solana:") {
+            return Err(invalid_input(
+                "xchain_build_lock_xmatch is for the Solana leg; EVM players use xchain_build_lock",
+            ));
+        }
+        let resp = self
+            .state
+            .game_api
+            .xqueue_build_sol_lock(&address)
+            .await
+            .map_err(|e| McpError::internal_error(format!("build_sol_lock failed: {e}"), None))?;
+        Ok(text_result(&serde_json::json!({
+            "lock": resp,
+            "instructions": "Sign the unsigned_tx with your Solana wallet and broadcast via game_submit_tx with action 'lock_xtranche'. Permissionless — you pay only the network fee.",
+        })))
+    }
+
+    #[tool(
         name = "xchain_build_refund",
         description = "[STATE] Build the unsigned EVM refund transaction to reclaim your stake on the EVM leg of a cross-chain match. Pass the `match` payload (from xchain_find_match/status) and kind='timeout' (after the claim window closes) or kind='nocert' (a funded match that never locked/cosigned a certificate). Refund is permissionless — you pay only gas. Returns {to, data, value_wei, chain} to sign and submit with your EVM wallet. EVM-leg only.",
         annotations(destructive_hint = true)

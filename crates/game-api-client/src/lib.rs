@@ -380,6 +380,27 @@ impl GameApiClient {
             .map_err(Into::into)
     }
 
+    /// `POST /internal/xqueue/build-sol-lock` — unsigned permissionless
+    /// `lock_xtranche` tx for the Solana-leg player to sign + submit. Authorized
+    /// by the operator's stored match-live signature (no matchmaker cosign).
+    /// Returns the raw JSON (`unsigned_tx`, `blockhash`, `match_id`, `action`).
+    pub async fn xqueue_build_sol_lock(
+        &self,
+        wallet: &str,
+    ) -> Result<serde_json::Value, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+        }
+        let url = format!("{}/internal/xqueue/build-sol-lock", self.base_url);
+        let resp = self.inner.post(&url).json(&Body { wallet }).send().await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
     /// `POST /internal/xqueue/build-sol-refund` — unsigned Solana refund tx
     /// (permissionless) for the player to sign + submit. Returns the raw JSON
     /// (`unsigned_tx`, `blockhash`, `match_id`, `action`).

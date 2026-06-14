@@ -217,7 +217,11 @@ fn decode_signed_tx(signed_tx_b64: &str) -> Result<Vec<u8>> {
 fn is_xchain_solana_action(action: &str) -> bool {
     matches!(
         action,
-        "create_xmatch" | "refund_xmatch_nocert" | "refund_xmatch_timeout" | "settle_xmatch"
+        "create_xmatch"
+            | "lock_xtranche"
+            | "refund_xmatch_nocert"
+            | "refund_xmatch_timeout"
+            | "settle_xmatch"
     )
 }
 
@@ -227,6 +231,7 @@ fn is_xchain_solana_action(action: &str) -> bool {
 fn log_xchain_solana_action(wallet: &str, action: &str, sig: &str) {
     let event = match action {
         "create_xmatch" => "cross-chain Solana leg funded",
+        "lock_xtranche" => "cross-chain Solana leg locked",
         "refund_xmatch_nocert" => "cross-chain Solana refund (no-cert) settled",
         "refund_xmatch_timeout" => "cross-chain Solana refund (timeout) settled",
         "settle_xmatch" => "cross-chain Solana leg settled",
@@ -240,9 +245,13 @@ fn log_xchain_solana_action(wallet: &str, action: &str, sig: &str) {
 fn xchain_submit_result(action: &str, sig: &str) -> serde_json::Value {
     let next_step = match action {
         "create_xmatch" => {
-            "Your Solana leg is funded. Poll xchain_match_status until the \
-             operator locks both legs, then sign and submit the outcome certificate with \
-             your session key."
+            "Your Solana leg is funded. Once the EVM leg funds too, lock your leg \
+             via xchain_build_lock_xmatch (permissionless — you pay only the fee); the EVM \
+             player locks theirs via xchain_build_lock. Both legs must be Locked before settle."
+        }
+        "lock_xtranche" => {
+            "Your Solana leg is locked. After both legs lock, play out the match \
+             (co-signed checkpoints) and assemble the settle with your session key."
         }
         "settle_xmatch" => {
             "Settlement submitted. Read your PlayerProfile / on-chain balance \
@@ -2090,6 +2099,7 @@ mod tests {
     fn xchain_solana_actions_are_recognized() {
         for a in [
             "create_xmatch",
+            "lock_xtranche",
             "refund_xmatch_nocert",
             "refund_xmatch_timeout",
             "settle_xmatch",
@@ -2113,10 +2123,18 @@ mod tests {
         let fund = xchain_submit_result("create_xmatch", "sig1");
         assert_eq!(fund["tx_signature"], "sig1");
         assert_eq!(fund["status"], "submitted");
+        // After funding, the player locks their own leg (permissionless) — the
+        // operator no longer locks.
         assert!(fund["next_step"]
             .as_str()
             .expect("next_step")
-            .contains("xchain_match_status"));
+            .contains("xchain_build_lock_xmatch"));
+
+        let lock = xchain_submit_result("lock_xtranche", "siglock");
+        assert!(lock["next_step"]
+            .as_str()
+            .expect("next_step")
+            .contains("locked"));
 
         let settle = xchain_submit_result("settle_xmatch", "sig2");
         assert!(settle["next_step"]
