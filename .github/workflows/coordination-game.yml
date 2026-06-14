@@ -23,6 +23,15 @@ on:
       - '.github/workflows/coordination-game.yml'
       - 'sdk/**'
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'Deploy target cluster (mainnet requires explicitly selecting it)'
+        required: true
+        default: devnet
+        type: choice
+        options:
+          - devnet
+          - mainnet
 
 jobs:
   test:
@@ -90,8 +99,9 @@ jobs:
         run: pkill -f solana-test-validator || true
 
   deploy-devnet:
+    # workflow_dispatch with target=devnet (the default). Never on push.
     # Manual only — conserve the rate-limited devnet faucet. See MAINNET_DEPLOY.md.
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -243,7 +253,8 @@ jobs:
   deploy-mainnet:
     # Manual only — never auto-deploy to mainnet on push (real SOL churn +
     # unreviewed-change risk). See MAINNET_DEPLOY.md.
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'
+    environment: mainnet
     needs: test
     runs-on: ubuntu-latest
     steps:
