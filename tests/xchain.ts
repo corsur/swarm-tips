@@ -227,16 +227,6 @@ describe("coordination-game cross-chain (xchain)", () => {
       .signers([player])
       .rpc();
 
-    // lock_xtranche — operator.
-    await program.methods
-      .lockXtranche(matchId, TRANCHE)
-      .accountsPartial({
-        xmatch: xmatchPda,
-        pool: poolPda,
-        operator: operator.publicKey,
-      })
-      .rpc();
-
     // Build the match-live certificate. Leg A is ALWAYS the Solana leg.
     const legA: CertLeg = {
       chainTag: SOLANA_CHAIN_TAG,
@@ -272,6 +262,17 @@ describe("coordination-game cross-chain (xchain)", () => {
       signDigest(counterSigner, liveDigest),
       signDigest(operatorSigner, liveDigest),
     ];
+
+    // lock_xtranche — permissionless: the operator's match-live signature
+    // (liveSigs[2]) authorizes; any cranker pays the fee. Must land before settle.
+    await program.methods
+      .lockXtranche(toCertArg(cert), liveSigs[2])
+      .accountsPartial({
+        xmatch: xmatchPda,
+        pool: poolPda,
+        cranker: provider.wallet.publicKey,
+      })
+      .rpc();
 
     // Terminal outcome: P1 (the local player) wins the heterogeneous match.
     const outcome: OutcomeCert = {
@@ -387,6 +388,10 @@ describe("coordination-game cross-chain (xchain)", () => {
       claimWindowSecs: c.claimWindowSecs,
       aIsP1: c.aIsP1,
     };
+  }
+  // lock_xtranche takes the FULL cert (leg A's tranche isn't on-chain pre-lock).
+  function toCertArg(c: MatchLiveCert) {
+    return { ...toCertNoAArg(c), legA: toLegArg(c.legA) };
   }
   function toOutcomeArg(o: OutcomeCert) {
     return {
