@@ -110,8 +110,9 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 20_000_000_000_000, // 0.00002 ETH (== deployed maxTrancheWei)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        // CrossChainGame deployed 2026-06-12 (operatorSigner 0x54a6…9A30 verified on-chain).
-        game_contract: Some("0xC2eb26078dD5B1957883e1a9D651A28Ef1F62AFf"),
+        // CrossChainGame redeployed 2026-06-14 with permissionless lockTranche
+        // (operatorSigner 0x54a6…9A30 verified on-chain; prior 0xC2eb…62AFf orphaned).
+        game_contract: Some("0xd585baE48901513202dAEb7d4feE4Af508a96234"),
         x402_network: Some("base-sepolia"),
     },
 ];
