@@ -167,19 +167,19 @@ pub fn build_xpool_deposit(amount: u64, funder: &Pubkey) -> Instruction {
     }
 }
 
-/// Build the `lock_xtranche` instruction — moves `tranche_lamports` from the
-/// pool's free balance into the locked balance and binds it to the funded
-/// match, transitioning it to `Locked` (the precondition for settle). The
-/// operator signs (must equal `pool.operator`); it does not pay rent. Account
-/// mut-flags mirror `LockXTranche<'info>` exactly.
+/// Build the permissionless `lock_xtranche` instruction — moves the cert's
+/// leg-A tranche from the pool's free balance into the locked balance and binds
+/// it to the funded match, transitioning it to `Locked` (the precondition for
+/// settle). Authorization is the operator's match-live signature over the cert
+/// (the same sig relayed at pairing — no new operator action); `cranker` is a
+/// permissionless fee payer (gas external). Account mut-flags mirror
+/// `LockXTranche<'info>` exactly.
 pub fn build_lock_xtranche(
-    match_id: [u8; 32],
-    tranche_lamports: u64,
-    operator: &Pubkey,
+    cert: MatchLiveCertArg,
+    operator_sig: [u8; 65],
+    cranker: &Pubkey,
 ) -> Instruction {
-    assert!(tranche_lamports > 0, "tranche_lamports must be non-zero");
-
-    let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+    let (xmatch_pda, _) = pda::xmatch_pda(&cert.match_id);
     let (xpool_pda, _) = pda::xpool_pda();
 
     Instruction {
@@ -187,13 +187,9 @@ pub fn build_lock_xtranche(
         accounts: vec![
             AccountMeta::new(xmatch_pda, false),
             AccountMeta::new(xpool_pda, false),
-            AccountMeta::new_readonly(*operator, true), // signer, not payer
+            AccountMeta::new(*cranker, true), // permissionless fee payer
         ],
-        data: LockXtranche {
-            match_id,
-            tranche_lamports,
-        }
-        .data(),
+        data: LockXtranche { cert, operator_sig }.data(),
     }
 }
 
@@ -818,12 +814,13 @@ mod tests {
 
     #[test]
     fn build_lock_xtranche_has_correct_accounts_and_mut_flags() {
-        let operator = Keypair::new();
-        let match_id = [0x55; 32];
-        let ix = build_lock_xtranche(match_id, 50_000_000, &operator.pubkey());
+        let cranker = Keypair::new();
+        let cert = full_cert();
+        let match_id = cert.match_id;
+        let ix = build_lock_xtranche(cert, [0u8; 65], &cranker.pubkey());
 
         assert_eq!(ix.program_id, PROGRAM_ID);
-        // 3 accounts: xmatch, pool, operator (signer, not payer).
+        // 3 accounts: xmatch, pool, cranker (permissionless fee payer).
         assert_eq!(ix.accounts.len(), 3, "lock_xtranche must have 3 accounts");
         let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
         let (xpool_pda, _) = pda::xpool_pda();
@@ -831,18 +828,12 @@ mod tests {
         assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
         assert_eq!(ix.accounts[1].pubkey, xpool_pda);
         assert!(ix.accounts[1].is_writable && !ix.accounts[1].is_signer);
-        // Operator signs but does NOT pay rent → readonly signer.
+        // Cranker is a permissionless writable signer (fee payer), NOT the operator.
         assert!(
-            ix.accounts[2].is_signer && !ix.accounts[2].is_writable,
-            "operator is readonly signer"
+            ix.accounts[2].is_signer && ix.accounts[2].is_writable,
+            "cranker is a writable signer (fee payer)"
         );
-        assert_eq!(ix.accounts[2].pubkey, operator.pubkey());
-    }
-
-    #[test]
-    #[should_panic(expected = "tranche_lamports must be non-zero")]
-    fn build_lock_xtranche_rejects_zero_tranche() {
-        let _ = build_lock_xtranche([0x55; 32], 0, &Pubkey::new_unique());
+        assert_eq!(ix.accounts[2].pubkey, cranker.pubkey());
     }
 
     fn full_cert() -> MatchLiveCertArg {

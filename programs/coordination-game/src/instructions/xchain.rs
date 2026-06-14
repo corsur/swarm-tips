@@ -184,26 +184,45 @@ pub fn create_xmatch(
     Ok(())
 }
 
+/// Permissionless tranche lock. Authorization is the operator's match-live
+/// signature over the cert (the same signature relayed at pairing — no new
+/// operator action); the locked amount is `cert.leg_a.tranche`, so the operator
+/// commits the exact tranche by signing. Anyone may submit + pay the fee; the
+/// operator never pays to run the lock (gas is external by default). Mirrors the
+/// EVM `lockTranche` and the permissionless settle/operator-sig model.
+///
+/// Unlike settle, the lock takes the FULL cert (not `MatchLiveCertNoA`): leg A's
+/// tranche is not yet on-chain (`m.tranche_lamports` is 0 until THIS call sets
+/// it), so it cannot be rebuilt — the caller supplies it and the operator sig
+/// binds it.
 pub fn lock_xtranche(
     ctx: Context<LockXTranche>,
-    _match_id: [u8; 32],
-    tranche_lamports: u64,
+    cert: MatchLiveCertArg,
+    operator_sig: [u8; 65],
 ) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
-    let pool = &mut ctx.accounts.pool;
-    let m = &mut ctx.accounts.xmatch;
     require!(
-        m.status == XChainStatus::Funded,
+        ctx.accounts.xmatch.status == XChainStatus::Funded,
         CoordinationError::XInvalidStatus
     );
+    let tranche_lamports = verify_lock_authorization(
+        &ctx.accounts.xmatch,
+        &cert,
+        &operator_sig,
+        &ctx.accounts.pool,
+        solana_chain_tag(),
+        now,
+    )?;
     require!(
-        tranche_lamports <= pool.max_tranche_lamports,
+        tranche_lamports <= ctx.accounts.pool.max_tranche_lamports,
         CoordinationError::XTrancheTooLarge
     );
     require!(
-        tranche_lamports <= pool.free_lamports,
+        tranche_lamports <= ctx.accounts.pool.free_lamports,
         CoordinationError::XPoolInsufficient
     );
+
+    let pool = &mut ctx.accounts.pool;
     pool.free_lamports = pool
         .free_lamports
         .checked_sub(tranche_lamports)
@@ -212,6 +231,7 @@ pub fn lock_xtranche(
         .locked_lamports
         .checked_add(tranche_lamports)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let m = &mut ctx.accounts.xmatch;
     m.tranche_lamports = tranche_lamports;
     m.locked_at = now;
     m.status = XChainStatus::Locked;
@@ -220,6 +240,43 @@ pub fn lock_xtranche(
         tranche_lamports,
     });
     Ok(())
+}
+
+/// Bind the cert's leg A to the funded match and verify the operator's match-live
+/// signature, returning the leg-A tranche to lock. Mirrors `verify_match_live`
+/// EXCEPT: (1) it omits the `leg.tranche == m.tranche_lamports` check (THIS call
+/// sets the tranche — the operator sig over the full cert is what fixes it);
+/// (2) quote freshness is anchored at `now`, not `m.locked_at` (0 pre-lock);
+/// (3) only the operator signature is checked — the lock precedes the players'
+/// match-live session signatures.
+fn verify_lock_authorization(
+    m: &XChainMatch,
+    cert: &MatchLiveCertArg,
+    operator_sig: &[u8; 65],
+    pool: &XPayoutPool,
+    chain_tag: [u8; 32],
+    now: i64,
+) -> Result<u64> {
+    let leg = &cert.leg_a; // leg A is ALWAYS the Solana leg
+    require!(
+        leg.chain_tag == chain_tag
+            && leg.contract == crate::ID.to_bytes()
+            && leg.player == m.player.to_bytes()
+            && leg.session_key == m.session_key
+            && cert.leg_b.session_key == m.counter_session_key
+            && u64::try_from(leg.stake).unwrap_or(u64::MAX) == m.stake_lamports
+            && cert.match_deadline == u64::try_from(m.match_deadline).unwrap_or(0)
+            && (cert.a_is_p1 == 1) == (m.player_is_p1 == 1),
+        CoordinationError::XCertMismatch
+    );
+    let quote_ok = u128::from(cert.quote_timestamp)
+        .checked_add(u128::from(cert.quote_max_age_secs))
+        .ok_or(CoordinationError::ArithmeticOverflow)?
+        >= u128::try_from(now).unwrap_or(0);
+    require!(quote_ok, CoordinationError::XStaleQuote);
+
+    require_signer(&cert.digest(), operator_sig, &pool.operator_signer)?;
+    u64::try_from(leg.tranche).map_err(|_| CoordinationError::XTrancheTooLarge.into())
 }
 
 // ---------------------------------------------------------------------------
@@ -829,11 +886,11 @@ pub struct CreateXMatch<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(match_id: [u8; 32])]
+#[instruction(cert: MatchLiveCertArg)]
 pub struct LockXTranche<'info> {
     #[account(
         mut,
-        seeds = [b"xmatch", match_id.as_ref()],
+        seeds = [b"xmatch", cert.match_id.as_ref()],
         bump = xmatch.bump,
     )]
     pub xmatch: Account<'info, XChainMatch>,
@@ -841,10 +898,11 @@ pub struct LockXTranche<'info> {
         mut,
         seeds = [b"xpool"],
         bump = pool.bump,
-        constraint = pool.operator == operator.key() @ CoordinationError::XBadConfig,
     )]
     pub pool: Account<'info, XPayoutPool>,
-    pub operator: Signer<'info>,
+    /// Permissionless fee payer — authorization is the operator signature on the
+    /// cert, not this account. The caller pays the tx fee (gas external).
+    pub cranker: Signer<'info>,
 }
 
 #[derive(Accounts)]

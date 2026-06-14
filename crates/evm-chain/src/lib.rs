@@ -80,7 +80,7 @@ sol! {
             uint64 matchDeadline
         ) external payable;
 
-        function lockTranche(bytes32 matchId, uint128 trancheWei) external;
+        function lockTranche(MatchLiveCert cert, bytes operatorSig) external;
 
         function settle(
             MatchLiveCert cert,
@@ -188,15 +188,19 @@ pub fn build_create_match(
     call(contract, data, U256::from(stake_wei))
 }
 
-/// Build an unsigned `lockTranche` call (operator-signed).
+/// Build an unsigned permissionless `lockTranche` call. The caller submits and
+/// pays gas; authorization is `operator_sig` — the operator's match-live
+/// signature over the cert (relayed at pairing, no new operator action). The
+/// locked amount is `cert.legB.tranche`, so the operator commits the exact
+/// tranche by signing the cert.
 pub fn build_lock_tranche(
     contract: Address,
-    match_id: [u8; 32],
-    tranche_wei: u128,
+    cert: MatchLiveCert,
+    operator_sig: [u8; 65],
 ) -> UnsignedEvmCall {
     let data = CrossChainGame::lockTrancheCall {
-        matchId: match_id.into(),
-        trancheWei: tranche_wei,
+        cert,
+        operatorSig: operator_sig.to_vec().into(),
     }
     .abi_encode();
     call(contract, data, U256::ZERO)
@@ -341,19 +345,8 @@ mod tests {
         assert_eq!(value, "2500000000000000");
     }
 
-    #[test]
-    fn lock_tranche_is_non_payable() {
-        let tx = build_lock_tranche(C, [0xBB; 32], 5_000_000_000_000_000);
-        assert_eq!(tx.value, U256::ZERO);
-        assert_eq!(
-            &tx.data[..4],
-            &CrossChainGame::lockTrancheCall::SELECTOR[..]
-        );
-    }
-
-    #[test]
-    fn settle_encodes_certs_and_six_sigs() {
-        let cert = MatchLiveCert {
+    fn sample_cert() -> MatchLiveCert {
+        MatchLiveCert {
             matchId: [0xAA; 32].into(),
             tournamentId: 7,
             matchupCommitment: [0xBB; 32].into(),
@@ -378,7 +371,24 @@ mod tests {
             matchDeadline: 3,
             claimWindowSecs: 4,
             aIsP1: 1,
-        };
+        }
+    }
+
+    #[test]
+    fn lock_tranche_is_permissionless_and_non_payable() {
+        // New signature: full cert + operator sig (permissionless), not
+        // (matchId, trancheWei) onlyOwner.
+        let tx = build_lock_tranche(C, sample_cert(), [0x7u8; 65]);
+        assert_eq!(tx.value, U256::ZERO);
+        assert_eq!(
+            &tx.data[..4],
+            &CrossChainGame::lockTrancheCall::SELECTOR[..]
+        );
+    }
+
+    #[test]
+    fn settle_encodes_certs_and_six_sigs() {
+        let cert = sample_cert();
         let oc = OutcomeCert {
             matchId: [0xAA; 32].into(),
             matchLiveDigest: [0xCC; 32].into(),

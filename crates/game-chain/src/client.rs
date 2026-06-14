@@ -229,17 +229,17 @@ impl GameTxBuilder {
         self.build_unsigned(&[ix]).await
     }
 
-    /// Build the unsigned `lock_xtranche` transaction — binds `tranche_lamports`
-    /// from the pool to a funded match, transitioning it to `Locked` (the
-    /// precondition for settle). `self.player` is the operator (signer + fee
-    /// payer) and MUST equal `pool.operator`.
+    /// Build the unsigned permissionless `lock_xtranche` transaction — binds the
+    /// cert's leg-A tranche from the pool to a funded match, transitioning it to
+    /// `Locked` (the precondition for settle). Authorization is `operator_sig`
+    /// (the operator's match-live signature over the cert); `self.player` is the
+    /// permissionless fee payer — it need NOT be the operator.
     pub async fn build_lock_xtranche(
         &self,
-        match_id: [u8; 32],
-        tranche_lamports: u64,
+        cert: coordination::cert::MatchLiveCertArg,
+        operator_sig: [u8; 65],
     ) -> Result<UnsignedTx> {
-        anyhow::ensure!(tranche_lamports > 0, "tranche_lamports must be non-zero");
-        let ix = instructions::build_lock_xtranche(match_id, tranche_lamports, &self.player);
+        let ix = instructions::build_lock_xtranche(cert, operator_sig, &self.player);
         self.build_unsigned(&[ix]).await
     }
 

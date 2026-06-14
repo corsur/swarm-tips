@@ -201,10 +201,10 @@ pub mod coordination_game {
 
     pub fn lock_xtranche(
         ctx: Context<LockXTranche>,
-        match_id: [u8; 32],
-        tranche_lamports: u64,
+        cert: cert::MatchLiveCertArg,
+        operator_sig: [u8; 65],
     ) -> Result<()> {
-        instructions::xchain::lock_xtranche(ctx, match_id, tranche_lamports)
+        instructions::xchain::lock_xtranche(ctx, cert, operator_sig)
     }
 
     pub fn settle_xmatch(
