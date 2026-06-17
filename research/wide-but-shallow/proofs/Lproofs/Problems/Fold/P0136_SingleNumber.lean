@@ -1,27 +1,44 @@
 import Lproofs.Schemes.Fold
 
 /-! @lc 136 | name:Single Number | scheme:fold | family:math-bit | complexity:O(n) |
-    source:https://leetcode.com/problems/single-number/ -/
+    source:https://leetcode.com/problems/single-number/
+
+    Every value appears twice except one. XOR-reduce the array: equal values cancel (`x ^^^ x = 0`),
+    leaving the lone element. CLASSIFICATION: the accepted solution IS a streaming left fold over the
+    XOR monoid — `sol = foldl (· ^^^ ·) 0`. We close the scheme/correctness gap fully here: `cls` is the
+    fold itself and `corr` proves the fold returns the unique element, so the certificate is the strong
+    form ("the accepted code is this fold, and it is correct"), not two separate facts. -/
 
 namespace LC.P0136
 open Interview.Patterns
 
-/-- Spec: an element that appears exactly once. -/
-def spec (a : List ℕ) (x : ℕ) : Prop := a.count x = 1
+/-- Accepted O(n) solution: XOR-reduce — a streaming left fold over `(ℕ, ^^^, 0)`. -/
+def sol (a : List ℕ) : ℕ := a.foldl (· ^^^ ·) 0
 
-/-- Accepted O(n) frequency solution: the first element whose count is one (frequencies are
-    built by a streaming fold — the hashing/counting structure; the XOR editorial is the same
-    fold over the XOR monoid). -/
-def sol (a : List ℕ) : Option ℕ := a.find? (fun x => a.count x == 1)
+/-- SCHEME (fold): the solution is literally a left fold — no separate witness needed. -/
+theorem cls : IsFold sol := ⟨(· ^^^ ·), 0, fun _ => rfl⟩
 
-/-- SCHEME (fold): the frequency count is a streaming fold (accumulator: a multiset). -/
-theorem cls : IsFold (fun s : List ℕ => s.foldl (fun m c => insert c m) (0 : Multiset ℕ)) :=
-  fold_charCount
+/-- XOR is right-commutative, so the left fold is permutation-invariant. -/
+instance xor_rcomm : Std.Commutative (· ^^^ · : ℕ → ℕ → ℕ) := ⟨Nat.xor_comm⟩
+instance xor_assoc : Std.Associative (· ^^^ · : ℕ → ℕ → ℕ) := ⟨Nat.xor_assoc⟩
 
-/-- CORRECT: whenever the search returns an element, that element appears exactly once. -/
-theorem corr (a : List ℕ) {x : ℕ} (h : sol a = some x) : spec a x := by
-  simp only [sol] at h
-  have hp := List.find?_some h
-  simpa [spec] using hp
+/-- A doubled list XOR-folds to the seed: each equal pair cancels. -/
+theorem pairs_fold (ys : List ℕ) : ∀ s, (ys.flatMap fun p => [p, p]).foldl (· ^^^ ·) s = s := by
+  induction ys with
+  | nil => intro s; simp
+  | cons p ps ih =>
+    intro s
+    rw [List.flatMap_cons, List.foldl_append]
+    have hpp : [p, p].foldl (· ^^^ ·) s = s := by
+      simp only [List.foldl_cons, List.foldl_nil]
+      rw [Nat.xor_assoc, Nat.xor_self, Nat.xor_zero]
+    rw [hpp, ih]
+
+/-- CORRECT: when every value appears twice except `t` (which appears once), the XOR fold returns `t`. -/
+theorem corr {a : List ℕ} {t : ℕ} {ys : List ℕ}
+    (h : a.Perm ((ys.flatMap fun p => [p, p]) ++ [t])) : sol a = t := by
+  unfold sol
+  rw [h.foldl_eq, List.foldl_append, pairs_fold]
+  simp
 
 end LC.P0136

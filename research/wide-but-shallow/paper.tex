@@ -9,6 +9,7 @@
 \usepackage{array}
 \usepackage{geometry}
 \usepackage{microtype}
+\usepackage{graphicx}
 \usepackage[hidelinks]{hyperref}
 \geometry{margin=1in}
 
@@ -61,7 +62,8 @@ We test them, and then ask what \emph{structure} explains the answer. The plain-
 patterns'' you are told to memorize are a handful of underlying ideas wearing different costumes, and the
 seven companies ask nearly the same things. To keep the structural labels honest we do not rely on hand
 labeling alone---we use a proof assistant to check, problem by problem, that the idea we assign really does
-solve the problem and that the accepted solution is correct.
+solve the problem and that the accepted solution satisfies a verified correctness property (and, for several
+canonical folds, that it is fully correct).
 
 \section{Data and method}
 \label{sec:data}
@@ -132,11 +134,22 @@ negligible--small boundary and the whole interval stays well below ``moderate,''
 difference is \emph{bounded}, not merely non-significant (the finer twenty-family grouping gives a similar,
 slightly smaller \V$\,= 0.064$, so the conclusion does not hinge on the grouping). Pairwise, of the
 twenty-one firm pairs the only non-negligible ones all involve \textbf{Uber}, which leans more on graph
-relaxation and less on the streaming fold (the largest, versus Google, is still only a ``small'' effect);
+relaxation and less on the streaming fold (the largest, versus Google, is still only a ``small'' effect; Figure~\ref{fig:resid});
 \textbf{the other six firms are mutually indistinguishable}. The qualifier matters: we are comparing the
 \emph{mix of problem types}, not interview difficulty or the marginal value of company-specific drilling,
 which these data cannot measure. Within that scope there is, in effect, a single interview syllabus, and
 preparing differently per company is, for most firms, wasted effort.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.78\linewidth]{figs/residual_scheme.png}
+\caption{Standardized $\chi^2$ residuals of the seven firms over the four recursion schemes (plus tail),
+window ``all'' (red = over-represented, blue = under-represented). Only Uber departs from the
+field---it over-asks graph relaxation ($+5.7$) and under-asks the streaming fold ($-3.4$)---while the other
+six rows are muted (all $|r|\lesssim 2$). This is the scheme-level picture behind the negligible-to-small
+omnibus effect (\V$\,=0.091$): one shared syllabus, with Uber the lone outlier.}
+\label{fig:resid}
+\end{figure}
 
 \section{Machine-checking the classification}
 \label{sec:lean}
@@ -157,10 +170,19 @@ axioms.
 \textbf{What this does and does not certify.} The two theorems are about, respectively, a canonical instance
 of the scheme and the transcribed solution; we do \emph{not} mechanize the further claim that those two are
 the \emph{same} program (that the accepted solution, syntactically, \emph{is} that fold). So the certificate
-says ``this problem is genuinely solvable by scheme $S$, and we have a verified correct solution,'' not
+says ``this problem is genuinely solvable by scheme $S$, and we have a solution with a verified correctness property,'' not
 ``the platform's accepted code is literally a fold.'' That is weaker than a full equivalence proof and we
 flag it plainly (Section~\ref{sec:threats}); it is still far stronger than an unchecked label, because the
 scheme instance is proven non-vacuous and the solution is proven correct.
+
+\textbf{Closing the gap for canonical folds.} For a handful of textbook folds we \emph{do} mechanize the full
+equivalence: the accepted solution is \emph{defined} as the fold and proven correct as that fold. Kadane's
+Maximum Subarray is the cleanest case---the answer is literally a \texttt{foldl} of the running
+$(\textit{best},\textit{cur})$ step, and we prove it both achieves a real contiguous-segment sum \emph{and}
+upper-bounds every such sum (a two-directional optimum, not a one-directional guarantee). Product Except Self
+is the prefix scan with its telescoping identity proven; Single Number is the XOR fold proven to return the
+lone odd-count element. For these the certificate is the strong form---``the accepted code \emph{is} this
+fold, and it is correct''---which is what the general per-problem procedure approximates.
 
 The result is one reproducible number: $\hat p = 0.71$ (71 of 100), 95\% Wilson interval $[0.61,0.79]$
 (Wilson is the standard interval for a proportion). The certified set is released as a column of the sampled
@@ -218,7 +240,7 @@ that the problems are easy.
 Interview problems have wide apparent breadth and shallow generative depth. The roughly twenty surface
 ``patterns'' are four recursion schemes in different costumes: on a uniform random sample, 71 of 100
 problems carry a Lean certificate that the problem is genuinely solvable by its assigned scheme and that a
-transcribed solution is correct (95\% CI $[61\%,79\%]$; the streaming fold the single most common). And the
+transcribed solution satisfies a verified correctness property (95\% CI $[61\%,79\%]$; the streaming fold the single most common). And the
 seven firms ask essentially one shared syllabus of problem \emph{types}. For the candidate, the practical
 reading is blunt, within that scope: learn the four schemes deeply rather than fifty patterns shallowly, and
 prepare for ``technical interviews,'' not for any one company.
