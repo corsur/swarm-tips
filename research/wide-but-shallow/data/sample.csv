@@ -10,7 +10,7 @@ num,family,scheme,proven
 65,string-other,fold,True
 66,math-bit,fold,True
 73,matrix-sim,tail,False
-76,sliding-window,fold,False
+76,sliding-window,fold,True
 81,binary-search,bisection,True
 85,monotonic-stack,fold,True
 92,linked-list,fold,True
@@ -55,11 +55,11 @@ num,family,scheme,proven
 799,dp-grid,dp,True
 815,bfs,relaxation,True
 825,hashing,fold,True
-833,string-other,fold,False
+833,string-other,fold,True
 863,bfs,relaxation,True
 931,dp-grid,dp,True
 941,two-pointers,fold,True
-992,sliding-window,fold,False
+992,sliding-window,fold,True
 1146,design,tail,False
 1174,sql,tail,False
 1193,sql,tail,False
@@ -89,7 +89,7 @@ num,family,scheme,proven
 2187,binary-search,bisection,True
 2214,dp-linear,dp,True
 2282,monotonic-stack,fold,True
-2444,sliding-window,fold,False
+2444,sliding-window,fold,True
 2833,trivial,tail,False
 2858,graph-other,relaxation,True
 2912,dp-grid,dp,True

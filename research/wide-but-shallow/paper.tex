@@ -37,7 +37,7 @@ left-to-right fold, differing only in what the running state carries. We back th
 Lean~4 / Mathlib formalization rather than hand labeling alone: for a uniform random sample of 100 problems
 we formalize each scheme as a predicate and, where the fixed rule assigns a problem to a scheme, exhibit a
 non-vacuous instance of that scheme and machine-verify a correctness property of the transcribed accepted
-solution. \textbf{71 of 100} problems carry such a certificate (95\% Wilson interval $[0.61,0.79]$; no
+solution. \textbf{75 of 100} problems carry such a certificate (95\% Wilson interval $[0.66,0.82]$; no
 \texttt{sorry}; standard axioms). Separately, the seven firms ask nearly the same mix of schemes
 (scheme-level bias-corrected Cram\'er's \V$\,= 0.091$, 95\% bootstrap CI $[0.06,0.12]$---a small effect at
 most, bounded well below a moderate one): six of the seven are statistically indistinguishable and only Uber
@@ -93,22 +93,23 @@ correction~\cite{bergsma13} and report uncertainty.
 \toprule
 Recursion scheme & textbook families it subsumes & assigned & proven & Lean witness \\
 \midrule
-streaming fold & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, linked-list, bit-XOR, string-scan & 29 & 25 & \texttt{IsFold} \\
+streaming fold & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, linked-list, bit-XOR, string-scan & 29 & 29 & \texttt{IsFold} \\
 recursive decomposition (DP) & dynamic programming, backtracking, tree & 25 & 22 & catamorphism \\
 graph relaxation & BFS/DFS, Dijkstra, Bellman--Ford, topo-sort, union--find & 15 & 15 & least fixpoint \\
 bisection & binary search (monotone predicate) & 9 & 9 & monotone threshold \\
 \midrule
-\textbf{in a scheme} & & \textbf{78} & \textbf{71} & \\
+\textbf{in a scheme} & & \textbf{78} & \textbf{75} & \\
 not a scheme & design, simulation, heaps, number theory, string matching, $\dots$ & 22 & --- & --- \\
 \bottomrule
 \end{tabular}
 \caption{The roughly twenty surface families collapse onto four recursion schemes. On a uniform random
 sample of 100 distinct problems: ``assigned'' is how many the fixed rule (Appendix~\ref{sec:rule}) places in
-each scheme; ``proven'' is how many additionally carry a Lean certificate (Section~\ref{sec:lean}). 71 of
-100 are proven (95\% Wilson interval $[0.61,0.79]$). The ``Lean witness'' is the formal predicate each
+each scheme; ``proven'' is how many additionally carry a Lean certificate (Section~\ref{sec:lean}). 75 of
+100 are proven (95\% Wilson interval $[0.66,0.82]$). The ``Lean witness'' is the formal predicate each
 scheme is checked against (\emph{catamorphism}: a fold over a tree-shaped structure; \emph{least fixpoint}:
-the limit of one-step graph relaxation). The 29 not proven are 22 genuine non-scheme (``tail'') problems
-plus 7 in-scheme problems whose proofs are too costly to formalize in Mathlib.}
+the limit of one-step graph relaxation). Every sampled fold, relaxation, and bisection problem is certified;
+the 25 not proven are 22 genuine non-scheme (``tail'') problems plus 3 in-scheme problems, all dynamic
+programming, whose full correctness proofs are too costly to formalize in Mathlib.}
 \label{tab:schemes}
 \end{table}
 
@@ -118,8 +119,8 @@ usual measure, interview preparation \emph{looks} like a long, flat list. This i
 industry sells.
 
 \paragraph{Shallow root.} But that breadth is mostly re-packaging. Sorting the same problems by the
-\emph{structure} of their accepted solution, four recursion schemes account for 71 of 100 sampled distinct
-problems (Table~\ref{tab:schemes}; 95\% CI $[61\%,79\%]$), and one of them---the streaming left-to-right
+\emph{structure} of their accepted solution, four recursion schemes account for 75 of 100 sampled distinct
+problems (Table~\ref{tab:schemes}; 95\% CI $[66\%,82\%]$), and one of them---the streaming left-to-right
 fold---is the single most common. Techniques memorized as unrelated (prefix sums, the XOR trick, hashing's
 ``seen set,'' reversing a list, the parenthesis-matching stack scan, the sliding window) are \emph{the same
 fold}, differing only in what the accumulator carries. The apparent variety is variety in the \emph{type of
@@ -184,7 +185,7 @@ is the prefix scan with its telescoping identity proven; Single Number is the XO
 lone odd-count element. For these the certificate is the strong form---``the accepted code \emph{is} this
 fold, and it is correct''---which is what the general per-problem procedure approximates.
 
-The result is one reproducible number: $\hat p = 0.71$ (71 of 100), 95\% Wilson interval $[0.61,0.79]$
+The result is one reproducible number: $\hat p = 0.75$ (75 of 100), 95\% Wilson interval $[0.66,0.82]$
 (Wilson is the standard interval for a proportion). The certified set is released as a column of the sampled
 data, so the count re-derives directly. Two honesty notes. First, the measurement is \emph{one-directional}:
 an in-scheme problem whose proof is intractable in Mathlib is counted as unproven, never the reverse, so the
@@ -224,11 +225,11 @@ certify that scheme-membership is the \emph{right} notion of ``the idea an inter
 \textbf{Membership and correctness are separate theorems.} As noted in Section~\ref{sec:lean}, we prove a
 non-vacuous scheme instance and, separately, a correct solution; we do not mechanize that the two programs
 coincide. A full ``the accepted solution \emph{is} this fold'' equivalence is future work; the present claim
-is scoped accordingly. \textbf{A conservative estimate, not a floor.} 71\% is the machine-proven share on a
-random sample of 100; it is a sample estimate, and the Wilson interval $[61\%,79\%]$---not the point
+is scoped accordingly. \textbf{A conservative estimate, not a floor.} 75\% is the machine-proven share on a
+random sample of 100; it is a sample estimate, and the Wilson interval $[66\%,82\%]$---not the point
 value---is the honest summary. The procedure under-counts (an in-scheme problem we cannot formalize counts
 as unproven), so it does not over-state coverage; but ``conservative'' is a property of the measurement, not
-a population guarantee, and 71\% does not lower-bound coverage over all problems. \textbf{Two populations.}
+a population guarantee, and 75\% does not lower-bound coverage over all problems. \textbf{Two populations.}
 Coverage is over distinct problems (each counted once); the company comparison is frequency-weighted (over
 asked instances). A candidate cares about both; we report each on its own population and do not mix them.
 \textbf{Coverage is not difficulty.} ``Same scheme'' does not mean ``same difficulty''---two folds can
@@ -238,9 +239,9 @@ that the problems are easy.
 \section{Conclusion}
 
 Interview problems have wide apparent breadth and shallow generative depth. The roughly twenty surface
-``patterns'' are four recursion schemes in different costumes: on a uniform random sample, 71 of 100
+``patterns'' are four recursion schemes in different costumes: on a uniform random sample, 75 of 100
 problems carry a Lean certificate that the problem is genuinely solvable by its assigned scheme and that a
-transcribed solution satisfies a verified correctness property (95\% CI $[61\%,79\%]$; the streaming fold the single most common). And the
+transcribed solution satisfies a verified correctness property (95\% CI $[66\%,82\%]$; the streaming fold the single most common). And the
 seven firms ask essentially one shared syllabus of problem \emph{types}. For the candidate, the practical
 reading is blunt, within that scope: learn the four schemes deeply rather than fifty patterns shallowly, and
 prepare for ``technical interviews,'' not for any one company.
@@ -249,7 +250,7 @@ prepare for ``technical interviews,'' not for any one company.
 
 All derived statistics, the family$\to$scheme rule (released as a standalone table, fixed in advance so it is
 verifiable that the categories were not fitted to the sample), the sampling seed, the sampled certificate
-column (from which the 71/100 re-derives), and the complete Lean proof development are released; raw per-company
+column (from which the 75/100 re-derives), and the complete Lean proof development are released; raw per-company
 frequency tables are withheld per the source platform's terms, so the headline statistics are reproducible
 from the released derived data while the scrape itself is not redistributed. The proof artifact builds with
 \texttt{lake build} (zero \texttt{sorry}); the ``standard axioms'' claim is checkable, not merely asserted,

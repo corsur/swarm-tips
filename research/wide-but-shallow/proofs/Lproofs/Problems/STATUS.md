@@ -1,17 +1,17 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 254/577 relevant problems** (54.9% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 258/577 relevant problems** (55.5% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
 | fold | hashing | 23 | 48 |
-| fold | string-other | 13 | 45 |
+| fold | string-other | 14 | 45 |
 | fold | two-pointers | 17 | 36 |
 | fold | math-bit | 11 | 33 |
 | fold | linked-list | 11 | 21 |
-| fold | sliding-window | 8 | 21 |
+| fold | sliding-window | 11 | 21 |
 | fold | monotonic-stack | 7 | 19 |
 | fold | prefix-sum | 5 | 17 |
 | fold | pairing-stack | 8 | 14 |
@@ -87,6 +87,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `72` Edit Distance — dp (O(mn)) — `lproofs/Lproofs/Problems/DP/P0072_EditDistance.lean`
 - `74` Search a 2D Matrix — bisection (O(log nm)) — `lproofs/Lproofs/Problems/Bisection/P0074_Search2DMatrix.lean`
 - `75` Sort Colors — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0075_SortColors.lean`
+- `76` Minimum Window Substring — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0076_MinWindowSubstring.lean`
 - `78` Subsets — dp (O(n·2ⁿ)) — `lproofs/Lproofs/Problems/DP/P0078_Subsets.lean`
 - `79` Word Search — dp (O(m·n·4^L)) — `lproofs/Lproofs/Problems/Relaxation/P0079_WordSearch.lean`
 - `81` Search in Rotated Sorted Array II — bisection () — `lproofs/Lproofs/Problems/Bisection/P0081_SearchRotatedII.lean`
@@ -230,6 +231,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `815` Bus Routes — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P0815_BusRoutes.lean`
 - `824` Goat Latin — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0824_GoatLatin.lean`
 - `825` Friends Of Appropriate Ages — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0825_FriendsAppropriateAges.lean`
+- `833` Find And Replace in String — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0833_FindReplaceString.lean`
 - `852` Peak Index in a Mountain Array — bisection () — `lproofs/Lproofs/Problems/Bisection/P0852_PeakIndex.lean`
 - `863` All Nodes Distance K in Binary Tree — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P0863_AllNodesDistanceKinBinar.lean`
 - `875` Koko Eating Bananas — bisection (O(n log m)) — `lproofs/Lproofs/Problems/Bisection/P0875_KokoBananas.lean`
@@ -242,6 +244,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `941` Valid Mountain Array — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0941_ValidMountainArray.lean`
 - `959` Regions Cut By Slashes — relaxation (O(n^2)) — `lproofs/Lproofs/Problems/Relaxation/P0959_RegionsBySlashes.lean`
 - `983` Minimum Cost For Tickets — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0983_MinCostTickets.lean`
+- `992` Subarrays with K Different Integers — fold () — `lproofs/Lproofs/Problems/Fold/P0992_SubarraysKDistinct.lean`
 - `994` Rotting Oranges — relaxation (O(mn)) — `lproofs/Lproofs/Problems/Relaxation/P0994_RottingOranges.lean`
 - `1004` Max Consecutive Ones III — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1004_MaxConsecutiveOnesIII.lean`
 - `1011` Capacity To Ship Packages Within D Days — bisection () — `lproofs/Lproofs/Problems/Bisection/P1011_ShipPackages.lean`
@@ -286,6 +289,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2282` Number of People That Can Be Seen in a Grid — fold () — `lproofs/Lproofs/Problems/Fold/P2282_PeopleSeenInGrid.lean`
 - `2337` Move Pieces to Obtain a String — fold () — `lproofs/Lproofs/Problems/Fold/P2337_MovePieces.lean`
 - `2385` Amount of Time for Binary Tree to Be Infected — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2385_AmountofTimeforBinaryTre.lean`
+- `2444` Count Subarrays With Fixed Bounds — fold () — `lproofs/Lproofs/Problems/Fold/P2444_CountSubarraysFixedBounds.lean`
 - `2503` Maximum Number of Points From Grid Queries — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean`
 - `2661` First Completely Painted Row or Column — fold () — `lproofs/Lproofs/Problems/Fold/P2661_FirstCompletelyPainted.lean`
 - `2858` Minimum Edge Reversals for All Reachable — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
