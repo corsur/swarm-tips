@@ -1,0 +1,66 @@
+{
+  "_comment": "Fine family -> {macro group, klass}. klass: 'core' = formally semiring/monoid-algebraic; 'periph' = structural-invariant; 'trivial' = no algorithmic content. Macro groups (~13) are used for the primary contingency test to control cell sparsity; fine families are exploratory.",
+  "families": {
+    "dp-linear":            {"macro": "dp",            "klass": "core"},
+    "dp-grid":              {"macro": "dp",            "klass": "core"},
+    "dp-interval":          {"macro": "dp",            "klass": "core"},
+    "dp-knapsack":          {"macro": "dp",            "klass": "core"},
+    "dp-bitmask":           {"macro": "dp",            "klass": "core"},
+    "dp-tree":              {"macro": "dp",            "klass": "core"},
+    "dp-digit":             {"macro": "dp",            "klass": "core"},
+
+    "bfs":                  {"macro": "graph-search",  "klass": "core"},
+    "dfs-flood":            {"macro": "graph-search",  "klass": "periph"},
+    "topo-sort":            {"macro": "graph-search",  "klass": "core"},
+    "union-find":           {"macro": "graph-search",  "klass": "periph"},
+    "dijkstra":             {"macro": "graph-search",  "klass": "core"},
+    "bellman-ford":         {"macro": "graph-search",  "klass": "core"},
+    "graph-other":          {"macro": "graph-search",  "klass": "periph"},
+
+    "tree-traversal":       {"macro": "tree",          "klass": "core"},
+    "tree-aggregate":       {"macro": "tree",          "klass": "core"},
+    "bst":                  {"macro": "tree",          "klass": "periph"},
+    "tree-construct":       {"macro": "tree",          "klass": "periph"},
+    "trie":                 {"macro": "tree",          "klass": "periph"},
+
+    "backtracking":         {"macro": "backtracking",  "klass": "core"},
+
+    "two-pointers":         {"macro": "two-pointers",  "klass": "periph"},
+    "fast-slow":            {"macro": "two-pointers",  "klass": "periph"},
+    "dutch-flag":           {"macro": "two-pointers",  "klass": "periph"},
+
+    "sliding-window":       {"macro": "sliding-window","klass": "periph"},
+
+    "binary-search":        {"macro": "binary-search", "klass": "periph"},
+
+    "hashing":              {"macro": "hashing",       "klass": "periph"},
+
+    "monotonic-stack":      {"macro": "stack",         "klass": "periph"},
+    "pairing-stack":        {"macro": "stack",         "klass": "periph"},
+
+    "heap-topk":            {"macro": "heap-select",   "klass": "periph"},
+
+    "merge-intervals":      {"macro": "intervals",     "klass": "periph"},
+    "diff-array":           {"macro": "intervals",     "klass": "periph"},
+
+    "prefix-sum":           {"macro": "prefix-sum",    "klass": "periph"},
+
+    "greedy":               {"macro": "greedy",        "klass": "periph"},
+
+    "string-matching":      {"macro": "string",        "klass": "periph"},
+    "string-other":         {"macro": "string",        "klass": "periph"},
+
+    "linked-list":          {"macro": "linked-list",   "klass": "periph"},
+
+    "matrix-sim":           {"macro": "matrix-sim",    "klass": "periph"},
+
+    "design":               {"macro": "design",        "klass": "periph"},
+
+    "math-bit":             {"macro": "math-bit",      "klass": "periph"},
+    "number-theory":        {"macro": "math-bit",      "klass": "periph"},
+    "geometry":             {"macro": "math-bit",      "klass": "periph"},
+
+    "sql":                  {"macro": "sql",           "klass": "trivial"},
+    "trivial":              {"macro": "trivial",       "klass": "trivial"}
+  }
+}

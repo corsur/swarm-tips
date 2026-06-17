@@ -38,10 +38,10 @@ def parse_file(path):
     cls = re.search(r"theorem\s+cls\b", txt) is not None
     corr = re.search(r"theorem\s+corr\b", txt) is not None
     bad = re.search(r"\bsorry\b|\badmit\b", txt) is not None
-    # non-vacuity proxy: a real classification ships cls AND >=1 structure/recurrence proof
-    # (fold_eq / state_eq / corr / the reachable lemma / ...), so cls is never a lone vacuous rfl.
-    nthm = len(re.findall(r"\btheorem\s+\w", txt))
-    classified = cls and not bad and nthm >= 2
+    # CERTIFIED iff cls (scheme membership) AND corr (correctness vs spec) AND no sorry/admit.
+    # corr is the non-vacuity guarantee: a real correctness theorem about the solution, so cls is
+    # never counted as a lone vacuous rfl. (Partial lemmas like corr_head/corr_bound do not count.)
+    classified = cls and corr and not bad
     return {"num": m.group(1), "name": fields.get("name", ""), "scheme": fields.get("scheme", ""),
             "family": fields.get("family", ""), "complexity": fields.get("complexity", ""),
             "source": fields.get("source", ""), "cls": cls, "corr": corr, "sorry": bad,

@@ -51,10 +51,10 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
 57,Insert Interval,fold,merge-intervals,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0057_InsertInterval.lean
 58,Length of Last Word,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0058_LengthOfLastWord.lean
 60,,fold,math-bit,False,False,,,False,False,
-61,,fold,linked-list,False,False,,,False,False,
+61,Rotate List,fold,linked-list,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0061_RotateList.lean
 62,Unique Paths,dp,dp-grid,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/DP/P0062_UniquePaths.lean
 63,Unique Paths II,dp,dp-grid,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/DP/P0063_UniquePathsII.lean
-64,Minimum Path Sum,dp,dp-grid,True,False,O(mn),,False,True,lproofs/Lproofs/Problems/DP/P0064_MinPathSum.lean
+64,Minimum Path Sum,dp,dp-grid,True,False,O(mn),,False,False,lproofs/Lproofs/Problems/DP/P0064_MinPathSum.lean
 65,Valid Number,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0065_ValidNumber.lean
 66,Plus One,fold,math-bit,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0066_PlusOne.lean
 67,Add Binary,fold,math-bit,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0067_AddBinary.lean
@@ -268,7 +268,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
 490,,relaxation,bfs,False,False,,,False,False,
 493,,bisection,binary-search,False,False,,,False,False,
 494,Target Sum,dp,dp-knapsack,True,True,O(n·sum),,False,True,lproofs/Lproofs/Problems/DP/P0494_TargetSum.lean
-496,Next Greater Element I,fold,monotonic-stack,True,False,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0496_NextGreaterElement.lean
+496,Next Greater Element I,fold,monotonic-stack,True,False,O(n),,False,False,lproofs/Lproofs/Problems/Fold/P0496_NextGreaterElement.lean
 503,,fold,monotonic-stack,False,False,,,False,False,
 505,The Maze II,relaxation,dijkstra,True,True,O(mn log mn),,False,True,lproofs/Lproofs/Problems/Relaxation/P0505_MazeII.lean
 509,Fibonacci Number,dp,dp-linear,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0509_Fibonacci.lean
@@ -356,7 +356,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
 876,,fold,fast-slow,False,False,,,False,False,
 889,Construct Binary Tree from Preorder and Postorder Traversal,dp,tree-construct,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0889_ConstructBTfromPreandPost.lean
 898,Bitwise ORs of Subarrays,dp,dp-linear,True,True,O(n·W),,False,True,lproofs/Lproofs/Problems/DP/P0898_BitwiseORsSubarrays.lean
-901,Online Stock Span,fold,monotonic-stack,True,False,O(n) amortized,,False,True,lproofs/Lproofs/Problems/Fold/P0901_OnlineStockSpan.lean
+901,Online Stock Span,fold,monotonic-stack,True,False,O(n) amortized,,False,False,lproofs/Lproofs/Problems/Fold/P0901_OnlineStockSpan.lean
 904,,fold,sliding-window,False,False,,,False,False,
 907,Sum of Subarray Minimums,fold,monotonic-stack,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0907_SumSubarrayMinimums.lean
 909,,relaxation,bfs,False,False,,,False,False,
@@ -448,7 +448,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
 1648,Sell Diminishing-Valued Colored Balls,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1648_SellDiminishingBalls.lean
 1650,,dp,tree-traversal,False,False,,,False,False,
 1657,Determine if Two Strings Are Close,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P1657_DetermineCloseStrings.lean
-1673,Find the Most Competitive Subsequence,fold,monotonic-stack,True,False,,,False,True,lproofs/Lproofs/Problems/Fold/P1673_MostCompetitiveSubsequence.lean
+1673,Find the Most Competitive Subsequence,fold,monotonic-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1673_MostCompetitiveSubsequence.lean
 1674,,fold,diff-array,False,False,,,False,False,
 1691,,dp,dp-linear,False,False,,,False,False,
 1719,Number Of Ways To Reconstruct A Tree,relaxation,graph-other,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P1719_Reach.lean
@@ -502,7 +502,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
 2258,Escape the Spreading Fire,relaxation,bfs,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P2258_EscapetheSpreadingFire.lean
 2261,,fold,hashing,False,False,,,False,False,
 2265,,dp,dp-tree,False,False,,,False,False,
-2282,,fold,monotonic-stack,False,False,,,False,False,
+2282,Number of People That Can Be Seen in a Grid,fold,monotonic-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P2282_PeopleSeenInGrid.lean
 2307,,relaxation,union-find,False,False,,,False,False,
 2333,,bisection,binary-search,False,False,,,False,False,
 2337,Move Pieces to Obtain a String,fold,two-pointers,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P2337_MovePieces.lean
@@ -571,7 +571,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
 3637,Trionic Array I,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P3637_TrionicArray.lean
 3652,,dp,dp-linear,False,False,,,False,False,
 3660,,dp,dp-linear,False,False,,,False,False,
-3741,,fold,hashing,False,False,,,False,False,
+3741,Minimum Distance Between Three Equal Elements II,fold,hashing,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P3741_MinDistThreeEqual.lean
 3742,,dp,dp-grid,False,False,,,False,False,
 3761,,fold,hashing,False,False,,,False,False,
 3872,,dp,dp-linear,False,False,,,False,False,

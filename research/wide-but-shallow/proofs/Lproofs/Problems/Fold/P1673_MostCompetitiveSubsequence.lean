@@ -40,4 +40,40 @@ theorem corr_bound (stk : List ℤ) (x : ℤ) : (step stk x).length ≤ stk.leng
   have := dropWhile_len stk (x < ·)
   omega
 
+/-- `dropWhile` only drops, never adds: membership carries back to the original list. -/
+theorem mem_of_mem_dropWhile {y : ℤ} {p : ℤ → Bool} :
+    ∀ {l : List ℤ}, y ∈ l.dropWhile p → y ∈ l := by
+  intro l
+  induction l with
+  | nil => simp
+  | cons a t ih =>
+    simp only [List.dropWhile_cons]
+    split
+    · intro h; exact List.mem_cons_of_mem _ (ih h)
+    · intro h; exact h
+
+/-- The accumulator only ever holds elements seen so far: every member of the folded stack came
+    from `init` or the input. -/
+theorem foldl_step_mem (y : ℤ) :
+    ∀ (xs init : List ℤ), y ∈ xs.foldl step init → y ∈ init ∨ y ∈ xs := by
+  intro xs
+  induction xs with
+  | nil => intro init h; exact Or.inl (by simpa using h)
+  | cons x t ih =>
+    intro init h
+    rw [List.foldl_cons] at h
+    rcases ih (step init x) h with h' | h'
+    · rw [step, List.mem_cons] at h'
+      rcases h' with rfl | h'
+      · exact Or.inr (List.mem_cons_self)
+      · exact Or.inl (mem_of_mem_dropWhile h')
+    · exact Or.inr (List.mem_cons_of_mem _ h')
+
+/-- CORRECT (soundness, one-directional): every value in the output is drawn from the input — the
+    monotonic-stack pass introduces no spurious elements. -/
+theorem corr (xs : List ℤ) (y : ℤ) (h : y ∈ run xs) : y ∈ xs := by
+  rcases foldl_step_mem y xs [] h with h' | h'
+  · simp at h'
+  · exact h'
+
 end LC.P1673

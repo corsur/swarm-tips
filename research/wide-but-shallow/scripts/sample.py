@@ -30,13 +30,11 @@ def main():
     rng = random.Random(args.seed)
     chosen = sorted(rng.sample(population, n), key=int)
 
-    # which sampled problems are already certified (have a Problems/ file)?
-    proven = set()
-    import glob, re
-    for p in glob.glob(os.path.join(HERE, "lproofs", "Lproofs", "Problems", "*", "*.lean")):
-        m = re.search(r"@lc\s+(\d+)", open(p).read())
-        if m:
-            proven.add(m.group(1))
+    # which sampled problems are certified? Single source of truth: certs.csv `done`
+    # (= cls AND corr AND no sorry, parsed from the Lean files by build_manifest.py). Deriving
+    # `proven` from the manifest — not from mere file-existence — keeps this column from drifting.
+    certs_path = os.path.join(HERE, "certs.csv")
+    proven = {r["num"] for r in csv.DictReader(open(certs_path)) if r["done"] == "True"}
 
     with open(os.path.join(HERE, "sample.csv"), "w", newline="") as fh:
         w = csv.writer(fh)

@@ -36,11 +36,11 @@ left-to-right fold, differing only in what the running state carries. We back th
 Lean~4 / Mathlib formalization rather than hand labeling alone: for a uniform random sample of 100 problems
 we formalize each scheme as a predicate and, where the fixed rule assigns a problem to a scheme, exhibit a
 non-vacuous instance of that scheme and machine-verify a correctness property of the transcribed accepted
-solution. \textbf{63 of 100} problems carry such a certificate (95\% Wilson interval $[0.53,0.72]$; no
+solution. \textbf{71 of 100} problems carry such a certificate (95\% Wilson interval $[0.61,0.79]$; no
 \texttt{sorry}; standard axioms). Separately, the seven firms ask nearly the same mix of schemes
-(scheme-level bias-corrected Cram\'er's \V$\,\approx 0.09$, 95\% bootstrap CI $[0.08,0.25]$---small at the
-point estimate, and bounded below a moderate effect): six of the seven are statistically indistinguishable
-and only Uber reaches the edge of a small effect. We measure the structure of
+(scheme-level bias-corrected Cram\'er's \V$\,= 0.091$, 95\% bootstrap CI $[0.06,0.12]$---a small effect at
+most, bounded well below a moderate one): six of the seven are statistically indistinguishable and only Uber
+stands out, leaning on graph relaxation. We measure the structure of
 \emph{commonly-asked} problems---not interview difficulty, and not the payoff of any prep regimen---and
 within that scope, company-specific preparation buys little. In short: interview problems are \emph{wide on
 the surface but shallow underneath}. Derived statistics (including the sampled certificates) and proof code
@@ -77,7 +77,8 @@ A fixed rule (Appendix~\ref{sec:rule}, set in advance) assigns each surface fami
 solution rather than its textbook name (Table~\ref{tab:schemes})---or to a residual ``tail.'' Two
 populations matter and we keep them distinct: \emph{coverage} is measured over a uniform random sample of
 \emph{distinct problems} (Section~\ref{sec:lean}); the \emph{company} comparison is over each firm's
-\emph{asked-frequency} distribution across schemes (Section~\ref{sec:result}). All effect sizes use bias
+\emph{asked-frequency} distribution across the four recursion schemes (plus tail; Section~\ref{sec:result}),
+with the finer twenty-family grouping reported alongside as a robustness check. All effect sizes use bias
 correction~\cite{bergsma13} and report uncertainty.
 
 \section{Result: four ideas, not fifty}
@@ -90,22 +91,22 @@ correction~\cite{bergsma13} and report uncertainty.
 \toprule
 Recursion scheme & textbook families it subsumes & assigned & proven & Lean witness \\
 \midrule
-streaming fold & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, linked-list, bit-XOR, string-scan & 29 & 21 & \texttt{IsFold} \\
-recursive decomposition (DP) & dynamic programming, backtracking, tree & 25 & 19 & catamorphism \\
-graph relaxation & BFS/DFS, Dijkstra, Bellman--Ford, topo-sort, union--find & 15 & 14 & least fixpoint \\
+streaming fold & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, linked-list, bit-XOR, string-scan & 29 & 25 & \texttt{IsFold} \\
+recursive decomposition (DP) & dynamic programming, backtracking, tree & 25 & 22 & catamorphism \\
+graph relaxation & BFS/DFS, Dijkstra, Bellman--Ford, topo-sort, union--find & 15 & 15 & least fixpoint \\
 bisection & binary search (monotone predicate) & 9 & 9 & monotone threshold \\
 \midrule
-\textbf{in a scheme} & & \textbf{78} & \textbf{63} & \\
+\textbf{in a scheme} & & \textbf{78} & \textbf{71} & \\
 not a scheme & design, simulation, heaps, number theory, string matching, $\dots$ & 22 & --- & --- \\
 \bottomrule
 \end{tabular}
 \caption{The roughly twenty surface families collapse onto four recursion schemes. On a uniform random
 sample of 100 distinct problems: ``assigned'' is how many the fixed rule (Appendix~\ref{sec:rule}) places in
-each scheme; ``proven'' is how many additionally carry a Lean certificate (Section~\ref{sec:lean}). 63 of
-100 are proven (95\% Wilson interval $[0.53,0.72]$). The ``Lean witness'' is the formal predicate each
+each scheme; ``proven'' is how many additionally carry a Lean certificate (Section~\ref{sec:lean}). 71 of
+100 are proven (95\% Wilson interval $[0.61,0.79]$). The ``Lean witness'' is the formal predicate each
 scheme is checked against (\emph{catamorphism}: a fold over a tree-shaped structure; \emph{least fixpoint}:
-the limit of one-step graph relaxation). The 37 not proven are 22 genuine non-scheme (``tail'') problems
-plus 15 in-scheme problems whose proofs are too costly to formalize in Mathlib.}
+the limit of one-step graph relaxation). The 29 not proven are 22 genuine non-scheme (``tail'') problems
+plus 7 in-scheme problems whose proofs are too costly to formalize in Mathlib.}
 \label{tab:schemes}
 \end{table}
 
@@ -115,27 +116,27 @@ usual measure, interview preparation \emph{looks} like a long, flat list. This i
 industry sells.
 
 \paragraph{Shallow root.} But that breadth is mostly re-packaging. Sorting the same problems by the
-\emph{structure} of their accepted solution, four recursion schemes account for 63 of 100 sampled distinct
-problems (Table~\ref{tab:schemes}; 95\% CI $[53\%,72\%]$), and one of them---the streaming left-to-right
+\emph{structure} of their accepted solution, four recursion schemes account for 71 of 100 sampled distinct
+problems (Table~\ref{tab:schemes}; 95\% CI $[61\%,79\%]$), and one of them---the streaming left-to-right
 fold---is the single most common. Techniques memorized as unrelated (prefix sums, the XOR trick, hashing's
 ``seen set,'' reversing a list, the parenthesis-matching stack scan, the sliding window) are \emph{the same
 fold}, differing only in what the accumulator carries. The apparent variety is variety in the \emph{type of
 the accumulator}, not in the underlying computation.
 
 \paragraph{One shared syllabus.} The same data dissolve the company myth. Treating each firm as a
-distribution over the four schemes (a seven-firm $\times$ four-scheme table, plus tail), the firms differ
-little: bias-corrected Cram\'er's \V~\cite{cramer46,bergsma13}$\,\approx 0.09$ (95\% bootstrap CI
-$[0.08,0.25]$)---a $0$-to-$1$ measure of how differently the firms ask, where $0$ means identical and
-conventional thresholds put $0.1$ at ``small'' and $0.3$ at ``moderate.'' The point estimate is small and
-the interval stays below the moderate threshold, so the between-firm difference is \emph{bounded}, not
-merely non-significant. Testing each firm against the pooled remainder (bootstrap confidence intervals on the
-corrected effect, per comparison), \textbf{six of the seven are statistically indistinguishable} from the
-rest; only Uber---which leans slightly more on graph relaxation and slightly less on the streaming
-fold---reaches the edge of a ``small'' effect, and with seven tests a single such crossing is what noise
-alone produces. The qualifier matters: we are comparing the \emph{mix of problem types}, not interview
-difficulty or the marginal value of company-specific drilling, which these data cannot measure. Within that
-scope there is, in effect, a single interview syllabus, and preparing differently per company is, for most
-firms, wasted effort.
+distribution over the four recursion schemes (a seven-firm $\times$ four-scheme table, plus tail), the firms
+differ little: bias-corrected Cram\'er's \V~\cite{cramer46,bergsma13}$\,= 0.091$ (95\% bootstrap CI
+$[0.06,0.12]$)---a $0$-to-$1$ measure of how differently the firms ask, where $0$ means identical and
+conventional thresholds put $0.1$ at ``small'' and $0.3$ at ``moderate.'' The point estimate sits at the
+negligible--small boundary and the whole interval stays well below ``moderate,'' so the between-firm
+difference is \emph{bounded}, not merely non-significant (the finer twenty-family grouping gives a similar,
+slightly smaller \V$\,= 0.064$, so the conclusion does not hinge on the grouping). Pairwise, of the
+twenty-one firm pairs the only non-negligible ones all involve \textbf{Uber}, which leans more on graph
+relaxation and less on the streaming fold (the largest, versus Google, is still only a ``small'' effect);
+\textbf{the other six firms are mutually indistinguishable}. The qualifier matters: we are comparing the
+\emph{mix of problem types}, not interview difficulty or the marginal value of company-specific drilling,
+which these data cannot measure. Within that scope there is, in effect, a single interview syllabus, and
+preparing differently per company is, for most firms, wasted effort.
 
 \section{Machine-checking the classification}
 \label{sec:lean}
@@ -161,7 +162,7 @@ says ``this problem is genuinely solvable by scheme $S$, and we have a verified 
 flag it plainly (Section~\ref{sec:threats}); it is still far stronger than an unchecked label, because the
 scheme instance is proven non-vacuous and the solution is proven correct.
 
-The result is one reproducible number: $\hat p = 0.63$ (63 of 100), 95\% Wilson interval $[0.53,0.72]$
+The result is one reproducible number: $\hat p = 0.71$ (71 of 100), 95\% Wilson interval $[0.61,0.79]$
 (Wilson is the standard interval for a proportion). The certified set is released as a column of the sampled
 data, so the count re-derives directly. Two honesty notes. First, the measurement is \emph{one-directional}:
 an in-scheme problem whose proof is intractable in Mathlib is counted as unproven, never the reverse, so the
@@ -171,6 +172,21 @@ spelled out in Section~\ref{sec:threats}). Second, because the check can only \e
 a label-error rate. The schemes' deeper foundations need not be re-derived here: shortest-path as a least fixpoint over a
 semiring~\cite{afp_dijkstra,afp_kleene,lehmann77} and verified dynamic programming as memoized
 recursion~\cite{afp_dp} already exist in the formal-methods literature, which we cite rather than reprove.
+
+\section{Related work}
+\label{sec:related}
+
+Two literatures bracket this paper. On the \emph{empirical} side, interview preparation is organized by
+pattern catalogues~\cite{prashad} that enumerate surface families; we are not aware of prior work that tests
+whether those families are generatively distinct, or whether firms differ in the mix they ask. On the
+\emph{structural} side, the observation that wide families of programs are instances of a few recursion
+schemes is the Bird--Meertens tradition of program calculation~\cite{bird-demoor} and its formal-methods
+descendants: associative aggregation over a sliding window is a verified fold~\cite{afp_sliding}, dynamic
+programming is verified memoized recursion~\cite{afp_dp}, and shortest paths are a least fixpoint over a
+semiring~\cite{afp_dijkstra,afp_kleene,lehmann77}; verified-algorithms textbooks now develop these schemes end
+to end~\cite{fav_book,nipkow_survey}. Our contribution is to connect that structural lens to the
+\emph{empirical} distribution of interview problems, and to machine-check the scheme assignment per problem
+rather than assert it.
 
 \section{Threats to validity}
 \label{sec:threats}
@@ -186,11 +202,11 @@ certify that scheme-membership is the \emph{right} notion of ``the idea an inter
 \textbf{Membership and correctness are separate theorems.} As noted in Section~\ref{sec:lean}, we prove a
 non-vacuous scheme instance and, separately, a correct solution; we do not mechanize that the two programs
 coincide. A full ``the accepted solution \emph{is} this fold'' equivalence is future work; the present claim
-is scoped accordingly. \textbf{A conservative estimate, not a floor.} 63\% is the machine-proven share on a
-random sample of 100; it is a sample estimate, and the Wilson interval $[53\%,72\%]$---not the point
+is scoped accordingly. \textbf{A conservative estimate, not a floor.} 71\% is the machine-proven share on a
+random sample of 100; it is a sample estimate, and the Wilson interval $[61\%,79\%]$---not the point
 value---is the honest summary. The procedure under-counts (an in-scheme problem we cannot formalize counts
 as unproven), so it does not over-state coverage; but ``conservative'' is a property of the measurement, not
-a population guarantee, and 63\% does not lower-bound coverage over all problems. \textbf{Two populations.}
+a population guarantee, and 71\% does not lower-bound coverage over all problems. \textbf{Two populations.}
 Coverage is over distinct problems (each counted once); the company comparison is frequency-weighted (over
 asked instances). A candidate cares about both; we report each on its own population and do not mix them.
 \textbf{Coverage is not difficulty.} ``Same scheme'' does not mean ``same difficulty''---two folds can
@@ -200,9 +216,9 @@ that the problems are easy.
 \section{Conclusion}
 
 Interview problems have wide apparent breadth and shallow generative depth. The roughly twenty surface
-``patterns'' are four recursion schemes in different costumes: on a uniform random sample, 63 of 100
+``patterns'' are four recursion schemes in different costumes: on a uniform random sample, 71 of 100
 problems carry a Lean certificate that the problem is genuinely solvable by its assigned scheme and that a
-transcribed solution is correct (95\% CI $[53\%,72\%]$; the streaming fold the single most common). And the
+transcribed solution is correct (95\% CI $[61\%,79\%]$; the streaming fold the single most common). And the
 seven firms ask essentially one shared syllabus of problem \emph{types}. For the candidate, the practical
 reading is blunt, within that scope: learn the four schemes deeply rather than fifty patterns shallowly, and
 prepare for ``technical interviews,'' not for any one company.
@@ -211,7 +227,7 @@ prepare for ``technical interviews,'' not for any one company.
 
 All derived statistics, the family$\to$scheme rule (released as a standalone table, fixed in advance so it is
 verifiable that the categories were not fitted to the sample), the sampling seed, the sampled certificate
-column (from which the 63/100 re-derives), and the complete Lean proof development are released; raw per-company
+column (from which the 71/100 re-derives), and the complete Lean proof development are released; raw per-company
 frequency tables are withheld per the source platform's terms, so the headline statistics are reproducible
 from the released derived data while the scrape itself is not redistributed. The proof artifact builds with
 \texttt{lake build} (zero \texttt{sorry}); the ``standard axioms'' claim is checkable, not merely asserted,
@@ -240,6 +256,14 @@ language. In \emph{Automated Deduction (CADE-28)}, 2021.
 \emph{Theoretical Computer Science}, 4(1):59--76, 1977.
 \bibitem{afp_dp} S.~Wimmer, S.~Hu, and T.~Nipkow. Monadification, memoization and dynamic
 programming. \emph{Archive of Formal Proofs}, 2018.
+\bibitem{bird-demoor} R.~Bird and O.~de Moor. \emph{Algebra of Programming}. Prentice Hall, 1997.
+\bibitem{afp_sliding} L.~Heimes, D.~Traytel, and J.~Schneider. Formalization of an algorithm for
+greedily computing associative aggregations on sliding windows. \emph{Archive of Formal Proofs}, 2020.
+\bibitem{fav_book} T.~Nipkow, J.~Blanchette, M.~Eberl, A.~G\'omez-Londo\~no, P.~Lammich,
+C.~Sternagel, S.~Wimmer, and B.~Zhan. \emph{Functional Algorithms, Verified!} 2021.
+\url{https://functional-algorithms-verified.org}.
+\bibitem{nipkow_survey} T.~Nipkow, M.~Eberl, and M.~P.~L.~Haslbeck. Verified textbook algorithms:
+A biased survey. In \emph{Automated Technology for Verification and Analysis (ATVA)}, 2020.
 \end{thebibliography}
 
 \appendix

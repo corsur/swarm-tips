@@ -1,18 +1,18 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 254/577 relevant problems** (55.0% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 254/577 relevant problems** (54.9% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
-| fold | hashing | 22 | 48 |
+| fold | hashing | 23 | 48 |
 | fold | string-other | 13 | 45 |
 | fold | two-pointers | 17 | 36 |
 | fold | math-bit | 11 | 33 |
-| fold | linked-list | 10 | 21 |
+| fold | linked-list | 11 | 21 |
 | fold | sliding-window | 8 | 21 |
-| fold | monotonic-stack | 8 | 19 |
+| fold | monotonic-stack | 7 | 19 |
 | fold | prefix-sum | 5 | 17 |
 | fold | pairing-stack | 8 | 14 |
 | fold | diff-array | 2 | 8 |
@@ -21,7 +21,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | fold | dutch-flag | 1 | 1 |
 | dp | dp-linear | 15 | 33 |
 | dp | backtracking | 12 | 29 |
-| dp | dp-grid | 11 | 25 |
+| dp | dp-grid | 10 | 25 |
 | dp | tree-traversal | 3 | 13 |
 | dp | bst | 5 | 12 |
 | dp | dp-tree | 3 | 12 |
@@ -75,9 +75,9 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `56` Merge Intervals — fold (O(n log n)) — `lproofs/Lproofs/Problems/Fold/P0056_MergeIntervals.lean`
 - `57` Insert Interval — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0057_InsertInterval.lean`
 - `58` Length of Last Word — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0058_LengthOfLastWord.lean`
+- `61` Rotate List — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0061_RotateList.lean`
 - `62` Unique Paths — dp (O(mn)) — `lproofs/Lproofs/Problems/DP/P0062_UniquePaths.lean`
 - `63` Unique Paths II — dp (O(mn)) — `lproofs/Lproofs/Problems/DP/P0063_UniquePathsII.lean`
-- `64` Minimum Path Sum — dp (O(mn)) — `lproofs/Lproofs/Problems/DP/P0064_MinPathSum.lean`
 - `65` Valid Number — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0065_ValidNumber.lean`
 - `66` Plus One — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0066_PlusOne.lean`
 - `67` Add Binary — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0067_AddBinary.lean`
@@ -199,7 +199,6 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `485` Max Consecutive Ones — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0485_MaxConsecutiveOnes.lean`
 - `489` Robot Room Cleaner — dp (O(cells)) — `lproofs/Lproofs/Problems/Relaxation/P0489_RobotRoomCleaner.lean`
 - `494` Target Sum — dp (O(n·sum)) — `lproofs/Lproofs/Problems/DP/P0494_TargetSum.lean`
-- `496` Next Greater Element I — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0496_NextGreaterElement.lean`
 - `505` The Maze II — relaxation (O(mn log mn)) — `lproofs/Lproofs/Problems/Relaxation/P0505_MazeII.lean`
 - `509` Fibonacci Number — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0509_Fibonacci.lean`
 - `516` Longest Palindromic Subsequence — dp (O(n²)) — `lproofs/Lproofs/Problems/DP/P0516_LongestPalindromicSubseq.lean`
@@ -236,7 +235,6 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `875` Koko Eating Bananas — bisection (O(n log m)) — `lproofs/Lproofs/Problems/Bisection/P0875_KokoBananas.lean`
 - `889` Construct Binary Tree from Preorder and Postorder Traversal — dp () — `lproofs/Lproofs/Problems/DP/P0889_ConstructBTfromPreandPost.lean`
 - `898` Bitwise ORs of Subarrays — dp (O(n·W)) — `lproofs/Lproofs/Problems/DP/P0898_BitwiseORsSubarrays.lean`
-- `901` Online Stock Span — fold (O(n) amortized) — `lproofs/Lproofs/Problems/Fold/P0901_OnlineStockSpan.lean`
 - `907` Sum of Subarray Minimums — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0907_SumSubarrayMinimums.lean`
 - `921` Minimum Add to Make Parentheses Valid — fold () — `lproofs/Lproofs/Problems/Fold/P0921_MinAddParensValid.lean`
 - `931` Minimum Falling Path Sum — dp (O(n²)) — `lproofs/Lproofs/Problems/DP/P0931_MinFallingPathSum.lean`
@@ -285,6 +283,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2187` Minimum Time to Complete Trips — bisection () — `lproofs/Lproofs/Problems/Bisection/P2187_MinTimeToCompleteTrips.lean`
 - `2214` Minimum Health to Beat Game — dp (O(n)) — `lproofs/Lproofs/Problems/Fold/P2214_MinHealth.lean`
 - `2258` Escape the Spreading Fire — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P2258_EscapetheSpreadingFire.lean`
+- `2282` Number of People That Can Be Seen in a Grid — fold () — `lproofs/Lproofs/Problems/Fold/P2282_PeopleSeenInGrid.lean`
 - `2337` Move Pieces to Obtain a String — fold () — `lproofs/Lproofs/Problems/Fold/P2337_MovePieces.lean`
 - `2385` Amount of Time for Binary Tree to Be Infected — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2385_AmountofTimeforBinaryTre.lean`
 - `2503` Maximum Number of Points From Grid Queries — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean`
@@ -296,4 +295,5 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `3387` Graph Reachability — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P3387_Reach.lean`
 - `3453` Separate Squares I — bisection (O(n log)) — `lproofs/Lproofs/Problems/Bisection/P3453_SeparateSquares.lean`
 - `3637` Trionic Array I — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P3637_TrionicArray.lean`
+- `3741` Minimum Distance Between Three Equal Elements II — fold () — `lproofs/Lproofs/Problems/Fold/P3741_MinDistThreeEqual.lean`
 - `3928` Minimum Cost to Buy Apples II — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P3928_MinimumCosttoBuyApples.lean`

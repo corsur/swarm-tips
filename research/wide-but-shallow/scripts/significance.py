@@ -22,13 +22,28 @@ Usage:
   python significance.py [--window all] [--boot 4000] [--seed 12345]
 Depends on analyze.build_long (taxonomy.json + labels.csv).
 """
-import argparse, os
+import argparse, csv, os
 from itertools import combinations
 import numpy as np
 from scipy.stats import chi2_contingency, ncx2, chi2 as chi2dist
-from analyze import build_long, contingency, WINDOWS, HERE
+from analyze import build_long, contingency, WINDOWS, HERE, _find
 
 SMALL, MODERATE = 0.1, 0.3  # Cohen thresholds for Cramer's V
+
+
+def load_scheme_map():
+    """surface family -> recursion scheme (fold / dp / relaxation / bisection); absent -> tail."""
+    return {r["surface_family"]: r["scheme"] for r in csv.DictReader(open(_find("family_scheme_rule.csv")))}
+
+
+def regroup(df, level):
+    """The 'company' comparison is reported over recursion schemes by default (the 'wide but
+    shallow' claim); --level family reports the finer 20-surface-family grouping. We reuse all the
+    downstream machinery by overwriting the 'macro' column with the chosen grouping."""
+    if level == "family":
+        return df
+    rule = load_scheme_map()
+    return df.assign(macro=df["family"].map(lambda f: rule.get(f, "tail")))
 
 
 def _stats(tab):
@@ -83,20 +98,31 @@ def power_V(tab, V=0.1, alpha=0.05):
 
 
 def bootstrap_V_ci(rows, n_boot, rng, statfn):
-    """rows: list of (company, macro). Resample problems with replacement, recompute statfn(V)."""
+    """rows: list of (company, macro). Resample problems with replacement, recompute statfn(V).
+
+    Returns a BIAS-CORRECTED bootstrap interval. statfn (corrected_V) is floored at 0, so the naive
+    percentile interval of resamples is biased upward — for a near-null effect it can float entirely
+    above the full-sample point estimate, which is not a valid CI. We subtract the bootstrap bias
+    (mean of resamples minus the full-sample statistic) so the interval is centered on the point
+    estimate, then clip the (necessarily non-negative) bounds at 0.
+    """
     comp = np.array([c for c, _ in rows])
     mac = np.array([m for _, m in rows])
     comps = sorted(set(comp)); macs = sorted(set(mac))
     ci = {c: i for i, c in enumerate(comps)}; mi = {m: i for i, m in enumerate(macs)}
     cidx = np.array([ci[c] for c in comp]); midx = np.array([mi[m] for m in mac])
     n = len(rows)
+    full = np.zeros((len(comps), len(macs)))
+    np.add.at(full, (cidx, midx), 1.0)
+    theta = statfn(full)  # full-sample point estimate
     vals = np.empty(n_boot)
     for b in range(n_boot):
         s = rng.integers(0, n, n)
         tab = np.zeros((len(comps), len(macs)))
         np.add.at(tab, (cidx[s], midx[s]), 1.0)
         vals[b] = statfn(tab)
-    return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+    adj = vals - (vals.mean() - theta)  # recenter on the point estimate
+    return float(max(0.0, np.percentile(adj, 2.5))), float(max(0.0, np.percentile(adj, 97.5)))
 
 
 def equiv_verdict(upper):
@@ -145,12 +171,15 @@ def main():
     ap.add_argument("--boot", type=int, default=4000)
     ap.add_argument("--floor", type=int, default=40)
     ap.add_argument("--seed", type=int, default=12345)
+    ap.add_argument("--level", choices=["scheme", "family"], default="scheme",
+                    help="group firms over the four recursion schemes +tail (default, the headline) "
+                         "or the twenty surface families (finer, more conservative)")
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
-    df = build_long("count")
+    df = regroup(build_long("count"), args.level)
 
     print("=" * 78)
-    print("OMNIBUS effect size per window  (raw V vs bias-corrected V vs null-noise floor)")
+    print(f"OMNIBUS effect size per window  (grouping: {args.level})  (raw V vs bias-corrected V vs null-noise floor)")
     print("  claim is about EFFECT SIZE, not the p-value: the omnibus is significant in several")
     print("  windows, so the defensible statement is 'significant but negligible/small'.")
     print("=" * 78)
