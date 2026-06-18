@@ -69,7 +69,7 @@ num,family,scheme,proven
 1423,sliding-window,fold,True
 1431,trivial,tail,False
 1470,trivial,tail,False
-1494,dp-bitmask,dp,False
+1494,dp-bitmask,dp,True
 1539,binary-search,bisection,True
 1584,union-find,relaxation,True
 1603,design,tail,False
@@ -77,7 +77,7 @@ num,family,scheme,proven
 1648,binary-search,bisection,True
 1651,sql,tail,False
 1673,monotonic-stack,fold,True
-1691,dp-linear,dp,False
+1691,dp-linear,dp,True
 1719,graph-other,relaxation,True
 1727,greedy,tail,False
 1768,string-other,fold,True
@@ -93,7 +93,7 @@ num,family,scheme,proven
 2833,trivial,tail,False
 2858,graph-other,relaxation,True
 2912,dp-grid,dp,True
-3129,dp-linear,dp,False
+3129,dp-linear,dp,True
 3161,binary-search,bisection,True
 3387,graph-other,relaxation,True
 3625,geometry,tail,False

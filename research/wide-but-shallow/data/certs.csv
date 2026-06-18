@@ -436,7 +436,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
 1482,Minimum Number of Days to Make m Bouquets,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1482_MinDaysBouquets.lean
 1489,,relaxation,union-find,False,False,,,False,False,
 1492,,fold,math-bit,False,False,,,False,False,
-1494,,dp,dp-bitmask,False,False,,,False,False,
+1494,Parallel Courses II,dp,dp-bitmask,True,True,O(3^n),,False,True,lproofs/Lproofs/Problems/DP/P1494_ParallelCoursesII.lean
 1519,,dp,dp-tree,False,False,,,False,False,
 1539,Kth Missing Positive Number,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1539_KthMissingPositive.lean
 1552,,bisection,binary-search,False,False,,,False,False,
@@ -450,7 +450,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
 1657,Determine if Two Strings Are Close,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P1657_DetermineCloseStrings.lean
 1673,Find the Most Competitive Subsequence,fold,monotonic-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1673_MostCompetitiveSubsequence.lean
 1674,,fold,diff-array,False,False,,,False,False,
-1691,,dp,dp-linear,False,False,,,False,False,
+1691,Maximum Height by Stacking Cuboids,dp,dp-linear,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P1691_MaxHeightStackingCuboids.lean
 1719,Number Of Ways To Reconstruct A Tree,relaxation,graph-other,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P1719_Reach.lean
 1722,,relaxation,union-find,False,False,,,False,False,
 1752,,fold,two-pointers,False,False,,,False,False,
@@ -546,7 +546,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
 3073,,fold,prefix-sum,False,False,,,False,False,
 3120,Count the Number of Special Characters I,fold,string-other,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P3120_CountSpecialCharacters.lean
 3121,,fold,string-other,False,False,,,False,False,
-3129,,dp,dp-linear,False,False,,,False,False,
+3129,Find All Possible Stable Binary Arrays I,dp,dp-linear,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P3129_StableBinaryArrays.lean
 3161,Block Placement Queries,bisection,binary-search,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Bisection/P3161_Bisect.lean
 3163,,fold,string-other,False,False,,,False,False,
 3225,,dp,dp-grid,False,False,,,False,False,

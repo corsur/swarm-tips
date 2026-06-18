@@ -1,6 +1,6 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 258/577 relevant problems** (55.5% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 261/577 relevant problems** (55.5% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
@@ -19,7 +19,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | fold | fast-slow | 2 | 6 |
 | fold | merge-intervals | 3 | 5 |
 | fold | dutch-flag | 1 | 1 |
-| dp | dp-linear | 15 | 33 |
+| dp | dp-linear | 17 | 33 |
 | dp | backtracking | 12 | 29 |
 | dp | dp-grid | 10 | 25 |
 | dp | tree-traversal | 3 | 13 |
@@ -31,7 +31,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | dp-interval | 3 | 7 |
 | dp | dp-knapsack | 3 | 6 |
 | dp | dp-digit | 0 | 2 |
-| dp | dp-bitmask | 0 | 2 |
+| dp | dp-bitmask | 1 | 2 |
 | relaxation | bfs | 15 | 31 |
 | relaxation | union-find | 9 | 17 |
 | relaxation | graph-other | 9 | 15 |
@@ -267,12 +267,14 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1466` Reorder Routes to Make All Paths Lead to the City Zero — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1466_ReorderRoutestoMakeAll.lean`
 - `1480` Running Sum of 1d Array — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1480_RunningSum.lean`
 - `1482` Minimum Number of Days to Make m Bouquets — bisection () — `lproofs/Lproofs/Problems/Bisection/P1482_MinDaysBouquets.lean`
+- `1494` Parallel Courses II — dp (O(3^n)) — `lproofs/Lproofs/Problems/DP/P1494_ParallelCoursesII.lean`
 - `1539` Kth Missing Positive Number — bisection () — `lproofs/Lproofs/Problems/Bisection/P1539_KthMissingPositive.lean`
 - `1584` Min Cost to Connect All Points — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1584_MinCostConnectPoints.lean`
 - `1614` Maximum Nesting Depth of the Parentheses — fold () — `lproofs/Lproofs/Problems/Fold/P1614_MaxNestingDepth.lean`
 - `1648` Sell Diminishing-Valued Colored Balls — bisection () — `lproofs/Lproofs/Problems/Bisection/P1648_SellDiminishingBalls.lean`
 - `1657` Determine if Two Strings Are Close — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1657_DetermineCloseStrings.lean`
 - `1673` Find the Most Competitive Subsequence — fold () — `lproofs/Lproofs/Problems/Fold/P1673_MostCompetitiveSubsequence.lean`
+- `1691` Maximum Height by Stacking Cuboids — dp () — `lproofs/Lproofs/Problems/DP/P1691_MaxHeightStackingCuboids.lean`
 - `1719` Number Of Ways To Reconstruct A Tree — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1719_Reach.lean`
 - `1768` Merge Strings Alternately — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1768_MergeAlternately.lean`
 - `1778` Shortest Path in a Hidden Grid — relaxation (O(mn)) — `lproofs/Lproofs/Problems/Relaxation/P1778_ShortestPathHiddenGrid.lean`
@@ -295,6 +297,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2858` Minimum Edge Reversals for All Reachable — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
 - `2912` Number of Ways to Reach Destination in the Grid — dp () — `lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean`
 - `3120` Count the Number of Special Characters I — fold () — `lproofs/Lproofs/Problems/Fold/P3120_CountSpecialCharacters.lean`
+- `3129` Find All Possible Stable Binary Arrays I — dp () — `lproofs/Lproofs/Problems/DP/P3129_StableBinaryArrays.lean`
 - `3161` Block Placement Queries — bisection (O(log n)) — `lproofs/Lproofs/Problems/Bisection/P3161_Bisect.lean`
 - `3387` Graph Reachability — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P3387_Reach.lean`
 - `3453` Separate Squares I — bisection (O(n log)) — `lproofs/Lproofs/Problems/Bisection/P3453_SeparateSquares.lean`

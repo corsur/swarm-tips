@@ -10,8 +10,8 @@ statistical code, and the complete Lean 4 / Mathlib proof development behind its
 The roughly twenty surface "patterns" that interview-prep material tells you to memorize are mostly **four
 recursion schemes** — streaming fold, recursive decomposition (dynamic programming), graph relaxation, and
 bisection — with the streaming fold the single most common. On a uniform random sample of 100 distinct
-problems, **75 carry a machine-checked Lean certificate** that the problem is genuinely solvable by its
-assigned scheme and that a transcribed solution is correct (95% Wilson interval [0.66, 0.82]; no `sorry`;
+problems, **78 carry a machine-checked Lean certificate** that the problem is genuinely solvable by its
+assigned scheme and that a transcribed solution is correct (95% Wilson interval [0.69, 0.85]; no `sorry`;
 standard axioms). Separately, the seven firms studied ask nearly the same *mix* of schemes
 (scheme-level bias-corrected Cramér's *V* = 0.091, 95% bootstrap CI [0.06, 0.12] — a small effect at most,
 bounded well below a moderate one); six of the seven are mutually indistinguishable and only Uber stands out.
@@ -23,7 +23,7 @@ regimen.
 ```
 paper.pdf, paper.tex          the paper
 data/sample.csv               the uniform random sample of 100 problems; the `proven` column
-                              re-derives the headline 75/100
+                              re-derives the headline 78/100
 data/certs.csv                per-problem certification manifest, derived from the proofs by
                               scripts/build_manifest.py (proven = cls AND corr AND no sorry)
 data/family_scheme_rule.csv   the fixed family→scheme rule (set in advance; families absent → tail)
@@ -37,7 +37,7 @@ proofs/                       the Lean 4 / Mathlib development (run `lake exe ca
 
 ## Reproducing the numbers
 
-- **Coverage (75/100).** The count is the `proven=True` rows of `data/sample.csv`. To re-derive it from the
+- **Coverage (78/100).** The count is the `proven=True` rows of `data/sample.csv`. To re-derive it from the
   proofs themselves, build the Lean development (below), then `python scripts/build_manifest.py` regenerates
   `data/certs.csv` (a problem is certified iff its file has `theorem cls` **and** `theorem corr` and no
   `sorry`) and `python scripts/sample.py` rewrites the `proven` column of `data/sample.csv` from that
