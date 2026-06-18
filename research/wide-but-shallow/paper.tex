@@ -26,62 +26,58 @@
 \maketitle
 
 \begin{abstract}
-The technical-interview-prep industry sells two beliefs: that different companies test materially
-different skills, and that candidates must master dozens of distinct problem ``patterns.'' Against
-per-company problem-frequency data for seven major technology firms (769 distinct problems), we find the
-breadth is largely a costume change. The roughly twenty surface ``families'' are mostly \textbf{four
-recursion schemes}---streaming fold, recursive decomposition (dynamic programming), graph relaxation, and
-bisection---and the streaming fold alone is the most common: techniques taught as unrelated (prefix sums,
-the XOR trick, a hash ``seen set,'' reversing a list, the sliding window) are the \emph{same}
-left-to-right fold, differing only in what the running state carries. We back this classification with a
-Lean~4 / Mathlib formalization rather than hand labeling alone: for a uniform random sample of 100 problems
-we formalize each scheme as a predicate and, where the fixed rule assigns a problem to a scheme, exhibit a
-non-vacuous instance of that scheme and machine-verify a correctness property of the transcribed accepted
-solution. \textbf{78 of 100} problems carry such a certificate (95\% Wilson interval $[0.69,0.85]$; no
-\texttt{sorry}; standard axioms). Separately, the seven firms ask nearly the same mix of schemes
-(scheme-level bias-corrected Cram\'er's \V$\,= 0.091$, 95\% bootstrap CI $[0.06,0.12]$---a small effect at
-most, bounded well below a moderate one): six of the seven are statistically indistinguishable and only Uber
-stands out, leaning on graph relaxation. We measure the structure of
-\emph{commonly-asked} problems---not interview difficulty, and not the payoff of any prep regimen---and
-within that scope, company-specific preparation buys little. In short: interview problems are \emph{wide on
-the surface but shallow underneath}. Derived statistics (including the sampled certificates) and proof code
-are released; raw frequency tables are withheld per platform terms.
+Interview-prep advice rests on two claims: that different companies test different skills, and that you must
+memorize dozens of separate problem ``patterns.'' We test both against how often each problem is asked at
+seven major technology firms (769 distinct problems), and both mostly fail. The roughly twenty ``patterns''
+you are told to learn are really \textbf{four underlying ideas}: a single left-to-right pass (a \emph{fold}),
+divide-and-solve recursion (dynamic programming), spreading information across a graph until it settles, and
+binary search. The single pass is the most common, and many tricks taught as unrelated---prefix sums, the
+XOR trick, a hash ``seen set,'' reversing a list, the sliding window---are the \emph{same} pass; they differ
+only in what running value they carry. To keep our labels honest we did not just hand-sort the problems: we
+re-checked a random sample of 100 with the Lean proof assistant, which verifies each claim mechanically.
+\textbf{78 of the 100} carry such a machine-checked certificate. Separately, the seven firms ask almost the
+same mix of the four ideas: on a standard $0$-to-$1$ scale of how differently they ask (bias-corrected
+Cram\'er's \V, where $0$ is identical), they score just $0.091$---small enough that six of the seven are
+statistically indistinguishable, and only Uber stands out (it leans on graph problems). We describe which
+problems are \emph{commonly asked}, not how hard they are or whether company-specific drilling pays off.
+In short: interview problems are \emph{wide on the surface but shallow underneath}, and essentially one
+shared syllabus covers every company. All derived data and proofs are released; the raw scrape is withheld
+per the platform's terms.
 \end{abstract}
 
 \section{Two myths}
 \label{sec:intro}
 
-Two pieces of folklore dominate interview preparation. The first is \emph{company specificity}: that
-Google, Meta, Amazon and their peers test distinguishable skill profiles, so you should prepare
-differently for each. The second is \emph{pattern proliferation}: that the field is a long list of loosely
-related tricks---sliding window, monotonic stack, union--find, prefix sums, and so on---each of which must
-be learned separately, as popularized by widely-used pattern catalogues~\cite{prashad}. Both are widely
-asserted and, as far as we can tell, never tested.
+Two beliefs dominate interview preparation. The first is \emph{company specificity}: that Google, Meta,
+Amazon and their peers test different skills, so you should prepare differently for each. The second is
+\emph{pattern proliferation}: that the field is a long list of loosely related tricks---sliding window,
+monotonic stack, union--find, prefix sums, and so on---each learned separately, as popular pattern
+catalogues present them~\cite{prashad}. Both are widely repeated and, as far as we can tell, never tested.
 
-We test them, and then ask what \emph{structure} explains the answer. The plain-terms summary: the ``fifty
-patterns'' you are told to memorize are a handful of underlying ideas wearing different costumes, and the
-seven companies ask nearly the same things. To keep the structural labels honest we do not rely on hand
-labeling alone---we use a proof assistant to check, problem by problem, that the idea we assign really does
-solve the problem and that the accepted solution satisfies a verified correctness property (and, for several
-canonical folds, that it is fully correct).
+We test them, and then ask what underlying \emph{structure} explains the answer. The short version: the
+``fifty patterns'' you are told to memorize are a handful of ideas in different disguises, and the seven
+companies ask nearly the same things. To keep our labels honest we do not hand-sort the problems and stop
+there---we use a proof assistant to check, problem by problem, that the idea we assign really does solve the
+problem (and, for several showcase examples, that the standard solution is fully correct).
 
 \section{Data and method}
 \label{sec:data}
 
-Our data are per-company problem-frequency tables for seven firms (Amazon, Apple, Bloomberg, Google, Meta,
-Microsoft, Uber), covering 769 distinct problems across company\,$\times$\,recency strata, scraped from a
-public interview-preparation platform. Each problem carries a fine-grained \emph{surface family} (one of
-$\sim$43: ``sliding window,'' ``monotonic stack,'' ``dynamic programming,'' $\dots$), supplied by the
-platform, and a per-company asked-frequency.
+For seven firms (Amazon, Apple, Bloomberg, Google, Meta, Microsoft, Uber) we scraped a public
+interview-prep platform for how often each problem is asked, broken down by how recently. This covers 769
+distinct problems. The platform tags each one with a \emph{surface family} (``sliding window,'' ``monotonic
+stack,'' ``dynamic programming,'' and so on), which we consolidate into about twenty broad families.
 
-A fixed rule (Appendix~\ref{sec:rule}, set in advance) assigns each surface family to one of four
-\emph{recursion schemes}---a coarser, \emph{structural} classification based on the shape of the accepted
-solution rather than its textbook name (Table~\ref{tab:schemes})---or to a residual ``tail.'' Two
-populations matter and we keep them distinct: \emph{coverage} is measured over a uniform random sample of
-\emph{distinct problems} (Section~\ref{sec:lean}); the \emph{company} comparison is over each firm's
-\emph{asked-frequency} distribution across the four recursion schemes (plus tail; Section~\ref{sec:result}),
-with the finer twenty-family grouping reported alongside as a robustness check. All effect sizes use bias
-correction~\cite{bergsma13} and report uncertainty.
+A fixed rule, written down in advance (Appendix~\ref{sec:rule}), maps each family to one of our four
+underlying \emph{ideas} (formally, \emph{recursion schemes})---a coarser label based on the \emph{shape} of
+the standard solution rather than its textbook name (Table~\ref{tab:schemes})---or to a leftover ``tail'' for
+problems that fit no single idea. We
+ask two separate questions and keep them apart: \emph{coverage}---what fraction of problems the four ideas
+explain---measured on a random sample of distinct problems (Section~\ref{sec:lean}); and the \emph{company}
+comparison---do firms ask different mixes?---measured by weighting each idea by how often it is asked
+(Section~\ref{sec:result}). The company comparison groups by the four ideas, with the finer twenty-family
+view reported alongside as a robustness check; all difference measures are bias-corrected~\cite{bergsma13}
+and reported with uncertainty.
 
 \section{Result: four ideas, not fifty}
 \label{sec:result}
@@ -119,83 +115,74 @@ takes six of the $\sim$20 to cover even half of asked problems; Gini $0.30$ over
 usual measure, interview preparation \emph{looks} like a long, flat list. This is the breadth the prep
 industry sells.
 
-\paragraph{Shallow root.} But that breadth is mostly re-packaging. Sorting the same problems by the
-\emph{structure} of their accepted solution, four recursion schemes account for 78 of 100 sampled distinct
-problems (Table~\ref{tab:schemes}; 95\% CI $[69\%,85\%]$), and one of them---the streaming left-to-right
-fold---is the single most common. Techniques memorized as unrelated (prefix sums, the XOR trick, hashing's
-``seen set,'' reversing a list, the parenthesis-matching stack scan, the sliding window) are \emph{the same
-fold}, differing only in what the accumulator carries. The apparent variety is variety in the \emph{type of
-the accumulator}, not in the underlying computation.
+\paragraph{Shallow root.} But that breadth is mostly repackaging. When we sort the same problems by the
+\emph{shape} of their standard solution, the four ideas cover 78 of 100 sampled problems
+(Table~\ref{tab:schemes}; 95\% confidence interval $[69\%,85\%]$), and the single left-to-right pass is the
+most common of them. Tricks memorized as unrelated---prefix sums, the XOR trick, a hash ``seen set,''
+reversing a list, matching parentheses with a stack, the sliding window---are the \emph{same} pass; they
+differ only in what running value they carry. The variety is in the bookkeeping, not in the computation.
 
-\paragraph{One shared syllabus.} The same data dissolve the company myth. Treating each firm as a
-distribution over the four recursion schemes (a seven-firm $\times$ four-scheme table, plus tail), the firms
-differ little: bias-corrected Cram\'er's \V~\cite{cramer46,bergsma13}$\,= 0.091$ (95\% bootstrap CI
-$[0.06,0.12]$)---a $0$-to-$1$ measure of how differently the firms ask, where $0$ means identical and
-conventional thresholds put $0.1$ at ``small'' and $0.3$ at ``moderate.'' The point estimate sits at the
-negligible--small boundary and the whole interval stays well below ``moderate,'' so the between-firm
-difference is \emph{bounded}, not merely non-significant (the finer twenty-family grouping gives a similar,
-slightly smaller \V$\,= 0.064$, so the conclusion does not hinge on the grouping). Pairwise, of the
-twenty-one firm pairs the only non-negligible ones all involve \textbf{Uber}, which leans more on graph
-relaxation and less on the streaming fold (the largest, versus Google, is still only a ``small'' effect; Figure~\ref{fig:resid});
-\textbf{the other six firms are mutually indistinguishable}. The qualifier matters: we are comparing the
-\emph{mix of problem types}, not interview difficulty or the marginal value of company-specific drilling,
-which these data cannot measure. Within that scope there is, in effect, a single interview syllabus, and
-preparing differently per company is, for most firms, wasted effort.
+\paragraph{One shared syllabus.} The same data dissolve the company myth. We score how differently the firms
+ask on a standard $0$-to-$1$ scale (bias-corrected Cram\'er's \V~\cite{cramer46,bergsma13}, where $0$ means
+identical and the usual cutoffs call $0.1$ ``small'' and $0.3$ ``moderate''). Across the four ideas the firms
+score just $\V = 0.091$ (95\% confidence interval $[0.06,0.12]$)---small, with the whole interval well below
+``moderate,'' so the difference is genuinely bounded, not merely undetected (the finer twenty-family view
+gives a similar $0.064$, so nothing hinges on the grouping). Comparing firms two at a time, the only real
+differences all involve \textbf{Uber}, which asks more graph problems and fewer single-pass ones (its largest
+gap, versus Google, is still only ``small''; Figure~\ref{fig:resid}); \textbf{the other six firms are
+statistically indistinguishable}. One caveat: we compare the \emph{mix of problem types}, not how hard the
+problems are or whether drilling for a specific company helps---our data cannot measure those. Within that
+scope, there is essentially one interview syllabus, and preparing differently per company is, for most firms,
+wasted effort.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.78\linewidth]{figs/residual_scheme.png}
-\caption{Standardized $\chi^2$ residuals of the seven firms over the four recursion schemes (plus tail),
-window ``all'' (red = over-represented, blue = under-represented). Only Uber departs from the
-field---it over-asks graph relaxation ($+5.7$) and under-asks the streaming fold ($-3.4$)---while the other
-six rows are muted (all $|r|\lesssim 2$). This is the scheme-level picture behind the negligible-to-small
-omnibus effect (\V$\,=0.091$): one shared syllabus, with Uber the lone outlier.}
+\caption{How much each firm over- or under-asks each idea, relative to the shared average (standardized
+residuals; red = more than expected, blue = less). Only Uber stands out---it asks far more graph problems
+($+5.7$) and far fewer single-pass ones ($-3.4$)---while the other six rows are muted (all within about
+$\pm2$). This is the picture behind the small overall difference (\V$\,=0.091$): one shared syllabus, with
+Uber the lone exception.}
 \label{fig:resid}
 \end{figure}
 
 \section{Machine-checking the classification}
 \label{sec:lean}
 
-A structural taxonomy is only as trustworthy as its labels, and the usual remedy---a second human rater and
-an agreement statistic---measures only whether two people read a label the same way. We add a different
-check: a proof assistant. We formalize each of the four schemes in Lean~4~\cite{lean4} /
-Mathlib~\cite{mathlib20} as a predicate on programs---e.g.\ \texttt{IsFold} says ``this function equals a
-left fold for some step and seed''---and for a uniform random sample of problems ($n=100$, fixed seed) we
-establish two things in Lean. \textbf{(i) Scheme membership} (\texttt{cls}): the problem admits a
-\emph{non-vacuous} instance of its assigned scheme---a fold/fixpoint/threshold with genuine working state,
-not the trivial witness that any function technically satisfies. \textbf{(ii) Solution correctness}
-(\texttt{corr}): the transcribed accepted solution meets the problem's specification (often a one-directional
-guarantee, e.g.\ ``every reported result is valid''). A problem is counted only when both hold with no
-\texttt{sorry} (Lean's placeholder for an unfinished proof---there are none) and only Lean's standard
-axioms.
+A classification is only as trustworthy as its labels. The usual check---a second human rater---only tells
+you whether two people read a label the same way. We do something stronger: we check the labels with a
+\emph{proof assistant}, a tool that mechanically verifies mathematical claims. Working in
+Lean~4~\cite{lean4} with its library Mathlib~\cite{mathlib20}, we write each of the four ideas as a precise
+test on programs (for example, ``this function is a single left-to-right pass''), and for a random sample of
+100 problems we prove two things. First, \textbf{the idea fits} (\texttt{cls}): the problem really can be
+solved by its assigned idea, with genuine working state---not by a trivial loophole that any function would
+pass. Second, \textbf{the solution is sound} (\texttt{corr}): the standard solution satisfies a verified
+correctness property (often one direction of the guarantee, e.g.\ ``everything it reports is valid''). A
+problem counts only when both proofs go through with no gaps (Lean flags unfinished proofs; there are none)
+and using only Lean's standard logical axioms.
 
-\textbf{What this does and does not certify.} The two theorems are about, respectively, a canonical instance
-of the scheme and the transcribed solution; we do \emph{not} mechanize the further claim that those two are
-the \emph{same} program (that the accepted solution, syntactically, \emph{is} that fold). So the certificate
-says ``this problem is genuinely solvable by scheme $S$, and we have a solution with a verified correctness property,'' not
-``the platform's accepted code is literally a fold.'' That is weaker than a full equivalence proof and we
-flag it plainly (Section~\ref{sec:threats}); it is still far stronger than an unchecked label, because the
-scheme instance is proven non-vacuous and the solution is proven correct.
+\textbf{What this does and does not show.} The two proofs cover an example of the idea and a working
+solution---but we do not separately prove that those two are the \emph{same} program. So a certificate says
+``this problem really is solvable by idea $S$, and we have a verified-correct solution,'' not ``the
+platform's exact accepted code is literally a single pass.'' That is weaker than proving the two coincide
+(which we flag in Section~\ref{sec:threats}), but far stronger than an unchecked label: the idea is proven to
+fit non-trivially, and the solution is proven sound.
 
-\textbf{Closing the gap for canonical folds.} For a handful of textbook folds we \emph{do} mechanize the full
-equivalence: the accepted solution is \emph{defined} as the fold and proven correct as that fold. Kadane's
-Maximum Subarray is the cleanest case---the answer is literally a \texttt{foldl} of the running
-$(\textit{best},\textit{cur})$ step, and we prove it both achieves a real contiguous-segment sum \emph{and}
-upper-bounds every such sum (a two-directional optimum, not a one-directional guarantee). Product Except Self
-is the prefix scan with its telescoping identity proven; Single Number is the XOR fold proven to return the
-lone odd-count element. For these the certificate is the strong form---``the accepted code \emph{is} this
-fold, and it is correct''---which is what the general per-problem procedure approximates.
+\textbf{The strongest examples.} For a few textbook cases we close that gap completely: the standard solution
+\emph{is} the single pass, and we prove it correct as such. The cleanest is Kadane's algorithm for Maximum
+Subarray---the answer is literally one pass carrying a running pair, and we prove it returns exactly the
+largest possible subarray sum (both that the value is achievable \emph{and} that nothing beats it). Product
+Except Self is a running-products pass with its key identity proven, and Single Number is the XOR pass proven
+to return the lone unpaired value. For these the certificate is the strong form---``the code \emph{is} this
+pass, and it is correct''---which is what the general procedure approximates for the rest.
 
-The result is one reproducible number: $\hat p = 0.78$ (78 of 100), 95\% Wilson interval $[0.69,0.85]$
-(Wilson is the standard interval for a proportion). The certified set is released as a column of the sampled
-data, so the count re-derives directly. Two honesty notes. First, the measurement is \emph{one-directional}:
-an in-scheme problem whose proof is intractable in Mathlib is counted as unproven, never the reverse, so the
-procedure under-counts rather than over-counts (what this does \emph{not} imply about population coverage is
-spelled out in Section~\ref{sec:threats}). Second, because the check can only \emph{confirm} a scheme or
-\emph{fail} to, it cannot produce a ``misclassification'' verdict; we therefore report a coverage count, not
-a label-error rate. The schemes' deeper foundations need not be re-derived here: shortest-path as a least fixpoint over a
-semiring~\cite{afp_dijkstra,afp_kleene,lehmann77} and verified dynamic programming as memoized
-recursion~\cite{afp_dp} already exist in the formal-methods literature, which we cite rather than reprove.
+The result is one reproducible number: 78 of 100, with a 95\% confidence interval of $[69\%,85\%]$ (a Wilson
+interval, standard for a proportion). The certified list ships with the sample, so the count re-derives
+directly. Two notes on honesty. The check can only \emph{confirm} that an idea fits, never disconfirm it: a
+problem we cannot formalize is counted as unproven, never the reverse, so the count understates rather than
+overstates coverage. Because of that, we report a coverage count, not an error rate. We also do not re-prove
+the deep theory behind the ideas---that shortest paths and dynamic programming are formally well-founded is
+already established~\cite{afp_dijkstra,afp_kleene,lehmann77,afp_dp}, which we cite rather than redo.
 
 \section{Related work}
 \label{sec:related}
@@ -215,52 +202,45 @@ rather than assert it.
 \section{Threats to validity}
 \label{sec:threats}
 
-\textbf{One platform.} Frequencies come from a single preparation platform and may reflect its collection
-process as much as employers' true distributions; we claim structure of \emph{commonly-asked} problems, not
-of any firm's private bar. \textbf{Surface labels.} The family$\to$scheme rule is ours, but the
-\emph{surface-family} labels it consumes are the platform's, single-rater and un-audited; the ``wide
-surface'' measure inherits whatever splitting that taxonomy chose. \textbf{Predicate faithfulness.} The Lean
-check certifies that a problem is solvable by a scheme and that a solution is correct; it does \emph{not}
-certify that scheme-membership is the \emph{right} notion of ``the idea an interview tests.'' That a problem
-``is a fold'' is a modeling choice the proof cannot validate---it can only validate that the model holds.
-\textbf{Membership and correctness are separate theorems.} As noted in Section~\ref{sec:lean}, we prove a
-non-vacuous scheme instance and, separately, a correct solution; we do not mechanize that the two programs
-coincide. A full ``the accepted solution \emph{is} this fold'' equivalence is future work; the present claim
-is scoped accordingly. \textbf{A conservative estimate, not a floor.} 78\% is the machine-proven share on a
-random sample of 100; it is a sample estimate, and the Wilson interval $[69\%,85\%]$---not the point
-value---is the honest summary. The procedure under-counts (an in-scheme problem we cannot formalize counts
-as unproven), so it does not over-state coverage; but ``conservative'' is a property of the measurement, not
-a population guarantee, and 78\% does not lower-bound coverage over all problems. \textbf{Two populations.}
-Coverage is over distinct problems (each counted once); the company comparison is frequency-weighted (over
-asked instances). A candidate cares about both; we report each on its own population and do not mix them.
-\textbf{Coverage is not difficulty.} ``Same scheme'' does not mean ``same difficulty''---two folds can
-differ enormously in how hard the accumulator is to find. We claim shallow \emph{generative} structure, not
+\textbf{One platform.} The frequencies come from a single prep platform and may reflect its own collection
+process as much as what employers truly ask; we describe \emph{commonly-asked} problems, not any firm's
+private bar. \textbf{Borrowed labels.} The family-to-idea rule is ours, but the surface-family tags it starts
+from are the platform's---single-source and un-audited---so the ``wide surface'' count inherits whatever
+splits that taxonomy chose. \textbf{The model is a choice.} The proof checks that a problem \emph{can} be
+solved by an idea; it cannot certify that ``which idea it is'' is the right way to describe what an interview
+tests. That a problem ``is a single pass'' is our modeling choice---the proof confirms the model holds, not
+that it is the only sensible one. \textbf{Idea and solution proven separately.} As in Section~\ref{sec:lean},
+we prove the idea fits and, separately, that a solution is sound; proving the two are the same program is done
+only for the showcase examples and is otherwise future work. \textbf{An estimate, not a floor.} 78\% is a
+sample estimate; the confidence interval $[69\%,85\%]$, not the point value, is the honest summary. The
+procedure undercounts, so it does not overstate coverage---but ``conservative'' describes the measurement,
+not a guarantee about all problems. \textbf{Two separate questions.} Coverage counts each distinct problem
+once; the company comparison weights by how often a problem is asked. Both matter to a candidate, and we keep
+them apart. \textbf{Shallow is not easy.} ``Same idea'' does not mean ``same difficulty''---two single-pass
+problems can differ hugely in how hard the running value is to find. We claim shallow \emph{structure}, not
 that the problems are easy.
 
 \section{Conclusion}
 
-Interview problems have wide apparent breadth and shallow generative depth. The roughly twenty surface
-``patterns'' are four recursion schemes in different costumes: on a uniform random sample, 78 of 100
-problems carry a Lean certificate that the problem is genuinely solvable by its assigned scheme and that a
-transcribed solution satisfies a verified correctness property (95\% CI $[69\%,85\%]$; the streaming fold the single most common). And the
-seven firms ask essentially one shared syllabus of problem \emph{types}. For the candidate, the practical
-reading is blunt, within that scope: learn the four schemes deeply rather than fifty patterns shallowly, and
-prepare for ``technical interviews,'' not for any one company.
+Interview problems are wide on the surface but shallow underneath. The roughly twenty ``patterns'' are four
+ideas in different disguises: on a random sample, 78 of 100 problems carry a machine-checked certificate that
+the assigned idea really solves them and that a standard solution is sound (95\% confidence interval
+$[69\%,85\%]$; the single left-to-right pass is the most common). And the seven firms ask essentially one
+shared syllabus. For a candidate, the takeaway is blunt: learn the four ideas deeply rather than fifty
+patterns shallowly, and prepare for ``technical interviews,'' not for any one company.
 
 \section*{Reproducibility and AI-use disclosure}
 
-All derived statistics, the family$\to$scheme rule (released as a standalone table, fixed in advance so it is
-verifiable that the categories were not fitted to the sample), the sampling seed, the sampled certificate
-column (from which the 78/100 re-derives), and the complete Lean proof development are released; raw per-company
-frequency tables are withheld per the source platform's terms, so the headline statistics are reproducible
-from the released derived data while the scrape itself is not redistributed. The proof artifact builds with
-\texttt{lake build} (zero \texttt{sorry}); the ``standard axioms'' claim is checkable, not merely asserted,
-by running \texttt{\#print axioms} on the top-level theorems. This paper was written by a single human
-author with substantial AI assistance for drafting, statistical code, and the Lean formalization; all
-claims, numbers, and proofs were checked by the author, and the machine-checked results are, by
-construction, independently verifiable by re-running the proof development. We disclose this plainly: the
-paper is partly an artifact of the tools of its moment, and its central empirical claims stand or fall on
-the released data and the proof assistant, not on the means of production.
+All derived statistics, the family-to-idea rule (released as a standalone table, fixed in advance so anyone
+can check the categories were not tuned to fit the sample), the sampling seed, the certified list (from which
+the 78/100 re-derives), and the complete Lean development are released. The raw per-company frequency tables
+are withheld under the platform's terms, so the headline numbers reproduce from the released derived data
+even though the scrape itself is not redistributed. The proofs build with \texttt{lake build} with no gaps;
+the ``standard axioms'' claim is checkable, not merely asserted, by running \texttt{\#print axioms} on the
+main theorems. This paper was written by one human author with substantial AI assistance for drafting,
+statistical code, and the formalization; all claims, numbers, and proofs were checked by the author, and the
+machine-checked results are independently verifiable by re-running the proofs. We say so plainly: the paper's
+central claims stand or fall on the released data and the proofs, not on how it was written.
 
 \begin{thebibliography}{99}
 \bibitem{prashad} S.~Prashad. LeetCode Patterns. \url{https://seanprashad.com/leetcode-patterns/}, 2020.
