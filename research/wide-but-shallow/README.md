@@ -1,67 +1,72 @@
 # Wide but Shallow
 
-*Technical-interview problems are four ideas in many costumes — and company-specific preparation is mostly a myth.*
+*The generative structure of technical-interview problems, and the myth of company-specific preparation.*
 
-This is the public artifact for the paper **"Wide but Shallow"** (`paper.pdf`): the derived data, the
-statistical code, and the complete Lean 4 / Mathlib proof development behind its claims.
+A paper + reproducible pipeline. Headline findings (see `paper.tex`): (1) big-tech firms are
+largely **interchangeable** in algorithmic interview profile — scheme-level bias-corrected Cramér's
+**V = 0.091** (95% bootstrap CI [0.06, 0.12], small at most); six of the seven are mutually
+indistinguishable and only **Uber** stands out (leaning on graph relaxation); (2) on a uniform random sample of 100 distinct problems, **76 carry a machine-checked,
+problem-specific Lean certificate** that they are solvable by one of **four recursion
+schemes** — streaming fold, DP, graph relaxation, bisection — with the streaming fold the single
+most common (95% Wilson [0.67, 0.83]), unifying techniques memorized as unrelated (two-pointers,
+hashing, stack, prefix-sum, XOR, reversal). (Two more in-scheme problems carry only a weaker
+structural certificate and are conservatively not counted.)
 
-## The finding, in one paragraph
+## The paper
 
-The roughly twenty surface "patterns" that interview-prep material tells you to memorize are mostly **four
-recursion schemes** — streaming fold, recursive decomposition (dynamic programming), graph relaxation, and
-bisection — with the streaming fold the single most common. On a uniform random sample of 100 distinct
-problems, **78 carry a machine-checked Lean certificate** that the problem is genuinely solvable by its
-assigned scheme and that a transcribed solution is correct (95% Wilson interval [0.69, 0.85]; no `sorry`;
-standard axioms). Separately, the seven firms studied ask nearly the same *mix* of schemes
-(scheme-level bias-corrected Cramér's *V* = 0.091, 95% bootstrap CI [0.06, 0.12] — a small effect at most,
-bounded well below a moderate one); six of the seven are mutually indistinguishable and only Uber stands out.
-We measure the structure of *commonly-asked* problems, not interview difficulty or the payoff of any prep
-regimen.
+- `paper.tex` — single source, arXiv-safe preamble.
+- `./build.sh all` → `paper.pdf` (tectonic), `paper.html` + `paper.md` (pandoc, for blog).
+  - `./build.sh arxiv` — PDF only (upload `paper.tex` + `figs/*.png`; arXiv category **cs.CY**).
+  - `./build.sh blog` — HTML/Markdown for Substack / static site.
+  - SIGCSE/ITiCSE short paper: trim the formal sections; the empirical half is the contribution.
 
-## What's here
+## The pipeline
 
 ```
-paper.pdf, paper.tex          the paper
-data/sample.csv               the uniform random sample of 100 problems; the `proven` column
-                              re-derives the headline 78/100
-data/certs.csv                per-problem certification manifest, derived from the proofs by
-                              scripts/build_manifest.py (proven = cls AND corr AND no sorry)
-data/family_scheme_rule.csv   the fixed family→scheme rule (set in advance; families absent → tail)
-data/labels.csv               surface family per problem (num → family)
-data/frequencies.csv          tidy long table of the derived per-firm family frequencies
-                              (= build_long('count'); the company effect size reproduces from this)
-data/taxonomy.json            family → macro-family → class map
-scripts/                      sampling, classification counting, and the company effect-size analysis
-proofs/                       the Lean 4 / Mathlib development (run `lake exe cache get && lake build`)
+data/raw/{company}__{window}.json   rank-ordered frequency lists (35 strata, 7 companies)
+data/raw/problems.json              num -> {name, diff}  (769 problems)
+        │
+        ├── taxonomy.json           43 families -> 20 macros -> core/periphery
+        ├── do_labels.py            -> labels.csv   (num -> family; validated complete)
+        └── analyze.py              -> stats + figs + frequencies.csv
 ```
 
-## Reproducing the numbers
+- **`do_labels.py`** — the labeling (simplest interviewer-accepted solution rule). Validates
+  every problem is covered with a valid family. (`make_labels.py` emits a blank template.)
+- **`analyze.py`** — permutation test + Cramér's V, BH-corrected pairwise, core/periphery,
+  family concentration, PCA. `python analyze.py --window six-months --weight count`.
+  `--weight rank` is the robustness pass.
+- **`lproofs/`** — Lean 4 / Mathlib project (build: `cd lproofs && lake build`; all standard
+  axioms, no `sorry`).
+  - `Generators.lean` — `range_fold` (group scan), `agg_hom` (semiring polymorphism), `bellman_*` (relaxation = least fixpoint).
+  - `Classify.lean` — per-problem classification certs (Climbing Stairs = DP fold, Range Sum = scan, reachability = lfp).
+  - `Patterns.lean` — the **four recursion schemes** (~80% of load): `IsFold` with 5 instances proving prefix-sum/XOR/reverse/running-max/seen-set are *one fold* (the merge); `bisection_threshold`/`bisection_isLeast` (binary search); `depth_isCata` (tree), `subsets_card` (backtracking).
 
-- **Coverage (78/100).** The count is the `proven=True` rows of `data/sample.csv`. To re-derive it from the
-  proofs themselves, build the Lean development (below), then `python scripts/build_manifest.py` regenerates
-  `data/certs.csv` (a problem is certified iff its file has `theorem cls` **and** `theorem corr` and no
-  `sorry`) and `python scripts/sample.py` rewrites the `proven` column of `data/sample.csv` from that
-  manifest.
-- **Company similarity (*V* = 0.091).** `python scripts/significance.py` recomputes the scheme-level
-  bias-corrected effect size, its (bias-corrected) bootstrap CI, the equivalence verdict, and the per-firm
-  pairwise comparisons (`--level family` gives the finer 20-family check, *V* = 0.064). It reproduces from
-  `data/frequencies.csv` — **no raw scrape required**.
-- **Proofs.** In `proofs/`, `lake exe cache get && lake build` checks every certificate; `#print axioms` on
-  the top-level theorems confirms only Lean's standard axioms are used. `lake-manifest.json` and
-  `lean-toolchain` pin the Mathlib revision and compiler so the build is reproducible.
+## Headline numbers (data snapshot June 2026)
 
-## Data note (please read)
+- Between-firm divergence (scheme level): **bias-corrected V = 0.091** (95% bootstrap CI
+  [0.06, 0.12], small at most) — the paper's headline (`significance.py`); the omnibus is
+  significant (6-month permutation **p = 0.0003**) yet the effect size is bounded below moderate.
+  The finer 20-family grouping is smaller still (V = 0.064, `--level family`).
+- Google/Amazon/Microsoft/Meta/Bloomberg/Apple: **mutually indistinguishable**. Uber is the lone
+  outlier (largest gap, vs Google, is a "small" effect).
+- Family concentration: **Gini 0.30**; 6 families = 50%, but **4 recursion schemes = ~82.3%** (fold 48.4, DP 18.0, relaxation 8.2, bisection 7.7; cross-check vs 4 empirical generators = 67.4%).
+- Algebraic fraction of load: **~30%** (semiring catamorphism + lattice fixpoint + monoid scan; ~20% strict) — a subset of the ~82% scheme-classifiable.
+- Label robustness: company-comparison headlines hold in **100%** of 2,000 Monte-Carlo relabelings; frequency-weighted four-scheme *load* coverage (a distinct measure from the 76/100 per-problem certified count) stays **79–84%** (`sensitivity.py`).
 
-The **raw per-company problem-frequency tables are deliberately withheld** per the source platform's terms
-and are *not* included here. Only *derived* statistics are released: the sample, the rule, the per-problem
-family labels, the certification manifest, and the tidy `frequencies.csv`. The two headline numbers above
-reproduce from these derived files plus the proof development. Two scripts are included for transparency but
-need the withheld raw scrape, so they are **not runnable from this public artifact**: `sensitivity.py` (the
-2,000-draw label-robustness Monte-Carlo) and `company_analysis.py` (the per-firm scheme-level audit).
+## Status / before submission
 
-## Authorship
+Done: data, labeling, analysis, Lean core (**76/100 certified with a problem-specific proof — every one
+of the 78 fold/DP/relaxation/bisection problems in the sample carries a formal certificate that builds;
+76 additionally prove a problem-specific correctness property; the 2 exceptions (Burst Balloons,
+Block Placement Queries) carry only a structural certificate and are not counted; the 22 unproven are
+exactly the tail**; cls≡corr closed for the flagship folds Kadane/Product/Single Number), scheme-level
+residual figure, **label sensitivity** (`sensitivity.py`: every headline holds in 100% of 2,000
+relabelings), Related-work section + citations, draft. **Outstanding:** true inter-rater κ (a second
+human rater; the 2,000-draw sensitivity Monte-Carlo is the current robustness substitute). Certificate
+strength varies — full correctness for the flagship folds, a one-directional property otherwise.
 
-Single human author, with substantial AI assistance for drafting, statistical code, and the Lean
-formalization; all claims, numbers, and proofs were checked by the author. The machine-checked results are,
-by construction, independently verifiable by re-running the proof development. See the paper's
-"Reproducibility and AI-use disclosure" section.
+## Data / ToS
+
+Raw per-problem frequency tables are **withheld** (platform terms); only derived aggregates
+are published. `analyze.py` reproduces every number from the local data.
