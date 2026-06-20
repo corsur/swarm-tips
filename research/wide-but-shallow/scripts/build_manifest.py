@@ -43,6 +43,19 @@ NOT_GENUINE = {
     # (strengthened: 240, 1818 concrete sorted array; 278 concrete isBad oracle)
     # (strengthened: 162 peak-existence via global-max argument; cls = interval-halving step)
     "3161": "abstract predicate",
+    # relaxation — DEMOTED 2026-06-19 (panel re-review): these prove only the generic `lfp = reachable
+    # set` over a concrete-but-universal adjacency `v ∈ g u` — the same theorem ANY reachability problem
+    # satisfies. Their genuine problem content (Eulerian path, MST cost, 0-1-BFS cost, tree-count,
+    # bridges, grid word-search) needs multi-file machinery, so we leave them uncounted rather than
+    # count a scheme-generic certificate. The fresh-seed (20260619) round certifies to a strict
+    # problem-specific standard and does not rely on these.
+    "332": "generic reachable-set (Eulerian path is the real, multi-file content)",
+    "1368": "generic reachable-set (0-1 BFS min-cost is the real content)",
+    "1584": "generic reachable-set (MST cost is the real, multi-file content)",
+    "1719": "generic reachable-set (tree-reconstruction count is the real content)",
+    "2858": "generic reachable-set (0-1 BFS min-reversals is the real content)",
+    "3387": "generic reachable-set (canonical bare reachability)",
+    "212": "generic reachable-set (grid word-search backtracking is the real content)",
     # dp/fold — vacuous, re-export, definitional, or abstract window predicate
     # (strengthened: 98 inorder-sorted<->bounded-BST, 833 scan=flatMap per-position replacement)
     # (strengthened: 545 boundary soundness; 211 wildcard search; 642 prefix navigation)

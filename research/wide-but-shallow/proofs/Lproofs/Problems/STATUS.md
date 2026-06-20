@@ -1,12 +1,12 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 287/577 relevant problems** (56.8% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 288/577 relevant problems** (56.8% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
-| fold | hashing | 27 | 48 |
+| fold | hashing | 28 | 48 |
 | fold | string-other | 16 | 45 |
 | fold | two-pointers | 19 | 36 |
 | fold | math-bit | 13 | 33 |
@@ -299,6 +299,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1856` Maximum Subarray Min-Product — fold () — `lproofs/Lproofs/Problems/Fold/P1856_MaxSubarrayMinProduct.lean`
 - `1868` Product of Two Run-Length Encoded Arrays — fold () — `lproofs/Lproofs/Problems/Fold/P1868_ProductOfTwoRLEArrays.lean`
 - `1871` Jump Game VII — dp () — `lproofs/Lproofs/Problems/Relaxation/P1871_JumpGameVII.lean`
+- `1915` Number of Wonderful Substrings — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1915_NumberOfWonderfulSubstrings.lean`
 - `1971` Find if Path Exists in Graph — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1971_FindPathExists.lean`
 - `2050` Parallel Courses III — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P2050_ParallelCoursesIII.lean`
 - `2092` Find All People With Secret — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2092_Reach.lean`

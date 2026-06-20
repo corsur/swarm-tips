@@ -77,7 +77,7 @@ num,family,scheme,proven
 1674,diff-array,fold,False
 1823,math-bit,fold,True
 1868,two-pointers,fold,True
-1915,hashing,fold,False
+1915,hashing,fold,True
 2144,greedy,tail,False
 2149,two-pointers,fold,True
 2357,greedy,tail,False
