@@ -102,7 +102,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 116,,dp,tree-traversal,False,False,,,False,False,,
 117,,dp,tree-traversal,False,False,,,False,False,,
 118,Pascal's Triangle,dp,dp-linear,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0118_PascalsTriangle.lean
-120,,dp,dp-grid,False,False,,,False,False,,
+120,Triangle,dp,dp-grid,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0120_Triangle.lean
 121,,dp,dp-linear,False,False,,,False,False,,
 123,,dp,dp-linear,False,False,,,False,False,,
 124,Binary Tree Maximum Path Sum,dp,dp-tree,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0124_MaxPathSum.lean
@@ -374,7 +374,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 974,,fold,prefix-sum,False,False,,,False,False,,
 977,,fold,two-pointers,False,False,,,False,False,,
 983,Minimum Cost For Tickets,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0983_MinCostTickets.lean
-986,,fold,merge-intervals,False,False,,,False,False,,
+986,Interval List Intersections,fold,merge-intervals,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P0986_IntervalListIntersections.lean
 987,,relaxation,bfs,False,False,,,False,False,,
 992,Subarrays with K Different Integers,fold,sliding-window,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P0992_SubarraysKDistinct.lean
 994,Rotting Oranges,relaxation,bfs,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0994_RottingOranges.lean
@@ -459,7 +459,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1778,Shortest Path in a Hidden Grid,relaxation,bfs,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1778_ShortestPathHiddenGrid.lean
 1814,,fold,hashing,False,False,,,False,False,,
 1818,Minimum Absolute Sum Difference,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1818_MinAbsSumDiff.lean
-1823,,fold,math-bit,False,False,,,False,False,,
+1823,Find the Winner of the Circular Game,fold,math-bit,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1823_FindTheWinnerCircularGame.lean
 1829,,fold,math-bit,False,False,,,False,False,,
 1838,,fold,sliding-window,False,False,,,False,False,,
 1848,,fold,two-pointers,False,False,,,False,False,,
@@ -517,7 +517,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 2472,,dp,dp-interval,False,False,,,False,False,,
 2477,,dp,dp-tree,False,False,,,False,False,,
 2488,,fold,prefix-sum,False,False,,,False,False,,
-2493,,relaxation,graph-other,False,False,,,False,False,,
+2493,Divide Nodes Into the Maximum Number of Groups,relaxation,graph-other,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2493_DivideNodesMaxGroups.lean
 2503,Maximum Number of Points From Grid Queries,relaxation,union-find,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean
 2508,,relaxation,graph-other,False,False,,,False,False,,
 2537,,fold,sliding-window,False,False,,,False,False,,

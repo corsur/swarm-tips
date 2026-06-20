@@ -11,7 +11,7 @@ num,family,scheme,proven
 109,tree-construct,dp,False
 111,tree-aggregate,dp,True
 113,backtracking,dp,True
-120,dp-grid,dp,False
+120,dp-grid,dp,True
 139,dp-linear,dp,True
 142,fast-slow,fold,False
 177,sql,tail,False
@@ -53,7 +53,7 @@ num,family,scheme,proven
 759,merge-intervals,fold,False
 815,bfs,relaxation,True
 939,hashing,fold,False
-986,merge-intervals,fold,False
+986,merge-intervals,fold,True
 996,backtracking,dp,False
 1146,design,tail,False
 1148,sql,tail,False
@@ -75,14 +75,14 @@ num,family,scheme,proven
 1656,design,tail,False
 1657,hashing,fold,True
 1674,diff-array,fold,False
-1823,math-bit,fold,False
+1823,math-bit,fold,True
 1868,two-pointers,fold,False
 1915,hashing,fold,False
 2144,greedy,tail,False
 2149,two-pointers,fold,False
 2357,greedy,tail,False
 2423,hashing,fold,False
-2493,graph-other,relaxation,False
+2493,graph-other,relaxation,True
 2551,greedy,tail,False
 2791,dp-tree,dp,False
 2858,graph-other,relaxation,True

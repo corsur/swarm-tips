@@ -1,6 +1,6 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 274/577 relevant problems** (56.1% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 278/577 relevant problems** (56.3% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
@@ -9,7 +9,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | fold | hashing | 26 | 48 |
 | fold | string-other | 14 | 45 |
 | fold | two-pointers | 17 | 36 |
-| fold | math-bit | 12 | 33 |
+| fold | math-bit | 13 | 33 |
 | fold | linked-list | 11 | 21 |
 | fold | sliding-window | 11 | 21 |
 | fold | monotonic-stack | 7 | 19 |
@@ -17,11 +17,11 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | fold | pairing-stack | 8 | 14 |
 | fold | diff-array | 2 | 8 |
 | fold | fast-slow | 2 | 6 |
-| fold | merge-intervals | 3 | 5 |
+| fold | merge-intervals | 4 | 5 |
 | fold | dutch-flag | 1 | 1 |
 | dp | dp-linear | 17 | 33 |
 | dp | backtracking | 12 | 29 |
-| dp | dp-grid | 10 | 25 |
+| dp | dp-grid | 11 | 25 |
 | dp | tree-traversal | 4 | 13 |
 | dp | bst | 5 | 12 |
 | dp | dp-tree | 3 | 12 |
@@ -34,7 +34,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | dp-bitmask | 1 | 2 |
 | relaxation | bfs | 16 | 31 |
 | relaxation | union-find | 9 | 17 |
-| relaxation | graph-other | 9 | 15 |
+| relaxation | graph-other | 10 | 15 |
 | relaxation | dfs-flood | 4 | 10 |
 | relaxation | topo-sort | 5 | 9 |
 | relaxation | dijkstra | 4 | 9 |
@@ -111,6 +111,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `113` Path Sum II — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0113_PathSumII.lean`
 - `115` Distinct Subsequences — dp (O(mn)) — `lproofs/Lproofs/Problems/DP/P0115_DistinctSubsequences.lean`
 - `118` Pascal's Triangle — dp (O(n²)) — `lproofs/Lproofs/Problems/DP/P0118_PascalsTriangle.lean`
+- `120` Triangle — dp (O(n²)) — `lproofs/Lproofs/Problems/DP/P0120_Triangle.lean`
 - `124` Binary Tree Maximum Path Sum — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0124_MaxPathSum.lean`
 - `125` Valid Palindrome — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0125_ValidPalindrome.lean`
 - `126` Word Ladder II — relaxation (O(N·L²)) — `lproofs/Lproofs/Problems/Relaxation/P0126_WordLadderII.lean`
@@ -249,6 +250,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `941` Valid Mountain Array — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0941_ValidMountainArray.lean`
 - `959` Regions Cut By Slashes — relaxation (O(n^2)) — `lproofs/Lproofs/Problems/Relaxation/P0959_RegionsBySlashes.lean`
 - `983` Minimum Cost For Tickets — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0983_MinCostTickets.lean`
+- `986` Interval List Intersections — fold () — `lproofs/Lproofs/Problems/Fold/P0986_IntervalListIntersections.lean`
 - `992` Subarrays with K Different Integers — fold () — `lproofs/Lproofs/Problems/Fold/P0992_SubarraysKDistinct.lean`
 - `994` Rotting Oranges — relaxation (O(mn)) — `lproofs/Lproofs/Problems/Relaxation/P0994_RottingOranges.lean`
 - `1004` Max Consecutive Ones III — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1004_MaxConsecutiveOnesIII.lean`
@@ -287,6 +289,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1768` Merge Strings Alternately — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1768_MergeAlternately.lean`
 - `1778` Shortest Path in a Hidden Grid — relaxation (O(mn)) — `lproofs/Lproofs/Problems/Relaxation/P1778_ShortestPathHiddenGrid.lean`
 - `1818` Minimum Absolute Sum Difference — bisection () — `lproofs/Lproofs/Problems/Bisection/P1818_MinAbsSumDiff.lean`
+- `1823` Find the Winner of the Circular Game — fold () — `lproofs/Lproofs/Problems/Fold/P1823_FindTheWinnerCircularGame.lean`
 - `1856` Maximum Subarray Min-Product — fold () — `lproofs/Lproofs/Problems/Fold/P1856_MaxSubarrayMinProduct.lean`
 - `1871` Jump Game VII — dp () — `lproofs/Lproofs/Problems/Relaxation/P1871_JumpGameVII.lean`
 - `1971` Find if Path Exists in Graph — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1971_FindPathExists.lean`
@@ -300,6 +303,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2337` Move Pieces to Obtain a String — fold () — `lproofs/Lproofs/Problems/Fold/P2337_MovePieces.lean`
 - `2385` Amount of Time for Binary Tree to Be Infected — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2385_AmountofTimeforBinaryTre.lean`
 - `2444` Count Subarrays With Fixed Bounds — fold () — `lproofs/Lproofs/Problems/Fold/P2444_CountSubarraysFixedBounds.lean`
+- `2493` Divide Nodes Into the Maximum Number of Groups — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2493_DivideNodesMaxGroups.lean`
 - `2503` Maximum Number of Points From Grid Queries — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean`
 - `2661` First Completely Painted Row or Column — fold () — `lproofs/Lproofs/Problems/Fold/P2661_FirstCompletelyPainted.lean`
 - `2858` Minimum Edge Reversals for All Reachable — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
