@@ -41,7 +41,8 @@ NOT_GENUINE = {
     "2092": "abstract r (time-ordered spread — plain reachability over-approximates)",
     # bisection — corr over a free abstract predicate, not the concrete problem condition
     # (strengthened: 240, 1818 concrete sorted array; 278 concrete isBad oracle)
-    "162": "abstract predicate (peak: no clean monotone threshold)", "3161": "abstract predicate",
+    # (strengthened: 162 peak-existence via global-max argument; cls = interval-halving step)
+    "3161": "abstract predicate",
     # dp/fold — vacuous, re-export, definitional, or abstract window predicate
     # (strengthened: 98 inorder-sorted<->bounded-BST, 833 scan=flatMap per-position replacement)
     # (strengthened: 545 boundary soundness; 211 wildcard search; 642 prefix navigation)

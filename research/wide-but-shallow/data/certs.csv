@@ -130,7 +130,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 153,Find Minimum in Rotated Sorted Array,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0153_FindMinRotated.lean
 160,,fold,linked-list,False,False,,,False,False,,
 161,One Edit Distance,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0161_OneEditDistance.lean
-162,Find Peak Element,bisection,binary-search,True,True,O(log n),,False,True,False,lproofs/Lproofs/Problems/Bisection/P0162_FindPeakElement.lean
+162,Find Peak Element,bisection,binary-search,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Bisection/P0162_FindPeakElement.lean
 163,Missing Ranges,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0163_MissingRanges.lean
 165,,fold,string-other,False,False,,,False,False,,
 167,Two Sum II - Input Array Is Sorted,fold,two-pointers,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0167_TwoSumSorted.lean
