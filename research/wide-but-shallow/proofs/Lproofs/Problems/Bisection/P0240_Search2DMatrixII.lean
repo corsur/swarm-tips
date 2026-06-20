@@ -3,29 +3,37 @@ import Lproofs.Schemes.Bisect
 /-! @lc 240 | name:Search a 2D Matrix II | scheme:bisection | family:binary-search |
     complexity:O(m log n) | source:https://leetcode.com/problems/search-a-2d-matrix-ii/
 
-    Each row is sorted, so within a row `atLeast j` = "the `j`-th entry is `≥ target`" is monotone
-    in `j`; binary search locates the boundary and the target is present in that row iff the
-    boundary entry equals it (repeated over the `m` rows). The scheme is bisection on each row's
-    monotone threshold predicate. -/
+    Each row is sorted, so within a concrete row `row j` the predicate `atLeast row target j` =
+    "the `j`-th entry reaches the target" is monotone in `j`; binary search locates the boundary and
+    the target is present in that row iff the boundary entry equals it (repeated over the rows).
+    CLASSIFICATION: bisection on each row's monotone threshold. `cls` certifies the threshold structure
+    of the concrete row; `corr` that the answer is the least qualifying column. -/
 
 namespace LC.P0240
 open Interview.Patterns
 
-/-- `atLeast j` = the `j`-th entry of a sorted row is `≥ target`, monotone in `j`. -/
-def sol (atLeast : ℕ → Prop) [DecidablePred atLeast] (h : ∃ j, atLeast j) : ℕ := Nat.find h
+/-- `atLeast row target j` — the `j`-th entry of the sorted `row` reaches `target`. -/
+def atLeast (row : ℕ → ℕ) (target j : ℕ) : Prop := target ≤ row j
 
-/-- Spec: the answer is the least column index whose entry reaches the target. -/
-def spec (atLeast : ℕ → Prop) (n : ℕ) : Prop := IsLeast {j | atLeast j} n
+instance (row : ℕ → ℕ) (target : ℕ) : DecidablePred (atLeast row target) :=
+  fun j => inferInstanceAs (Decidable (target ≤ row j))
 
-/-- SCHEME (bisection): the monotone per-row predicate is a threshold. -/
-theorem cls (atLeast : ℕ → Prop) [DecidablePred atLeast]
-    (mono : ∀ a b, a ≤ b → atLeast a → atLeast b) (h : ∃ j, atLeast j) (n : ℕ) :
-    atLeast n ↔ sol atLeast h ≤ n :=
-  bisection_threshold atLeast mono h n
+/-- The binary-search answer: the least column whose entry reaches the target. -/
+def sol (row : ℕ → ℕ) (target : ℕ) (h : ∃ j, atLeast row target j) : ℕ := Nat.find h
 
-/-- CORRECT: the binary-search answer is the least qualifying column index. -/
-theorem corr (atLeast : ℕ → Prop) [DecidablePred atLeast] (h : ∃ j, atLeast j) :
-    spec atLeast (sol atLeast h) :=
-  bisection_isLeast atLeast h
+/-- On a sorted row `atLeast` is a monotone up-set: once reached, it stays. -/
+theorem atLeast_mono (row : ℕ → ℕ) (hmono : Monotone row) (target : ℕ) :
+    ∀ a b, a ≤ b → atLeast row target a → atLeast row target b :=
+  fun a b hab ha => le_trans ha (hmono hab)
+
+/-- SCHEME (bisection): the per-row predicate is a monotone threshold — `atLeast j ↔ answer ≤ j`. -/
+theorem cls (row : ℕ → ℕ) (hmono : Monotone row) (target : ℕ) (h : ∃ j, atLeast row target j) (n : ℕ) :
+    atLeast row target n ↔ sol row target h ≤ n :=
+  bisection_threshold (atLeast row target) (atLeast_mono row hmono target) h n
+
+/-- CORRECT: the binary-search answer is the least column of `row` whose entry reaches the target. -/
+theorem corr (row : ℕ → ℕ) (target : ℕ) (h : ∃ j, atLeast row target j) :
+    IsLeast {j | atLeast row target j} (sol row target h) :=
+  bisection_isLeast (atLeast row target) h
 
 end LC.P0240

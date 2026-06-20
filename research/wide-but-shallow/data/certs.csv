@@ -178,7 +178,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 237,,fold,linked-list,False,False,,,False,False,,
 238,Product of Array Except Self,fold,prefix-sum,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0238_ProductExceptSelf.lean
 239,,fold,monotonic-stack,False,False,,,False,False,,
-240,Search a 2D Matrix II,bisection,binary-search,True,True,,,False,True,False,lproofs/Lproofs/Problems/Bisection/P0240_Search2DMatrixII.lean
+240,Search a 2D Matrix II,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0240_Search2DMatrixII.lean
 242,Valid Anagram,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0242_ValidAnagram.lean
 243,,fold,two-pointers,False,False,,,False,False,,
 246,,fold,string-other,False,False,,,False,False,,
@@ -458,7 +458,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1768,Merge Strings Alternately,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P1768_MergeAlternately.lean
 1778,Shortest Path in a Hidden Grid,relaxation,bfs,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1778_ShortestPathHiddenGrid.lean
 1814,,fold,hashing,False,False,,,False,False,,
-1818,Minimum Absolute Sum Difference,bisection,binary-search,True,True,,,False,True,False,lproofs/Lproofs/Problems/Bisection/P1818_MinAbsSumDiff.lean
+1818,Minimum Absolute Sum Difference,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1818_MinAbsSumDiff.lean
 1823,,fold,math-bit,False,False,,,False,False,,
 1829,,fold,math-bit,False,False,,,False,False,,
 1838,,fold,sliding-window,False,False,,,False,False,,

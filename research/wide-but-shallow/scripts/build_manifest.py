@@ -40,8 +40,9 @@ NOT_GENUINE = {
     "417": "abstract flow", "1368": "abstract r (weighted cost)", "1584": "abstract r (MST cost)",
     "2092": "abstract r (time-ordered)", "212": "abstract r (word-search)",
     # bisection — corr over a free abstract predicate, not the concrete problem condition
-    "162": "abstract predicate", "240": "abstract predicate", "278": "abstract predicate",
-    "1818": "abstract predicate", "3161": "abstract predicate",
+    # (strengthened 2026-06-19: 240, 1818 now derive the predicate from a concrete sorted array)
+    "162": "abstract predicate (peak: no clean monotone threshold)",
+    "278": "abstract predicate (oracle-only input)", "3161": "abstract predicate",
     # dp/fold — vacuous, re-export, definitional, or abstract window predicate
     "98": "Iff.rfl (spec = solution)", "211": "re-export of P0208", "642": "re-export of P0208",
     "312": "trivial base case only", "545": "preorder definitional unfold",
