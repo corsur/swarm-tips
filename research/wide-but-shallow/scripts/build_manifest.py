@@ -38,7 +38,7 @@ NOT_GENUINE = {
     # relaxation — abstract V/relation, corr = bellman_isLeast / reachability over an uninstantiated r
     # (strengthened 2026-06-19: 733,3387,102,863,815,332,1719,2858,505,1778 now use a concrete relation)
     # (strengthened: 417 drainage, 212 search states, 1368 path connectivity, 1584 MST connectivity)
-    "2092": "abstract r (time-ordered spread — plain reachability over-approximates)",
+    # (strengthened: 2092 time-respecting spread relation — reachable set respects meeting timestamps)
     # bisection — corr over a free abstract predicate, not the concrete problem condition
     # (strengthened: 240, 1818 concrete sorted array; 278 concrete isBad oracle)
     # (strengthened: 162 peak-existence via global-max argument; cls = interval-halving step)

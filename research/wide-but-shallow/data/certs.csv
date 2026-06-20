@@ -485,7 +485,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 2050,Parallel Courses III,relaxation,topo-sort,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2050_ParallelCoursesIII.lean
 2055,,fold,prefix-sum,False,False,,,False,False,,
 2065,,dp,backtracking,False,False,,,False,False,,
-2092,Find All People With Secret,relaxation,union-find,True,True,O(V+E),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P2092_Reach.lean
+2092,Find All People With Secret,relaxation,union-find,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2092_Reach.lean
 2101,,relaxation,graph-other,False,False,,,False,False,,
 2104,,fold,monotonic-stack,False,False,,,False,False,,
 2115,,relaxation,topo-sort,False,False,,,False,False,,

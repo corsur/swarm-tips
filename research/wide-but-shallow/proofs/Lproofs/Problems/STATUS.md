@@ -283,7 +283,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1871` Jump Game VII — dp () — `lproofs/Lproofs/Problems/Relaxation/P1871_JumpGameVII.lean`
 - `1971` Find if Path Exists in Graph — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1971_FindPathExists.lean`
 - `2050` Parallel Courses III — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P2050_ParallelCoursesIII.lean`
-- `2092` Find All People With Secret — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P2092_Reach.lean`
+- `2092` Find All People With Secret — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2092_Reach.lean`
 - `2150` Find All Lonely Numbers in the Array — fold () — `lproofs/Lproofs/Problems/Fold/P2150_FindAllLonelyNumbers.lean`
 - `2187` Minimum Time to Complete Trips — bisection () — `lproofs/Lproofs/Problems/Bisection/P2187_MinTimeToCompleteTrips.lean`
 - `2214` Minimum Health to Beat Game — dp (O(n)) — `lproofs/Lproofs/Problems/Fold/P2214_MinHealth.lean`
