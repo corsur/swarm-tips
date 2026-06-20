@@ -1,14 +1,14 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 278/577 relevant problems** (56.3% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 281/577 relevant problems** (56.5% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
 | fold | hashing | 26 | 48 |
-| fold | string-other | 14 | 45 |
-| fold | two-pointers | 17 | 36 |
+| fold | string-other | 15 | 45 |
+| fold | two-pointers | 18 | 36 |
 | fold | math-bit | 13 | 33 |
 | fold | linked-list | 11 | 21 |
 | fold | sliding-window | 11 | 21 |
@@ -26,7 +26,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | bst | 5 | 12 |
 | dp | dp-tree | 3 | 12 |
 | dp | trie | 7 | 10 |
-| dp | tree-construct | 5 | 9 |
+| dp | tree-construct | 6 | 9 |
 | dp | tree-aggregate | 6 | 8 |
 | dp | dp-interval | 3 | 7 |
 | dp | dp-knapsack | 3 | 6 |
@@ -105,6 +105,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `104` Maximum Depth of Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0104_MaxDepth.lean`
 - `105` Construct Binary Tree from Preorder and Inorder Traversal — dp () — `lproofs/Lproofs/Problems/DP/P0105_ConstructBTfromPreandIn.lean`
 - `108` Convert Sorted Array to Binary Search Tree — dp () — `lproofs/Lproofs/Problems/DP/P0108_SortedArrayToBST.lean`
+- `109` Convert Sorted List to Binary Search Tree — dp () — `lproofs/Lproofs/Problems/DP/P0109_ConvertSortedListToBST.lean`
 - `110` Balanced Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0110_BalancedBinaryTree.lean`
 - `111` Minimum Depth of Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0111_MinimumDepthBinaryTree.lean`
 - `112` Path Sum — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0112_PathSum.lean`
@@ -219,6 +220,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `611` Valid Triangle Number — fold (O(n²)) — `lproofs/Lproofs/Problems/Fold/P0611_ValidTriangle.lean`
 - `636` Exclusive Time of Functions — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0636_ExclusiveTime.lean`
 - `642` Design Search Autocomplete System — dp () — `lproofs/Lproofs/Problems/DP/P0642_SearchAutocomplete.lean`
+- `647` Palindromic Substrings — fold (O(n²)) — `lproofs/Lproofs/Problems/Fold/P0647_PalindromicSubstrings.lean`
 - `648` Replace Words — dp (O(Σ) — `lproofs/Lproofs/Problems/DP/P0648_ReplaceWords.lean`
 - `658` Find K Closest Elements — bisection (O(log n)) — `lproofs/Lproofs/Problems/Bisection/P0658_FindKClosest.lean`
 - `662` Maximum Width of Binary Tree — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P0662_MaximumWidthofBinaryTr.lean`
@@ -291,6 +293,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1818` Minimum Absolute Sum Difference — bisection () — `lproofs/Lproofs/Problems/Bisection/P1818_MinAbsSumDiff.lean`
 - `1823` Find the Winner of the Circular Game — fold () — `lproofs/Lproofs/Problems/Fold/P1823_FindTheWinnerCircularGame.lean`
 - `1856` Maximum Subarray Min-Product — fold () — `lproofs/Lproofs/Problems/Fold/P1856_MaxSubarrayMinProduct.lean`
+- `1868` Product of Two Run-Length Encoded Arrays — fold () — `lproofs/Lproofs/Problems/Fold/P1868_ProductOfTwoRLEArrays.lean`
 - `1871` Jump Game VII — dp () — `lproofs/Lproofs/Problems/Relaxation/P1871_JumpGameVII.lean`
 - `1971` Find if Path Exists in Graph — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1971_FindPathExists.lean`
 - `2050` Parallel Courses III — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P2050_ParallelCoursesIII.lean`

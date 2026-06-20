@@ -8,7 +8,7 @@ num,family,scheme,proven
 94,tree-traversal,dp,True
 101,tree-traversal,dp,True
 104,tree-aggregate,dp,True
-109,tree-construct,dp,False
+109,tree-construct,dp,True
 111,tree-aggregate,dp,True
 113,backtracking,dp,True
 120,dp-grid,dp,True
@@ -46,7 +46,7 @@ num,family,scheme,proven
 588,design,tail,False
 611,two-pointers,fold,True
 635,design,tail,False
-647,string-other,fold,False
+647,string-other,fold,True
 670,greedy,tail,False
 719,binary-search,bisection,True
 736,string-other,fold,False
@@ -76,7 +76,7 @@ num,family,scheme,proven
 1657,hashing,fold,True
 1674,diff-array,fold,False
 1823,math-bit,fold,True
-1868,two-pointers,fold,False
+1868,two-pointers,fold,True
 1915,hashing,fold,False
 2144,greedy,tail,False
 2149,two-pointers,fold,False
