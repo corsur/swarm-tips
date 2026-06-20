@@ -103,16 +103,15 @@ not a scheme & design, simulation, heaps, number theory, string matching, $\dots
 \end{tabular}
 \caption{The roughly twenty surface families collapse onto four recursion schemes. On a uniform random
 sample of 100 distinct problems: ``assigned'' is how many the fixed rule (Appendix~\ref{sec:rule}) places in
-each scheme; ``certified'' is how many additionally carry a Lean certificate whose correctness proof is
-\emph{problem-specific} (Section~\ref{sec:lean}). 76 of 100 are certified (95\% Wilson interval
-$[0.67,0.83]$). The ``Lean witness'' is the formal predicate each scheme is checked against
-(\emph{catamorphism}: a fold over a tree-shaped structure; \emph{least fixpoint}: the limit of one-step
-graph relaxation). \emph{Every} assigned problem carries a formal certificate that builds (78 of 78); 76 of
-those additionally prove a problem-specific correctness property. The two that do not---Burst Balloons (its
-interval-DP \emph{optimality}) and Block Placement Queries (its segment-tree query structure)---carry only a
-structural certificate, as a faithful proof exceeds one self-contained file; we conservatively leave them
-uncounted. Certificate strength among the 76 still varies: full correctness for the flagship folds of
-Section~\ref{sec:lean}, a one-directional property (e.g.\ soundness, or existence) otherwise.}
+each scheme; ``certified'' is how many additionally carry a Lean proof that the idea solves \emph{that}
+problem, not just some problem in the scheme (Section~\ref{sec:lean}). 76 of 100 are certified (95\% Wilson
+interval $[0.67,0.83]$). The ``Lean witness'' is the formal test each scheme is checked against (a
+\emph{catamorphism} is a fold over a tree; a \emph{least fixpoint} is where graph relaxation settles). Every
+assigned problem carries a proof that compiles (78 of 78), and 76 of those prove a property of the specific
+problem. The two that fall short---Burst Balloons and Block Placement Queries---would need a longer,
+multi-part proof than one self-contained file allows, so we leave them uncounted. Among the 76 the strength
+still varies: full correctness for the flagship folds of Section~\ref{sec:lean}, and a one-directional
+property (such as ``everything it reports is valid'') otherwise.}
 \label{tab:schemes}
 \end{table}
 
@@ -132,11 +131,12 @@ differ only in what running value they carry. The variety is in the bookkeeping,
 ask on a standard $0$-to-$1$ scale (bias-corrected Cram\'er's \V~\cite{cramer46,bergsma13}, where $0$ means
 identical and the usual cutoffs call $0.1$ ``small'' and $0.3$ ``moderate''). Across the four ideas the firms
 score just $\V = 0.091$ (95\% confidence interval $[0.06,0.12]$)---small, with the whole interval well below
-``moderate,'' so the difference is genuinely bounded, not merely undetected. We headline the four-idea
-grouping because its score clears the noise floor that finite samples generate by chance ($0.091$ versus a
-null of $0.065$); at the finer twenty-family level the score is \emph{below} its own floor ($0.064$ versus
-$0.116$), i.e.\ statistically indistinguishable from identical---so the finer view, if anything, makes the
-firms look more alike, not less. Comparing firms two at a time, the only real
+``moderate,'' so the difference is genuinely bounded, not merely undetected. We report the four-idea
+grouping because its score stands clear of the small difference that random chance alone would produce in a
+sample this size ($0.091$ against a chance level of $0.065$); at the finer twenty-family level the score
+falls \emph{below} that chance level ($0.064$ against $0.116$)---indistinguishable from identical---so the
+finer view, if anything, makes the firms look more alike, not less. Comparing firms two at a time, the only
+real
 differences all involve \textbf{Uber}, which asks more graph problems and fewer single-pass ones (its largest
 gap, versus Google, is still only ``small''; Figure~\ref{fig:resid}); \textbf{the other six firms are
 statistically indistinguishable}. One caveat: we compare the \emph{mix of problem types}, not how hard the
@@ -163,19 +163,17 @@ you whether two people read a label the same way. We do something stronger: we c
 \emph{proof assistant}, a tool that mechanically verifies mathematical claims. Working in
 Lean~4~\cite{lean4} with its library Mathlib~\cite{mathlib20}, we write each of the four ideas as a precise
 test on programs (for example, ``this function is a single left-to-right pass''), and for a random sample of
-100 problems we prove two things. First, \textbf{the idea fits} (\texttt{cls}): we exhibit the standard
-solution in the form of its assigned idea (the scheme predicate holds of a concrete solution). Second,
-\textbf{the solution is sound} (\texttt{corr}): that solution satisfies a verified correctness property
-(often one direction of the guarantee, e.g.\ ``everything it reports is valid''). A problem counts only
-when both proofs go through with no gaps (Lean flags unfinished proofs; there are none), using only Lean's
-standard logical axioms, \emph{and} the correctness property is \textbf{problem-specific}---it refers to the
-concrete problem (this grid, these subarrays, this sorted array), not to an abstract relation or predicate
-that every problem in the scheme would satisfy equally. This last condition is the load-bearing one: a
-certificate stated over a free relation certifies the \emph{scheme}, not the \emph{problem}, and we
-mechanically exclude such certificates from the count (the gate is part of the released build script). Two
-problems survive only as scheme-generic or structural certificates---Burst Balloons and Block Placement
-Queries, whose genuine guarantees (interval-DP optimality; a segment-tree query invariant) need machinery
-beyond a single self-contained file---and we do not count them, leaving 76.
+100 problems we prove two things. First, \textbf{the idea fits} (\texttt{cls}): the standard solution really
+does have the shape of its assigned idea. Second, \textbf{the solution is sound} (\texttt{corr}): that
+solution is proven to satisfy a correctness property of the problem (often one direction of the guarantee,
+e.g.\ ``everything it reports is valid''). A problem counts only when both proofs pass with no gaps (Lean
+flags any unfinished proof; there are none), use only Lean's standard logical axioms, \emph{and} the
+correctness proof is about the \textbf{specific problem}---its actual grid, array, or condition---rather than
+a generic statement that every problem in the same family would satisfy equally. That last requirement is
+the one that matters: a generic proof certifies the \emph{category}, not the \emph{problem}, so we exclude
+such proofs automatically (the check ships in the build script). Two problems clear only the generic
+bar---Burst Balloons and Block Placement Queries, whose real guarantees need more machinery than a single
+self-contained proof allows---so we leave them out, giving 76.
 
 \textbf{What this does and does not show.} The two proofs cover an example of the idea and a working
 solution---but we do not separately prove that those two are the \emph{same} program. So a certificate says
@@ -233,12 +231,12 @@ describe what an interview tests. That a problem ``is a single pass'' is our mod
 confirms the model holds, not that it is the only sensible one. \textbf{Idea and solution proven separately.}
 As in Section~\ref{sec:lean}, we prove the idea fits and, separately, that a solution is sound; proving the two
 are the same program is done only for the showcase examples and is otherwise future work. \textbf{An estimate,
-not a floor.} 76\% is a sample estimate; the confidence interval $[67\%,83\%]$, not the point value, is the
-honest summary. The procedure undercounts in two ways---a problem we cannot formalize stays uncounted, and the
-fixed rule conservatively routes borderline scan-shaped or binary-search-shaped families (e.g.\ parts of
-``greedy'' and ``simulation'') into the tail rather than into \texttt{fold}/\texttt{bisection}---so 76\% is if
-anything a lower bound on how many problems reduce to the four ideas. But ``conservative'' describes the
-measurement, not a guarantee about all problems. \textbf{Window dependence.} The company difference is not
+and a cautious one.} 76\% is a sample estimate, so the confidence interval $[67\%,83\%]$ is the honest
+summary, not the point value. It errs low in two ways: a problem we cannot formalize stays uncounted, and
+the fixed rule sends borderline cases---some ``greedy'' and ``simulation'' problems that are really single
+passes or binary searches---to the tail rather than into a scheme. So 76\% is, if anything, a lower bound on
+how many problems reduce to the four ideas; but that is a property of our method, not a promise about
+problems we did not sample. \textbf{Window dependence.} The company difference is not
 constant across recency windows: the bias-corrected \V\ ranges from below its noise floor in the short windows
 up to $0.125$ in the six-month window (still ``small''), so ``one shared syllabus'' is a statement about the
 pooled data, not every slice. \textbf{Two separate questions.} Coverage counts each distinct problem once; the
