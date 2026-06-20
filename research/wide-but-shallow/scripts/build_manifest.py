@@ -36,10 +36,9 @@ def importance():
 # when its corr has been rewritten to a problem-specific statement (then re-run this script).
 NOT_GENUINE = {
     # relaxation — abstract V/relation, corr = bellman_isLeast / reachability over an uninstantiated r
-    # (strengthened 2026-06-19: 733, 3387, 102, 863, 815 now use a concrete relation + reachability/BFS corr)
-    "332": "abstract r", "417": "abstract flow", "505": "abstract r",
-    "1368": "abstract r", "1584": "abstract r", "1719": "abstract r", "1778": "abstract r",
-    "2092": "abstract r", "2858": "abstract r", "212": "abstract r (word-search)",
+    # (strengthened 2026-06-19: 733,3387,102,863,815,332,1719,2858,505,1778 now use a concrete relation)
+    "417": "abstract flow", "1368": "abstract r (weighted cost)", "1584": "abstract r (MST cost)",
+    "2092": "abstract r (time-ordered)", "212": "abstract r (word-search)",
     # bisection — corr over a free abstract predicate, not the concrete problem condition
     "162": "abstract predicate", "240": "abstract predicate", "278": "abstract predicate",
     "1818": "abstract predicate", "3161": "abstract predicate",

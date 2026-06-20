@@ -294,7 +294,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2444` Count Subarrays With Fixed Bounds — fold () — `lproofs/Lproofs/Problems/Fold/P2444_CountSubarraysFixedBounds.lean`
 - `2503` Maximum Number of Points From Grid Queries — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean`
 - `2661` First Completely Painted Row or Column — fold () — `lproofs/Lproofs/Problems/Fold/P2661_FirstCompletelyPainted.lean`
-- `2858` Minimum Edge Reversals for All Reachable — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
+- `2858` Minimum Edge Reversals for All Reachable — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
 - `2912` Number of Ways to Reach Destination in the Grid — dp () — `lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean`
 - `3120` Count the Number of Special Characters I — fold () — `lproofs/Lproofs/Problems/Fold/P3120_CountSpecialCharacters.lean`
 - `3129` Find All Possible Stable Binary Arrays I — dp () — `lproofs/Lproofs/Problems/DP/P3129_StableBinaryArrays.lean`

@@ -3,31 +3,36 @@ import Lproofs.Generators
 /-! @lc 1778 | name:Shortest Path in a Hidden Grid | scheme:relaxation | family:bfs | complexity:O(mn) |
     source:https://leetcode.com/problems/shortest-path-in-a-hidden-grid/
 
-    Explore the grid, then BFS the shortest path to the target. CLASSIFICATION: the set of cells
-    reachable from the start under the open-move relation `r` is the least fixpoint of one-step
-    relaxation — the BFS frontier. `cls` certifies the relaxation fixpoint; `corr` ties it to genuine
-    reachability (the target is reachable iff a path exists). DROP the shortest-length count. -/
+    Each move is one unit step to an open neighbour, so the shortest path length is the BFS hop-distance
+    from the start. CLASSIFICATION: the distance is the least step count under the concrete open-move
+    relation `move g` (`v` is an open neighbour of `u`), and the BFS layers are the bounded relaxation
+    iterates. `cls` ties the scheme to the concrete layers; `corr` proves `sol` is the genuine least
+    number of moves to reach the target — over a concrete relation, not a free `r`. -/
 
 namespace LC.P1778
 open Interview
 
-/-- Cells reachable from `start` under open moves, as a relaxation lfp. -/
-def sol {V : Type*} (start : V) (r : V → V → Prop) : Set V := OrderHom.lfp (reachOp {start} r)
+/-- Concrete open-move edge: `v` is an open neighbour of `u` (adjacency list `g`). -/
+def move (g : ℕ → List ℕ) (u v : ℕ) : Prop := v ∈ g u
 
-/-- Spec: exactly the cells reachable from `start` along open moves. -/
-def spec {V : Type*} (start : V) (r : V → V → Prop) (S : Set V) : Prop :=
-  S = {v | Relation.ReflTransGen r start v}
+/-- Shortest path length: the least number of open moves from `start` reaching `v`. -/
+noncomputable def sol (g : ℕ → List ℕ) (start v : ℕ) : ℕ :=
+  sInf {n | Reaches (move g) start v n}
 
-/-- SCHEME (relaxation): the reachable set is a fixpoint of one-step relaxation. -/
-theorem cls {V : Type*} (start : V) (r : V → V → Prop) :
-    reachOp {start} r (sol start r) = sol start r :=
-  reach_is_dp_fixpoint {start} r
+/-- Spec: the answer is the least number of moves reaching `v`. -/
+def spec (g : ℕ → List ℕ) (start v : ℕ) (d : ℕ) : Prop :=
+  IsLeast {n | Reaches (move g) start v n} d
 
-/-- CORRECT: the relaxation lfp is exactly the cells reachable from the start. -/
-theorem corr {V : Type*} (start : V) (r : V → V → Prop) : spec start r (sol start r) := by
-  unfold spec sol
-  rw [lfp_reachOp_eq_reachable]
-  ext v
-  simp [Set.mem_singleton_iff]
+/-- SCHEME (relaxation): the BFS layers are exactly the bounded relaxation iterates of the concrete
+    move relation — reachable in `≤ n` steps is `(reachOp {start} (move g))^[n+1] ∅`. -/
+theorem cls (g : ℕ → List ℕ) (start : ℕ) :
+    ∀ (n : ℕ) (v : ℕ), v ∈ (reachOp ({start} : Set ℕ) (move g))^[n + 1] (∅ : Set ℕ) ↔
+      ∃ m ≤ n, Reaches (move g) start v m :=
+  mem_reachOp_iterate start (move g)
+
+/-- CORRECT: `sol` is the least number of open moves reaching `v` — the genuine shortest path length. -/
+theorem corr (g : ℕ → List ℕ) (start v : ℕ) (h : ∃ n, Reaches (move g) start v n) :
+    spec g start v (sol g start v) :=
+  ⟨Nat.sInf_mem h, fun _ hn => Nat.sInf_le hn⟩
 
 end LC.P1778

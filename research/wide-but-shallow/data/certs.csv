@@ -218,7 +218,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 326,,fold,math-bit,False,False,,,False,False,,
 328,Odd Even Linked List,fold,linked-list,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0328_OddEvenLinkedList.lean
 329,Longest Increasing Path in a Matrix,dp,dp-grid,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0329_LongestIncreasingPath.lean
-332,Reconstruct Itinerary,relaxation,graph-other,True,True,O(V+E),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P0332_Reach.lean
+332,Reconstruct Itinerary,relaxation,graph-other,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0332_Reach.lean
 337,,dp,dp-tree,False,False,,,False,False,,
 339,,dp,tree-traversal,False,False,,,False,False,,
 340,,fold,sliding-window,False,False,,,False,False,,
@@ -270,7 +270,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 494,Target Sum,dp,dp-knapsack,True,True,O(n·sum),,False,True,True,lproofs/Lproofs/Problems/DP/P0494_TargetSum.lean
 496,Next Greater Element I,fold,monotonic-stack,True,False,O(n),,False,False,False,lproofs/Lproofs/Problems/Fold/P0496_NextGreaterElement.lean
 503,,fold,monotonic-stack,False,False,,,False,False,,
-505,The Maze II,relaxation,dijkstra,True,True,O(mn log mn),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P0505_MazeII.lean
+505,The Maze II,relaxation,dijkstra,True,True,O(mn log mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0505_MazeII.lean
 509,Fibonacci Number,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0509_Fibonacci.lean
 515,,relaxation,bfs,False,False,,,False,False,,
 516,Longest Palindromic Subsequence,dp,dp-interval,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0516_LongestPalindromicSubseq.lean
@@ -451,12 +451,12 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1673,Find the Most Competitive Subsequence,fold,monotonic-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1673_MostCompetitiveSubsequence.lean
 1674,,fold,diff-array,False,False,,,False,False,,
 1691,Maximum Height by Stacking Cuboids,dp,dp-linear,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P1691_MaxHeightStackingCuboids.lean
-1719,Number Of Ways To Reconstruct A Tree,relaxation,graph-other,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1719_Reach.lean
+1719,Number Of Ways To Reconstruct A Tree,relaxation,graph-other,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1719_Reach.lean
 1722,,relaxation,union-find,False,False,,,False,False,,
 1752,,fold,two-pointers,False,False,,,False,False,,
 1762,,fold,monotonic-stack,False,False,,,False,False,,
 1768,Merge Strings Alternately,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P1768_MergeAlternately.lean
-1778,Shortest Path in a Hidden Grid,relaxation,bfs,True,True,O(mn),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1778_ShortestPathHiddenGrid.lean
+1778,Shortest Path in a Hidden Grid,relaxation,bfs,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1778_ShortestPathHiddenGrid.lean
 1814,,fold,hashing,False,False,,,False,False,,
 1818,Minimum Absolute Sum Difference,bisection,binary-search,True,True,,,False,True,False,lproofs/Lproofs/Problems/Bisection/P1818_MinAbsSumDiff.lean
 1823,,fold,math-bit,False,False,,,False,False,,
@@ -534,7 +534,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 2817,,fold,sliding-window,False,False,,,False,False,,
 2828,,fold,string-other,False,False,,,False,False,,
 2848,,fold,diff-array,False,False,,,False,False,,
-2858,Minimum Edge Reversals for All Reachable,relaxation,graph-other,True,True,O(V+E),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean
+2858,Minimum Edge Reversals for All Reachable,relaxation,graph-other,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean
 2861,,bisection,binary-search,False,False,,,False,False,,
 2906,,fold,prefix-sum,False,False,,,False,False,,
 2912,Number of Ways to Reach Destination in the Grid,dp,dp-grid,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean
