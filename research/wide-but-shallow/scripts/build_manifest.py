@@ -46,8 +46,8 @@ NOT_GENUINE = {
     # (strengthened: 98 inorder-sorted<->bounded-BST, 833 scan=flatMap per-position replacement)
     # (strengthened: 545 boundary soundness; 211 wildcard search; 642 prefix navigation)
     # (strengthened: 992 atMost(k)=atMost(k-1)+exactly(k) identity; 76 min-window = IsLeast covering len)
+    # (strengthened: 2444 inclusion-exclusion sieve over four bounded-subarray counts)
     "312": "trivial base case only (DP optimality not formalized)",
-    "2444": "abstract window predicate p",
 }
 
 
