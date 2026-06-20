@@ -1,12 +1,12 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 261/577 relevant problems** (55.5% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 265/577 relevant problems** (55.6% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
-| fold | hashing | 23 | 48 |
+| fold | hashing | 24 | 48 |
 | fold | string-other | 14 | 45 |
 | fold | two-pointers | 17 | 36 |
 | fold | math-bit | 11 | 33 |
@@ -22,7 +22,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | dp-linear | 17 | 33 |
 | dp | backtracking | 12 | 29 |
 | dp | dp-grid | 10 | 25 |
-| dp | tree-traversal | 3 | 13 |
+| dp | tree-traversal | 4 | 13 |
 | dp | bst | 5 | 12 |
 | dp | dp-tree | 3 | 12 |
 | dp | trie | 5 | 10 |
@@ -32,14 +32,14 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | dp-knapsack | 3 | 6 |
 | dp | dp-digit | 0 | 2 |
 | dp | dp-bitmask | 1 | 2 |
-| relaxation | bfs | 15 | 31 |
+| relaxation | bfs | 16 | 31 |
 | relaxation | union-find | 9 | 17 |
 | relaxation | graph-other | 9 | 15 |
 | relaxation | dfs-flood | 4 | 10 |
 | relaxation | topo-sort | 5 | 9 |
 | relaxation | dijkstra | 4 | 9 |
 | relaxation | bellman-ford | 1 | 1 |
-| bisection | binary-search | 28 | 43 |
+| bisection | binary-search | 29 | 43 |
 
 ## Certified problems
 
@@ -149,7 +149,9 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `213` House Robber II — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0213_HouseRobberII.lean`
 - `217` Contains Duplicate — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0217_ContainsDuplicate.lean`
 - `219` Contains Duplicate II — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0219_ContainsDuplicateII.lean`
+- `226` Invert Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0226_InvertBinaryTree.lean`
 - `228` Summary Ranges — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0228_SummaryRanges.lean`
+- `229` Majority Element II — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0229_MajorityElementII.lean`
 - `230` Kth Smallest Element in a BST — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0230_KthSmallestBST.lean`
 - `231` Power of Two — fold (O(log n)) — `lproofs/Lproofs/Problems/Fold/P0231_PowerOfTwo.lean`
 - `234` Palindrome Linked List — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0234_PalindromeLinkedList.lean`
@@ -220,6 +222,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `680` Valid Palindrome II — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0680_ValidPalindromeII.lean`
 - `713` Subarray Product Less Than K — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0713_SubarrayProductLessThanK.lean`
 - `714` Best Time to Buy and Sell Stock with Transaction Fee — dp () — `lproofs/Lproofs/Problems/DP/P0714_StockWithFee.lean`
+- `719` Find K-th Smallest Pair Distance — bisection () — `lproofs/Lproofs/Problems/Bisection/P0719_KthSmallestPairDistance.lean`
 - `724` Find Pivot Index — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0724_FindPivotIndex.lean`
 - `733` Flood Fill — relaxation (O(n)) — `lproofs/Lproofs/Problems/Relaxation/P0733_FloodFill.lean`
 - `735` Asteroid Collision — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0735_AsteroidCollision.lean`
@@ -301,6 +304,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `3161` Block Placement Queries — bisection (O(log n)) — `lproofs/Lproofs/Problems/Bisection/P3161_Bisect.lean`
 - `3387` Graph Reachability — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P3387_Reach.lean`
 - `3453` Separate Squares I — bisection (O(n log)) — `lproofs/Lproofs/Problems/Bisection/P3453_SeparateSquares.lean`
+- `3629` Minimum Jumps to Reach End via Prime Teleportation — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P3629_PrimeTeleportation.lean`
 - `3637` Trionic Array I — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P3637_TrionicArray.lean`
 - `3741` Minimum Distance Between Three Equal Elements II — fold () — `lproofs/Lproofs/Problems/Fold/P3741_MinDistThreeEqual.lean`
 - `3928` Minimum Cost to Buy Apples II — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P3928_MinimumCosttoBuyApples.lean`
