@@ -39,7 +39,7 @@ num,family,scheme,proven
 516,dp-interval,dp,True
 535,design,tail,False
 536,tree-construct,dp,False
-541,string-other,fold,False
+541,string-other,fold,True
 543,tree-aggregate,dp,True
 577,sql,tail,False
 585,sql,tail,False
@@ -60,7 +60,7 @@ num,family,scheme,proven
 1166,trie,dp,True
 1192,graph-other,relaxation,False
 1193,sql,tail,False
-1239,backtracking,dp,False
+1239,backtracking,dp,True
 1268,trie,dp,False
 1385,binary-search,bisection,True
 1387,math-bit,fold,False
@@ -81,7 +81,7 @@ num,family,scheme,proven
 2144,greedy,tail,False
 2149,two-pointers,fold,True
 2357,greedy,tail,False
-2423,hashing,fold,False
+2423,hashing,fold,True
 2493,graph-other,relaxation,True
 2551,greedy,tail,False
 2791,dp-tree,dp,False

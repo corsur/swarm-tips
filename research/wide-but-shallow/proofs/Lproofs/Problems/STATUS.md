@@ -1,13 +1,13 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 284/577 relevant problems** (56.7% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 287/577 relevant problems** (56.8% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
-| fold | hashing | 26 | 48 |
-| fold | string-other | 15 | 45 |
+| fold | hashing | 27 | 48 |
+| fold | string-other | 16 | 45 |
 | fold | two-pointers | 19 | 36 |
 | fold | math-bit | 13 | 33 |
 | fold | linked-list | 11 | 21 |
@@ -20,7 +20,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | fold | merge-intervals | 5 | 5 |
 | fold | dutch-flag | 1 | 1 |
 | dp | dp-linear | 17 | 33 |
-| dp | backtracking | 12 | 29 |
+| dp | backtracking | 13 | 29 |
 | dp | dp-grid | 11 | 25 |
 | dp | tree-traversal | 4 | 13 |
 | dp | bst | 5 | 12 |
@@ -211,6 +211,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `516` Longest Palindromic Subsequence — dp (O(n²)) — `lproofs/Lproofs/Problems/DP/P0516_LongestPalindromicSubseq.lean`
 - `528` Random Pick with Weight — bisection () — `lproofs/Lproofs/Problems/Bisection/P0528_RandomPickWeight.lean`
 - `540` Single Element in a Sorted Array — bisection () — `lproofs/Lproofs/Problems/Bisection/P0540_SingleElementSorted.lean`
+- `541` Reverse String II — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0541_ReverseStringII.lean`
 - `542` 01 Matrix — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P0542_01Matrix.lean`
 - `543` Diameter of Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0543_DiameterOfBinaryTree.lean`
 - `545` Boundary of Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0545_BoundaryOfTree.lean`
@@ -269,6 +270,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1202` Smallest String With Swaps — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1202_SmallestStringWithSwaps.lean`
 - `1209` Remove All Adjacent Duplicates in String II — fold () — `lproofs/Lproofs/Problems/Fold/P1209_RemoveAdjacentDuplicatesII.lean`
 - `1235` Maximum Profit in Job Scheduling — dp () — `lproofs/Lproofs/Problems/DP/P1235_MaxProfitJobScheduling.lean`
+- `1239` Maximum Length of a Concatenated String with Unique Characters — dp () — `lproofs/Lproofs/Problems/DP/P1239_MaxLengthConcatenatedUnique.lean`
 - `1347` Minimum Number of Steps to Make Two Strings Anagram — fold () — `lproofs/Lproofs/Problems/Fold/P1347_MinStepsAnagram.lean`
 - `1368` Minimum Cost to Make at Least One Valid Path in a Grid — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean`
 - `1385` Find the Distance Value Between Two Arrays — bisection () — `lproofs/Lproofs/Problems/Fold/P1385_DistanceValueBetweenTwoArrays.lean`
@@ -308,6 +310,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2282` Number of People That Can Be Seen in a Grid — fold () — `lproofs/Lproofs/Problems/Fold/P2282_PeopleSeenInGrid.lean`
 - `2337` Move Pieces to Obtain a String — fold () — `lproofs/Lproofs/Problems/Fold/P2337_MovePieces.lean`
 - `2385` Amount of Time for Binary Tree to Be Infected — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2385_AmountofTimeforBinaryTre.lean`
+- `2423` Remove Letter To Equalize Frequency — fold () — `lproofs/Lproofs/Problems/Fold/P2423_RemoveLetterToEqualizeFrequency.lean`
 - `2444` Count Subarrays With Fixed Bounds — fold () — `lproofs/Lproofs/Problems/Fold/P2444_CountSubarraysFixedBounds.lean`
 - `2493` Divide Nodes Into the Maximum Number of Groups — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2493_DivideNodesMaxGroups.lean`
 - `2503` Maximum Number of Points From Grid Queries — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean`
