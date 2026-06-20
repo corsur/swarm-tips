@@ -16,3 +16,6 @@ rev = "v4.30.0"
 
 [[lean_lib]]
 name = "Lproofs"
+# Build the whole tree (infra + every per-problem certificate under Lproofs/Problems), so a bare
+# `lake build` compiles and checks all certificates — matching the reproducibility claim.
+globs = ["Lproofs.+"]
