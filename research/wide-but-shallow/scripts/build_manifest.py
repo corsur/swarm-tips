@@ -46,7 +46,7 @@ NOT_GENUINE = {
     # (strengthened: 98 inorder-sorted<->bounded-BST, 833 scan=flatMap per-position replacement)
     # (strengthened: 545 boundary soundness; 211 wildcard search; 642 prefix navigation)
     "312": "trivial base case only (DP optimality not formalized)",
-    "76": "abstract window predicate p", "992": "abstract window predicate p",
+    "76": "abstract window predicate p",
     "2444": "abstract window predicate p",
 }
 
