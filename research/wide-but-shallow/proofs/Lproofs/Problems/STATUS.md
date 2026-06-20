@@ -1,12 +1,12 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 265/577 relevant problems** (55.6% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 270/577 relevant problems** (56.0% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
-| fold | hashing | 24 | 48 |
+| fold | hashing | 25 | 48 |
 | fold | string-other | 14 | 45 |
 | fold | two-pointers | 17 | 36 |
 | fold | math-bit | 11 | 33 |
@@ -27,7 +27,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | dp-tree | 3 | 12 |
 | dp | trie | 5 | 10 |
 | dp | tree-construct | 5 | 9 |
-| dp | tree-aggregate | 4 | 8 |
+| dp | tree-aggregate | 6 | 8 |
 | dp | dp-interval | 3 | 7 |
 | dp | dp-knapsack | 3 | 6 |
 | dp | dp-digit | 0 | 2 |
@@ -39,7 +39,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | relaxation | topo-sort | 5 | 9 |
 | relaxation | dijkstra | 4 | 9 |
 | relaxation | bellman-ford | 1 | 1 |
-| bisection | binary-search | 29 | 43 |
+| bisection | binary-search | 31 | 43 |
 
 ## Certified problems
 
@@ -106,6 +106,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `105` Construct Binary Tree from Preorder and Inorder Traversal — dp () — `lproofs/Lproofs/Problems/DP/P0105_ConstructBTfromPreandIn.lean`
 - `108` Convert Sorted Array to Binary Search Tree — dp () — `lproofs/Lproofs/Problems/DP/P0108_SortedArrayToBST.lean`
 - `110` Balanced Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0110_BalancedBinaryTree.lean`
+- `111` Minimum Depth of Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0111_MinimumDepthBinaryTree.lean`
 - `112` Path Sum — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0112_PathSum.lean`
 - `113` Path Sum II — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0113_PathSumII.lean`
 - `115` Distinct Subsequences — dp (O(mn)) — `lproofs/Lproofs/Problems/DP/P0115_DistinctSubsequences.lean`
@@ -208,6 +209,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `528` Random Pick with Weight — bisection () — `lproofs/Lproofs/Problems/Bisection/P0528_RandomPickWeight.lean`
 - `540` Single Element in a Sorted Array — bisection () — `lproofs/Lproofs/Problems/Bisection/P0540_SingleElementSorted.lean`
 - `542` 01 Matrix — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P0542_01Matrix.lean`
+- `543` Diameter of Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0543_DiameterOfBinaryTree.lean`
 - `545` Boundary of Binary Tree — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0545_BoundaryOfTree.lean`
 - `547` Number of Provinces — relaxation (O(V^2)) — `lproofs/Lproofs/Problems/Relaxation/P0547_NumberOfProvinces.lean`
 - `549` Binary Tree Longest Consecutive Sequence II — dp () — `lproofs/Lproofs/Problems/DP/P0549_LongestConsecutiveII.lean`
@@ -262,6 +264,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1235` Maximum Profit in Job Scheduling — dp () — `lproofs/Lproofs/Problems/DP/P1235_MaxProfitJobScheduling.lean`
 - `1347` Minimum Number of Steps to Make Two Strings Anagram — fold () — `lproofs/Lproofs/Problems/Fold/P1347_MinStepsAnagram.lean`
 - `1368` Minimum Cost to Make at Least One Valid Path in a Grid — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean`
+- `1385` Find the Distance Value Between Two Arrays — bisection () — `lproofs/Lproofs/Problems/Fold/P1385_DistanceValueBetweenTwoArrays.lean`
 - `1423` Maximum Points You Can Obtain from Cards — fold () — `lproofs/Lproofs/Problems/Fold/P1423_MaxPointsCards.lean`
 - `1428` Leftmost Column with at Least a One — bisection () — `lproofs/Lproofs/Problems/Bisection/P1428_LeftmostColumnWithOne.lean`
 - `1438` Longest Continuous Subarray With Absolute Diff ≤ Limit — fold () — `lproofs/Lproofs/Problems/Fold/P1438_LongestSubarrayLimit.lean`
@@ -298,10 +301,12 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2503` Maximum Number of Points From Grid Queries — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean`
 - `2661` First Completely Painted Row or Column — fold () — `lproofs/Lproofs/Problems/Fold/P2661_FirstCompletelyPainted.lean`
 - `2858` Minimum Edge Reversals for All Reachable — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
+- `2861` Maximum Number of Alloys — bisection () — `lproofs/Lproofs/Problems/Bisection/P2861_MaximumNumberOfAlloys.lean`
 - `2912` Number of Ways to Reach Destination in the Grid — dp () — `lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean`
 - `3120` Count the Number of Special Characters I — fold () — `lproofs/Lproofs/Problems/Fold/P3120_CountSpecialCharacters.lean`
 - `3129` Find All Possible Stable Binary Arrays I — dp () — `lproofs/Lproofs/Problems/DP/P3129_StableBinaryArrays.lean`
 - `3161` Block Placement Queries — bisection (O(log n)) — `lproofs/Lproofs/Problems/Bisection/P3161_Bisect.lean`
+- `3371` Identify the Largest Outlier in an Array — fold () — `lproofs/Lproofs/Problems/Fold/P3371_LargestOutlier.lean`
 - `3387` Graph Reachability — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P3387_Reach.lean`
 - `3453` Separate Squares I — bisection (O(n log)) — `lproofs/Lproofs/Problems/Bisection/P3453_SeparateSquares.lean`
 - `3629` Minimum Jumps to Reach End via Prime Teleportation — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P3629_PrimeTeleportation.lean`

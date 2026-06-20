@@ -94,7 +94,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 108,Convert Sorted Array to Binary Search Tree,dp,tree-construct,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0108_SortedArrayToBST.lean
 109,,dp,tree-construct,False,False,,,False,False,,
 110,Balanced Binary Tree,dp,tree-aggregate,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0110_BalancedBinaryTree.lean
-111,,dp,tree-aggregate,False,False,,,False,False,,
+111,Minimum Depth of Binary Tree,dp,tree-aggregate,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0111_MinimumDepthBinaryTree.lean
 112,Path Sum,dp,tree-aggregate,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0112_PathSum.lean
 113,Path Sum II,dp,backtracking,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0113_PathSumII.lean
 114,,dp,tree-traversal,False,False,,,False,False,,
@@ -285,7 +285,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 540,Single Element in a Sorted Array,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0540_SingleElementSorted.lean
 541,,fold,string-other,False,False,,,False,False,,
 542,01 Matrix,relaxation,bfs,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0542_01Matrix.lean
-543,,dp,tree-aggregate,False,False,,,False,False,,
+543,Diameter of Binary Tree,dp,tree-aggregate,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0543_DiameterOfBinaryTree.lean
 545,Boundary of Binary Tree,dp,tree-traversal,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0545_BoundaryOfTree.lean
 547,Number of Provinces,relaxation,union-find,True,True,O(V^2),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0547_NumberOfProvinces.lean
 549,Binary Tree Longest Consecutive Sequence II,dp,dp-tree,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0549_LongestConsecutiveII.lean
@@ -422,7 +422,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1365,,fold,prefix-sum,False,False,,,False,False,,
 1368,Minimum Cost to Make at Least One Valid Path in a Grid,relaxation,dijkstra,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean
 1382,,dp,bst,False,False,,,False,False,,
-1385,,bisection,binary-search,False,False,,,False,False,,
+1385,Find the Distance Value Between Two Arrays,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1385_DistanceValueBetweenTwoArrays.lean
 1387,,fold,math-bit,False,False,,,False,False,,
 1404,,fold,math-bit,False,False,,,False,False,,
 1423,Maximum Points You Can Obtain from Cards,fold,sliding-window,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1423_MaxPointsCards.lean
@@ -535,7 +535,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 2828,,fold,string-other,False,False,,,False,False,,
 2848,,fold,diff-array,False,False,,,False,False,,
 2858,Minimum Edge Reversals for All Reachable,relaxation,graph-other,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean
-2861,,bisection,binary-search,False,False,,,False,False,,
+2861,Maximum Number of Alloys,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P2861_MaximumNumberOfAlloys.lean
 2906,,fold,prefix-sum,False,False,,,False,False,,
 2912,Number of Ways to Reach Destination in the Grid,dp,dp-grid,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean
 2948,,relaxation,union-find,False,False,,,False,False,,
@@ -555,7 +555,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 3342,,relaxation,dijkstra,False,False,,,False,False,,
 3355,,fold,diff-array,False,False,,,False,False,,
 3356,,fold,diff-array,False,False,,,False,False,,
-3371,,fold,hashing,False,False,,,False,False,,
+3371,Identify the Largest Outlier in an Array,fold,hashing,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P3371_LargestOutlier.lean
 3387,Graph Reachability,relaxation,graph-other,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P3387_Reach.lean
 3413,,fold,prefix-sum,False,False,,,False,False,,
 3418,,dp,dp-grid,False,False,,,False,False,,
