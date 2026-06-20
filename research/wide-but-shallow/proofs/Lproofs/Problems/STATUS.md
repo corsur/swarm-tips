@@ -1,6 +1,6 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 281/577 relevant problems** (56.5% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 284/577 relevant problems** (56.7% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
@@ -8,16 +8,16 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 |---|---|--:|--:|
 | fold | hashing | 26 | 48 |
 | fold | string-other | 15 | 45 |
-| fold | two-pointers | 18 | 36 |
+| fold | two-pointers | 19 | 36 |
 | fold | math-bit | 13 | 33 |
 | fold | linked-list | 11 | 21 |
 | fold | sliding-window | 11 | 21 |
 | fold | monotonic-stack | 7 | 19 |
 | fold | prefix-sum | 5 | 17 |
-| fold | pairing-stack | 8 | 14 |
+| fold | pairing-stack | 9 | 14 |
 | fold | diff-array | 2 | 8 |
 | fold | fast-slow | 2 | 6 |
-| fold | merge-intervals | 4 | 5 |
+| fold | merge-intervals | 5 | 5 |
 | fold | dutch-flag | 1 | 1 |
 | dp | dp-linear | 17 | 33 |
 | dp | backtracking | 12 | 29 |
@@ -84,6 +84,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `68` Text Justification — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0068_TextJustification.lean`
 - `69` Sqrt(x) — bisection (O(log x)) — `lproofs/Lproofs/Problems/Bisection/P0069_Sqrt.lean`
 - `70` Climbing Stairs — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0070_ClimbingStairs.lean`
+- `71` Simplify Path — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0071_SimplifyPath.lean`
 - `72` Edit Distance — dp (O(mn)) — `lproofs/Lproofs/Problems/DP/P0072_EditDistance.lean`
 - `74` Search a 2D Matrix — bisection (O(log nm)) — `lproofs/Lproofs/Problems/Bisection/P0074_Search2DMatrix.lean`
 - `75` Sort Colors — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0075_SortColors.lean`
@@ -231,6 +232,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `724` Find Pivot Index — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0724_FindPivotIndex.lean`
 - `733` Flood Fill — relaxation (O(n)) — `lproofs/Lproofs/Problems/Relaxation/P0733_FloodFill.lean`
 - `735` Asteroid Collision — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0735_AsteroidCollision.lean`
+- `759` Employee Free Time — fold (O(n log n)) — `lproofs/Lproofs/Problems/Fold/P0759_EmployeeFreeTime.lean`
 - `778` Swim in Rising Water — relaxation (O(V log V)) — `lproofs/Lproofs/Problems/Relaxation/P0778_SwiminRisingWater.lean`
 - `785` Is Graph Bipartite? — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P0785_IsGraphBipartite.lean`
 - `787` Cheapest Flights Within K Stops — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P0787_CheapestFlights.lean`
@@ -298,6 +300,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1971` Find if Path Exists in Graph — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1971_FindPathExists.lean`
 - `2050` Parallel Courses III — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P2050_ParallelCoursesIII.lean`
 - `2092` Find All People With Secret — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2092_Reach.lean`
+- `2149` Rearrange Array Elements by Sign — fold () — `lproofs/Lproofs/Problems/Fold/P2149_RearrangeArrayBySign.lean`
 - `2150` Find All Lonely Numbers in the Array — fold () — `lproofs/Lproofs/Problems/Fold/P2150_FindAllLonelyNumbers.lean`
 - `2187` Minimum Time to Complete Trips — bisection () — `lproofs/Lproofs/Problems/Bisection/P2187_MinTimeToCompleteTrips.lean`
 - `2214` Minimum Health to Beat Game — dp (O(n)) — `lproofs/Lproofs/Problems/Fold/P2214_MinHealth.lean`

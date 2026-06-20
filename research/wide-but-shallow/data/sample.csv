@@ -2,7 +2,7 @@ num,family,scheme,proven
 7,math-bit,fold,True
 20,pairing-stack,fold,True
 55,greedy,tail,False
-71,pairing-stack,fold,False
+71,pairing-stack,fold,True
 74,binary-search,bisection,True
 88,two-pointers,fold,True
 94,tree-traversal,dp,True
@@ -50,7 +50,7 @@ num,family,scheme,proven
 670,greedy,tail,False
 719,binary-search,bisection,True
 736,string-other,fold,False
-759,merge-intervals,fold,False
+759,merge-intervals,fold,True
 815,bfs,relaxation,True
 939,hashing,fold,False
 986,merge-intervals,fold,True
@@ -79,7 +79,7 @@ num,family,scheme,proven
 1868,two-pointers,fold,True
 1915,hashing,fold,False
 2144,greedy,tail,False
-2149,two-pointers,fold,False
+2149,two-pointers,fold,True
 2357,greedy,tail,False
 2423,hashing,fold,False
 2493,graph-other,relaxation,True
