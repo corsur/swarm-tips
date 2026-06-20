@@ -29,6 +29,28 @@ def importance():
     return imp
 
 
+# NON-GENUINE certificates (panel audit, 2026-06-19): corr does NOT reference the concrete problem —
+# it is scheme-generic (proven over an abstract relation/predicate, would certify any problem in that
+# scheme), vacuous (Iff.rfl against a spec defined as the solution), or a verbatim re-export of another
+# problem. These BUILD but do not count toward the genuine-coverage headline. Remove a num here only
+# when its corr has been rewritten to a problem-specific statement (then re-run this script).
+NOT_GENUINE = {
+    # relaxation — abstract V/relation, corr = bellman_isLeast / reachability over an uninstantiated r
+    # (strengthened 2026-06-19: 733, 3387, 102, 863, 815 now use a concrete relation + reachability/BFS corr)
+    "332": "abstract r", "417": "abstract flow", "505": "abstract r",
+    "1368": "abstract r", "1584": "abstract r", "1719": "abstract r", "1778": "abstract r",
+    "2092": "abstract r", "2858": "abstract r", "212": "abstract r (word-search)",
+    # bisection — corr over a free abstract predicate, not the concrete problem condition
+    "162": "abstract predicate", "240": "abstract predicate", "278": "abstract predicate",
+    "1818": "abstract predicate", "3161": "abstract predicate",
+    # dp/fold — vacuous, re-export, definitional, or abstract window predicate
+    "98": "Iff.rfl (spec = solution)", "211": "re-export of P0208", "642": "re-export of P0208",
+    "312": "trivial base case only", "545": "preorder definitional unfold",
+    "76": "abstract window predicate p", "992": "abstract window predicate p",
+    "2444": "abstract window predicate p", "833": "identity on empty replacement only",
+}
+
+
 def parse_file(path):
     txt = open(path).read()
     m = HDR.search(txt)
@@ -38,14 +60,16 @@ def parse_file(path):
     cls = re.search(r"theorem\s+cls\b", txt) is not None
     corr = re.search(r"theorem\s+corr\b", txt) is not None
     bad = re.search(r"\bsorry\b|\badmit\b", txt) is not None
-    # CERTIFIED iff cls (scheme membership) AND corr (correctness vs spec) AND no sorry/admit.
-    # corr is the non-vacuity guarantee: a real correctness theorem about the solution, so cls is
-    # never counted as a lone vacuous rfl. (Partial lemmas like corr_head/corr_bound do not count.)
-    classified = cls and corr and not bad
-    return {"num": m.group(1), "name": fields.get("name", ""), "scheme": fields.get("scheme", ""),
+    num = m.group(1)
+    # BUILDS = file has cls + corr + no sorry/admit (syntactic). GENUINE = builds AND corr is
+    # problem-specific (references the concrete problem, not an abstract relation/predicate). Only
+    # genuine certs count toward the headline coverage number.
+    builds = cls and corr and not bad
+    genuine = builds and num not in NOT_GENUINE
+    return {"num": num, "name": fields.get("name", ""), "scheme": fields.get("scheme", ""),
             "family": fields.get("family", ""), "complexity": fields.get("complexity", ""),
             "source": fields.get("source", ""), "cls": cls, "corr": corr, "sorry": bad,
-            "done": classified, "file": os.path.relpath(path, HERE)}
+            "done": builds, "genuine": genuine, "file": os.path.relpath(path, HERE)}
 
 
 def main():
@@ -66,7 +90,7 @@ def main():
                     {"num": num, "name": "", "scheme": sch, "family": fam, "complexity": "",
                      "source": "", "cls": False, "corr": False, "sorry": False, "done": False, "file": ""})
 
-    cols = ["num", "name", "scheme", "family", "cls", "corr", "complexity", "source", "sorry", "done", "file"]
+    cols = ["num", "name", "scheme", "family", "cls", "corr", "complexity", "source", "sorry", "done", "genuine", "file"]
     with open(os.path.join(HERE, "certs.csv"), "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols); w.writeheader()
         for r in rows:
@@ -117,10 +141,19 @@ def main():
         h = z * math.sqrt(p * (1 - p) / nn + z * z / (4 * nn * nn)) / d
         return (max(0.0, c - h), min(1.0, c + h))
 
+    genuine = {r["num"] for r in rows if r.get("genuine")}
     sample_path = os.path.join(HERE, "sample.csv")
     if os.path.exists(sample_path):
         srows = list(csv.DictReader(open(sample_path)))
         n = len(srows)
+        builds_in = sum(1 for r in srows if r["num"] in done and files.get(r["num"], {}).get("scheme") in
+                        ("fold", "dp", "relaxation", "bisection"))
+        gen_in = sum(1 for r in srows if r["num"] in genuine and files.get(r["num"], {}).get("scheme") in
+                     ("fold", "dp", "relaxation", "bisection"))
+        glo, ghi = wilson(gen_in, n)
+        print(f"\n=== HEADLINE (honest): GENUINE problem-specific certs in the sample ===")
+        print(f"  genuine {gen_in}/{n}  Wilson95 [{glo:.2f},{ghi:.2f}]   "
+              f"(builds-but-not-genuine: {builds_in - gen_in}; total builds: {builds_in})")
         proven_scheme = defaultdict(int)  # cert scheme tag, only for classified problems
         for r in srows:
             num = r["num"]

@@ -1,26 +1,38 @@
 import Lproofs.Generators
 
 /-! @lc 102 | name:Binary Tree Level Order Traversal | scheme:relaxation | family:bfs | complexity:O(n) |
-    source:https://leetcode.com/problems/binary-tree-level-order-traversal/ -/
+    source:https://leetcode.com/problems/binary-tree-level-order-traversal/
+
+    Level-order BFS visits every node reachable from the root by repeatedly stepping to children.
+    CLASSIFICATION: the set of visited nodes is the least fixpoint of one-step relaxation under the
+    concrete child relation `childRel kids` (`v` is a child of `u` per the adjacency `kids`). `cls`
+    certifies the relaxation fixpoint; `corr` proves the visited set is exactly the nodes reachable
+    from the root through child links — over a concrete relation, not a free `child`. (The level
+    grouping orders this set by depth.) -/
 
 namespace LC.P0102
 open Interview
 
-/-- `child u v`: `v` is a child of `u`. BFS visits exactly the nodes reachable from the root set
-    `s` — the least fixpoint of one-step relaxation (the level grouping orders this set by depth). -/
-def sol {V : Type*} (s : Set V) (child : V → V → Prop) : Set V := OrderHom.lfp (reachOp s child)
+/-- Concrete child relation: `v` is a child of `u` per the children adjacency `kids`. -/
+def childRel (kids : ℕ → List ℕ) (u v : ℕ) : Prop := v ∈ kids u
 
-/-- Spec: the least relaxation-stable set of visited nodes (everything reachable from the root). -/
-def spec {V : Type*} (s : Set V) (child : V → V → Prop) (S : Set V) : Prop :=
-  IsLeast (Function.fixedPoints (reachOp s child)) S
+/-- The visited set: nodes reachable from `root` under `childRel`, the least relaxation fixpoint. -/
+def sol (kids : ℕ → List ℕ) (root : ℕ) : Set ℕ := OrderHom.lfp (reachOp {root} (childRel kids))
 
-/-- SCHEME (relaxation): the visited set is a fixpoint of one-step relaxation. -/
-theorem cls {V : Type*} (s : Set V) (child : V → V → Prop) :
-    reachOp s child (sol s child) = sol s child :=
-  reach_is_dp_fixpoint s child
+/-- Spec: exactly the nodes reachable from `root` along child links. -/
+def spec (kids : ℕ → List ℕ) (root : ℕ) (S : Set ℕ) : Prop :=
+  S = {v | Relation.ReflTransGen (childRel kids) root v}
 
-/-- CORRECT: it is the LEAST fixpoint — exactly the reachable nodes, none visited without a path. -/
-theorem corr {V : Type*} (s : Set V) (child : V → V → Prop) : spec s child (sol s child) :=
-  bellman_isLeast (reachOp s child)
+/-- SCHEME (relaxation): the visited set is a fixpoint of one-step relaxation of the child relation. -/
+theorem cls (kids : ℕ → List ℕ) (root : ℕ) :
+    reachOp {root} (childRel kids) (sol kids root) = sol kids root :=
+  reach_is_dp_fixpoint {root} (childRel kids)
+
+/-- CORRECT: the visited set is exactly the nodes reachable from `root` through child links. -/
+theorem corr (kids : ℕ → List ℕ) (root : ℕ) : spec kids root (sol kids root) := by
+  unfold spec sol
+  rw [lfp_reachOp_eq_reachable]
+  ext v
+  simp [Set.mem_singleton_iff]
 
 end LC.P0102

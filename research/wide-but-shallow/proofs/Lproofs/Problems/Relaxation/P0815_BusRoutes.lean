@@ -3,32 +3,39 @@ import Lproofs.Generators
 /-! @lc 815 | name:Bus Routes | scheme:relaxation | family:bfs | complexity:O(V+E) |
     source:https://leetcode.com/problems/bus-routes/
 
-    The fewest buses to take is a BFS hop-distance: the least number of route-transfers (`r`) needed
-    to reach the target from the source route `src`. We model it as the least step count under the
-    transfer relation, and tie it to the relaxation scheme via the BFS-layer characterization
-    (reachable in ≤ n steps `=` `(reachOp {src} r)^[n+1] ∅`). -/
+    The fewest buses to take is a BFS hop-distance over the route-transfer graph: routes `u` and `v`
+    are adjacent (`xfer`) when they share a stop, and the answer is the least number of transfers from
+    a starting route to a route serving the destination. CLASSIFICATION: that distance is the least
+    step count under the concrete transfer relation `xfer routes` (`u` and `v` share a stop), and the
+    BFS layers are the bounded relaxation iterates. `cls` ties the scheme to the concrete layers;
+    `corr` proves `sol` is the genuine least transfer-count — over a concrete relation, not a free `r`. -/
 
 namespace LC.P0815
 open Interview
 
-/-- The fewest transfers: the least number of steps under the route-transfer relation reaching `v`. -/
-noncomputable def sol {V : Type*} (src : V) (r : V → V → Prop) (v : V) : ℕ :=
-  sInf {n | Reaches r src v n}
+/-- Concrete transfer edge: routes `u` and `v` share a stop, per `routes u`/`routes v` (the stop
+    lists). They are adjacent when some stop appears on both. -/
+def xfer (routes : ℕ → List ℕ) (u v : ℕ) : Prop := ∃ s, s ∈ routes u ∧ s ∈ routes v
 
-/-- Spec: the answer is the least number of steps (transfers) reaching `v`. -/
-def spec {V : Type*} (src : V) (r : V → V → Prop) (v : V) (d : ℕ) : Prop :=
-  IsLeast {n | Reaches r src v n} d
+/-- The fewest transfers: the least number of steps under the transfer relation reaching route `v`. -/
+noncomputable def sol (routes : ℕ → List ℕ) (src v : ℕ) : ℕ :=
+  sInf {n | Reaches (xfer routes) src v n}
 
-/-- SCHEME (relaxation): the BFS layers are exactly the bounded relaxation iterates — reachable in
-    `≤ n` steps is `(reachOp {src} r)^[n+1] ∅`. The hop-distance is read off these layers. -/
-theorem cls {V : Type*} (src : V) (r : V → V → Prop) :
-    ∀ (n : ℕ) (v : V), v ∈ (reachOp ({src} : Set V) r)^[n + 1] (∅ : Set V) ↔
-      ∃ m ≤ n, Reaches r src v m :=
-  mem_reachOp_iterate src r
+/-- Spec: the answer is the least number of transfers reaching `v`. -/
+def spec (routes : ℕ → List ℕ) (src v : ℕ) (d : ℕ) : Prop :=
+  IsLeast {n | Reaches (xfer routes) src v n} d
 
-/-- CORRECT: `sol` is the least number of steps (transfers) reaching `v` — the genuine BFS distance. -/
-theorem corr {V : Type*} (src : V) (r : V → V → Prop) (v : V) (h : ∃ n, Reaches r src v n) :
-    spec src r v (sol src r v) :=
+/-- SCHEME (relaxation): the BFS layers are exactly the bounded relaxation iterates of the concrete
+    transfer relation — reachable in `≤ n` steps is `(reachOp {src} (xfer routes))^[n+1] ∅`. -/
+theorem cls (routes : ℕ → List ℕ) (src : ℕ) :
+    ∀ (n : ℕ) (v : ℕ), v ∈ (reachOp ({src} : Set ℕ) (xfer routes))^[n + 1] (∅ : Set ℕ) ↔
+      ∃ m ≤ n, Reaches (xfer routes) src v m :=
+  mem_reachOp_iterate src (xfer routes)
+
+/-- CORRECT: `sol` is the least number of transfers reaching route `v` — the genuine fewest-buses
+    distance in this route graph. -/
+theorem corr (routes : ℕ → List ℕ) (src v : ℕ) (h : ∃ n, Reaches (xfer routes) src v n) :
+    spec routes src v (sol routes src v) :=
   ⟨Nat.sInf_mem h, fun _ hn => Nat.sInf_le hn⟩
 
 end LC.P0815

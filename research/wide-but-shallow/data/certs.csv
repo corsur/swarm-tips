@@ -1,578 +1,578 @@
-num,name,scheme,family,cls,corr,complexity,source,sorry,done,file
-1,Two Sum,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0001_TwoSum.lean
-2,Add Two Numbers,fold,linked-list,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0002_AddTwoNumbers.lean
-3,Longest Substring Without Repeating Characters,fold,sliding-window,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P0003_LongestSubstringNoRepeat.lean
-4,Median of Two Sorted Arrays,bisection,binary-search,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Bisection/P0004_MedianTwoSortedArrays.lean
-5,Longest Palindromic Substring,fold,string-other,True,True,O(n²),,False,True,lproofs/Lproofs/Problems/DP/P0005_LongestPalindromicSubstring.lean
-6,,fold,string-other,False,False,,,False,False,
-7,Reverse Integer,fold,math-bit,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0007_ReverseInteger.lean
-8,,fold,string-other,False,False,,,False,False,
-9,Palindrome Number,fold,math-bit,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0009_PalindromeNumber.lean
-10,,dp,dp-grid,False,False,,,False,False,
-11,,fold,two-pointers,False,False,,,False,False,
-12,,fold,string-other,False,False,,,False,False,
-13,,fold,string-other,False,False,,,False,False,
-14,Longest Common Prefix,fold,string-other,True,True,O(Σ,,False,True,lproofs/Lproofs/Problems/Fold/P0014_LongestCommonPrefix.lean
-15,,fold,two-pointers,False,False,,,False,False,
-16,,fold,two-pointers,False,False,,,False,False,
-17,Letter Combinations of a Phone Number,dp,backtracking,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0017_LetterCombinations.lean
-18,,fold,two-pointers,False,False,,,False,False,
-19,,fold,fast-slow,False,False,,,False,False,
-20,Valid Parentheses,fold,pairing-stack,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0020_ValidParentheses.lean
-21,Merge Two Sorted Lists,fold,linked-list,True,True,O(n+m),,False,True,lproofs/Lproofs/Problems/DP/P0021_MergeTwoSortedLists.lean
-22,,dp,backtracking,False,False,,,False,False,
-24,Swap Nodes in Pairs,fold,linked-list,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0024_SwapNodesInPairs.lean
-25,,fold,linked-list,False,False,,,False,False,
-26,Remove Duplicates from Sorted Array,fold,two-pointers,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P0026_RemoveDuplicatesSorted.lean
-27,Remove Element,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0027_RemoveElement.lean
-29,,fold,math-bit,False,False,,,False,False,
-30,,fold,sliding-window,False,False,,,False,False,
-31,,fold,two-pointers,False,False,,,False,False,
-32,,fold,pairing-stack,False,False,,,False,False,
-33,,bisection,binary-search,False,False,,,False,False,
-34,Find First and Last Position of Element in Sorted Array,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0034_FindFirstLast.lean
-35,Search Insert Position,bisection,binary-search,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Bisection/P0035_SearchInsert.lean
-36,Valid Sudoku,fold,hashing,True,True,O(1),,False,True,lproofs/Lproofs/Problems/Fold/P0036_ValidSudoku.lean
-37,Sudoku Solver,dp,backtracking,True,True,exp,,False,True,lproofs/Lproofs/Problems/Relaxation/P0037_SudokuSolver.lean
-38,Count and Say,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0038_CountAndSay.lean
-39,Combination Sum,dp,backtracking,True,True,exponential,,False,True,lproofs/Lproofs/Problems/DP/P0039_CombinationSum.lean
-40,,dp,backtracking,False,False,,,False,False,
-41,First Missing Positive,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0041_FirstMissingPositive.lean
-42,Trapping Rain Water,fold,monotonic-stack,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0042_TrappingRainWater.lean
-43,Multiply Strings,fold,string-other,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/Fold/P0043_MultiplyStrings.lean
-44,Wildcard Matching,dp,dp-grid,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/DP/P0044_WildcardMatching.lean
-46,Permutations,dp,backtracking,True,True,O(n·n!),,False,True,lproofs/Lproofs/Problems/DP/P0046_Permutations.lean
-47,,dp,backtracking,False,False,,,False,False,
-49,Group Anagrams,fold,hashing,True,True,O(n·k),,False,True,lproofs/Lproofs/Problems/Fold/P0049_GroupAnagrams.lean
-50,"Pow(x, n)",fold,math-bit,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Fold/P0050_PowXN.lean
-51,N-Queens,dp,backtracking,True,True,exponential,,False,True,lproofs/Lproofs/Problems/DP/P0051_NQueens.lean
-53,Maximum Subarray,dp,dp-linear,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0053_MaximumSubarray.lean
-56,Merge Intervals,fold,merge-intervals,True,True,O(n log n),,False,True,lproofs/Lproofs/Problems/Fold/P0056_MergeIntervals.lean
-57,Insert Interval,fold,merge-intervals,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0057_InsertInterval.lean
-58,Length of Last Word,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0058_LengthOfLastWord.lean
-60,,fold,math-bit,False,False,,,False,False,
-61,Rotate List,fold,linked-list,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0061_RotateList.lean
-62,Unique Paths,dp,dp-grid,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/DP/P0062_UniquePaths.lean
-63,Unique Paths II,dp,dp-grid,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/DP/P0063_UniquePathsII.lean
-64,Minimum Path Sum,dp,dp-grid,True,False,O(mn),,False,False,lproofs/Lproofs/Problems/DP/P0064_MinPathSum.lean
-65,Valid Number,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0065_ValidNumber.lean
-66,Plus One,fold,math-bit,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0066_PlusOne.lean
-67,Add Binary,fold,math-bit,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0067_AddBinary.lean
-68,Text Justification,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0068_TextJustification.lean
-69,Sqrt(x),bisection,binary-search,True,True,O(log x),,False,True,lproofs/Lproofs/Problems/Bisection/P0069_Sqrt.lean
-70,Climbing Stairs,dp,dp-linear,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0070_ClimbingStairs.lean
-71,,fold,pairing-stack,False,False,,,False,False,
-72,Edit Distance,dp,dp-grid,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/DP/P0072_EditDistance.lean
-74,Search a 2D Matrix,bisection,binary-search,True,True,O(log nm),,False,True,lproofs/Lproofs/Problems/Bisection/P0074_Search2DMatrix.lean
-75,Sort Colors,fold,dutch-flag,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0075_SortColors.lean
-76,Minimum Window Substring,fold,sliding-window,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0076_MinWindowSubstring.lean
-77,,dp,backtracking,False,False,,,False,False,
-78,Subsets,dp,backtracking,True,True,O(n·2ⁿ),,False,True,lproofs/Lproofs/Problems/DP/P0078_Subsets.lean
-79,Word Search,dp,backtracking,True,True,O(m·n·4^L),,False,True,lproofs/Lproofs/Problems/Relaxation/P0079_WordSearch.lean
-80,,fold,two-pointers,False,False,,,False,False,
-81,Search in Rotated Sorted Array II,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0081_SearchRotatedII.lean
-82,,fold,linked-list,False,False,,,False,False,
-83,,fold,linked-list,False,False,,,False,False,
-84,Largest Rectangle in Histogram,fold,monotonic-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P0084_LargestRectangle.lean
-85,Maximal Rectangle,fold,monotonic-stack,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/Fold/P0085_MaximalRectangle.lean
-86,,fold,linked-list,False,False,,,False,False,
-88,Merge Sorted Array,fold,two-pointers,True,True,O(n+m),,False,True,lproofs/Lproofs/Problems/DP/P0088_MergeSortedArray.lean
-90,Subsets II,dp,backtracking,True,True,O(n·2ⁿ),,False,True,lproofs/Lproofs/Problems/DP/P0090_SubsetsII.lean
-91,Decode Ways,dp,dp-linear,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0091_DecodeWays.lean
-92,Reverse Linked List II,fold,linked-list,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0092_ReverseLinkedListII.lean
-93,,dp,backtracking,False,False,,,False,False,
-94,Binary Tree Inorder Traversal,dp,tree-traversal,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0094_BinaryTreeInorder.lean
-97,Interleaving String,dp,dp-grid,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/DP/P0097_InterleavingString.lean
-98,Validate Binary Search Tree,dp,bst,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0098_ValidateBST.lean
-99,,dp,bst,False,False,,,False,False,
-100,,dp,tree-traversal,False,False,,,False,False,
-101,Symmetric Tree,dp,tree-traversal,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0101_SymmetricTree.lean
-102,Binary Tree Level Order Traversal,relaxation,bfs,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Relaxation/P0102_LevelOrderTraversal.lean
-103,,relaxation,bfs,False,False,,,False,False,
-104,Maximum Depth of Binary Tree,dp,tree-aggregate,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0104_MaxDepth.lean
-105,Construct Binary Tree from Preorder and Inorder Traversal,dp,tree-construct,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0105_ConstructBTfromPreandIn.lean
-108,Convert Sorted Array to Binary Search Tree,dp,tree-construct,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0108_SortedArrayToBST.lean
-109,,dp,tree-construct,False,False,,,False,False,
-110,Balanced Binary Tree,dp,tree-aggregate,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0110_BalancedBinaryTree.lean
-111,,dp,tree-aggregate,False,False,,,False,False,
-112,Path Sum,dp,tree-aggregate,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0112_PathSum.lean
-113,Path Sum II,dp,backtracking,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0113_PathSumII.lean
-114,,dp,tree-traversal,False,False,,,False,False,
-115,Distinct Subsequences,dp,dp-grid,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/DP/P0115_DistinctSubsequences.lean
-116,,dp,tree-traversal,False,False,,,False,False,
-117,,dp,tree-traversal,False,False,,,False,False,
-118,Pascal's Triangle,dp,dp-linear,True,True,O(n²),,False,True,lproofs/Lproofs/Problems/DP/P0118_PascalsTriangle.lean
-120,,dp,dp-grid,False,False,,,False,False,
-121,,dp,dp-linear,False,False,,,False,False,
-123,,dp,dp-linear,False,False,,,False,False,
-124,Binary Tree Maximum Path Sum,dp,dp-tree,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0124_MaxPathSum.lean
-125,Valid Palindrome,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0125_ValidPalindrome.lean
-126,Word Ladder II,relaxation,bfs,True,True,O(N·L²),,False,True,lproofs/Lproofs/Problems/Relaxation/P0126_WordLadderII.lean
-127,Word Ladder,relaxation,bfs,True,True,O(N·L²),,False,True,lproofs/Lproofs/Problems/Relaxation/P0127_WordLadder.lean
-128,,fold,hashing,False,False,,,False,False,
-129,Sum Root to Leaf Numbers,dp,tree-aggregate,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0129_SumRootToLeaf.lean
-130,Surrounded Regions,relaxation,dfs-flood,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/Relaxation/P0130_SurroundedRegions.lean
-131,,dp,backtracking,False,False,,,False,False,
-132,,dp,dp-interval,False,False,,,False,False,
-133,Clone Graph,relaxation,graph-other,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P0133_CloneGraph.lean
-136,Single Number,fold,math-bit,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0136_SingleNumber.lean
-137,,fold,math-bit,False,False,,,False,False,
-138,Copy List with Random Pointer,fold,linked-list,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P0138_CopyListRandomPointer.lean
-139,Word Break,dp,dp-linear,True,True,O(n²),,False,True,lproofs/Lproofs/Problems/DP/P0139_WordBreak.lean
-140,Word Break II,dp,backtracking,True,True,exp,,False,True,lproofs/Lproofs/Problems/DP/P0140_WordBreakII.lean
-141,,fold,fast-slow,False,False,,,False,False,
-142,,fold,fast-slow,False,False,,,False,False,
-143,,fold,linked-list,False,False,,,False,False,
-148,Sort List,fold,linked-list,True,True,O(n log n),,False,True,lproofs/Lproofs/Problems/DP/P0148_SortList.lean
-150,Evaluate Reverse Polish Notation,fold,pairing-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P0150_EvalRPN.lean
-151,Reverse Words in a String,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0151_ReverseWords.lean
-152,,dp,dp-linear,False,False,,,False,False,
-153,Find Minimum in Rotated Sorted Array,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0153_FindMinRotated.lean
-160,,fold,linked-list,False,False,,,False,False,
-161,One Edit Distance,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0161_OneEditDistance.lean
-162,Find Peak Element,bisection,binary-search,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Bisection/P0162_FindPeakElement.lean
-163,Missing Ranges,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0163_MissingRanges.lean
-165,,fold,string-other,False,False,,,False,False,
-167,Two Sum II - Input Array Is Sorted,fold,two-pointers,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0167_TwoSumSorted.lean
-168,,fold,math-bit,False,False,,,False,False,
-169,Majority Element,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0169_MajorityElement.lean
-171,,fold,math-bit,False,False,,,False,False,
-172,Factorial Trailing Zeroes,fold,math-bit,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Fold/P0172_FactorialTrailingZeroes.lean
-173,Binary Search Tree Iterator,dp,bst,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0173_BSTIterator.lean
-174,,dp,dp-grid,False,False,,,False,False,
-186,,fold,string-other,False,False,,,False,False,
-188,,dp,dp-knapsack,False,False,,,False,False,
-189,,fold,two-pointers,False,False,,,False,False,
-190,,fold,math-bit,False,False,,,False,False,
-191,Number of 1 Bits,fold,math-bit,True,True,O(1),,False,True,lproofs/Lproofs/Problems/Fold/P0191_NumberOf1Bits.lean
-193,,fold,string-other,False,False,,,False,False,
-198,House Robber,dp,dp-linear,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0198_HouseRobber.lean
-199,Binary Tree Right Side View,relaxation,bfs,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0199_RightSideView.lean
-200,Number of Islands,relaxation,dfs-flood,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/Relaxation/P0200_NumberOfIslands.lean
-202,Happy Number,fold,hashing,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Relaxation/P0202_HappyNumber.lean
-203,Remove Linked List Elements,fold,linked-list,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0203_RemoveLinkedListElements.lean
-205,Isomorphic Strings,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0205_IsomorphicStrings.lean
-206,Reverse Linked List,fold,linked-list,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0206_ReverseLinkedList.lean
-207,Course Schedule,relaxation,topo-sort,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P0207_CourseSchedule.lean
-208,Implement Trie (Prefix Tree),dp,trie,True,True,O(,,False,True,lproofs/Lproofs/Problems/DP/P0208_ImplementTrie.lean
-209,Minimum Size Subarray Sum,fold,sliding-window,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0209_MinSizeSubarraySum.lean
-210,Course Schedule II,relaxation,topo-sort,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P0210_CourseScheduleII.lean
-211,Design Add and Search Words Data Structure,dp,trie,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0211_AddSearchWords.lean
-212,Word Search II,dp,trie,True,True,O(m·n·4^L),,False,True,lproofs/Lproofs/Problems/Relaxation/P0212_WordSearchII.lean
-213,House Robber II,dp,dp-linear,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0213_HouseRobberII.lean
-216,,dp,backtracking,False,False,,,False,False,
-217,Contains Duplicate,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0217_ContainsDuplicate.lean
-219,Contains Duplicate II,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0219_ContainsDuplicateII.lean
-221,,dp,dp-grid,False,False,,,False,False,
-224,,fold,pairing-stack,False,False,,,False,False,
-226,,dp,tree-traversal,False,False,,,False,False,
-227,,fold,pairing-stack,False,False,,,False,False,
-228,Summary Ranges,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0228_SummaryRanges.lean
-229,,fold,hashing,False,False,,,False,False,
-230,Kth Smallest Element in a BST,dp,bst,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0230_KthSmallestBST.lean
-231,Power of Two,fold,math-bit,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Fold/P0231_PowerOfTwo.lean
-233,,dp,dp-digit,False,False,,,False,False,
-234,Palindrome Linked List,fold,fast-slow,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0234_PalindromeLinkedList.lean
-235,Lowest Common Ancestor of a Binary Search Tree,dp,bst,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0235_LCAofBST.lean
-236,,dp,tree-aggregate,False,False,,,False,False,
-237,,fold,linked-list,False,False,,,False,False,
-238,Product of Array Except Self,fold,prefix-sum,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0238_ProductExceptSelf.lean
-239,,fold,monotonic-stack,False,False,,,False,False,
-240,Search a 2D Matrix II,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0240_Search2DMatrixII.lean
-242,Valid Anagram,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0242_ValidAnagram.lean
-243,,fold,two-pointers,False,False,,,False,False,
-246,,fold,string-other,False,False,,,False,False,
-249,,fold,hashing,False,False,,,False,False,
-252,Meeting Rooms,fold,merge-intervals,True,True,O(n log n),,False,True,lproofs/Lproofs/Problems/Fold/P0252_MeetingRooms.lean
-253,Meeting Rooms II,fold,diff-array,True,True,O(n log n),,False,True,lproofs/Lproofs/Problems/Fold/P0253_MeetingRoomsII.lean
-254,Factor Combinations,dp,backtracking,True,True,exp,,False,True,lproofs/Lproofs/Problems/DP/P0254_FactorCombinations.lean
-257,,dp,tree-traversal,False,False,,,False,False,
-258,Add Digits,fold,math-bit,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0258_AddDigits.lean
-266,,fold,hashing,False,False,,,False,False,
-268,Missing Number,fold,math-bit,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0268_MissingNumber.lean
-269,Alien Dictionary,relaxation,topo-sort,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P0269_AlienDictionary.lean
-270,Closest Binary Search Tree Value,dp,bst,True,True,O(h),,False,True,lproofs/Lproofs/Problems/DP/P0270_ClosestBSTValue.lean
-273,,fold,string-other,False,False,,,False,False,
-274,H-Index,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0274_HIndex.lean
-277,Find the Celebrity,relaxation,graph-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0277_FindCelebrity.lean
-278,First Bad Version,bisection,binary-search,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Bisection/P0278_FirstBadVersion.lean
-282,,dp,backtracking,False,False,,,False,False,
-283,Move Zeroes,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0283_MoveZeroes.lean
-286,Walls and Gates,relaxation,bfs,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/Relaxation/P0286_WallsAndGates.lean
-287,Find the Duplicate Number,fold,fast-slow,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0287_FindDuplicateNumber.lean
-290,Word Pattern,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0290_WordPattern.lean
-291,,dp,backtracking,False,False,,,False,False,
-297,Serialize and Deserialize Binary Tree,dp,tree-construct,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0297_SerializeDeserialize.lean
-299,,fold,hashing,False,False,,,False,False,
-300,,dp,dp-linear,False,False,,,False,False,
-301,,relaxation,bfs,False,False,,,False,False,
-303,Range Sum Query - Immutable,fold,prefix-sum,True,True,O(1) query,,False,True,lproofs/Lproofs/Problems/Fold/P0303_RangeSumQuery.lean
-304,,fold,prefix-sum,False,False,,,False,False,
-305,Number of Islands II,relaxation,union-find,True,True,O(k·α),,False,True,lproofs/Lproofs/Problems/Relaxation/P0305_NumberOfIslandsII.lean
-309,Best Time to Buy and Sell Stock with Cooldown,dp,dp-linear,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0309_StockCooldown.lean
-310,,relaxation,topo-sort,False,False,,,False,False,
-312,Burst Balloons,dp,dp-interval,True,True,O(n³),,False,True,lproofs/Lproofs/Problems/DP/P0312_BurstBalloons.lean
-314,,relaxation,bfs,False,False,,,False,False,
-317,,relaxation,bfs,False,False,,,False,False,
-322,Coin Change,dp,dp-knapsack,True,True,O(amount·coins),,False,True,lproofs/Lproofs/Problems/DP/P0322_CoinChange.lean
-326,,fold,math-bit,False,False,,,False,False,
-328,Odd Even Linked List,fold,linked-list,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0328_OddEvenLinkedList.lean
-329,Longest Increasing Path in a Matrix,dp,dp-grid,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P0329_LongestIncreasingPath.lean
-332,Reconstruct Itinerary,relaxation,graph-other,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P0332_Reach.lean
-337,,dp,dp-tree,False,False,,,False,False,
-339,,dp,tree-traversal,False,False,,,False,False,
-340,,fold,sliding-window,False,False,,,False,False,
-343,,dp,dp-linear,False,False,,,False,False,
-344,Reverse String,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0344_ReverseString.lean
-345,,fold,two-pointers,False,False,,,False,False,
-349,Intersection of Two Arrays,fold,hashing,True,True,O(n+m),,False,True,lproofs/Lproofs/Problems/Fold/P0349_IntersectionOfTwoArrays.lean
-354,,bisection,binary-search,False,False,,,False,False,
-368,Largest Divisible Subset,dp,dp-linear,True,True,O(n²),,False,True,lproofs/Lproofs/Problems/DP/P0368_LargestDivisibleSubset.lean
-371,,fold,math-bit,False,False,,,False,False,
-378,Kth Smallest Element in a Sorted Matrix,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0378_KthSmallestSortedMatrix.lean
-383,Ransom Note,fold,hashing,True,True,O(n+m),,False,True,lproofs/Lproofs/Problems/Fold/P0383_RansomNote.lean
-386,,relaxation,dfs-flood,False,False,,,False,False,
-387,First Unique Character in a String,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0387_FirstUniqueCharacter.lean
-389,,fold,math-bit,False,False,,,False,False,
-390,,fold,math-bit,False,False,,,False,False,
-392,Is Subsequence,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0392_IsSubsequence.lean
-394,,fold,pairing-stack,False,False,,,False,False,
-396,,fold,math-bit,False,False,,,False,False,
-399,Evaluate Division,relaxation,union-find,True,True,O(Q·(V+E)),,False,True,lproofs/Lproofs/Problems/Relaxation/P0399_EvaluateDivision.lean
-402,,fold,monotonic-stack,False,False,,,False,False,
-404,,dp,tree-traversal,False,False,,,False,False,
-408,Valid Word Abbreviation,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0408_ValidWordAbbreviation.lean
-410,Split Array Largest Sum,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0410_SplitArrayLargestSum.lean
-415,Add Strings,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0415_AddStrings.lean
-416,Partition Equal Subset Sum,dp,dp-knapsack,True,True,O(n·sum),,False,True,lproofs/Lproofs/Problems/DP/P0416_PartitionEqualSubset.lean
-417,Pacific Atlantic Water Flow,relaxation,dfs-flood,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P0417_PacificAtlantic.lean
-424,,fold,sliding-window,False,False,,,False,False,
-426,,dp,bst,False,False,,,False,False,
-427,Construct Quad Tree,dp,tree-construct,True,True,O(n²),,False,True,lproofs/Lproofs/Problems/DP/P0427_QuadTree.lean
-428,,dp,tree-construct,False,False,,,False,False,
-430,,fold,linked-list,False,False,,,False,False,
-438,,fold,sliding-window,False,False,,,False,False,
-442,Find All Duplicates in an Array,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0442_FindAllDuplicates.lean
-443,String Compression,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0443_StringCompression.lean
-445,,fold,linked-list,False,False,,,False,False,
-448,Find All Numbers Disappeared in an Array,fold,hashing,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P0448_FindDisappearedNumbers.lean
-450,,dp,bst,False,False,,,False,False,
-456,,fold,monotonic-stack,False,False,,,False,False,
-465,,dp,backtracking,False,False,,,False,False,
-468,,fold,string-other,False,False,,,False,False,
-472,,dp,trie,False,False,,,False,False,
-475,,bisection,binary-search,False,False,,,False,False,
-477,,fold,math-bit,False,False,,,False,False,
-485,Max Consecutive Ones,fold,sliding-window,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0485_MaxConsecutiveOnes.lean
-489,Robot Room Cleaner,dp,backtracking,True,True,O(cells),,False,True,lproofs/Lproofs/Problems/Relaxation/P0489_RobotRoomCleaner.lean
-490,,relaxation,bfs,False,False,,,False,False,
-493,,bisection,binary-search,False,False,,,False,False,
-494,Target Sum,dp,dp-knapsack,True,True,O(n·sum),,False,True,lproofs/Lproofs/Problems/DP/P0494_TargetSum.lean
-496,Next Greater Element I,fold,monotonic-stack,True,False,O(n),,False,False,lproofs/Lproofs/Problems/Fold/P0496_NextGreaterElement.lean
-503,,fold,monotonic-stack,False,False,,,False,False,
-505,The Maze II,relaxation,dijkstra,True,True,O(mn log mn),,False,True,lproofs/Lproofs/Problems/Relaxation/P0505_MazeII.lean
-509,Fibonacci Number,dp,dp-linear,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0509_Fibonacci.lean
-515,,relaxation,bfs,False,False,,,False,False,
-516,Longest Palindromic Subsequence,dp,dp-interval,True,True,O(n²),,False,True,lproofs/Lproofs/Problems/DP/P0516_LongestPalindromicSubseq.lean
-518,,dp,dp-knapsack,False,False,,,False,False,
-523,,fold,prefix-sum,False,False,,,False,False,
-525,,fold,prefix-sum,False,False,,,False,False,
-526,,dp,backtracking,False,False,,,False,False,
-528,Random Pick with Weight,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0528_RandomPickWeight.lean
-529,,relaxation,dfs-flood,False,False,,,False,False,
-532,,fold,hashing,False,False,,,False,False,
-536,,dp,tree-construct,False,False,,,False,False,
-540,Single Element in a Sorted Array,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0540_SingleElementSorted.lean
-541,,fold,string-other,False,False,,,False,False,
-542,01 Matrix,relaxation,bfs,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P0542_01Matrix.lean
-543,,dp,tree-aggregate,False,False,,,False,False,
-545,Boundary of Binary Tree,dp,tree-traversal,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0545_BoundaryOfTree.lean
-547,Number of Provinces,relaxation,union-find,True,True,O(V^2),,False,True,lproofs/Lproofs/Problems/Relaxation/P0547_NumberOfProvinces.lean
-549,Binary Tree Longest Consecutive Sequence II,dp,dp-tree,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0549_LongestConsecutiveII.lean
-560,Subarray Sum Equals K,fold,prefix-sum,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0560_SubarraySumK.lean
-564,,fold,string-other,False,False,,,False,False,
-565,,relaxation,graph-other,False,False,,,False,False,
-567,Permutation in String,fold,sliding-window,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0567_PermutationInString.lean
-611,Valid Triangle Number,fold,two-pointers,True,True,O(n²),,False,True,lproofs/Lproofs/Problems/Fold/P0611_ValidTriangle.lean
-636,Exclusive Time of Functions,fold,pairing-stack,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0636_ExclusiveTime.lean
-642,Design Search Autocomplete System,dp,trie,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0642_SearchAutocomplete.lean
-643,,fold,sliding-window,False,False,,,False,False,
-645,,fold,hashing,False,False,,,False,False,
-647,,fold,string-other,False,False,,,False,False,
-648,Replace Words,dp,trie,True,True,O(Σ,,False,True,lproofs/Lproofs/Problems/DP/P0648_ReplaceWords.lean
-653,,dp,bst,False,False,,,False,False,
-657,,fold,string-other,False,False,,,False,False,
-658,Find K Closest Elements,bisection,binary-search,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Bisection/P0658_FindKClosest.lean
-662,Maximum Width of Binary Tree,relaxation,bfs,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P0662_MaximumWidthofBinaryTr.lean
-673,,dp,dp-linear,False,False,,,False,False,
-679,,dp,backtracking,False,False,,,False,False,
-680,Valid Palindrome II,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0680_ValidPalindromeII.lean
-688,,dp,dp-grid,False,False,,,False,False,
-690,,relaxation,dfs-flood,False,False,,,False,False,
-695,,relaxation,dfs-flood,False,False,,,False,False,
-696,,fold,string-other,False,False,,,False,False,
-704,,bisection,binary-search,False,False,,,False,False,
-708,,fold,linked-list,False,False,,,False,False,
-713,Subarray Product Less Than K,fold,sliding-window,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0713_SubarrayProductLessThanK.lean
-714,Best Time to Buy and Sell Stock with Transaction Fee,dp,dp-linear,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0714_StockWithFee.lean
-719,,bisection,binary-search,False,False,,,False,False,
-721,,relaxation,union-find,False,False,,,False,False,
-722,,fold,string-other,False,False,,,False,False,
-724,Find Pivot Index,fold,prefix-sum,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0724_FindPivotIndex.lean
-733,Flood Fill,relaxation,dfs-flood,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Relaxation/P0733_FloodFill.lean
-735,Asteroid Collision,fold,pairing-stack,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0735_AsteroidCollision.lean
-736,,fold,string-other,False,False,,,False,False,
-739,,fold,monotonic-stack,False,False,,,False,False,
-741,,dp,dp-grid,False,False,,,False,False,
-743,,relaxation,dijkstra,False,False,,,False,False,
-746,,dp,dp-linear,False,False,,,False,False,
-752,,relaxation,bfs,False,False,,,False,False,
-759,,fold,merge-intervals,False,False,,,False,False,
-773,,relaxation,bfs,False,False,,,False,False,
-777,,fold,two-pointers,False,False,,,False,False,
-778,Swim in Rising Water,relaxation,dijkstra,True,True,O(V log V),,False,True,lproofs/Lproofs/Problems/Relaxation/P0778_SwiminRisingWater.lean
-785,Is Graph Bipartite?,relaxation,graph-other,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P0785_IsGraphBipartite.lean
-787,Cheapest Flights Within K Stops,relaxation,bellman-ford,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P0787_CheapestFlights.lean
-788,,dp,dp-digit,False,False,,,False,False,
-792,,bisection,binary-search,False,False,,,False,False,
-796,,fold,string-other,False,False,,,False,False,
-797,All Paths From Source to Target,relaxation,graph-other,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0797_AllPathsSourceTarget.lean
-799,Champagne Tower,dp,dp-grid,True,True,O(r²),,False,True,lproofs/Lproofs/Problems/DP/P0799_ChampagneTower.lean
-802,,relaxation,topo-sort,False,False,,,False,False,
-815,Bus Routes,relaxation,bfs,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P0815_BusRoutes.lean
-820,,dp,trie,False,False,,,False,False,
-824,Goat Latin,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0824_GoatLatin.lean
-825,Friends Of Appropriate Ages,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0825_FriendsAppropriateAges.lean
-827,,relaxation,dfs-flood,False,False,,,False,False,
-833,Find And Replace in String,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0833_FindReplaceString.lean
-834,,dp,dp-tree,False,False,,,False,False,
-841,,relaxation,dfs-flood,False,False,,,False,False,
-843,,fold,string-other,False,False,,,False,False,
-844,,fold,two-pointers,False,False,,,False,False,
-852,Peak Index in a Mountain Array,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P0852_PeakIndex.lean
-863,All Nodes Distance K in Binary Tree,relaxation,bfs,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P0863_AllNodesDistanceKinBinar.lean
-864,,relaxation,bfs,False,False,,,False,False,
-875,Koko Eating Bananas,bisection,binary-search,True,True,O(n log m),,False,True,lproofs/Lproofs/Problems/Bisection/P0875_KokoBananas.lean
-876,,fold,fast-slow,False,False,,,False,False,
-889,Construct Binary Tree from Preorder and Postorder Traversal,dp,tree-construct,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P0889_ConstructBTfromPreandPost.lean
-898,Bitwise ORs of Subarrays,dp,dp-linear,True,True,O(n·W),,False,True,lproofs/Lproofs/Problems/DP/P0898_BitwiseORsSubarrays.lean
-901,Online Stock Span,fold,monotonic-stack,True,False,O(n) amortized,,False,False,lproofs/Lproofs/Problems/Fold/P0901_OnlineStockSpan.lean
-904,,fold,sliding-window,False,False,,,False,False,
-907,Sum of Subarray Minimums,fold,monotonic-stack,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0907_SumSubarrayMinimums.lean
-909,,relaxation,bfs,False,False,,,False,False,
-918,,dp,dp-linear,False,False,,,False,False,
-921,Minimum Add to Make Parentheses Valid,fold,pairing-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P0921_MinAddParensValid.lean
-931,Minimum Falling Path Sum,dp,dp-grid,True,True,O(n²),,False,True,lproofs/Lproofs/Problems/DP/P0931_MinFallingPathSum.lean
-934,Shortest Bridge,relaxation,bfs,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/Relaxation/P0934_ShortestBridge.lean
-938,,dp,bst,False,False,,,False,False,
-939,,fold,hashing,False,False,,,False,False,
-941,Valid Mountain Array,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P0941_ValidMountainArray.lean
-953,,fold,string-other,False,False,,,False,False,
-958,,relaxation,bfs,False,False,,,False,False,
-959,Regions Cut By Slashes,relaxation,union-find,True,True,O(n^2),,False,True,lproofs/Lproofs/Problems/Relaxation/P0959_RegionsBySlashes.lean
-962,,fold,monotonic-stack,False,False,,,False,False,
-974,,fold,prefix-sum,False,False,,,False,False,
-977,,fold,two-pointers,False,False,,,False,False,
-983,Minimum Cost For Tickets,dp,dp-linear,True,True,O(n),,False,True,lproofs/Lproofs/Problems/DP/P0983_MinCostTickets.lean
-986,,fold,merge-intervals,False,False,,,False,False,
-987,,relaxation,bfs,False,False,,,False,False,
-992,Subarrays with K Different Integers,fold,sliding-window,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P0992_SubarraysKDistinct.lean
-994,Rotting Oranges,relaxation,bfs,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/Relaxation/P0994_RottingOranges.lean
-996,,dp,backtracking,False,False,,,False,False,
-1004,Max Consecutive Ones III,fold,sliding-window,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P1004_MaxConsecutiveOnesIII.lean
-1011,Capacity To Ship Packages Within D Days,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1011_ShipPackages.lean
-1022,,dp,tree-aggregate,False,False,,,False,False,
-1039,,dp,dp-interval,False,False,,,False,False,
-1047,Remove All Adjacent Duplicates In String,fold,pairing-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1047_RemoveAdjacentDuplicates.lean
-1060,Missing Element in Sorted Array,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1060_MissingElementSorted.lean
-1064,Fixed Point,bisection,binary-search,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Bisection/P1064_FixedPoint.lean
-1071,,fold,string-other,False,False,,,False,False,
-1087,,dp,backtracking,False,False,,,False,False,
-1091,Shortest Path in Binary Matrix,relaxation,bfs,True,True,O(n²),,False,True,lproofs/Lproofs/Problems/Relaxation/P1091_ShortestPathBinaryMatrix.lean
-1092,,dp,dp-grid,False,False,,,False,False,
-1094,Car Pooling,fold,diff-array,True,True,O(n + maxPos),,False,True,lproofs/Lproofs/Problems/Fold/P1094_CarPooling.lean
-1101,,relaxation,union-find,False,False,,,False,False,
-1109,,fold,diff-array,False,False,,,False,False,
-1110,,dp,tree-traversal,False,False,,,False,False,
-1136,,relaxation,topo-sort,False,False,,,False,False,
-1139,,dp,dp-grid,False,False,,,False,False,
-1143,,dp,dp-grid,False,False,,,False,False,
-1152,,fold,hashing,False,False,,,False,False,
-1166,,dp,trie,False,False,,,False,False,
-1169,,fold,hashing,False,False,,,False,False,
-1171,Remove Zero Sum Consecutive Nodes from Linked List,fold,linked-list,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1171_RemoveZeroSumSublists.lean
-1192,,relaxation,graph-other,False,False,,,False,False,
-1197,,relaxation,bfs,False,False,,,False,False,
-1202,Smallest String With Swaps,relaxation,union-find,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P1202_SmallestStringWithSwaps.lean
-1207,,fold,hashing,False,False,,,False,False,
-1209,Remove All Adjacent Duplicates in String II,fold,pairing-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1209_RemoveAdjacentDuplicatesII.lean
-1216,,dp,dp-interval,False,False,,,False,False,
-1235,Maximum Profit in Job Scheduling,dp,dp-interval,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P1235_MaxProfitJobScheduling.lean
-1239,,dp,backtracking,False,False,,,False,False,
-1249,,fold,pairing-stack,False,False,,,False,False,
-1266,,fold,math-bit,False,False,,,False,False,
-1268,,dp,trie,False,False,,,False,False,
-1334,,relaxation,dijkstra,False,False,,,False,False,
-1335,,dp,dp-knapsack,False,False,,,False,False,
-1339,,dp,dp-tree,False,False,,,False,False,
-1340,,dp,dp-linear,False,False,,,False,False,
-1345,,relaxation,bfs,False,False,,,False,False,
-1347,Minimum Number of Steps to Make Two Strings Anagram,fold,hashing,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1347_MinStepsAnagram.lean
-1356,,fold,math-bit,False,False,,,False,False,
-1365,,fold,prefix-sum,False,False,,,False,False,
-1368,Minimum Cost to Make at Least One Valid Path in a Grid,relaxation,dijkstra,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean
-1382,,dp,bst,False,False,,,False,False,
-1385,,bisection,binary-search,False,False,,,False,False,
-1387,,fold,math-bit,False,False,,,False,False,
-1404,,fold,math-bit,False,False,,,False,False,
-1423,Maximum Points You Can Obtain from Cards,fold,sliding-window,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1423_MaxPointsCards.lean
-1428,Leftmost Column with at Least a One,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1428_LeftmostColumnWithOne.lean
-1438,Longest Continuous Subarray With Absolute Diff ≤ Limit,fold,sliding-window,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1438_LongestSubarrayLimit.lean
-1443,Minimum Time to Collect All Apples in a Tree,dp,dp-tree,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P1443_CollectApples.lean
-1462,Course Schedule IV,relaxation,topo-sort,True,True,O(V*E),,False,True,lproofs/Lproofs/Problems/Relaxation/P1462_CourseScheduleIV.lean
-1466,Reorder Routes to Make All Paths Lead to the City Zero,relaxation,graph-other,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P1466_ReorderRoutestoMakeAll.lean
-1475,,fold,monotonic-stack,False,False,,,False,False,
-1480,Running Sum of 1d Array,fold,prefix-sum,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P1480_RunningSum.lean
-1482,Minimum Number of Days to Make m Bouquets,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1482_MinDaysBouquets.lean
-1489,,relaxation,union-find,False,False,,,False,False,
-1492,,fold,math-bit,False,False,,,False,False,
-1494,Parallel Courses II,dp,dp-bitmask,True,True,O(3^n),,False,True,lproofs/Lproofs/Problems/DP/P1494_ParallelCoursesII.lean
-1519,,dp,dp-tree,False,False,,,False,False,
-1539,Kth Missing Positive Number,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1539_KthMissingPositive.lean
-1552,,bisection,binary-search,False,False,,,False,False,
-1579,,relaxation,union-find,False,False,,,False,False,
-1583,,fold,hashing,False,False,,,False,False,
-1584,Min Cost to Connect All Points,relaxation,union-find,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P1584_MinCostConnectPoints.lean
-1614,Maximum Nesting Depth of the Parentheses,fold,pairing-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1614_MaxNestingDepth.lean
-1627,,relaxation,union-find,False,False,,,False,False,
-1648,Sell Diminishing-Valued Colored Balls,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1648_SellDiminishingBalls.lean
-1650,,dp,tree-traversal,False,False,,,False,False,
-1657,Determine if Two Strings Are Close,fold,hashing,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P1657_DetermineCloseStrings.lean
-1673,Find the Most Competitive Subsequence,fold,monotonic-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1673_MostCompetitiveSubsequence.lean
-1674,,fold,diff-array,False,False,,,False,False,
-1691,Maximum Height by Stacking Cuboids,dp,dp-linear,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P1691_MaxHeightStackingCuboids.lean
-1719,Number Of Ways To Reconstruct A Tree,relaxation,graph-other,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P1719_Reach.lean
-1722,,relaxation,union-find,False,False,,,False,False,
-1752,,fold,two-pointers,False,False,,,False,False,
-1762,,fold,monotonic-stack,False,False,,,False,False,
-1768,Merge Strings Alternately,fold,string-other,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P1768_MergeAlternately.lean
-1778,Shortest Path in a Hidden Grid,relaxation,bfs,True,True,O(mn),,False,True,lproofs/Lproofs/Problems/Relaxation/P1778_ShortestPathHiddenGrid.lean
-1814,,fold,hashing,False,False,,,False,False,
-1818,Minimum Absolute Sum Difference,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P1818_MinAbsSumDiff.lean
-1823,,fold,math-bit,False,False,,,False,False,
-1829,,fold,math-bit,False,False,,,False,False,
-1838,,fold,sliding-window,False,False,,,False,False,
-1848,,fold,two-pointers,False,False,,,False,False,
-1856,Maximum Subarray Min-Product,fold,monotonic-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P1856_MaxSubarrayMinProduct.lean
-1868,,fold,two-pointers,False,False,,,False,False,
-1871,Jump Game VII,dp,dp-linear,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P1871_JumpGameVII.lean
-1888,,dp,dp-linear,False,False,,,False,False,
-1903,,fold,string-other,False,False,,,False,False,
-1915,,fold,hashing,False,False,,,False,False,
-1922,,fold,math-bit,False,False,,,False,False,
-1926,,relaxation,bfs,False,False,,,False,False,
-1931,,dp,dp-bitmask,False,False,,,False,False,
-1932,,dp,bst,False,False,,,False,False,
-1944,,fold,monotonic-stack,False,False,,,False,False,
-1961,,fold,string-other,False,False,,,False,False,
-1966,,bisection,binary-search,False,False,,,False,False,
-1967,,fold,string-other,False,False,,,False,False,
-1971,Find if Path Exists in Graph,relaxation,union-find,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P1971_FindPathExists.lean
-2008,,dp,dp-linear,False,False,,,False,False,
-2009,,bisection,binary-search,False,False,,,False,False,
-2021,,fold,diff-array,False,False,,,False,False,
-2023,,fold,hashing,False,False,,,False,False,
-2050,Parallel Courses III,relaxation,topo-sort,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P2050_ParallelCoursesIII.lean
-2055,,fold,prefix-sum,False,False,,,False,False,
-2065,,dp,backtracking,False,False,,,False,False,
-2092,Find All People With Secret,relaxation,union-find,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P2092_Reach.lean
-2101,,relaxation,graph-other,False,False,,,False,False,
-2104,,fold,monotonic-stack,False,False,,,False,False,
-2115,,relaxation,topo-sort,False,False,,,False,False,
-2140,,dp,dp-linear,False,False,,,False,False,
-2149,,fold,two-pointers,False,False,,,False,False,
-2150,Find All Lonely Numbers in the Array,fold,hashing,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P2150_FindAllLonelyNumbers.lean
-2187,Minimum Time to Complete Trips,bisection,binary-search,True,True,,,False,True,lproofs/Lproofs/Problems/Bisection/P2187_MinTimeToCompleteTrips.lean
-2196,,dp,tree-construct,False,False,,,False,False,
-2214,Minimum Health to Beat Game,dp,dp-linear,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P2214_MinHealth.lean
-2243,,fold,string-other,False,False,,,False,False,
-2246,,dp,dp-tree,False,False,,,False,False,
-2248,,fold,hashing,False,False,,,False,False,
-2251,,bisection,binary-search,False,False,,,False,False,
-2258,Escape the Spreading Fire,relaxation,bfs,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P2258_EscapetheSpreadingFire.lean
-2261,,fold,hashing,False,False,,,False,False,
-2265,,dp,dp-tree,False,False,,,False,False,
-2282,Number of People That Can Be Seen in a Grid,fold,monotonic-stack,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P2282_PeopleSeenInGrid.lean
-2307,,relaxation,union-find,False,False,,,False,False,
-2333,,bisection,binary-search,False,False,,,False,False,
-2337,Move Pieces to Obtain a String,fold,two-pointers,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P2337_MovePieces.lean
-2351,,fold,hashing,False,False,,,False,False,
-2385,Amount of Time for Binary Tree to Be Infected,relaxation,bfs,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P2385_AmountofTimeforBinaryTre.lean
-2389,,bisection,binary-search,False,False,,,False,False,
-2397,,dp,backtracking,False,False,,,False,False,
-2423,,fold,hashing,False,False,,,False,False,
-2435,,dp,dp-grid,False,False,,,False,False,
-2444,Count Subarrays With Fixed Bounds,fold,sliding-window,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P2444_CountSubarraysFixedBounds.lean
-2467,,dp,dp-tree,False,False,,,False,False,
-2472,,dp,dp-interval,False,False,,,False,False,
-2477,,dp,dp-tree,False,False,,,False,False,
-2488,,fold,prefix-sum,False,False,,,False,False,
-2493,,relaxation,graph-other,False,False,,,False,False,
-2503,Maximum Number of Points From Grid Queries,relaxation,union-find,True,True,,,False,True,lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean
-2508,,relaxation,graph-other,False,False,,,False,False,
-2537,,fold,sliding-window,False,False,,,False,False,
-2540,,fold,two-pointers,False,False,,,False,False,
-2553,,fold,string-other,False,False,,,False,False,
-2555,,dp,dp-linear,False,False,,,False,False,
-2571,,fold,math-bit,False,False,,,False,False,
-2603,,relaxation,graph-other,False,False,,,False,False,
-2657,,fold,prefix-sum,False,False,,,False,False,
-2661,First Completely Painted Row or Column,fold,hashing,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P2661_FirstCompletelyPainted.lean
-2768,,fold,hashing,False,False,,,False,False,
-2784,,fold,hashing,False,False,,,False,False,
-2791,,dp,dp-tree,False,False,,,False,False,
-2817,,fold,sliding-window,False,False,,,False,False,
-2828,,fold,string-other,False,False,,,False,False,
-2848,,fold,diff-array,False,False,,,False,False,
-2858,Minimum Edge Reversals for All Reachable,relaxation,graph-other,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean
-2861,,bisection,binary-search,False,False,,,False,False,
-2906,,fold,prefix-sum,False,False,,,False,False,
-2912,Number of Ways to Reach Destination in the Grid,dp,dp-grid,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean
-2948,,relaxation,union-find,False,False,,,False,False,
-2965,,fold,hashing,False,False,,,False,False,
-2970,,fold,two-pointers,False,False,,,False,False,
-2972,,fold,two-pointers,False,False,,,False,False,
-3043,,dp,trie,False,False,,,False,False,
-3073,,fold,prefix-sum,False,False,,,False,False,
-3120,Count the Number of Special Characters I,fold,string-other,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P3120_CountSpecialCharacters.lean
-3121,,fold,string-other,False,False,,,False,False,
-3129,Find All Possible Stable Binary Arrays I,dp,dp-linear,True,True,,,False,True,lproofs/Lproofs/Problems/DP/P3129_StableBinaryArrays.lean
-3161,Block Placement Queries,bisection,binary-search,True,True,O(log n),,False,True,lproofs/Lproofs/Problems/Bisection/P3161_Bisect.lean
-3163,,fold,string-other,False,False,,,False,False,
-3225,,dp,dp-grid,False,False,,,False,False,
-3300,,fold,math-bit,False,False,,,False,False,
-3341,,relaxation,dijkstra,False,False,,,False,False,
-3342,,relaxation,dijkstra,False,False,,,False,False,
-3355,,fold,diff-array,False,False,,,False,False,
-3356,,fold,diff-array,False,False,,,False,False,
-3371,,fold,hashing,False,False,,,False,False,
-3387,Graph Reachability,relaxation,graph-other,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P3387_Reach.lean
-3413,,fold,prefix-sum,False,False,,,False,False,
-3418,,dp,dp-grid,False,False,,,False,False,
-3419,,relaxation,dijkstra,False,False,,,False,False,
-3434,,fold,sliding-window,False,False,,,False,False,
-3453,Separate Squares I,bisection,binary-search,True,True,O(n log),,False,True,lproofs/Lproofs/Problems/Bisection/P3453_SeparateSquares.lean
-3466,,dp,dp-grid,False,False,,,False,False,
-3481,,fold,string-other,False,False,,,False,False,
-3488,,fold,hashing,False,False,,,False,False,
-3522,,fold,string-other,False,False,,,False,False,
-3546,,fold,prefix-sum,False,False,,,False,False,
-3629,,relaxation,bfs,False,False,,,False,False,
-3637,Trionic Array I,fold,two-pointers,True,True,O(n),,False,True,lproofs/Lproofs/Problems/Fold/P3637_TrionicArray.lean
-3652,,dp,dp-linear,False,False,,,False,False,
-3660,,dp,dp-linear,False,False,,,False,False,
-3741,Minimum Distance Between Three Equal Elements II,fold,hashing,True,True,,,False,True,lproofs/Lproofs/Problems/Fold/P3741_MinDistThreeEqual.lean
-3742,,dp,dp-grid,False,False,,,False,False,
-3761,,fold,hashing,False,False,,,False,False,
-3872,,dp,dp-linear,False,False,,,False,False,
-3928,Minimum Cost to Buy Apples II,relaxation,dijkstra,True,True,O(V+E),,False,True,lproofs/Lproofs/Problems/Relaxation/P3928_MinimumCosttoBuyApples.lean
+num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
+1,Two Sum,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0001_TwoSum.lean
+2,Add Two Numbers,fold,linked-list,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0002_AddTwoNumbers.lean
+3,Longest Substring Without Repeating Characters,fold,sliding-window,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P0003_LongestSubstringNoRepeat.lean
+4,Median of Two Sorted Arrays,bisection,binary-search,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Bisection/P0004_MedianTwoSortedArrays.lean
+5,Longest Palindromic Substring,fold,string-other,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0005_LongestPalindromicSubstring.lean
+6,,fold,string-other,False,False,,,False,False,,
+7,Reverse Integer,fold,math-bit,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0007_ReverseInteger.lean
+8,,fold,string-other,False,False,,,False,False,,
+9,Palindrome Number,fold,math-bit,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0009_PalindromeNumber.lean
+10,,dp,dp-grid,False,False,,,False,False,,
+11,,fold,two-pointers,False,False,,,False,False,,
+12,,fold,string-other,False,False,,,False,False,,
+13,,fold,string-other,False,False,,,False,False,,
+14,Longest Common Prefix,fold,string-other,True,True,O(Σ,,False,True,True,lproofs/Lproofs/Problems/Fold/P0014_LongestCommonPrefix.lean
+15,,fold,two-pointers,False,False,,,False,False,,
+16,,fold,two-pointers,False,False,,,False,False,,
+17,Letter Combinations of a Phone Number,dp,backtracking,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0017_LetterCombinations.lean
+18,,fold,two-pointers,False,False,,,False,False,,
+19,,fold,fast-slow,False,False,,,False,False,,
+20,Valid Parentheses,fold,pairing-stack,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0020_ValidParentheses.lean
+21,Merge Two Sorted Lists,fold,linked-list,True,True,O(n+m),,False,True,True,lproofs/Lproofs/Problems/DP/P0021_MergeTwoSortedLists.lean
+22,,dp,backtracking,False,False,,,False,False,,
+24,Swap Nodes in Pairs,fold,linked-list,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0024_SwapNodesInPairs.lean
+25,,fold,linked-list,False,False,,,False,False,,
+26,Remove Duplicates from Sorted Array,fold,two-pointers,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P0026_RemoveDuplicatesSorted.lean
+27,Remove Element,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0027_RemoveElement.lean
+29,,fold,math-bit,False,False,,,False,False,,
+30,,fold,sliding-window,False,False,,,False,False,,
+31,,fold,two-pointers,False,False,,,False,False,,
+32,,fold,pairing-stack,False,False,,,False,False,,
+33,,bisection,binary-search,False,False,,,False,False,,
+34,Find First and Last Position of Element in Sorted Array,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0034_FindFirstLast.lean
+35,Search Insert Position,bisection,binary-search,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Bisection/P0035_SearchInsert.lean
+36,Valid Sudoku,fold,hashing,True,True,O(1),,False,True,True,lproofs/Lproofs/Problems/Fold/P0036_ValidSudoku.lean
+37,Sudoku Solver,dp,backtracking,True,True,exp,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0037_SudokuSolver.lean
+38,Count and Say,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0038_CountAndSay.lean
+39,Combination Sum,dp,backtracking,True,True,exponential,,False,True,True,lproofs/Lproofs/Problems/DP/P0039_CombinationSum.lean
+40,,dp,backtracking,False,False,,,False,False,,
+41,First Missing Positive,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0041_FirstMissingPositive.lean
+42,Trapping Rain Water,fold,monotonic-stack,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0042_TrappingRainWater.lean
+43,Multiply Strings,fold,string-other,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Fold/P0043_MultiplyStrings.lean
+44,Wildcard Matching,dp,dp-grid,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/DP/P0044_WildcardMatching.lean
+46,Permutations,dp,backtracking,True,True,O(n·n!),,False,True,True,lproofs/Lproofs/Problems/DP/P0046_Permutations.lean
+47,,dp,backtracking,False,False,,,False,False,,
+49,Group Anagrams,fold,hashing,True,True,O(n·k),,False,True,True,lproofs/Lproofs/Problems/Fold/P0049_GroupAnagrams.lean
+50,"Pow(x, n)",fold,math-bit,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0050_PowXN.lean
+51,N-Queens,dp,backtracking,True,True,exponential,,False,True,True,lproofs/Lproofs/Problems/DP/P0051_NQueens.lean
+53,Maximum Subarray,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0053_MaximumSubarray.lean
+56,Merge Intervals,fold,merge-intervals,True,True,O(n log n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0056_MergeIntervals.lean
+57,Insert Interval,fold,merge-intervals,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0057_InsertInterval.lean
+58,Length of Last Word,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0058_LengthOfLastWord.lean
+60,,fold,math-bit,False,False,,,False,False,,
+61,Rotate List,fold,linked-list,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0061_RotateList.lean
+62,Unique Paths,dp,dp-grid,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/DP/P0062_UniquePaths.lean
+63,Unique Paths II,dp,dp-grid,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/DP/P0063_UniquePathsII.lean
+64,Minimum Path Sum,dp,dp-grid,True,False,O(mn),,False,False,False,lproofs/Lproofs/Problems/DP/P0064_MinPathSum.lean
+65,Valid Number,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0065_ValidNumber.lean
+66,Plus One,fold,math-bit,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0066_PlusOne.lean
+67,Add Binary,fold,math-bit,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0067_AddBinary.lean
+68,Text Justification,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0068_TextJustification.lean
+69,Sqrt(x),bisection,binary-search,True,True,O(log x),,False,True,True,lproofs/Lproofs/Problems/Bisection/P0069_Sqrt.lean
+70,Climbing Stairs,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0070_ClimbingStairs.lean
+71,,fold,pairing-stack,False,False,,,False,False,,
+72,Edit Distance,dp,dp-grid,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/DP/P0072_EditDistance.lean
+74,Search a 2D Matrix,bisection,binary-search,True,True,O(log nm),,False,True,True,lproofs/Lproofs/Problems/Bisection/P0074_Search2DMatrix.lean
+75,Sort Colors,fold,dutch-flag,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0075_SortColors.lean
+76,Minimum Window Substring,fold,sliding-window,True,True,O(n),,False,True,False,lproofs/Lproofs/Problems/Fold/P0076_MinWindowSubstring.lean
+77,,dp,backtracking,False,False,,,False,False,,
+78,Subsets,dp,backtracking,True,True,O(n·2ⁿ),,False,True,True,lproofs/Lproofs/Problems/DP/P0078_Subsets.lean
+79,Word Search,dp,backtracking,True,True,O(m·n·4^L),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0079_WordSearch.lean
+80,,fold,two-pointers,False,False,,,False,False,,
+81,Search in Rotated Sorted Array II,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0081_SearchRotatedII.lean
+82,,fold,linked-list,False,False,,,False,False,,
+83,,fold,linked-list,False,False,,,False,False,,
+84,Largest Rectangle in Histogram,fold,monotonic-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P0084_LargestRectangle.lean
+85,Maximal Rectangle,fold,monotonic-stack,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Fold/P0085_MaximalRectangle.lean
+86,,fold,linked-list,False,False,,,False,False,,
+88,Merge Sorted Array,fold,two-pointers,True,True,O(n+m),,False,True,True,lproofs/Lproofs/Problems/DP/P0088_MergeSortedArray.lean
+90,Subsets II,dp,backtracking,True,True,O(n·2ⁿ),,False,True,True,lproofs/Lproofs/Problems/DP/P0090_SubsetsII.lean
+91,Decode Ways,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0091_DecodeWays.lean
+92,Reverse Linked List II,fold,linked-list,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0092_ReverseLinkedListII.lean
+93,,dp,backtracking,False,False,,,False,False,,
+94,Binary Tree Inorder Traversal,dp,tree-traversal,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0094_BinaryTreeInorder.lean
+97,Interleaving String,dp,dp-grid,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/DP/P0097_InterleavingString.lean
+98,Validate Binary Search Tree,dp,bst,True,True,O(n),,False,True,False,lproofs/Lproofs/Problems/DP/P0098_ValidateBST.lean
+99,,dp,bst,False,False,,,False,False,,
+100,,dp,tree-traversal,False,False,,,False,False,,
+101,Symmetric Tree,dp,tree-traversal,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0101_SymmetricTree.lean
+102,Binary Tree Level Order Traversal,relaxation,bfs,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0102_LevelOrderTraversal.lean
+103,,relaxation,bfs,False,False,,,False,False,,
+104,Maximum Depth of Binary Tree,dp,tree-aggregate,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0104_MaxDepth.lean
+105,Construct Binary Tree from Preorder and Inorder Traversal,dp,tree-construct,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0105_ConstructBTfromPreandIn.lean
+108,Convert Sorted Array to Binary Search Tree,dp,tree-construct,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0108_SortedArrayToBST.lean
+109,,dp,tree-construct,False,False,,,False,False,,
+110,Balanced Binary Tree,dp,tree-aggregate,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0110_BalancedBinaryTree.lean
+111,,dp,tree-aggregate,False,False,,,False,False,,
+112,Path Sum,dp,tree-aggregate,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0112_PathSum.lean
+113,Path Sum II,dp,backtracking,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0113_PathSumII.lean
+114,,dp,tree-traversal,False,False,,,False,False,,
+115,Distinct Subsequences,dp,dp-grid,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/DP/P0115_DistinctSubsequences.lean
+116,,dp,tree-traversal,False,False,,,False,False,,
+117,,dp,tree-traversal,False,False,,,False,False,,
+118,Pascal's Triangle,dp,dp-linear,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0118_PascalsTriangle.lean
+120,,dp,dp-grid,False,False,,,False,False,,
+121,,dp,dp-linear,False,False,,,False,False,,
+123,,dp,dp-linear,False,False,,,False,False,,
+124,Binary Tree Maximum Path Sum,dp,dp-tree,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0124_MaxPathSum.lean
+125,Valid Palindrome,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0125_ValidPalindrome.lean
+126,Word Ladder II,relaxation,bfs,True,True,O(N·L²),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0126_WordLadderII.lean
+127,Word Ladder,relaxation,bfs,True,True,O(N·L²),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0127_WordLadder.lean
+128,,fold,hashing,False,False,,,False,False,,
+129,Sum Root to Leaf Numbers,dp,tree-aggregate,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0129_SumRootToLeaf.lean
+130,Surrounded Regions,relaxation,dfs-flood,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0130_SurroundedRegions.lean
+131,,dp,backtracking,False,False,,,False,False,,
+132,,dp,dp-interval,False,False,,,False,False,,
+133,Clone Graph,relaxation,graph-other,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0133_CloneGraph.lean
+136,Single Number,fold,math-bit,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0136_SingleNumber.lean
+137,,fold,math-bit,False,False,,,False,False,,
+138,Copy List with Random Pointer,fold,linked-list,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0138_CopyListRandomPointer.lean
+139,Word Break,dp,dp-linear,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0139_WordBreak.lean
+140,Word Break II,dp,backtracking,True,True,exp,,False,True,True,lproofs/Lproofs/Problems/DP/P0140_WordBreakII.lean
+141,,fold,fast-slow,False,False,,,False,False,,
+142,,fold,fast-slow,False,False,,,False,False,,
+143,,fold,linked-list,False,False,,,False,False,,
+148,Sort List,fold,linked-list,True,True,O(n log n),,False,True,True,lproofs/Lproofs/Problems/DP/P0148_SortList.lean
+150,Evaluate Reverse Polish Notation,fold,pairing-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P0150_EvalRPN.lean
+151,Reverse Words in a String,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0151_ReverseWords.lean
+152,,dp,dp-linear,False,False,,,False,False,,
+153,Find Minimum in Rotated Sorted Array,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0153_FindMinRotated.lean
+160,,fold,linked-list,False,False,,,False,False,,
+161,One Edit Distance,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0161_OneEditDistance.lean
+162,Find Peak Element,bisection,binary-search,True,True,O(log n),,False,True,False,lproofs/Lproofs/Problems/Bisection/P0162_FindPeakElement.lean
+163,Missing Ranges,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0163_MissingRanges.lean
+165,,fold,string-other,False,False,,,False,False,,
+167,Two Sum II - Input Array Is Sorted,fold,two-pointers,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0167_TwoSumSorted.lean
+168,,fold,math-bit,False,False,,,False,False,,
+169,Majority Element,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0169_MajorityElement.lean
+171,,fold,math-bit,False,False,,,False,False,,
+172,Factorial Trailing Zeroes,fold,math-bit,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0172_FactorialTrailingZeroes.lean
+173,Binary Search Tree Iterator,dp,bst,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0173_BSTIterator.lean
+174,,dp,dp-grid,False,False,,,False,False,,
+186,,fold,string-other,False,False,,,False,False,,
+188,,dp,dp-knapsack,False,False,,,False,False,,
+189,,fold,two-pointers,False,False,,,False,False,,
+190,,fold,math-bit,False,False,,,False,False,,
+191,Number of 1 Bits,fold,math-bit,True,True,O(1),,False,True,True,lproofs/Lproofs/Problems/Fold/P0191_NumberOf1Bits.lean
+193,,fold,string-other,False,False,,,False,False,,
+198,House Robber,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0198_HouseRobber.lean
+199,Binary Tree Right Side View,relaxation,bfs,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0199_RightSideView.lean
+200,Number of Islands,relaxation,dfs-flood,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0200_NumberOfIslands.lean
+202,Happy Number,fold,hashing,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0202_HappyNumber.lean
+203,Remove Linked List Elements,fold,linked-list,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0203_RemoveLinkedListElements.lean
+205,Isomorphic Strings,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0205_IsomorphicStrings.lean
+206,Reverse Linked List,fold,linked-list,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0206_ReverseLinkedList.lean
+207,Course Schedule,relaxation,topo-sort,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0207_CourseSchedule.lean
+208,Implement Trie (Prefix Tree),dp,trie,True,True,O(,,False,True,True,lproofs/Lproofs/Problems/DP/P0208_ImplementTrie.lean
+209,Minimum Size Subarray Sum,fold,sliding-window,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0209_MinSizeSubarraySum.lean
+210,Course Schedule II,relaxation,topo-sort,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0210_CourseScheduleII.lean
+211,Design Add and Search Words Data Structure,dp,trie,True,True,,,False,True,False,lproofs/Lproofs/Problems/DP/P0211_AddSearchWords.lean
+212,Word Search II,dp,trie,True,True,O(m·n·4^L),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P0212_WordSearchII.lean
+213,House Robber II,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0213_HouseRobberII.lean
+216,,dp,backtracking,False,False,,,False,False,,
+217,Contains Duplicate,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0217_ContainsDuplicate.lean
+219,Contains Duplicate II,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0219_ContainsDuplicateII.lean
+221,,dp,dp-grid,False,False,,,False,False,,
+224,,fold,pairing-stack,False,False,,,False,False,,
+226,,dp,tree-traversal,False,False,,,False,False,,
+227,,fold,pairing-stack,False,False,,,False,False,,
+228,Summary Ranges,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0228_SummaryRanges.lean
+229,,fold,hashing,False,False,,,False,False,,
+230,Kth Smallest Element in a BST,dp,bst,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0230_KthSmallestBST.lean
+231,Power of Two,fold,math-bit,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0231_PowerOfTwo.lean
+233,,dp,dp-digit,False,False,,,False,False,,
+234,Palindrome Linked List,fold,fast-slow,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0234_PalindromeLinkedList.lean
+235,Lowest Common Ancestor of a Binary Search Tree,dp,bst,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0235_LCAofBST.lean
+236,,dp,tree-aggregate,False,False,,,False,False,,
+237,,fold,linked-list,False,False,,,False,False,,
+238,Product of Array Except Self,fold,prefix-sum,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0238_ProductExceptSelf.lean
+239,,fold,monotonic-stack,False,False,,,False,False,,
+240,Search a 2D Matrix II,bisection,binary-search,True,True,,,False,True,False,lproofs/Lproofs/Problems/Bisection/P0240_Search2DMatrixII.lean
+242,Valid Anagram,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0242_ValidAnagram.lean
+243,,fold,two-pointers,False,False,,,False,False,,
+246,,fold,string-other,False,False,,,False,False,,
+249,,fold,hashing,False,False,,,False,False,,
+252,Meeting Rooms,fold,merge-intervals,True,True,O(n log n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0252_MeetingRooms.lean
+253,Meeting Rooms II,fold,diff-array,True,True,O(n log n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0253_MeetingRoomsII.lean
+254,Factor Combinations,dp,backtracking,True,True,exp,,False,True,True,lproofs/Lproofs/Problems/DP/P0254_FactorCombinations.lean
+257,,dp,tree-traversal,False,False,,,False,False,,
+258,Add Digits,fold,math-bit,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0258_AddDigits.lean
+266,,fold,hashing,False,False,,,False,False,,
+268,Missing Number,fold,math-bit,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0268_MissingNumber.lean
+269,Alien Dictionary,relaxation,topo-sort,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0269_AlienDictionary.lean
+270,Closest Binary Search Tree Value,dp,bst,True,True,O(h),,False,True,True,lproofs/Lproofs/Problems/DP/P0270_ClosestBSTValue.lean
+273,,fold,string-other,False,False,,,False,False,,
+274,H-Index,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0274_HIndex.lean
+277,Find the Celebrity,relaxation,graph-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0277_FindCelebrity.lean
+278,First Bad Version,bisection,binary-search,True,True,O(log n),,False,True,False,lproofs/Lproofs/Problems/Bisection/P0278_FirstBadVersion.lean
+282,,dp,backtracking,False,False,,,False,False,,
+283,Move Zeroes,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0283_MoveZeroes.lean
+286,Walls and Gates,relaxation,bfs,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0286_WallsAndGates.lean
+287,Find the Duplicate Number,fold,fast-slow,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0287_FindDuplicateNumber.lean
+290,Word Pattern,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0290_WordPattern.lean
+291,,dp,backtracking,False,False,,,False,False,,
+297,Serialize and Deserialize Binary Tree,dp,tree-construct,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0297_SerializeDeserialize.lean
+299,,fold,hashing,False,False,,,False,False,,
+300,,dp,dp-linear,False,False,,,False,False,,
+301,,relaxation,bfs,False,False,,,False,False,,
+303,Range Sum Query - Immutable,fold,prefix-sum,True,True,O(1) query,,False,True,True,lproofs/Lproofs/Problems/Fold/P0303_RangeSumQuery.lean
+304,,fold,prefix-sum,False,False,,,False,False,,
+305,Number of Islands II,relaxation,union-find,True,True,O(k·α),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0305_NumberOfIslandsII.lean
+309,Best Time to Buy and Sell Stock with Cooldown,dp,dp-linear,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0309_StockCooldown.lean
+310,,relaxation,topo-sort,False,False,,,False,False,,
+312,Burst Balloons,dp,dp-interval,True,True,O(n³),,False,True,False,lproofs/Lproofs/Problems/DP/P0312_BurstBalloons.lean
+314,,relaxation,bfs,False,False,,,False,False,,
+317,,relaxation,bfs,False,False,,,False,False,,
+322,Coin Change,dp,dp-knapsack,True,True,O(amount·coins),,False,True,True,lproofs/Lproofs/Problems/DP/P0322_CoinChange.lean
+326,,fold,math-bit,False,False,,,False,False,,
+328,Odd Even Linked List,fold,linked-list,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0328_OddEvenLinkedList.lean
+329,Longest Increasing Path in a Matrix,dp,dp-grid,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0329_LongestIncreasingPath.lean
+332,Reconstruct Itinerary,relaxation,graph-other,True,True,O(V+E),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P0332_Reach.lean
+337,,dp,dp-tree,False,False,,,False,False,,
+339,,dp,tree-traversal,False,False,,,False,False,,
+340,,fold,sliding-window,False,False,,,False,False,,
+343,,dp,dp-linear,False,False,,,False,False,,
+344,Reverse String,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0344_ReverseString.lean
+345,,fold,two-pointers,False,False,,,False,False,,
+349,Intersection of Two Arrays,fold,hashing,True,True,O(n+m),,False,True,True,lproofs/Lproofs/Problems/Fold/P0349_IntersectionOfTwoArrays.lean
+354,,bisection,binary-search,False,False,,,False,False,,
+368,Largest Divisible Subset,dp,dp-linear,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0368_LargestDivisibleSubset.lean
+371,,fold,math-bit,False,False,,,False,False,,
+378,Kth Smallest Element in a Sorted Matrix,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0378_KthSmallestSortedMatrix.lean
+383,Ransom Note,fold,hashing,True,True,O(n+m),,False,True,True,lproofs/Lproofs/Problems/Fold/P0383_RansomNote.lean
+386,,relaxation,dfs-flood,False,False,,,False,False,,
+387,First Unique Character in a String,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0387_FirstUniqueCharacter.lean
+389,,fold,math-bit,False,False,,,False,False,,
+390,,fold,math-bit,False,False,,,False,False,,
+392,Is Subsequence,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0392_IsSubsequence.lean
+394,,fold,pairing-stack,False,False,,,False,False,,
+396,,fold,math-bit,False,False,,,False,False,,
+399,Evaluate Division,relaxation,union-find,True,True,O(Q·(V+E)),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0399_EvaluateDivision.lean
+402,,fold,monotonic-stack,False,False,,,False,False,,
+404,,dp,tree-traversal,False,False,,,False,False,,
+408,Valid Word Abbreviation,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0408_ValidWordAbbreviation.lean
+410,Split Array Largest Sum,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0410_SplitArrayLargestSum.lean
+415,Add Strings,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0415_AddStrings.lean
+416,Partition Equal Subset Sum,dp,dp-knapsack,True,True,O(n·sum),,False,True,True,lproofs/Lproofs/Problems/DP/P0416_PartitionEqualSubset.lean
+417,Pacific Atlantic Water Flow,relaxation,dfs-flood,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P0417_PacificAtlantic.lean
+424,,fold,sliding-window,False,False,,,False,False,,
+426,,dp,bst,False,False,,,False,False,,
+427,Construct Quad Tree,dp,tree-construct,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0427_QuadTree.lean
+428,,dp,tree-construct,False,False,,,False,False,,
+430,,fold,linked-list,False,False,,,False,False,,
+438,,fold,sliding-window,False,False,,,False,False,,
+442,Find All Duplicates in an Array,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0442_FindAllDuplicates.lean
+443,String Compression,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0443_StringCompression.lean
+445,,fold,linked-list,False,False,,,False,False,,
+448,Find All Numbers Disappeared in an Array,fold,hashing,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P0448_FindDisappearedNumbers.lean
+450,,dp,bst,False,False,,,False,False,,
+456,,fold,monotonic-stack,False,False,,,False,False,,
+465,,dp,backtracking,False,False,,,False,False,,
+468,,fold,string-other,False,False,,,False,False,,
+472,,dp,trie,False,False,,,False,False,,
+475,,bisection,binary-search,False,False,,,False,False,,
+477,,fold,math-bit,False,False,,,False,False,,
+485,Max Consecutive Ones,fold,sliding-window,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0485_MaxConsecutiveOnes.lean
+489,Robot Room Cleaner,dp,backtracking,True,True,O(cells),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0489_RobotRoomCleaner.lean
+490,,relaxation,bfs,False,False,,,False,False,,
+493,,bisection,binary-search,False,False,,,False,False,,
+494,Target Sum,dp,dp-knapsack,True,True,O(n·sum),,False,True,True,lproofs/Lproofs/Problems/DP/P0494_TargetSum.lean
+496,Next Greater Element I,fold,monotonic-stack,True,False,O(n),,False,False,False,lproofs/Lproofs/Problems/Fold/P0496_NextGreaterElement.lean
+503,,fold,monotonic-stack,False,False,,,False,False,,
+505,The Maze II,relaxation,dijkstra,True,True,O(mn log mn),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P0505_MazeII.lean
+509,Fibonacci Number,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0509_Fibonacci.lean
+515,,relaxation,bfs,False,False,,,False,False,,
+516,Longest Palindromic Subsequence,dp,dp-interval,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0516_LongestPalindromicSubseq.lean
+518,,dp,dp-knapsack,False,False,,,False,False,,
+523,,fold,prefix-sum,False,False,,,False,False,,
+525,,fold,prefix-sum,False,False,,,False,False,,
+526,,dp,backtracking,False,False,,,False,False,,
+528,Random Pick with Weight,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0528_RandomPickWeight.lean
+529,,relaxation,dfs-flood,False,False,,,False,False,,
+532,,fold,hashing,False,False,,,False,False,,
+536,,dp,tree-construct,False,False,,,False,False,,
+540,Single Element in a Sorted Array,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0540_SingleElementSorted.lean
+541,,fold,string-other,False,False,,,False,False,,
+542,01 Matrix,relaxation,bfs,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0542_01Matrix.lean
+543,,dp,tree-aggregate,False,False,,,False,False,,
+545,Boundary of Binary Tree,dp,tree-traversal,True,True,O(n),,False,True,False,lproofs/Lproofs/Problems/DP/P0545_BoundaryOfTree.lean
+547,Number of Provinces,relaxation,union-find,True,True,O(V^2),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0547_NumberOfProvinces.lean
+549,Binary Tree Longest Consecutive Sequence II,dp,dp-tree,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0549_LongestConsecutiveII.lean
+560,Subarray Sum Equals K,fold,prefix-sum,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0560_SubarraySumK.lean
+564,,fold,string-other,False,False,,,False,False,,
+565,,relaxation,graph-other,False,False,,,False,False,,
+567,Permutation in String,fold,sliding-window,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0567_PermutationInString.lean
+611,Valid Triangle Number,fold,two-pointers,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/Fold/P0611_ValidTriangle.lean
+636,Exclusive Time of Functions,fold,pairing-stack,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0636_ExclusiveTime.lean
+642,Design Search Autocomplete System,dp,trie,True,True,,,False,True,False,lproofs/Lproofs/Problems/DP/P0642_SearchAutocomplete.lean
+643,,fold,sliding-window,False,False,,,False,False,,
+645,,fold,hashing,False,False,,,False,False,,
+647,,fold,string-other,False,False,,,False,False,,
+648,Replace Words,dp,trie,True,True,O(Σ,,False,True,True,lproofs/Lproofs/Problems/DP/P0648_ReplaceWords.lean
+653,,dp,bst,False,False,,,False,False,,
+657,,fold,string-other,False,False,,,False,False,,
+658,Find K Closest Elements,bisection,binary-search,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Bisection/P0658_FindKClosest.lean
+662,Maximum Width of Binary Tree,relaxation,bfs,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0662_MaximumWidthofBinaryTr.lean
+673,,dp,dp-linear,False,False,,,False,False,,
+679,,dp,backtracking,False,False,,,False,False,,
+680,Valid Palindrome II,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0680_ValidPalindromeII.lean
+688,,dp,dp-grid,False,False,,,False,False,,
+690,,relaxation,dfs-flood,False,False,,,False,False,,
+695,,relaxation,dfs-flood,False,False,,,False,False,,
+696,,fold,string-other,False,False,,,False,False,,
+704,,bisection,binary-search,False,False,,,False,False,,
+708,,fold,linked-list,False,False,,,False,False,,
+713,Subarray Product Less Than K,fold,sliding-window,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0713_SubarrayProductLessThanK.lean
+714,Best Time to Buy and Sell Stock with Transaction Fee,dp,dp-linear,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0714_StockWithFee.lean
+719,,bisection,binary-search,False,False,,,False,False,,
+721,,relaxation,union-find,False,False,,,False,False,,
+722,,fold,string-other,False,False,,,False,False,,
+724,Find Pivot Index,fold,prefix-sum,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0724_FindPivotIndex.lean
+733,Flood Fill,relaxation,dfs-flood,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0733_FloodFill.lean
+735,Asteroid Collision,fold,pairing-stack,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0735_AsteroidCollision.lean
+736,,fold,string-other,False,False,,,False,False,,
+739,,fold,monotonic-stack,False,False,,,False,False,,
+741,,dp,dp-grid,False,False,,,False,False,,
+743,,relaxation,dijkstra,False,False,,,False,False,,
+746,,dp,dp-linear,False,False,,,False,False,,
+752,,relaxation,bfs,False,False,,,False,False,,
+759,,fold,merge-intervals,False,False,,,False,False,,
+773,,relaxation,bfs,False,False,,,False,False,,
+777,,fold,two-pointers,False,False,,,False,False,,
+778,Swim in Rising Water,relaxation,dijkstra,True,True,O(V log V),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0778_SwiminRisingWater.lean
+785,Is Graph Bipartite?,relaxation,graph-other,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0785_IsGraphBipartite.lean
+787,Cheapest Flights Within K Stops,relaxation,bellman-ford,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0787_CheapestFlights.lean
+788,,dp,dp-digit,False,False,,,False,False,,
+792,,bisection,binary-search,False,False,,,False,False,,
+796,,fold,string-other,False,False,,,False,False,,
+797,All Paths From Source to Target,relaxation,graph-other,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0797_AllPathsSourceTarget.lean
+799,Champagne Tower,dp,dp-grid,True,True,O(r²),,False,True,True,lproofs/Lproofs/Problems/DP/P0799_ChampagneTower.lean
+802,,relaxation,topo-sort,False,False,,,False,False,,
+815,Bus Routes,relaxation,bfs,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0815_BusRoutes.lean
+820,,dp,trie,False,False,,,False,False,,
+824,Goat Latin,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0824_GoatLatin.lean
+825,Friends Of Appropriate Ages,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0825_FriendsAppropriateAges.lean
+827,,relaxation,dfs-flood,False,False,,,False,False,,
+833,Find And Replace in String,fold,string-other,True,True,O(n),,False,True,False,lproofs/Lproofs/Problems/Fold/P0833_FindReplaceString.lean
+834,,dp,dp-tree,False,False,,,False,False,,
+841,,relaxation,dfs-flood,False,False,,,False,False,,
+843,,fold,string-other,False,False,,,False,False,,
+844,,fold,two-pointers,False,False,,,False,False,,
+852,Peak Index in a Mountain Array,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P0852_PeakIndex.lean
+863,All Nodes Distance K in Binary Tree,relaxation,bfs,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0863_AllNodesDistanceKinBinar.lean
+864,,relaxation,bfs,False,False,,,False,False,,
+875,Koko Eating Bananas,bisection,binary-search,True,True,O(n log m),,False,True,True,lproofs/Lproofs/Problems/Bisection/P0875_KokoBananas.lean
+876,,fold,fast-slow,False,False,,,False,False,,
+889,Construct Binary Tree from Preorder and Postorder Traversal,dp,tree-construct,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0889_ConstructBTfromPreandPost.lean
+898,Bitwise ORs of Subarrays,dp,dp-linear,True,True,O(n·W),,False,True,True,lproofs/Lproofs/Problems/DP/P0898_BitwiseORsSubarrays.lean
+901,Online Stock Span,fold,monotonic-stack,True,False,O(n) amortized,,False,False,False,lproofs/Lproofs/Problems/Fold/P0901_OnlineStockSpan.lean
+904,,fold,sliding-window,False,False,,,False,False,,
+907,Sum of Subarray Minimums,fold,monotonic-stack,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0907_SumSubarrayMinimums.lean
+909,,relaxation,bfs,False,False,,,False,False,,
+918,,dp,dp-linear,False,False,,,False,False,,
+921,Minimum Add to Make Parentheses Valid,fold,pairing-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P0921_MinAddParensValid.lean
+931,Minimum Falling Path Sum,dp,dp-grid,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0931_MinFallingPathSum.lean
+934,Shortest Bridge,relaxation,bfs,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0934_ShortestBridge.lean
+938,,dp,bst,False,False,,,False,False,,
+939,,fold,hashing,False,False,,,False,False,,
+941,Valid Mountain Array,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0941_ValidMountainArray.lean
+953,,fold,string-other,False,False,,,False,False,,
+958,,relaxation,bfs,False,False,,,False,False,,
+959,Regions Cut By Slashes,relaxation,union-find,True,True,O(n^2),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0959_RegionsBySlashes.lean
+962,,fold,monotonic-stack,False,False,,,False,False,,
+974,,fold,prefix-sum,False,False,,,False,False,,
+977,,fold,two-pointers,False,False,,,False,False,,
+983,Minimum Cost For Tickets,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0983_MinCostTickets.lean
+986,,fold,merge-intervals,False,False,,,False,False,,
+987,,relaxation,bfs,False,False,,,False,False,,
+992,Subarrays with K Different Integers,fold,sliding-window,True,True,,,False,True,False,lproofs/Lproofs/Problems/Fold/P0992_SubarraysKDistinct.lean
+994,Rotting Oranges,relaxation,bfs,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0994_RottingOranges.lean
+996,,dp,backtracking,False,False,,,False,False,,
+1004,Max Consecutive Ones III,fold,sliding-window,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P1004_MaxConsecutiveOnesIII.lean
+1011,Capacity To Ship Packages Within D Days,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1011_ShipPackages.lean
+1022,,dp,tree-aggregate,False,False,,,False,False,,
+1039,,dp,dp-interval,False,False,,,False,False,,
+1047,Remove All Adjacent Duplicates In String,fold,pairing-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1047_RemoveAdjacentDuplicates.lean
+1060,Missing Element in Sorted Array,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1060_MissingElementSorted.lean
+1064,Fixed Point,bisection,binary-search,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Bisection/P1064_FixedPoint.lean
+1071,,fold,string-other,False,False,,,False,False,,
+1087,,dp,backtracking,False,False,,,False,False,,
+1091,Shortest Path in Binary Matrix,relaxation,bfs,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1091_ShortestPathBinaryMatrix.lean
+1092,,dp,dp-grid,False,False,,,False,False,,
+1094,Car Pooling,fold,diff-array,True,True,O(n + maxPos),,False,True,True,lproofs/Lproofs/Problems/Fold/P1094_CarPooling.lean
+1101,,relaxation,union-find,False,False,,,False,False,,
+1109,,fold,diff-array,False,False,,,False,False,,
+1110,,dp,tree-traversal,False,False,,,False,False,,
+1136,,relaxation,topo-sort,False,False,,,False,False,,
+1139,,dp,dp-grid,False,False,,,False,False,,
+1143,,dp,dp-grid,False,False,,,False,False,,
+1152,,fold,hashing,False,False,,,False,False,,
+1166,,dp,trie,False,False,,,False,False,,
+1169,,fold,hashing,False,False,,,False,False,,
+1171,Remove Zero Sum Consecutive Nodes from Linked List,fold,linked-list,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1171_RemoveZeroSumSublists.lean
+1192,,relaxation,graph-other,False,False,,,False,False,,
+1197,,relaxation,bfs,False,False,,,False,False,,
+1202,Smallest String With Swaps,relaxation,union-find,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1202_SmallestStringWithSwaps.lean
+1207,,fold,hashing,False,False,,,False,False,,
+1209,Remove All Adjacent Duplicates in String II,fold,pairing-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1209_RemoveAdjacentDuplicatesII.lean
+1216,,dp,dp-interval,False,False,,,False,False,,
+1235,Maximum Profit in Job Scheduling,dp,dp-interval,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P1235_MaxProfitJobScheduling.lean
+1239,,dp,backtracking,False,False,,,False,False,,
+1249,,fold,pairing-stack,False,False,,,False,False,,
+1266,,fold,math-bit,False,False,,,False,False,,
+1268,,dp,trie,False,False,,,False,False,,
+1334,,relaxation,dijkstra,False,False,,,False,False,,
+1335,,dp,dp-knapsack,False,False,,,False,False,,
+1339,,dp,dp-tree,False,False,,,False,False,,
+1340,,dp,dp-linear,False,False,,,False,False,,
+1345,,relaxation,bfs,False,False,,,False,False,,
+1347,Minimum Number of Steps to Make Two Strings Anagram,fold,hashing,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1347_MinStepsAnagram.lean
+1356,,fold,math-bit,False,False,,,False,False,,
+1365,,fold,prefix-sum,False,False,,,False,False,,
+1368,Minimum Cost to Make at Least One Valid Path in a Grid,relaxation,dijkstra,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean
+1382,,dp,bst,False,False,,,False,False,,
+1385,,bisection,binary-search,False,False,,,False,False,,
+1387,,fold,math-bit,False,False,,,False,False,,
+1404,,fold,math-bit,False,False,,,False,False,,
+1423,Maximum Points You Can Obtain from Cards,fold,sliding-window,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1423_MaxPointsCards.lean
+1428,Leftmost Column with at Least a One,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1428_LeftmostColumnWithOne.lean
+1438,Longest Continuous Subarray With Absolute Diff ≤ Limit,fold,sliding-window,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1438_LongestSubarrayLimit.lean
+1443,Minimum Time to Collect All Apples in a Tree,dp,dp-tree,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P1443_CollectApples.lean
+1462,Course Schedule IV,relaxation,topo-sort,True,True,O(V*E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1462_CourseScheduleIV.lean
+1466,Reorder Routes to Make All Paths Lead to the City Zero,relaxation,graph-other,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1466_ReorderRoutestoMakeAll.lean
+1475,,fold,monotonic-stack,False,False,,,False,False,,
+1480,Running Sum of 1d Array,fold,prefix-sum,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P1480_RunningSum.lean
+1482,Minimum Number of Days to Make m Bouquets,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1482_MinDaysBouquets.lean
+1489,,relaxation,union-find,False,False,,,False,False,,
+1492,,fold,math-bit,False,False,,,False,False,,
+1494,Parallel Courses II,dp,dp-bitmask,True,True,O(3^n),,False,True,True,lproofs/Lproofs/Problems/DP/P1494_ParallelCoursesII.lean
+1519,,dp,dp-tree,False,False,,,False,False,,
+1539,Kth Missing Positive Number,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1539_KthMissingPositive.lean
+1552,,bisection,binary-search,False,False,,,False,False,,
+1579,,relaxation,union-find,False,False,,,False,False,,
+1583,,fold,hashing,False,False,,,False,False,,
+1584,Min Cost to Connect All Points,relaxation,union-find,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1584_MinCostConnectPoints.lean
+1614,Maximum Nesting Depth of the Parentheses,fold,pairing-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1614_MaxNestingDepth.lean
+1627,,relaxation,union-find,False,False,,,False,False,,
+1648,Sell Diminishing-Valued Colored Balls,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1648_SellDiminishingBalls.lean
+1650,,dp,tree-traversal,False,False,,,False,False,,
+1657,Determine if Two Strings Are Close,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P1657_DetermineCloseStrings.lean
+1673,Find the Most Competitive Subsequence,fold,monotonic-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1673_MostCompetitiveSubsequence.lean
+1674,,fold,diff-array,False,False,,,False,False,,
+1691,Maximum Height by Stacking Cuboids,dp,dp-linear,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P1691_MaxHeightStackingCuboids.lean
+1719,Number Of Ways To Reconstruct A Tree,relaxation,graph-other,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1719_Reach.lean
+1722,,relaxation,union-find,False,False,,,False,False,,
+1752,,fold,two-pointers,False,False,,,False,False,,
+1762,,fold,monotonic-stack,False,False,,,False,False,,
+1768,Merge Strings Alternately,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P1768_MergeAlternately.lean
+1778,Shortest Path in a Hidden Grid,relaxation,bfs,True,True,O(mn),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1778_ShortestPathHiddenGrid.lean
+1814,,fold,hashing,False,False,,,False,False,,
+1818,Minimum Absolute Sum Difference,bisection,binary-search,True,True,,,False,True,False,lproofs/Lproofs/Problems/Bisection/P1818_MinAbsSumDiff.lean
+1823,,fold,math-bit,False,False,,,False,False,,
+1829,,fold,math-bit,False,False,,,False,False,,
+1838,,fold,sliding-window,False,False,,,False,False,,
+1848,,fold,two-pointers,False,False,,,False,False,,
+1856,Maximum Subarray Min-Product,fold,monotonic-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1856_MaxSubarrayMinProduct.lean
+1868,,fold,two-pointers,False,False,,,False,False,,
+1871,Jump Game VII,dp,dp-linear,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1871_JumpGameVII.lean
+1888,,dp,dp-linear,False,False,,,False,False,,
+1903,,fold,string-other,False,False,,,False,False,,
+1915,,fold,hashing,False,False,,,False,False,,
+1922,,fold,math-bit,False,False,,,False,False,,
+1926,,relaxation,bfs,False,False,,,False,False,,
+1931,,dp,dp-bitmask,False,False,,,False,False,,
+1932,,dp,bst,False,False,,,False,False,,
+1944,,fold,monotonic-stack,False,False,,,False,False,,
+1961,,fold,string-other,False,False,,,False,False,,
+1966,,bisection,binary-search,False,False,,,False,False,,
+1967,,fold,string-other,False,False,,,False,False,,
+1971,Find if Path Exists in Graph,relaxation,union-find,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1971_FindPathExists.lean
+2008,,dp,dp-linear,False,False,,,False,False,,
+2009,,bisection,binary-search,False,False,,,False,False,,
+2021,,fold,diff-array,False,False,,,False,False,,
+2023,,fold,hashing,False,False,,,False,False,,
+2050,Parallel Courses III,relaxation,topo-sort,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2050_ParallelCoursesIII.lean
+2055,,fold,prefix-sum,False,False,,,False,False,,
+2065,,dp,backtracking,False,False,,,False,False,,
+2092,Find All People With Secret,relaxation,union-find,True,True,O(V+E),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P2092_Reach.lean
+2101,,relaxation,graph-other,False,False,,,False,False,,
+2104,,fold,monotonic-stack,False,False,,,False,False,,
+2115,,relaxation,topo-sort,False,False,,,False,False,,
+2140,,dp,dp-linear,False,False,,,False,False,,
+2149,,fold,two-pointers,False,False,,,False,False,,
+2150,Find All Lonely Numbers in the Array,fold,hashing,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P2150_FindAllLonelyNumbers.lean
+2187,Minimum Time to Complete Trips,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P2187_MinTimeToCompleteTrips.lean
+2196,,dp,tree-construct,False,False,,,False,False,,
+2214,Minimum Health to Beat Game,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P2214_MinHealth.lean
+2243,,fold,string-other,False,False,,,False,False,,
+2246,,dp,dp-tree,False,False,,,False,False,,
+2248,,fold,hashing,False,False,,,False,False,,
+2251,,bisection,binary-search,False,False,,,False,False,,
+2258,Escape the Spreading Fire,relaxation,bfs,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2258_EscapetheSpreadingFire.lean
+2261,,fold,hashing,False,False,,,False,False,,
+2265,,dp,dp-tree,False,False,,,False,False,,
+2282,Number of People That Can Be Seen in a Grid,fold,monotonic-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P2282_PeopleSeenInGrid.lean
+2307,,relaxation,union-find,False,False,,,False,False,,
+2333,,bisection,binary-search,False,False,,,False,False,,
+2337,Move Pieces to Obtain a String,fold,two-pointers,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P2337_MovePieces.lean
+2351,,fold,hashing,False,False,,,False,False,,
+2385,Amount of Time for Binary Tree to Be Infected,relaxation,bfs,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2385_AmountofTimeforBinaryTre.lean
+2389,,bisection,binary-search,False,False,,,False,False,,
+2397,,dp,backtracking,False,False,,,False,False,,
+2423,,fold,hashing,False,False,,,False,False,,
+2435,,dp,dp-grid,False,False,,,False,False,,
+2444,Count Subarrays With Fixed Bounds,fold,sliding-window,True,True,,,False,True,False,lproofs/Lproofs/Problems/Fold/P2444_CountSubarraysFixedBounds.lean
+2467,,dp,dp-tree,False,False,,,False,False,,
+2472,,dp,dp-interval,False,False,,,False,False,,
+2477,,dp,dp-tree,False,False,,,False,False,,
+2488,,fold,prefix-sum,False,False,,,False,False,,
+2493,,relaxation,graph-other,False,False,,,False,False,,
+2503,Maximum Number of Points From Grid Queries,relaxation,union-find,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean
+2508,,relaxation,graph-other,False,False,,,False,False,,
+2537,,fold,sliding-window,False,False,,,False,False,,
+2540,,fold,two-pointers,False,False,,,False,False,,
+2553,,fold,string-other,False,False,,,False,False,,
+2555,,dp,dp-linear,False,False,,,False,False,,
+2571,,fold,math-bit,False,False,,,False,False,,
+2603,,relaxation,graph-other,False,False,,,False,False,,
+2657,,fold,prefix-sum,False,False,,,False,False,,
+2661,First Completely Painted Row or Column,fold,hashing,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P2661_FirstCompletelyPainted.lean
+2768,,fold,hashing,False,False,,,False,False,,
+2784,,fold,hashing,False,False,,,False,False,,
+2791,,dp,dp-tree,False,False,,,False,False,,
+2817,,fold,sliding-window,False,False,,,False,False,,
+2828,,fold,string-other,False,False,,,False,False,,
+2848,,fold,diff-array,False,False,,,False,False,,
+2858,Minimum Edge Reversals for All Reachable,relaxation,graph-other,True,True,O(V+E),,False,True,False,lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean
+2861,,bisection,binary-search,False,False,,,False,False,,
+2906,,fold,prefix-sum,False,False,,,False,False,,
+2912,Number of Ways to Reach Destination in the Grid,dp,dp-grid,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean
+2948,,relaxation,union-find,False,False,,,False,False,,
+2965,,fold,hashing,False,False,,,False,False,,
+2970,,fold,two-pointers,False,False,,,False,False,,
+2972,,fold,two-pointers,False,False,,,False,False,,
+3043,,dp,trie,False,False,,,False,False,,
+3073,,fold,prefix-sum,False,False,,,False,False,,
+3120,Count the Number of Special Characters I,fold,string-other,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P3120_CountSpecialCharacters.lean
+3121,,fold,string-other,False,False,,,False,False,,
+3129,Find All Possible Stable Binary Arrays I,dp,dp-linear,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P3129_StableBinaryArrays.lean
+3161,Block Placement Queries,bisection,binary-search,True,True,O(log n),,False,True,False,lproofs/Lproofs/Problems/Bisection/P3161_Bisect.lean
+3163,,fold,string-other,False,False,,,False,False,,
+3225,,dp,dp-grid,False,False,,,False,False,,
+3300,,fold,math-bit,False,False,,,False,False,,
+3341,,relaxation,dijkstra,False,False,,,False,False,,
+3342,,relaxation,dijkstra,False,False,,,False,False,,
+3355,,fold,diff-array,False,False,,,False,False,,
+3356,,fold,diff-array,False,False,,,False,False,,
+3371,,fold,hashing,False,False,,,False,False,,
+3387,Graph Reachability,relaxation,graph-other,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P3387_Reach.lean
+3413,,fold,prefix-sum,False,False,,,False,False,,
+3418,,dp,dp-grid,False,False,,,False,False,,
+3419,,relaxation,dijkstra,False,False,,,False,False,,
+3434,,fold,sliding-window,False,False,,,False,False,,
+3453,Separate Squares I,bisection,binary-search,True,True,O(n log),,False,True,True,lproofs/Lproofs/Problems/Bisection/P3453_SeparateSquares.lean
+3466,,dp,dp-grid,False,False,,,False,False,,
+3481,,fold,string-other,False,False,,,False,False,,
+3488,,fold,hashing,False,False,,,False,False,,
+3522,,fold,string-other,False,False,,,False,False,,
+3546,,fold,prefix-sum,False,False,,,False,False,,
+3629,,relaxation,bfs,False,False,,,False,False,,
+3637,Trionic Array I,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P3637_TrionicArray.lean
+3652,,dp,dp-linear,False,False,,,False,False,,
+3660,,dp,dp-linear,False,False,,,False,False,,
+3741,Minimum Distance Between Three Equal Elements II,fold,hashing,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P3741_MinDistThreeEqual.lean
+3742,,dp,dp-grid,False,False,,,False,False,,
+3761,,fold,hashing,False,False,,,False,False,,
+3872,,dp,dp-linear,False,False,,,False,False,,
+3928,Minimum Cost to Buy Apples II,relaxation,dijkstra,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P3928_MinimumCosttoBuyApples.lean
