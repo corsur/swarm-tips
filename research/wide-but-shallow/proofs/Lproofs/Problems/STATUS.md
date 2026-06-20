@@ -1,15 +1,15 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 270/577 relevant problems** (56.0% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 274/577 relevant problems** (56.1% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
-| fold | hashing | 25 | 48 |
+| fold | hashing | 26 | 48 |
 | fold | string-other | 14 | 45 |
 | fold | two-pointers | 17 | 36 |
-| fold | math-bit | 11 | 33 |
+| fold | math-bit | 12 | 33 |
 | fold | linked-list | 11 | 21 |
 | fold | sliding-window | 11 | 21 |
 | fold | monotonic-stack | 7 | 19 |
@@ -25,7 +25,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | tree-traversal | 4 | 13 |
 | dp | bst | 5 | 12 |
 | dp | dp-tree | 3 | 12 |
-| dp | trie | 5 | 10 |
+| dp | trie | 7 | 10 |
 | dp | tree-construct | 5 | 9 |
 | dp | tree-aggregate | 6 | 8 |
 | dp | dp-interval | 3 | 7 |
@@ -258,6 +258,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1064` Fixed Point — bisection (O(log n)) — `lproofs/Lproofs/Problems/Bisection/P1064_FixedPoint.lean`
 - `1091` Shortest Path in Binary Matrix — relaxation (O(n²)) — `lproofs/Lproofs/Problems/Relaxation/P1091_ShortestPathBinaryMatrix.lean`
 - `1094` Car Pooling — fold (O(n + maxPos)) — `lproofs/Lproofs/Problems/Fold/P1094_CarPooling.lean`
+- `1166` Design File System — dp (O() — `lproofs/Lproofs/Problems/DP/P1166_DesignFileSystem.lean`
 - `1171` Remove Zero Sum Consecutive Nodes from Linked List — fold () — `lproofs/Lproofs/Problems/Fold/P1171_RemoveZeroSumSublists.lean`
 - `1202` Smallest String With Swaps — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1202_SmallestStringWithSwaps.lean`
 - `1209` Remove All Adjacent Duplicates in String II — fold () — `lproofs/Lproofs/Problems/Fold/P1209_RemoveAdjacentDuplicatesII.lean`
@@ -273,6 +274,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1466` Reorder Routes to Make All Paths Lead to the City Zero — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1466_ReorderRoutestoMakeAll.lean`
 - `1480` Running Sum of 1d Array — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1480_RunningSum.lean`
 - `1482` Minimum Number of Days to Make m Bouquets — bisection () — `lproofs/Lproofs/Problems/Bisection/P1482_MinDaysBouquets.lean`
+- `1492` The kth Factor of n — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1492_KthFactorOfN.lean`
 - `1494` Parallel Courses II — dp (O(3^n)) — `lproofs/Lproofs/Problems/DP/P1494_ParallelCoursesII.lean`
 - `1539` Kth Missing Positive Number — bisection () — `lproofs/Lproofs/Problems/Bisection/P1539_KthMissingPositive.lean`
 - `1584` Min Cost to Connect All Points — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1584_MinCostConnectPoints.lean`
@@ -303,6 +305,8 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2858` Minimum Edge Reversals for All Reachable — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
 - `2861` Maximum Number of Alloys — bisection () — `lproofs/Lproofs/Problems/Bisection/P2861_MaximumNumberOfAlloys.lean`
 - `2912` Number of Ways to Reach Destination in the Grid — dp () — `lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean`
+- `2965` Find Missing and Repeated Values — fold (O(n²)) — `lproofs/Lproofs/Problems/Fold/P2965_FindMissingAndRepeated.lean`
+- `3043` Find the Length of the Longest Common Prefix — dp () — `lproofs/Lproofs/Problems/DP/P3043_LongestCommonPrefix.lean`
 - `3120` Count the Number of Special Characters I — fold () — `lproofs/Lproofs/Problems/Fold/P3120_CountSpecialCharacters.lean`
 - `3129` Find All Possible Stable Binary Arrays I — dp () — `lproofs/Lproofs/Problems/DP/P3129_StableBinaryArrays.lean`
 - `3161` Block Placement Queries — bisection (O(log n)) — `lproofs/Lproofs/Problems/Bisection/P3161_Bisect.lean`

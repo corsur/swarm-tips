@@ -57,7 +57,7 @@ num,family,scheme,proven
 996,backtracking,dp,False
 1146,design,tail,False
 1148,sql,tail,False
-1166,trie,dp,False
+1166,trie,dp,True
 1192,graph-other,relaxation,False
 1193,sql,tail,False
 1239,backtracking,dp,False
@@ -67,7 +67,7 @@ num,family,scheme,proven
 1438,sliding-window,fold,True
 1472,design,tail,False
 1489,union-find,relaxation,False
-1492,math-bit,fold,False
+1492,math-bit,fold,True
 1526,greedy,tail,False
 1570,design,tail,False
 1581,sql,tail,False
@@ -89,10 +89,10 @@ num,family,scheme,proven
 2861,binary-search,bisection,True
 2912,dp-grid,dp,True
 2948,union-find,relaxation,False
-2965,hashing,fold,False
+2965,hashing,fold,True
 3034,string-matching,tail,False
 3037,string-matching,tail,False
-3043,trie,dp,False
+3043,trie,dp,True
 3371,hashing,fold,True
 3453,binary-search,bisection,True
 3466,dp-grid,dp,False

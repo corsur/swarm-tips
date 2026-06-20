@@ -398,7 +398,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1139,,dp,dp-grid,False,False,,,False,False,,
 1143,,dp,dp-grid,False,False,,,False,False,,
 1152,,fold,hashing,False,False,,,False,False,,
-1166,,dp,trie,False,False,,,False,False,,
+1166,Design File System,dp,trie,True,True,O(,,False,True,True,lproofs/Lproofs/Problems/DP/P1166_DesignFileSystem.lean
 1169,,fold,hashing,False,False,,,False,False,,
 1171,Remove Zero Sum Consecutive Nodes from Linked List,fold,linked-list,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1171_RemoveZeroSumSublists.lean
 1192,,relaxation,graph-other,False,False,,,False,False,,
@@ -435,7 +435,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1480,Running Sum of 1d Array,fold,prefix-sum,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P1480_RunningSum.lean
 1482,Minimum Number of Days to Make m Bouquets,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1482_MinDaysBouquets.lean
 1489,,relaxation,union-find,False,False,,,False,False,,
-1492,,fold,math-bit,False,False,,,False,False,,
+1492,The kth Factor of n,fold,math-bit,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P1492_KthFactorOfN.lean
 1494,Parallel Courses II,dp,dp-bitmask,True,True,O(3^n),,False,True,True,lproofs/Lproofs/Problems/DP/P1494_ParallelCoursesII.lean
 1519,,dp,dp-tree,False,False,,,False,False,,
 1539,Kth Missing Positive Number,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1539_KthMissingPositive.lean
@@ -539,10 +539,10 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 2906,,fold,prefix-sum,False,False,,,False,False,,
 2912,Number of Ways to Reach Destination in the Grid,dp,dp-grid,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean
 2948,,relaxation,union-find,False,False,,,False,False,,
-2965,,fold,hashing,False,False,,,False,False,,
+2965,Find Missing and Repeated Values,fold,hashing,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/Fold/P2965_FindMissingAndRepeated.lean
 2970,,fold,two-pointers,False,False,,,False,False,,
 2972,,fold,two-pointers,False,False,,,False,False,,
-3043,,dp,trie,False,False,,,False,False,,
+3043,Find the Length of the Longest Common Prefix,dp,trie,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P3043_LongestCommonPrefix.lean
 3073,,fold,prefix-sum,False,False,,,False,False,,
 3120,Count the Number of Special Characters I,fold,string-other,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P3120_CountSpecialCharacters.lean
 3121,,fold,string-other,False,False,,,False,False,,
