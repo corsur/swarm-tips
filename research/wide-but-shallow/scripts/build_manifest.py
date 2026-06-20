@@ -37,13 +37,11 @@ def importance():
 NOT_GENUINE = {
     # relaxation — abstract V/relation, corr = bellman_isLeast / reachability over an uninstantiated r
     # (strengthened 2026-06-19: 733,3387,102,863,815,332,1719,2858,505,1778 now use a concrete relation)
-    # (strengthened: 417 reverse-flow drainage, 212 trie-guided search states — concrete relations)
-    "1368": "abstract r (weighted cost — optimality hard)", "1584": "abstract r (MST cost — hard)",
-    "2092": "abstract r (time-ordered spread — hard)",
+    # (strengthened: 417 drainage, 212 search states, 1368 path connectivity, 1584 MST connectivity)
+    "2092": "abstract r (time-ordered spread — plain reachability over-approximates)",
     # bisection — corr over a free abstract predicate, not the concrete problem condition
-    # (strengthened 2026-06-19: 240, 1818 now derive the predicate from a concrete sorted array)
-    "162": "abstract predicate (peak: no clean monotone threshold)",
-    "278": "abstract predicate (oracle-only input)", "3161": "abstract predicate",
+    # (strengthened: 240, 1818 concrete sorted array; 278 concrete isBad oracle)
+    "162": "abstract predicate (peak: no clean monotone threshold)", "3161": "abstract predicate",
     # dp/fold — vacuous, re-export, definitional, or abstract window predicate
     # (strengthened: 98 inorder-sorted<->bounded-BST, 833 scan=flatMap per-position replacement)
     "211": "re-export of P0208", "642": "re-export of P0208",

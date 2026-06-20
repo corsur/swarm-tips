@@ -1,27 +1,36 @@
 import Lproofs.Schemes.Bisect
 
 /-! @lc 278 | name:First Bad Version | scheme:bisection | family:binary-search | complexity:O(log n) |
-    source:https://leetcode.com/problems/first-bad-version/ -/
+    source:https://leetcode.com/problems/first-bad-version/
+
+    The input is the `isBadVersion` oracle: a concrete predicate `isBad : ℕ → Bool` on versions that is
+    monotone — once a version is bad, every later version is bad. Binary-search the boundary.
+    CLASSIFICATION: `bad isBad` is a monotone threshold, so the search returns its least satisfying
+    index. `cls` certifies the threshold structure of the concrete oracle; `corr` that the answer is the
+    least bad version of `isBad`. -/
 
 namespace LC.P0278
 open Interview.Patterns
 
-/-- Editorial binary search: the first bad version is the decision boundary `Nat.find`.
-    (`bad v` = version `v` is bad; monotone — once bad, all later versions are bad.) -/
-def sol (bad : ℕ → Prop) [DecidablePred bad] (h : ∃ n, bad n) : ℕ := Nat.find h
+/-- The concrete `isBadVersion` oracle reports each version bad/good. -/
+def bad (isBad : ℕ → Bool) (n : ℕ) : Prop := isBad n = true
 
-/-- Spec: the answer is the least bad version. -/
-def spec (bad : ℕ → Prop) (n : ℕ) : Prop := IsLeast {m | bad m} n
+instance (isBad : ℕ → Bool) : DecidablePred (bad isBad) :=
+  fun n => inferInstanceAs (Decidable (isBad n = true))
 
-/-- SCHEME (bisection): the monotone predicate is a threshold — `bad n ↔ answer ≤ n` — which is
-    exactly the up-set structure that makes halving on the boundary correct. -/
-theorem cls (bad : ℕ → Prop) [DecidablePred bad] (mono : ∀ a b, a ≤ b → bad a → bad b)
-    (h : ∃ n, bad n) (n : ℕ) : bad n ↔ sol bad h ≤ n :=
-  bisection_threshold bad mono h n
+/-- The binary-search answer: the first bad version (the decision boundary). -/
+def sol (isBad : ℕ → Bool) (h : ∃ n, bad isBad n) : ℕ := Nat.find h
 
-/-- CORRECT: the binary-search answer is the first (least) bad version. -/
-theorem corr (bad : ℕ → Prop) [DecidablePred bad] (h : ∃ n, bad n) :
-    spec bad (sol bad h) :=
-  bisection_isLeast bad h
+/-- Spec: the answer is the least bad version of the oracle. -/
+def spec (isBad : ℕ → Bool) (n : ℕ) : Prop := IsLeast {m | bad isBad m} n
+
+/-- SCHEME (bisection): the monotone oracle is a threshold — `bad isBad n ↔ answer ≤ n`. -/
+theorem cls (isBad : ℕ → Bool) (mono : ∀ a b, a ≤ b → bad isBad a → bad isBad b)
+    (h : ∃ n, bad isBad n) (n : ℕ) : bad isBad n ↔ sol isBad h ≤ n :=
+  bisection_threshold (bad isBad) mono h n
+
+/-- CORRECT: the binary-search answer is the first (least) bad version of the concrete oracle. -/
+theorem corr (isBad : ℕ → Bool) (h : ∃ n, bad isBad n) : spec isBad (sol isBad h) :=
+  bisection_isLeast (bad isBad) h
 
 end LC.P0278

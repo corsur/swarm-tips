@@ -195,7 +195,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 273,,fold,string-other,False,False,,,False,False,,
 274,H-Index,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0274_HIndex.lean
 277,Find the Celebrity,relaxation,graph-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0277_FindCelebrity.lean
-278,First Bad Version,bisection,binary-search,True,True,O(log n),,False,True,False,lproofs/Lproofs/Problems/Bisection/P0278_FirstBadVersion.lean
+278,First Bad Version,bisection,binary-search,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Bisection/P0278_FirstBadVersion.lean
 282,,dp,backtracking,False,False,,,False,False,,
 283,Move Zeroes,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0283_MoveZeroes.lean
 286,Walls and Gates,relaxation,bfs,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0286_WallsAndGates.lean
@@ -420,7 +420,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1347,Minimum Number of Steps to Make Two Strings Anagram,fold,hashing,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1347_MinStepsAnagram.lean
 1356,,fold,math-bit,False,False,,,False,False,,
 1365,,fold,prefix-sum,False,False,,,False,False,,
-1368,Minimum Cost to Make at Least One Valid Path in a Grid,relaxation,dijkstra,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean
+1368,Minimum Cost to Make at Least One Valid Path in a Grid,relaxation,dijkstra,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean
 1382,,dp,bst,False,False,,,False,False,,
 1385,,bisection,binary-search,False,False,,,False,False,,
 1387,,fold,math-bit,False,False,,,False,False,,
@@ -442,7 +442,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1552,,bisection,binary-search,False,False,,,False,False,,
 1579,,relaxation,union-find,False,False,,,False,False,,
 1583,,fold,hashing,False,False,,,False,False,,
-1584,Min Cost to Connect All Points,relaxation,union-find,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1584_MinCostConnectPoints.lean
+1584,Min Cost to Connect All Points,relaxation,union-find,True,True,,,False,True,True,lproofs/Lproofs/Problems/Relaxation/P1584_MinCostConnectPoints.lean
 1614,Maximum Nesting Depth of the Parentheses,fold,pairing-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1614_MaxNestingDepth.lean
 1627,,relaxation,union-find,False,False,,,False,False,,
 1648,Sell Diminishing-Valued Colored Balls,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1648_SellDiminishingBalls.lean
