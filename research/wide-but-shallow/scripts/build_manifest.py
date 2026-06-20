@@ -45,10 +45,11 @@ NOT_GENUINE = {
     "162": "abstract predicate (peak: no clean monotone threshold)",
     "278": "abstract predicate (oracle-only input)", "3161": "abstract predicate",
     # dp/fold — vacuous, re-export, definitional, or abstract window predicate
-    "98": "Iff.rfl (spec = solution)", "211": "re-export of P0208", "642": "re-export of P0208",
+    # (strengthened: 98 inorder-sorted<->bounded-BST, 833 scan=flatMap per-position replacement)
+    "211": "re-export of P0208", "642": "re-export of P0208",
     "312": "trivial base case only", "545": "preorder definitional unfold",
     "76": "abstract window predicate p", "992": "abstract window predicate p",
-    "2444": "abstract window predicate p", "833": "identity on empty replacement only",
+    "2444": "abstract window predicate p",
 }
 
 
