@@ -157,7 +157,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 208,Implement Trie (Prefix Tree),dp,trie,True,True,O(,,False,True,True,lproofs/Lproofs/Problems/DP/P0208_ImplementTrie.lean
 209,Minimum Size Subarray Sum,fold,sliding-window,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0209_MinSizeSubarraySum.lean
 210,Course Schedule II,relaxation,topo-sort,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0210_CourseScheduleII.lean
-211,Design Add and Search Words Data Structure,dp,trie,True,True,,,False,True,False,lproofs/Lproofs/Problems/DP/P0211_AddSearchWords.lean
+211,Design Add and Search Words Data Structure,dp,trie,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0211_AddSearchWords.lean
 212,Word Search II,dp,trie,True,True,O(m·n·4^L),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0212_WordSearchII.lean
 213,House Robber II,dp,dp-linear,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0213_HouseRobberII.lean
 216,,dp,backtracking,False,False,,,False,False,,
@@ -295,7 +295,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 567,Permutation in String,fold,sliding-window,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0567_PermutationInString.lean
 611,Valid Triangle Number,fold,two-pointers,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/Fold/P0611_ValidTriangle.lean
 636,Exclusive Time of Functions,fold,pairing-stack,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0636_ExclusiveTime.lean
-642,Design Search Autocomplete System,dp,trie,True,True,,,False,True,False,lproofs/Lproofs/Problems/DP/P0642_SearchAutocomplete.lean
+642,Design Search Autocomplete System,dp,trie,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0642_SearchAutocomplete.lean
 643,,fold,sliding-window,False,False,,,False,False,,
 645,,fold,hashing,False,False,,,False,False,,
 647,,fold,string-other,False,False,,,False,False,,
