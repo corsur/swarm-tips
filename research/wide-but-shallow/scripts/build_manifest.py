@@ -37,8 +37,9 @@ def importance():
 NOT_GENUINE = {
     # relaxation — abstract V/relation, corr = bellman_isLeast / reachability over an uninstantiated r
     # (strengthened 2026-06-19: 733,3387,102,863,815,332,1719,2858,505,1778 now use a concrete relation)
-    "417": "abstract flow", "1368": "abstract r (weighted cost)", "1584": "abstract r (MST cost)",
-    "2092": "abstract r (time-ordered)", "212": "abstract r (word-search)",
+    # (strengthened: 417 reverse-flow drainage, 212 trie-guided search states — concrete relations)
+    "1368": "abstract r (weighted cost — optimality hard)", "1584": "abstract r (MST cost — hard)",
+    "2092": "abstract r (time-ordered spread — hard)",
     # bisection — corr over a free abstract predicate, not the concrete problem condition
     # (strengthened 2026-06-19: 240, 1818 now derive the predicate from a concrete sorted array)
     "162": "abstract predicate (peak: no clean monotone threshold)",
