@@ -44,8 +44,9 @@ NOT_GENUINE = {
     "162": "abstract predicate (peak: no clean monotone threshold)", "3161": "abstract predicate",
     # dp/fold — vacuous, re-export, definitional, or abstract window predicate
     # (strengthened: 98 inorder-sorted<->bounded-BST, 833 scan=flatMap per-position replacement)
+    # (strengthened: 545 full boundary traversal + soundness corr)
     "211": "re-export of P0208", "642": "re-export of P0208",
-    "312": "trivial base case only", "545": "preorder definitional unfold",
+    "312": "trivial base case only",
     "76": "abstract window predicate p", "992": "abstract window predicate p",
     "2444": "abstract window predicate p",
 }
