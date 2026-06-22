@@ -1,6 +1,6 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 292/577 relevant problems** (57.1% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 294/577 relevant problems** (57.3% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
@@ -15,8 +15,8 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | fold | monotonic-stack | 7 | 19 |
 | fold | prefix-sum | 5 | 17 |
 | fold | pairing-stack | 9 | 14 |
-| fold | diff-array | 2 | 8 |
-| fold | fast-slow | 2 | 6 |
+| fold | diff-array | 3 | 8 |
+| fold | fast-slow | 3 | 6 |
 | fold | merge-intervals | 5 | 5 |
 | fold | dutch-flag | 1 | 1 |
 | dp | dp-linear | 17 | 33 |
@@ -125,6 +125,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `138` Copy List with Random Pointer — fold () — `lproofs/Lproofs/Problems/Relaxation/P0138_CopyListRandomPointer.lean`
 - `139` Word Break — dp (O(n²)) — `lproofs/Lproofs/Problems/DP/P0139_WordBreak.lean`
 - `140` Word Break II — dp (exp) — `lproofs/Lproofs/Problems/DP/P0140_WordBreakII.lean`
+- `142` Linked List Cycle II — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0142_LinkedListCycleII.lean`
 - `148` Sort List — fold (O(n log n)) — `lproofs/Lproofs/Problems/DP/P0148_SortList.lean`
 - `150` Evaluate Reverse Polish Notation — fold () — `lproofs/Lproofs/Problems/Fold/P0150_EvalRPN.lean`
 - `151` Reverse Words in a String — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0151_ReverseWords.lean`
@@ -293,6 +294,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1648` Sell Diminishing-Valued Colored Balls — bisection () — `lproofs/Lproofs/Problems/Bisection/P1648_SellDiminishingBalls.lean`
 - `1657` Determine if Two Strings Are Close — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1657_DetermineCloseStrings.lean`
 - `1673` Find the Most Competitive Subsequence — fold () — `lproofs/Lproofs/Problems/Fold/P1673_MostCompetitiveSubsequence.lean`
+- `1674` Minimum Moves to Make Array Complementary — fold () — `lproofs/Lproofs/Problems/Fold/P1674_MinMovesComplementary.lean`
 - `1691` Maximum Height by Stacking Cuboids — dp () — `lproofs/Lproofs/Problems/DP/P1691_MaxHeightStackingCuboids.lean`
 - `1719` Number Of Ways To Reconstruct A Tree — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1719_Reach.lean`
 - `1768` Merge Strings Alternately — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1768_MergeAlternately.lean`

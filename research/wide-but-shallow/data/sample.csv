@@ -13,7 +13,7 @@ num,family,scheme,proven
 113,backtracking,dp,True
 120,dp-grid,dp,True
 139,dp-linear,dp,True
-142,fast-slow,fold,False
+142,fast-slow,fold,True
 177,sql,tail,False
 186,string-other,fold,False
 188,dp-knapsack,dp,False
@@ -74,7 +74,7 @@ num,family,scheme,proven
 1614,pairing-stack,fold,True
 1656,design,tail,False
 1657,hashing,fold,True
-1674,diff-array,fold,False
+1674,diff-array,fold,True
 1823,math-bit,fold,True
 1868,two-pointers,fold,True
 1915,hashing,fold,True

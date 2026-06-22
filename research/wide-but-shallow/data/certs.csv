@@ -121,7 +121,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 139,Word Break,dp,dp-linear,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0139_WordBreak.lean
 140,Word Break II,dp,backtracking,True,True,exp,,False,True,True,lproofs/Lproofs/Problems/DP/P0140_WordBreakII.lean
 141,,fold,fast-slow,False,False,,,False,False,,
-142,,fold,fast-slow,False,False,,,False,False,,
+142,Linked List Cycle II,fold,fast-slow,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0142_LinkedListCycleII.lean
 143,,fold,linked-list,False,False,,,False,False,,
 148,Sort List,fold,linked-list,True,True,O(n log n),,False,True,True,lproofs/Lproofs/Problems/DP/P0148_SortList.lean
 150,Evaluate Reverse Polish Notation,fold,pairing-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P0150_EvalRPN.lean
@@ -449,7 +449,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1650,,dp,tree-traversal,False,False,,,False,False,,
 1657,Determine if Two Strings Are Close,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P1657_DetermineCloseStrings.lean
 1673,Find the Most Competitive Subsequence,fold,monotonic-stack,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1673_MostCompetitiveSubsequence.lean
-1674,,fold,diff-array,False,False,,,False,False,,
+1674,Minimum Moves to Make Array Complementary,fold,diff-array,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1674_MinMovesComplementary.lean
 1691,Maximum Height by Stacking Cuboids,dp,dp-linear,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P1691_MaxHeightStackingCuboids.lean
 1719,Number Of Ways To Reconstruct A Tree,relaxation,graph-other,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1719_Reach.lean
 1722,,relaxation,union-find,False,False,,,False,False,,
