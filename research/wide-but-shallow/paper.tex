@@ -237,12 +237,15 @@ that a problem \emph{can} be solved by an idea; it cannot certify that ``which i
 describe what an interview tests. That a problem ``is a single pass'' is our modeling choice---the proof
 confirms the model holds, not that it is the only sensible one. \textbf{Idea and solution proven separately.}
 As in Section~\ref{sec:lean}, we prove the idea fits and, separately, that a solution is sound; proving the two
-are the same program is done only for the showcase examples and is otherwise future work. \textbf{Coverage is a rule rate; the proof count is a check.} The 75\% headline is how often a fixed rule
-lands a problem in a scheme---stable across samples (68--82\%) and needing no proofs. It errs low in one
-direction: the rule sends borderline cases (some ``greedy'' and ``simulation'' problems that are really
-single passes or binary searches) to the tail rather than into a scheme, so 75\% is, if anything, a floor.
-The 54/100 is a different quantity---a per-problem \emph{check} that the labels hold---and is lower than
-75\% only because some labels need multi-file proofs we did not attempt, never because a label failed. \textbf{Window dependence.} The company difference is not
+are the same program is done only for the showcase examples and is otherwise future work. \textbf{Coverage is a magnitude; the proofs are its warrant.} The 75\% headline is \emph{how many} problems
+the rule labels in-scheme---a count over labels, stable across samples (68--82\%), that no Lean proof enters.
+What makes those labels trustworthy rather than merely asserted is the verification of Section~\ref{sec:lean}:
+the proofs establish that the assigned idea really solves the problem, so they are the warrant behind the
+75\%, not a competing estimate of it. The 75\% errs low in one direction---the rule sends borderline cases
+(some ``greedy'' and ``simulation'' problems that are really single passes or binary searches) to the tail
+rather than into a scheme, so it is, if anything, a floor. The 54/100 is the warrant's strength on a sample:
+of the in-scheme labels we could formalize, every one held (none refuted), and it sits below 75\% only
+because some labels need multi-file proofs we did not attempt, never because a label failed. \textbf{Window dependence.} The company difference is not
 constant across recency windows: the bias-corrected \V\ ranges from below its noise floor in the short windows
 up to $0.125$ in the six-month window (still ``small''), so ``one shared syllabus'' is a statement about the
 pooled data, not every slice. \textbf{Two separate questions.} Coverage counts each distinct problem once; the
