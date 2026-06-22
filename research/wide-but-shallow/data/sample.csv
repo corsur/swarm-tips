@@ -54,7 +54,7 @@ num,family,scheme,proven
 815,bfs,relaxation,True
 939,hashing,fold,False
 986,merge-intervals,fold,True
-996,backtracking,dp,False
+996,backtracking,dp,True
 1146,design,tail,False
 1148,sql,tail,False
 1166,trie,dp,True
@@ -88,7 +88,7 @@ num,family,scheme,proven
 2858,graph-other,relaxation,True
 2861,binary-search,bisection,True
 2912,dp-grid,dp,True
-2948,union-find,relaxation,False
+2948,union-find,relaxation,True
 2965,hashing,fold,True
 3034,string-matching,tail,False
 3037,string-matching,tail,False

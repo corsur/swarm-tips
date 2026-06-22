@@ -1,6 +1,6 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 290/577 relevant problems** (57.1% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 292/577 relevant problems** (57.1% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
@@ -20,7 +20,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | fold | merge-intervals | 5 | 5 |
 | fold | dutch-flag | 1 | 1 |
 | dp | dp-linear | 17 | 33 |
-| dp | backtracking | 13 | 29 |
+| dp | backtracking | 14 | 29 |
 | dp | dp-grid | 11 | 25 |
 | dp | tree-traversal | 4 | 13 |
 | dp | bst | 5 | 12 |
@@ -33,7 +33,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | dp-digit | 0 | 2 |
 | dp | dp-bitmask | 1 | 2 |
 | relaxation | bfs | 17 | 31 |
-| relaxation | union-find | 9 | 17 |
+| relaxation | union-find | 10 | 17 |
 | relaxation | graph-other | 10 | 15 |
 | relaxation | dfs-flood | 4 | 10 |
 | relaxation | topo-sort | 5 | 9 |
@@ -259,6 +259,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `986` Interval List Intersections — fold () — `lproofs/Lproofs/Problems/Fold/P0986_IntervalListIntersections.lean`
 - `992` Subarrays with K Different Integers — fold () — `lproofs/Lproofs/Problems/Fold/P0992_SubarraysKDistinct.lean`
 - `994` Rotting Oranges — relaxation (O(mn)) — `lproofs/Lproofs/Problems/Relaxation/P0994_RottingOranges.lean`
+- `996` Number of Squareful Arrays — dp (O(n!·n)) — `lproofs/Lproofs/Problems/DP/P0996_NumberOfSquarefulArrays.lean`
 - `1004` Max Consecutive Ones III — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P1004_MaxConsecutiveOnesIII.lean`
 - `1011` Capacity To Ship Packages Within D Days — bisection () — `lproofs/Lproofs/Problems/Bisection/P1011_ShipPackages.lean`
 - `1047` Remove All Adjacent Duplicates In String — fold () — `lproofs/Lproofs/Problems/Fold/P1047_RemoveAdjacentDuplicates.lean`
@@ -321,6 +322,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2858` Minimum Edge Reversals for All Reachable — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
 - `2861` Maximum Number of Alloys — bisection () — `lproofs/Lproofs/Problems/Bisection/P2861_MaximumNumberOfAlloys.lean`
 - `2912` Number of Ways to Reach Destination in the Grid — dp () — `lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean`
+- `2948` Make Lexicographically Smallest Array by Swapping Elements — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2948_LexSmallestBySwapping.lean`
 - `2965` Find Missing and Repeated Values — fold (O(n²)) — `lproofs/Lproofs/Problems/Fold/P2965_FindMissingAndRepeated.lean`
 - `3043` Find the Length of the Longest Common Prefix — dp () — `lproofs/Lproofs/Problems/DP/P3043_LongestCommonPrefix.lean`
 - `3120` Count the Number of Special Characters I — fold () — `lproofs/Lproofs/Problems/Fold/P3120_CountSpecialCharacters.lean`
