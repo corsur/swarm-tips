@@ -1,6 +1,8 @@
 import Lproofs.Schemes.Fold
 
-/-! @lc 736 | name:Parse Lisp Expression | scheme:fold | family:string-other | complexity:O(n) |
+/-! @lc 736 | name:Parse Lisp Expression | scheme:dp | family:string-other | complexity:O(n) |
+    (editorial-relabelled fold->dp 2026-06-22: the accepted solution is recursive evaluation over the
+    parse tree---a catamorphism; file kept under Fold/ for git history.)
     source:https://leetcode.com/problems/parse-lisp-expression/
 
     Evaluate a Lisp-like expression with integer literals, variables, `add`, `mult`, and `let`

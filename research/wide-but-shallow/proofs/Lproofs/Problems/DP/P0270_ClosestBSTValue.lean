@@ -1,7 +1,9 @@
 import Lproofs.Schemes.Fold
 
-/-! @lc 270 | name:Closest Binary Search Tree Value | scheme:dp | family:bst | complexity:O(h) |
-    source:https://leetcode.com/problems/closest-binary-search-tree-value/ -/
+/-! @lc 270 | name:Closest Binary Search Tree Value | scheme:bisection | family:bst | complexity:O(h) |
+    source:https://leetcode.com/problems/closest-binary-search-tree-value/
+    (editorial-relabelled dp->bisection 2026-06-22: the canonical accepted solution is the binary
+    descent down the BST; file kept under DP/ for git history.) -/
 
 namespace LC.P0270
 

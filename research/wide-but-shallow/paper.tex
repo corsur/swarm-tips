@@ -36,7 +36,8 @@ until it settles, and binary search. To put a number on this without hand-waving
 standard accepted solution really is one of the four ideas. \textbf{72 of the 100 carry such a proof} (70
 machine-checked here, 2 citing existing formal proofs); the other 28 are a genuine ``tail'' that fits no
 single idea. Every classification was checked against the problem's published editorial. So about
-\textbf{three-quarters of interview problems provably reduce to four ideas}, and the single pass is the most
+\textbf{three-quarters of interview problems reduce to four ideas}, each backed by a machine-checked
+proof (two by a cited one), and the single pass is the most
 common---many tricks taught as unrelated (prefix sums, the XOR trick, a hash ``seen set,'' reversing a list,
 the sliding window) are the \emph{same} pass, differing only in what running value they carry. Separately,
 the seven firms ask almost the same mix: on a $0$-to-$1$ scale of how differently
@@ -94,7 +95,7 @@ uncertainty.
 \small
 \begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.3cm}>{\raggedright\arraybackslash}p{5.6cm}rl@{}}
 \toprule
-Recursion scheme & textbook families it subsumes & proven & Lean witness \\
+Recursion scheme & textbook families it subsumes & in scheme & Lean witness \\
 \midrule
 streaming fold & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, linked-list, bit-XOR, string-scan & 28 & \texttt{IsFold} \\
 recursive decomposition (DP) & dynamic programming, backtracking, tree, trie & 25 & catamorphism \\
@@ -106,12 +107,11 @@ not a scheme & design, simulation, heaps, number theory, geometry, string matchi
 \bottomrule
 \end{tabular}
 \caption{The roughly twenty surface families collapse onto four recursion schemes. On a pre-registered
-random sample of 100 distinct problems (the seed fixed before the draw; Section~\ref{sec:lean}), ``proven''
-counts the problems carrying a machine-checked proof that a standard accepted solution is that idea. 72 of
-the 100 are proven to be one of the four (70 checked here in Lean, 2 citing existing formal proofs of the
-heavy algorithm---minimum spanning tree and graph
-bridges~\cite{afp_kruskal,afp_dfs}); 95\% Wilson interval $[0.62,0.80]$. The remaining 28 are the
-genuine tail. Every classification was checked against the problem's published editorial. The ``Lean
+random sample of 100 distinct problems (the seed fixed before the draw; Section~\ref{sec:lean}), ``in
+scheme'' counts the problems classified into each idea. 72 of the 100 are one of the four---70 with a
+machine-checked proof here, and 2 (minimum spanning tree, LC~1489; graph bridges, LC~1192) citing an
+existing formal proof of the heavy algorithm~\cite{afp_kruskal,afp_dfs}, both falling under graph
+relaxation; 95\% Wilson interval $[0.62,0.80]$. The remaining 28 are the genuine tail. Every classification was checked against the problem's published editorial. The ``Lean
 witness'' is the formal test each scheme is checked against (a \emph{catamorphism} is a fold over a tree; a
 \emph{least fixpoint} is where graph relaxation settles). Proof strength varies: full correctness for the
 flagship folds of Section~\ref{sec:lean}, a one-directional property (e.g.\ ``everything it reports
@@ -183,8 +183,9 @@ one sample to near-completion, which measures how hard we worked, not how often 
 afterward, it was the best-scoring draw out of 2000). We discarded it, fixed a new seed \emph{before drawing}
 (recorded in the released \texttt{PREREGISTRATION.md}), and report whatever it yields. On that sample,
 \textbf{72 of 100 problems} are proven to be one of the four ideas; the other 28 are the genuine tail. Of the
-72, \textbf{70 are machine-checked here}; the remaining two---finding a minimum spanning tree and finding the
-bridges of a graph---rest on a classic algorithm whose correctness is itself a substantial formalization, so
+72, \textbf{70 are machine-checked here}; the remaining two---finding a minimum spanning tree (LC~1489) and
+finding the bridges of a graph (LC~1192)---rest on a classic algorithm whose correctness is itself a
+substantial formalization, so
 rather than redo it we cite an existing machine-checked proof~\cite{afp_kruskal,afp_dfs} that the algorithm
 is the graph computation we classify it as.
 
@@ -250,7 +251,7 @@ that the problems are easy.
 \section{Conclusion}
 
 Interview problems are wide on the surface but shallow underneath. On a pre-registered random sample,
-72 of 100 problems carry a machine-checked proof that a standard accepted solution is one of four ideas
+72 of 100 problems (70 with a machine-checked proof here, 2 citing existing formal proofs) are one of four ideas
 (the single left-to-right pass is the most common); the rest are a genuine tail. And the seven firms ask
 essentially one shared syllabus. For a candidate, the takeaway is blunt: learn the four ideas deeply rather
 than fifty patterns shallowly, and prepare for ``technical interviews,'' not for any one company.

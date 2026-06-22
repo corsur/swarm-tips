@@ -174,11 +174,14 @@ def main():
         print(f"\n=== HEADLINE (honest): GENUINE problem-specific certs in the sample ===")
         print(f"  genuine {gen_in}/{n}  Wilson95 [{glo:.2f},{ghi:.2f}]   "
               f"(builds-but-not-genuine: {builds_in - gen_in}; total builds: {builds_in})")
-        proven_scheme = defaultdict(int)  # cert scheme tag, only for classified problems
+        # Use the canonical (family-rule + editorial override) scheme from the emitted rows, so this
+        # distribution matches certs.csv and the paper's Table 1 (not the raw Lean-file header tag).
+        row_scheme = {r["num"]: r["scheme"] for r in rows}
+        proven_scheme = defaultdict(int)
         for r in srows:
             num = r["num"]
-            if num in done:
-                proven_scheme[files[num]["scheme"]] += 1
+            if num in done and num in row_scheme:
+                proven_scheme[row_scheme[num]] += 1
         in_scheme = sum(proven_scheme[s] for s in ("fold", "dp", "relaxation", "bisection"))
         lo, hi = wilson(in_scheme, n)
         print(f"\nMEASURED scheme distribution by proof — uniform sample n={n} over all 769 problems:")

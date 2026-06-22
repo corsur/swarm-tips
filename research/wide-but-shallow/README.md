@@ -6,12 +6,12 @@ A paper + reproducible pipeline. Headline findings (see `paper.tex`): (1) big-te
 largely **interchangeable** in algorithmic interview profile — scheme-level bias-corrected Cramér's
 **V = 0.091** (95% bootstrap CI [0.06, 0.12], small at most); six of the seven are mutually
 indistinguishable and only **Uber** stands out (leaning on graph relaxation); (2) on a
-**pre-registered random sample** of 100 problems (seed fixed before the draw), **72 carry a
-machine-checked proof** that a standard accepted solution is one of **four recursion schemes** —
-streaming fold, DP, graph relaxation, bisection (70 checked here in Lean, 2 citing existing formal
-proofs of MST/graph-bridges); 95% Wilson [0.62, 0.80]. The other 28 are a genuine tail. Every
-classification was cross-checked against the problem's published editorial (`EDITORIAL_VERIFICATION.md`).
-So **~three-quarters of interview problems provably reduce to four ideas**, the streaming fold the
+**pre-registered random sample** of 100 problems (seed fixed before the draw), **72 are one of
+four recursion schemes** — streaming fold, DP, graph relaxation, bisection — each backed by a proof:
+70 machine-checked here in Lean, 2 citing existing formal proofs of MST (LC 1489) / graph-bridges
+(LC 1192); 95% Wilson [0.62, 0.80]. The other 28 are a genuine tail. Every classification was
+cross-checked against the problem's published editorial (`EDITORIAL_VERIFICATION.md`).
+So **~three-quarters of interview problems reduce to four ideas**, the streaming fold the
 single most common, unifying techniques memorized as unrelated (two-pointers, hashing, stack,
 prefix-sum, XOR, reversal).
 
