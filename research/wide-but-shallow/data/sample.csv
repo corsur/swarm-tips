@@ -29,7 +29,7 @@ num,family,scheme,proven
 270,bst,dp,True
 278,binary-search,bisection,True
 284,design,tail,False
-314,bfs,relaxation,False
+314,bfs,relaxation,True
 329,dp-grid,dp,True
 378,binary-search,bisection,True
 412,trivial,tail,False
@@ -61,7 +61,7 @@ num,family,scheme,proven
 1192,graph-other,relaxation,False
 1193,sql,tail,False
 1239,backtracking,dp,True
-1268,trie,dp,False
+1268,trie,dp,True
 1385,binary-search,bisection,True
 1387,math-bit,fold,False
 1438,sliding-window,fold,True

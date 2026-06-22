@@ -1,6 +1,6 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 288/577 relevant problems** (56.8% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 290/577 relevant problems** (57.1% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
@@ -25,14 +25,14 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | tree-traversal | 4 | 13 |
 | dp | bst | 5 | 12 |
 | dp | dp-tree | 3 | 12 |
-| dp | trie | 7 | 10 |
+| dp | trie | 8 | 10 |
 | dp | tree-construct | 6 | 9 |
 | dp | tree-aggregate | 6 | 8 |
 | dp | dp-interval | 3 | 7 |
 | dp | dp-knapsack | 3 | 6 |
 | dp | dp-digit | 0 | 2 |
 | dp | dp-bitmask | 1 | 2 |
-| relaxation | bfs | 16 | 31 |
+| relaxation | bfs | 17 | 31 |
 | relaxation | union-find | 9 | 17 |
 | relaxation | graph-other | 10 | 15 |
 | relaxation | dfs-flood | 4 | 10 |
@@ -182,6 +182,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `305` Number of Islands II — relaxation (O(k·α)) — `lproofs/Lproofs/Problems/Relaxation/P0305_NumberOfIslandsII.lean`
 - `309` Best Time to Buy and Sell Stock with Cooldown — dp () — `lproofs/Lproofs/Problems/DP/P0309_StockCooldown.lean`
 - `312` Burst Balloons — dp (O(n³)) — `lproofs/Lproofs/Problems/DP/P0312_BurstBalloons.lean`
+- `314` Binary Tree Vertical Order Traversal — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P0314_BinaryTreeVerticalOrder.lean`
 - `322` Coin Change — dp (O(amount·coins)) — `lproofs/Lproofs/Problems/DP/P0322_CoinChange.lean`
 - `328` Odd Even Linked List — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0328_OddEvenLinkedList.lean`
 - `329` Longest Increasing Path in a Matrix — dp () — `lproofs/Lproofs/Problems/Relaxation/P0329_LongestIncreasingPath.lean`
@@ -271,6 +272,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1209` Remove All Adjacent Duplicates in String II — fold () — `lproofs/Lproofs/Problems/Fold/P1209_RemoveAdjacentDuplicatesII.lean`
 - `1235` Maximum Profit in Job Scheduling — dp () — `lproofs/Lproofs/Problems/DP/P1235_MaxProfitJobScheduling.lean`
 - `1239` Maximum Length of a Concatenated String with Unique Characters — dp () — `lproofs/Lproofs/Problems/DP/P1239_MaxLengthConcatenatedUnique.lean`
+- `1268` Search Suggestions System — dp (O(Σ) — `lproofs/Lproofs/Problems/DP/P1268_SearchSuggestionsSystem.lean`
 - `1347` Minimum Number of Steps to Make Two Strings Anagram — fold () — `lproofs/Lproofs/Problems/Fold/P1347_MinStepsAnagram.lean`
 - `1368` Minimum Cost to Make at Least One Valid Path in a Grid — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean`
 - `1385` Find the Distance Value Between Two Arrays — bisection () — `lproofs/Lproofs/Problems/Fold/P1385_DistanceValueBetweenTwoArrays.lean`
