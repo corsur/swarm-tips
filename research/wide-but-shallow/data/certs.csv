@@ -141,7 +141,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 173,Binary Search Tree Iterator,dp,bst,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0173_BSTIterator.lean
 174,,dp,dp-grid,False,False,,,False,False,,
 186,,fold,string-other,False,False,,,False,False,,
-188,,dp,dp-knapsack,False,False,,,False,False,,
+188,Best Time to Buy and Sell Stock IV,dp,dp-knapsack,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0188_BestTimeToBuySellStockIV.lean
 189,,fold,two-pointers,False,False,,,False,False,,
 190,,fold,math-bit,False,False,,,False,False,,
 191,Number of 1 Bits,fold,math-bit,True,True,O(1),,False,True,True,lproofs/Lproofs/Problems/Fold/P0191_NumberOf1Bits.lean
@@ -365,7 +365,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 931,Minimum Falling Path Sum,dp,dp-grid,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/DP/P0931_MinFallingPathSum.lean
 934,Shortest Bridge,relaxation,bfs,True,True,O(mn),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0934_ShortestBridge.lean
 938,,dp,bst,False,False,,,False,False,,
-939,,fold,hashing,False,False,,,False,False,,
+939,Minimum Area Rectangle,fold,hashing,True,True,O(n²),,False,True,True,lproofs/Lproofs/Problems/Fold/P0939_MinimumAreaRectangle.lean
 941,Valid Mountain Array,fold,two-pointers,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0941_ValidMountainArray.lean
 953,,fold,string-other,False,False,,,False,False,,
 958,,relaxation,bfs,False,False,,,False,False,,

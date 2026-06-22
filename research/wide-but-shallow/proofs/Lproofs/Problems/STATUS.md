@@ -1,12 +1,12 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 294/577 relevant problems** (57.3% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 296/577 relevant problems** (57.3% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
-| fold | hashing | 28 | 48 |
+| fold | hashing | 29 | 48 |
 | fold | string-other | 16 | 45 |
 | fold | two-pointers | 19 | 36 |
 | fold | math-bit | 13 | 33 |
@@ -29,7 +29,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | tree-construct | 6 | 9 |
 | dp | tree-aggregate | 6 | 8 |
 | dp | dp-interval | 3 | 7 |
-| dp | dp-knapsack | 3 | 6 |
+| dp | dp-knapsack | 4 | 6 |
 | dp | dp-digit | 0 | 2 |
 | dp | dp-bitmask | 1 | 2 |
 | relaxation | bfs | 17 | 31 |
@@ -137,6 +137,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `169` Majority Element — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0169_MajorityElement.lean`
 - `172` Factorial Trailing Zeroes — fold (O(log n)) — `lproofs/Lproofs/Problems/Fold/P0172_FactorialTrailingZeroes.lean`
 - `173` Binary Search Tree Iterator — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0173_BSTIterator.lean`
+- `188` Best Time to Buy and Sell Stock IV — dp () — `lproofs/Lproofs/Problems/DP/P0188_BestTimeToBuySellStockIV.lean`
 - `191` Number of 1 Bits — fold (O(1)) — `lproofs/Lproofs/Problems/Fold/P0191_NumberOf1Bits.lean`
 - `198` House Robber — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0198_HouseRobber.lean`
 - `199` Binary Tree Right Side View — relaxation (O(n)) — `lproofs/Lproofs/Problems/DP/P0199_RightSideView.lean`
@@ -254,6 +255,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `921` Minimum Add to Make Parentheses Valid — fold () — `lproofs/Lproofs/Problems/Fold/P0921_MinAddParensValid.lean`
 - `931` Minimum Falling Path Sum — dp (O(n²)) — `lproofs/Lproofs/Problems/DP/P0931_MinFallingPathSum.lean`
 - `934` Shortest Bridge — relaxation (O(mn)) — `lproofs/Lproofs/Problems/Relaxation/P0934_ShortestBridge.lean`
+- `939` Minimum Area Rectangle — fold (O(n²)) — `lproofs/Lproofs/Problems/Fold/P0939_MinimumAreaRectangle.lean`
 - `941` Valid Mountain Array — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0941_ValidMountainArray.lean`
 - `959` Regions Cut By Slashes — relaxation (O(n^2)) — `lproofs/Lproofs/Problems/Relaxation/P0959_RegionsBySlashes.lean`
 - `983` Minimum Cost For Tickets — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0983_MinCostTickets.lean`

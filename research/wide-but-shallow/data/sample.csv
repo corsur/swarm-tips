@@ -16,7 +16,7 @@ num,family,scheme,proven
 142,fast-slow,fold,True
 177,sql,tail,False
 186,string-other,fold,False
-188,dp-knapsack,dp,False
+188,dp-knapsack,dp,True
 196,sql,tail,False
 208,trie,dp,True
 209,sliding-window,fold,True
@@ -52,7 +52,7 @@ num,family,scheme,proven
 736,string-other,fold,False
 759,merge-intervals,fold,True
 815,bfs,relaxation,True
-939,hashing,fold,False
+939,hashing,fold,True
 986,merge-intervals,fold,True
 996,backtracking,dp,True
 1146,design,tail,False
