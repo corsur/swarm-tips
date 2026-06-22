@@ -140,7 +140,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 172,Factorial Trailing Zeroes,fold,math-bit,True,True,O(log n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0172_FactorialTrailingZeroes.lean
 173,Binary Search Tree Iterator,dp,bst,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P0173_BSTIterator.lean
 174,,dp,dp-grid,False,False,,,False,False,,
-186,,fold,string-other,False,False,,,False,False,,
+186,Reverse Words in a String II,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0186_ReverseWordsII.lean
 188,Best Time to Buy and Sell Stock IV,dp,dp-knapsack,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P0188_BestTimeToBuySellStockIV.lean
 189,,fold,two-pointers,False,False,,,False,False,,
 190,,fold,math-bit,False,False,,,False,False,,
@@ -423,7 +423,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 1368,Minimum Cost to Make at Least One Valid Path in a Grid,relaxation,dijkstra,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean
 1382,,dp,bst,False,False,,,False,False,,
 1385,Find the Distance Value Between Two Arrays,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1385_DistanceValueBetweenTwoArrays.lean
-1387,,fold,math-bit,False,False,,,False,False,,
+1387,Sort Integers by The Power Value,fold,math-bit,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1387_SortByPowerValue.lean
 1404,,fold,math-bit,False,False,,,False,False,,
 1423,Maximum Points You Can Obtain from Cards,fold,sliding-window,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P1423_MaxPointsCards.lean
 1428,Leftmost Column with at Least a One,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P1428_LeftmostColumnWithOne.lean
@@ -530,7 +530,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 2661,First Completely Painted Row or Column,fold,hashing,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P2661_FirstCompletelyPainted.lean
 2768,,fold,hashing,False,False,,,False,False,,
 2784,,fold,hashing,False,False,,,False,False,,
-2791,,dp,dp-tree,False,False,,,False,False,,
+2791,Count Paths That Can Form a Palindrome in a Tree,dp,dp-tree,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P2791_CountPalindromePathsInTree.lean
 2817,,fold,sliding-window,False,False,,,False,False,,
 2828,,fold,string-other,False,False,,,False,False,,
 2848,,fold,diff-array,False,False,,,False,False,,
@@ -562,7 +562,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 3419,,relaxation,dijkstra,False,False,,,False,False,,
 3434,,fold,sliding-window,False,False,,,False,False,,
 3453,Separate Squares I,bisection,binary-search,True,True,O(n log),,False,True,True,lproofs/Lproofs/Problems/Bisection/P3453_SeparateSquares.lean
-3466,,dp,dp-grid,False,False,,,False,False,,
+3466,Maximum Coin Collection,dp,dp-grid,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/DP/P3466_MaximumCoinCollection.lean
 3481,,fold,string-other,False,False,,,False,False,,
 3488,,fold,hashing,False,False,,,False,False,,
 3522,,fold,string-other,False,False,,,False,False,,
@@ -572,7 +572,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 3652,,dp,dp-linear,False,False,,,False,False,,
 3660,,dp,dp-linear,False,False,,,False,False,,
 3741,Minimum Distance Between Three Equal Elements II,fold,hashing,True,True,,,False,True,True,lproofs/Lproofs/Problems/Fold/P3741_MinDistThreeEqual.lean
-3742,,dp,dp-grid,False,False,,,False,False,,
+3742,Maximum Path Score in a Grid,dp,dp-grid,True,True,O(m·n·k),,False,True,True,lproofs/Lproofs/Problems/DP/P3742_MaximumPathScoreInGrid.lean
 3761,,fold,hashing,False,False,,,False,False,,
 3872,,dp,dp-linear,False,False,,,False,False,,
 3928,Minimum Cost to Buy Apples II,relaxation,dijkstra,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P3928_MinimumCosttoBuyApples.lean

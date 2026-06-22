@@ -15,7 +15,7 @@ num,family,scheme,proven
 139,dp-linear,dp,True
 142,fast-slow,fold,True
 177,sql,tail,False
-186,string-other,fold,False
+186,string-other,fold,True
 188,dp-knapsack,dp,True
 196,sql,tail,False
 208,trie,dp,True
@@ -63,7 +63,7 @@ num,family,scheme,proven
 1239,backtracking,dp,True
 1268,trie,dp,True
 1385,binary-search,bisection,True
-1387,math-bit,fold,False
+1387,math-bit,fold,True
 1438,sliding-window,fold,True
 1472,design,tail,False
 1489,union-find,relaxation,False
@@ -84,7 +84,7 @@ num,family,scheme,proven
 2423,hashing,fold,True
 2493,graph-other,relaxation,True
 2551,greedy,tail,False
-2791,dp-tree,dp,False
+2791,dp-tree,dp,True
 2858,graph-other,relaxation,True
 2861,binary-search,bisection,True
 2912,dp-grid,dp,True
@@ -95,7 +95,7 @@ num,family,scheme,proven
 3043,trie,dp,True
 3371,hashing,fold,True
 3453,binary-search,bisection,True
-3466,dp-grid,dp,False
+3466,dp-grid,dp,True
 3629,bfs,relaxation,True
-3742,dp-grid,dp,False
+3742,dp-grid,dp,True
 3914,greedy,tail,False

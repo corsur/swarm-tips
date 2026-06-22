@@ -1,15 +1,15 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 296/577 relevant problems** (57.3% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 301/577 relevant problems** (57.6% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
 | fold | hashing | 29 | 48 |
-| fold | string-other | 16 | 45 |
+| fold | string-other | 17 | 45 |
 | fold | two-pointers | 19 | 36 |
-| fold | math-bit | 13 | 33 |
+| fold | math-bit | 14 | 33 |
 | fold | linked-list | 11 | 21 |
 | fold | sliding-window | 11 | 21 |
 | fold | monotonic-stack | 7 | 19 |
@@ -21,10 +21,10 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | fold | dutch-flag | 1 | 1 |
 | dp | dp-linear | 17 | 33 |
 | dp | backtracking | 14 | 29 |
-| dp | dp-grid | 11 | 25 |
+| dp | dp-grid | 13 | 25 |
 | dp | tree-traversal | 4 | 13 |
 | dp | bst | 5 | 12 |
-| dp | dp-tree | 3 | 12 |
+| dp | dp-tree | 4 | 12 |
 | dp | trie | 8 | 10 |
 | dp | tree-construct | 6 | 9 |
 | dp | tree-aggregate | 6 | 8 |
@@ -137,6 +137,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `169` Majority Element — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0169_MajorityElement.lean`
 - `172` Factorial Trailing Zeroes — fold (O(log n)) — `lproofs/Lproofs/Problems/Fold/P0172_FactorialTrailingZeroes.lean`
 - `173` Binary Search Tree Iterator — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0173_BSTIterator.lean`
+- `186` Reverse Words in a String II — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0186_ReverseWordsII.lean`
 - `188` Best Time to Buy and Sell Stock IV — dp () — `lproofs/Lproofs/Problems/DP/P0188_BestTimeToBuySellStockIV.lean`
 - `191` Number of 1 Bits — fold (O(1)) — `lproofs/Lproofs/Problems/Fold/P0191_NumberOf1Bits.lean`
 - `198` House Robber — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0198_HouseRobber.lean`
@@ -280,6 +281,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `1347` Minimum Number of Steps to Make Two Strings Anagram — fold () — `lproofs/Lproofs/Problems/Fold/P1347_MinStepsAnagram.lean`
 - `1368` Minimum Cost to Make at Least One Valid Path in a Grid — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P1368_MinCostValidPath.lean`
 - `1385` Find the Distance Value Between Two Arrays — bisection () — `lproofs/Lproofs/Problems/Fold/P1385_DistanceValueBetweenTwoArrays.lean`
+- `1387` Sort Integers by The Power Value — fold () — `lproofs/Lproofs/Problems/Fold/P1387_SortByPowerValue.lean`
 - `1423` Maximum Points You Can Obtain from Cards — fold () — `lproofs/Lproofs/Problems/Fold/P1423_MaxPointsCards.lean`
 - `1428` Leftmost Column with at Least a One — bisection () — `lproofs/Lproofs/Problems/Bisection/P1428_LeftmostColumnWithOne.lean`
 - `1438` Longest Continuous Subarray With Absolute Diff ≤ Limit — fold () — `lproofs/Lproofs/Problems/Fold/P1438_LongestSubarrayLimit.lean`
@@ -323,6 +325,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2493` Divide Nodes Into the Maximum Number of Groups — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2493_DivideNodesMaxGroups.lean`
 - `2503` Maximum Number of Points From Grid Queries — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean`
 - `2661` First Completely Painted Row or Column — fold () — `lproofs/Lproofs/Problems/Fold/P2661_FirstCompletelyPainted.lean`
+- `2791` Count Paths That Can Form a Palindrome in a Tree — dp () — `lproofs/Lproofs/Problems/DP/P2791_CountPalindromePathsInTree.lean`
 - `2858` Minimum Edge Reversals for All Reachable — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
 - `2861` Maximum Number of Alloys — bisection () — `lproofs/Lproofs/Problems/Bisection/P2861_MaximumNumberOfAlloys.lean`
 - `2912` Number of Ways to Reach Destination in the Grid — dp () — `lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean`
@@ -335,7 +338,9 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `3371` Identify the Largest Outlier in an Array — fold () — `lproofs/Lproofs/Problems/Fold/P3371_LargestOutlier.lean`
 - `3387` Graph Reachability — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P3387_Reach.lean`
 - `3453` Separate Squares I — bisection (O(n log)) — `lproofs/Lproofs/Problems/Bisection/P3453_SeparateSquares.lean`
+- `3466` Maximum Coin Collection — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P3466_MaximumCoinCollection.lean`
 - `3629` Minimum Jumps to Reach End via Prime Teleportation — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P3629_PrimeTeleportation.lean`
 - `3637` Trionic Array I — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P3637_TrionicArray.lean`
 - `3741` Minimum Distance Between Three Equal Elements II — fold () — `lproofs/Lproofs/Problems/Fold/P3741_MinDistThreeEqual.lean`
+- `3742` Maximum Path Score in a Grid — dp (O(m·n·k)) — `lproofs/Lproofs/Problems/DP/P3742_MaximumPathScoreInGrid.lean`
 - `3928` Minimum Cost to Buy Apples II — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P3928_MinimumCosttoBuyApples.lean`
