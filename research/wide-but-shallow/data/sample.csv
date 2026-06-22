@@ -38,7 +38,7 @@ num,family,scheme,proven
 505,dijkstra,relaxation,True
 516,dp-interval,dp,True
 535,design,tail,False
-536,tree-construct,dp,False
+536,tree-construct,dp,True
 541,string-other,fold,True
 543,tree-aggregate,dp,True
 577,sql,tail,False
@@ -49,7 +49,7 @@ num,family,scheme,proven
 647,string-other,fold,True
 670,greedy,tail,False
 719,binary-search,bisection,True
-736,string-other,fold,False
+736,string-other,fold,True
 759,merge-intervals,fold,True
 815,bfs,relaxation,True
 939,hashing,fold,True

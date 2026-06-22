@@ -1,13 +1,13 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 301/577 relevant problems** (57.6% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 303/577 relevant problems** (57.6% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
 | scheme | family | certified | total |
 |---|---|--:|--:|
 | fold | hashing | 29 | 48 |
-| fold | string-other | 17 | 45 |
+| fold | string-other | 18 | 45 |
 | fold | two-pointers | 19 | 36 |
 | fold | math-bit | 14 | 33 |
 | fold | linked-list | 11 | 21 |
@@ -26,7 +26,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | bst | 5 | 12 |
 | dp | dp-tree | 4 | 12 |
 | dp | trie | 8 | 10 |
-| dp | tree-construct | 6 | 9 |
+| dp | tree-construct | 7 | 9 |
 | dp | tree-aggregate | 6 | 8 |
 | dp | dp-interval | 3 | 7 |
 | dp | dp-knapsack | 4 | 6 |
@@ -214,6 +214,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `509` Fibonacci Number — dp (O(n)) — `lproofs/Lproofs/Problems/DP/P0509_Fibonacci.lean`
 - `516` Longest Palindromic Subsequence — dp (O(n²)) — `lproofs/Lproofs/Problems/DP/P0516_LongestPalindromicSubseq.lean`
 - `528` Random Pick with Weight — bisection () — `lproofs/Lproofs/Problems/Bisection/P0528_RandomPickWeight.lean`
+- `536` Construct Binary Tree from String — dp () — `lproofs/Lproofs/Problems/DP/P0536_ConstructBinaryTreeFromString.lean`
 - `540` Single Element in a Sorted Array — bisection () — `lproofs/Lproofs/Problems/Bisection/P0540_SingleElementSorted.lean`
 - `541` Reverse String II — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0541_ReverseStringII.lean`
 - `542` 01 Matrix — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P0542_01Matrix.lean`
@@ -237,6 +238,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `724` Find Pivot Index — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0724_FindPivotIndex.lean`
 - `733` Flood Fill — relaxation (O(n)) — `lproofs/Lproofs/Problems/Relaxation/P0733_FloodFill.lean`
 - `735` Asteroid Collision — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0735_AsteroidCollision.lean`
+- `736` Parse Lisp Expression — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0736_ParseLispExpression.lean`
 - `759` Employee Free Time — fold (O(n log n)) — `lproofs/Lproofs/Problems/Fold/P0759_EmployeeFreeTime.lean`
 - `778` Swim in Rising Water — relaxation (O(V log V)) — `lproofs/Lproofs/Problems/Relaxation/P0778_SwiminRisingWater.lean`
 - `785` Is Graph Bipartite? — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P0785_IsGraphBipartite.lean`

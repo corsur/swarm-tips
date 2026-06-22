@@ -1,0 +1,48 @@
+import Lproofs.Schemes.Fold
+
+/-! @lc 536 | name:Construct Binary Tree from String | scheme:dp | family:tree-construct |
+    complexity:O(n) | source:https://leetcode.com/problems/construct-binary-tree-from-string/
+
+    A string like `4(2(3)(1))(6(5))` encodes a tree: a node value followed by parenthesised left and
+    right subtrees. The accepted solution is a recursive-descent parse; its inverse, serialization, is
+    the matching tree catamorphism `value · "(" left ")" "(" right ")"`. CLASSIFICATION (dp): the tree
+    encoding is a catamorphism. CORRECTNESS (soundness, not full parser correctness): we certify that
+    serialization preserves every node --- every value in the tree appears in the serialized token
+    stream, so the encoding drops nothing. -/
+
+namespace LC.P0536
+
+abbrev T := Interview.Patterns.Tree ℤ
+
+/-- In-order node values. -/
+def inorder : T → List ℤ
+  | .leaf => []
+  | .node l v r => inorder l ++ v :: inorder r
+
+/-- The value-token stream of the string encoding (value, then left then right subtree tokens). -/
+def serialize : T → List ℤ
+  | .leaf => []
+  | .node l v r => v :: (serialize l ++ serialize r)
+
+/-- SCHEME (dp / catamorphism): the encoding is a genuine `Tree.fold`. -/
+theorem cls : (serialize : T → List ℤ) =
+    Interview.Patterns.Tree.fold [] (fun l v r => v :: (l ++ r)) := by
+  funext t
+  induction t with
+  | leaf => rfl
+  | node l v r ihl ihr => simp [serialize, Interview.Patterns.Tree.fold, ihl, ihr]
+
+/-- CORRECT (soundness): every node value appears in the serialized token stream --- the encoding
+    preserves all nodes. -/
+theorem corr (t : T) (x : ℤ) (h : x ∈ inorder t) : x ∈ serialize t := by
+  induction t with
+  | leaf => simp [inorder] at h
+  | node l v r ihl ihr =>
+    simp only [inorder, List.mem_append, List.mem_cons] at h
+    simp only [serialize, List.mem_cons, List.mem_append]
+    rcases h with h | h | h
+    · exact Or.inr (Or.inl (ihl h))
+    · exact Or.inl h
+    · exact Or.inr (Or.inr (ihr h))
+
+end LC.P0536
