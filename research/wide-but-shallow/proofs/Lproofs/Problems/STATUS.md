@@ -7,7 +7,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | scheme | family | certified | total |
 |---|---|--:|--:|
 | fold | hashing | 29 | 48 |
-| fold | string-other | 18 | 45 |
+| fold | string-other | 17 | 44 |
 | fold | two-pointers | 19 | 36 |
 | fold | math-bit | 14 | 33 |
 | fold | linked-list | 11 | 21 |
@@ -23,8 +23,8 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | backtracking | 14 | 29 |
 | dp | dp-grid | 13 | 25 |
 | dp | tree-traversal | 4 | 13 |
-| dp | bst | 5 | 12 |
 | dp | dp-tree | 4 | 12 |
+| dp | bst | 4 | 11 |
 | dp | trie | 8 | 10 |
 | dp | tree-construct | 7 | 9 |
 | dp | tree-aggregate | 6 | 8 |
@@ -32,6 +32,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | dp | dp-knapsack | 4 | 6 |
 | dp | dp-digit | 0 | 2 |
 | dp | dp-bitmask | 1 | 2 |
+| dp | string-other | 1 | 1 |
 | relaxation | bfs | 17 | 31 |
 | relaxation | union-find | 10 | 17 |
 | relaxation | graph-other | 10 | 15 |
@@ -40,6 +41,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | relaxation | dijkstra | 4 | 9 |
 | relaxation | bellman-ford | 1 | 1 |
 | bisection | binary-search | 31 | 43 |
+| bisection | bst | 1 | 1 |
 
 ## Certified problems
 
@@ -172,7 +174,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `258` Add Digits — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0258_AddDigits.lean`
 - `268` Missing Number — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0268_MissingNumber.lean`
 - `269` Alien Dictionary — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P0269_AlienDictionary.lean`
-- `270` Closest Binary Search Tree Value — dp (O(h)) — `lproofs/Lproofs/Problems/DP/P0270_ClosestBSTValue.lean`
+- `270` Closest Binary Search Tree Value — bisection (O(h)) — `lproofs/Lproofs/Problems/DP/P0270_ClosestBSTValue.lean`
 - `274` H-Index — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0274_HIndex.lean`
 - `277` Find the Celebrity — relaxation (O(n)) — `lproofs/Lproofs/Problems/Fold/P0277_FindCelebrity.lean`
 - `278` First Bad Version — bisection (O(log n)) — `lproofs/Lproofs/Problems/Bisection/P0278_FirstBadVersion.lean`
@@ -238,7 +240,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `724` Find Pivot Index — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0724_FindPivotIndex.lean`
 - `733` Flood Fill — relaxation (O(n)) — `lproofs/Lproofs/Problems/Relaxation/P0733_FloodFill.lean`
 - `735` Asteroid Collision — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0735_AsteroidCollision.lean`
-- `736` Parse Lisp Expression — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0736_ParseLispExpression.lean`
+- `736` Parse Lisp Expression — dp (O(n)) — `lproofs/Lproofs/Problems/Fold/P0736_ParseLispExpression.lean`
 - `759` Employee Free Time — fold (O(n log n)) — `lproofs/Lproofs/Problems/Fold/P0759_EmployeeFreeTime.lean`
 - `778` Swim in Rising Water — relaxation (O(V log V)) — `lproofs/Lproofs/Problems/Relaxation/P0778_SwiminRisingWater.lean`
 - `785` Is Graph Bipartite? — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P0785_IsGraphBipartite.lean`

@@ -191,7 +191,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 266,,fold,hashing,False,False,,,False,False,,
 268,Missing Number,fold,math-bit,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0268_MissingNumber.lean
 269,Alien Dictionary,relaxation,topo-sort,True,True,O(V+E),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0269_AlienDictionary.lean
-270,Closest Binary Search Tree Value,dp,bst,True,True,O(h),,False,True,True,lproofs/Lproofs/Problems/DP/P0270_ClosestBSTValue.lean
+270,Closest Binary Search Tree Value,bisection,bst,True,True,O(h),,False,True,True,lproofs/Lproofs/Problems/DP/P0270_ClosestBSTValue.lean
 273,,fold,string-other,False,False,,,False,False,,
 274,H-Index,fold,hashing,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0274_HIndex.lean
 277,Find the Celebrity,relaxation,graph-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0277_FindCelebrity.lean
@@ -321,7 +321,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 724,Find Pivot Index,fold,prefix-sum,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0724_FindPivotIndex.lean
 733,Flood Fill,relaxation,dfs-flood,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Relaxation/P0733_FloodFill.lean
 735,Asteroid Collision,fold,pairing-stack,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0735_AsteroidCollision.lean
-736,Parse Lisp Expression,fold,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0736_ParseLispExpression.lean
+736,Parse Lisp Expression,dp,string-other,True,True,O(n),,False,True,True,lproofs/Lproofs/Problems/Fold/P0736_ParseLispExpression.lean
 739,,fold,monotonic-stack,False,False,,,False,False,,
 741,,dp,dp-grid,False,False,,,False,False,,
 743,,relaxation,dijkstra,False,False,,,False,False,,

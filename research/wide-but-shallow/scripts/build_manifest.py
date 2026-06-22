@@ -97,9 +97,14 @@ def main():
         if r:
             files[r["num"]] = r
 
+    # Editorial-verified per-problem scheme overrides (EDITORIAL_VERIFICATION.md, 2026-06-22): the
+    # published editorial's canonical approach differs from the family-rule's initial guess for these two,
+    # so the editorial verdict governs the scheme tag. Both remain one of the four.
+    scheme_override = {"270": "bisection", "736": "dp"}
+
     rows = []
     for num, fam in sorted(relevant.items(), key=lambda x: int(x[0])):
-        sch = SCHEME.get(fam, "tail")
+        sch = scheme_override.get(num, SCHEME.get(fam, "tail"))
         f = files.get(num)
         rows.append({**f, "num": num, "family": fam, "scheme": sch} if f else
                     {"num": num, "name": "", "scheme": sch, "family": fam, "complexity": "",
