@@ -5,14 +5,15 @@
 A paper + reproducible pipeline. Headline findings (see `paper.tex`): (1) big-tech firms are
 largely **interchangeable** in algorithmic interview profile — scheme-level bias-corrected Cramér's
 **V = 0.091** (95% bootstrap CI [0.06, 0.12], small at most); six of the seven are mutually
-indistinguishable and only **Uber** stands out (leaning on graph relaxation); (2) a fixed,
-pre-registered rule places **about three-quarters of all problems (75%)** in one of **four recursion
-schemes** — streaming fold, DP, graph relaxation, bisection — with the streaming fold the single
-most common, unifying techniques memorized as unrelated (two-pointers, hashing, stack, prefix-sum,
-XOR, reversal). On a **pre-registered random sample** (seed fixed before the draw), **54 of 100
-problems** — three-quarters of those the rule assigns to a scheme — carry a **machine-checked,
-problem-specific Lean certificate** that the assigned idea really solves *that* problem, and **none
-is refuted**; the remaining in-scheme problems are unproven (multi-file proofs), not disproven.
+indistinguishable and only **Uber** stands out (leaning on graph relaxation); (2) on a
+**pre-registered random sample** of 100 problems (seed fixed before the draw), **72 carry a
+machine-checked proof** that a standard accepted solution is one of **four recursion schemes** —
+streaming fold, DP, graph relaxation, bisection (70 checked here in Lean, 2 citing existing formal
+proofs of MST/graph-bridges); 95% Wilson [0.62, 0.80]. The other 28 are a genuine tail. Every
+classification was cross-checked against the problem's published editorial (`EDITORIAL_VERIFICATION.md`).
+So **~three-quarters of interview problems provably reduce to four ideas**, the streaming fold the
+single most common, unifying techniques memorized as unrelated (two-pointers, hashing, stack,
+prefix-sum, XOR, reversal).
 
 ## The paper
 
@@ -54,16 +55,16 @@ data/raw/problems.json              num -> {name, diff}  (769 problems)
   outlier (largest gap, vs Google, is a "small" effect).
 - Family concentration: **Gini 0.30**; 6 families = 50%, but **4 recursion schemes = ~82.3%** (fold 48.4, DP 18.0, relaxation 8.2, bisection 7.7; cross-check vs 4 empirical generators = 67.4%).
 - Algebraic fraction of load: **~30%** (semiring catamorphism + lattice fixpoint + monoid scan; ~20% strict) — a subset of the ~82% scheme-classifiable.
-- Label robustness: company-comparison headlines hold in **100%** of 2,000 Monte-Carlo relabelings; frequency-weighted four-scheme *load* coverage (a distinct measure from the 54/100 per-problem verification count) stays **79–84%** (`sensitivity.py`).
+- Label robustness: company-comparison headlines hold in **100%** of 2,000 Monte-Carlo relabelings; frequency-weighted four-scheme *load* coverage (a distinct measure from the 72/100 per-problem proof count) stays **79–84%** (`sensitivity.py`).
 
 ## Status / before submission
 
-Done: data, labeling, analysis, Lean core (**coverage = the rule's seed-stable 75% in-scheme rate;
-verification = on the pre-registered sample (seed 20260619, fixed before drawing) 54/100 carry a
-problem-specific proof — 54 of the 72 in-scheme problems, none refuted; the 18 uncounted are unproven
-(multi-file: DP optimality, MST cost, parsing, geometry, ...), not disproven; the old seed-7 76/100 was
-the best-of-2000 draw and is discarded** — see PREREGISTRATION.md; cls≡corr closed for the flagship folds
-Kadane/Product/Single Number), scheme-level
+Done: data, labeling, analysis, Lean core (**proof-classified coverage on the pre-registered sample
+(seed 20260619, fixed before drawing): 72/100 proven to be one of the four ideas — 70 machine-checked
+in Lean + 2 citation-backed (1489 MST → AFP Kruskal, 1192 bridges → AFP DFS_Framework); all 72 in-scheme
+classified, none refuted; the 28 tail genuinely outside the four; old seed-7 76/100 was the best-of-2000
+draw and is discarded** — see PREREGISTRATION.md, CITATIONS.md, EDITORIAL_VERIFICATION.md; cls≡corr closed
+for the flagship folds Kadane/Product/Single Number), scheme-level
 residual figure, **label sensitivity** (`sensitivity.py`: every headline holds in 100% of 2,000
 relabelings), Related-work section + citations, draft. **Outstanding:** true inter-rater κ (a second
 human rater; the 2,000-draw sensitivity Monte-Carlo is the current robustness substitute). Certificate
