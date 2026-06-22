@@ -53,7 +53,8 @@ NOT_GENUINE = {
     "1368": "generic reachable-set (0-1 BFS min-cost is the real content)",
     "1584": "generic reachable-set (MST cost is the real, multi-file content)",
     "1719": "generic reachable-set (tree-reconstruction count is the real content)",
-    "2858": "generic reachable-set (0-1 BFS min-reversals is the real content)",
+    # 2858 RECOVERED 2026-06-22: it is a tree (unique root->node paths), so min-reversals is not a
+    # minimisation but a deterministic re-rooting DP; certified via the +/-1 re-rooting recurrence.
     "3387": "generic reachable-set (canonical bare reachability)",
     "212": "generic reachable-set (grid word-search backtracking is the real content)",
     # dp/fold — vacuous, re-export, definitional, or abstract window predicate

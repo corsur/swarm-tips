@@ -328,7 +328,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `2503` Maximum Number of Points From Grid Queries — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2503_MaxPointsGridQueries.lean`
 - `2661` First Completely Painted Row or Column — fold () — `lproofs/Lproofs/Problems/Fold/P2661_FirstCompletelyPainted.lean`
 - `2791` Count Paths That Can Form a Palindrome in a Tree — dp () — `lproofs/Lproofs/Problems/DP/P2791_CountPalindromePathsInTree.lean`
-- `2858` Minimum Edge Reversals for All Reachable — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean`
+- `2858` Minimum Edge Reversals So Every Node Is Reachable — relaxation () — `lproofs/Lproofs/Problems/DP/P2858_MinEdgeReversals.lean`
 - `2861` Maximum Number of Alloys — bisection () — `lproofs/Lproofs/Problems/Bisection/P2861_MaximumNumberOfAlloys.lean`
 - `2912` Number of Ways to Reach Destination in the Grid — dp () — `lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean`
 - `2948` Make Lexicographically Smallest Array by Swapping Elements — relaxation () — `lproofs/Lproofs/Problems/Relaxation/P2948_LexSmallestBySwapping.lean`

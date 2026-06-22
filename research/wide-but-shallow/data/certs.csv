@@ -534,7 +534,7 @@ num,name,scheme,family,cls,corr,complexity,source,sorry,done,genuine,file
 2817,,fold,sliding-window,False,False,,,False,False,,
 2828,,fold,string-other,False,False,,,False,False,,
 2848,,fold,diff-array,False,False,,,False,False,,
-2858,Minimum Edge Reversals for All Reachable,relaxation,graph-other,True,True,,,False,True,False,lproofs/Lproofs/Problems/Relaxation/P2858_Reach.lean
+2858,Minimum Edge Reversals So Every Node Is Reachable,relaxation,graph-other,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P2858_MinEdgeReversals.lean
 2861,Maximum Number of Alloys,bisection,binary-search,True,True,,,False,True,True,lproofs/Lproofs/Problems/Bisection/P2861_MaximumNumberOfAlloys.lean
 2906,,fold,prefix-sum,False,False,,,False,False,,
 2912,Number of Ways to Reach Destination in the Grid,dp,dp-grid,True,True,,,False,True,True,lproofs/Lproofs/Problems/DP/P2912_NumberOfWaysGrid.lean
