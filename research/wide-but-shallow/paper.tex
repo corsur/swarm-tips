@@ -33,8 +33,8 @@ twenty ``patterns'' you are told to learn are really \textbf{four underlying ide
 pass (a \emph{fold}), divide-and-solve recursion (dynamic programming), spreading information across a graph
 until it settles, and binary search. To put a number on this without hand-waving, we take a
 \emph{pre-registered} random sample of 100 problems and, for each, prove with the Lean proof assistant that a
-standard accepted solution really is one of the four ideas. \textbf{72 of the 100 carry such a proof} (70
-machine-checked here, 2 citing existing formal proofs); the other 28 are a genuine ``tail'' that fits no
+standard accepted solution really is one of the four ideas. \textbf{71 of the 100 carry such a proof} (69
+machine-checked here, 2 citing existing formal proofs); the other 29 are a genuine ``tail'' that fits no
 single idea. Every classification was checked against the problem's published editorial. So about
 \textbf{three-quarters of interview problems reduce to four ideas}, each backed by a machine-checked
 proof (two by a cited one), and the single pass is the most
@@ -97,25 +97,28 @@ uncertainty.
 \toprule
 Recursion scheme & textbook families it subsumes & in scheme & Lean witness \\
 \midrule
-streaming fold & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, linked-list, bit-XOR, string-scan & 28 & \texttt{IsFold} \\
+streaming fold & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, linked-list, bit-XOR, string-scan & 27 & \texttt{IsFold} \\
 recursive decomposition (DP) & dynamic programming, backtracking, tree, trie & 25 & catamorphism \\
 graph relaxation & BFS/DFS, Dijkstra, Bellman--Ford, topo-sort, union--find & 11 & least fixpoint \\
 bisection & binary search (monotone predicate) & 8 & monotone threshold \\
 \midrule
-\textbf{one of the four} & & \textbf{72} & \\
+\textbf{one of the four} & & \textbf{71} & \\
 not a scheme & design, simulation, heaps, number theory, geometry, string matching, $\dots$ & --- & \\
 \bottomrule
 \end{tabular}
 \caption{The roughly twenty surface families collapse onto four recursion schemes. On a pre-registered
 random sample of 100 distinct problems (the seed fixed before the draw; Section~\ref{sec:lean}), ``in
-scheme'' counts the problems classified into each idea. 72 of the 100 are one of the four---70 with a
+scheme'' counts the problems classified into each idea. 71 of the 100 are one of the four---69 with a
 machine-checked proof here, and 2 (minimum spanning tree, LC~1489; graph bridges, LC~1192) citing an
 existing formal proof of the heavy algorithm~\cite{afp_kruskal,afp_dfs}, both falling under graph
-relaxation; 95\% Wilson interval $[0.62,0.80]$. The remaining 28 are the genuine tail. Every classification was checked against the problem's published editorial. The ``Lean
+relaxation; 95\% Wilson interval $[0.61,0.79]$. The remaining 29 are the genuine tail. Every classification was checked against the problem's published editorial. The ``Lean
 witness'' is the formal test each scheme is checked against (a \emph{catamorphism} is a fold over a tree; a
-\emph{least fixpoint} is where graph relaxation settles). Proof strength varies: full correctness for the
-flagship folds of Section~\ref{sec:lean}, a one-directional property (e.g.\ ``everything it reports
-is valid'') otherwise.}
+\emph{least fixpoint} is where graph relaxation settles). Proof strength varies across the 69 checked here:
+29 prove the exact answer (an \texttt{IsLeast}, a closed form, an iff, or an exact reconstruction), 22 an
+exact identity or invariant the algorithm rests on, and 18 a one-directional guarantee (soundness ---
+``everything it reports is valid'' --- a bound, or monotonicity); three flagship folds (Maximum Subarray,
+Single Number, Product Except Self) close the gap entirely, proving the accepted one-pass code itself
+correct.}
 \label{tab:schemes}
 \end{table}
 
@@ -125,9 +128,9 @@ usual measure, interview preparation \emph{looks} like a long, flat list. This i
 industry sells.
 
 \paragraph{Shallow root.} But that breadth is mostly repackaging. Sorting the same problems by the
-\emph{shape} of their standard solution, about three-quarters reduce to just four ideas---\textbf{72 of a
+\emph{shape} of their standard solution, about three-quarters reduce to just four ideas---\textbf{71 of a
 random sample of 100, each backed by a machine-checked proof} (Section~\ref{sec:lean}; 95\% interval
-$[62\%,80\%]$)---with the single left-to-right pass the most common. Tricks memorized as unrelated---prefix
+$[61\%,79\%]$)---with the single left-to-right pass the most common. Tricks memorized as unrelated---prefix
 sums, the XOR trick, a hash ``seen set,'' reversing a list, matching parentheses with a stack, the sliding
 window---are the \emph{same} pass; they differ only in what running value they carry. The variety is in the
 bookkeeping, not in the computation. The remaining quarter---bespoke data structures, simulation, geometry,
@@ -182,19 +185,20 @@ formalize than others. An earlier draft drew from a seed we had, in effect, chos
 one sample to near-completion, which measures how hard we worked, not how often the four ideas hold (checked
 afterward, it was the best-scoring draw out of 2000). We discarded it, fixed a new seed \emph{before drawing}
 (recorded in the released \texttt{PREREGISTRATION.md}), and report whatever it yields. On that sample,
-\textbf{72 of 100 problems} are proven to be one of the four ideas; the other 28 are the genuine tail. Of the
-72, \textbf{70 are machine-checked here}; the remaining two---finding a minimum spanning tree (LC~1489) and
+\textbf{71 of 100 problems} are proven to be one of the four ideas; the other 29 are the genuine tail. Of the
+71, \textbf{69 are machine-checked here}; the remaining two---finding a minimum spanning tree (LC~1489) and
 finding the bridges of a graph (LC~1192)---rest on a classic algorithm whose correctness is itself a
 substantial formalization, so
 rather than redo it we cite an existing machine-checked proof~\cite{afp_kruskal,afp_dfs} that the algorithm
 is the graph computation we classify it as.
 
 \textbf{Checked against the editorials.} The proofs are about solutions we \emph{model}; to guard against
-modelling a convenient strawman, we cross-checked every one of the 72 against the problem's published
-editorial and confirmed the standard accepted solution really is the idea we assigned. Three needed a note:
-two were a different one of the four than our first guess (we relabelled them---both still in scope), and one
-(Add Digits) has a constant-time arithmetic shortcut as its \emph{optimal} solution, though the
-single-pass version is an accepted editorial approach too. None fell outside the four.
+modelling a convenient strawman, we cross-checked every candidate against the problem's published editorial
+and confirmed the standard accepted solution really is the idea we assigned. Three needed a note: two were a
+different one of the four than our first guess (we relabelled them---both still in scope), and one (Add
+Digits) we moved to the tail, because its \emph{optimal} accepted solution is a constant-time arithmetic
+formula outside the four---a single-pass solution also passes, but we count it conservatively as tail. That
+move is why the count is 71, not 72.
 
 \textbf{What this does and does not show.} We prove that a solution of the right shape solves the problem; we
 do not prove it is byte-for-byte the platform's accepted code (our model captures the solution's structure,
@@ -232,12 +236,12 @@ window, not the full distribution, so the rare tail is truncated; the company co
 the distributions, where the data are densest. \textbf{Borrowed labels.} The family-to-idea rule is ours, but
 the surface-family tags it starts from are the platform's---single-source and un-audited---so the ``wide
 surface'' count inherits whatever splits that taxonomy chose. \textbf{We model the solution, not the submission.} The proofs are about a solution we write down to capture
-the standard accepted approach, not the platform's exact code; we checked all 72 against the published
+the standard accepted approach, not the platform's exact code; we checked every candidate against the published
 editorials to guard against strawmen, but ``this captures the accepted approach'' remains a modelling
 judgement, not something the proof itself certifies. \textbf{Which idea is a choice.} The proof shows a
 problem \emph{can} be solved by an idea; it does not certify that ``which idea it is'' is the only sensible
-way to describe what an interview tests. \textbf{A single-sample estimate.} 72\% comes from one
-pre-registered sample, so the 95\% interval $[62\%,80\%]$, not the point value, is the honest summary; it
+way to describe what an interview tests. \textbf{A single-sample estimate.} 71\% comes from one
+pre-registered sample, so the 95\% interval $[61\%,79\%]$, not the point value, is the honest summary; it
 errs low if anything, since the four ideas absorb some borderline ``greedy''/``simulation'' problems we left
 in the tail. \textbf{Window dependence.} The company difference is not
 constant across recency windows: the bias-corrected \V\ ranges from below its noise floor in the short windows
@@ -251,7 +255,7 @@ that the problems are easy.
 \section{Conclusion}
 
 Interview problems are wide on the surface but shallow underneath. On a pre-registered random sample,
-72 of 100 problems (70 with a machine-checked proof here, 2 citing existing formal proofs) are one of four ideas
+71 of 100 problems (69 with a machine-checked proof here, 2 citing existing formal proofs) are one of four ideas
 (the single left-to-right pass is the most common); the rest are a genuine tail. And the seven firms ask
 essentially one shared syllabus. For a candidate, the takeaway is blunt: learn the four ideas deeply rather
 than fifty patterns shallowly, and prepare for ``technical interviews,'' not for any one company.
@@ -259,7 +263,7 @@ than fifty patterns shallowly, and prepare for ``technical interviews,'' not for
 \section*{Reproducibility and AI-use disclosure}
 
 All derived statistics, the pre-registration of the sampling seed (\texttt{PREREGISTRATION.md}, committed
-before the sample was drawn or scored), the per-problem proof list (from which the 72/100 re-derives), the
+before the sample was drawn or scored), the per-problem proof list (from which the 71/100 re-derives), the
 editorial cross-check, and the complete Lean development are released. The gate that decides which proofs
 count is a released, mechanical script, so the count is reproducible rather than a matter of our judgement.
 The raw per-company frequency tables are withheld under the platform's terms, so the headline numbers

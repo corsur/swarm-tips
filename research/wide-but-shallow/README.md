@@ -6,10 +6,10 @@ A paper + reproducible pipeline. Headline findings (see `paper.tex`): (1) big-te
 largely **interchangeable** in algorithmic interview profile — scheme-level bias-corrected Cramér's
 **V = 0.091** (95% bootstrap CI [0.06, 0.12], small at most); six of the seven are mutually
 indistinguishable and only **Uber** stands out (leaning on graph relaxation); (2) on a
-**pre-registered random sample** of 100 problems (seed fixed before the draw), **72 are one of
+**pre-registered random sample** of 100 problems (seed fixed before the draw), **71 are one of
 four recursion schemes** — streaming fold, DP, graph relaxation, bisection — each backed by a proof:
-70 machine-checked here in Lean, 2 citing existing formal proofs of MST (LC 1489) / graph-bridges
-(LC 1192); 95% Wilson [0.62, 0.80]. The other 28 are a genuine tail. Every classification was
+69 machine-checked here in Lean, 2 citing existing formal proofs of MST (LC 1489) / graph-bridges
+(LC 1192); 95% Wilson [0.61, 0.79]. The other 29 are a genuine tail (incl. Add Digits, whose optimal solution is an O(1) formula). Every classification was
 cross-checked against the problem's published editorial (`EDITORIAL_VERIFICATION.md`).
 So **~three-quarters of interview problems reduce to four ideas**, the streaming fold the
 single most common, unifying techniques memorized as unrelated (two-pointers, hashing, stack,
@@ -55,14 +55,15 @@ data/raw/problems.json              num -> {name, diff}  (769 problems)
   outlier (largest gap, vs Google, is a "small" effect).
 - Family concentration: **Gini 0.30**; 6 families = 50%, but **4 recursion schemes = ~82.3%** (fold 48.4, DP 18.0, relaxation 8.2, bisection 7.7; cross-check vs 4 empirical generators = 67.4%).
 - Algebraic fraction of load: **~30%** (semiring catamorphism + lattice fixpoint + monoid scan; ~20% strict) — a subset of the ~82% scheme-classifiable.
-- Label robustness: company-comparison headlines hold in **100%** of 2,000 Monte-Carlo relabelings; frequency-weighted four-scheme *load* coverage (a distinct measure from the 72/100 per-problem proof count) stays **79–84%** (`sensitivity.py`).
+- Label robustness: company-comparison headlines hold in **100%** of 2,000 Monte-Carlo relabelings; frequency-weighted four-scheme *load* coverage (a distinct measure from the 71/100 per-problem proof count) stays **79–84%** (`sensitivity.py`).
 
 ## Status / before submission
 
 Done: data, labeling, analysis, Lean core (**proof-classified coverage on the pre-registered sample
-(seed 20260619, fixed before drawing): 72/100 proven to be one of the four ideas — 70 machine-checked
-in Lean + 2 citation-backed (1489 MST → AFP Kruskal, 1192 bridges → AFP DFS_Framework); all 72 in-scheme
-classified, none refuted; the 28 tail genuinely outside the four; old seed-7 76/100 was the best-of-2000
+(seed 20260619, fixed before drawing): 71/100 proven to be one of the four ideas — 69 machine-checked
+in Lean + 2 citation-backed (1489 MST → AFP Kruskal, 1192 bridges → AFP DFS_Framework); all 71 in-scheme
+classified, none refuted; the 29 tail genuinely outside the four (incl. 258 Add Digits, reclassified —
+optimal is O(1) arithmetic); old seed-7 76/100 was the best-of-2000
 draw and is discarded** — see PREREGISTRATION.md, CITATIONS.md, EDITORIAL_VERIFICATION.md; cls≡corr closed
 for the flagship folds Kadane/Product/Single Number), scheme-level
 residual figure, **label sensitivity** (`sensitivity.py`: every headline holds in 100% of 2,000

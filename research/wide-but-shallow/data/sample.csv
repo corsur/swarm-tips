@@ -23,7 +23,7 @@ num,family,scheme,proven
 210,topo-sort,relaxation,True
 226,tree-traversal,dp,True
 229,hashing,fold,True
-258,math-bit,fold,True
+258,math-bit,tail,False
 262,sql,tail,False
 269,topo-sort,relaxation,True
 270,bst,dp,True

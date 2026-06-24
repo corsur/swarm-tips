@@ -90,7 +90,12 @@ def parse_file(path):
 def main():
     imp = importance()
     labels = {r["num"]: r["family"] for r in csv.DictReader(open(os.path.join(HERE, "labels.csv")))}
-    relevant = {num: fam for num, fam in labels.items() if SCHEME.get(fam, "tail") != "tail"}
+    # Editorial reclassification to tail (EDITORIAL_VERIFICATION.md): 258 Add Digits' canonical accepted
+    # solution is the O(1) digital-root formula, which is outside the four ideas; the digit-sum fold is
+    # only a fallback, so we conservatively move it to the tail rather than count it as a scheme.
+    tail_override = {"258"}
+    relevant = {num: fam for num, fam in labels.items()
+                if SCHEME.get(fam, "tail") != "tail" and num not in tail_override}
     files = {}
     for p in glob.glob(os.path.join(PROB, "*", "*.lean")):
         r = parse_file(p)

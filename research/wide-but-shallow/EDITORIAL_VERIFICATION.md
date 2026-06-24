@@ -6,8 +6,9 @@ neetcode, leetcode.ca, doocs/leetcode) and asked: is the canonical accepted solu
 recursion scheme we assigned? This does not run the judge — it confirms the scheme assignment against
 documented accepted approaches, which is the load-bearing fact for the classification.
 
-**Result: 69 clean matches, 3 flagged, 0 unclear. All 72 remain one of the four ideas; the 3 flags are
-re-labelings *within* the four (or a noted edge case), none drops to the tail.**
+**Result: 69 clean matches, 3 flagged, 0 unclear. Two flags are re-labelings *within* the four; the
+third (258 Add Digits) is reclassified to the TAIL (its optimal solution is O(1) arithmetic), giving 71
+in-scheme. None of the remaining 71 falls outside the four.**
 
 ## The 3 flagged problems
 
@@ -18,14 +19,14 @@ re-labelings *within* the four (or a noted edge case), none drops to the tail.**
 - **736 Parse Lisp Expression** — assigned `fold`, editorial is **recursive evaluation with scoped
   environments**: a catamorphism over the parse tree = `dp`. Our Lean model already evaluates the
   expression tree recursively, so the proof is unchanged; only the scheme tag moves fold → dp.
-- **258 Add Digits** — assigned `fold`. The *optimal* accepted solution is the O(1) digital-root
-  formula `(n-1)%9+1` (a math identity, arguably outside the four). However, the repeated digit-sum
-  **fold** is an editorial-listed approach and passes the judge, so it holds under the "the approach
-  appears in the editorial" bar. Noted as an edge case (its optimum is arithmetic, not one of the four).
+- **258 Add Digits** — assigned `fold`, **RECLASSIFIED TO TAIL (2026-06-24)**. The *optimal* accepted
+  solution is the O(1) digital-root formula `(n-1)%9+1`, a math identity outside the four; the repeated
+  digit-sum fold passes too, but since the canonical/optimal solution is not one of the four we move it
+  to the tail (the strict reading). This lowers the count 72 -> 71. See `build_manifest.py` tail_override.
 
 ## Effect on the per-scheme split
 
-In-scheme total is unchanged at 72/72. After re-labeling: fold 28, dp 25, relaxation 11, bisection 8.
+In-scheme total is 71 (after moving 258 to tail). After re-labeling: fold 27, dp 25, relaxation 11, bisection 8.
 
 ## Full verdict table (72 in-scheme problems)
 
@@ -52,7 +53,7 @@ In-scheme total is unchanged at 72/72. After re-labeling: fold 28, dp 25, relaxa
 | 210 | Course Schedule II | relaxation | MATCH | topological sort |
 | 226 | Invert Binary Tree | dp | MATCH | tree recursion |
 | 229 | Majority Element II | fold | MATCH | Boyer-Moore voting |
-| 258 | Add Digits | fold | FLAG | digit-sum fold (opt: O(1) math) |
+| 258 | Add Digits | fold→TAIL | RECLASS | digit-sum fold; optimal is O(1) math |
 | 269 | Alien Dictionary | relaxation | MATCH | topological sort (Kahn) |
 | 270 | Closest BST Value | dp→bisection | RELABEL | binary descent of BST |
 | 278 | First Bad Version | bisection | MATCH | binary search on versions |
@@ -104,5 +105,6 @@ In-scheme total is unchanged at 72/72. After re-labeling: fold 28, dp 25, relaxa
 | 3629 | Min Jumps Prime Teleport | relaxation | MATCH | BFS shortest path |
 | 3742 | Maximum Path Score in Grid | dp | MATCH | 3D grid DP over budget |
 
-**Tally: 69 MATCH · 2 RELABEL (within the four) · 1 FLAG (258, edge case) · 0 UNCLEAR.**
-All 72 sampled in-scheme problems have a documented accepted solution that is one of the four ideas.
+**Tally: 69 MATCH · 2 RELABEL (within the four) · 1 RECLASSIFIED-TO-TAIL (258) · 0 UNCLEAR.**
+71 sampled in-scheme problems have a documented accepted solution that is one of the four ideas; 258 is
+moved to the tail because its optimal accepted solution is not.

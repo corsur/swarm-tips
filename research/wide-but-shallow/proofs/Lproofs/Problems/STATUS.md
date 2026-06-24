@@ -1,6 +1,6 @@
 # Certification status — eliminating κ via per-problem proofs
 
-**Certified: 303/577 relevant problems** (57.6% of frequency-weighted load; goal is the full 82.3% non-tail mass).
+**Certified: 302/576 relevant problems** (57.6% of frequency-weighted load; goal is the full 82.3% non-tail mass).
 
 Each certified problem carries machine-checked `cls` (scheme membership) + `corr` (correctness vs spec), standard axioms only, no `sorry`. Pending problems have no file yet.
 
@@ -9,7 +9,7 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 | fold | hashing | 29 | 48 |
 | fold | string-other | 17 | 44 |
 | fold | two-pointers | 19 | 36 |
-| fold | math-bit | 14 | 33 |
+| fold | math-bit | 13 | 32 |
 | fold | linked-list | 11 | 21 |
 | fold | sliding-window | 11 | 21 |
 | fold | monotonic-stack | 7 | 19 |
@@ -171,7 +171,6 @@ Each certified problem carries machine-checked `cls` (scheme membership) + `corr
 - `252` Meeting Rooms — fold (O(n log n)) — `lproofs/Lproofs/Problems/Fold/P0252_MeetingRooms.lean`
 - `253` Meeting Rooms II — fold (O(n log n)) — `lproofs/Lproofs/Problems/Fold/P0253_MeetingRoomsII.lean`
 - `254` Factor Combinations — dp (exp) — `lproofs/Lproofs/Problems/DP/P0254_FactorCombinations.lean`
-- `258` Add Digits — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0258_AddDigits.lean`
 - `268` Missing Number — fold (O(n)) — `lproofs/Lproofs/Problems/Fold/P0268_MissingNumber.lean`
 - `269` Alien Dictionary — relaxation (O(V+E)) — `lproofs/Lproofs/Problems/Relaxation/P0269_AlienDictionary.lean`
 - `270` Closest Binary Search Tree Value — bisection (O(h)) — `lproofs/Lproofs/Problems/DP/P0270_ClosestBSTValue.lean`

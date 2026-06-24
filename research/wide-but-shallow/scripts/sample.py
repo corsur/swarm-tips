@@ -36,14 +36,18 @@ def main():
     certs_path = os.path.join(HERE, "certs.csv")
     proven = {r["num"] for r in csv.DictReader(open(certs_path)) if r["done"] == "True"}
 
+    # 258 reclassified to tail (its O(1) digital-root optimum is outside the four; see build_manifest.py).
+    tail_override = {"258"}
+    def scheme_of(num):
+        return "tail" if num in tail_override else SCHEME.get(labels[num], "tail")
+
     with open(os.path.join(HERE, "sample.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["num", "family", "scheme", "proven"])
         for num in chosen:
-            sch = SCHEME.get(labels[num], "tail")
-            w.writerow([num, labels[num], sch, num in proven])
+            w.writerow([num, labels[num], scheme_of(num), num in proven])
 
-    by = Counter(SCHEME.get(labels[n], "tail") for n in chosen)
+    by = Counter(scheme_of(n) for n in chosen)
     ndone = sum(1 for n in chosen if n in proven)
     print(f"sample: n={n} of {len(population)} all distinct problems  (seed={args.seed})")
     for s in ("fold", "dp", "relaxation", "bisection", "tail"):

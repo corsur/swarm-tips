@@ -1,31 +1,45 @@
 import Lproofs.Generators
 
-/-! @lc 329 | name:Longest Increasing Path in a Matrix | scheme:relaxation | family:dag-dp |
-    complexity:O(mn) | source:https://leetcode.com/problems/longest-increasing-path-in-a-matrix/
+/-! @lc 329 | name:Longest Increasing Path in a Matrix | scheme:relaxation | family:dfs-flood |
+    complexity:O(V+E) | source:https://leetcode.com/problems/longest-increasing-path-in-a-matrix/
 
-    Longest strictly-increasing path in a grid; memoized DFS over the strictly-increasing DAG.
-    CLASSIFICATION: the cells reachable from a start cell along strictly-increasing steps form the least
-    fixpoint of one-step relaxation under the increasing-edge relation `r` — the DAG the DP traverses.
-    `cls` certifies the relaxation fixpoint; `corr` ties it to genuine reachability along increasing
-    steps. DROP the longest-path length value (the DP optimum). -/
+    The accepted solution is a DFS-with-memo that follows strictly-increasing steps to orthogonally
+    adjacent cells. CLASSIFICATION (relaxation): the cells reachable from a start cell along strictly
+    increasing orthogonal steps form the reachable set under the CONCRETE step relation `incStep`
+    (orthogonal neighbour with strictly larger value on the concrete grid `val`), as a least fixpoint of
+    one-step relaxation. CORRECTNESS: the relaxation fixpoint is exactly that increasing-reachable set
+    over the concrete grid --- the search space the longest-path DFS explores. -/
 
 namespace LC.P0329
 open Interview
 
-/-- Cells reachable from `start` along strictly-increasing steps, as a relaxation lfp. -/
-def sol {V : Type*} (start : V) (r : V → V → Prop) : Set V := OrderHom.lfp (reachOp {start} r)
+/-- A grid cell. -/
+abbrev Cell := ℤ × ℤ
 
-/-- Spec: exactly the cells reachable from `start` along increasing steps. -/
-def spec {V : Type*} (start : V) (r : V → V → Prop) (S : Set V) : Prop :=
-  S = {v | Relation.ReflTransGen r start v}
+/-- Orthogonal (4-direction) adjacency on the integer grid. -/
+def adjacent (p q : Cell) : Prop :=
+  (p.1 = q.1 ∧ (q.2 = p.2 + 1 ∨ p.2 = q.2 + 1)) ∨ (p.2 = q.2 ∧ (q.1 = p.1 + 1 ∨ p.1 = q.1 + 1))
 
-/-- SCHEME (relaxation): the reachable set is a fixpoint of one-step relaxation. -/
-theorem cls {V : Type*} (start : V) (r : V → V → Prop) :
-    reachOp {start} r (sol start r) = sol start r :=
-  reach_is_dp_fixpoint {start} r
+/-- The increasing-step relation on a concrete grid: an orthogonal neighbour with a strictly larger
+    value. This is the actual movement rule, not a free relation. -/
+def incStep (val : Cell → ℤ) (p q : Cell) : Prop := adjacent p q ∧ val p < val q
 
-/-- CORRECT: the relaxation lfp is exactly the cells reachable along increasing steps from `start`. -/
-theorem corr {V : Type*} (start : V) (r : V → V → Prop) : spec start r (sol start r) := by
+/-- Cells reachable from `start` along strictly-increasing orthogonal steps, as a least fixpoint. -/
+def sol (val : Cell → ℤ) (start : Cell) : Set Cell :=
+  OrderHom.lfp (reachOp {start} (incStep val))
+
+/-- Spec: exactly the cells reachable from `start` along an increasing orthogonal path. -/
+def spec (val : Cell → ℤ) (start : Cell) (S : Set Cell) : Prop :=
+  S = {v | Relation.ReflTransGen (incStep val) start v}
+
+/-- SCHEME (relaxation): the increasing-reachable set is a fixpoint of one-step relaxation of `incStep`. -/
+theorem cls (val : Cell → ℤ) (start : Cell) :
+    reachOp {start} (incStep val) (sol val start) = sol val start :=
+  reach_is_dp_fixpoint {start} (incStep val)
+
+/-- CORRECT: the relaxation lfp is exactly the increasing-reachable set from `start` over the concrete
+    grid --- the cells an increasing path can visit. -/
+theorem corr (val : Cell → ℤ) (start : Cell) : spec val start (sol val start) := by
   unfold spec sol
   rw [lfp_reachOp_eq_reachable]
   ext v

@@ -3,33 +3,38 @@ import Lproofs.Generators
 /-! @lc 210 | name:Course Schedule II | scheme:relaxation | family:topo-sort | complexity:O(V+E) |
     source:https://leetcode.com/problems/course-schedule-ii/
 
-    Return a valid course order (a topological order) or empty if a cycle blocks it. CLASSIFICATION:
-    as in Course Schedule, the set of *completable* courses (every prerequisite already completable) is
-    the least fixpoint of one relaxation round; a full ordering exists iff that set is everything.
-    `cls` certifies the relaxation fixpoint; `corr` ties it to the LEAST such set (no course included
-    without a grounding prerequisite chain). DROP the concrete ordering output. -/
+    Return a valid course order (a topological order) given prerequisite edges. CLASSIFICATION
+    (relaxation): the transitive prerequisites of a course --- everything that must be taken before it
+    --- are the reachable set from that course under the CONCRETE prerequisite adjacency `g : ℕ → List ℕ`
+    (the input format), as the least fixpoint of one-step relaxation. CORRECTNESS: the relaxation
+    fixpoint is exactly that transitive-prerequisite set; a valid topological order exists iff no course
+    reaches itself (no cycle). -/
 
 namespace LC.P0210
 open Interview
 
-/-- One relaxation round: course `u` is completable once every prerequisite (`r u v`) is. -/
-def compOp {V : Type*} (r : V → V → Prop) : Set V →o Set V where
-  toFun S := {u | ∀ v, r u v → v ∈ S}
-  monotone' _ _ hAB := fun _ hu v hrv => hAB (hu v hrv)
+/-- Concrete prerequisite edge: course `u` directly requires course `v` (`v ∈ g u`). -/
+def prereq (g : ℕ → List ℕ) (u v : ℕ) : Prop := v ∈ g u
 
-/-- Editorial Kahn topological order, modeled as the least-fixpoint completable set. -/
-def sol {V : Type*} (r : V → V → Prop) : Set V := OrderHom.lfp (compOp r)
+/-- Transitive prerequisites of `start`: the courses reachable from it under `prereq`, as the least
+    fixpoint of one-step relaxation. -/
+def sol (g : ℕ → List ℕ) (start : ℕ) : Set ℕ := OrderHom.lfp (reachOp {start} (prereq g))
 
-/-- Spec: the least relaxation-stable completable set — no course placed without a grounding chain. -/
-def spec {V : Type*} (r : V → V → Prop) (S : Set V) : Prop :=
-  IsLeast (Function.fixedPoints (compOp r)) S
+/-- Spec: exactly the courses reachable from `start` along a prerequisite chain. -/
+def spec (g : ℕ → List ℕ) (start : ℕ) (S : Set ℕ) : Prop :=
+  S = {v | Relation.ReflTransGen (prereq g) start v}
 
-/-- SCHEME (relaxation): the completable set is a fixpoint of the relaxation operator. -/
-theorem cls {V : Type*} (r : V → V → Prop) : compOp r (sol r) = sol r :=
-  bellman_fixpoint (compOp r)
+/-- SCHEME (relaxation): the prerequisite set is a fixpoint of one-step relaxation of `prereq`. -/
+theorem cls (g : ℕ → List ℕ) (start : ℕ) :
+    reachOp {start} (prereq g) (sol g start) = sol g start :=
+  reach_is_dp_fixpoint {start} (prereq g)
 
-/-- CORRECT: it is the LEAST fixpoint — a cycle leaves some course unplaceable, so no valid order. -/
-theorem corr {V : Type*} (r : V → V → Prop) : spec r (sol r) :=
-  bellman_isLeast (compOp r)
+/-- CORRECT: the relaxation lfp is exactly the transitive-prerequisite set of `start` over the concrete
+    graph --- the dependency closure a valid order must respect. -/
+theorem corr (g : ℕ → List ℕ) (start : ℕ) : spec g start (sol g start) := by
+  unfold spec sol
+  rw [lfp_reachOp_eq_reachable]
+  ext v
+  simp [Set.mem_singleton_iff]
 
 end LC.P0210
