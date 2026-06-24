@@ -108,13 +108,9 @@ not a scheme & --- & & design, simulation, heaps, number theory, geometry, strin
 \bottomrule
 \end{tabular}
 \caption{The roughly twenty surface families collapse onto four recursion schemes. On a pre-registered
-random sample of 100 distinct problems (the seed fixed before the draw; Section~\ref{sec:lean}), ``in
-scheme'' counts the problems classified into each idea. 71 of the 100 are one of the four---69 with a
-machine-checked proof here, and 2 (minimum spanning tree, LC~1489; graph bridges, LC~1192) citing an
-existing formal proof of the heavy algorithm~\cite{afp_kruskal,afp_dfs}, both falling under graph
-relaxation; 95\% Wilson interval $[0.61,0.79]$. The remaining 29 are the genuine tail. Every classification was checked against the problem's published editorial. The ``Lean
-witness'' is the formal test each scheme is checked against (a \emph{catamorphism} is a fold over a tree; a
-\emph{least fixpoint} is where graph relaxation settles). Proof strength varies (Section~\ref{sec:lean}).}
+sample of 100 problems, 71 are proven to be one of the four (69 machine-checked here, 2
+cited~\cite{afp_kruskal,afp_dfs}; both graph relaxation); 29 form the genuine tail. ``Lean witness'' names
+the formal test per scheme. Full method and numbers: Sections~\ref{sec:result}--\ref{sec:lean}.}
 \label{tab:schemes}
 \end{table}
 
