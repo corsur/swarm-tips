@@ -93,8 +93,11 @@ uncertainty.
 
 \begin{table}[t]
 \centering
-\small
-\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.5cm}>{\centering\arraybackslash}p{1.1cm}>{\raggedright\arraybackslash}p{2.5cm}>{\raggedright\arraybackslash}p{5.3cm}@{}}
+\begin{minipage}{10.7cm}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.1cm}>{\centering\arraybackslash}p{0.8cm}>{\raggedright\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}p{4.5cm}@{}}
 \toprule
 Recursion scheme & in scheme & Lean witness & textbook families it subsumes \\
 \midrule
@@ -107,11 +110,12 @@ bisection & 8 & monotone threshold & binary search (monotone predicate) \\
 not a scheme & --- & & design, simulation, heaps, number theory, geometry, string matching, $\dots$ \\
 \bottomrule
 \end{tabular}
-\caption{The roughly twenty surface families collapse onto four recursion schemes. On a pre-registered
-sample of 100 problems, 71 are proven to be one of the four (69 machine-checked here, 2
+\caption{\footnotesize The roughly twenty surface families collapse onto four recursion schemes. On a
+pre-registered sample of 100 problems, 71 are proven to be one of the four (69 machine-checked here, 2
 cited~\cite{afp_kruskal,afp_dfs}; both graph relaxation); 29 form the genuine tail. ``Lean witness'' names
 the formal test per scheme. Full method and numbers: Sections~\ref{sec:result}--\ref{sec:lean}.}
 \label{tab:schemes}
+\end{minipage}
 \end{table}
 
 \paragraph{Wide surface.} The surface taxonomy really is spread out: no one or two families dominate (it
