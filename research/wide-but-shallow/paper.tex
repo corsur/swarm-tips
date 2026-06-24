@@ -113,12 +113,7 @@ machine-checked proof here, and 2 (minimum spanning tree, LC~1489; graph bridges
 existing formal proof of the heavy algorithm~\cite{afp_kruskal,afp_dfs}, both falling under graph
 relaxation; 95\% Wilson interval $[0.61,0.79]$. The remaining 29 are the genuine tail. Every classification was checked against the problem's published editorial. The ``Lean
 witness'' is the formal test each scheme is checked against (a \emph{catamorphism} is a fold over a tree; a
-\emph{least fixpoint} is where graph relaxation settles). Proof strength varies across the 69 checked here:
-29 prove the exact answer (an \texttt{IsLeast}, a closed form, an iff, or an exact reconstruction), 22 an
-exact identity or invariant the algorithm rests on, and 18 a one-directional guarantee (soundness ---
-``everything it reports is valid'' --- a bound, or monotonicity); three flagship folds (Maximum Subarray,
-Single Number, Product Except Self) close the gap entirely, proving the accepted one-pass code itself
-correct.}
+\emph{least fixpoint} is where graph relaxation settles). Proof strength varies (Section~\ref{sec:lean}).}
 \label{tab:schemes}
 \end{table}
 
@@ -203,9 +198,12 @@ move is why the count is 71, not 72.
 \textbf{What this does and does not show.} We prove that a solution of the right shape solves the problem; we
 do not prove it is byte-for-byte the platform's accepted code (our model captures the solution's structure,
 not its every line). So a certificate says ``this problem really is solved by idea $S$,'' not ``the accepted
-submission is literally this program.'' For a few textbook cases we close even that gap: Kadane's algorithm
-for Maximum Subarray is literally one pass carrying a running pair, and we prove it returns exactly the
-largest subarray sum; Single Number is the XOR pass proven to return the lone unpaired value. And we do not
+submission is literally this program.'' How much each proof shows varies: of the 69 checked here, about
+half (29) prove the exact answer and another 22 an exact identity the algorithm relies on, while 18 prove a
+one-directional guarantee (everything reported is valid, or the value only moves one way). For a few
+textbook cases we close even the modelling gap: Kadane's algorithm for Maximum Subarray is literally one
+pass carrying a running pair, and we prove it returns exactly the largest subarray sum; Single Number is the
+XOR pass proven to return the lone unpaired value. And we do not
 re-prove the deep theory behind the ideas---that shortest paths and dynamic programming are formally
 well-founded is already established~\cite{afp_dijkstra,afp_kleene,lehmann77,afp_dp}, which we cite rather than
 redo.
