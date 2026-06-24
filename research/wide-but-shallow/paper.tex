@@ -93,17 +93,17 @@ uncertainty.
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.3cm}>{\raggedright\arraybackslash}p{5.6cm}rl@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.5cm}>{\centering\arraybackslash}p{1.1cm}>{\raggedright\arraybackslash}p{2.5cm}>{\raggedright\arraybackslash}p{5.3cm}@{}}
 \toprule
-Recursion scheme & textbook families it subsumes & in scheme & Lean witness \\
+Recursion scheme & in scheme & Lean witness & textbook families it subsumes \\
 \midrule
-streaming fold & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, linked-list, bit-XOR, string-scan & 27 & \texttt{IsFold} \\
-recursive decomposition (DP) & dynamic programming, backtracking, tree, trie & 25 & catamorphism \\
-graph relaxation & BFS/DFS, Dijkstra, Bellman--Ford, topo-sort, union--find & 11 & least fixpoint \\
-bisection & binary search (monotone predicate) & 8 & monotone threshold \\
+streaming fold & 27 & \texttt{IsFold} & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, linked-list, bit-XOR, string-scan \\
+recursive decomposition (DP) & 25 & catamorphism & dynamic programming, backtracking, tree, trie \\
+graph relaxation & 11 & least fixpoint & BFS/DFS, Dijkstra, Bellman--Ford, topo-sort, union--find \\
+bisection & 8 & monotone threshold & binary search (monotone predicate) \\
 \midrule
-\textbf{one of the four} & & \textbf{71} & \\
-not a scheme & design, simulation, heaps, number theory, geometry, string matching, $\dots$ & --- & \\
+\textbf{one of the four} & \textbf{71} & & \\
+not a scheme & --- & & design, simulation, heaps, number theory, geometry, string matching, $\dots$ \\
 \bottomrule
 \end{tabular}
 \caption{The roughly twenty surface families collapse onto four recursion schemes. On a pre-registered
