@@ -456,6 +456,107 @@ impl GameApiClient {
             .map_err(Into::into)
     }
 
+    /// `POST /internal/xqueue/commit` — record the player's guess commit
+    /// (`0x` SHA-256 of their guess preimage).
+    pub async fn xqueue_commit(
+        &self,
+        wallet: &str,
+        commit: &str,
+    ) -> Result<serde_json::Value, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+            commit: &'a str,
+        }
+        let url = format!("{}/internal/xqueue/commit", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body { wallet, commit })
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `POST /internal/xqueue/sign` — submit the player's session-key signature
+    /// over the canonical checkpoint for `step` (2 = both committed, 4 =
+    /// terminal). Returns `{ relayed, r_matchup? }`.
+    pub async fn xqueue_sign(
+        &self,
+        wallet: &str,
+        step: u8,
+        signature: &str,
+    ) -> Result<serde_json::Value, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+            step: u8,
+            signature: &'a str,
+        }
+        let url = format!("{}/internal/xqueue/sign", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body {
+                wallet,
+                step,
+                signature,
+            })
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `POST /internal/xqueue/reveal` — reveal the player's guess preimage.
+    pub async fn xqueue_reveal(
+        &self,
+        wallet: &str,
+        preimage: &str,
+    ) -> Result<serde_json::Value, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+            preimage: &'a str,
+        }
+        let url = format!("{}/internal/xqueue/reveal", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body { wallet, preimage })
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `GET /internal/xqueue/gameplay` — the player's "what to sign next" view:
+    /// canonical step-2 / terminal checkpoints and the released `r_matchup`.
+    pub async fn xqueue_gameplay(&self, wallet: &str) -> Result<serde_json::Value, GameApiError> {
+        let url = format!("{}/internal/xqueue/gameplay", self.base_url);
+        let resp = self
+            .inner
+            .get(&url)
+            .query(&[("wallet", wallet)])
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
     // -- Games (token required) --------------------------------------------
 
     /// `POST /games/committed` — notify the backend that this player committed their guess.

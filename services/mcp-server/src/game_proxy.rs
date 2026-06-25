@@ -135,6 +135,54 @@ impl GameApiProxy {
             .await
             .map_err(map_game_api_error)
     }
+
+    /// Record the player's guess commit.
+    pub async fn xqueue_commit(
+        &self,
+        wallet: &str,
+        commit: &str,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_commit(wallet, commit)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Submit the player's session-key signature over the canonical checkpoint.
+    pub async fn xqueue_sign(
+        &self,
+        wallet: &str,
+        step: u8,
+        signature: &str,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_sign(wallet, step, signature)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Reveal the player's guess preimage.
+    pub async fn xqueue_reveal(
+        &self,
+        wallet: &str,
+        preimage: &str,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_reveal(wallet, preimage)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// The player's cross-chain "what to sign next" gameplay view.
+    pub async fn xqueue_gameplay(
+        &self,
+        wallet: &str,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_gameplay(wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
 }
 
 /// Map shared crate errors to MCP server errors with structured logging.

@@ -230,6 +230,29 @@ pub struct XchainBuildRefundArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct XchainCommitArgs {
+    /// `0x` SHA-256 of your guess preimage. Generate a random 32-byte preimage
+    /// whose last bit encodes your guess (0 = same-team, 1 = diff-team), keep it
+    /// secret, and submit its SHA-256 here.
+    pub commit: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct XchainSignArgs {
+    /// Checkpoint step to co-sign: 2 (both committed) or 4 (terminal).
+    pub step: u8,
+    /// `0x` 65-byte session-key signature over the canonical checkpoint digest
+    /// returned by xchain_gameplay_status.
+    pub signature: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct XchainRevealArgs {
+    /// `0x` 32-byte guess preimage that opens your commit.
+    pub preimage: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameFindMatchArgs {
     /// Tournament ID to join. Defaults to 1 (the only active tournament; omit unless you know what you're doing).
     pub tournament_id: Option<u64>,
@@ -1619,6 +1642,92 @@ impl SwarmTipsMcp {
             "outcome": outcome,
             "instructions": "Sign `outcome_digest` with your per-match session key to produce your leg's outcome signature (oc_sigs for your seat). Assemble settle with [legA session, legB session, operator] sigs over the outcome digest plus the match-live signatures; submit the Solana settle_xmatch via game_submit_tx with action='settle_xmatch' (permissionless) and the EVM settle from your own wallet.",
         })))
+    }
+
+    #[tool(
+        name = "xchain_commit_guess",
+        description = "[STATE] Commit your guess for a cross-chain match. Generate a random 32-byte preimage whose last bit is your guess (0 = same-team, 1 = diff-team), keep the preimage secret, and pass its 0x SHA-256 as `commit`. Returns { both_committed }. Once both players commit, call xchain_gameplay_status for the step-2 checkpoint to co-sign.",
+        annotations(destructive_hint = true)
+    )]
+    async fn xchain_commit_guess(
+        &self,
+        Parameters(args): Parameters<XchainCommitArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        let resp = self
+            .state
+            .game_api
+            .xqueue_commit(&address, &args.commit)
+            .await
+            .map_err(|e| McpError::internal_error(format!("commit failed: {e}"), None))?;
+        Ok(text_result(&resp))
+    }
+
+    #[tool(
+        name = "xchain_gameplay_status",
+        description = "[READ] Your cross-chain 'what to sign next' view: the canonical step-2 checkpoint to co-sign once both players commit, the revealed r_matchup once the step-2 checkpoint is stored (so you can learn the matchup type and reveal), and the canonical terminal checkpoint once both reveal. Sign each returned checkpoint's digest with your session key and submit via xchain_sign_checkpoint."
+    )]
+    async fn xchain_gameplay_status(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        let resp = self
+            .state
+            .game_api
+            .xqueue_gameplay(&address)
+            .await
+            .map_err(|e| McpError::internal_error(format!("gameplay status failed: {e}"), None))?;
+        Ok(text_result(&resp))
+    }
+
+    #[tool(
+        name = "xchain_sign_checkpoint",
+        description = "[STATE] Co-sign a cross-chain transcript checkpoint. Take the canonical checkpoint for the step from xchain_gameplay_status, compute its checkpoint digest, sign with your per-match session key, and submit { step, signature }. step=2 is the both-committed checkpoint (signing it releases r_matchup); step=4 is the terminal checkpoint (signing it makes the match settle-ready). Returns { relayed, r_matchup? }.",
+        annotations(destructive_hint = true)
+    )]
+    async fn xchain_sign_checkpoint(
+        &self,
+        Parameters(args): Parameters<XchainSignArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        let resp = self
+            .state
+            .game_api
+            .xqueue_sign(&address, args.step, &args.signature)
+            .await
+            .map_err(|e| McpError::internal_error(format!("sign failed: {e}"), None))?;
+        Ok(text_result(&resp))
+    }
+
+    #[tool(
+        name = "xchain_reveal_guess",
+        description = "[STATE] Reveal your guess for a cross-chain match after both players committed and you co-signed the step-2 checkpoint. Pass the 0x 32-byte preimage that opens your commit. Returns { both_revealed }. Once both reveal, call xchain_gameplay_status for the terminal checkpoint to co-sign, then settle via xchain_build_settle.",
+        annotations(destructive_hint = true)
+    )]
+    async fn xchain_reveal_guess(
+        &self,
+        Parameters(args): Parameters<XchainRevealArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        let resp = self
+            .state
+            .game_api
+            .xqueue_reveal(&address, &args.preimage)
+            .await
+            .map_err(|e| McpError::internal_error(format!("reveal failed: {e}"), None))?;
+        Ok(text_result(&resp))
     }
 
     #[tool(
