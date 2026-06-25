@@ -120,6 +120,9 @@ pub struct CheckpointArg {
     pub first_committer: u8,
     pub matchup_type: u8,
     pub transcript_hash: [u8; 32],
+    /// Matchup-type reveal preimage; bound to the cert's commitment on
+    /// terminal checkpoints (see `verify_matchup_binding`). 0 when unused.
+    pub r_matchup: [u8; 32],
 }
 
 impl CheckpointArg {
@@ -134,11 +137,34 @@ impl CheckpointArg {
             first_committer: self.first_committer,
             matchup_type: self.matchup_type,
             transcript_hash: self.transcript_hash,
+            r_matchup: self.r_matchup,
         }
     }
 
     pub fn digest(&self) -> [u8; 32] {
         keccak256(&self.to_schema().encode())
+    }
+
+    /// On a TERMINAL checkpoint the payoff depends on `matchup_type`, which a
+    /// colluding pair could otherwise fabricate. Bind it to the matchmaker's
+    /// commitment exactly as same-chain `reveal_guess` does:
+    /// `sha256(r_matchup) == matchup_commitment` and
+    /// `matchup_type == r_matchup[31] & 1`. Non-terminal checkpoints derive
+    /// timeout outcomes that don't read `matchup_type`, so no binding is needed.
+    pub fn verify_matchup_binding(&self, matchup_commitment: &[u8; 32]) -> Result<()> {
+        if self.step_count != TERMINAL_STEP_COUNT {
+            return Ok(());
+        }
+        let computed: [u8; 32] = solana_sha256_hasher::hashv(&[self.r_matchup.as_ref()]).to_bytes();
+        require!(
+            computed == *matchup_commitment,
+            CoordinationError::InvalidGameState
+        );
+        require!(
+            self.matchup_type == (self.r_matchup[31] & 1),
+            CoordinationError::InvalidGameState
+        );
+        Ok(())
     }
 
     /// The outcome a checkpoint entitles a claimant to under the timeout
@@ -257,6 +283,15 @@ pub fn keccak256(bytes: &[u8]) -> [u8; 32] {
     solana_keccak_hasher::hashv(&[bytes]).to_bytes()
 }
 
+/// secp256k1 group order ÷ 2, big-endian. A signature whose s exceeds this is
+/// malleable (its twin s' = n - s is equally valid). The EVM leg's OpenZeppelin
+/// `ECDSA.recover` rejects high-s, so the Solana leg must too — otherwise a
+/// malleated twin would verify on one leg but not the other.
+const SECP256K1_HALF_ORDER: [u8; 32] = [
+    0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20, 0xa0,
+];
+
 /// Recover the 20-byte Ethereum address that produced a 65-byte
 /// `[r || s || v]` secp256k1 signature over `digest`.
 pub fn recover_eth_address(digest: &[u8; 32], sig65: &[u8; 65]) -> Result<[u8; 20]> {
@@ -266,6 +301,11 @@ pub fn recover_eth_address(digest: &[u8; 32], sig65: &[u8; 65]) -> Result<[u8; 2
         v @ (0 | 1) => v,
         _ => return Err(error!(CoordinationError::InvalidGameState)),
     };
+    // Reject high-s (malleable) signatures so this leg's acceptance set matches
+    // the EVM leg's. Big-endian byte comparison == numeric comparison here.
+    if sig65[32..64] > SECP256K1_HALF_ORDER[..] {
+        return Err(error!(CoordinationError::InvalidGameState));
+    }
     let pubkey = secp256k1_recover(digest, recovery_id, &sig65[..64])
         .map_err(|_| error!(CoordinationError::InvalidGameState))?;
     // eth address = keccak256(uncompressed pubkey, no 0x04 prefix)[12..].
@@ -329,7 +369,34 @@ mod tests {
             first_committer: first,
             matchup_type: matchup,
             transcript_hash: [0; 32],
+            r_matchup: [0; 32],
         }
+    }
+
+    #[test]
+    fn verify_matchup_binding_enforced_on_terminal_checkpoint() {
+        let r = [0xE1u8; 32]; // LSB == 1
+        let commitment: [u8; 32] = solana_sha256_hasher::hashv(&[r.as_ref()]).to_bytes();
+
+        let mut good = cp(4, 1, 0, 1, 1); // terminal, matchup_type == 1
+        good.r_matchup = r;
+        assert!(good.verify_matchup_binding(&commitment).is_ok());
+
+        // Forged preimage that doesn't open the commitment → reject.
+        let mut bad_preimage = good.clone();
+        bad_preimage.r_matchup = [0x07; 32];
+        assert!(bad_preimage.verify_matchup_binding(&commitment).is_err());
+
+        // matchup_type inconsistent with r_matchup LSB → reject.
+        let mut bad_type = good.clone();
+        bad_type.matchup_type = 0;
+        assert!(bad_type.verify_matchup_binding(&commitment).is_err());
+
+        // Non-terminal checkpoint: binding is not enforced (timeout payoff
+        // doesn't read matchup_type), so any r_matchup passes.
+        let mut nonterminal = cp(1, 255, 255, 1, 1);
+        nonterminal.r_matchup = [0x07; 32];
+        assert!(nonterminal.verify_matchup_binding(&commitment).is_ok());
     }
 
     #[test]

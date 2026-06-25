@@ -77,6 +77,7 @@ library CertLib {
         uint8 firstCommitter; // 1 | 2; 255 before any commit
         uint8 matchupType; // 0 same-team, 1 diff-team, 255 unset
         bytes32 transcriptHash;
+        bytes32 rMatchup; // matchup-type preimage; bound to matchupCommitment on terminal cps
     }
 
     /// Outcome certificate: terminal checkpoint + explicit result, bound
@@ -131,7 +132,7 @@ library CertLib {
         return keccak256(encodeMatchLive(cert));
     }
 
-    /// @notice 11 words, 352 bytes.
+    /// @notice 12 words, 384 bytes.
     function encodeCheckpoint(Checkpoint memory cp) internal pure returns (bytes memory) {
         return abi.encode(
             CHECKPOINT_MAGIC,
@@ -144,7 +145,8 @@ library CertLib {
             uint256(cp.p2Guess),
             uint256(cp.firstCommitter),
             uint256(cp.matchupType),
-            cp.transcriptHash
+            cp.transcriptHash,
+            cp.rMatchup
         );
     }
 

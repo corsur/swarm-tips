@@ -63,6 +63,7 @@ fn sample_checkpoint(match_live_digest: [u8; 32]) -> Checkpoint {
         first_committer: 1,
         matchup_type: 1,
         transcript_hash: [0xD0; 32],
+        r_matchup: [0xE1; 32],
     }
 }
 

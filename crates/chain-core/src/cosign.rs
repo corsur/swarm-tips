@@ -18,6 +18,9 @@ pub enum CosignError {
     /// A co-signature recovered successfully but to the wrong address — the
     /// signer is not the expected session key.
     SignerMismatch,
+    /// A high-s (malleable) signature. Rejected so this leg agrees with the EVM
+    /// leg, whose OpenZeppelin `ECDSA.recover` reverts on s > n/2.
+    MalleableSignature,
 }
 
 /// The 20-byte Ethereum address of a secp256k1 secret key — the
@@ -59,6 +62,13 @@ pub fn sign_digest(secret_key: &[u8; 32], digest: &[u8; 32]) -> Result<[u8; 65],
 pub fn recover_address(digest: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 20], CosignError> {
     let recid = RecoveryId::from_byte(sig[64]).ok_or(CosignError::SigningFailed)?;
     let signature = Signature::from_slice(&sig[..64]).map_err(|_| CosignError::SigningFailed)?;
+    // Reject high-s (malleable) signatures: normalize_s() returns Some only when
+    // the input s was in the upper half order. The EVM leg already rejects these
+    // (OZ ECDSA); enforcing it here keeps both legs' acceptance sets identical so
+    // no malleated twin is valid on one leg but not the other.
+    if signature.normalize_s().is_some() {
+        return Err(CosignError::MalleableSignature);
+    }
     let vk = VerifyingKey::recover_from_prehash(digest, &signature, recid)
         .map_err(|_| CosignError::SigningFailed)?;
     Ok(verifying_key_address(&vk))
@@ -129,6 +139,29 @@ mod tests {
     }
 
     #[test]
+    fn recover_address_rejects_high_s_malleable_signature() {
+        let sk = secret(0x42);
+        let digest = keccak256(b"malleable twin");
+        let sig = sign_digest(&sk, &digest).unwrap();
+        // The canonical low-s signature recovers fine.
+        assert!(recover_address(&digest, &sig).is_ok());
+
+        // Build the malleable high-s twin: s' = n - s (the recovery bit would
+        // also flip, but the low-s guard fires before recovery).
+        let signature = Signature::from_slice(&sig[..64]).unwrap();
+        let neg_s = -(*signature.s());
+        let twin = Signature::from_scalars(signature.r().to_bytes(), neg_s.to_bytes())
+            .expect("valid scalars");
+        let mut malleable = [0u8; 65];
+        malleable[..64].copy_from_slice(&twin.to_bytes());
+        malleable[64] = sig[64] ^ 1;
+        assert_eq!(
+            recover_address(&digest, &malleable),
+            Err(CosignError::MalleableSignature)
+        );
+    }
+
+    #[test]
     fn sign_match_live_digest_matches_canonical_encoding() {
         use crate::cert_schema::CertLeg;
         let leg = |s: u8| CertLeg {
@@ -174,6 +207,7 @@ mod tests {
             first_committer: 1,
             matchup_type: 1,
             transcript_hash: [0x44; 32],
+            r_matchup: [0x55; 32],
         }
     }
 

@@ -68,6 +68,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         bytes32 matchLiveDigest; // pinned at first claim/settle
         uint8 bestStepCount;
         uint8 bestOutcomeKind;
+        uint64 timeoutOpensAt; // refund backstop, snapshotted at lock so setConfig can't pull it earlier
     }
 
     /// keccak256("eip155:84532") for Base Sepolia — set at deploy from the
@@ -132,7 +133,9 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         uint32 skewMarginSecs_
     ) Ownable(initialOwner) {
         if (chainTag == bytes32(0)) revert BadConfig();
-        _validateConfig(operatorSigner_, treasury_, treasurySplitBps_, stakeWei_, maxTrancheWei_, skewMarginSecs_);
+        _validateConfig(
+            initialOwner, operatorSigner_, treasury_, treasurySplitBps_, stakeWei_, maxTrancheWei_, skewMarginSecs_
+        );
         CHAIN_TAG = chainTag;
         operatorSigner = operatorSigner_;
         treasury = treasury_;
@@ -146,6 +149,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     /// @dev The single config-bounds gate, shared by the constructor and
     ///      setConfig so the two paths can never accept divergent values.
     function _validateConfig(
+        address owner_,
         address operatorSigner_,
         address treasury_,
         uint16 treasurySplitBps_,
@@ -156,6 +160,10 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         if (operatorSigner_ == address(0) || treasury_ == address(0) || stakeWei_ == 0) {
             revert BadConfig();
         }
+        // Key separation (decision.md trust model): the certificate signer must
+        // be a dedicated key, never the owner/upgrade authority or the treasury,
+        // so operator compromise can't also move governance or treasury funds.
+        if (operatorSigner_ == owner_ || operatorSigner_ == treasury_) revert BadConfig();
         if (treasurySplitBps_ < MIN_SPLIT_BPS || treasurySplitBps_ > MAX_SPLIT_BPS) revert BadConfig();
         if (maxTrancheWei_ < stakeWei_ || skewMarginSecs_ == 0) revert BadConfig();
     }
@@ -231,6 +239,11 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         poolLocked += trancheWei;
         m.trancheWei = trancheWei;
         m.lockedAt = uint64(block.timestamp);
+        // Snapshot the refund backstop from the config in force at lock time, so a
+        // later setConfig that lowers maxClaimWindowSecs/skew cannot pull opensAt
+        // ahead of an open claim's window (it is always >= matchDeadline +
+        // claimWindowSecs + 2*skew for any cert, preserving the no-race inequality).
+        m.timeoutOpensAt = uint64(uint256(m.matchDeadline) + maxClaimWindowSecs + 2 * uint256(skewMarginSecs));
         m.status = Status.Locked;
         emit TrancheLocked(cert.matchId, trancheWei);
     }
@@ -296,6 +309,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         bytes32 liveDigest = _verifyMatchLive(m, cert, liveSigs);
         if (cp.matchLiveDigest != liveDigest) revert CertMismatch();
         _verifyCheckpoint(cert, cp, cpSigs);
+        _verifyMatchupBinding(cp, cert.matchupCommitment);
 
         m.status = Status.Claiming;
         m.matchLiveDigest = liveDigest;
@@ -335,6 +349,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         if (m.bestStepCount == type(uint8).max) revert BadOutcome();
         if (cp.stepCount <= m.bestStepCount) revert BadOutcome();
         _verifyCheckpoint(cert, cp, cpSigs);
+        _verifyMatchupBinding(cp, cert.matchupCommitment);
 
         m.bestStepCount = cp.stepCount;
         m.bestOutcomeKind = CertLib.deriveClaimOutcome(cp);
@@ -439,20 +454,26 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         _pay(m.player, amount);
     }
 
-    /// @notice Backstop: locked (or claim-stalled) match that nothing
-    ///         settled. Player made whole, tranche back to the pool — any
-    ///         unfiled forfeit is eaten by the operator by design.
-    ///         Opens 2×skewMargin after the claim-filing window closes so a
-    ///         claim valid on one leg can never race a refund on the other.
+    /// @notice Backstop after the claim window plus 2×skewMargin (snapshotted at
+    ///         lock as m.timeoutOpensAt). Two cases:
+    ///         - Locked, no claim ever filed: player made whole, tranche back to
+    ///           the pool — any unfiled forfeit is eaten by the operator by design.
+    ///         - Claiming: a co-signed claim already proved the outcome, so this
+    ///           realizes THAT outcome exactly like settleClaim. It must NOT flat-
+    ///           refund the stake, which would strip a winning claimant of the
+    ///           tranche they proved and hand it to whoever races the call. Making
+    ///           both terminal functions settle identically removes the race.
     function refundTimeout(bytes32 matchId) external nonReentrant {
         Match storage m = matches[matchId];
         if (m.status != Status.Locked && m.status != Status.Claiming) revert InvalidStatus();
-        // claimWindowEnd is always <= matchDeadline + maxClaimWindowSecs
-        // (bounded in _claimWindowEnd), so this base backstop strictly
-        // follows any leg's settle window by at least 2·skew — no Claiming
-        // special case needed, and both legs compute the identical value.
-        uint256 opensAt = uint256(m.matchDeadline) + maxClaimWindowSecs + 2 * uint256(skewMarginSecs);
-        if (block.timestamp <= opensAt) revert DeadlineNotReached();
+        if (block.timestamp <= m.timeoutOpensAt) revert DeadlineNotReached();
+
+        if (m.status == Status.Claiming) {
+            m.status = Status.ClaimSettled;
+            (uint256 toPlayer,) = _execute(m, m.bestOutcomeKind);
+            emit ClaimSettled(matchId, m.bestOutcomeKind, toPlayer);
+            return;
+        }
 
         m.status = Status.RefundedTimeout;
         _releaseTranche(m);
@@ -497,7 +518,9 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         uint32 maxClaimWindowSecs_,
         uint32 skewMarginSecs_
     ) external onlyOwner {
-        _validateConfig(operatorSigner_, treasury_, treasurySplitBps_, stakeWei_, maxTrancheWei_, skewMarginSecs_);
+        _validateConfig(
+            owner(), operatorSigner_, treasury_, treasurySplitBps_, stakeWei_, maxTrancheWei_, skewMarginSecs_
+        );
         operatorSigner = operatorSigner_;
         treasury = treasury_;
         treasurySplitBps = treasurySplitBps_;
@@ -554,6 +577,18 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         bytes32 digest = cp.checkpointDigest();
         _requireSigner(digest, sigs[0], cert.legA.sessionKey);
         _requireSigner(digest, sigs[1], cert.legB.sessionKey);
+    }
+
+    /// @dev On a TERMINAL checkpoint the claim payoff reads `matchupType`. This
+    ///      path has no operator signature over the outcome, so a colluding pair
+    ///      could otherwise co-sign a fabricated `matchupType`. Bind it to the
+    ///      matchmaker's commitment exactly as same-chain reveal does:
+    ///      sha256(rMatchup) == matchupCommitment and matchupType == rMatchup LSB.
+    ///      Non-terminal checkpoints derive timeout outcomes independent of it.
+    function _verifyMatchupBinding(CertLib.Checkpoint calldata cp, bytes32 matchupCommitment) private pure {
+        if (cp.stepCount != CertLib.TERMINAL_STEP_COUNT) return;
+        if (sha256(abi.encodePacked(cp.rMatchup)) != matchupCommitment) revert CertMismatch();
+        if (uint8(cp.rMatchup[31]) & 1 != cp.matchupType) revert CertMismatch();
     }
 
     function _requireSigner(bytes32 digest, bytes calldata sig, address expected) private pure {

@@ -34,7 +34,7 @@ pub const SCHEMA_VERSION: u16 = 1;
 
 /// Encoded sizes: every field is one 32-byte word.
 pub const MATCH_LIVE_WORDS: usize = 22;
-pub const CHECKPOINT_WORDS: usize = 11;
+pub const CHECKPOINT_WORDS: usize = 12;
 pub const OUTCOME_WORDS: usize = 11;
 pub const WORD: usize = 32;
 
@@ -109,6 +109,12 @@ pub struct Checkpoint {
     /// 0 same-team, 1 diff-team, 255 unset.
     pub matchup_type: u8,
     pub transcript_hash: [u8; 32],
+    /// The matchup-type reveal preimage. A terminal checkpoint binds it on
+    /// every leg: `sha256(r_matchup) == match_live.matchup_commitment` and
+    /// `matchup_type == r_matchup[31] & 1`. Without this on-chain check the
+    /// contested-claim path (no operator) would let two colluding players
+    /// settle a fabricated matchup. 0 on non-terminal checkpoints (unused).
+    pub r_matchup: [u8; 32],
 }
 
 /// How a match resolved. The numeric values are part of the cross-chain
@@ -224,9 +230,9 @@ impl MatchLiveCert {
 }
 
 impl Checkpoint {
-    /// Canonical payload: 11 words, 352 bytes.
+    /// Canonical payload: 12 words, 384 bytes.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(352);
+        let mut out = Vec::with_capacity(384);
         push_word(&mut out, &CHECKPOINT_MAGIC);
         push_u16(&mut out, SCHEMA_VERSION);
         push_word(&mut out, &self.match_live_digest);
@@ -238,6 +244,7 @@ impl Checkpoint {
         push_u8(&mut out, self.first_committer);
         push_u8(&mut out, self.matchup_type);
         push_word(&mut out, &self.transcript_hash);
+        push_word(&mut out, &self.r_matchup);
         debug_assert_eq!(out.len(), CHECKPOINT_WORDS.saturating_mul(WORD));
         out
     }
@@ -409,8 +416,9 @@ mod tests {
             first_committer: 1,
             matchup_type: 255,
             transcript_hash: [4; 32],
+            r_matchup: [0; 32],
         };
-        assert_eq!(checkpoint.encode().len(), 352);
+        assert_eq!(checkpoint.encode().len(), 384);
         let outcome = OutcomeCert {
             match_id: [5; 32],
             match_live_digest: [6; 32],
@@ -476,6 +484,7 @@ mod tests {
             first_committer: first,
             matchup_type: matchup,
             transcript_hash: [0; 32],
+            r_matchup: [0; 32],
         }
     }
 

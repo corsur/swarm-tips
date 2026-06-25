@@ -18,6 +18,10 @@ contract CrossChainGameTest is Test {
     uint32 internal constant CLAIM_WINDOW = 3600;
     uint32 internal constant SKEW = 900;
     uint16 internal constant SPLIT_BPS = 5000;
+    // Matchup reveal preimage with LSB == 1 (matches the checkpoints' matchupType
+    // of 1); the cert's matchupCommitment is its sha256 so the terminal-checkpoint
+    // binding (finding #5) holds.
+    bytes32 internal constant R_MATCHUP = bytes32(uint256(0xE1));
 
     address internal owner = makeAddr("owner");
     address internal treasury = makeAddr("treasury");
@@ -64,7 +68,7 @@ contract CrossChainGameTest is Test {
     }
 
     function _playerIsP1(bytes32 matchId) internal view returns (bool p) {
-        (,,,, p,,,,,,,,,,,) = game.matches(matchId);
+        (,,,, p,,,,,,,,,,,,) = game.matches(matchId);
     }
 
     /// Permissionless lock: build a cert matching the funded match and the
@@ -101,7 +105,7 @@ contract CrossChainGameTest is Test {
         cert = CertLib.MatchLiveCert({
             matchId: matchId,
             tournamentId: 1,
-            matchupCommitment: keccak256("commitment"),
+            matchupCommitment: sha256(abi.encodePacked(R_MATCHUP)),
             legA: legA,
             legB: legB,
             quoteTimestamp: uint64(block.timestamp),
@@ -155,7 +159,7 @@ contract CrossChainGameTest is Test {
     /// Read just the status (field 0) of a match without destructuring all
     /// 16 fields.
     function _status(bytes32 matchId) internal view returns (CrossChainGame.Status) {
-        (CrossChainGame.Status status,,,,,,,,,,,,,,,) = game.matches(matchId);
+        (CrossChainGame.Status status,,,,,,,,,,,,,,,,) = game.matches(matchId);
         return status;
     }
 
@@ -400,7 +404,8 @@ contract CrossChainGameTest is Test {
             p2Guess: p2Guess,
             firstCommitter: firstCommitter,
             matchupType: 1,
-            transcriptHash: keccak256("t")
+            transcriptHash: keccak256("t"),
+            rMatchup: R_MATCHUP
         });
     }
 
@@ -599,5 +604,98 @@ contract CrossChainGameTest is Test {
             game.poolFree() + game.poolLocked() + game.prizePoolWei(),
             "tracked balances reconcile"
         );
+    }
+
+    // --- regression: audit findings (2026-06-17) -------------------------
+
+    /// Finding #1: after the backstop opens, BOTH settleClaim and refundTimeout
+    /// are live on a Claiming match. refundTimeout must realize the proven claim
+    /// (stake + tranche for a winner), never a flat stake-only refund that a
+    /// griefer could use to strip the winner's tranche back into the pool.
+    function test_refundTimeout_onClaiming_realizesClaimNotFlatRefund() public {
+        bytes32 id = keccak256("m_claimrace");
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        // P1 (local) is the sole committer → committer wins both stakes.
+        CertLib.Checkpoint memory cp = _checkpoint(liveDigest, 1, 255, 255, 1);
+        game.openClaim(cert, cp, _liveSigs(cert), _cpSigs(cp));
+
+        // Warp past the backstop so refundTimeout is also callable.
+        vm.warp(block.timestamp + 2 days + CLAIM_WINDOW + 2 * SKEW + 1);
+
+        // A griefer (not the winner) calls refundTimeout instead of settleClaim.
+        uint256 before = player.balance;
+        vm.prank(makeAddr("griefer"));
+        game.refundTimeout(id);
+
+        assertEq(player.balance, before + STAKE + tranche, "winning claim realized, tranche not stripped");
+        assertEq(uint256(_status(id)), uint256(CrossChainGame.Status.ClaimSettled));
+    }
+
+    /// Finding #2: the refund backstop is snapshotted at lock time, so a later
+    /// setConfig that lowers maxClaimWindowSecs/skew cannot pull refundTimeout
+    /// ahead of a still-open claim window.
+    function test_setConfig_cannotPullRefundTimeoutBeforeSnapshot() public {
+        bytes32 id = keccak256("m_setconfig");
+        _fund(id, true);
+        _lock(id, STAKE);
+        uint256 matchDeadline = block.timestamp + 2 days; // _fund used this
+        uint256 snapshotOpensAt = matchDeadline + CLAIM_WINDOW + 2 * SKEW;
+
+        // Owner shrinks window + skew to the minimum AFTER the lock.
+        vm.prank(owner);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 1, 1);
+
+        // A non-snapshotted opensAt would be matchDeadline + 1 + 2; the snapshot
+        // still gates the refund well past that point.
+        vm.warp(matchDeadline + 100);
+        vm.expectRevert(CrossChainGame.DeadlineNotReached.selector);
+        game.refundTimeout(id);
+
+        vm.warp(snapshotOpensAt + 1);
+        uint256 before = player.balance;
+        game.refundTimeout(id);
+        assertEq(player.balance, before + STAKE, "refund only after the snapshotted backstop");
+    }
+
+    /// Finding #4: key separation enforced — the certificate signer can never be
+    /// the owner/upgrade authority or the treasury.
+    function test_constructor_rejectsOperatorEqualsOwner() public {
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        new CrossChainGame(CHAIN_TAG, owner, owner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+    }
+
+    function test_constructor_rejectsOperatorEqualsTreasury() public {
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        new CrossChainGame(CHAIN_TAG, owner, treasury, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+    }
+
+    function test_setConfig_rejectsOperatorEqualsOwner() public {
+        vm.prank(owner);
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        game.setConfig(owner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+    }
+
+    /// Finding #5: on the operator-less contested path, a TERMINAL claim
+    /// checkpoint whose matchup is not bound to the cert's commitment is
+    /// rejected — two colluding players cannot settle a fabricated matchup.
+    function test_openClaim_unboundMatchup_reverts() public {
+        bytes32 id = keccak256("m_matchupbind");
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        // Terminal checkpoint with a forged rMatchup that does NOT open the
+        // commitment (both players co-sign it, but the binding check fails).
+        CertLib.Checkpoint memory cp = _checkpoint(liveDigest, 4, 0, 1, 1);
+        cp.rMatchup = bytes32(uint256(0xBEEF));
+        vm.expectRevert(CrossChainGame.CertMismatch.selector);
+        game.openClaim(cert, cp, _liveSigs(cert), _cpSigs(cp));
     }
 }

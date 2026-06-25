@@ -117,6 +117,7 @@ export interface Checkpoint {
   firstCommitter: number;
   matchupType: number;
   transcriptHash: Uint8Array; // 32
+  rMatchup: Uint8Array; // 32 — matchup-type preimage (bound to commitment on terminal cps)
 }
 
 export function encodeCheckpoint(c: Checkpoint): Uint8Array {
@@ -132,6 +133,7 @@ export function encodeCheckpoint(c: Checkpoint): Uint8Array {
     word(c.firstCommitter),
     word(c.matchupType),
     bytes32(c.transcriptHash),
+    bytes32(c.rMatchup),
   ]);
 }
 

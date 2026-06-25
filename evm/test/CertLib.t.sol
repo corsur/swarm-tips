@@ -89,7 +89,8 @@ contract CertLibTest is Test {
             p2Guess: 0,
             firstCommitter: 1,
             matchupType: 1,
-            transcriptHash: _fill(0xD0)
+            transcriptHash: _fill(0xD0),
+            rMatchup: _fill(0xE1)
         });
         bytes memory payload = CertLib.encodeCheckpoint(cp);
         Vector memory v = _readVector("checkpoint");
@@ -181,7 +182,8 @@ contract CertLibTest is Test {
             p2Guess: p2Guess,
             firstCommitter: firstCommitter,
             matchupType: matchupType,
-            transcriptHash: bytes32(0)
+            transcriptHash: bytes32(0),
+            rMatchup: bytes32(0)
         });
     }
 }

@@ -93,7 +93,7 @@ contract Handler is Test {
         idx = bound(idx, 0, openMatches.length - 1);
         bytes32 id = openMatches[idx];
         // Match fields: status(0) … stakeWei(7), trancheWei(8) …
-        (CrossChainGame.Status status,,,,,,,, uint128 tranche,,,,,,,) = game.matches(id);
+        (CrossChainGame.Status status,,,,,,,, uint128 tranche,,,,,,,,) = game.matches(id);
         if (status != CrossChainGame.Status.Locked) return;
 
         uint8 kind = rawKind % 9;
@@ -160,7 +160,7 @@ contract CrossChainGameInvariantTest is Test {
             bytes32 id = keccak256(abi.encode("inv", i));
             // Match fields: status(0), player(1) … playerIsP1(4),
             // localEquivocated(5), counterEquivocated(6), stakeWei(7) …
-            (CrossChainGame.Status status,,,,,,, uint128 stakeWei,,,,,,,,) = game.matches(id);
+            (CrossChainGame.Status status,,,,,,, uint128 stakeWei,,,,,,,,,) = game.matches(id);
             if (
                 status == CrossChainGame.Status.Funded || status == CrossChainGame.Status.Locked
                     || status == CrossChainGame.Status.Claiming

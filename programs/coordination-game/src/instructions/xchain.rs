@@ -400,6 +400,9 @@ pub fn open_xclaim(
         CoordinationError::XCertMismatch
     );
     verify_checkpoint(&cert, &cp, &cp_sigs)?;
+    // Bind matchup_type to the cert's commitment so a colluding pair can't
+    // settle a fabricated matchup on this operator-less path.
+    cp.verify_matchup_binding(&cert.matchup_commitment)?;
 
     let m = &mut ctx.accounts.xmatch;
     m.status = XChainStatus::Claiming;
@@ -442,6 +445,7 @@ pub fn supersede_xclaim(
         CoordinationError::XBadOutcome
     );
     verify_checkpoint(&cert, &cp, &cp_sigs)?;
+    cp.verify_matchup_binding(&cert.matchup_commitment)?;
 
     let m = &mut ctx.accounts.xmatch;
     m.best_step_count = cp.step_count;
