@@ -9,6 +9,13 @@ import {
   SystemProgram,
 } from "@solana/web3.js";
 import { assert } from "chai";
+import {
+  OutcomeKind,
+  deriveTerminalOutcome,
+  deriveClaimOutcome,
+  resolvePayoff,
+  splitTournamentGain,
+} from "./helpers/outcome-oracle";
 
 // ---------------------------------------------------------------------------
 // Commit helpers
@@ -863,288 +870,402 @@ describe("coordination-game", () => {
   // Heterogeneous game — different-team matchup
   // ---------------------------------------------------------------------------
 
-  it("heterogeneous game: p1 commits first, both correct → p1 gets full pot (2× stake)", async () => {
-    // Create a fresh tournament for this test so we can run it in isolation
-    const heteroTournamentId = new BN(2);
-    const [heteroTournamentPda] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("tournament"),
-        heteroTournamentId.toArrayLike(Buffer, "le", 8),
-      ],
-      program.programId
-    );
-    const now = Math.floor(Date.now() / 1000);
-    await program.methods
-      .createTournament(
-        heteroTournamentId,
-        new BN(now - 60),
-        new BN(now + 86400)
-      )
-      .accountsPartial({
-        tournament: heteroTournamentPda,
-        authority: provider.wallet.publicKey,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
+  // -------------------------------------------------------------------------
+  // Payoff matrix — exhaustive logic oracle (no validator)
+  //
+  // The TS oracle mirrors cert_schema.rs / CertLib.sol / payoff.rs. Sweeping
+  // every (matchup_type, p1_guess, p2_guess, first_committer) proves the mirror
+  // is internally consistent (stake conservation) and outcome-correct against an
+  // independent expectation table, before the on-chain block below confirms a
+  // representative game per cell actually resolves to the same outcome.
+  // -------------------------------------------------------------------------
+  describe("payoff matrix — exhaustive oracle", () => {
+    const STAKE_L = BigInt(STAKE.toString());
 
-    // Capture balances before any stake is locked, so the full stake loss is visible.
-    const p1BalanceBefore = await provider.connection.getBalance(
-      player1.publicKey
-    );
-    const p2BalanceBefore = await provider.connection.getBalance(
-      player2.publicKey
-    );
+    // Independent expectation: derived straight from the spec, NOT from the
+    // function under test, so a wrong oracle cannot agree with itself.
+    function expectedTerminal(
+      mt: 0 | 1,
+      p1: 0 | 1,
+      p2: 0 | 1,
+      fc: 1 | 2
+    ): OutcomeKind {
+      const p1ok = p1 === mt;
+      const p2ok = p2 === mt;
+      if (mt === 0) {
+        if (p1ok && p2ok) return OutcomeKind.HomogBothCorrect;
+        if (p1ok) return OutcomeKind.HomogP1Correct;
+        if (p2ok) return OutcomeKind.HomogP2Correct;
+        return OutcomeKind.BothWrong;
+      }
+      if (!p1ok && !p2ok) return OutcomeKind.BothWrong;
+      if (p1ok && p2ok)
+        return fc === 1 ? OutcomeKind.HeteroP1Wins : OutcomeKind.HeteroP2Wins;
+      return p1ok ? OutcomeKind.HeteroP1Wins : OutcomeKind.HeteroP2Wins;
+    }
 
-    // P1 creates game with matchup_type = 1 (different teams), matchmaker co-signs
-    const [heteroGamePda, , heteroRMatchup] = await createGameOnChain(
-      heteroTournamentPda,
-      GUESS_DIFF_TEAM,
-      player1
-    );
+    it("derives the right outcome and conserves stake for all 16 terminal transcripts", () => {
+      const two = STAKE_L * 2n;
+      for (const mt of [0, 1] as const) {
+        for (const p1 of [0, 1] as const) {
+          for (const p2 of [0, 1] as const) {
+            for (const fc of [1, 2] as const) {
+              const t = {
+                stepCount: 4,
+                matchupType: mt,
+                p1Guess: p1,
+                p2Guess: p2,
+                firstCommitter: fc,
+              };
+              assert.equal(
+                deriveTerminalOutcome(t),
+                expectedTerminal(mt, p1, p2, fc),
+                `terminal outcome mt=${mt} p1=${p1} p2=${p2} fc=${fc}`
+              );
+              const payoff = resolvePayoff({ ...t, stake: STAKE_L });
+              assert.equal(
+                (
+                  payoff.p1Return +
+                  payoff.p2Return +
+                  payoff.tournamentGain
+                ).toString(),
+                two.toString(),
+                `stake conservation mt=${mt} p1=${p1} p2=${p2} fc=${fc}`
+              );
+            }
+          }
+        }
+      }
+    });
 
-    const createdGame = await program.account.game.fetch(heteroGamePda);
-    assert.equal(
-      createdGame.playerOne.toString(),
-      player1.publicKey.toString(),
-      "player_one should be set at creation"
-    );
-
-    // P1 profile was created at game creation
-    const [hetP1ProfilePda] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("player"),
-        heteroTournamentId.toArrayLike(Buffer, "le", 8),
-        player1.publicKey.toBuffer(),
-      ],
-      program.programId
-    );
-    // P2 joins
-    const hetP2ProfilePda = await joinGameOnChain(
-      heteroGamePda,
-      heteroTournamentId,
-      heteroTournamentPda,
-      player2
-    );
-
-    // Both commit guessing DIFF_TEAM (1 = correct for a heterogeneous match)
-    // P1 commits first → first_committer = 1
-    const hetP1Commit = generateCommit(GUESS_DIFF_TEAM);
-    const hetP2Commit = generateCommit(GUESS_DIFF_TEAM);
-
-    await program.methods
-      .commitGuess(hetP1Commit.commitment as any)
-      .accountsPartial({ game: heteroGamePda, player: player1.publicKey })
-      .signers([player1])
-      .rpc();
-
-    await program.methods
-      .commitGuess(hetP2Commit.commitment as any)
-      .accountsPartial({ game: heteroGamePda, player: player2.publicKey })
-      .signers([player2])
-      .rpc();
-
-    // Both reveal — first revealer provides r_matchup, second passes null
-    const revealAccounts = {
-      game: heteroGamePda,
-      p1Profile: hetP1ProfilePda,
-      p2Profile: hetP2ProfilePda,
-      tournament: heteroTournamentPda,
-      playerOneWallet: player1.publicKey,
-      playerTwoWallet: player2.publicKey,
-      globalConfig: globalConfigPda,
-      treasury: treasury.publicKey,
-      systemProgram: SystemProgram.programId,
-    };
-
-    await program.methods
-      .revealGuess(hetP1Commit.r as any, heteroRMatchup as any)
-      .accountsPartial({ ...revealAccounts, player: player1.publicKey })
-      .signers([player1])
-      .rpc();
-
-    await program.methods
-      .revealGuess(hetP2Commit.r as any, null)
-      .accountsPartial({ ...revealAccounts, player: player2.publicKey })
-      .signers([player2])
-      .rpc();
-
-    const resolvedGame = await program.account.game.fetch(heteroGamePda);
-    assert.equal(
-      resolvedGame.p1Guess,
-      GUESS_DIFF_TEAM,
-      "p1 should have guessed diff team"
-    );
-    assert.equal(
-      resolvedGame.p2Guess,
-      GUESS_DIFF_TEAM,
-      "p2 should have guessed diff team"
-    );
-    assert.equal(
-      resolvedGame.matchupType,
-      GUESS_DIFF_TEAM,
-      "matchup_type should be revealed as diff team"
-    );
-    assert.equal(
-      resolvedGame.firstCommitter,
-      1,
-      "p1 should be first committer"
-    );
-    assert.notEqual(
-      resolvedGame.resolvedAt.toString(),
-      "0",
-      "game should be resolved"
-    );
-
-    // P1 committed first, both correct → p1 wins full pot (2× stake), tournament gains nothing
-    const hetTournament = await program.account.tournament.fetch(
-      heteroTournamentPda
-    );
-    assert.equal(
-      hetTournament.prizeLamports.toString(),
-      "0",
-      "tournament should gain nothing in heterogeneous game"
-    );
-
-    // P1 net balance should have increased by approximately stake (received 2S, spent S + tx fees)
-    const p1BalanceAfter = await provider.connection.getBalance(
-      player1.publicKey
-    );
-    assert.isAbove(p1BalanceAfter, p1BalanceBefore, "p1 should net gain stake");
-
-    // P2 should receive nothing (lost)
-    const p2BalanceAfter = await provider.connection.getBalance(
-      player2.publicKey
-    );
-    // p2 net = -(stake + tx fees) — approximately, just check they didn't gain
-    assert.isBelow(p2BalanceAfter, p2BalanceBefore, "p2 should lose stake");
+    it("derives timeout outcomes for partial transcripts (steps 0-3)", () => {
+      const base = { matchupType: 1, p1Guess: 255, p2Guess: 255 };
+      // step 1: only the first committer landed -> committer wins.
+      assert.equal(
+        deriveClaimOutcome({ ...base, stepCount: 1, firstCommitter: 1 }),
+        OutcomeKind.TimeoutP1Wins
+      );
+      assert.equal(
+        deriveClaimOutcome({ ...base, stepCount: 1, firstCommitter: 2 }),
+        OutcomeKind.TimeoutP2Wins
+      );
+      // step 3: both committed, exactly one revealed -> revealer wins.
+      assert.equal(
+        deriveClaimOutcome({
+          matchupType: 1,
+          p1Guess: 1,
+          p2Guess: 255,
+          stepCount: 3,
+          firstCommitter: 1,
+        }),
+        OutcomeKind.TimeoutP1Wins
+      );
+      assert.equal(
+        deriveClaimOutcome({
+          matchupType: 1,
+          p1Guess: 255,
+          p2Guess: 1,
+          stepCount: 3,
+          firstCommitter: 1,
+        }),
+        OutcomeKind.TimeoutP2Wins
+      );
+      // both revealed at step 3, and steps 0 & 2 -> both forfeit.
+      assert.equal(
+        deriveClaimOutcome({
+          matchupType: 1,
+          p1Guess: 1,
+          p2Guess: 1,
+          stepCount: 3,
+          firstCommitter: 1,
+        }),
+        OutcomeKind.TimeoutBothForfeit
+      );
+      for (const stepCount of [0, 2]) {
+        assert.equal(
+          deriveClaimOutcome({ ...base, stepCount, firstCommitter: 1 }),
+          OutcomeKind.TimeoutBothForfeit
+        );
+      }
+    });
   });
 
-  it("heterogeneous game: both wrong → full refund, tournament gains nothing", async () => {
-    const bothWrongTournamentId = new BN(3);
-    const [bothWrongTournamentPda] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("tournament"),
-        bothWrongTournamentId.toArrayLike(Buffer, "le", 8),
-      ],
-      program.programId
-    );
-    const now = Math.floor(Date.now() / 1000);
-    await program.methods
-      .createTournament(
-        bothWrongTournamentId,
-        new BN(now - 60),
-        new BN(now + 86400)
-      )
-      .accountsPartial({
-        tournament: bothWrongTournamentPda,
-        authority: provider.wallet.publicKey,
+  // -------------------------------------------------------------------------
+  // Payoff matrix — combinatorial on-chain resolution
+  //
+  // One real game per distinct payoff cell (both first-committer tie-breaks for
+  // the heterogeneous both-correct case), each asserting the on-chain Game state
+  // and tournament prize delta against the oracle. Replaces the hand-rolled
+  // single-cell hetero tests; adds the previously-untested homogeneous
+  // asymmetric cells and hetero P2-wins.
+  // -------------------------------------------------------------------------
+  describe("payoff matrix — combinatorial on-chain resolution", () => {
+    const STAKE_L = BigInt(STAKE.toString());
+    const TREASURY_SPLIT_BPS = 5000; // initialize_config above
+    const FEE_MARGIN = 10_000_000; // 0.01 SOL — covers per-player tx fees + rent churn (still « the 0.05 stake)
+
+    before(async () => {
+      // Top up so cells that burn a full stake stay funded.
+      for (const player of [player1, player2]) {
+        const sig = await provider.connection.requestAirdrop(
+          player.publicKey,
+          2 * LAMPORTS_PER_SOL
+        );
+        await provider.connection.confirmTransaction(sig);
+      }
+    });
+
+    async function playToResolution(opts: {
+      tournamentId: number;
+      matchupType: 0 | 1;
+      p1Guess: 0 | 1;
+      p2Guess: 0 | 1;
+      commitFirst: 1 | 2;
+    }) {
+      const tId = new BN(opts.tournamentId);
+      const [tPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("tournament"), tId.toArrayLike(Buffer, "le", 8)],
+        program.programId
+      );
+      const now = Math.floor(Date.now() / 1000);
+      await program.methods
+        .createTournament(tId, new BN(now - 60), new BN(now + 86400))
+        .accountsPartial({
+          tournament: tPda,
+          authority: provider.wallet.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const prizeBefore = BigInt(
+        (await program.account.tournament.fetch(tPda)).prizeLamports.toString()
+      );
+      const p1Before = await provider.connection.getBalance(player1.publicKey);
+      const p2Before = await provider.connection.getBalance(player2.publicKey);
+
+      const [gPda, , rMatchup] = await createGameOnChain(
+        tPda,
+        opts.matchupType,
+        player1
+      );
+      const [p1Profile] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("player"),
+          tId.toArrayLike(Buffer, "le", 8),
+          player1.publicKey.toBuffer(),
+        ],
+        program.programId
+      );
+      const p2Profile = await joinGameOnChain(gPda, tId, tPda, player2);
+
+      const c1 = generateCommit(opts.p1Guess);
+      const c2 = generateCommit(opts.p2Guess);
+      // first_committer is set by COMMIT order; reveal order is independent.
+      const order: Array<[Keypair, Commit]> =
+        opts.commitFirst === 1
+          ? [
+              [player1, c1],
+              [player2, c2],
+            ]
+          : [
+              [player2, c2],
+              [player1, c1],
+            ];
+      for (const [signer, commit] of order) {
+        await program.methods
+          .commitGuess(commit.commitment as any)
+          .accountsPartial({ game: gPda, player: signer.publicKey })
+          .signers([signer])
+          .rpc();
+      }
+
+      const revealAccounts = {
+        game: gPda,
+        p1Profile,
+        p2Profile,
+        tournament: tPda,
+        playerOneWallet: player1.publicKey,
+        playerTwoWallet: player2.publicKey,
+        globalConfig: globalConfigPda,
+        treasury: treasury.publicKey,
         systemProgram: SystemProgram.programId,
-      })
-      .rpc();
+      };
+      // Player 1 reveals first and provides r_matchup; player 2 passes null.
+      await program.methods
+        .revealGuess(c1.r as any, rMatchup as any)
+        .accountsPartial({ ...revealAccounts, player: player1.publicKey })
+        .signers([player1])
+        .rpc();
+      await program.methods
+        .revealGuess(c2.r as any, null)
+        .accountsPartial({ ...revealAccounts, player: player2.publicKey })
+        .signers([player2])
+        .rpc();
 
-    // Capture balances before deposit so the full cost (deposit tx + game txs)
-    // is visible. The refund returns stake to the player wallet, not the escrow,
-    // so capturing after deposit would make p1BalanceAfter > p1BalanceBefore.
-    const p1BalanceBefore = await provider.connection.getBalance(
-      player1.publicKey
-    );
-    const p2BalanceBefore = await provider.connection.getBalance(
-      player2.publicKey
-    );
+      const resolvedGame = await program.account.game.fetch(gPda);
+      const tournament = await program.account.tournament.fetch(tPda);
+      const prizeDelta =
+        BigInt(tournament.prizeLamports.toString()) - prizeBefore;
+      return {
+        resolvedGame,
+        prizeDelta,
+        p1Delta:
+          (await provider.connection.getBalance(player1.publicKey)) - p1Before,
+        p2Delta:
+          (await provider.connection.getBalance(player2.publicKey)) - p2Before,
+      };
+    }
 
-    // P1 creates game with matchup_type = 1 (different teams), P2 joins
-    const [bothWrongGamePda, , bwRMatchup] = await createGameOnChain(
-      bothWrongTournamentPda,
-      GUESS_DIFF_TEAM,
-      player1
-    );
-    const [bwP1ProfilePda] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("player"),
-        bothWrongTournamentId.toArrayLike(Buffer, "le", 8),
-        player1.publicKey.toBuffer(),
-      ],
-      program.programId
-    );
-    const bwP2ProfilePda = await joinGameOnChain(
-      bothWrongGamePda,
-      bothWrongTournamentId,
-      bothWrongTournamentPda,
-      player2
-    );
+    function assertNetDirection(delta: number, net: bigint, label: string) {
+      if (net > 0n) {
+        assert.isAbove(delta, 0, `${label} should net gain`);
+      } else if (net < 0n) {
+        assert.isBelow(delta, 0, `${label} should net lose`);
+      } else {
+        // Broke even on stake; only paid fees.
+        assert.isAtMost(delta, 0, `${label} break-even (<= 0 after fees)`);
+        assert.isAtLeast(delta, -FEE_MARGIN, `${label} fees within margin`);
+      }
+    }
 
-    // Both commit SAME_TEAM (0 = wrong for a heterogeneous match)
-    const bwP1Commit = generateCommit(GUESS_SAME_TEAM);
-    const bwP2Commit = generateCommit(GUESS_SAME_TEAM);
+    const CELLS: Array<{
+      name: string;
+      tournamentId: number;
+      matchupType: 0 | 1;
+      p1Guess: 0 | 1;
+      p2Guess: 0 | 1;
+      commitFirst: 1 | 2;
+    }> = [
+      // Homogeneous (same-team): correct guess = SAME_TEAM (0).
+      {
+        name: "homog both correct",
+        tournamentId: 200,
+        matchupType: 0,
+        p1Guess: 0,
+        p2Guess: 0,
+        commitFirst: 1,
+      },
+      {
+        name: "homog P1 correct only",
+        tournamentId: 201,
+        matchupType: 0,
+        p1Guess: 0,
+        p2Guess: 1,
+        commitFirst: 1,
+      },
+      {
+        name: "homog P2 correct only",
+        tournamentId: 202,
+        matchupType: 0,
+        p1Guess: 1,
+        p2Guess: 0,
+        commitFirst: 1,
+      },
+      {
+        name: "homog both wrong",
+        tournamentId: 203,
+        matchupType: 0,
+        p1Guess: 1,
+        p2Guess: 1,
+        commitFirst: 1,
+      },
+      // Heterogeneous (diff-team): correct guess = DIFF_TEAM (1).
+      {
+        name: "hetero P1 wins (correct only)",
+        tournamentId: 204,
+        matchupType: 1,
+        p1Guess: 1,
+        p2Guess: 0,
+        commitFirst: 2,
+      },
+      {
+        name: "hetero P2 wins (correct only)",
+        tournamentId: 205,
+        matchupType: 1,
+        p1Guess: 0,
+        p2Guess: 1,
+        commitFirst: 1,
+      },
+      {
+        name: "hetero both correct -> first committer P1",
+        tournamentId: 206,
+        matchupType: 1,
+        p1Guess: 1,
+        p2Guess: 1,
+        commitFirst: 1,
+      },
+      {
+        name: "hetero both correct -> first committer P2",
+        tournamentId: 207,
+        matchupType: 1,
+        p1Guess: 1,
+        p2Guess: 1,
+        commitFirst: 2,
+      },
+      {
+        name: "hetero both wrong",
+        tournamentId: 208,
+        matchupType: 1,
+        p1Guess: 0,
+        p2Guess: 0,
+        commitFirst: 1,
+      },
+    ];
 
-    await program.methods
-      .commitGuess(bwP1Commit.commitment as any)
-      .accountsPartial({ game: bothWrongGamePda, player: player1.publicKey })
-      .signers([player1])
-      .rpc();
+    for (const cell of CELLS) {
+      it(`${cell.name} resolves to the oracle outcome`, async () => {
+        const { resolvedGame, prizeDelta, p1Delta, p2Delta } =
+          await playToResolution(cell);
 
-    await program.methods
-      .commitGuess(bwP2Commit.commitment as any)
-      .accountsPartial({ game: bothWrongGamePda, player: player2.publicKey })
-      .signers([player2])
-      .rpc();
+        // On-chain transcript matches what we played.
+        assert.equal(resolvedGame.p1Guess, cell.p1Guess, "p1 guess");
+        assert.equal(resolvedGame.p2Guess, cell.p2Guess, "p2 guess");
+        assert.equal(
+          resolvedGame.matchupType,
+          cell.matchupType,
+          "matchup type"
+        );
+        assert.equal(
+          resolvedGame.firstCommitter,
+          cell.commitFirst,
+          "first committer"
+        );
+        assert.notEqual(resolvedGame.resolvedAt.toString(), "0", "resolved");
 
-    // Both reveal — first revealer provides r_matchup, second passes null
-    const bwRevealAccounts = {
-      game: bothWrongGamePda,
-      p1Profile: bwP1ProfilePda,
-      p2Profile: bwP2ProfilePda,
-      tournament: bothWrongTournamentPda,
-      playerOneWallet: player1.publicKey,
-      playerTwoWallet: player2.publicKey,
-      globalConfig: globalConfigPda,
-      treasury: treasury.publicKey,
-      systemProgram: SystemProgram.programId,
-    };
+        const oracle = {
+          stepCount: 4,
+          matchupType: cell.matchupType,
+          p1Guess: cell.p1Guess,
+          p2Guess: cell.p2Guess,
+          firstCommitter: cell.commitFirst,
+        };
+        const payoff = resolvePayoff({ ...oracle, stake: STAKE_L });
+        const { prizeGain } = splitTournamentGain(
+          payoff.tournamentGain,
+          TREASURY_SPLIT_BPS
+        );
 
-    await program.methods
-      .revealGuess(bwP1Commit.r as any, bwRMatchup as any)
-      .accountsPartial({ ...bwRevealAccounts, player: player1.publicKey })
-      .signers([player1])
-      .rpc();
+        // Prize-pool delta is exact (no tx fees touch the tournament PDA).
+        assert.equal(
+          prizeDelta.toString(),
+          prizeGain.toString(),
+          `${cell.name}: prize-pool delta`
+        );
 
-    await program.methods
-      .revealGuess(bwP2Commit.r as any, null)
-      .accountsPartial({ ...bwRevealAccounts, player: player2.publicKey })
-      .signers([player2])
-      .rpc();
-
-    // Both wrong → full forfeiture: 2× stake split between treasury (50%) and tournament (50%)
-    const bwTournament = await program.account.tournament.fetch(
-      bothWrongTournamentPda
-    );
-    const twoStakes = STAKE.toNumber() * 2;
-    // At 5000 bps (50/50 split), tournament gets half of 2S
-    const expectedTournamentShare = Math.floor(twoStakes / 2);
-    assert.equal(
-      bwTournament.prizeLamports.toString(),
-      expectedTournamentShare.toString(),
-      "tournament should gain half of 2× stake (treasury gets the other half)"
-    );
-
-    // Both players should lose their full stake
-    const p1BalanceAfter = await provider.connection.getBalance(
-      player1.publicKey
-    );
-    const p2BalanceAfter = await provider.connection.getBalance(
-      player2.publicKey
-    );
-    const stakeNum = STAKE.toNumber();
-    assert.isBelow(
-      p1BalanceAfter,
-      p1BalanceBefore - stakeNum + 100_000, // allow small margin for rent reclaim
-      "p1 should lose full stake"
-    );
-    assert.isBelow(
-      p2BalanceAfter,
-      p2BalanceBefore - stakeNum + 100_000,
-      "p2 should lose full stake"
-    );
+        // Balance direction matches net (return - stake); fees only blur the
+        // break-even (both-correct) case slightly negative.
+        assertNetDirection(
+          p1Delta,
+          payoff.p1Return - STAKE_L,
+          `${cell.name}: p1`
+        );
+        assertNetDirection(
+          p2Delta,
+          payoff.p2Return - STAKE_L,
+          `${cell.name}: p2`
+        );
+      });
+    }
   });
 
   it("rejects create_game outside tournament window", async () => {
