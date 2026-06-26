@@ -86,6 +86,51 @@ impl GameApiProxy {
             .map_err(map_game_api_error)
     }
 
+    /// Join the same-chain EVM (EVM-vs-EVM) queue (proxies game-api's internal
+    /// endpoint). No session key — same-chain gameplay is on-chain.
+    pub async fn evmgame_join(
+        &self,
+        wallet: &str,
+        chain: &str,
+        contract: &str,
+        tournament_id: u64,
+    ) -> Result<game_api_client::XQueueResponse, McpServiceError> {
+        let request = game_api_client::EvmGameJoinRequest {
+            wallet,
+            chain,
+            contract,
+            tournament_id,
+        };
+        self.client
+            .evmgame_join(&request)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Poll for a same-chain EVM match by wallet.
+    pub async fn evmgame_status(
+        &self,
+        wallet: &str,
+    ) -> Result<game_api_client::XQueueResponse, McpServiceError> {
+        self.client
+            .evmgame_status(wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Notify that a player committed on-chain; once both have, the response
+    /// carries `r_matchup`.
+    pub async fn evmgame_committed(
+        &self,
+        game_id: &str,
+        wallet: &str,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .evmgame_committed(game_id, wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
+
     /// Get the matchmaker-cosigned Solana create_xmatch funding tx.
     pub async fn xqueue_build_sol_fund(
         &self,

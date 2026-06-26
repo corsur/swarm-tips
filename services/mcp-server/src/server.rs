@@ -214,6 +214,20 @@ pub struct XchainFindMatchArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct EvmFindMatchArgs {
+    /// 0x address of the same-chain CoordinationGame contract to play on.
+    pub contract: String,
+    /// Tournament ID to join. Defaults to 1.
+    pub tournament_id: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct EvmCommittedArgs {
+    /// 0x game id of your same-chain EVM match (from the match payload).
+    pub game_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct XchainBuildCreateMatchArgs {
     /// The `match` payload object from xchain_find_match / xchain_match_status.
     #[serde(rename = "match")]
@@ -1581,6 +1595,106 @@ impl SwarmTipsMcp {
             "chain": chain,
             "wallet": address,
         })))
+    }
+
+    #[tool(
+        name = "game_find_evm_match",
+        description = "[STATE] Join the SAME-CHAIN EVM (EVM-vs-EVM) Coordination Game queue and get matched with another player on the same chain + contract. Unlike the cross-chain game there is no session key or float pool — both players stake into one CoordinationGame contract and play on-chain with their own wallets. Requires a registered EVM (0x) wallet. Pass the CoordinationGame contract address (0x) to play on. Returns 'waiting' (poll game_evm_match_status) or 'matched' with the two unsigned calls: {create_call, join_call} each {to, data, value_wei, chain} — the waiting player sends createGame, the joiner sends joinGame. tournament_id defaults to 1. Testnet only (Base Sepolia).",
+        annotations(destructive_hint = true)
+    )]
+    async fn game_find_evm_match(
+        &self,
+        Parameters(args): Parameters<EvmFindMatchArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if !args.contract.starts_with("0x") {
+            return Err(invalid_input("contract must be a 0x EVM address"));
+        }
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        if !chain.starts_with("eip155:") {
+            return Err(invalid_input(
+                "game_find_evm_match is for same-chain EVM play; register an EVM (0x) wallet",
+            ));
+        }
+        let tournament_id = args.tournament_id.unwrap_or(1);
+
+        let resp = self
+            .state
+            .game_api
+            .evmgame_join(&address, &chain, &args.contract, tournament_id)
+            .await
+            .map_err(|e| McpError::internal_error(format!("evmgame_join failed: {e}"), None))?;
+
+        tracing::info!(
+            event = "game_find_evm_match",
+            wallet = %address,
+            chain = %chain,
+            status = %resp.status,
+            "same-chain EVM queue join"
+        );
+        Ok(text_result(&serde_json::json!({
+            "status": resp.status,
+            "match": resp.match_payload,
+            "chain": chain,
+            "wallet": address,
+            "next": "If 'waiting', poll game_evm_match_status. If 'matched', sign + submit your call from the match payload (create_call if you are the creator, join_call if the joiner), then commit/reveal on-chain (notify game_evm_committed after committing).",
+        })))
+    }
+
+    #[tool(
+        name = "game_evm_match_status",
+        description = "[READ] Poll for your same-chain EVM match. Returns 'waiting' if not yet paired, or 'matched' with the two unsigned calls once an opponent joined. Call after game_find_evm_match returned 'waiting'. Requires a registered EVM wallet.",
+        annotations(read_only_hint = true)
+    )]
+    async fn game_evm_match_status(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+
+        let resp = self
+            .state
+            .game_api
+            .evmgame_status(&address)
+            .await
+            .map_err(|e| McpError::internal_error(format!("evmgame_status failed: {e}"), None))?;
+
+        Ok(text_result(&serde_json::json!({
+            "status": resp.status,
+            "match": resp.match_payload,
+            "chain": chain,
+            "wallet": address,
+        })))
+    }
+
+    #[tool(
+        name = "game_evm_committed",
+        description = "[STATE] Notify that you have committed your guess on-chain (commitGuess) in a same-chain EVM match. Once BOTH players have committed, the response carries r_matchup — the matchup-type preimage the FIRST on-chain reveal must supply (the second reveal passes the zero value). Before both commit, r_matchup is null (the anonymity barrier). Requires a registered EVM wallet; pass your match's game_id.",
+        annotations(destructive_hint = true)
+    )]
+    async fn game_evm_committed(
+        &self,
+        Parameters(args): Parameters<EvmCommittedArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+
+        let resp = self
+            .state
+            .game_api
+            .evmgame_committed(&args.game_id, &address)
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("evmgame_committed failed: {e}"), None)
+            })?;
+
+        Ok(text_result(&resp))
     }
 
     #[tool(
