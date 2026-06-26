@@ -23,6 +23,20 @@ pub enum Finality {
     EvmFinalizedTag,
 }
 
+/// A deployed contract's role on a chain, so one chain can expose several (an
+/// EVM chain hosts BOTH the cross-chain `CrossChainGame` and the same-chain
+/// `CoordinationGame`). The generalized lookup every product shares: adding a
+/// future product (e.g. a Shillbot EVM escrow) is a new variant + an address on
+/// the relevant entries — no consumer change. See `contract_for`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractPurpose {
+    /// The cross-chain match contract — Solana coordination-game program, or the
+    /// EVM `CrossChainGame`.
+    CrossChainGame,
+    /// The same-chain EVM-vs-EVM `CoordinationGame`.
+    CoordinationGame,
+}
+
 /// One chain's complete configuration.
 #[derive(Debug, Clone)]
 pub struct ChainEntry {
@@ -46,11 +60,27 @@ pub struct ChainEntry {
     /// refundTimeout opens 2×skew_margin_secs later on BOTH legs.
     pub claim_window_secs: u32,
     pub skew_margin_secs: u32,
-    /// Coordination-game program ID (solana) or CrossChainGame contract
-    /// address (eip155). None until deployed on that chain.
+    /// Cross-chain match contract: coordination-game program ID (solana) or
+    /// `CrossChainGame` address (eip155). None until deployed on that chain.
+    /// Prefer `contract_for(ContractPurpose::CrossChainGame)` in new code.
     pub game_contract: Option<&'static str>,
+    /// Same-chain EVM-vs-EVM `CoordinationGame` address (eip155). None where it
+    /// isn't deployed — every Solana entry, and an EVM chain until deployed.
+    pub coordination_game_contract: Option<&'static str>,
     /// x402 network descriptor name, when this chain settles payments.
     pub x402_network: Option<&'static str>,
+}
+
+impl ChainEntry {
+    /// The deployed contract for a purpose on this chain, if any. The
+    /// generalized lookup all products share — a future product is a new
+    /// `ContractPurpose` variant mapped to its address field.
+    pub fn contract_for(&self, purpose: ContractPurpose) -> Option<&'static str> {
+        match purpose {
+            ContractPurpose::CrossChainGame => self.game_contract,
+            ContractPurpose::CoordinationGame => self.coordination_game_contract,
+        }
+    }
 }
 
 /// Testnet stake parity note: 0.05 SOL and 0.0025 ETH are within the
@@ -70,6 +100,7 @@ const REGISTRY: &[ChainEntry] = &[
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         game_contract: Some("2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"),
+        coordination_game_contract: None, // same-chain EVM game has no Solana deployment
         x402_network: None,
     },
     ChainEntry {
@@ -85,6 +116,7 @@ const REGISTRY: &[ChainEntry] = &[
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         game_contract: Some("2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"),
+        coordination_game_contract: None,
         x402_network: Some("solana"),
     },
     ChainEntry {
@@ -113,6 +145,10 @@ const REGISTRY: &[ChainEntry] = &[
         // CrossChainGame redeployed 2026-06-14 with permissionless lockTranche
         // (operatorSigner 0x54a6…9A30 verified on-chain; prior 0xC2eb…62AFf orphaned).
         game_contract: Some("0xd585baE48901513202dAEb7d4feE4Af508a96234"),
+        // Same-chain EVM-vs-EVM CoordinationGame, deployed to Base Sepolia
+        // 2026-06-26 (operatorSigner 0x54a6…9A30 == game-api xchain-operator-signer,
+        // so game-api's v=27/28 normalized createGame attestation verifies).
+        coordination_game_contract: Some("0x2F88c12764cA7d5A50C880323696a44420664664"),
         x402_network: Some("base-sepolia"),
     },
 ];
@@ -121,6 +157,13 @@ const REGISTRY: &[ChainEntry] = &[
 /// at system boundaries reject rather than guess.
 pub fn entry(chain: &ChainId) -> Option<&'static ChainEntry> {
     REGISTRY.iter().find(|e| e.chain_id == chain.as_str())
+}
+
+/// The deployed contract for a (chain, purpose) — None if the chain is
+/// unregistered or that contract isn't deployed there. The single lookup every
+/// product (game today, a future Shillbot EVM escrow tomorrow) shares.
+pub fn contract_for(chain: &ChainId, purpose: ContractPurpose) -> Option<&'static str> {
+    entry(chain).and_then(|e| e.contract_for(purpose))
 }
 
 /// Every registered chain, in registry order. Callers that need cross-chain
@@ -213,6 +256,27 @@ mod tests {
 
         let unknown = ChainId::parse("eip155:1").unwrap();
         assert!(super::entry(&unknown).is_none());
+    }
+
+    #[test]
+    fn contract_for_resolves_by_purpose() {
+        let base = ChainId::parse("eip155:84532").unwrap();
+        // Base Sepolia hosts BOTH the cross-chain and same-chain contracts.
+        assert_eq!(
+            contract_for(&base, ContractPurpose::CrossChainGame),
+            Some("0xd585baE48901513202dAEb7d4feE4Af508a96234")
+        );
+        assert_eq!(
+            contract_for(&base, ContractPurpose::CoordinationGame),
+            Some("0x2F88c12764cA7d5A50C880323696a44420664664")
+        );
+        // Solana has no same-chain EVM CoordinationGame, but has the cross-chain one.
+        let sol = ChainId::parse("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1").unwrap();
+        assert!(contract_for(&sol, ContractPurpose::CoordinationGame).is_none());
+        assert!(contract_for(&sol, ContractPurpose::CrossChainGame).is_some());
+        // Unregistered chain → None for any purpose.
+        let unknown = ChainId::parse("eip155:1").unwrap();
+        assert!(contract_for(&unknown, ContractPurpose::CoordinationGame).is_none());
     }
 
     #[test]

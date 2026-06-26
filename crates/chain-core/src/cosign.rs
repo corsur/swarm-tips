@@ -55,6 +55,23 @@ pub fn sign_digest(secret_key: &[u8; 32], digest: &[u8; 32]) -> Result<[u8; 65],
     Ok(out)
 }
 
+/// Sign a 32-byte digest for **on-chain EVM** verification: `[r || s || v]` with
+/// `v = 27 | 28`. OpenZeppelin `ECDSA.recover` and the `ecrecover` precompile
+/// return `address(0)` for any `v ∉ {27,28}`, whereas [`sign_digest`] emits
+/// `v = 0 | 1` (the Solana program + off-chain k256 relay convention). Use THIS
+/// for any signature an EVM CONTRACT verifies (e.g. a `CoordinationGame`
+/// operator attestation, or a session co-sig submitted on-chain); use
+/// [`sign_digest`] for the relay/Solana-program path. This is the canonical
+/// EVM-operator-sig primitive every product shares (see the
+/// `evm_operator_sig_v_convention` note) — don't re-derive the `+27` at call
+/// sites.
+pub fn sign_digest_eth(secret_key: &[u8; 32], digest: &[u8; 32]) -> Result<[u8; 65], CosignError> {
+    let mut sig = sign_digest(secret_key, digest)?;
+    // 0|1 -> 27|28; the input is always 0 or 1 so this never saturates.
+    sig[64] = sig[64].saturating_add(27);
+    Ok(sig)
+}
+
 /// Recover the 20-byte Ethereum address that produced a 65-byte
 /// `[r || s || v]` signature over `digest` — the same operation the Anchor
 /// program's `secp256k1_recover` and the EVM `ecrecover` perform. The
@@ -136,6 +153,24 @@ mod tests {
         let signature = Signature::from_slice(&sig[..64]).unwrap();
         let recovered = VerifyingKey::recover_from_prehash(&digest, &signature, recid).unwrap();
         assert_eq!(verifying_key_address(&recovered), addr);
+    }
+
+    #[test]
+    fn sign_digest_eth_uses_v_27_28_and_recovers_to_signer() {
+        let sk = secret(0x42);
+        let addr = eth_address(&sk).unwrap();
+        let digest = keccak256(b"on-chain evm attestation");
+
+        let eth_sig = sign_digest_eth(&sk, &digest).unwrap();
+        // v MUST be 27 or 28 — what ecrecover / OZ ECDSA.recover require.
+        assert!(eth_sig[64] == 27 || eth_sig[64] == 28, "v={}", eth_sig[64]);
+
+        // It is exactly sign_digest with v normalized: de-normalizing (v-27)
+        // yields the k256 form, which recovers to the same signer.
+        let mut k256_sig = eth_sig;
+        k256_sig[64] = k256_sig[64].wrapping_sub(27);
+        assert_eq!(k256_sig, sign_digest(&sk, &digest).unwrap());
+        assert_eq!(recover_address(&digest, &k256_sig).unwrap(), addr);
     }
 
     #[test]
