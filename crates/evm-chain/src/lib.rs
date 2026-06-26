@@ -103,6 +103,17 @@ sol! {
 
         function poolDeposit() external payable;
     }
+
+    /// The subset of the same-chain CoordinationGame the backend builds
+    /// transactions for (EVM-vs-EVM play; both stakes escrow here, so there is
+    /// no operator float pool — the winner is paid from the pot directly).
+    interface CoordinationGame {
+        function createGame(bytes32 gameId, bytes32 matchupCommitment, bytes operatorSig) external payable;
+        function joinGame(bytes32 gameId) external payable;
+        function commitGuess(bytes32 gameId, bytes32 commitment) external;
+        function revealGuess(bytes32 gameId, bytes32 r, bytes32 rMatchup) external;
+        function resolveTimeout(bytes32 gameId) external;
+    }
 }
 
 /// An EVM call the caller must wrap in a transaction, sign, and submit.
@@ -331,6 +342,129 @@ pub fn build_pool_deposit(contract: Address, amount_wei: u128) -> UnsignedEvmCal
     call(contract, data, U256::from(amount_wei))
 }
 
+// ---------------------------------------------------------------------------
+// Same-chain CoordinationGame builders (EVM-vs-EVM). Both players stake the
+// same native amount into the one contract; the winner is paid from the pot.
+// `contract` is the CoordinationGame address (distinct from CrossChainGame).
+// ---------------------------------------------------------------------------
+
+/// Build an unsigned `createGame` call. `stake_wei` is sent as native ETH;
+/// `operator_sig` is the matchmaker's attestation of `matchup_commitment`.
+pub fn build_create_game(
+    contract: Address,
+    game_id: [u8; 32],
+    matchup_commitment: [u8; 32],
+    operator_sig: [u8; 65],
+    stake_wei: u128,
+) -> UnsignedEvmCall {
+    let data = CoordinationGame::createGameCall {
+        gameId: game_id.into(),
+        matchupCommitment: matchup_commitment.into(),
+        operatorSig: operator_sig.to_vec().into(),
+    }
+    .abi_encode();
+    call(contract, data, U256::from(stake_wei))
+}
+
+/// Byte-array variant of [`build_create_game`] for alloy-free callers.
+pub fn build_create_game_parts(
+    contract: [u8; 20],
+    game_id: [u8; 32],
+    matchup_commitment: [u8; 32],
+    operator_sig: [u8; 65],
+    stake_wei: u128,
+) -> UnsignedEvmCall {
+    build_create_game(
+        Address::from(contract),
+        game_id,
+        matchup_commitment,
+        operator_sig,
+        stake_wei,
+    )
+}
+
+/// Build an unsigned `joinGame` call. The matched `stake_wei` is sent as ETH.
+pub fn build_join_game(contract: Address, game_id: [u8; 32], stake_wei: u128) -> UnsignedEvmCall {
+    let data = CoordinationGame::joinGameCall {
+        gameId: game_id.into(),
+    }
+    .abi_encode();
+    call(contract, data, U256::from(stake_wei))
+}
+
+/// Byte-array variant of [`build_join_game`].
+pub fn build_join_game_parts(
+    contract: [u8; 20],
+    game_id: [u8; 32],
+    stake_wei: u128,
+) -> UnsignedEvmCall {
+    build_join_game(Address::from(contract), game_id, stake_wei)
+}
+
+/// Build an unsigned `commitGuess` call (non-payable).
+pub fn build_commit_guess(
+    contract: Address,
+    game_id: [u8; 32],
+    commitment: [u8; 32],
+) -> UnsignedEvmCall {
+    let data = CoordinationGame::commitGuessCall {
+        gameId: game_id.into(),
+        commitment: commitment.into(),
+    }
+    .abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_commit_guess`].
+pub fn build_commit_guess_parts(
+    contract: [u8; 20],
+    game_id: [u8; 32],
+    commitment: [u8; 32],
+) -> UnsignedEvmCall {
+    build_commit_guess(Address::from(contract), game_id, commitment)
+}
+
+/// Build an unsigned `revealGuess` call (non-payable). The first revealer passes
+/// the matchup preimage in `r_matchup`; the second passes the all-zero sentinel.
+pub fn build_reveal_guess(
+    contract: Address,
+    game_id: [u8; 32],
+    r: [u8; 32],
+    r_matchup: [u8; 32],
+) -> UnsignedEvmCall {
+    let data = CoordinationGame::revealGuessCall {
+        gameId: game_id.into(),
+        r: r.into(),
+        rMatchup: r_matchup.into(),
+    }
+    .abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_reveal_guess`].
+pub fn build_reveal_guess_parts(
+    contract: [u8; 20],
+    game_id: [u8; 32],
+    r: [u8; 32],
+    r_matchup: [u8; 32],
+) -> UnsignedEvmCall {
+    build_reveal_guess(Address::from(contract), game_id, r, r_matchup)
+}
+
+/// Build an unsigned permissionless `resolveTimeout` call (non-payable).
+pub fn build_resolve_timeout(contract: Address, game_id: [u8; 32]) -> UnsignedEvmCall {
+    let data = CoordinationGame::resolveTimeoutCall {
+        gameId: game_id.into(),
+    }
+    .abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_resolve_timeout`].
+pub fn build_resolve_timeout_parts(contract: [u8; 20], game_id: [u8; 32]) -> UnsignedEvmCall {
+    build_resolve_timeout(Address::from(contract), game_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,5 +650,79 @@ mod tests {
         let tx = build_settle(C, cert, oc, sigs(), sigs());
         assert_eq!(tx.value, U256::ZERO);
         assert_eq!(&tx.data[..4], &CrossChainGame::settleCall::SELECTOR[..]);
+    }
+
+    #[test]
+    fn coordination_builders_encode_selectors_values_and_distinct_selectors() {
+        let stake = 50_000_000_000_000_000u128;
+        let create = build_create_game(C, [0xAA; 32], [0xBB; 32], [0x07; 65], stake);
+        assert_eq!(create.value, U256::from(stake));
+        assert_eq!(
+            &create.data[..4],
+            &CoordinationGame::createGameCall::SELECTOR[..]
+        );
+
+        let join = build_join_game(C, [0xAA; 32], stake);
+        assert_eq!(join.value, U256::from(stake));
+        assert_eq!(
+            &join.data[..4],
+            &CoordinationGame::joinGameCall::SELECTOR[..]
+        );
+
+        let commit = build_commit_guess(C, [0xAA; 32], [0xC1; 32]);
+        assert_eq!(commit.value, U256::ZERO);
+        assert_eq!(
+            &commit.data[..4],
+            &CoordinationGame::commitGuessCall::SELECTOR[..]
+        );
+
+        let reveal = build_reveal_guess(C, [0xAA; 32], [0xD0; 32], [0xE1; 32]);
+        assert_eq!(reveal.value, U256::ZERO);
+        assert_eq!(
+            &reveal.data[..4],
+            &CoordinationGame::revealGuessCall::SELECTOR[..]
+        );
+
+        let timeout = build_resolve_timeout(C, [0xAA; 32]);
+        assert_eq!(timeout.value, U256::ZERO);
+        assert_eq!(
+            &timeout.data[..4],
+            &CoordinationGame::resolveTimeoutCall::SELECTOR[..]
+        );
+
+        // Every function selector is distinct.
+        let mut seen = std::collections::HashSet::new();
+        for tx in [&create, &join, &commit, &reveal, &timeout] {
+            assert!(
+                seen.insert(tx.data[..4].to_vec()),
+                "selectors must be distinct"
+            );
+        }
+    }
+
+    #[test]
+    fn coordination_parts_match_typed_builders() {
+        let contract = [0x11u8; 20];
+        let g = [0xAA; 32];
+        assert_eq!(
+            build_create_game_parts(contract, g, [0xBB; 32], [0x07; 65], 7).data,
+            build_create_game(Address::from(contract), g, [0xBB; 32], [0x07; 65], 7).data
+        );
+        assert_eq!(
+            build_join_game_parts(contract, g, 7).data,
+            build_join_game(Address::from(contract), g, 7).data
+        );
+        assert_eq!(
+            build_commit_guess_parts(contract, g, [0xC1; 32]).data,
+            build_commit_guess(Address::from(contract), g, [0xC1; 32]).data
+        );
+        assert_eq!(
+            build_reveal_guess_parts(contract, g, [0xD0; 32], [0xE1; 32]).data,
+            build_reveal_guess(Address::from(contract), g, [0xD0; 32], [0xE1; 32]).data
+        );
+        assert_eq!(
+            build_resolve_timeout_parts(contract, g).data,
+            build_resolve_timeout(Address::from(contract), g).data
+        );
     }
 }
