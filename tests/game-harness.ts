@@ -30,7 +30,7 @@ import {
   gameView,
   generateCommit,
 } from "./harness/game-steps";
-import { OutcomeKind } from "./helpers/outcome-oracle";
+import { OutcomeKind, deriveTerminalOutcome } from "./helpers/outcome-oracle";
 
 interface Cell {
   name: string;
@@ -41,50 +41,32 @@ interface Cell {
   expected: OutcomeKind;
 }
 
-// Representative payoff cells: tournamentGain 0 / partial / full forfeit, plus a
-// hetero tie-break that turns on commit order.
-const CELLS: Cell[] = [
-  {
-    name: "homog both correct (gain 0)",
-    matchupType: 0,
-    p1Guess: 0,
-    p2Guess: 0,
-    commitFirst: 1,
-    expected: OutcomeKind.HomogBothCorrect,
-  },
-  {
-    name: "homog P1 only (gain 1.5·stake)",
-    matchupType: 0,
-    p1Guess: 0,
-    p2Guess: 1,
-    commitFirst: 1,
-    expected: OutcomeKind.HomogP1Correct,
-  },
-  {
-    name: "homog both wrong (gain 2·stake)",
-    matchupType: 0,
-    p1Guess: 1,
-    p2Guess: 1,
-    commitFirst: 1,
-    expected: OutcomeKind.BothWrong,
-  },
-  {
-    name: "hetero P1 wins (gain 0)",
-    matchupType: 1,
-    p1Guess: 1,
-    p2Guess: 0,
-    commitFirst: 1,
-    expected: OutcomeKind.HeteroP1Wins,
-  },
-  {
-    name: "hetero both correct → first committer P2 wins",
-    matchupType: 1,
-    p1Guess: 1,
-    p2Guess: 1,
-    commitFirst: 2,
-    expected: OutcomeKind.HeteroP2Wins,
-  },
-];
+// The FULL terminal payoff matrix: matchupType × p1Guess × p2Guess × commitFirst
+// = 16 combinations. Each is just a parameterized scenario the property battery
+// verifies via the oracle on the realized transcript — the `expected` here is
+// derived (not hardcoded), purely for a readable test name.
+const BIT = [0, 1] as const;
+const CELLS: Cell[] = [];
+for (const matchupType of BIT)
+  for (const p1Guess of BIT)
+    for (const p2Guess of BIT)
+      for (const commitFirst of [1, 2] as const) {
+        const expected = deriveTerminalOutcome({
+          stepCount: 4,
+          matchupType,
+          p1Guess,
+          p2Guess,
+          firstCommitter: commitFirst,
+        });
+        CELLS.push({
+          name: `mt${matchupType} p1=${p1Guess} p2=${p2Guess} cf${commitFirst} → ${OutcomeKind[expected]}`,
+          matchupType,
+          p1Guess,
+          p2Guess,
+          commitFirst,
+          expected,
+        });
+      }
 
 describe("coordination-game same-chain (bankrun, harness)", () => {
   let handle: BankrunHandle;
@@ -98,8 +80,8 @@ describe("coordination-game same-chain (bankrun, harness)", () => {
 
   before(async () => {
     handle = await startBankrun();
-    await handle.runtime.fund(p1.publicKey, 5 * LAMPORTS_PER_SOL);
-    await handle.runtime.fund(p2.publicKey, 5 * LAMPORTS_PER_SOL);
+    await handle.runtime.fund(p1.publicKey, 20 * LAMPORTS_PER_SOL);
+    await handle.runtime.fund(p2.publicKey, 20 * LAMPORTS_PER_SOL);
     ctx = await setupGame(handle.runtime, { treasury, splitBps: 5000 });
   });
 
