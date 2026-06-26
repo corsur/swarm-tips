@@ -26,6 +26,7 @@
 import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { homedir } from "os";
+import { createHash, randomBytes } from "crypto";
 import { expect } from "chai";
 import { Connection, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import {
@@ -49,6 +50,7 @@ import {
   type Checkpoint,
   type OutcomeCert,
 } from "../helpers/xchain-cert";
+import { deriveTerminalOutcome } from "../helpers/outcome-oracle";
 
 const GAME_API = process.env.GAME_API ?? "https://api.coordination.game";
 const SOLANA_RPC =
@@ -65,7 +67,6 @@ const IDL_PATH =
   process.env.IDL_PATH ??
   `${homedir()}/swarm/swarm-tips-repo/target/idl/coordination_game.json`;
 const TOURNAMENT_ID = Number(process.env.TOURNAMENT_ID ?? "2");
-const HOMOG_BOTH_CORRECT = 0;
 const TERMINAL_STEP_COUNT = 4;
 
 const OPERATOR_SK = process.env.OPERATOR_SK ?? "";
@@ -90,6 +91,17 @@ const w32 = (hex: string): Uint8Array =>
 const w20 = (hex: string): Uint8Array =>
   fromHex(hex as `0x${string}`, { to: "bytes", size: 20 });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A 32-byte guess preimage whose last bit encodes the guess. */
+const preimage = (guess: number): Uint8Array => {
+  const r = randomBytes(32);
+  r[31] = (r[31] & 0xfe) | (guess & 1);
+  return Uint8Array.from(r);
+};
+const sha256_0x = (b: Uint8Array): string =>
+  "0x" + createHash("sha256").update(b).digest("hex");
+/** Sign a `0x` 32-byte digest → `0x` 65-byte [r||s||v=0|1] (relay's recover form). */
+const sig0x = (s: SessionSigner, digestHex: string): string =>
+  bytesToHex(Uint8Array.from(signDigest(s, w32(digestHex))));
 
 function cast(args: string[]): string {
   return execFileSync("cast", args, { encoding: "utf8" }).trim();
@@ -451,42 +463,81 @@ function certFromPayload(p: any): MatchLiveCert {
         "EVM Locked"
       );
 
-      // 5) Relay a co-signed terminal checkpoint (both session keys).
-      const cp: Checkpoint = {
-        matchLiveDigest: w32(payload.match_live_digest),
-        stepCount: TERMINAL_STEP_COUNT,
-        p1Commit: w32(`0x${"11".repeat(32)}`),
-        p2Commit: w32(`0x${"22".repeat(32)}`),
-        p1Guess: 0,
-        p2Guess: 0,
-        firstCommitter: 1,
-        matchupType: 0,
-        transcriptHash: w32(`0x${"33".repeat(32)}`),
-      };
-      const cpDigest = checkpointDigest(cp);
-      await api("/internal/xqueue/checkpoint", {
+      // 5) Play the REAL gameplay relay: commit → co-sign step-2 (releases the
+      //    matchmaker's secret r_matchup) → reveal → co-sign the terminal
+      //    checkpoint. The relay stores the matchup-bound terminal checkpoint
+      //    server-side from the REAL transcript — no fabrication, so the binding
+      //    holds by construction.
+      const preA = preimage(1);
+      const preB = preimage(0);
+      await api("/internal/xqueue/commit", {
         wallet: solWallet,
-        checkpoint: {
-          step_count: cp.stepCount,
-          p1_commit: toHex(cp.p1Commit),
-          p2_commit: toHex(cp.p2Commit),
-          p1_guess: cp.p1Guess,
-          p2_guess: cp.p2Guess,
-          first_committer: cp.firstCommitter,
-          matchup_type: cp.matchupType,
-          transcript_hash: toHex(cp.transcriptHash),
-        },
-        sigs: [
-          bytesToHex(Uint8Array.from(signDigest(legA, cpDigest))),
-          bytesToHex(Uint8Array.from(signDigest(legB, cpDigest))),
-        ],
+        commit: sha256_0x(preA),
       });
+      const committed = await api("/internal/xqueue/commit", {
+        wallet: evmPlayer.address,
+        commit: sha256_0x(preB),
+      });
+      expect(committed.both_committed).to.equal(true);
 
-      // 6) Operator-cosign the outcome (game-api derives it from the checkpoint).
+      const gpCommit = await api(
+        `/internal/xqueue/gameplay?wallet=${solWallet}`
+      );
+      await api("/internal/xqueue/sign", {
+        wallet: solWallet,
+        step: 2,
+        signature: sig0x(legA, gpCommit.step2_checkpoint_digest),
+      });
+      const signed2 = await api("/internal/xqueue/sign", {
+        wallet: evmPlayer.address,
+        step: 2,
+        signature: sig0x(legB, gpCommit.step2_checkpoint_digest),
+      });
+      expect(signed2.r_matchup, "r_matchup released after step-2").to.be.a(
+        "string"
+      );
+
+      await api("/internal/xqueue/reveal", {
+        wallet: solWallet,
+        preimage: bytesToHex(preA),
+      });
+      const revealed = await api("/internal/xqueue/reveal", {
+        wallet: evmPlayer.address,
+        preimage: bytesToHex(preB),
+      });
+      expect(revealed.both_revealed).to.equal(true);
+
+      const gpTerm = await api(`/internal/xqueue/gameplay?wallet=${solWallet}`);
+      await api("/internal/xqueue/sign", {
+        wallet: solWallet,
+        step: 4,
+        signature: sig0x(legA, gpTerm.terminal_checkpoint_digest),
+      });
+      const relayed = await api("/internal/xqueue/sign", {
+        wallet: evmPlayer.address,
+        step: 4,
+        signature: sig0x(legB, gpTerm.terminal_checkpoint_digest),
+      });
+      expect(
+        relayed.relayed,
+        "terminal checkpoint relayed (matchup bound)"
+      ).to.equal(true);
+
+      // 6) Operator-cosign the outcome (game-api derives it from the stored
+      //    terminal checkpoint). Assert it against the oracle on the REALIZED
+      //    transcript — derived, never hardcoded (matchup type is the
+      //    matchmaker's, revealed only at step 2).
       const ocResp = await api("/internal/xqueue/outcome-cosign", {
         wallet: solWallet,
       });
-      expect(ocResp.outcome_kind).to.equal(HOMOG_BOTH_CORRECT);
+      const expectedOutcome = deriveTerminalOutcome({
+        stepCount: TERMINAL_STEP_COUNT,
+        matchupType: ocResp.matchup_type,
+        p1Guess: ocResp.p1_guess,
+        p2Guess: ocResp.p2_guess,
+        firstCommitter: ocResp.first_committer,
+      });
+      expect(ocResp.outcome_kind).to.equal(expectedOutcome);
       const oc: OutcomeCert = {
         matchId,
         matchLiveDigest: w32(payload.match_live_digest),
