@@ -8,6 +8,7 @@ on:
       - 'crates/shared/**'
       - 'tests/coordination-game.ts'
       - 'tests/xchain-contested.ts'
+      - 'tests/game-harness.ts'
       - 'tests/helpers/**'
       - 'tsconfig.json'
       - 'package.json'
@@ -20,6 +21,7 @@ on:
       - 'crates/shared/**'
       - 'tests/coordination-game.ts'
       - 'tests/xchain-contested.ts'
+      - 'tests/game-harness.ts'
       - 'tests/helpers/**'
       - 'tsconfig.json'
       - 'package.json'
@@ -85,15 +87,16 @@ jobs:
           anchor build -p extension-credit
 
       - name: Lint coordination-game tests
-        run: npx prettier "tests/coordination-game.ts" "tests/xchain-contested.ts" --check
+        run: npx prettier "tests/coordination-game.ts" "tests/xchain-contested.ts" "tests/game-harness.ts" --check
 
-      # Cross-chain contested path (open/supersede/settle_xclaim) runs under
-      # bankrun — in-process, no validator. Warps the clock past the claim
-      # window, which a live validator can't do deterministically.
+      # Harness bankrun suites — in-process, no validator. The cross-chain
+      # contested path warps the clock past the claim window (a live validator
+      # can't do that deterministically); the same-chain harness plays the payoff
+      # cells through the modular steps + property battery.
       # --exit: bankrun's native context keeps libuv's event loop alive, so
       # mocha hangs after the tests pass unless forced to exit.
-      - name: Run cross-chain contested tests (bankrun)
-        run: npx ts-mocha -p ./tsconfig.json -t 1000000 --exit "tests/xchain-contested.ts"
+      - name: Run harness bankrun tests
+        run: npx ts-mocha -p ./tsconfig.json -t 1000000 --exit "tests/xchain-contested.ts" "tests/game-harness.ts"
 
       - name: Start local validator
         run: |
