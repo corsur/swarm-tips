@@ -78,6 +78,11 @@ jobs:
         run: |
           anchor build -p coordination-game
           anchor build -p shillbot
+          # startAnchor(".") in the bankrun step loads EVERY program declared in
+          # Anchor.toml [programs.localnet]; a missing .so panics
+          # solana-program-test on a background thread and hangs the test hook.
+          anchor build -p extension-registry
+          anchor build -p extension-credit
 
       - name: Lint coordination-game tests
         run: npx prettier "tests/coordination-game.ts" "tests/xchain-contested.ts" --check
