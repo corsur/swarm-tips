@@ -85,8 +85,10 @@ jobs:
       # Cross-chain contested path (open/supersede/settle_xclaim) runs under
       # bankrun — in-process, no validator. Warps the clock past the claim
       # window, which a live validator can't do deterministically.
+      # --exit: bankrun's native context keeps libuv's event loop alive, so
+      # mocha hangs after the tests pass unless forced to exit.
       - name: Run cross-chain contested tests (bankrun)
-        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/xchain-contested.ts"
+        run: npx ts-mocha -p ./tsconfig.json -t 1000000 --exit "tests/xchain-contested.ts"
 
       - name: Start local validator
         run: |
