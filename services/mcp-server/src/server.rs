@@ -215,8 +215,6 @@ pub struct XchainFindMatchArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct EvmFindMatchArgs {
-    /// 0x address of the same-chain CoordinationGame contract to play on.
-    pub contract: String,
     /// Tournament ID to join. Defaults to 1.
     pub tournament_id: Option<u64>,
 }
@@ -1599,7 +1597,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_find_evm_match",
-        description = "[STATE] Join the SAME-CHAIN EVM (EVM-vs-EVM) Coordination Game queue and get matched with another player on the same chain + contract. Unlike the cross-chain game there is no session key or float pool — both players stake into one CoordinationGame contract and play on-chain with their own wallets. Requires a registered EVM (0x) wallet. Pass the CoordinationGame contract address (0x) to play on. Returns 'waiting' (poll game_evm_match_status) or 'matched' with the two unsigned calls: {create_call, join_call} each {to, data, value_wei, chain} — the waiting player sends createGame, the joiner sends joinGame. tournament_id defaults to 1. Testnet only (Base Sepolia).",
+        description = "[STATE] Join the SAME-CHAIN EVM (EVM-vs-EVM) Coordination Game queue and get matched with another player on the same chain. Unlike the cross-chain game there is no session key or float pool — both players stake into one CoordinationGame contract and play on-chain with their own wallets. Requires a registered EVM (0x) wallet; the CoordinationGame contract is resolved from the chain registry (you don't supply it). Returns 'waiting' (poll game_evm_match_status) or 'matched' with the two unsigned calls: {create_call, join_call} each {to, data, value_wei, chain} — the waiting player sends createGame, the joiner sends joinGame. tournament_id defaults to 1. Testnet only (Base Sepolia).",
         annotations(destructive_hint = true)
     )]
     async fn game_find_evm_match(
@@ -1607,9 +1605,6 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<EvmFindMatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        if !args.contract.starts_with("0x") {
-            return Err(invalid_input("contract must be a 0x EVM address"));
-        }
         let bound = self.require_bound_wallet(Some(&parts)).await?;
         let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
@@ -1623,7 +1618,7 @@ impl SwarmTipsMcp {
         let resp = self
             .state
             .game_api
-            .evmgame_join(&address, &chain, &args.contract, tournament_id)
+            .evmgame_join(&address, &chain, tournament_id)
             .await
             .map_err(|e| McpError::internal_error(format!("evmgame_join failed: {e}"), None))?;
 

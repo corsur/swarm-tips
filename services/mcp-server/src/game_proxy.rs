@@ -92,13 +92,11 @@ impl GameApiProxy {
         &self,
         wallet: &str,
         chain: &str,
-        contract: &str,
         tournament_id: u64,
     ) -> Result<game_api_client::XQueueResponse, McpServiceError> {
         let request = game_api_client::EvmGameJoinRequest {
             wallet,
             chain,
-            contract,
             tournament_id,
         };
         self.client

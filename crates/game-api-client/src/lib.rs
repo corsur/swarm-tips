@@ -95,15 +95,15 @@ pub struct GameStatusResponse {
 }
 
 /// Request body for `POST /internal/evmgame/join` — the same-chain EVM queue.
-/// No session key: same-chain gameplay is on-chain with the player's own wallet.
+/// No session key (same-chain gameplay is on-chain with the player's own wallet)
+/// and no contract: game-api resolves the CoordinationGame address from the
+/// chain registry (single source of truth).
 #[derive(Debug, Serialize)]
 pub struct EvmGameJoinRequest<'a> {
     /// The joining player's `0x` EVM wallet.
     pub wallet: &'a str,
     /// CAIP-2 chain id, e.g. `eip155:84532`.
     pub chain: &'a str,
-    /// `0x` CoordinationGame contract address.
-    pub contract: &'a str,
     pub tournament_id: u64,
 }
 
@@ -881,21 +881,21 @@ mod tests {
     }
 
     #[test]
-    fn evmgame_join_request_serializes_without_session_key() {
-        // Same-chain EVM join has no session key (gameplay is on-chain with the
-        // player's own wallet) — the field must be absent from the wire body.
+    fn evmgame_join_request_omits_session_key_and_contract() {
+        // Same-chain EVM join carries neither a session key (gameplay is on-chain
+        // with the player's own wallet) nor a contract (game-api resolves it from
+        // the registry) — both must be absent from the wire body.
         let body = serde_json::to_value(EvmGameJoinRequest {
             wallet: "0xPlayer",
             chain: "eip155:84532",
-            contract: "0xGame",
             tournament_id: 2,
         })
         .expect("serialize");
         assert_eq!(body["wallet"], "0xPlayer");
         assert_eq!(body["chain"], "eip155:84532");
-        assert_eq!(body["contract"], "0xGame");
         assert_eq!(body["tournament_id"], 2);
         assert!(body.get("session_key").is_none());
+        assert!(body.get("contract").is_none());
     }
 
     #[test]
