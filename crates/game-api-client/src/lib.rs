@@ -94,6 +94,19 @@ pub struct GameStatusResponse {
     pub resolved_at: Option<String>,
 }
 
+/// Request body for `POST /internal/evmgame/join` — the same-chain EVM queue.
+/// No session key: same-chain gameplay is on-chain with the player's own wallet.
+#[derive(Debug, Serialize)]
+pub struct EvmGameJoinRequest<'a> {
+    /// The joining player's `0x` EVM wallet.
+    pub wallet: &'a str,
+    /// CAIP-2 chain id, e.g. `eip155:84532`.
+    pub chain: &'a str,
+    /// `0x` CoordinationGame contract address.
+    pub contract: &'a str,
+    pub tournament_id: u64,
+}
+
 /// Request body for `POST /internal/xqueue/join` — the cross-chain queue.
 #[derive(Debug, Serialize)]
 pub struct XQueueJoinRequest<'a> {
@@ -352,6 +365,68 @@ impl GameApiClient {
             .inner
             .get(&url)
             .query(&[("wallet", wallet)])
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    // -- Same-chain EVM queue (internal; caller is trusted) ----------------
+
+    /// `POST /internal/evmgame/join` — join the same-chain EVM (EVM-vs-EVM)
+    /// queue. Returns `waiting`, or `matched` with the two unsigned on-chain
+    /// calls (`createGame` for the waiting player, `joinGame` for the joiner).
+    pub async fn evmgame_join(
+        &self,
+        request: &EvmGameJoinRequest<'_>,
+    ) -> Result<XQueueResponse, GameApiError> {
+        let url = format!("{}/internal/evmgame/join", self.base_url);
+        let resp = self.inner.post(&url).json(request).send().await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `GET /internal/evmgame/status?wallet=…` — poll for a same-chain EVM match
+    /// by wallet (the player who was already waiting retrieves their calls).
+    pub async fn evmgame_status(&self, wallet: &str) -> Result<XQueueResponse, GameApiError> {
+        let url = format!("{}/internal/evmgame/status", self.base_url);
+        let resp = self
+            .inner
+            .get(&url)
+            .query(&[("wallet", wallet)])
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `POST /internal/evmgame/committed` — notify that a player has committed
+    /// on-chain. Returns `{both_committed, r_matchup}`; `r_matchup` (the matchup
+    /// preimage) is non-null only once BOTH players have committed.
+    pub async fn evmgame_committed(
+        &self,
+        game_id: &str,
+        wallet: &str,
+    ) -> Result<serde_json::Value, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            game_id: &'a str,
+            wallet: &'a str,
+        }
+        let url = format!("{}/internal/evmgame/committed", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body { game_id, wallet })
             .send()
             .await?;
         Self::check_status(resp)
@@ -803,6 +878,45 @@ mod tests {
     fn new_preserves_url_without_trailing_slash() {
         let client = GameApiClient::new("https://api.example.com").unwrap();
         assert_eq!(client.base_url(), "https://api.example.com");
+    }
+
+    #[test]
+    fn evmgame_join_request_serializes_without_session_key() {
+        // Same-chain EVM join has no session key (gameplay is on-chain with the
+        // player's own wallet) — the field must be absent from the wire body.
+        let body = serde_json::to_value(EvmGameJoinRequest {
+            wallet: "0xPlayer",
+            chain: "eip155:84532",
+            contract: "0xGame",
+            tournament_id: 2,
+        })
+        .expect("serialize");
+        assert_eq!(body["wallet"], "0xPlayer");
+        assert_eq!(body["chain"], "eip155:84532");
+        assert_eq!(body["contract"], "0xGame");
+        assert_eq!(body["tournament_id"], 2);
+        assert!(body.get("session_key").is_none());
+    }
+
+    #[test]
+    fn url_construction_evmgame_endpoints() {
+        let client = GameApiClient::new("https://api.example.com").unwrap();
+        for (path, expected) in [
+            (
+                "/internal/evmgame/join",
+                "https://api.example.com/internal/evmgame/join",
+            ),
+            (
+                "/internal/evmgame/status",
+                "https://api.example.com/internal/evmgame/status",
+            ),
+            (
+                "/internal/evmgame/committed",
+                "https://api.example.com/internal/evmgame/committed",
+            ),
+        ] {
+            assert_eq!(format!("{}{}", client.base_url(), path), expected);
+        }
     }
 
     #[test]
