@@ -33,27 +33,26 @@ export interface RunResult {
 // (1) Conservation -----------------------------------------------------------
 
 /**
- * Protocol-controlled lamports/wei net to ZERO exactly; the whole tracked system
- * (protocol + players) loses only `feesLamports` to the network. Holds for any
- * composition — value is never created or destroyed. Requires the Ledger to have
- * opened+closed every value-bearing account the scenario touched.
+ * Whole-system conservation: the sum of deltas over EVERY tracked account equals
+ * `-feesLamports` — value leaves only as network fees paid by accounts the test
+ * didn't track (e.g. an untracked cranker). This is the universal, path-independent
+ * invariant; it holds for same-chain payoffs, FORFEITS, and cross-chain FLOAT
+ * movements alike. (The protocol is NOT a passthrough in general: it absorbs
+ * forfeited stake same-chain and fronts the tranche cross-chain — so its subtotal
+ * is non-zero in those legit cases. Use `assertPayoffMatchesLedger` for the
+ * stronger same-chain-only "protocol take == oracle tournamentGain" check.)
+ * Requires the Ledger to have opened+closed every value-bearing account touched.
  */
 export function assertConservation(
   ledger: Ledger,
   opts: { feesLamports?: bigint } = {}
 ): void {
-  const protocolNet = ledger.netByKind("protocol");
-  assert.equal(
-    protocolNet.toString(),
-    "0",
-    "conservation: protocol lamports not conserved"
-  );
   const fees = opts.feesLamports ?? 0n;
-  const total = protocolNet + ledger.netByKind("player");
+  const total = ledger.netByKind("protocol") + ledger.netByKind("player");
   assert.equal(
     total.toString(),
     (-fees).toString(),
-    "conservation: total value changed by more than fees"
+    "conservation: tracked value changed by more than fees"
   );
 }
 

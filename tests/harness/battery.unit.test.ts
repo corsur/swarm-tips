@@ -92,8 +92,8 @@ describe("harness/Transcript — realized step derivation", () => {
 });
 
 describe("harness/battery (1) conservation", () => {
-  it("passes when protocol nets to 0 and the system loses only fees", () => {
-    // Hetero P1 wins: P2's stake moves to P1 via the game PDA; protocol net 0.
+  it("passes for a payoff where the protocol is a passthrough (net 0)", () => {
+    // Hetero P1 wins: P2's stake moves to P1 via the game PDA; system nets 0.
     const led = new Ledger();
     led.open("p1", "player", 100n);
     led.open("p2", "player", 100n);
@@ -105,11 +105,24 @@ describe("harness/battery (1) conservation", () => {
     assertConservation(led);
   });
 
-  it("catches protocol lamports that don't net to zero", () => {
+  it("passes a FORFEIT where the protocol subtotal is non-zero (system still nets 0)", () => {
+    // Both forfeit: players lose 2*stake, treasury+prize ABSORB it. Protocol net
+    // != 0, but whole-system conservation still holds — the universal property.
+    const led = new Ledger();
+    led.open("p1", "player", 100n);
+    led.open("p2", "player", 100n);
+    led.open("treasury", "protocol", 0n);
+    led.close("p1", 50n); // staked 50, forfeited
+    led.close("p2", 50n);
+    led.close("treasury", 100n); // protocol absorbed 2*stake
+    assertConservation(led);
+  });
+
+  it("catches value created out of nothing", () => {
     const led = new Ledger();
     led.open("gamePda", "protocol", 0n);
     led.close("gamePda", 7n); // 7 lamports appeared from nowhere
-    expectThrows(() => assertConservation(led), "protocol leak");
+    expectThrows(() => assertConservation(led), "value created");
   });
 
   it("catches value leaving beyond the declared fee", () => {
