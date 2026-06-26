@@ -1,0 +1,37 @@
+name: Harness Unit
+
+# The e2e harness verification substrate (tests/harness/{ledger,assertions}.ts) is
+# pure TypeScript — no validator, no bankrun, no network. Gate it on its own fast
+# workflow (~1 min: pnpm install + prettier + ts-mocha) instead of the heavy
+# Anchor builds, so the property battery has tight feedback.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/harness/**'
+      - 'tests/helpers/outcome-oracle.ts'
+      - '.github/workflows/harness-unit.yml'
+  pull_request:
+    paths:
+      - 'tests/harness/**'
+      - 'tests/helpers/outcome-oracle.ts'
+      - '.github/workflows/harness-unit.yml'
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: Lint harness sources
+        run: npx prettier "tests/harness/**/*.ts" --check
+      - name: Run harness unit tests (no validator)
+        run: npx ts-mocha -p ./tsconfig.json --exit "tests/harness/*.unit.test.ts"
