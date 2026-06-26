@@ -7,6 +7,8 @@ on:
       - 'programs/coordination-game/**'
       - 'crates/shared/**'
       - 'tests/coordination-game.ts'
+      - 'tests/xchain-contested.ts'
+      - 'tests/helpers/**'
       - 'tsconfig.json'
       - 'package.json'
       - 'Anchor.toml'
@@ -17,6 +19,8 @@ on:
       - 'programs/coordination-game/**'
       - 'crates/shared/**'
       - 'tests/coordination-game.ts'
+      - 'tests/xchain-contested.ts'
+      - 'tests/helpers/**'
       - 'tsconfig.json'
       - 'package.json'
       - 'Anchor.toml'
@@ -76,7 +80,13 @@ jobs:
           anchor build -p shillbot
 
       - name: Lint coordination-game tests
-        run: npx prettier "tests/coordination-game.ts" --check
+        run: npx prettier "tests/coordination-game.ts" "tests/xchain-contested.ts" --check
+
+      # Cross-chain contested path (open/supersede/settle_xclaim) runs under
+      # bankrun — in-process, no validator. Warps the clock past the claim
+      # window, which a live validator can't do deterministically.
+      - name: Run cross-chain contested tests (bankrun)
+        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/xchain-contested.ts"
 
       - name: Start local validator
         run: |
