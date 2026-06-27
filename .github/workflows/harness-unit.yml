@@ -11,11 +11,15 @@ on:
     paths:
       - 'tests/harness/**'
       - 'tests/helpers/outcome-oracle.ts'
+      - 'sdk/outcome-oracle.ts'
+      - 'sdk/battery.ts'
       - '.github/workflows/harness-unit.yml'
   pull_request:
     paths:
       - 'tests/harness/**'
       - 'tests/helpers/outcome-oracle.ts'
+      - 'sdk/outcome-oracle.ts'
+      - 'sdk/battery.ts'
       - '.github/workflows/harness-unit.yml'
 
 jobs:
@@ -32,6 +36,6 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - name: Lint harness sources
-        run: npx prettier "tests/harness/**/*.ts" --check
+        run: npx prettier "tests/harness/**/*.ts" "sdk/outcome-oracle.ts" "sdk/battery.ts" --check
       - name: Run harness unit tests (no validator)
         run: npx ts-mocha -p ./tsconfig.json --exit "tests/harness/*.unit.test.ts"
