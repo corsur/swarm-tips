@@ -311,6 +311,28 @@ export async function reveal(
   assertLegalTransition(GAME_GRAPH, before, after);
 }
 
+/** resolve_timeout (permissionless): crank a stalled game to Resolved after its
+ *  slot deadline. The caller (any signer) pays the fee and receives no prize. */
+export async function resolveTimeout(
+  ctx: GameCtx,
+  m: GameMatch
+): Promise<void> {
+  await ctx.rt.program.methods
+    .resolveTimeout()
+    .accountsPartial({
+      game: m.gamePda,
+      p1Profile: m.p1Profile,
+      p2Profile: m.p2Profile,
+      tournament: m.tournamentPda,
+      globalConfig: ctx.globalConfigPda,
+      treasury: ctx.treasury,
+      playerOneWallet: m.p1.publicKey,
+      playerTwoWallet: m.p2.publicKey,
+      caller: ctx.rt.payer,
+    })
+    .rpc();
+}
+
 /** A StateView over a same-chain game for the property battery. */
 export function gameView(ctx: GameCtx, gamePda: PublicKey): StateView {
   return {

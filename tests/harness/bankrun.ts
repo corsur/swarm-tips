@@ -54,6 +54,19 @@ export async function startBankrun(): Promise<BankrunHandle> {
       );
     },
 
+    async warpBySlots(slots) {
+      const c = await context.banksClient.getClock();
+      context.setClock(
+        new Clock(
+          c.slot + BigInt(slots),
+          c.epochStartTimestamp,
+          c.epoch,
+          c.leaderScheduleEpoch,
+          c.unixTimestamp
+        )
+      );
+    },
+
     async fund(recipient, lamports) {
       const tx = new Transaction().add(
         SystemProgram.transfer({

@@ -27,6 +27,13 @@ export interface SolanaRuntime {
    */
   warpTo(ts: number): Promise<void>;
 
+  /**
+   * Advance the clock by `slots`. The commit/reveal timeouts are SLOT-based
+   * (COMMIT/REVEAL_TIMEOUT_SLOTS), so resolve_timeout tests must move the slot,
+   * not the timestamp. Bankrun-only (owns the clock).
+   */
+  warpBySlots(slots: number): Promise<void>;
+
   /** Move lamports from the runtime payer to `recipient` (test funding helper). */
   fund(recipient: PublicKey, lamports: number | bigint): Promise<void>;
 }
