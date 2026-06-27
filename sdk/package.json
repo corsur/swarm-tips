@@ -7,7 +7,13 @@
   "files": [
     "coordination_game.js",
     "coordination_game.d.ts",
-    "coordination_game.ts"
+    "coordination_game.ts",
+    "outcome-oracle.js",
+    "outcome-oracle.d.ts",
+    "outcome-oracle.ts",
+    "battery.js",
+    "battery.d.ts",
+    "battery.ts"
   ],
   "repository": {
     "type": "git",

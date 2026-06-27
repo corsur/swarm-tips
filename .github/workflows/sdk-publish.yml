@@ -1,0 +1,44 @@
+name: SDK Publish (verification core)
+
+# Publishes @corsur/coordination-game-sdk with the PURE verification core
+# (outcome-oracle + battery) on push — NO program deploy. The coordination-app
+# Playwright/MCP e2e harness consumes the battery from the published package
+# (Playwright can't import the cross-repo .ts directly).
+#
+# Superset, not a replacement: it also (re)ships coordination_game.{js,d.ts,ts}
+# (the committed IDL snapshot) so nothing the package already provides is lost.
+# Published under the `verify` dist-tag at 0.2.<run_number>, so the deploy-publish
+# job's `latest` tag and pinned consumers (frontend) are untouched — the harness
+# pins this version explicitly.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/coordination_game.ts'
+      - 'sdk/outcome-oracle.ts'
+      - 'sdk/battery.ts'
+      - 'sdk/package.json'
+      - '.github/workflows/sdk-publish.yml'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@corsur'
+      - name: Compile + publish (verification core, no deploy)
+        run: |
+          cd sdk
+          npx -p typescript@5 tsc \
+            coordination_game.ts outcome-oracle.ts battery.ts \
+            --declaration --module commonjs --target es2020 \
+            --esModuleInterop --skipLibCheck
+          npm version 0.2.${{ github.run_number }} --no-git-tag-version
+          npm publish --tag verify
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
