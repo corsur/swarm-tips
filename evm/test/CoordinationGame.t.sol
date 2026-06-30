@@ -47,8 +47,14 @@ contract CoordinationGameTest is Test {
         commitment = sha256(abi.encodePacked(r));
     }
 
+    /// Operator attestation bound to the creator (L2). All standard test flows
+    /// create as p1, so default to p1; _opSigFor takes an explicit creator.
     function _opSig(bytes32 gameId, bytes32 commitment) internal view returns (bytes memory) {
-        bytes32 digest = keccak256(abi.encode(block.chainid, address(game), gameId, commitment));
+        return _opSigFor(gameId, p1, commitment);
+    }
+
+    function _opSigFor(bytes32 gameId, address creator, bytes32 commitment) internal view returns (bytes memory) {
+        bytes32 digest = keccak256(abi.encode(block.chainid, address(game), gameId, creator, commitment));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(operatorPk, digest);
         return abi.encodePacked(r, s, v);
     }
@@ -224,7 +230,7 @@ contract CoordinationGameTest is Test {
         bytes32 gameId = keccak256("bad-sig");
         (, bytes32 mc) = _commit(0, keccak256(abi.encode(gameId, "matchup")));
         // Sign with the wrong key.
-        bytes32 digest = keccak256(abi.encode(block.chainid, address(game), gameId, mc));
+        bytes32 digest = keccak256(abi.encode(block.chainid, address(game), gameId, p1, mc));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xBEEF, digest);
         vm.prank(p1);
         vm.expectRevert(CoordinationGame.BadSignature.selector);
@@ -402,6 +408,24 @@ contract CoordinationGameTest is Test {
         assertEq(
             uint8(_status(gameId)), uint8(CoordinationGame.Status.Resolved), "resolves at the snapshotted deadline"
         );
+    }
+
+    /// L2: an operator attestation signed for one creator can't be replayed by a
+    /// different msg.sender to squat the assigned gameId.
+    function test_L2_createGameSigNotReplayableByOtherSender() public {
+        bytes32 gameId = keccak256("l2-replay");
+        (, bytes32 mc) = _commit(0, keccak256(abi.encode(gameId, "matchup")));
+        bytes memory sigForP1 = _opSigFor(gameId, p1, mc);
+
+        // p2 tries to use p1's attestation → digest binds msg.sender, so it fails.
+        vm.prank(p2);
+        vm.expectRevert(CoordinationGame.BadSignature.selector);
+        game.createGame{value: STAKE}(gameId, mc, sigForP1);
+
+        // p1 (the bound creator) succeeds with the same sig.
+        vm.prank(p1);
+        game.createGame{value: STAKE}(gameId, mc, sigForP1);
+        assertEq(uint8(_status(gameId)), uint8(CoordinationGame.Status.Pending), "bound creator succeeds");
     }
 
     /// L1: setConfig rejects out-of-range stake / timeout windows.

@@ -201,7 +201,10 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         if (g.status != Status.None) revert InvalidStatus();
         if (msg.value != stakeWei) revert BadStake();
         if (matchupCommitment == bytes32(0)) revert BadCommitment();
-        bytes32 digest = keccak256(abi.encode(block.chainid, address(this), gameId, matchupCommitment));
+        // Bind msg.sender into the digest (L2): the operator's attestation is for
+        // THIS creator, so a sig signed for one player can't be replayed by another
+        // to squat the assigned gameId.
+        bytes32 digest = keccak256(abi.encode(block.chainid, address(this), gameId, msg.sender, matchupCommitment));
         if (ECDSA.recover(digest, operatorSig) != operatorSigner) revert BadSignature();
 
         g.status = Status.Pending;
