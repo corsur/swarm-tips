@@ -41,7 +41,8 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         Active,
         Committing,
         Revealing,
-        Resolved
+        Resolved,
+        Cancelled
     }
 
     struct Game {
@@ -59,6 +60,7 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         uint64 activatedAt; // join time — Active/commit-timeout anchor
         uint64 firstCommitAt; // first commit time — Committing-timeout anchor
         uint64 bothCommitAt; // second commit time — Revealing-timeout anchor
+        uint64 createdAt; // create time — Pending join-window / cancel anchor (H3)
     }
 
     mapping(bytes32 => Game) public games;
@@ -95,6 +97,7 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
     event PrizePoolWithdrawn(address indexed to, uint256 amount);
     event ConfigUpdated();
     event Withdrawn(address indexed to, uint256 amount);
+    event GameCancelled(bytes32 indexed gameId, address indexed player1, uint256 amount);
 
     error InvalidStatus();
     error BadSignature();
@@ -200,7 +203,25 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         g.p2Guess = UNREVEALED;
         g.firstCommitter = 0;
         g.matchupType = MATCHUP_UNSET;
+        g.createdAt = uint64(block.timestamp);
         emit GameCreated(gameId, msg.sender, g.stakeWei);
+    }
+
+    /// @notice Refund the creator of a Pending game that no one ever joined, once
+    ///         the join window (commitTimeoutSecs after creation) elapses.
+    ///         Permissionless — anyone may crank it; the stake is credited back to
+    ///         player1 (M1 pull-payment). Without this an unjoined game stranded
+    ///         P1's stake forever (audit H3). A P2 that joins within the window
+    ///         moves the game to Active, after which this reverts (not Pending).
+    function cancelPending(bytes32 gameId) external {
+        Game storage g = games[gameId];
+        if (g.status != Status.Pending) revert InvalidStatus();
+        if (block.timestamp <= uint256(g.createdAt) + commitTimeoutSecs) revert DeadlineNotReached();
+
+        g.status = Status.Cancelled;
+        uint256 amount = g.stakeWei;
+        emit GameCancelled(gameId, g.player1, amount);
+        _credit(g.player1, amount);
     }
 
     /// @notice Join a pending game by matching the stake; the game goes Active.

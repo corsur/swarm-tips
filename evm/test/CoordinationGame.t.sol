@@ -340,6 +340,43 @@ contract CoordinationGameTest is Test {
         new CoordinationGame(owner, treasury, treasury, SPLIT_BPS, STAKE, COMMIT_TIMEOUT, REVEAL_TIMEOUT);
     }
 
+    // ----- H3 cancelPending: unjoined-game refund -------------------------
+
+    /// A Pending game that no one joins must be refundable after the join window,
+    /// else P1's stake is stranded forever.
+    function test_H3_cancelPendingRefundsCreatorAfterWindow() public {
+        bytes32 gameId = keccak256("h3-strand");
+        (, bytes32 mc) = _commit(0, keccak256(abi.encode(gameId, "matchup")));
+        vm.prank(p1);
+        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc));
+
+        // Too early: still inside the join window.
+        vm.expectRevert(CoordinationGame.DeadlineNotReached.selector);
+        game.cancelPending(gameId);
+
+        vm.warp(block.timestamp + COMMIT_TIMEOUT + 1);
+        uint256 before = p1.balance;
+        // Permissionless crank (a third party calls it).
+        vm.prank(address(0xCA77));
+        game.cancelPending(gameId);
+
+        assertEq(uint8(_status(gameId)), uint8(CoordinationGame.Status.Cancelled), "game cancelled");
+        assertEq(game.withdrawable(p1), STAKE, "creator credited the stake");
+        vm.prank(p1);
+        game.withdraw();
+        assertEq(p1.balance, before + STAKE, "creator made whole");
+    }
+
+    /// Once P2 joins, the game is Active and can no longer be cancelled — no
+    /// griefer can refund-and-cancel a live match out from under the players.
+    function test_H3_cancelPendingRevertsOnceJoined() public {
+        bytes32 gameId = keccak256("h3-joined");
+        _create(gameId, 1); // creates + joins → Active
+        vm.warp(block.timestamp + COMMIT_TIMEOUT + 1);
+        vm.expectRevert(CoordinationGame.InvalidStatus.selector);
+        game.cancelPending(gameId);
+    }
+
     // ----- M1 pull-payment ------------------------------------------------
 
     /// A winner that reverts on receive must NOT be able to brick the terminal
@@ -382,7 +419,7 @@ contract CoordinationGameTest is Test {
     }
 
     function _status(bytes32 gameId) internal view returns (CoordinationGame.Status s) {
-        (s,,,,,,,,,,,,,) = game.games(gameId);
+        (s,,,,,,,,,,,,,,) = game.games(gameId);
     }
 }
 
