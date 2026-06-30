@@ -253,6 +253,11 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         // ahead of an open claim's window (it is always >= matchDeadline +
         // claimWindowSecs + 2*skew for any cert, preserving the no-race inequality).
         m.timeoutOpensAt = uint64(uint256(m.matchDeadline) + maxClaimWindowSecs + 2 * uint256(skewMarginSecs));
+        // Snapshot the claim window too (M2): validate cert.claimWindowSecs against
+        // the live maxClaimWindowSecs ONCE, here, so a later setConfig that lowers
+        // the max can't DoS a valid openClaim/submitEquivocationProof by failing
+        // the bound check at claim time.
+        m.claimWindowEnd = _claimWindowEnd(m.matchDeadline, cert.claimWindowSecs);
         m.status = Status.Locked;
         emit TrancheLocked(cert.matchId, trancheWei);
     }
@@ -310,7 +315,8 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     ) external {
         Match storage m = matches[cert.matchId];
         if (m.status != Status.Locked) revert InvalidStatus();
-        uint64 windowEnd = _claimWindowEnd(m.matchDeadline, cert.claimWindowSecs);
+        // Use the window snapshotted at lock (M2) — never the live config.
+        uint64 windowEnd = m.claimWindowEnd;
         // Claims may only be filed inside the window; after it closes the
         // refund backstop takes over.
         if (block.timestamp > windowEnd) revert DeadlinePassed();
@@ -324,7 +330,6 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         m.matchLiveDigest = liveDigest;
         m.bestStepCount = cp.stepCount;
         m.bestOutcomeKind = CertLib.deriveClaimOutcome(cp);
-        m.claimWindowEnd = windowEnd;
         emit ClaimOpened(cert.matchId, m.bestOutcomeKind, windowEnd);
     }
 
@@ -392,7 +397,8 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         // signature, but the deadline/window it implies must be trusted.
         bytes32 liveDigest = cert.matchLiveDigest();
         if (cert.matchDeadline != m.matchDeadline) revert CertMismatch();
-        uint64 windowEnd = _claimWindowEnd(m.matchDeadline, cert.claimWindowSecs);
+        // Snapshotted at lock (M2), immune to a later setConfig.
+        uint64 windowEnd = m.claimWindowEnd;
         if (block.timestamp > windowEnd) revert DeadlinePassed();
         if (cpA.matchLiveDigest != liveDigest || cpB.matchLiveDigest != liveDigest) {
             revert CertMismatch();
@@ -418,7 +424,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
 
         m.status = Status.Claiming;
         m.matchLiveDigest = liveDigest;
-        m.claimWindowEnd = windowEnd;
+        // claimWindowEnd already snapshotted at lock (M2).
         // Verdict from flags only — order-independent, never read from the
         // current claim outcome.
         m.bestOutcomeKind = _equivocationOutcome(m.playerIsP1, m.localEquivocated, m.counterEquivocated);

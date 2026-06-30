@@ -440,6 +440,28 @@ contract CrossChainGameTest is Test {
         return [_sign(counterSessionPk, d), _sign(localSessionPk, d)];
     }
 
+    /// M2: the claim window is snapshotted at lock, so an owner setConfig that
+    /// lowers maxClaimWindowSecs below the locked cert's claimWindowSecs cannot
+    /// DoS a valid openClaim (which previously re-validated against live config).
+    function test_M2_setConfigCannotDosOpenClaim() public {
+        bytes32 id = keccak256("m2-dos");
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+
+        // Shrink maxClaimWindowSecs far below the locked cert's claimWindowSecs.
+        vm.prank(owner);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 1, SKEW);
+
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 liveDigest = CertLib.matchLiveDigest(cert);
+        CertLib.Checkpoint memory cp = _checkpoint(liveDigest, 1, 255, 255, 1);
+        // Pre-M2 this reverted BadConfig (cert.claimWindowSecs > live max); now
+        // it uses the lock-time snapshot and succeeds.
+        game.openClaim(cert, cp, _liveSigs(cert), _cpSigs(cp));
+        assertEq(uint256(_status(id)), uint256(CrossChainGame.Status.Claiming), "claim opened despite shrunk config");
+    }
+
     function test_claimPath_committerWinsAfterWindow() public {
         bytes32 id = keccak256("m11");
         uint128 tranche = STAKE;
