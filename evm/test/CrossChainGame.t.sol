@@ -269,6 +269,24 @@ contract CrossChainGameTest is Test {
         assertEq(uint256(_status(id)), uint256(CrossChainGame.Status.Funded), "authorized create succeeds");
     }
 
+    /// L1: setConfig rejects out-of-range stake / tranche / windows.
+    function test_L1_setConfigRejectsOutOfRangeValues() public {
+        vm.startPrank(owner);
+        // stake below the dust floor
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, 1, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+        // maxTranche over 10x stake
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, STAKE * 11, CLAIM_WINDOW, SKEW);
+        // claim window below the 60s floor
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 59, SKEW);
+        // skew over the 30-day cap
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, 31 days);
+        vm.stopPrank();
+    }
+
     function test_loserForfeit_splitsTreasuryAndPool() public {
         bytes32 id = keccak256("m2");
         uint128 tranche = STAKE;
@@ -506,9 +524,10 @@ contract CrossChainGameTest is Test {
         _fund(id, true);
         _lock(id, tranche);
 
-        // Shrink maxClaimWindowSecs far below the locked cert's claimWindowSecs.
+        // Shrink maxClaimWindowSecs to the floor (60), far below the locked cert's
+        // claimWindowSecs (CLAIM_WINDOW=3600).
         vm.prank(owner);
-        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 1, SKEW);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 60, SKEW);
 
         CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
         bytes32 liveDigest = CertLib.matchLiveDigest(cert);
@@ -760,13 +779,14 @@ contract CrossChainGameTest is Test {
         uint256 matchDeadline = block.timestamp + 2 days; // _fund used this
         uint256 snapshotOpensAt = matchDeadline + CLAIM_WINDOW + 2 * SKEW;
 
-        // Owner shrinks window + skew to the minimum AFTER the lock.
+        // Owner shrinks window + skew to the floor (60) AFTER the lock.
         vm.prank(owner);
-        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 1, 1);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 60, 60);
 
-        // A non-snapshotted opensAt would be matchDeadline + 1 + 2; the snapshot
-        // still gates the refund well past that point.
-        vm.warp(matchDeadline + 100);
+        // A non-snapshotted opensAt would be matchDeadline + 60 + 2*60 = +180; warp
+        // past that but before the snapshot (matchDeadline + 3600 + 1800) — the
+        // snapshot still gates the refund.
+        vm.warp(matchDeadline + 1000);
         vm.expectRevert(CrossChainGame.DeadlineNotReached.selector);
         game.refundTimeout(id);
 

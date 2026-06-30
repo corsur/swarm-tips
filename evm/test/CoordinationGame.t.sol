@@ -386,13 +386,13 @@ contract CoordinationGameTest is Test {
         bytes32 gameId = keccak256("m3-inflight");
         _create(gameId, 1); // Active; windows snapshotted at COMMIT/REVEAL_TIMEOUT
 
-        // Owner shrinks both timeouts to the minimum AFTER the game started.
+        // Owner shrinks both timeouts to the floor (60) AFTER the game started.
         vm.prank(owner);
-        game.setConfig(operator, treasury, SPLIT_BPS, STAKE, 1, 1);
+        game.setConfig(operator, treasury, SPLIT_BPS, STAKE, 60, 60);
 
-        // Past the NEW (shrunk) commit timeout but before the snapshotted one:
-        // must still be too early to resolve.
-        vm.warp(block.timestamp + 2);
+        // Past the NEW (shrunk) commit timeout (60) but before the snapshotted one
+        // (COMMIT_TIMEOUT=3600): must still be too early to resolve.
+        vm.warp(block.timestamp + 100);
         vm.expectRevert(CoordinationGame.DeadlineNotReached.selector);
         game.resolveTimeout(gameId);
 
@@ -402,6 +402,21 @@ contract CoordinationGameTest is Test {
         assertEq(
             uint8(_status(gameId)), uint8(CoordinationGame.Status.Resolved), "resolves at the snapshotted deadline"
         );
+    }
+
+    /// L1: setConfig rejects out-of-range stake / timeout windows.
+    function test_L1_setConfigRejectsOutOfRangeValues() public {
+        vm.startPrank(owner);
+        // stake below the dust floor
+        vm.expectRevert(CoordinationGame.BadConfig.selector);
+        game.setConfig(operator, treasury, SPLIT_BPS, 1, COMMIT_TIMEOUT, REVEAL_TIMEOUT);
+        // commit timeout below the 60s floor
+        vm.expectRevert(CoordinationGame.BadConfig.selector);
+        game.setConfig(operator, treasury, SPLIT_BPS, STAKE, 59, REVEAL_TIMEOUT);
+        // reveal timeout over the 30-day cap
+        vm.expectRevert(CoordinationGame.BadConfig.selector);
+        game.setConfig(operator, treasury, SPLIT_BPS, STAKE, COMMIT_TIMEOUT, 31 days);
+        vm.stopPrank();
     }
 
     // ----- M1 pull-payment ------------------------------------------------

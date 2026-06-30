@@ -91,6 +91,12 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
     uint16 private constant MAX_SPLIT_BPS = 8000;
     uint16 private constant BPS_DENOM = 10000;
 
+    // Config sanity bounds (L1).
+    uint128 private constant MIN_STAKE_WEI = 0.0001 ether;
+    uint128 private constant MAX_STAKE_WEI = 100 ether;
+    uint32 private constant MIN_WINDOW_SECS = 60;
+    uint32 private constant MAX_WINDOW_SECS = 30 days;
+
     event GameCreated(bytes32 indexed gameId, address indexed player1, uint128 stakeWei);
     event GameStarted(bytes32 indexed gameId, address indexed player1, address indexed player2);
     event GuessCommitted(bytes32 indexed gameId, address indexed player);
@@ -149,13 +155,14 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         uint32 commitTimeoutSecs_,
         uint32 revealTimeoutSecs_
     ) private pure {
-        if (operatorSigner_ == address(0) || treasury_ == address(0) || stakeWei_ == 0) {
-            revert BadConfig();
-        }
+        if (operatorSigner_ == address(0) || treasury_ == address(0)) revert BadConfig();
         // Key separation: the matchmaker key is never the owner or the treasury.
         if (operatorSigner_ == owner_ || operatorSigner_ == treasury_) revert BadConfig();
         if (treasurySplitBps_ < MIN_SPLIT_BPS || treasurySplitBps_ > MAX_SPLIT_BPS) revert BadConfig();
-        if (commitTimeoutSecs_ == 0 || revealTimeoutSecs_ == 0) revert BadConfig();
+        // Bounds (L1): stake + the two timeout windows.
+        if (stakeWei_ < MIN_STAKE_WEI || stakeWei_ > MAX_STAKE_WEI) revert BadConfig();
+        if (commitTimeoutSecs_ < MIN_WINDOW_SECS || commitTimeoutSecs_ > MAX_WINDOW_SECS) revert BadConfig();
+        if (revealTimeoutSecs_ < MIN_WINDOW_SECS || revealTimeoutSecs_ > MAX_WINDOW_SECS) revert BadConfig();
     }
 
     function setConfig(

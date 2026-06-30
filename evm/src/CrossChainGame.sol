@@ -105,6 +105,14 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     uint16 private constant MAX_SPLIT_BPS = 8000;
     uint16 private constant BPS_DENOM = 10000;
 
+    // Config sanity bounds (L1) — reject mis-set stakes/windows that would brick
+    // play or over-expose the pool, without constraining the chosen $5 stake.
+    uint128 private constant MIN_STAKE_WEI = 0.0001 ether; // dust floor
+    uint128 private constant MAX_STAKE_WEI = 100 ether; // fat-finger cap
+    uint32 private constant MIN_WINDOW_SECS = 60; // 1 minute
+    uint32 private constant MAX_WINDOW_SECS = 30 days;
+    uint128 private constant MAX_TRANCHE_MULTIPLE = 10; // maxTranche <= 10x stake
+
     event MatchCreated(bytes32 indexed matchId, address indexed player, uint128 stakeWei);
     event TrancheLocked(bytes32 indexed matchId, uint128 trancheWei);
     event Settled(bytes32 indexed matchId, uint8 outcomeKind, uint256 toPlayer, uint256 toTreasury);
@@ -143,7 +151,14 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     ) Ownable(initialOwner) {
         if (chainTag == bytes32(0)) revert BadConfig();
         _validateConfig(
-            initialOwner, operatorSigner_, treasury_, treasurySplitBps_, stakeWei_, maxTrancheWei_, skewMarginSecs_
+            initialOwner,
+            operatorSigner_,
+            treasury_,
+            treasurySplitBps_,
+            stakeWei_,
+            maxTrancheWei_,
+            maxClaimWindowSecs_,
+            skewMarginSecs_
         );
         CHAIN_TAG = chainTag;
         operatorSigner = operatorSigner_;
@@ -164,17 +179,22 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         uint16 treasurySplitBps_,
         uint128 stakeWei_,
         uint128 maxTrancheWei_,
+        uint32 maxClaimWindowSecs_,
         uint32 skewMarginSecs_
     ) private pure {
-        if (operatorSigner_ == address(0) || treasury_ == address(0) || stakeWei_ == 0) {
-            revert BadConfig();
-        }
+        if (operatorSigner_ == address(0) || treasury_ == address(0)) revert BadConfig();
         // Key separation (decision.md trust model): the certificate signer must
         // be a dedicated key, never the owner/upgrade authority or the treasury,
         // so operator compromise can't also move governance or treasury funds.
         if (operatorSigner_ == owner_ || operatorSigner_ == treasury_) revert BadConfig();
         if (treasurySplitBps_ < MIN_SPLIT_BPS || treasurySplitBps_ > MAX_SPLIT_BPS) revert BadConfig();
-        if (maxTrancheWei_ < stakeWei_ || skewMarginSecs_ == 0) revert BadConfig();
+        // Bounds (L1): stake, tranche-vs-stake, and the two windows.
+        if (stakeWei_ < MIN_STAKE_WEI || stakeWei_ > MAX_STAKE_WEI) revert BadConfig();
+        if (maxTrancheWei_ < stakeWei_ || maxTrancheWei_ > stakeWei_ * MAX_TRANCHE_MULTIPLE) {
+            revert BadConfig();
+        }
+        if (maxClaimWindowSecs_ < MIN_WINDOW_SECS || maxClaimWindowSecs_ > MAX_WINDOW_SECS) revert BadConfig();
+        if (skewMarginSecs_ < MIN_WINDOW_SECS || skewMarginSecs_ > MAX_WINDOW_SECS) revert BadConfig();
     }
 
     // ---------------------------------------------------------------------
@@ -555,7 +575,14 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         uint32 skewMarginSecs_
     ) external onlyOwner {
         _validateConfig(
-            owner(), operatorSigner_, treasury_, treasurySplitBps_, stakeWei_, maxTrancheWei_, skewMarginSecs_
+            owner(),
+            operatorSigner_,
+            treasury_,
+            treasurySplitBps_,
+            stakeWei_,
+            maxTrancheWei_,
+            maxClaimWindowSecs_,
+            skewMarginSecs_
         );
         operatorSigner = operatorSigner_;
         treasury = treasury_;
