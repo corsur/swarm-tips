@@ -1,0 +1,9 @@
+{
+  "comment": "OutcomeKind derivation truth table. chain-core computes expected_kind; CertLib.sol reads + asserts. Parallel arrays, equal length. 255 = UNREVEALED.",
+  "step_count": [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 3, 3, 3],
+  "p1_guess": [0, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 1, 255, 255, 1, 0],
+  "p2_guess": [0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1, 255, 0, 1],
+  "first_committer": [1, 2, 1, 1, 1, 1, 1, 1, 2, 1, 2, 255, 0, 1, 2, 0, 3, 1, 2, 1, 1, 1, 1, 2],
+  "matchup_type": [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0],
+  "expected_kind": [0, 0, 1, 2, 3, 4, 5, 4, 5, 3, 3, 8, 8, 6, 7, 8, 8, 8, 8, 6, 7, 8, 8, 8]
+}

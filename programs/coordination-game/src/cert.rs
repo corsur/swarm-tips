@@ -399,64 +399,31 @@ mod tests {
         assert!(nonterminal.verify_matchup_binding(&commitment).is_ok());
     }
 
+    /// The BPF copy of the derivation, pinned to the SAME exhaustive truth table
+    /// chain-core (`cert_schema::DERIVATION_TRUTH_TABLE`) generates into
+    /// `outcome-derivation.json` and `CertLib.deriveClaimOutcome` reads. Any drift
+    /// between this on-chain copy and the others surfaces here. 255 = UNREVEALED;
+    /// the expected column is the raw `XKIND_*` value (OutcomeKind as u8).
+    #[rustfmt::skip]
+    const DERIVATION_TRUTH_TABLE: &[(u8, u8, u8, u8, u8, u8)] = &[
+        (4, 0, 0, 1, 0, 0), (4, 0, 0, 2, 0, 0), (4, 0, 1, 1, 0, 1), (4, 1, 0, 1, 0, 2),
+        (4, 1, 1, 1, 0, 3), (4, 1, 0, 1, 1, 4), (4, 0, 1, 1, 1, 5), (4, 1, 1, 1, 1, 4),
+        (4, 1, 1, 2, 1, 5), (4, 0, 0, 1, 1, 3), (4, 0, 0, 2, 1, 3),
+        (0, 255, 255, 255, 1, 8), (0, 255, 255, 0, 0, 8),
+        (1, 255, 255, 1, 1, 6), (1, 255, 255, 2, 1, 7), (1, 255, 255, 0, 1, 8), (1, 255, 255, 3, 1, 8),
+        (2, 255, 255, 1, 1, 8), (2, 255, 255, 2, 0, 8),
+        (3, 1, 255, 1, 1, 6), (3, 255, 1, 1, 1, 7), (3, 255, 255, 1, 1, 8), (3, 1, 0, 1, 1, 8), (3, 0, 1, 2, 0, 8),
+    ];
+
     #[test]
-    fn derive_claim_outcome_matches_evm_certlib() {
-        use crate::payoff::*;
-        // Terminal heterogeneous: correct guess wins.
-        assert_eq!(
-            cp(4, 1, 0, 1, 1).derive_claim_outcome(),
-            XKIND_HETERO_P1_WINS
-        );
-        assert_eq!(
-            cp(4, 0, 1, 1, 1).derive_claim_outcome(),
-            XKIND_HETERO_P2_WINS
-        );
-        // Both correct → first committer.
-        assert_eq!(
-            cp(4, 1, 1, 2, 1).derive_claim_outcome(),
-            XKIND_HETERO_P2_WINS
-        );
-        assert_eq!(cp(4, 0, 0, 1, 1).derive_claim_outcome(), XKIND_BOTH_WRONG);
-        // Terminal homogeneous.
-        assert_eq!(
-            cp(4, 0, 0, 1, 0).derive_claim_outcome(),
-            XKIND_HOMOG_BOTH_CORRECT
-        );
-        assert_eq!(
-            cp(4, 0, 1, 1, 0).derive_claim_outcome(),
-            XKIND_HOMOG_P1_CORRECT
-        );
-        // Timeout step 1: committer wins; bad committer → both forfeit.
-        assert_eq!(
-            cp(1, 255, 255, 1, 1).derive_claim_outcome(),
-            XKIND_TIMEOUT_P1_WINS
-        );
-        assert_eq!(
-            cp(1, 255, 255, 0, 1).derive_claim_outcome(),
-            XKIND_TIMEOUT_BOTH_FORFEIT
-        );
-        // Timeout step 3: sole revealer wins; both-set → both forfeit (guard).
-        assert_eq!(
-            cp(3, 1, 255, 1, 1).derive_claim_outcome(),
-            XKIND_TIMEOUT_P1_WINS
-        );
-        assert_eq!(
-            cp(3, 255, 1, 1, 1).derive_claim_outcome(),
-            XKIND_TIMEOUT_P2_WINS
-        );
-        assert_eq!(
-            cp(3, 1, 1, 1, 1).derive_claim_outcome(),
-            XKIND_TIMEOUT_BOTH_FORFEIT
-        );
-        // Step 0 / 2: both forfeit.
-        assert_eq!(
-            cp(0, 255, 255, 255, 1).derive_claim_outcome(),
-            XKIND_TIMEOUT_BOTH_FORFEIT
-        );
-        assert_eq!(
-            cp(2, 255, 255, 1, 1).derive_claim_outcome(),
-            XKIND_TIMEOUT_BOTH_FORFEIT
-        );
+    fn derive_claim_outcome_matches_truth_table() {
+        for &(step, p1, p2, fc, m, expected) in DERIVATION_TRUTH_TABLE {
+            assert_eq!(
+                cp(step, p1, p2, fc, m).derive_claim_outcome(),
+                expected,
+                "row step={step} p1={p1} p2={p2} first_committer={fc} matchup={m}"
+            );
+        }
     }
 
     fn hex_literal(s: &str) -> [u8; 32] {

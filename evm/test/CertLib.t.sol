@@ -168,6 +168,44 @@ contract CertLibTest is Test {
         assertEq(CertLib.deriveClaimOutcome(cp), CertLib.TIMEOUT_BOTH_FORFEIT);
     }
 
+    /// The cross-language derivation pin (M11): chain-core generates
+    /// outcome-derivation.json (its `derive_outcome_kind` output over an
+    /// exhaustive input set); this asserts Solidity's `deriveClaimOutcome` agrees
+    /// on every row, so the Rust and Solidity derivations can never drift.
+    function test_deriveClaimOutcome_matches_truth_table() public view {
+        string memory json = vm.readFile("../tests/fixtures/outcome-derivation.json");
+        uint256[] memory step = vm.parseJsonUintArray(json, ".step_count");
+        uint256[] memory p1 = vm.parseJsonUintArray(json, ".p1_guess");
+        uint256[] memory p2 = vm.parseJsonUintArray(json, ".p2_guess");
+        uint256[] memory fc = vm.parseJsonUintArray(json, ".first_committer");
+        uint256[] memory mt = vm.parseJsonUintArray(json, ".matchup_type");
+        uint256[] memory kind = vm.parseJsonUintArray(json, ".expected_kind");
+
+        uint256 n = step.length;
+        assertTrue(n > 0, "empty truth table");
+        assertEq(kind.length, n, "expected_kind length mismatch");
+
+        for (uint256 i = 0; i < n; i++) {
+            CertLib.Checkpoint memory cp = CertLib.Checkpoint({
+                matchLiveDigest: bytes32(0),
+                stepCount: uint8(step[i]),
+                p1Commit: bytes32(0),
+                p2Commit: bytes32(0),
+                p1Guess: uint8(p1[i]),
+                p2Guess: uint8(p2[i]),
+                firstCommitter: uint8(fc[i]),
+                matchupType: uint8(mt[i]),
+                transcriptHash: bytes32(0),
+                rMatchup: bytes32(0)
+            });
+            assertEq(
+                uint256(CertLib.deriveClaimOutcome(cp)),
+                kind[i],
+                "Solidity deriveClaimOutcome diverges from the chain-core truth table"
+            );
+        }
+    }
+
     function _terminal(uint8 matchupType, uint8 p1Guess, uint8 p2Guess, uint8 firstCommitter)
         internal
         pure

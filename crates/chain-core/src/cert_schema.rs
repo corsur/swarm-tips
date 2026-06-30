@@ -488,42 +488,48 @@ mod tests {
         }
     }
 
-    /// Cross-checks the backend copy of the derivation against the EXACT same
-    /// vectors `programs/coordination-game/src/cert.rs` asserts against
-    /// `CertLib.deriveClaimOutcome`. Any drift between the BPF and backend
-    /// copies of this logic surfaces here.
+    /// The exhaustive (step, p1, p2, first_committer, matchup, expected_kind)
+    /// truth table — the same rows `tests/golden_vectors.rs` writes to
+    /// `outcome-derivation.json` (which `CertLib.deriveClaimOutcome` reads) and
+    /// `programs/.../cert.rs` mirrors. Hand-authored expected values here are the
+    /// independent audit of this reference impl. 255 = UNREVEALED. Covers every
+    /// branch of `derive_outcome_kind` + `derive_terminal_outcome`.
+    const DERIVATION_TRUTH_TABLE: &[(u8, u8, u8, u8, u8, u8)] = &[
+        (4, 0, 0, 1, 0, 0), // homog both correct (fc irrelevant)
+        (4, 0, 0, 2, 0, 0),
+        (4, 0, 1, 1, 0, 1), // homog p1 correct
+        (4, 1, 0, 1, 0, 2), // homog p2 correct
+        (4, 1, 1, 1, 0, 3), // homog both wrong
+        (4, 1, 0, 1, 1, 4), // hetero p1 correct
+        (4, 0, 1, 1, 1, 5), // hetero p2 correct
+        (4, 1, 1, 1, 1, 4), // hetero both correct, tie → first_committer 1
+        (4, 1, 1, 2, 1, 5), // hetero both correct, tie → first_committer 2
+        (4, 0, 0, 1, 1, 3), // hetero both wrong
+        (4, 0, 0, 2, 1, 3),
+        (0, 255, 255, 255, 1, 8), // timeout step 0
+        (0, 255, 255, 0, 0, 8),
+        (1, 255, 255, 1, 1, 6), // timeout step 1: committer wins
+        (1, 255, 255, 2, 1, 7),
+        (1, 255, 255, 0, 1, 8), // inconsistent committer → forfeit
+        (1, 255, 255, 3, 1, 8),
+        (2, 255, 255, 1, 1, 8), // timeout step 2
+        (2, 255, 255, 2, 0, 8),
+        (3, 1, 255, 1, 1, 6), // timeout step 3: sole revealer wins
+        (3, 255, 1, 1, 1, 7),
+        (3, 255, 255, 1, 1, 8), // neither revealed
+        (3, 1, 0, 1, 1, 8),     // both revealed (guard) → forfeit
+        (3, 0, 1, 2, 0, 8),
+    ];
+
     #[test]
-    fn derive_outcome_kind_matches_certlib_vectors() {
-        use OutcomeKind::*;
-        // Terminal heterogeneous: correct guess wins.
-        assert_eq!(cp(4, 1, 0, 1, 1).derive_outcome_kind(), HeteroP1Wins);
-        assert_eq!(cp(4, 0, 1, 1, 1).derive_outcome_kind(), HeteroP2Wins);
-        // Both correct → first committer.
-        assert_eq!(cp(4, 1, 1, 2, 1).derive_outcome_kind(), HeteroP2Wins);
-        assert_eq!(cp(4, 0, 0, 1, 1).derive_outcome_kind(), BothWrong);
-        // Terminal homogeneous.
-        assert_eq!(cp(4, 0, 0, 1, 0).derive_outcome_kind(), HomogBothCorrect);
-        assert_eq!(cp(4, 0, 1, 1, 0).derive_outcome_kind(), HomogP1Correct);
-        assert_eq!(cp(4, 1, 0, 1, 0).derive_outcome_kind(), HomogP2Correct);
-        // Timeout step 1: committer wins; bad committer → both forfeit.
-        assert_eq!(cp(1, 255, 255, 1, 1).derive_outcome_kind(), TimeoutP1Wins);
-        assert_eq!(
-            cp(1, 255, 255, 0, 1).derive_outcome_kind(),
-            TimeoutBothForfeit
-        );
-        // Timeout step 3: sole revealer wins; both-set → both forfeit (guard).
-        assert_eq!(cp(3, 1, 255, 1, 1).derive_outcome_kind(), TimeoutP1Wins);
-        assert_eq!(cp(3, 255, 1, 1, 1).derive_outcome_kind(), TimeoutP2Wins);
-        assert_eq!(cp(3, 1, 1, 1, 1).derive_outcome_kind(), TimeoutBothForfeit);
-        // Step 0 / 2: both forfeit.
-        assert_eq!(
-            cp(0, 255, 255, 255, 1).derive_outcome_kind(),
-            TimeoutBothForfeit
-        );
-        assert_eq!(
-            cp(2, 255, 255, 1, 1).derive_outcome_kind(),
-            TimeoutBothForfeit
-        );
+    fn derive_outcome_kind_matches_truth_table() {
+        for &(step, p1, p2, fc, m, expected) in DERIVATION_TRUTH_TABLE {
+            assert_eq!(
+                cp(step, p1, p2, fc, m).derive_outcome_kind() as u8,
+                expected,
+                "row step={step} p1={p1} p2={p2} first_committer={fc} matchup={m}"
+            );
+        }
     }
 
     #[test]
