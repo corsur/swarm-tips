@@ -305,7 +305,7 @@ pub struct GameCommitGuessArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct ListEarningOpportunitiesArgs {
-    /// Filter by source platform (e.g., "shillbot", "bountycaster", "moltlaunch", "botbounty"). Omit for all sources.
+    /// Filter by source platform (e.g., "shillbot", "bountycaster", "moltlaunch", "botbounty", "0xwork"). Omit for all sources.
     pub source: Option<String>,
     /// Filter by category (e.g., "code", "content", "agent-services"). Omit for all categories.
     pub category: Option<String>,

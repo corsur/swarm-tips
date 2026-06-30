@@ -1,5 +1,5 @@
 use crate::listings::models::{HealthCheck, RawListing};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use std::time::Instant;
 
 /// Result of fetching from one source: listings + health check data.
@@ -769,6 +769,138 @@ fn parse_bountycaster(b: &serde_json::Value) -> Option<RawListing> {
     })
 }
 
+/// Fetch open tasks from 0xWork (Base mainnet, on-chain USDC escrow).
+///
+/// 0xWork is agent-native (wallet auth, no KYC) and payment-provable (on-chain
+/// USDC payouts via TaskPoolV4). Claiming requires staking ~10% of the bounty
+/// in $AXOBOTL — surfaced in each listing's description so agents can price
+/// that friction before navigating out. External source: agents claim
+/// off-platform via `source_url` (no in-MCP deep integration).
+pub async fn fetch_0xwork(client: &reqwest::Client) -> FetchResult {
+    let source = "0xwork".to_string();
+    let start = Instant::now();
+
+    let result = async {
+        let res = client.get("https://api.0xwork.org/tasks").send().await?;
+
+        let status = res.status().as_u16();
+        if !res.status().is_success() {
+            tracing::warn!(source = "0xwork", status, "non-success response");
+            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
+        }
+
+        let data: serde_json::Value = res.json().await?;
+        let tasks = if data.is_array() {
+            data.as_array().cloned().unwrap_or_default()
+        } else {
+            data.get("tasks")
+                .and_then(|t| t.as_array())
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        let listings: Vec<RawListing> = tasks.iter().take(20).filter_map(parse_0xwork).collect();
+
+        Ok((listings, status))
+    }
+    .await;
+
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok((listings, status)) => {
+            let count = listings.len() as u32;
+            FetchResult {
+                source,
+                listings,
+                health: HealthCheck {
+                    timestamp: Utc::now(),
+                    status_code: status,
+                    response_ms: elapsed_ms,
+                    listing_count: count,
+                    error: None,
+                },
+            }
+        }
+        Err(e) => {
+            tracing::warn!(source = "0xwork", error = %e, "fetch failed");
+            FetchResult {
+                source,
+                listings: vec![],
+                health: HealthCheck {
+                    timestamp: Utc::now(),
+                    status_code: 0,
+                    response_ms: elapsed_ms,
+                    listing_count: 0,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+    }
+}
+
+/// Parse one 0xWork task object into a `RawListing`. Only `Open` tasks are
+/// kept (the API also returns claimed/completed ones). The $AXOBOTL claim-stake
+/// requirement is appended to the description so agents see the cost up front.
+fn parse_0xwork(t: &serde_json::Value) -> Option<RawListing> {
+    let id = t.get("id").and_then(|v| v.as_u64())?;
+
+    let status = str_field(t, "status").unwrap_or_default();
+    if !status.eq_ignore_ascii_case("open") {
+        return None; // only surface claimable (open) tasks
+    }
+
+    let bounty = str_field(t, "bounty_amount").unwrap_or_else(|| "0".to_string());
+    let usd = bounty.parse::<f64>().ok();
+
+    let raw_desc: String = str_field(t, "description")
+        .unwrap_or_default()
+        .chars()
+        .take(400)
+        .collect();
+    // Synthesize a title from the first sentence/line of the description.
+    let title: String = raw_desc
+        .split(['.', '\n'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(80)
+        .collect();
+    let title = if title.is_empty() {
+        format!("0xWork task #{id}")
+    } else {
+        title
+    };
+
+    let category = str_field(t, "category")
+        .map(|c| c.to_lowercase())
+        .unwrap_or_else(|| "general".to_string());
+
+    let description = format!(
+        "{raw_desc} [0xWork: on-chain USDC escrow on Base; claiming requires staking ~10% of the bounty in $AXOBOTL.]"
+    );
+
+    Some(RawListing {
+        source: "0xwork".to_string(),
+        source_id: id.to_string(),
+        // SPA route on the 0xWork board; if it 404s, fall back to the board root.
+        source_url: format!("https://www.0xwork.org/tasks/{id}"),
+        title,
+        description,
+        category,
+        tags: vec!["0xwork".to_string()],
+        reward_amount: bounty,
+        reward_token: "USDC".to_string(),
+        reward_chain: "base".to_string(),
+        reward_usd_estimate: usd,
+        payment_model: "fixed".to_string(),
+        escrow: true,
+        posted_at: parse_naive_datetime(t.get("created_at")).unwrap_or_else(Utc::now),
+        deadline: None,
+    })
+}
+
 // -- Helpers --
 
 fn str_field(v: &serde_json::Value, key: &str) -> Option<String> {
@@ -789,9 +921,56 @@ fn parse_datetime(val: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
+/// Parse 0xWork's zone-less `"%Y-%m-%d %H:%M:%S"` timestamps as UTC.
+fn parse_naive_datetime(val: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
+    val.and_then(|v| v.as_str())
+        .and_then(|s| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
+        .map(|ndt| ndt.and_utc())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_0xwork_open_task() {
+        let json = serde_json::json!({
+            "id": 391,
+            "description": "Get @jessepollak to follow @Inner_Axiom on X.",
+            "category": "Social",
+            "bounty_amount": "50",
+            "status": "Open",
+            "created_at": "2026-03-30 23:02:24",
+            "poster_address": "0xabc"
+        });
+        let listing = parse_0xwork(&json).expect("open task should parse");
+        assert_eq!(listing.source, "0xwork");
+        assert_eq!(listing.source_id, "391");
+        assert_eq!(listing.source_url, "https://www.0xwork.org/tasks/391");
+        assert_eq!(
+            listing.title,
+            "Get @jessepollak to follow @Inner_Axiom on X"
+        );
+        assert_eq!(listing.reward_amount, "50");
+        assert_eq!(listing.reward_token, "USDC");
+        assert_eq!(listing.reward_chain, "base");
+        assert_eq!(listing.reward_usd_estimate, Some(50.0));
+        assert!(listing.escrow);
+        assert!(listing.description.contains("AXOBOTL"));
+        assert_eq!(listing.posted_at.to_rfc3339(), "2026-03-30T23:02:24+00:00");
+    }
+
+    #[test]
+    fn parse_0xwork_skips_non_open_tasks() {
+        let json = serde_json::json!({
+            "id": 12,
+            "description": "already done",
+            "bounty_amount": "10",
+            "status": "Completed",
+            "created_at": "2026-03-30 23:02:24"
+        });
+        assert!(parse_0xwork(&json).is_none());
+    }
 
     #[test]
     fn parse_bountycaster_with_reward() {
