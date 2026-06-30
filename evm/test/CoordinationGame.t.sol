@@ -101,6 +101,19 @@ contract CoordinationGameTest is Test {
 
         uint256 expCut = (expGain * SPLIT_BPS) / 10000;
         uint256 expPrize = expGain - expCut;
+        // Pull-payment (M1): resolution credits; recipients realize it via withdraw().
+        if (expToP1 > 0) {
+            vm.prank(p1);
+            game.withdraw();
+        }
+        if (expToP2 > 0) {
+            vm.prank(p2);
+            game.withdraw();
+        }
+        if (expCut > 0) {
+            vm.prank(treasury);
+            game.withdraw();
+        }
         assertEq(p1.balance, p1Before + expToP1, "p1 payout");
         assertEq(p2.balance, p2Before + expToP2, "p2 payout");
         assertEq(treasury.balance, treasBefore + expCut, "treasury cut");
@@ -160,6 +173,8 @@ contract CoordinationGameTest is Test {
         uint256 treasBefore = treasury.balance;
         vm.warp(block.timestamp + COMMIT_TIMEOUT);
         game.resolveTimeout(gameId);
+        vm.prank(treasury);
+        game.withdraw();
         assertEq(treasury.balance, treasBefore + (2 * uint256(STAKE) * SPLIT_BPS) / 10000, "both forfeit");
     }
 
@@ -172,6 +187,8 @@ contract CoordinationGameTest is Test {
         uint256 p1Before = p1.balance;
         vm.warp(block.timestamp + COMMIT_TIMEOUT);
         game.resolveTimeout(gameId);
+        vm.prank(p1);
+        game.withdraw();
         assertEq(p1.balance, p1Before + 2 * uint256(STAKE), "committer (p1) wins pot");
     }
 
@@ -189,6 +206,8 @@ contract CoordinationGameTest is Test {
         uint256 p1Before = p1.balance;
         vm.warp(block.timestamp + REVEAL_TIMEOUT);
         game.resolveTimeout(gameId);
+        vm.prank(p1);
+        game.withdraw();
         assertEq(p1.balance, p1Before + 2 * uint256(STAKE), "revealer (p1) wins pot");
     }
 
@@ -319,5 +338,57 @@ contract CoordinationGameTest is Test {
         // operatorSigner == treasury is rejected (key separation).
         vm.expectRevert(CoordinationGame.BadConfig.selector);
         new CoordinationGame(owner, treasury, treasury, SPLIT_BPS, STAKE, COMMIT_TIMEOUT, REVEAL_TIMEOUT);
+    }
+
+    // ----- M1 pull-payment ------------------------------------------------
+
+    /// A winner that reverts on receive must NOT be able to brick the terminal
+    /// reveal (which used to push the pot). Under M1 the resolution credits and
+    /// always succeeds; only the bad recipient's own withdraw() fails.
+    function test_M1_resolveSurvivesRevertingWinner() public {
+        RevertingReceiver evil = new RevertingReceiver();
+        vm.deal(address(evil), 100 ether);
+        bytes32 gameId = keccak256("m1-evil");
+
+        // Hetero match (matchupType=1); evil is p2 and guesses correctly → wins.
+        (bytes32 rMatchup, bytes32 mc) = _commit(1, keccak256(abi.encode(gameId, "matchup")));
+        vm.prank(p1);
+        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc));
+        vm.prank(address(evil));
+        game.joinGame{value: STAKE}(gameId);
+
+        (bytes32 r1, bytes32 c1) = _commit(0, keccak256(abi.encode(gameId, "1"))); // p1 wrong
+        (bytes32 r2, bytes32 c2) = _commit(1, keccak256(abi.encode(gameId, "2"))); // evil correct
+        vm.prank(p1);
+        game.commitGuess(gameId, c1);
+        vm.prank(address(evil));
+        game.commitGuess(gameId, c2);
+        vm.prank(p1);
+        game.revealGuess(gameId, r1, rMatchup);
+
+        // The terminal reveal pays the pot. Under push payment evil's reverting
+        // receive() would revert this call and strand the game; under M1 it
+        // credits and succeeds.
+        vm.prank(address(evil));
+        game.revealGuess(gameId, r2, bytes32(0));
+
+        assertEq(game.withdrawable(address(evil)), 2 * uint256(STAKE), "winner credited the full pot");
+        assertEq(uint8(_status(gameId)), uint8(CoordinationGame.Status.Resolved), "game resolved despite bad winner");
+
+        // Evil still can't pull (its receive reverts), but the protocol is intact.
+        vm.prank(address(evil));
+        vm.expectRevert(bytes("withdraw failed"));
+        game.withdraw();
+    }
+
+    function _status(bytes32 gameId) internal view returns (CoordinationGame.Status s) {
+        (s,,,,,,,,,,,,,) = game.games(gameId);
+    }
+}
+
+/// Reverts on any plain-ETH receive — stands in for a hostile winner/treasury.
+contract RevertingReceiver {
+    receive() external payable {
+        revert("no ether");
     }
 }

@@ -63,6 +63,11 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
 
     mapping(bytes32 => Game) public games;
 
+    /// Pull-payment ledger (M1): resolution CREDITS each player + treasury here
+    /// instead of pushing ETH, so a player/treasury that reverts on receive can
+    /// never block the game from resolving. Recipients pull via withdraw().
+    mapping(address => uint256) public withdrawable;
+
     /// Accumulates homogeneous-outcome forfeits — the local analog of
     /// Tournament.prize_lamports; the owner sweeps it to the tournament pot.
     uint256 public prizePoolWei;
@@ -89,6 +94,7 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
     event GameResolved(bytes32 indexed gameId, uint8 outcomeKind, uint256 toP1, uint256 toP2, uint256 toTreasury);
     event PrizePoolWithdrawn(address indexed to, uint256 amount);
     event ConfigUpdated();
+    event Withdrawn(address indexed to, uint256 amount);
 
     error InvalidStatus();
     error BadSignature();
@@ -100,6 +106,7 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
     error DeadlineNotReached();
     error BadOutcome();
     error BadConfig();
+    error NothingToWithdraw();
 
     constructor(
         address initialOwner,
@@ -328,10 +335,11 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         g.status = Status.Resolved;
         prizePoolWei += toPrize;
 
-        // Interactions.
-        if (toTreasury > 0) _pay(treasury, toTreasury);
-        if (toP1 > 0) _pay(g.player1, toP1);
-        if (toP2 > 0) _pay(g.player2, toP2);
+        // Interactions — credit, never push (M1): a reverting player or treasury
+        // must not block the game from resolving.
+        if (toTreasury > 0) _credit(treasury, toTreasury);
+        if (toP1 > 0) _credit(g.player1, toP1);
+        if (toP2 > 0) _credit(g.player2, toP2);
         emit GameResolved(gameId, outcomeKind, toP1, toP2, toTreasury);
     }
 
@@ -357,6 +365,22 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
     function _pay(address to, uint256 amount) private {
         (bool ok,) = payable(to).call{value: amount}("");
         require(ok, "transfer failed");
+    }
+
+    /// @dev Pull-payment credit (M1): accrue to `to`'s withdrawable balance.
+    function _credit(address to, uint256 amount) private {
+        withdrawable[to] += amount;
+    }
+
+    /// @notice Withdraw the caller's accrued balance (winnings or refund). CEI +
+    ///         nonReentrant: a reverting recipient only fails its OWN withdraw.
+    function withdraw() external nonReentrant {
+        uint256 amount = withdrawable[msg.sender];
+        if (amount == 0) revert NothingToWithdraw();
+        withdrawable[msg.sender] = 0;
+        emit Withdrawn(msg.sender, amount);
+        (bool ok,) = payable(msg.sender).call{value: amount}("");
+        require(ok, "withdraw failed");
     }
 
     // ---------------------------------------------------------------------

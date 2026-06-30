@@ -168,7 +168,11 @@ contract CrossChainGameInvariantTest is Test {
                 liveStakes += stakeWei;
             }
         }
-        uint256 tracked = game.poolFree() + game.poolLocked() + game.prizePoolWei() + liveStakes;
+        // Pull-payment (M1): settled/refunded payouts are CREDITED, not pushed,
+        // so they remain in the contract as withdrawable balances until pulled.
+        // Only the handler's player + treasury ever receive credits.
+        uint256 credited = game.withdrawable(handler.player()) + game.withdrawable(treasury);
+        uint256 tracked = game.poolFree() + game.poolLocked() + game.prizePoolWei() + liveStakes + credited;
         assertEq(address(game).balance, tracked, "contract balance must reconcile with accounting");
     }
 

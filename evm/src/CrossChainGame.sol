@@ -84,6 +84,13 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     /// (the local analog of Tournament.prize_lamports).
     uint256 public prizePoolWei;
 
+    /// Pull-payment ledger (M1): settle/refund CREDIT the player + treasury here
+    /// instead of pushing ETH, so a recipient that reverts on receive can never
+    /// brick the state transition or strand the locked tranche. Recipients pull
+    /// via withdraw(). Owner-controlled exits (poolWithdraw, withdrawPrizePool)
+    /// stay push — the owner chooses the address and a revert there is its own.
+    mapping(address => uint256) public withdrawable;
+
     /// Dedicated secp256k1 certificate signer — NOT the owner EOA and not
     /// the Solana upgrade authority (key-separation requirement).
     address public operatorSigner;
@@ -109,6 +116,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     event PoolDeposited(address indexed from, uint256 amount);
     event PoolWithdrawn(uint256 amount);
     event ConfigUpdated();
+    event Withdrawn(address indexed to, uint256 amount);
 
     error InvalidStatus();
     error BadSignature();
@@ -120,6 +128,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     error TrancheTooLarge();
     error BadOutcome();
     error BadConfig();
+    error NothingToWithdraw();
 
     constructor(
         bytes32 chainTag,
@@ -451,7 +460,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         m.status = Status.RefundedNoCert;
         uint256 amount = m.stakeWei;
         emit Refunded(matchId, Status.RefundedNoCert, amount);
-        _pay(m.player, amount);
+        _credit(m.player, amount);
     }
 
     /// @notice Backstop after the claim window plus 2×skewMargin (snapshotted at
@@ -479,7 +488,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         _releaseTranche(m);
         uint256 amount = m.stakeWei;
         emit Refunded(matchId, Status.RefundedTimeout, amount);
-        _pay(m.player, amount);
+        _credit(m.player, amount);
     }
 
     // ---------------------------------------------------------------------
@@ -657,9 +666,10 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         poolFree += trancheReleased + toPoolReimburse;
         prizePoolWei += toPrize;
 
-        // Interactions last.
-        if (toTreasury > 0) _pay(treasury, toTreasury);
-        if (toPlayer > 0) _pay(m.player, toPlayer);
+        // Interactions last — credit, never push (M1): a reverting treasury or
+        // player must not block settlement or strand the released tranche.
+        if (toTreasury > 0) _credit(treasury, toTreasury);
+        if (toPlayer > 0) _credit(m.player, toPlayer);
     }
 
     enum Result {
@@ -703,5 +713,24 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     function _pay(address to, uint256 amount) private {
         (bool ok,) = payable(to).call{value: amount}("");
         require(ok, "transfer failed");
+    }
+
+    /// @dev Pull-payment credit (M1). Accrues `amount` to `to`'s withdrawable
+    ///      balance; the recipient later pulls via withdraw(). Never reverts on
+    ///      a hostile recipient, so settlement/refund always completes.
+    function _credit(address to, uint256 amount) private {
+        withdrawable[to] += amount;
+    }
+
+    /// @notice Withdraw the caller's accrued balance (settled stake, treasury
+    ///         cut, or refund). CEI + nonReentrant: zero the balance before the
+    ///         transfer so a reverting recipient only fails its OWN withdraw.
+    function withdraw() external nonReentrant {
+        uint256 amount = withdrawable[msg.sender];
+        if (amount == 0) revert NothingToWithdraw();
+        withdrawable[msg.sender] = 0;
+        emit Withdrawn(msg.sender, amount);
+        (bool ok,) = payable(msg.sender).call{value: amount}("");
+        require(ok, "withdraw failed");
     }
 }

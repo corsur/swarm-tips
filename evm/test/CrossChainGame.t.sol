@@ -182,8 +182,34 @@ contract CrossChainGameTest is Test {
         // Local player is P1 and wins the heterogeneous match.
         _settle(id, true, tranche, CertLib.HETERO_P1_WINS);
 
-        assertEq(player.balance, before + STAKE + tranche, "winner gets stake + tranche");
+        // Pull-payment (M1): the win is credited, not pushed.
+        assertEq(
+            player.balance + game.withdrawable(player), before + STAKE + tranche, "winner credited stake + tranche"
+        );
         assertEq(uint256(_status(id)), uint256(CrossChainGame.Status.Settled));
+    }
+
+    /// M1: the credited win is realized via withdraw() — pulls exactly once,
+    /// zeroes the balance, and a second pull reverts. (Brick-resistance against a
+    /// reverting recipient is structural — settle never calls the payee — and is
+    /// proven end-to-end in CoordinationGameTest.test_M1_resolveSurvivesRevertingWinner.)
+    function test_M1_winnerWithdrawsCredit() public {
+        bytes32 id = keccak256("m1-withdraw");
+        uint128 tranche = STAKE;
+        _fund(id, true);
+        _lock(id, tranche);
+        _settle(id, true, tranche, CertLib.HETERO_P1_WINS);
+
+        assertEq(game.withdrawable(player), uint256(STAKE) + tranche, "win credited");
+        uint256 before = player.balance;
+        vm.prank(player);
+        game.withdraw();
+        assertEq(player.balance, before + STAKE + tranche, "withdraw pays out exactly once");
+        assertEq(game.withdrawable(player), 0, "balance zeroed");
+
+        vm.prank(player);
+        vm.expectRevert(CrossChainGame.NothingToWithdraw.selector);
+        game.withdraw();
     }
 
     function test_loserForfeit_splitsTreasuryAndPool() public {
@@ -197,7 +223,7 @@ contract CrossChainGameTest is Test {
         // Local P1 loses → P2 wins.
         _settle(id, true, tranche, CertLib.HETERO_P2_WINS);
 
-        assertEq(treasury.balance - treBefore, STAKE * SPLIT_BPS / 10000, "treasury cut");
+        assertEq(treasury.balance - treBefore + game.withdrawable(treasury), STAKE * SPLIT_BPS / 10000, "treasury cut");
         // Tranche released back + pool reimbursed with the post-treasury remainder.
         uint256 reimburse = STAKE - (STAKE * SPLIT_BPS / 10000);
         assertEq(game.poolFree(), poolBefore + tranche + reimburse, "tranche + reimbursement");
@@ -366,7 +392,7 @@ contract CrossChainGameTest is Test {
         vm.warp(block.timestamp + 1 days + 1);
         uint256 before = player.balance;
         game.refundNoCert(id);
-        assertEq(player.balance, before + STAKE);
+        assertEq(player.balance + game.withdrawable(player), before + STAKE);
     }
 
     function test_refundTimeout_releasesTrancheAfterSkew() public {
@@ -384,7 +410,7 @@ contract CrossChainGameTest is Test {
         vm.warp(block.timestamp + 2 * SKEW);
         uint256 before = player.balance;
         game.refundTimeout(id);
-        assertEq(player.balance, before + STAKE, "stake refunded");
+        assertEq(player.balance + game.withdrawable(player), before + STAKE, "stake refunded");
         assertEq(game.poolLocked(), 0, "tranche released");
     }
 
@@ -432,8 +458,8 @@ contract CrossChainGameTest is Test {
         _warpPastClaimWindow();
         uint256 before = player.balance;
         game.settleClaim(id);
-        // P1 (local) wins both stakes: own stake + tranche.
-        assertEq(player.balance, before + STAKE + tranche);
+        // P1 (local) wins both stakes: own stake + tranche (credited).
+        assertEq(player.balance + game.withdrawable(player), before + STAKE + tranche);
     }
 
     function test_supersede_higherStepCountReplacesClaim() public {
@@ -527,13 +553,19 @@ contract CrossChainGameTest is Test {
             game.submitEquivocationProof(cert, a, b, counterA, counterB);
         }
         _warpPastClaimWindow();
-        uint256 treBefore = treasury.balance;
-        uint256 before = player.balance;
+        // This helper runs twice in one test, so credits ACCUMULATE — measure the
+        // claimable (balance + withdrawable) DELTA from this settle, not the total.
+        uint256 treBefore = treasury.balance + game.withdrawable(treasury);
+        uint256 before = player.balance + game.withdrawable(player);
         game.settleClaim(id);
         // Both forfeit: player gets nothing, the whole stake splits to
         // treasury+prize, and the tranche returns to the pool.
-        assertEq(player.balance, before, "both-forfeit pays player nothing");
-        assertEq(treasury.balance - treBefore, STAKE * SPLIT_BPS / 10000, "treasury cut on forfeit");
+        assertEq(player.balance + game.withdrawable(player), before, "both-forfeit pays player nothing");
+        assertEq(
+            treasury.balance + game.withdrawable(treasury) - treBefore,
+            STAKE * SPLIT_BPS / 10000,
+            "treasury cut on forfeit"
+        );
     }
 
     /// Regression (review finding): an honest player who legitimately filed a
@@ -568,7 +600,11 @@ contract CrossChainGameTest is Test {
         uint256 before = player.balance;
         game.settleClaim(id);
         // Local P1 should WIN outright: own stake + tranche.
-        assertEq(player.balance, before + STAKE + tranche, "honest local wins on counter-equivocation");
+        assertEq(
+            player.balance + game.withdrawable(player),
+            before + STAKE + tranche,
+            "honest local wins on counter-equivocation"
+        );
     }
 
     // --- fuzz: every terminal outcome conserves value --------------------
@@ -582,8 +618,6 @@ contract CrossChainGameTest is Test {
         _lock(id, tranche);
 
         uint256 contractBefore = address(game).balance;
-        uint256 playerBefore = player.balance;
-        uint256 treBefore = treasury.balance;
 
         CertLib.MatchLiveCert memory cert = _cert(id, playerIsP1, tranche);
         bytes32 liveDigest = CertLib.matchLiveDigest(cert);
@@ -591,17 +625,14 @@ contract CrossChainGameTest is Test {
         oc.stepCount = CertLib.TERMINAL_STEP_COUNT;
         game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
 
-        // Value leaving the contract == stake + tranche consumed by a win,
-        // or only the treasury cut for a forfeit. Conservation: the
-        // contract's balance drop equals exactly what players+treasury
-        // received, never more.
-        uint256 paidOut = (player.balance - playerBefore) + (treasury.balance - treBefore);
-        uint256 contractDrop = contractBefore - address(game).balance;
-        assertEq(paidOut, contractDrop, "no value created or destroyed");
-        // Internal pool accounting stays solvent.
+        // Pull-payment (M1): settle moves NO ether out — the payout is credited
+        // internally. Conservation: the contract still holds everything, now
+        // partitioned into pool + prize + the player/treasury credits.
+        assertEq(address(game).balance, contractBefore, "settle moves no ether out");
         assertEq(
             address(game).balance,
-            game.poolFree() + game.poolLocked() + game.prizePoolWei(),
+            game.poolFree() + game.poolLocked() + game.prizePoolWei() + game.withdrawable(player)
+                + game.withdrawable(treasury),
             "tracked balances reconcile"
         );
     }
@@ -632,7 +663,11 @@ contract CrossChainGameTest is Test {
         vm.prank(makeAddr("griefer"));
         game.refundTimeout(id);
 
-        assertEq(player.balance, before + STAKE + tranche, "winning claim realized, tranche not stripped");
+        assertEq(
+            player.balance + game.withdrawable(player),
+            before + STAKE + tranche,
+            "winning claim realized, tranche not stripped"
+        );
         assertEq(uint256(_status(id)), uint256(CrossChainGame.Status.ClaimSettled));
     }
 
@@ -659,7 +694,9 @@ contract CrossChainGameTest is Test {
         vm.warp(snapshotOpensAt + 1);
         uint256 before = player.balance;
         game.refundTimeout(id);
-        assertEq(player.balance, before + STAKE, "refund only after the snapshotted backstop");
+        assertEq(
+            player.balance + game.withdrawable(player), before + STAKE, "refund only after the snapshotted backstop"
+        );
     }
 
     /// Finding #4: key separation enforced — the certificate signer can never be
