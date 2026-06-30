@@ -74,14 +74,24 @@ contract Handler is Test {
         if (game.poolFree() < tranche) return;
         bytes32 id = keccak256(abi.encode("inv", createdCount));
         createdCount++;
+        uint64 fundDeadline = uint64(block.timestamp + 1 days);
+        uint64 matchDeadline = uint64(block.timestamp + 2 days);
+        bytes32 createDigest = keccak256(
+            abi.encode(
+                block.chainid,
+                address(game),
+                id,
+                player,
+                vm.addr(localPk),
+                vm.addr(counterPk),
+                true,
+                fundDeadline,
+                matchDeadline
+            )
+        );
         vm.prank(player);
         game.createMatch{value: STAKE}(
-            id,
-            vm.addr(localPk),
-            vm.addr(counterPk),
-            true,
-            uint64(block.timestamp + 1 days),
-            uint64(block.timestamp + 2 days)
+            id, vm.addr(localPk), vm.addr(counterPk), true, fundDeadline, matchDeadline, _sign(operatorPk, createDigest)
         );
         CertLib.MatchLiveCert memory cert = _cert(id, tranche);
         game.lockTranche(cert, _sign(operatorPk, CertLib.matchLiveDigest(cert)));

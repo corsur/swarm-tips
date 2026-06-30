@@ -189,7 +189,8 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         address counterSessionKey,
         bool playerIsP1,
         uint64 fundDeadline,
-        uint64 matchDeadline
+        uint64 matchDeadline,
+        bytes calldata operatorSig
     ) external payable whenNotPaused {
         Match storage m = matches[matchId];
         if (m.status != Status.None) revert InvalidStatus();
@@ -199,6 +200,26 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         // the dual-signature cert model assume two independent parties.
         if (sessionKey == counterSessionKey) revert BadConfig();
         if (fundDeadline <= block.timestamp || matchDeadline <= fundDeadline) revert DeadlinePassed();
+        // Operator authorization (M4): the matchmaker signs the exact creation —
+        // matchId BOUND to msg.sender, session keys, seat, and deadlines — so a
+        // griefer can't squat a paired matchId with their own params before the
+        // assigned player funds (a squat would force the legit createMatch to
+        // revert on the now-occupied id). msg.sender in the digest ties the sig to
+        // the one authorized player; it can't be replayed by anyone else.
+        bytes32 digest = keccak256(
+            abi.encode(
+                block.chainid,
+                address(this),
+                matchId,
+                msg.sender,
+                sessionKey,
+                counterSessionKey,
+                playerIsP1,
+                fundDeadline,
+                matchDeadline
+            )
+        );
+        _requireSigner(digest, operatorSig, operatorSigner);
 
         m.status = Status.Funded;
         m.player = msg.sender;

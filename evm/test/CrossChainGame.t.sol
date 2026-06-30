@@ -56,15 +56,44 @@ contract CrossChainGameTest is Test {
     // --- helpers ---------------------------------------------------------
 
     function _fund(bytes32 matchId, bool playerIsP1) internal {
+        uint64 fundDeadline = uint64(block.timestamp + 1 days);
+        uint64 matchDeadline = uint64(block.timestamp + 2 days);
         vm.prank(player);
         game.createMatch{value: STAKE}(
             matchId,
             localSession,
             counterSession,
             playerIsP1,
-            uint64(block.timestamp + 1 days),
-            uint64(block.timestamp + 2 days)
+            fundDeadline,
+            matchDeadline,
+            _createMatchSig(matchId, player, localSession, counterSession, playerIsP1, fundDeadline, matchDeadline)
         );
+    }
+
+    /// Operator authorization for createMatch (M4) — the digest the contract checks.
+    function _createMatchSig(
+        bytes32 matchId,
+        address player_,
+        address sessionKey,
+        address counterSessionKey,
+        bool playerIsP1,
+        uint64 fundDeadline,
+        uint64 matchDeadline
+    ) internal view returns (bytes memory) {
+        bytes32 digest = keccak256(
+            abi.encode(
+                block.chainid,
+                address(game),
+                matchId,
+                player_,
+                sessionKey,
+                counterSessionKey,
+                playerIsP1,
+                fundDeadline,
+                matchDeadline
+            )
+        );
+        return _sign(operatorPk, digest);
     }
 
     function _playerIsP1(bytes32 matchId) internal view returns (bool p) {
@@ -210,6 +239,34 @@ contract CrossChainGameTest is Test {
         vm.prank(player);
         vm.expectRevert(CrossChainGame.NothingToWithdraw.selector);
         game.withdraw();
+    }
+
+    /// M4: createMatch requires an operator signature over the exact creation
+    /// (matchId bound to msg.sender + session keys + seat + deadlines), so a
+    /// griefer can't squat a paired matchId before the assigned player funds.
+    function test_M4_matchIdSquatRequiresOperatorSig() public {
+        bytes32 id = keccak256("m4-squat");
+        address squatter = makeAddr("squatter");
+        vm.deal(squatter, 10 ether);
+        uint64 fd = uint64(block.timestamp + 1 days);
+        uint64 md = uint64(block.timestamp + 2 days);
+
+        // (a) No valid operator authorization → reverts.
+        bytes memory badSig = _sign(0xBEEF, keccak256("not the digest"));
+        vm.prank(squatter);
+        vm.expectRevert(CrossChainGame.BadSignature.selector);
+        game.createMatch{value: STAKE}(id, localSession, counterSession, true, fd, md, badSig);
+
+        // (b) A sig the operator signed for the LEGIT player can't be replayed by
+        // the squatter — msg.sender is bound into the digest.
+        bytes memory legitSig = _createMatchSig(id, player, localSession, counterSession, true, fd, md);
+        vm.prank(squatter);
+        vm.expectRevert(CrossChainGame.BadSignature.selector);
+        game.createMatch{value: STAKE}(id, localSession, counterSession, true, fd, md, legitSig);
+
+        // (c) The assigned player (matching the signed digest) creates the match.
+        _fund(id, true);
+        assertEq(uint256(_status(id)), uint256(CrossChainGame.Status.Funded), "authorized create succeeds");
     }
 
     function test_loserForfeit_splitsTreasuryAndPool() public {
