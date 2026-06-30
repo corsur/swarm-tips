@@ -129,175 +129,10 @@ fn parse_botbounty(b: &serde_json::Value) -> Option<RawListing> {
     })
 }
 
-/// Subprocess output contract from the `listings-scraper` sibling binary.
-/// Mirror of `services/listings-scraper/src/main.rs::ScraperOutput` — kept
-/// duplicated rather than shared via a workspace crate because the contract
-/// is three fields and rarely changes.
-#[derive(serde::Deserialize)]
-struct ScraperOutput {
-    status_code: u16,
-    body: String,
-}
-
-/// Fetch open agent gigs from Moltlaunch (Base / ETH).
-///
-/// Moltlaunch is an agent marketplace on Base where AI agents publish "gigs"
-/// (priced services they offer to perform). Clients hire them, ETH is escrowed
-/// and released on delivery. From a Swarm Tips agent operator's perspective,
-/// each gig is an existing agent doing earnable work that can be replicated.
-/// We surface the most recent priced gigs as listings under EARN.
-///
-/// Cloudflare fingerprint-blocks plain reqwest at `api.moltlaunch.com`
-/// (HTTP 429 / error code 1027 — confirmed 2026-04-29 to be JA3-level, not
-/// IP-level). We shell out to the `listings-scraper` sibling binary, which
-/// links BoringSSL via rquest and emits a real Chrome 131 handshake. Lives
-/// in its own process to keep BoringSSL out of mcp-server's link graph (the
-/// solana-sdk → openssl-sys path requires OpenSSL 3.0 symbols BoringSSL
-/// doesn't ship). The `_client` arg is unused — kept only to preserve the
-/// fetch_* call-site signature consistency.
-pub async fn fetch_moltlaunch(_client: &reqwest::Client) -> FetchResult {
-    let source = "moltlaunch".to_string();
-    let start = Instant::now();
-    let scraper_bin =
-        std::env::var("LISTINGS_SCRAPER_BIN").unwrap_or_else(|_| "listings-scraper".to_string());
-
-    let result: Result<(Vec<RawListing>, u16), anyhow::Error> = async {
-        let output = tokio::process::Command::new(&scraper_bin)
-            .args(["--url", "https://api.moltlaunch.com/api/gigs"])
-            .output()
-            .await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("scraper subprocess failed: {stderr}");
-        }
-
-        let resp: ScraperOutput = serde_json::from_slice(&output.stdout)?;
-
-        if !(200..300).contains(&resp.status_code) {
-            tracing::warn!(
-                source = "moltlaunch",
-                status = resp.status_code,
-                "non-success response"
-            );
-            return Ok((vec![], resp.status_code));
-        }
-
-        let data: serde_json::Value = serde_json::from_str(&resp.body)?;
-        let gigs = data
-            .get("gigs")
-            .and_then(|g| g.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        let listings: Vec<RawListing> = gigs
-            .iter()
-            .filter(|g| g.get("active").and_then(|v| v.as_bool()).unwrap_or(false))
-            .take(20)
-            .filter_map(parse_moltlaunch_gig)
-            .collect();
-
-        Ok((listings, resp.status_code))
-    }
-    .await;
-
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    match result {
-        Ok((listings, status)) => {
-            let count = listings.len() as u32;
-            FetchResult {
-                source,
-                listings,
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: status,
-                    response_ms: elapsed_ms,
-                    listing_count: count,
-                    error: None,
-                },
-            }
-        }
-        Err(e) => {
-            tracing::warn!(source = "moltlaunch", error = %e, "fetch failed");
-            FetchResult {
-                source,
-                listings: vec![],
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: 0,
-                    response_ms: elapsed_ms,
-                    listing_count: 0,
-                    error: Some(e.to_string()),
-                },
-            }
-        }
-    }
-}
-
-/// Convert a Moltlaunch wei priceWei string to an ETH float.
-/// Returns 0.0 on parse failure (caller decides whether to drop the listing).
-fn moltlaunch_wei_to_eth(price_wei_str: &str) -> f64 {
-    // priceWei comes back as a decimal string like "600000000000000".
-    // 1 ETH = 1e18 wei. Use f64 division — for the price ranges we see
-    // (< 1 ETH) precision loss is well below display significance.
-    price_wei_str.parse::<f64>().unwrap_or(0.0) / 1e18
-}
-
-fn parse_moltlaunch_gig(g: &serde_json::Value) -> Option<RawListing> {
-    let id = str_field(g, "id")?;
-    let title = str_field(g, "title")?;
-    let description = str_field(g, "description").unwrap_or_default();
-    let category = str_field(g, "category").unwrap_or_else(|| "agent-services".to_string());
-    let price_wei_str = str_field(g, "priceWei").unwrap_or_else(|| "0".to_string());
-    let eth_amount = moltlaunch_wei_to_eth(&price_wei_str);
-
-    // Drop unpriced gigs — they aren't real earning opportunities.
-    if eth_amount <= 0.0 {
-        return None;
-    }
-
-    // createdAt is Unix epoch milliseconds (e.g., 1775547934609).
-    let created_ms = g.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
-    let posted_at =
-        chrono::DateTime::<Utc>::from_timestamp_millis(created_ms).unwrap_or_else(Utc::now);
-
-    let agent_name = g
-        .get("agent")
-        .and_then(|a| a.get("name"))
-        .and_then(|n| n.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| "unknown agent".to_string());
-
-    let delivery = str_field(g, "deliveryTime").unwrap_or_else(|| "TBD".to_string());
-
-    // Reformat the description to include the offering agent + delivery window
-    // so the surface card on swarm.tips conveys "this is an existing earning loop".
-    let description = format!(
-        "{} (offered by {} • delivery in {})",
-        description.chars().take(400).collect::<String>(),
-        agent_name,
-        delivery
-    );
-
-    Some(RawListing {
-        source: "moltlaunch".to_string(),
-        source_id: id.clone(),
-        source_url: format!("https://moltlaunch.com/task/{id}"),
-        title,
-        description,
-        category,
-        tags: vec!["base".to_string(), "agent-marketplace".to_string()],
-        reward_amount: format!("{eth_amount:.4}"),
-        reward_token: "ETH".to_string(),
-        reward_chain: "base".to_string(),
-        reward_usd_estimate: Some(eth_amount * ETH_PRICE_USD),
-        payment_model: "fixed".to_string(),
-        escrow: true,
-        posted_at,
-        deadline: None,
-    })
-}
+// moltlaunch source removed 2026-06-30: api.moltlaunch.com was decommissioned
+// (DNS gone; it breaks moltlaunch's own explore page too) with no replacement
+// endpoint — the platform pivoted off the gig marketplace. Dropped per the
+// listing policy; re-add a fetch_* if/when a working gigs API returns.
 
 /// Fetch open content tasks from the Shillbot orchestrator (Solana / SOL).
 ///
@@ -481,8 +316,7 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
 /// Firestore for the survey doc and future job-probe pipelines. The point
 /// is meta-discovery: when a new crypto-native agent platform launches, it
 /// shows up in DefiLlama within days, and we want it queryable here so we
-/// can decide whether to integrate it as a real listings source the way
-/// Moltlaunch was added by hand.
+/// can decide whether to integrate it as a real first-party listings source.
 pub async fn fetch_defillama_ai_agents(client: &reqwest::Client) -> FetchResult {
     let source = "defillama-ai".to_string();
     let start = Instant::now();
@@ -1109,82 +943,6 @@ mod tests {
     }
 
     #[test]
-    fn moltlaunch_wei_to_eth_handles_typical_prices() {
-        // 0.0006 ETH (median gig price)
-        assert!((moltlaunch_wei_to_eth("600000000000000") - 0.0006).abs() < 1e-9);
-        // 0.001 ETH
-        assert!((moltlaunch_wei_to_eth("1000000000000000") - 0.001).abs() < 1e-9);
-        // 1 ETH (high end)
-        assert!((moltlaunch_wei_to_eth("1000000000000000000") - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn moltlaunch_wei_to_eth_handles_garbage() {
-        assert_eq!(moltlaunch_wei_to_eth(""), 0.0);
-        assert_eq!(moltlaunch_wei_to_eth("not-a-number"), 0.0);
-        assert_eq!(moltlaunch_wei_to_eth("0"), 0.0);
-    }
-
-    #[test]
-    fn parse_moltlaunch_gig_basic() {
-        let json = serde_json::json!({
-            "id": "11ae39c6-3b40-483f-a985-3c51d5db961c",
-            "agentId": "38849",
-            "title": "Quick React bug rescue",
-            "description": "Fast bug isolation and fix for React/Next.js production issues.",
-            "priceWei": "600000000000000",
-            "deliveryTime": "12h",
-            "category": "bug-fix",
-            "active": true,
-            "createdAt": 1775547934609i64,
-            "agent": {
-                "id": "0x97c1",
-                "name": "NI-KA"
-            }
-        });
-
-        let listing = parse_moltlaunch_gig(&json).expect("should parse");
-        assert_eq!(listing.source, "moltlaunch");
-        assert_eq!(listing.source_id, "11ae39c6-3b40-483f-a985-3c51d5db961c");
-        assert_eq!(listing.title, "Quick React bug rescue");
-        assert_eq!(listing.reward_token, "ETH");
-        assert_eq!(listing.reward_chain, "base");
-        assert_eq!(listing.reward_amount, "0.0006");
-        assert_eq!(listing.category, "bug-fix");
-        assert!(listing.description.contains("NI-KA"));
-        assert!(listing.description.contains("12h"));
-        assert!(listing.escrow);
-        assert!(listing
-            .source_url
-            .starts_with("https://moltlaunch.com/task/"));
-    }
-
-    #[test]
-    fn parse_moltlaunch_gig_drops_unpriced() {
-        let json = serde_json::json!({
-            "id": "free-gig",
-            "title": "Free thing",
-            "priceWei": "0",
-            "active": true,
-            "createdAt": 1775547934609i64,
-            "agent": { "name": "ghost" }
-        });
-        assert!(parse_moltlaunch_gig(&json).is_none());
-    }
-
-    #[test]
-    fn parse_moltlaunch_gig_drops_missing_title() {
-        let json = serde_json::json!({
-            "id": "no-title",
-            "priceWei": "1000000000000000",
-            "active": true,
-            "createdAt": 1775547934609i64,
-            "agent": { "name": "ghost" }
-        });
-        assert!(parse_moltlaunch_gig(&json).is_none());
-    }
-
-    #[test]
     fn parse_defillama_protocol_basic() {
         let json = serde_json::json!({
             "id": "1234",
@@ -1289,19 +1047,5 @@ mod tests {
         let listing = parse_defillama_protocol(&json).expect("should parse");
         assert!(listing.description.contains("Quietproto"));
         assert!(listing.description.contains("(no description)"));
-    }
-
-    #[test]
-    fn parse_moltlaunch_gig_handles_missing_agent_name() {
-        let json = serde_json::json!({
-            "id": "agentless",
-            "title": "Some service",
-            "priceWei": "1000000000000000",
-            "active": true,
-            "createdAt": 1775547934609i64,
-            "agent": {}
-        });
-        let listing = parse_moltlaunch_gig(&json).expect("should parse without agent name");
-        assert!(listing.description.contains("unknown agent"));
     }
 }

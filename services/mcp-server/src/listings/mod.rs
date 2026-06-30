@@ -349,10 +349,6 @@ async fn fetch_all_sources(state: &Arc<ListingsState>) -> Vec<sources::FetchResu
         },
         {
             random_sleep_ms(300, 800).await;
-            fetch_if_not_skipped(&skipped, "moltlaunch", sources::fetch_moltlaunch(client)).await
-        },
-        {
-            random_sleep_ms(300, 800).await;
             fetch_if_not_skipped(&skipped, "0xwork", sources::fetch_0xwork(client)).await
         },
         {
