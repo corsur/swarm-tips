@@ -12,10 +12,11 @@ import { assert } from "chai";
 import {
   CertLeg,
   MatchLiveCert,
+  Checkpoint,
   OutcomeCert,
   matchLiveDigest,
+  checkpointDigest,
   outcomeDigest,
-  encodeMatchLive,
   keccak256,
   newSessionSigner,
   signDigest,
@@ -131,18 +132,25 @@ describe("coordination-game cross-chain (xchain)", () => {
     );
   });
 
-  it("TS cert encoder agrees with the golden vector (4-way)", () => {
+  it("TS cert encoder agrees with the golden vectors (match-live + checkpoint + outcome)", () => {
+    // Reconstruct the SAME sample certs chain-core writes to cert-vectors.json and
+    // assert the TS encoder's keccak digest matches on all three — the 4th leg of
+    // the Rust/BPF/Solidity/TS parity (the values mirror golden_vectors.rs: each
+    // field distinct, aIsP1=0, p2Guess=255 UNREVEALED, leg tranche = 3x+offset).
     const golden = JSON.parse(
       readFileSync("tests/fixtures/cert-vectors.json", "utf8")
     );
     const fill = (n: number, len = 32) => new Uint8Array(len).fill(n);
+    const expectDigest = (d: Uint8Array, g: string) =>
+      assert.equal(Buffer.from(d).toString("hex"), g.replace("0x", ""));
+
     const leg = (s: number): CertLeg => ({
       chainTag: fill(s),
       contract: fill(s + 1),
       player: fill(s + 2),
       sessionKey: fill(s + 3, 20),
-      stake: BigInt(s) * 1_000_000n,
-      tranche: BigInt(s) * 2_000_000n,
+      stake: BigInt(s) * 1_000_000n + 11n,
+      tranche: BigInt(s) * 3_000_000n + 22n,
     });
     const cert: MatchLiveCert = {
       matchId: fill(0xaa),
@@ -154,12 +162,37 @@ describe("coordination-game cross-chain (xchain)", () => {
       quoteMaxAgeSecs: 300,
       matchDeadline: 1_765_000_900n,
       claimWindowSecs: 3600,
-      aIsP1: 1,
+      aIsP1: 0,
     };
-    const digest = Buffer.from(keccak256(encodeMatchLive(cert))).toString(
-      "hex"
-    );
-    assert.equal(digest, golden.match_live.digest.replace("0x", ""));
+    const mlDigest = matchLiveDigest(cert);
+    expectDigest(mlDigest, golden.match_live.digest);
+
+    const checkpoint: Checkpoint = {
+      matchLiveDigest: mlDigest,
+      stepCount: 3,
+      p1Commit: fill(0xc1),
+      p2Commit: fill(0xc2),
+      p1Guess: 1,
+      p2Guess: 255,
+      firstCommitter: 2,
+      matchupType: 0,
+      transcriptHash: fill(0xd0),
+      rMatchup: fill(0xe1),
+    };
+    expectDigest(checkpointDigest(checkpoint), golden.checkpoint.digest);
+
+    const outcome: OutcomeCert = {
+      matchId: fill(0xaa),
+      matchLiveDigest: mlDigest,
+      outcomeKind: 5, // HETERO_P2_WINS
+      stepCount: 4,
+      p1Guess: 1,
+      p2Guess: 255,
+      firstCommitter: 2,
+      matchupType: 0,
+      transcriptHash: fill(0xd0),
+    };
+    expectDigest(outcomeDigest(outcome), golden.outcome.digest);
   });
 
   it("initializes the payout pool and funds it", async () => {

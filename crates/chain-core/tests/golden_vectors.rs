@@ -32,8 +32,12 @@ fn leg(seed: u8) -> CertLeg {
         contract: [seed.wrapping_add(1); 32],
         player: [seed.wrapping_add(2); 32],
         session_key: [seed.wrapping_add(3); 20],
-        stake: u128::from(seed).wrapping_mul(1_000_000),
-        tranche: u128::from(seed).wrapping_mul(2_000_000),
+        // Distinct multipliers + offsets so no stake/tranche aliases another
+        // leg's: a 2x tranche made leg_a.tranche (0x10*2M) collide with
+        // leg_b.stake (0x20*1M), letting an encode() field-swap slip the golden
+        // vector. 3x + distinct offsets makes every numeric word unique.
+        stake: u128::from(seed).wrapping_mul(1_000_000).wrapping_add(11),
+        tranche: u128::from(seed).wrapping_mul(3_000_000).wrapping_add(22),
     }
 }
 
@@ -48,20 +52,24 @@ fn sample_match_live() -> MatchLiveCert {
         quote_max_age_secs: 300,
         match_deadline: 1_765_000_900,
         claim_window_secs: 3600,
-        a_is_p1: 1,
+        // a_is_p1 = 0 (exercises the non-default seat) — also distinct from every
+        // other scalar so a field swap into this slot changes the digest.
+        a_is_p1: 0,
     }
 }
 
 fn sample_checkpoint(match_live_digest: [u8; 32]) -> Checkpoint {
+    // Every small-int field a DISTINCT value so reordering any two in encode()
+    // changes the bytes (M10). 255 = UNREVEALED, exercising that sentinel too.
     Checkpoint {
         match_live_digest,
-        step_count: 4,
+        step_count: 3,
         p1_commit: [0xC1; 32],
         p2_commit: [0xC2; 32],
         p1_guess: 1,
-        p2_guess: 0,
-        first_committer: 1,
-        matchup_type: 1,
+        p2_guess: 255,
+        first_committer: 2,
+        matchup_type: 0,
         transcript_hash: [0xD0; 32],
         r_matchup: [0xE1; 32],
     }
@@ -71,12 +79,12 @@ fn sample_outcome(match_live_digest: [u8; 32]) -> OutcomeCert {
     OutcomeCert {
         match_id: [0xAA; 32],
         match_live_digest,
-        outcome_kind: OutcomeKind::HeteroP1Wins,
+        outcome_kind: OutcomeKind::HeteroP2Wins,
         step_count: 4,
         p1_guess: 1,
-        p2_guess: 0,
-        first_committer: 1,
-        matchup_type: 1,
+        p2_guess: 255,
+        first_committer: 2,
+        matchup_type: 0,
         transcript_hash: [0xD0; 32],
     }
 }

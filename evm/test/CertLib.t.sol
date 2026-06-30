@@ -24,8 +24,8 @@ contract CertLibTest is Test {
             contractId: contractId,
             player: player,
             sessionKey: sessionKey,
-            stake: uint128(seed) * 1_000_000,
-            tranche: uint128(seed) * 2_000_000
+            stake: uint128(seed) * 1_000_000 + 11,
+            tranche: uint128(seed) * 3_000_000 + 22
         });
     }
 
@@ -54,7 +54,7 @@ contract CertLibTest is Test {
             quoteMaxAgeSecs: 300,
             matchDeadline: 1_765_000_900,
             claimWindowSecs: 3600,
-            aIsP1: 1
+            aIsP1: 0
         });
     }
 
@@ -82,13 +82,13 @@ contract CertLibTest is Test {
         Vector memory ml = _readVector("match_live");
         CertLib.Checkpoint memory cp = CertLib.Checkpoint({
             matchLiveDigest: ml.digest,
-            stepCount: 4,
+            stepCount: 3,
             p1Commit: _fill(0xC1),
             p2Commit: _fill(0xC2),
             p1Guess: 1,
-            p2Guess: 0,
-            firstCommitter: 1,
-            matchupType: 1,
+            p2Guess: 255,
+            firstCommitter: 2,
+            matchupType: 0,
             transcriptHash: _fill(0xD0),
             rMatchup: _fill(0xE1)
         });
@@ -103,12 +103,12 @@ contract CertLibTest is Test {
         CertLib.OutcomeCert memory oc = CertLib.OutcomeCert({
             matchId: _fill(0xAA),
             matchLiveDigest: ml.digest,
-            outcomeKind: CertLib.HETERO_P1_WINS,
+            outcomeKind: CertLib.HETERO_P2_WINS,
             stepCount: 4,
             p1Guess: 1,
-            p2Guess: 0,
-            firstCommitter: 1,
-            matchupType: 1,
+            p2Guess: 255,
+            firstCommitter: 2,
+            matchupType: 0,
             transcriptHash: _fill(0xD0)
         });
         bytes memory payload = CertLib.encodeOutcome(oc);
