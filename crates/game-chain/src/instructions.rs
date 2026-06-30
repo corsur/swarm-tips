@@ -9,8 +9,8 @@ use anchor_lang::InstructionData;
 use coordination::{
     cert::{CheckpointArg, MatchLiveCertArg, MatchLiveCertNoA, OutcomeCertArg},
     instruction::{
-        CommitGuess, CreateGame, CreateXmatch, DepositStake, InitializeXpool, JoinGame,
-        LockXtranche, OpenXclaim, RefundXmatchNocert, RefundXmatchTimeout, RevealGuess,
+        CloseXmatch, CommitGuess, CreateGame, CreateXmatch, DepositStake, InitializeXpool,
+        JoinGame, LockXtranche, OpenXclaim, RefundXmatchNocert, RefundXmatchTimeout, RevealGuess,
         SettleXclaim, SettleXmatch, SubmitEquivocationProof, SupersedeXclaim, XpoolDeposit,
     },
     instructions::xchain::CreateXMatchArgs,
@@ -386,6 +386,24 @@ pub fn build_refund_xmatch_timeout(match_id: [u8; 32], player: &Pubkey) -> Instr
     }
 }
 
+/// Build the permissionless `close_xmatch` instruction — reclaims the
+/// `XChainMatch` account's rent (~0.00236 SOL) once the match is terminal
+/// (`Settled`/`ClaimSettled`/`RefundedNoCert`/`RefundedTimeout`). Anchor's
+/// `close = player` returns the rent to the recorded player. No signer account:
+/// the fee payer (anyone) submits; `player` must equal `xmatch.player`. Cranked
+/// after settle/refund so the per-match rent doesn't leak every game.
+pub fn build_close_xmatch(match_id: [u8; 32], player: &Pubkey) -> Instruction {
+    let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(xmatch_pda, false),
+            AccountMeta::new(*player, false),
+        ],
+        data: CloseXmatch {}.data(),
+    }
+}
+
 /// Build the `DepositStake` instruction.
 ///
 /// Deposits the fixed stake into the per-player escrow PDA for the
@@ -717,6 +735,29 @@ mod tests {
     }
 
     #[test]
+    fn build_close_xmatch_has_correct_accounts_and_discriminator() {
+        let player = Pubkey::new_unique();
+        let ix = build_close_xmatch([0x0c; 32], &player);
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        // 2 accounts: xmatch (PDA, mut — Anchor closes it), player (mut, rent
+        // recipient). Permissionless: neither is a signer.
+        assert_eq!(ix.accounts.len(), 2, "close_xmatch must have 2 accounts");
+        let (xmatch_pda, _) = pda::xmatch_pda(&[0x0c; 32]);
+        assert_eq!(ix.accounts[0].pubkey, xmatch_pda);
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
+        assert_eq!(ix.accounts[1].pubkey, player);
+        assert!(ix.accounts[1].is_writable && !ix.accounts[1].is_signer);
+        // The 8-byte Anchor discriminator must be close_xmatch's own, not a
+        // refund's — same account layout, different instruction.
+        assert_eq!(ix.data.len(), 8, "close_xmatch takes no args");
+        assert_ne!(
+            ix.data[..8],
+            build_refund_xmatch_nocert([0x0c; 32], &player).data[..8],
+            "close must not alias refund_nocert's discriminator"
+        );
+    }
+
+    #[test]
     fn build_refund_xmatch_timeout_has_correct_accounts() {
         let player = Pubkey::new_unique();
         let ix = build_refund_xmatch_timeout([0x09; 32], &player);
@@ -870,6 +911,7 @@ mod tests {
             first_committer: 1,
             matchup_type: 1,
             transcript_hash: [0; 32],
+            r_matchup: [0; 32],
         }
     }
 

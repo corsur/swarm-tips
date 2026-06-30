@@ -262,6 +262,16 @@ impl GameTxBuilder {
         Ok(unsigned)
     }
 
+    /// Build the unsigned `close_xmatch` transaction (Solana leg) —
+    /// permissionless rent reclaim once the match is terminal. The fee payer
+    /// (`self.player`) submits; rent returns to the recorded match player.
+    /// Cranked after settle/refund so per-match rent doesn't leak each game.
+    pub async fn build_close_xmatch(&self, match_id: [u8; 32]) -> Result<UnsignedTx> {
+        let ix = instructions::build_close_xmatch(match_id, &self.player);
+        let unsigned = self.build_unsigned(&[ix]).await?;
+        Ok(unsigned)
+    }
+
     // -- Submit ----------------------------------------------------------------
 
     /// Submit a pre-signed transaction to the network.
