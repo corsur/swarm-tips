@@ -377,6 +377,33 @@ contract CoordinationGameTest is Test {
         game.cancelPending(gameId);
     }
 
+    // ----- M3 timeout-window snapshot -------------------------------------
+
+    /// An owner setConfig that lowers the timeouts must NOT be able to force a
+    /// running game to timeout-resolve early — the windows are snapshotted at
+    /// create, so resolution still waits for the original deadline.
+    function test_M3_setConfigCannotForceResolveInFlight() public {
+        bytes32 gameId = keccak256("m3-inflight");
+        _create(gameId, 1); // Active; windows snapshotted at COMMIT/REVEAL_TIMEOUT
+
+        // Owner shrinks both timeouts to the minimum AFTER the game started.
+        vm.prank(owner);
+        game.setConfig(operator, treasury, SPLIT_BPS, STAKE, 1, 1);
+
+        // Past the NEW (shrunk) commit timeout but before the snapshotted one:
+        // must still be too early to resolve.
+        vm.warp(block.timestamp + 2);
+        vm.expectRevert(CoordinationGame.DeadlineNotReached.selector);
+        game.resolveTimeout(gameId);
+
+        // Past the snapshotted window → resolves on the original schedule.
+        vm.warp(block.timestamp + COMMIT_TIMEOUT);
+        game.resolveTimeout(gameId);
+        assertEq(
+            uint8(_status(gameId)), uint8(CoordinationGame.Status.Resolved), "resolves at the snapshotted deadline"
+        );
+    }
+
     // ----- M1 pull-payment ------------------------------------------------
 
     /// A winner that reverts on receive must NOT be able to brick the terminal
@@ -419,7 +446,7 @@ contract CoordinationGameTest is Test {
     }
 
     function _status(bytes32 gameId) internal view returns (CoordinationGame.Status s) {
-        (s,,,,,,,,,,,,,,) = game.games(gameId);
+        (s,,,,,,,,,,,,,,,,) = game.games(gameId);
     }
 }
 

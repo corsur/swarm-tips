@@ -61,6 +61,8 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         uint64 firstCommitAt; // first commit time — Committing-timeout anchor
         uint64 bothCommitAt; // second commit time — Revealing-timeout anchor
         uint64 createdAt; // create time — Pending join-window / cancel anchor (H3)
+        uint32 commitWindowSecs; // timeout windows SNAPSHOTTED at create (M3) so a
+        uint32 revealWindowSecs; // later setConfig can't force-resolve this game early
     }
 
     mapping(bytes32 => Game) public games;
@@ -204,6 +206,9 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         g.firstCommitter = 0;
         g.matchupType = MATCHUP_UNSET;
         g.createdAt = uint64(block.timestamp);
+        // Freeze this game's timeout schedule at the config in force now (M3).
+        g.commitWindowSecs = commitTimeoutSecs;
+        g.revealWindowSecs = revealTimeoutSecs;
         emit GameCreated(gameId, msg.sender, g.stakeWei);
     }
 
@@ -216,7 +221,7 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
     function cancelPending(bytes32 gameId) external {
         Game storage g = games[gameId];
         if (g.status != Status.Pending) revert InvalidStatus();
-        if (block.timestamp <= uint256(g.createdAt) + commitTimeoutSecs) revert DeadlineNotReached();
+        if (block.timestamp <= uint256(g.createdAt) + g.commitWindowSecs) revert DeadlineNotReached();
 
         g.status = Status.Cancelled;
         uint256 amount = g.stakeWei;
@@ -308,13 +313,13 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         Game storage g = games[gameId];
         uint8 stepCount;
         if (g.status == Status.Active) {
-            _requireElapsed(g.activatedAt, commitTimeoutSecs);
+            _requireElapsed(g.activatedAt, g.commitWindowSecs);
             stepCount = 0;
         } else if (g.status == Status.Committing) {
-            _requireElapsed(g.firstCommitAt, commitTimeoutSecs);
+            _requireElapsed(g.firstCommitAt, g.commitWindowSecs);
             stepCount = 1;
         } else if (g.status == Status.Revealing) {
-            _requireElapsed(g.bothCommitAt, revealTimeoutSecs);
+            _requireElapsed(g.bothCommitAt, g.revealWindowSecs);
             stepCount = 3;
         } else {
             revert InvalidStatus();
