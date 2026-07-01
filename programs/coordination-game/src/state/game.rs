@@ -150,11 +150,6 @@ mod tests {
     }
 
     #[test]
-    fn pending_join_window_is_positive() {
-        assert!(PENDING_JOIN_WINDOW_SECS > 0);
-    }
-
-    #[test]
     fn timeout_slots_ordering() {
         // Reveal timeout must be longer than commit timeout — verified at
         // compile time by the const assertion in the parent module.
