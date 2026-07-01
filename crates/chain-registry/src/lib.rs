@@ -95,8 +95,13 @@ const REGISTRY: &[ChainEntry] = &[
         finality: Finality::SolanaFinalized,
         native_symbol: "SOL",
         native_decimals: 9,
-        stake_base_units: 50_000_000, // 0.05 SOL — FIXED_STAKE_LAMPORTS
-        max_tranche_base_units: 100_000_000, // 0.1 SOL
+        // Cross-chain leg parity with the $5 EVM anchor (0.0032 ETH): ~0.068 SOL
+        // at SOL≈$73. Only the xchain Solana leg reads this (same-chain Solana
+        // uses the on-chain FIXED_STAKE constant); create_xmatch takes stake as
+        // an arg (no fixed on-chain stake), and 0.068 ≤ the live xpool's 0.1-SOL
+        // max_tranche, so no Solana redeploy or pool reconfig is needed.
+        stake_base_units: 68_000_000, // ~0.068 SOL ($5 parity with the EVM leg)
+        max_tranche_base_units: 100_000_000, // 0.1 SOL (unchanged; == live xpool max_tranche)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         game_contract: Some("2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"),
@@ -132,14 +137,14 @@ const REGISTRY: &[ChainEntry] = &[
         native_symbol: "ETH",
         native_decimals: 18,
         // Testnet: MUST match the deployed CrossChainGame's stakeWei/maxTrancheWei
-        // (0.00001 / 0.00002 ETH) — the contract was deployed with tiny stakes to
-        // conserve testnet ETH, and createMatch records exactly stakeWei, so the
-        // cert's leg_b.stake must equal it or settle's digest check fails. This
-        // breaks the 0.05-SOL↔ETH parity intended for mainnet; real parity needs
-        // the operator rate-quote mechanism (see decision.md / 5d-H) + a mainnet
-        // contract deployed with the parity stake. Verified on-chain 2026-06-13.
-        stake_base_units: 10_000_000_000_000, // 0.00001 ETH (== deployed stakeWei)
-        max_tranche_base_units: 20_000_000_000_000, // 0.00002 ETH (== deployed maxTrancheWei)
+        // — createMatch records exactly stakeWei, so the cert's leg_b.stake must
+        // equal it or settle's digest check fails. Set to the SETTLED $5 anchor
+        // (0.0032 / 0.0064 ETH) at the audit-fix redeploy; the Solana devnet leg
+        // below is sized to match (~0.068 SOL ≈ $5). Bump both the deploy config
+        // (deploy-evm-testnet.yml XCHAIN_STAKE_WEI/XCHAIN_MAX_TRANCHE_WEI) and
+        // this entry in lockstep — a registry-only change breaks the live e2e.
+        stake_base_units: 3_200_000_000_000_000, // 0.0032 ETH ($5 anchor, == deployed stakeWei)
+        max_tranche_base_units: 6_400_000_000_000_000, // 0.0064 ETH (== deployed maxTrancheWei)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         // CrossChainGame redeployed 2026-06-14 with permissionless lockTranche

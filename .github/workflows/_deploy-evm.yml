@@ -35,9 +35,11 @@ jobs:
     env:
       # Shared testnet config (identical for every contract). CI-only deploy key
       # (per CLAUDE.md: CI values → GitHub Secrets). TESTNET-ONLY — rotate before
-      # any mainnet deploy. Stakes are deliberately TINY for the live smoke test
-      # (0.00001 ETH) so one CDP faucet drip covers many match lifecycles;
-      # production parity values apply only at the separately-gated mainnet deploy.
+      # any mainnet deploy. Stake is the SETTLED $5 anchor (0.0032 ETH); the
+      # audit-fixed contracts enforce MIN_STAKE_WEI = 1e14 (L1 bounds), so the old
+      # 0.00001-ETH smoke stake would now REVERT at deploy. Must equal the
+      # crates/chain-registry eip155:84532 stake_base_units (a mismatch fails the
+      # live settle digest). Production parity re-tunes at the gated mainnet deploy.
       DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
       XCHAIN_OWNER: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
       # Dedicated secp256k1 operator/attestor (public address; the private key
@@ -45,7 +47,7 @@ jobs:
       XCHAIN_OPERATOR_SIGNER: '0x54a600649C2906f7Bb0D52E74818Ce025afd9A30'
       XCHAIN_TREASURY: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
       XCHAIN_TREASURY_BPS: '5000'
-      XCHAIN_STAKE_WEI: '10000000000000' # 0.00001 ETH (smoke-test stake)
+      XCHAIN_STAKE_WEI: '3200000000000000' # 0.0032 ETH ($5 anchor; == registry stake_base_units)
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,7 +63,7 @@ jobs:
         env:
           # chainTag mirrors crates/chain-registry (Base Sepolia row).
           XCHAIN_CHAIN_TAG: '0x8a9a9c58b754a98f1ff302a7ead652cfd23eb36a5791767b5d185067dd9481c2'
-          XCHAIN_MAX_TRANCHE_WEI: '20000000000000' # 0.00002 ETH
+          XCHAIN_MAX_TRANCHE_WEI: '6400000000000000' # 0.0064 ETH (2× stake; == registry max_tranche_base_units)
           XCHAIN_CLAIM_WINDOW: '3600'
           XCHAIN_SKEW_MARGIN: '900'
         run: |
