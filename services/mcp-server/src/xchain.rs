@@ -143,6 +143,10 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
     let a_is_p1 = payload.get("a_is_p1").and_then(Value::as_u64).unwrap_or(1);
     let player_is_p1 = a_is_p1 == 0;
     let fund_deadline = match_deadline.saturating_sub(FUND_WINDOW_BEFORE_DEADLINE);
+    // Operator authorization for createMatch (M4): game-api signs the exact
+    // creation (matchId bound to the player + session keys + seat + deadlines) at
+    // pairing and relays it here; the contract rejects an unauthorized createMatch.
+    let operator_sig = decode_0x::<65>(&str_at(payload, "create_match_operator_sig")?)?;
 
     let call = evm_chain::build_create_match_parts(
         contract,
@@ -152,6 +156,7 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
         player_is_p1,
         fund_deadline,
         match_deadline,
+        operator_sig,
         stake_wei,
     );
     let (to, data, value) = call.to_hex_parts();
@@ -332,6 +337,7 @@ mod tests {
                 "session_key": format!("0x{}", "23".repeat(20)),
                 "stake_base_units": "10000000000000",
             },
+            "create_match_operator_sig": format!("0x{}", "33".repeat(65)),
         });
         let call = build_evm_create_match_call(&payload).expect("valid payload");
         // value is the stake; to is the unpadded 20-byte contract.
@@ -340,10 +346,11 @@ mod tests {
             call["to"].as_str().unwrap().to_lowercase(),
             "0xc2eb26078dd5b1957883e1a9d651a28ef1f62aff"
         );
-        // calldata is 0x + createMatch selector + 6 words = 4+192 bytes.
+        // calldata: 0x + createMatch selector + 7 head words (6 static + operatorSig
+        // offset) + the bytes tail (len + 65 padded to 96).
         let data = call["data"].as_str().unwrap();
         assert!(data.starts_with("0x"));
-        assert_eq!(data.len(), 2 + (4 + 6 * 32) * 2);
+        assert_eq!(data.len(), 2 + (4 + 7 * 32 + 32 + 96) * 2);
         // fund_deadline derived strictly before match_deadline.
         assert!(call["fund_deadline"].as_u64().unwrap() < 1_765_007_200);
     }

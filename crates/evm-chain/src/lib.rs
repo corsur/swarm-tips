@@ -77,7 +77,8 @@ sol! {
             address counterSessionKey,
             bool playerIsP1,
             uint64 fundDeadline,
-            uint64 matchDeadline
+            uint64 matchDeadline,
+            bytes operatorSig
         ) external payable;
 
         function lockTranche(MatchLiveCert cert, bytes operatorSig) external;
@@ -160,6 +161,7 @@ pub fn build_create_match_parts(
     player_is_p1: bool,
     fund_deadline: u64,
     match_deadline: u64,
+    operator_sig: [u8; 65],
     stake_wei: u128,
 ) -> UnsignedEvmCall {
     build_create_match(
@@ -170,6 +172,7 @@ pub fn build_create_match_parts(
         player_is_p1,
         fund_deadline,
         match_deadline,
+        operator_sig,
         stake_wei,
     )
 }
@@ -185,6 +188,7 @@ pub fn build_create_match(
     player_is_p1: bool,
     fund_deadline: u64,
     match_deadline: u64,
+    operator_sig: [u8; 65],
     stake_wei: u128,
 ) -> UnsignedEvmCall {
     let data = CrossChainGame::createMatchCall {
@@ -194,6 +198,7 @@ pub fn build_create_match(
         playerIsP1: player_is_p1,
         fundDeadline: fund_deadline,
         matchDeadline: match_deadline,
+        operatorSig: operator_sig.to_vec().into(),
     }
     .abi_encode();
     call(contract, data, U256::from(stake_wei))
@@ -482,12 +487,14 @@ mod tests {
             true,
             100,
             200,
+            [0x33; 65],
             2_500_000_000_000_000,
         );
         assert_eq!(tx.to, C);
         assert_eq!(tx.value, U256::from(2_500_000_000_000_000u128));
-        // selector(4) + 6 32-byte words.
-        assert_eq!(tx.data.len(), 4 + 6 * 32);
+        // selector(4) + 7 head words (6 static + operatorSig offset) + the bytes
+        // tail (len word + 65 bytes padded to 96) = 4 + 224 + 128.
+        assert_eq!(tx.data.len(), 4 + 7 * 32 + 32 + 96);
         // First 4 bytes are the createMatch selector.
         assert_eq!(
             &tx.data[..4],
@@ -524,6 +531,7 @@ mod tests {
             true,
             100,
             200,
+            [0x33; 65],
             2_500_000_000_000_000,
         );
         // Identical calldata + value to the typed builder.
@@ -535,6 +543,7 @@ mod tests {
             true,
             100,
             200,
+            [0x33; 65],
             2_500_000_000_000_000,
         );
         assert_eq!(parts.data, typed.data);
