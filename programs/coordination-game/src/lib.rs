@@ -114,6 +114,10 @@ pub mod coordination_game {
         instructions::close_game::close_game(ctx)
     }
 
+    pub fn refund_pending(ctx: Context<RefundPending>) -> Result<()> {
+        instructions::refund_pending::refund_pending(ctx)
+    }
+
     // --- Session key instructions ---
 
     pub fn create_player_session(ctx: Context<CreatePlayerSession>) -> Result<()> {

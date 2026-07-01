@@ -23,6 +23,16 @@ pub struct GameStarted {
     pub player_two: Pubkey,
 }
 
+/// Emitted by `refund_pending` when an un-joined Pending game is cancelled and
+/// P1's stake is refunded (mirrors the EVM `GameCancelled`). Powers a log-based
+/// metric / alarm on stuck-Pending recovery.
+#[event]
+pub struct GameCancelled {
+    pub game_id: u64,
+    pub player_one: Pubkey,
+    pub refund_lamports: u64,
+}
+
 #[event]
 pub struct GuessCommitted {
     pub game_id: u64,

@@ -4,6 +4,14 @@ pub const COMMIT_TIMEOUT_SLOTS: u64 = 7_200;
 pub const REVEAL_TIMEOUT_SLOTS: u64 = 14_400;
 pub const FIXED_STAKE_LAMPORTS: u64 = 50_000_000; // 0.05 SOL
 
+/// Seconds after `Game.created_at` before an un-joined `Pending` game can be
+/// refunded via `refund_pending`. Timestamp-based (a Pending game has no
+/// creation slot — `activated_at_slot` is only set at join), which also keeps
+/// the window byte-for-byte homogeneous with the EVM `cancelPending`
+/// (`createdAt + commitWindowSecs`). Matches the EVM commit window (3600s) and
+/// the Solana commit-timeout wall-clock (~1h at ~0.5s/slot).
+pub const PENDING_JOIN_WINDOW_SECS: i64 = 3_600;
+
 pub const GUESS_SAME_TEAM: u8 = 0;
 pub const GUESS_DIFF_TEAM: u8 = 1;
 pub const GUESS_UNREVEALED: u8 = 255;
@@ -81,6 +89,7 @@ impl Game {
 /// ```text
 ///          --(create_game)--> Pending
 /// Pending --(join_game)--> Active
+/// Pending --(refund_pending: P2 never joined, window elapsed)--> Cancelled (P1 refunded, account closed)
 /// Active  --(commit_guess: first)--> Committing
 /// Active  --(resolve_timeout: neither commits)--> Resolved
 /// Committing --(commit_guess: second)--> Revealing
@@ -96,6 +105,10 @@ pub enum GameState {
     Committing,
     Revealing,
     Resolved,
+    /// Un-joined Pending game whose P1 stake was refunded via `refund_pending`
+    /// (mirrors the EVM `Status.Cancelled`). Terminal; `refund_pending` closes
+    /// the account in the same tx, so this is written transiently before close.
+    Cancelled,
 }
 
 // Compile-time invariant: reveal window must be longer than commit window.
@@ -117,6 +130,28 @@ mod tests {
         assert_eq!(GameState::Pending, GameState::Pending);
         assert_ne!(GameState::Pending, GameState::Active);
         assert_ne!(GameState::Committing, GameState::Revealing);
+    }
+
+    #[test]
+    fn cancelled_is_a_distinct_terminal_state() {
+        // Cancelled (refund_pending outcome) must be distinct from every other
+        // state — most importantly Resolved and Pending, so it can't be confused
+        // with a resolved game or re-entered as a live one.
+        for s in [
+            GameState::Pending,
+            GameState::Active,
+            GameState::Committing,
+            GameState::Revealing,
+            GameState::Resolved,
+        ] {
+            assert_ne!(GameState::Cancelled, s);
+        }
+        assert_eq!(GameState::Cancelled, GameState::Cancelled);
+    }
+
+    #[test]
+    fn pending_join_window_is_positive() {
+        assert!(PENDING_JOIN_WINDOW_SECS > 0);
     }
 
     #[test]

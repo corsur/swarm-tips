@@ -10,8 +10,9 @@ use coordination::{
     cert::{CheckpointArg, MatchLiveCertArg, MatchLiveCertNoA, OutcomeCertArg},
     instruction::{
         CloseXmatch, CommitGuess, CreateGame, CreateXmatch, DepositStake, InitializeXpool,
-        JoinGame, LockXtranche, OpenXclaim, RefundXmatchNocert, RefundXmatchTimeout, RevealGuess,
-        SettleXclaim, SettleXmatch, SubmitEquivocationProof, SupersedeXclaim, XpoolDeposit,
+        JoinGame, LockXtranche, OpenXclaim, RefundPending, RefundXmatchNocert, RefundXmatchTimeout,
+        RevealGuess, SettleXclaim, SettleXmatch, SubmitEquivocationProof, SupersedeXclaim,
+        XpoolDeposit,
     },
     instructions::xchain::CreateXMatchArgs,
     ID as PROGRAM_ID,
@@ -401,6 +402,26 @@ pub fn build_close_xmatch(match_id: [u8; 32], player: &Pubkey) -> Instruction {
             AccountMeta::new(*player, false),
         ],
         data: CloseXmatch {}.data(),
+    }
+}
+
+/// Build the permissionless `RefundPending` instruction.
+///
+/// Refunds P1's stake from an un-joined `Pending` game and closes the account
+/// once the join window (`created_at + PENDING_JOIN_WINDOW_SECS`) has elapsed.
+/// `player_one` must equal `game.player_one` (receives the refund); `caller`
+/// (anyone) pays the fee and receives the reclaimed rent. Mirrors the EVM
+/// `cancelPending`. Account order matches `RefundPending<'info>`.
+pub fn build_refund_pending(game_id: u64, player_one: &Pubkey, caller: &Pubkey) -> Instruction {
+    let (game_pda, _) = pda::game_pda(game_id);
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(game_pda, false),
+            AccountMeta::new(*player_one, false),
+            AccountMeta::new(*caller, true),
+        ],
+        data: RefundPending {}.data(),
     }
 }
 
