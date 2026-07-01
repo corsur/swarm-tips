@@ -46,7 +46,7 @@ import {
 
 const RPC = process.env.RPC_URL ?? "https://sepolia.base.org";
 const CONTRACT = (process.env.CONTRACT ??
-  "0xd585baE48901513202dAEb7d4feE4Af508a96234") as `0x${string}`;
+  "0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4") as `0x${string}`;
 // Live-network, manual-only. The Anchor.toml test glob (tests/**/*.ts) and a
 // bare `anchor test` would otherwise sweep this in; skip unless the live
 // credentials are present so it never runs (or fails) in those contexts.

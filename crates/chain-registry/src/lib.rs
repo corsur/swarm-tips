@@ -147,13 +147,16 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 6_400_000_000_000_000, // 0.0064 ETH (== deployed maxTrancheWei)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        // CrossChainGame redeployed 2026-06-14 with permissionless lockTranche
-        // (operatorSigner 0x54a6…9A30 verified on-chain; prior 0xC2eb…62AFf orphaned).
-        game_contract: Some("0xd585baE48901513202dAEb7d4feE4Af508a96234"),
-        // Same-chain EVM-vs-EVM CoordinationGame, deployed to Base Sepolia
-        // 2026-06-26 (operatorSigner 0x54a6…9A30 == game-api xchain-operator-signer,
-        // so game-api's v=27/28 normalized createGame attestation verifies).
-        coordination_game_contract: Some("0x2F88c12764cA7d5A50C880323696a44420664664"),
+        // CrossChainGame redeployed 2026-07-01 with the audit-fix hardening
+        // (M1 pull-payment, M2/M4 snapshots + createMatch operator-sig, L1 config
+        // bounds) at the $5 stake (operatorSigner 0x54a6…9A30; prior tiny-stake
+        // 0xd585…6234 orphaned by this redeploy).
+        game_contract: Some("0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4"),
+        // Same-chain EVM-vs-EVM CoordinationGame, redeployed 2026-07-01 with the
+        // audit-fix hardening (M1/M3/H3/L1/L2) at the $5 stake (operatorSigner
+        // 0x54a6…9A30 == game-api xchain-operator-signer, so game-api's v=27/28
+        // normalized createGame attestation verifies; prior 0x2F88…4664 orphaned).
+        coordination_game_contract: Some("0x042fE7202d208C9D79AdFd276da77b928C64514b"),
         x402_network: Some("base-sepolia"),
     },
 ];
@@ -269,11 +272,11 @@ mod tests {
         // Base Sepolia hosts BOTH the cross-chain and same-chain contracts.
         assert_eq!(
             contract_for(&base, ContractPurpose::CrossChainGame),
-            Some("0xd585baE48901513202dAEb7d4feE4Af508a96234")
+            Some("0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4")
         );
         assert_eq!(
             contract_for(&base, ContractPurpose::CoordinationGame),
-            Some("0x2F88c12764cA7d5A50C880323696a44420664664")
+            Some("0x042fE7202d208C9D79AdFd276da77b928C64514b")
         );
         // Solana has no same-chain EVM CoordinationGame, but has the cross-chain one.
         let sol = ChainId::parse("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1").unwrap();

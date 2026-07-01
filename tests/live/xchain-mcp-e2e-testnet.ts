@@ -60,7 +60,7 @@ const PROGRAM_ID = new PublicKey(
   "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 );
 const CONTRACT = (process.env.CONTRACT ??
-  "0xd585baE48901513202dAEb7d4feE4Af508a96234") as `0x${string}`;
+  "0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4") as `0x${string}`;
 const SOLANA_CHAIN = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 const EVM_CHAIN = "eip155:84532";
 const IDL_PATH =
