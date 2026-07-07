@@ -14,6 +14,8 @@ pub mod llm_classify;
 pub mod merge;
 pub mod models;
 pub mod search;
+#[cfg(test)]
+mod search_eval;
 pub mod sources;
 
 use crate::discovery::llm_classify::{LlmClassifier, MAX_SERVERS_PER_CYCLE};
@@ -170,19 +172,7 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
     // live search corpus dropped with it). Servers already known but not
     // re-seen this cycle are retained unchanged; their stale
     // `last_seen_at` remains available for future staleness pruning.
-    let seen: std::collections::HashSet<String> = merged.iter().map(|s| s.slug()).collect();
-    let mut retained_unseen = 0usize;
-    for (slug, doc) in &existing_by_slug {
-        if !seen.contains(slug) {
-            merged.push(doc.clone());
-            retained_unseen = retained_unseen.saturating_add(1);
-        }
-    }
-    // Postcondition: union can only grow the merge.
-    debug_assert!(
-        merged.len() >= seen.len(),
-        "union must not shrink the merge"
-    );
+    let retained_unseen = union_with_existing(&mut merged, &existing_by_slug);
 
     let total = merged.len();
     let earning_count = merged.iter().filter(|s| s.is_earning_candidate()).count();
@@ -284,6 +274,34 @@ async fn pull_all_discovery_sources(
         "expected at most one batch per source"
     );
     all_sources
+}
+
+/// Union the freshly-merged pull with the previously-known index: any server
+/// in `existing_by_slug` that this cycle's sources did NOT re-surface is
+/// appended unchanged. A degraded/partial pull therefore never shrinks the
+/// catalog; successive partial pulls accumulate toward complete. Returns the
+/// count of retained-unseen servers.
+fn union_with_existing(
+    merged: &mut Vec<EnrichedServer>,
+    existing_by_slug: &std::collections::HashMap<String, EnrichedServer>,
+) -> usize {
+    let seen: std::collections::HashSet<String> = merged.iter().map(|s| s.slug()).collect();
+    let mut retained_unseen = 0usize;
+    for (slug, doc) in existing_by_slug {
+        if !seen.contains(slug) {
+            merged.push(doc.clone());
+            retained_unseen = retained_unseen.saturating_add(1);
+        }
+    }
+    // Postconditions: union can only grow the merge, by exactly the number
+    // of retained servers.
+    debug_assert!(merged.len() >= seen.len(), "union must not shrink");
+    debug_assert_eq!(
+        merged.len(),
+        seen.len().saturating_add(retained_unseen),
+        "union adds exactly the unseen servers"
+    );
+    retained_unseen
 }
 
 /// Patch newly-merged records with any pre-existing Layer 2 / Layer 3 LLM
@@ -749,4 +767,79 @@ pub fn llm_classify_handler(state: Arc<DiscoveryState>) -> axum::routing::Method
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::models::Layer1Classification;
+
+    fn srv(name: &str) -> EnrichedServer {
+        EnrichedServer {
+            name: name.to_string(),
+            title: None,
+            description: None,
+            endpoint: None,
+            transport: None,
+            npm_package: None,
+            github_repo: None,
+            sources: vec!["official".to_string()],
+            source_count: 1,
+            upstream_quality_score: None,
+            upstream_visitors_estimate: None,
+            classification: Layer1Classification {
+                category: None,
+                cash_flow_direction: None,
+                currencies: vec![],
+                value_to_swarm: None,
+                confident: false,
+                matched_signals: vec![],
+            },
+            layer2_classification: None,
+            layer3_analysis: None,
+            first_seen_at: chrono::Utc::now(),
+            last_seen_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn union_never_shrinks_catalog_on_partial_pull() {
+        // Existing index has 4 servers; the degraded pull re-saw only 1
+        // (plus found 1 new). Union must retain the 3 unseen.
+        let existing: std::collections::HashMap<String, EnrichedServer> =
+            ["a/1", "a/2", "a/3", "a/4"]
+                .into_iter()
+                .map(|n| {
+                    let s = srv(n);
+                    (s.slug(), s)
+                })
+                .collect();
+        let mut merged = vec![srv("a/1"), srv("b/new")];
+        let retained = union_with_existing(&mut merged, &existing);
+        assert_eq!(retained, 3);
+        assert_eq!(merged.len(), 5, "2 pulled + 3 retained");
+    }
+
+    #[test]
+    fn union_is_noop_when_pull_is_complete() {
+        let existing: std::collections::HashMap<String, EnrichedServer> = ["a/1", "a/2"]
+            .into_iter()
+            .map(|n| {
+                let s = srv(n);
+                (s.slug(), s)
+            })
+            .collect();
+        let mut merged = vec![srv("a/1"), srv("a/2"), srv("a/3")];
+        let retained = union_with_existing(&mut merged, &existing);
+        assert_eq!(retained, 0);
+        assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn union_from_empty_existing_is_noop() {
+        let existing = std::collections::HashMap::new();
+        let mut merged = vec![srv("a/1")];
+        assert_eq!(union_with_existing(&mut merged, &existing), 0);
+        assert_eq!(merged.len(), 1);
+    }
 }

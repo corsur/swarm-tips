@@ -194,9 +194,11 @@ fn index_text(s: &EnrichedServer) -> String {
     parts.join("\n")
 }
 
-/// Quality prior from automated signals only. Neutral = 1.0; bounded to
-/// [1.0, 2.0] so relevance stays dominant (engine-panel F1: relevance
-/// gates, quality reorders — never overwhelms).
+/// Quality prior from automated signals only. Neutral = 1.0, boosts to
+/// 2.0 max so relevance stays dominant (engine-panel F1: relevance gates,
+/// quality reorders — never overwhelms). Degenerate repetitive text
+/// (keyword stuffing) is penalized below 1.0 by the content-diversity
+/// factor — also machine-derived, no curation.
 fn quality_prior(s: &EnrichedServer) -> f64 {
     let mut q = 1.0_f64;
     // Multi-source corroboration: 1 source → +0.10, 4 sources → +0.24.
@@ -215,10 +217,38 @@ fn quality_prior(s: &EnrichedServer) -> f64 {
     if let Some(l2) = &s.layer2_classification {
         q += 0.1 * f64::from(l2.confidence.clamp(0.0, 1.0));
     }
-    let q = q.clamp(1.0, 2.0);
-    // Postcondition: the prior can only boost, never bury, a relevant hit.
-    assert!((1.0..=2.0).contains(&q), "quality prior out of bounds");
+    q *= diversity_factor(s);
+    let q = q.clamp(0.1, 2.0);
+    // Postcondition: bounded so neither spam-burial nor popularity can
+    // overwhelm the BM25 relevance gate.
+    assert!((0.1..=2.0).contains(&q), "quality prior out of bounds");
     q
+}
+
+/// Content-diversity factor: keyword-stuffed descriptions repeat a handful
+/// of tokens, so their unique-token ratio collapses while natural prose
+/// stays high. Quadratic penalty below the 0.5 ratio; short texts (where a
+/// low ratio is not evidence of stuffing) are exempt. Fully automated —
+/// derived from the server's own published text.
+fn diversity_factor(s: &EnrichedServer) -> f64 {
+    let text = format!(
+        "{} {} {}",
+        s.name,
+        s.title.as_deref().unwrap_or(""),
+        s.description.as_deref().unwrap_or("")
+    )
+    .to_lowercase();
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.len() < 12 {
+        return 1.0;
+    }
+    let unique: std::collections::HashSet<&str> = tokens.iter().copied().collect();
+    let ratio = unique.len() as f64 / tokens.len() as f64;
+    if ratio >= 0.5 {
+        1.0
+    } else {
+        (ratio / 0.5).powi(2)
+    }
 }
 
 /// First-party is a fact about where the server lives, not a judgment.
@@ -498,8 +528,19 @@ mod tests {
             probed_at: chrono::Utc::now(),
         });
         let q = quality_prior(&maxed);
-        assert!((1.0..=2.0).contains(&q));
+        assert!((0.1..=2.0).contains(&q));
         let plain = make_server("plain", "x");
         assert!((quality_prior(&plain) - 1.104).abs() < 0.01); // 1 + 0.15*ln(2)
+
+        // Degenerate repetitive text sinks below neutral (anti-stuffing).
+        let stuffed = make_server(
+            "stuffed",
+            "swap swap swap swap swap token token swap swap swap swap swap swap",
+        );
+        assert!(
+            quality_prior(&stuffed) < 0.75,
+            "stuffed text must be penalized, got {}",
+            quality_prior(&stuffed)
+        );
     }
 }

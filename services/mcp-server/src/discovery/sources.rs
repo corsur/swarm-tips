@@ -31,6 +31,15 @@ const USER_AGENT: &str = "SwarmTipsDiscovery/0.1 (+https://swarm.tips)";
 /// Pull the full server list from the official MCP registry, paginated by cursor.
 /// Returns whatever we got — caller decides what to do with partial failures.
 pub async fn pull_official_registry(client: &reqwest::Client) -> Result<Vec<RawServer>> {
+    pull_official_registry_from(client, OFFICIAL_REGISTRY_BASE).await
+}
+
+/// Core pull with an injectable base URL so ingest-robustness tests can run
+/// against a mock registry (wiremock) without network access.
+async fn pull_official_registry_from(
+    client: &reqwest::Client,
+    base: &str,
+) -> Result<Vec<RawServer>> {
     let mut all = Vec::new();
     let mut cursor: Option<String> = None;
     let mut pages_fetched = 0u32;
@@ -56,7 +65,7 @@ pub async fn pull_official_registry(client: &reqwest::Client) -> Result<Vec<RawS
             break;
         }
 
-        let mut url = format!("{OFFICIAL_REGISTRY_BASE}?limit=100");
+        let mut url = format!("{base}?limit=100");
         if let Some(c) = &cursor {
             url.push_str("&cursor=");
             url.push_str(&urlencoding::encode(c));
@@ -835,5 +844,107 @@ mod tests {
     fn parse_best_of_md_skips_lines_without_details() {
         let md = "## Just a heading\n\nplain paragraph\n";
         assert!(parse_best_of_md(md).is_empty());
+    }
+
+    // -- ingest-robustness tests (wiremock; encode the 2026-07-07 lessons) --
+
+    fn page_body(names: &[&str], next_cursor: Option<&str>) -> serde_json::Value {
+        let servers: Vec<serde_json::Value> = names
+            .iter()
+            .map(|n| serde_json::json!({"server": {"name": n, "description": "d"}}))
+            .collect();
+        match next_cursor {
+            Some(c) => serde_json::json!({"servers": servers, "metadata": {"nextCursor": c}}),
+            None => serde_json::json!({"servers": servers, "metadata": {}}),
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_pull_retries_flaky_page_and_completes_walk() {
+        use wiremock::matchers::{method, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // Page 1 always OK, carries a cursor.
+        Mock::given(method("GET"))
+            .and(query_param("limit", "100"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(page_body(&["a/one", "a/two"], Some("p2"))),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Page 2 fails twice, then succeeds — retries must absorb this.
+        Mock::given(method("GET"))
+            .and(query_param("cursor", "p2"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(2)
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("cursor", "p2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page_body(&["b/three"], None)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let got = pull_official_registry_from(&client, &format!("{}/v0/servers", server.uri()))
+            .await
+            .expect("walk should complete after retries");
+        let names: Vec<&str> = got.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["a/one", "a/two", "b/three"]);
+    }
+
+    #[tokio::test]
+    async fn registry_pull_keeps_partial_when_page_fails_after_retries() {
+        use wiremock::matchers::{method, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(query_param("limit", "100"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(page_body(&["a/one"], Some("p2"))),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // Page 2 fails on every attempt → partial results, not an error.
+        Mock::given(method("GET"))
+            .and(query_param("cursor", "p2"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let got = pull_official_registry_from(&client, &format!("{}/v0/servers", server.uri()))
+            .await
+            .expect("partial walk must return Ok with the pages we got");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "a/one");
+    }
+
+    #[tokio::test]
+    async fn registry_pull_errors_when_first_page_never_succeeds() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let got =
+            pull_official_registry_from(&client, &format!("{}/v0/servers", server.uri())).await;
+        assert!(
+            got.is_err(),
+            "fully-down registry must surface as a source failure"
+        );
     }
 }
