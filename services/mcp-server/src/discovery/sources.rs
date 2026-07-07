@@ -67,24 +67,50 @@ pub async fn pull_official_registry(client: &reqwest::Client) -> Result<Vec<RawS
         // the ENTIRE official source for that refresh, and every server
         // that exists only in the official registry silently vanishes from
         // the catalog (observed 2026-07-07: registry latency spikes left
-        // the catalog awesome-lists-only). Keep partial progress and log
-        // loudly; propagate an error only when the FIRST page fails, so a
-        // fully-down registry still surfaces as a source failure.
-        let page_result: Result<serde_json::Value> = async {
-            let resp = client
-                .get(&url)
-                .header(reqwest::header::USER_AGENT, USER_AGENT)
-                .send()
-                .await
-                .with_context(|| format!("GET {url}"))?;
-            if !resp.status().is_success() {
-                anyhow::bail!("official MCP registry returned {} for {url}", resp.status());
+        // the catalog awesome-lists-only). Each page is retried with
+        // backoff (the registry's failures are transient latency spikes —
+        // without retries the walk dies at a random depth every run and
+        // deep pages are never reached). If a page still fails after
+        // retries: keep partial progress and log loudly; propagate an
+        // error only when the FIRST page fails, so a fully-down registry
+        // still surfaces as a source failure.
+        const PAGE_ATTEMPTS: u32 = 3;
+        let mut page_result: Result<serde_json::Value> = Err(anyhow::anyhow!("no attempt made"));
+        for attempt in 1..=PAGE_ATTEMPTS {
+            page_result = async {
+                let resp = client
+                    .get(&url)
+                    .header(reqwest::header::USER_AGENT, USER_AGENT)
+                    .send()
+                    .await
+                    .with_context(|| format!("GET {url}"))?;
+                if !resp.status().is_success() {
+                    anyhow::bail!("official MCP registry returned {} for {url}", resp.status());
+                }
+                resp.json()
+                    .await
+                    .context("parse official registry response")
             }
-            resp.json()
-                .await
-                .context("parse official registry response")
+            .await;
+            match &page_result {
+                Ok(_) => break,
+                Err(e) => {
+                    tracing::warn!(
+                        source = "official_mcp",
+                        attempt,
+                        pages_fetched,
+                        error = %e,
+                        "registry page fetch attempt failed"
+                    );
+                    if attempt < PAGE_ATTEMPTS {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            500_u64.saturating_mul(u64::from(attempt)),
+                        ))
+                        .await;
+                    }
+                }
+            }
         }
-        .await;
 
         let body = match page_result {
             Ok(body) => body,
@@ -95,7 +121,7 @@ pub async fn pull_official_registry(client: &reqwest::Client) -> Result<Vec<RawS
                     pages_fetched,
                     partial_count = all.len(),
                     error = %e,
-                    "registry page fetch failed mid-pagination — keeping partial results"
+                    "registry page fetch failed after retries — keeping partial results"
                 );
                 break;
             }
