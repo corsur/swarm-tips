@@ -15,6 +15,7 @@ on:
         options:
           - coordination
           - crosschain
+          - shillbot
         default: coordination
       network:
         description: 'Target network (must exist in foundry.toml rpc_endpoints)'

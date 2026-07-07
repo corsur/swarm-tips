@@ -116,6 +116,29 @@ sol! {
         function resolveTimeout(bytes32 gameId) external;
         function withdraw() external;
     }
+
+    /// The Shillbot task-escrow lifecycle (evm/src/ShillbotEscrow.sol). The
+    /// attester signature inside `verifyTaskAttested` is the only trust gate;
+    /// every builder below is permissionless or caller-authorized on-chain.
+    interface IShillbotEscrow {
+        function createTask(
+            bytes32 statementCommitment,
+            bytes32 policyId,
+            uint8 verificationKind,
+            uint64 deadline,
+            bool requiresApproval
+        ) external payable returns (uint64);
+
+        function claimTask(uint64 taskId) external;
+        function submitWork(uint64 taskId, bytes32 contentIdHash, bytes32 artifactHash) external;
+        function approveTask(uint64 taskId) external;
+        function verifyTaskAttested(uint64 taskId, uint64 score, bytes sig) external;
+        function challengeTask(uint64 taskId) external payable;
+        function finalizeTask(uint64 taskId) external;
+        function defaultResolve(uint64 taskId) external;
+        function expireTask(uint64 taskId) external;
+        function withdraw() external;
+    }
 }
 
 /// An EVM call the caller must wrap in a transaction, sign, and submit.
@@ -486,6 +509,211 @@ pub fn build_withdraw_parts(contract: [u8; 20]) -> UnsignedEvmCall {
     build_withdraw(Address::from(contract))
 }
 
+// ---------------------------------------------------------------------------
+// ShillbotEscrow builders. `contract` is the ShillbotEscrow address (from
+// chain-registry `contract_for(ContractPurpose::ShillbotEscrow)`). Payable
+// calls (`createTask` escrow, `challengeTask` bond) carry their exact native
+// amount; the contract rejects any other value.
+// ---------------------------------------------------------------------------
+
+/// Build an unsigned `createTask` call. The client signs and submits it;
+/// `escrow_wei` (the task budget) is sent as native ETH. Kind 1 requires
+/// nonzero `statement_commitment` + `policy_id` on-chain.
+pub fn build_shillbot_create_task(
+    contract: Address,
+    statement_commitment: [u8; 32],
+    policy_id: [u8; 32],
+    verification_kind: u8,
+    deadline: u64,
+    requires_approval: bool,
+    escrow_wei: u128,
+) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::createTaskCall {
+        statementCommitment: statement_commitment.into(),
+        policyId: policy_id.into(),
+        verificationKind: verification_kind,
+        deadline,
+        requiresApproval: requires_approval,
+    }
+    .abi_encode();
+    call(contract, data, U256::from(escrow_wei))
+}
+
+/// Byte-array variant of [`build_shillbot_create_task`] for alloy-free callers.
+pub fn build_shillbot_create_task_parts(
+    contract: [u8; 20],
+    statement_commitment: [u8; 32],
+    policy_id: [u8; 32],
+    verification_kind: u8,
+    deadline: u64,
+    requires_approval: bool,
+    escrow_wei: u128,
+) -> UnsignedEvmCall {
+    build_shillbot_create_task(
+        Address::from(contract),
+        statement_commitment,
+        policy_id,
+        verification_kind,
+        deadline,
+        requires_approval,
+        escrow_wei,
+    )
+}
+
+/// Build an unsigned `claimTask` call (worker-signed; arms-length enforced
+/// on-chain: the client can never claim its own task).
+pub fn build_shillbot_claim_task(contract: Address, task_id: u64) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::claimTaskCall { taskId: task_id }.abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_shillbot_claim_task`].
+pub fn build_shillbot_claim_task_parts(contract: [u8; 20], task_id: u64) -> UnsignedEvmCall {
+    build_shillbot_claim_task(Address::from(contract), task_id)
+}
+
+/// Build an unsigned `submitWork` call (worker-signed). The hashes are the
+/// commitments the attestation digest later binds.
+pub fn build_shillbot_submit_work(
+    contract: Address,
+    task_id: u64,
+    content_id_hash: [u8; 32],
+    artifact_hash: [u8; 32],
+) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::submitWorkCall {
+        taskId: task_id,
+        contentIdHash: content_id_hash.into(),
+        artifactHash: artifact_hash.into(),
+    }
+    .abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_shillbot_submit_work`].
+pub fn build_shillbot_submit_work_parts(
+    contract: [u8; 20],
+    task_id: u64,
+    content_id_hash: [u8; 32],
+    artifact_hash: [u8; 32],
+) -> UnsignedEvmCall {
+    build_shillbot_submit_work(
+        Address::from(contract),
+        task_id,
+        content_id_hash,
+        artifact_hash,
+    )
+}
+
+/// Build an unsigned `approveTask` call (client-signed; only meaningful for
+/// tasks created with `requiresApproval`).
+pub fn build_shillbot_approve_task(contract: Address, task_id: u64) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::approveTaskCall { taskId: task_id }.abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_shillbot_approve_task`].
+pub fn build_shillbot_approve_task_parts(contract: [u8; 20], task_id: u64) -> UnsignedEvmCall {
+    build_shillbot_approve_task(Address::from(contract), task_id)
+}
+
+/// Build an unsigned permissionless `verifyTaskAttested` relay call.
+/// `attester_sig` is the 65-byte `[r||s||v]` (v = 27|28) signature from
+/// chain-core `cosign::sign_digest_eth` over the VerifyLib attestation
+/// digest — the signature, not the submitter, is the authorization.
+pub fn build_shillbot_verify_task_attested(
+    contract: Address,
+    task_id: u64,
+    score: u64,
+    attester_sig: [u8; 65],
+) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::verifyTaskAttestedCall {
+        taskId: task_id,
+        score,
+        sig: attester_sig.to_vec().into(),
+    }
+    .abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_shillbot_verify_task_attested`].
+pub fn build_shillbot_verify_task_attested_parts(
+    contract: [u8; 20],
+    task_id: u64,
+    score: u64,
+    attester_sig: [u8; 65],
+) -> UnsignedEvmCall {
+    build_shillbot_verify_task_attested(Address::from(contract), task_id, score, attester_sig)
+}
+
+/// Build an unsigned `challengeTask` call. `bond_wei` must be EXACTLY
+/// escrow × challengeBondMultiplier (the contract rejects anything else).
+pub fn build_shillbot_challenge_task(
+    contract: Address,
+    task_id: u64,
+    bond_wei: u128,
+) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::challengeTaskCall { taskId: task_id }.abi_encode();
+    call(contract, data, U256::from(bond_wei))
+}
+
+/// Byte-array variant of [`build_shillbot_challenge_task`].
+pub fn build_shillbot_challenge_task_parts(
+    contract: [u8; 20],
+    task_id: u64,
+    bond_wei: u128,
+) -> UnsignedEvmCall {
+    build_shillbot_challenge_task(Address::from(contract), task_id, bond_wei)
+}
+
+/// Build an unsigned permissionless `finalizeTask` crank (pays the pinned
+/// amounts once the challenge window closes).
+pub fn build_shillbot_finalize_task(contract: Address, task_id: u64) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::finalizeTaskCall { taskId: task_id }.abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_shillbot_finalize_task`].
+pub fn build_shillbot_finalize_task_parts(contract: [u8; 20], task_id: u64) -> UnsignedEvmCall {
+    build_shillbot_finalize_task(Address::from(contract), task_id)
+}
+
+/// Build an unsigned permissionless `defaultResolve` crank (executes the
+/// pinned payout after the dispute window lapses unadjudicated).
+pub fn build_shillbot_default_resolve(contract: Address, task_id: u64) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::defaultResolveCall { taskId: task_id }.abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_shillbot_default_resolve`].
+pub fn build_shillbot_default_resolve_parts(contract: [u8; 20], task_id: u64) -> UnsignedEvmCall {
+    build_shillbot_default_resolve(Address::from(contract), task_id)
+}
+
+/// Build an unsigned permissionless `expireTask` crank (refunds the client
+/// after the deadline / verification timeout).
+pub fn build_shillbot_expire_task(contract: Address, task_id: u64) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::expireTaskCall { taskId: task_id }.abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_shillbot_expire_task`].
+pub fn build_shillbot_expire_task_parts(contract: [u8; 20], task_id: u64) -> UnsignedEvmCall {
+    build_shillbot_expire_task(Address::from(contract), task_id)
+}
+
+/// Build an unsigned ShillbotEscrow `withdraw()` call. Pull-payment: every
+/// resolution CREDITS `withdrawable[recipient]`; workers/clients/challengers
+/// realize payouts by calling this.
+pub fn build_shillbot_withdraw(contract: Address) -> UnsignedEvmCall {
+    let data = IShillbotEscrow::withdrawCall {}.abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_shillbot_withdraw`].
+pub fn build_shillbot_withdraw_parts(contract: [u8; 20]) -> UnsignedEvmCall {
+    build_shillbot_withdraw(Address::from(contract))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,6 +959,156 @@ mod tests {
                 seen.insert(tx.data[..4].to_vec()),
                 "selectors must be distinct"
             );
+        }
+    }
+
+    #[test]
+    fn shillbot_builders_encode_selectors_values_and_distinct_selectors() {
+        let escrow = 1_000_000_000_000_000_000u128; // 1 ETH
+        let create = build_shillbot_create_task(C, [0x51; 32], [0x52; 32], 1, 12_345, true, escrow);
+        assert_eq!(create.to, C);
+        assert_eq!(
+            create.value,
+            U256::from(escrow),
+            "createTask carries the escrow"
+        );
+        assert_eq!(
+            &create.data[..4],
+            &IShillbotEscrow::createTaskCall::SELECTOR[..]
+        );
+        // selector(4) + 5 static head words.
+        assert_eq!(create.data.len(), 4 + 5 * 32);
+
+        let claim = build_shillbot_claim_task(C, 7);
+        assert_eq!(claim.value, U256::ZERO);
+        assert_eq!(
+            &claim.data[..4],
+            &IShillbotEscrow::claimTaskCall::SELECTOR[..]
+        );
+
+        let submit = build_shillbot_submit_work(C, 7, [0xC1; 32], [0xA1; 32]);
+        assert_eq!(submit.value, U256::ZERO);
+        assert_eq!(
+            &submit.data[..4],
+            &IShillbotEscrow::submitWorkCall::SELECTOR[..]
+        );
+
+        let approve = build_shillbot_approve_task(C, 7);
+        assert_eq!(approve.value, U256::ZERO);
+        assert_eq!(
+            &approve.data[..4],
+            &IShillbotEscrow::approveTaskCall::SELECTOR[..]
+        );
+
+        let verify = build_shillbot_verify_task_attested(C, 7, 1_000_000, [0x33; 65]);
+        assert_eq!(verify.value, U256::ZERO, "verify relay is non-payable");
+        assert_eq!(
+            &verify.data[..4],
+            &IShillbotEscrow::verifyTaskAttestedCall::SELECTOR[..]
+        );
+        // selector(4) + 3 head words (taskId, score, sig offset) + bytes tail
+        // (len word + 65 bytes padded to 96).
+        assert_eq!(verify.data.len(), 4 + 3 * 32 + 32 + 96);
+
+        let bond = 2 * escrow;
+        let challenge = build_shillbot_challenge_task(C, 7, bond);
+        assert_eq!(
+            challenge.value,
+            U256::from(bond),
+            "challengeTask carries the exact bond"
+        );
+        assert_eq!(
+            &challenge.data[..4],
+            &IShillbotEscrow::challengeTaskCall::SELECTOR[..]
+        );
+
+        let finalize = build_shillbot_finalize_task(C, 7);
+        let default_resolve = build_shillbot_default_resolve(C, 7);
+        let expire = build_shillbot_expire_task(C, 7);
+        let withdraw = build_shillbot_withdraw(C);
+        assert_eq!(finalize.value, U256::ZERO);
+        assert_eq!(default_resolve.value, U256::ZERO);
+        assert_eq!(expire.value, U256::ZERO);
+        assert_eq!(withdraw.value, U256::ZERO);
+        assert_eq!(withdraw.data.len(), 4, "withdraw is selector-only");
+
+        // Every function selector is distinct.
+        let mut seen = std::collections::HashSet::new();
+        for tx in [
+            &create,
+            &claim,
+            &submit,
+            &approve,
+            &verify,
+            &challenge,
+            &finalize,
+            &default_resolve,
+            &expire,
+            &withdraw,
+        ] {
+            assert!(
+                seen.insert(tx.data[..4].to_vec()),
+                "selectors must be distinct"
+            );
+        }
+    }
+
+    #[test]
+    fn shillbot_parts_match_typed_builders() {
+        // The alloy-free parts flavor must produce byte-identical calldata +
+        // value to the typed flavor for every builder (the MCP server relays
+        // parts without an alloy dependency).
+        let contract = [0x11u8; 20];
+        let typed_addr = Address::from(contract);
+
+        let pairs: [(UnsignedEvmCall, UnsignedEvmCall); 10] = [
+            (
+                build_shillbot_create_task_parts(
+                    contract, [0x51; 32], [0x52; 32], 1, 12_345, true, 9,
+                ),
+                build_shillbot_create_task(typed_addr, [0x51; 32], [0x52; 32], 1, 12_345, true, 9),
+            ),
+            (
+                build_shillbot_claim_task_parts(contract, 7),
+                build_shillbot_claim_task(typed_addr, 7),
+            ),
+            (
+                build_shillbot_submit_work_parts(contract, 7, [0xC1; 32], [0xA1; 32]),
+                build_shillbot_submit_work(typed_addr, 7, [0xC1; 32], [0xA1; 32]),
+            ),
+            (
+                build_shillbot_approve_task_parts(contract, 7),
+                build_shillbot_approve_task(typed_addr, 7),
+            ),
+            (
+                build_shillbot_verify_task_attested_parts(contract, 7, 1_000_000, [0x33; 65]),
+                build_shillbot_verify_task_attested(typed_addr, 7, 1_000_000, [0x33; 65]),
+            ),
+            (
+                build_shillbot_challenge_task_parts(contract, 7, 18),
+                build_shillbot_challenge_task(typed_addr, 7, 18),
+            ),
+            (
+                build_shillbot_finalize_task_parts(contract, 7),
+                build_shillbot_finalize_task(typed_addr, 7),
+            ),
+            (
+                build_shillbot_default_resolve_parts(contract, 7),
+                build_shillbot_default_resolve(typed_addr, 7),
+            ),
+            (
+                build_shillbot_expire_task_parts(contract, 7),
+                build_shillbot_expire_task(typed_addr, 7),
+            ),
+            (
+                build_shillbot_withdraw_parts(contract),
+                build_shillbot_withdraw(typed_addr),
+            ),
+        ];
+        for (parts, typed) in pairs {
+            assert_eq!(parts.data, typed.data, "parts calldata must match typed");
+            assert_eq!(parts.value, typed.value, "parts value must match typed");
+            assert_eq!(parts.to, typed.to, "parts target must match typed");
         }
     }
 

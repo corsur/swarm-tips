@@ -2,10 +2,10 @@
 pragma solidity ^0.8.24;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {CertLib} from "./CertLib.sol";
+import {PullPayment} from "./base/PullPayment.sol";
+import {AttesterGated} from "./base/AttesterGated.sol";
 
 /// @title CoordinationGame — same-chain (EVM-vs-EVM) 1v1 commit-reveal game
 /// @notice The Solidity port of `programs/coordination-game`: two players stake
@@ -34,7 +34,7 @@ import {CertLib} from "./CertLib.sol";
 ///   Revealing  ─revealGuess(both)──► Resolved [payoff matrix]
 ///   Revealing  ─resolveTimeout──► Resolved [revealer wins / both forfeit]
 ///   Resolved   ─(terminal)
-contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
+contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated {
     enum Status {
         None,
         Pending,
@@ -67,18 +67,13 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
 
     mapping(bytes32 => Game) public games;
 
-    /// Pull-payment ledger (M1): resolution CREDITS each player + treasury here
-    /// instead of pushing ETH, so a player/treasury that reverts on receive can
-    /// never block the game from resolving. Recipients pull via withdraw().
-    mapping(address => uint256) public withdrawable;
+    // Pull-payment ledger (M1) — `withdrawable` / `_credit` / `withdraw()`
+    // live in the shared PullPayment base.
 
     /// Accumulates homogeneous-outcome forfeits — the local analog of
     /// Tournament.prize_lamports; the owner sweeps it to the tournament pot.
     uint256 public prizePoolWei;
 
-    /// Dedicated secp256k1 matchmaker key — NOT the owner and not the treasury
-    /// (key separation: matchmaker compromise can't move governance/treasury).
-    address public operatorSigner;
     address public treasury;
     uint16 public treasurySplitBps; // [2000, 8000], mirrors GlobalConfig bounds
     uint128 public stakeWei; // exact required stake
@@ -104,7 +99,6 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
     event GameResolved(bytes32 indexed gameId, uint8 outcomeKind, uint256 toP1, uint256 toP2, uint256 toTreasury);
     event PrizePoolWithdrawn(address indexed to, uint256 amount);
     event ConfigUpdated();
-    event Withdrawn(address indexed to, uint256 amount);
     event GameCancelled(bytes32 indexed gameId, address indexed player1, uint256 amount);
 
     error InvalidStatus();
@@ -117,7 +111,6 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
     error DeadlineNotReached();
     error BadOutcome();
     error BadConfig();
-    error NothingToWithdraw();
 
     constructor(
         address initialOwner,
@@ -137,12 +130,19 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
             commitTimeoutSecs_,
             revealTimeoutSecs_
         );
-        operatorSigner = operatorSigner_;
+        _setAuthorizedSigner(operatorSigner_);
         treasury = treasury_;
         treasurySplitBps = treasurySplitBps_;
         stakeWei = stakeWei_;
         commitTimeoutSecs = commitTimeoutSecs_;
         revealTimeoutSecs = revealTimeoutSecs_;
+    }
+
+    /// @notice Dedicated secp256k1 matchmaker key — NOT the owner and not the
+    ///         treasury (key separation: matchmaker compromise can't move
+    ///         governance/treasury). Stored in the AttesterGated base.
+    function operatorSigner() public view returns (address) {
+        return _authorizedSignerAddr();
     }
 
     /// @dev Single config-bounds gate shared by the constructor and setConfig.
@@ -176,7 +176,7 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         _validateConfig(
             owner(), operatorSigner_, treasury_, treasurySplitBps_, stakeWei_, commitTimeoutSecs_, revealTimeoutSecs_
         );
-        operatorSigner = operatorSigner_;
+        _setAuthorizedSigner(operatorSigner_);
         treasury = treasury_;
         treasurySplitBps = treasurySplitBps_;
         stakeWei = stakeWei_;
@@ -205,7 +205,7 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         // THIS creator, so a sig signed for one player can't be replayed by another
         // to squat the assigned gameId.
         bytes32 digest = keccak256(abi.encode(block.chainid, address(this), gameId, msg.sender, matchupCommitment));
-        if (ECDSA.recover(digest, operatorSig) != operatorSigner) revert BadSignature();
+        if (!_recoverAndCheck(digest, operatorSig)) revert BadSignature();
 
         g.status = Status.Pending;
         g.player1 = msg.sender;
@@ -403,21 +403,7 @@ contract CoordinationGame is Ownable2Step, ReentrancyGuard, Pausable {
         require(ok, "transfer failed");
     }
 
-    /// @dev Pull-payment credit (M1): accrue to `to`'s withdrawable balance.
-    function _credit(address to, uint256 amount) private {
-        withdrawable[to] += amount;
-    }
-
-    /// @notice Withdraw the caller's accrued balance (winnings or refund). CEI +
-    ///         nonReentrant: a reverting recipient only fails its OWN withdraw.
-    function withdraw() external nonReentrant {
-        uint256 amount = withdrawable[msg.sender];
-        if (amount == 0) revert NothingToWithdraw();
-        withdrawable[msg.sender] = 0;
-        emit Withdrawn(msg.sender, amount);
-        (bool ok,) = payable(msg.sender).call{value: amount}("");
-        require(ok, "withdraw failed");
-    }
+    // Pull-payment credit + withdraw() live in the shared PullPayment base.
 
     // ---------------------------------------------------------------------
     // Owner operations

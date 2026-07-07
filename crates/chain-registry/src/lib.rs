@@ -35,6 +35,9 @@ pub enum ContractPurpose {
     CrossChainGame,
     /// The same-chain EVM-vs-EVM `CoordinationGame`.
     CoordinationGame,
+    /// The Shillbot task-escrow — Solana shillbot program, or the EVM
+    /// `ShillbotEscrow`.
+    ShillbotEscrow,
 }
 
 /// One chain's complete configuration.
@@ -67,6 +70,10 @@ pub struct ChainEntry {
     /// Same-chain EVM-vs-EVM `CoordinationGame` address (eip155). None where it
     /// isn't deployed — every Solana entry, and an EVM chain until deployed.
     pub coordination_game_contract: Option<&'static str>,
+    /// Shillbot task-escrow: shillbot program ID (solana) or `ShillbotEscrow`
+    /// address (eip155). None until deployed on that chain (the EVM address
+    /// lands in a follow-up commit after the gated testnet deploy).
+    pub shillbot_escrow_contract: Option<&'static str>,
     /// x402 network descriptor name, when this chain settles payments.
     pub x402_network: Option<&'static str>,
 }
@@ -79,6 +86,7 @@ impl ChainEntry {
         match purpose {
             ContractPurpose::CrossChainGame => self.game_contract,
             ContractPurpose::CoordinationGame => self.coordination_game_contract,
+            ContractPurpose::ShillbotEscrow => self.shillbot_escrow_contract,
         }
     }
 }
@@ -106,6 +114,7 @@ const REGISTRY: &[ChainEntry] = &[
         skew_margin_secs: 900,
         game_contract: Some("2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"),
         coordination_game_contract: None, // same-chain EVM game has no Solana deployment
+        shillbot_escrow_contract: None,   // not yet deployed on this chain
         x402_network: None,
     },
     ChainEntry {
@@ -122,6 +131,7 @@ const REGISTRY: &[ChainEntry] = &[
         skew_margin_secs: 900,
         game_contract: Some("2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"),
         coordination_game_contract: None,
+        shillbot_escrow_contract: None, // not yet deployed on this chain
         x402_network: Some("solana"),
     },
     ChainEntry {
@@ -157,6 +167,7 @@ const REGISTRY: &[ChainEntry] = &[
         // 0x54a6…9A30 == game-api xchain-operator-signer, so game-api's v=27/28
         // normalized createGame attestation verifies; prior 0x2F88…4664 orphaned).
         coordination_game_contract: Some("0x042fE7202d208C9D79AdFd276da77b928C64514b"),
+        shillbot_escrow_contract: None, // not yet deployed on this chain
         x402_network: Some("base-sepolia"),
     },
 ];
@@ -285,6 +296,21 @@ mod tests {
         // Unregistered chain → None for any purpose.
         let unknown = ChainId::parse("eip155:1").unwrap();
         assert!(contract_for(&unknown, ContractPurpose::CoordinationGame).is_none());
+        assert!(contract_for(&unknown, ContractPurpose::ShillbotEscrow).is_none());
+    }
+
+    #[test]
+    fn shillbot_escrow_purpose_resolves_none_until_deployed() {
+        // The variant + field land ahead of the gated testnet deploy; the
+        // address arrives in a follow-up commit, so every entry is None today.
+        for e in REGISTRY {
+            let chain = ChainId::parse(e.chain_id).expect("valid CAIP-2");
+            assert!(
+                contract_for(&chain, ContractPurpose::ShillbotEscrow).is_none(),
+                "{}: shillbot escrow address must stay None until the deploy lands",
+                e.chain_id
+            );
+        }
     }
 
     #[test]

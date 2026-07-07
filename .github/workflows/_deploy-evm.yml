@@ -14,7 +14,7 @@ on:
   workflow_call:
     inputs:
       contract:
-        description: 'Which contract to deploy: crosschain | coordination'
+        description: 'Which contract to deploy: crosschain | coordination | shillbot'
         required: true
         type: string
       network:
@@ -79,6 +79,32 @@ jobs:
           COORD_REVEAL_TIMEOUT: '7200' # Revealing
         run: |
           forge script script/DeployCoordinationGame.s.sol \
+            --rpc-url ${{ inputs.network }} \
+            --private-key "$DEPLOYER_PK" \
+            --broadcast
+
+      - name: Deploy ShillbotEscrow
+        if: inputs.contract == 'shillbot'
+        env:
+          # chainTag mirrors crates/chain-registry (Base Sepolia row).
+          SHILLBOT_ESCROW_CHAIN_TAG: '0x8a9a9c58b754a98f1ff302a7ead652cfd23eb36a5791767b5d185067dd9481c2'
+          SHILLBOT_ESCROW_OWNER: ${{ env.XCHAIN_OWNER }}
+          # Bootstrap attester = the shared xchain operator key (satisfies the
+          # signer != owner != treasury gate). Rotate to the dedicated
+          # shillbot-attester EVM key via setConfig before real use.
+          SHILLBOT_ESCROW_ATTESTER_SIGNER: ${{ env.XCHAIN_OPERATOR_SIGNER }}
+          SHILLBOT_ESCROW_TREASURY: ${{ env.XCHAIN_TREASURY }}
+          SHILLBOT_ESCROW_FEE_BPS: '1000' # 10%
+          SHILLBOT_ESCROW_QUALITY_THRESHOLD: '200000' # kind-0 payout floor (of 1_000_000)
+          SHILLBOT_ESCROW_CHALLENGE_WINDOW_SECS: '3600'
+          SHILLBOT_ESCROW_DISPUTE_WINDOW_SECS: '86400'
+          SHILLBOT_ESCROW_VERIFICATION_TIMEOUT_SECS: '86400'
+          SHILLBOT_ESCROW_BOND_MULTIPLIER: '2'
+          SHILLBOT_ESCROW_BOND_SLASH_TREASURY_BPS: '5000'
+          SHILLBOT_ESCROW_MIN_ESCROW_WEI: '100000000000000' # 0.0001 ETH
+          SHILLBOT_ESCROW_MAX_ESCROW_WEI: '1000000000000000000' # 1 ETH (testnet cap)
+        run: |
+          forge script script/DeployShillbotEscrow.s.sol \
             --rpc-url ${{ inputs.network }} \
             --private-key "$DEPLOYER_PK" \
             --broadcast

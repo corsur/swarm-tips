@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {CrossChainGame} from "../src/CrossChainGame.sol";
 import {CertLib} from "../src/CertLib.sol";
+import {PullPayment} from "../src/base/PullPayment.sol";
 
 /// @notice Behavioral suite for the EVM leg: state machine, the panel's
 ///         eight flagged gaps (double-claim, inert cert, stale quote,
@@ -237,7 +238,7 @@ contract CrossChainGameTest is Test {
         assertEq(game.withdrawable(player), 0, "balance zeroed");
 
         vm.prank(player);
-        vm.expectRevert(CrossChainGame.NothingToWithdraw.selector);
+        vm.expectRevert(PullPayment.NothingToWithdraw.selector);
         game.withdraw();
     }
 

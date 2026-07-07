@@ -2,10 +2,12 @@
 pragma solidity ^0.8.24;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {CertLib} from "./CertLib.sol";
+import {PullPayment} from "./base/PullPayment.sol";
+import {AttesterGated} from "./base/AttesterGated.sol";
+import {ChainTagged} from "./base/ChainTagged.sol";
 
 /// @title CrossChainGame — EVM leg of cross-chain coordination-game matches
 /// @notice One contract holds both the per-match native-ETH stake escrows and
@@ -35,7 +37,7 @@ import {CertLib} from "./CertLib.sol";
 ///              (t > fundDeadline,                   └─refundTimeout──► RefundedTimeout
 ///               never locked)                         (t > matchDeadline + maxClaimWindow + 2·skew,
 ///                                                      nothing settled; tranche → poolFree)
-contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
+contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, ChainTagged {
     using CertLib for CertLib.MatchLiveCert;
     using CertLib for CertLib.Checkpoint;
     using CertLib for CertLib.OutcomeCert;
@@ -71,10 +73,9 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         uint64 timeoutOpensAt; // refund backstop, snapshotted at lock so setConfig can't pull it earlier
     }
 
-    /// keccak256("eip155:84532") for Base Sepolia — set at deploy from the
-    /// chain registry value; immutable so a cert for another chain can
-    /// never execute here.
-    bytes32 public immutable CHAIN_TAG;
+    // CHAIN_TAG (keccak256("eip155:84532") for Base Sepolia, from the chain
+    // registry) lives in the ChainTagged base — immutable so a cert for
+    // another chain can never execute here.
 
     mapping(bytes32 => Match) public matches;
 
@@ -84,16 +85,13 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     /// (the local analog of Tournament.prize_lamports).
     uint256 public prizePoolWei;
 
-    /// Pull-payment ledger (M1): settle/refund CREDIT the player + treasury here
-    /// instead of pushing ETH, so a recipient that reverts on receive can never
-    /// brick the state transition or strand the locked tranche. Recipients pull
-    /// via withdraw(). Owner-controlled exits (poolWithdraw, withdrawPrizePool)
-    /// stay push — the owner chooses the address and a revert there is its own.
-    mapping(address => uint256) public withdrawable;
+    // Pull-payment ledger (M1) — `withdrawable` / `_credit` / `withdraw()`
+    // live in the shared PullPayment base: settle/refund CREDIT the player +
+    // treasury instead of pushing ETH, so a recipient that reverts on receive
+    // can never brick the state transition or strand the locked tranche.
+    // Owner-controlled exits (poolWithdraw, withdrawPrizePool) stay push —
+    // the owner chooses the address and a revert there is its own.
 
-    /// Dedicated secp256k1 certificate signer — NOT the owner EOA and not
-    /// the Solana upgrade authority (key-separation requirement).
-    address public operatorSigner;
     address public treasury;
     uint16 public treasurySplitBps; // [2000, 8000], mirrors GlobalConfig bounds
     uint128 public stakeWei; // exact required stake (chain registry value)
@@ -124,7 +122,6 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     event PoolDeposited(address indexed from, uint256 amount);
     event PoolWithdrawn(uint256 amount);
     event ConfigUpdated();
-    event Withdrawn(address indexed to, uint256 amount);
 
     error InvalidStatus();
     error BadSignature();
@@ -136,7 +133,6 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     error TrancheTooLarge();
     error BadOutcome();
     error BadConfig();
-    error NothingToWithdraw();
 
     constructor(
         bytes32 chainTag,
@@ -148,8 +144,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         uint128 maxTrancheWei_,
         uint32 maxClaimWindowSecs_,
         uint32 skewMarginSecs_
-    ) Ownable(initialOwner) {
-        if (chainTag == bytes32(0)) revert BadConfig();
+    ) Ownable(initialOwner) ChainTagged(chainTag) {
         _validateConfig(
             initialOwner,
             operatorSigner_,
@@ -160,14 +155,20 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
             maxClaimWindowSecs_,
             skewMarginSecs_
         );
-        CHAIN_TAG = chainTag;
-        operatorSigner = operatorSigner_;
+        _setAuthorizedSigner(operatorSigner_);
         treasury = treasury_;
         treasurySplitBps = treasurySplitBps_;
         stakeWei = stakeWei_;
         maxTrancheWei = maxTrancheWei_;
         maxClaimWindowSecs = maxClaimWindowSecs_;
         skewMarginSecs = skewMarginSecs_;
+    }
+
+    /// @notice Dedicated secp256k1 certificate signer — NOT the owner EOA and
+    ///         not the Solana upgrade authority (key-separation requirement).
+    ///         Stored in the AttesterGated base.
+    function operatorSigner() public view returns (address) {
+        return _authorizedSignerAddr();
     }
 
     /// @dev The single config-bounds gate, shared by the constructor and
@@ -239,7 +240,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
                 matchDeadline
             )
         );
-        _requireSigner(digest, operatorSig, operatorSigner);
+        _requireOperatorSig(digest, operatorSig);
 
         m.status = Status.Funded;
         m.player = msg.sender;
@@ -270,7 +271,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         // Bind the cert to the funded match — identical to _verifyMatchLive
         // EXCEPT leg.tranche and m.lockedAt, which THIS call is what sets.
         if (
-            leg.chainTag != CHAIN_TAG || leg.contractId != bytes32(uint256(uint160(address(this))))
+            leg.chainTag != CHAIN_TAG || leg.contractId != _contractIdWord()
                 || leg.player != bytes32(uint256(uint160(m.player))) || leg.sessionKey != m.sessionKey
                 || cert.legA.sessionKey != m.counterSessionKey || leg.stake != m.stakeWei
                 || cert.matchDeadline != m.matchDeadline || (cert.aIsP1 == 1) == m.playerIsP1
@@ -279,7 +280,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         if (uint256(cert.quoteTimestamp) + cert.quoteMaxAgeSecs < block.timestamp) revert StaleQuote();
         // Only the operator signature is required — the lock precedes the
         // players' match-live session signatures.
-        _requireSigner(cert.matchLiveDigest(), operatorSig, operatorSigner);
+        _requireOperatorSig(cert.matchLiveDigest(), operatorSig);
 
         uint128 trancheWei = leg.tranche;
         if (trancheWei > maxTrancheWei) revert TrancheTooLarge();
@@ -332,7 +333,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         bytes32 ocDigest = oc.outcomeDigest();
         _requireSigner(ocDigest, ocSigs[0], cert.legA.sessionKey);
         _requireSigner(ocDigest, ocSigs[1], cert.legB.sessionKey);
-        _requireSigner(ocDigest, ocSigs[2], operatorSigner);
+        _requireOperatorSig(ocDigest, ocSigs[2]);
 
         m.status = Status.Settled;
         m.matchLiveDigest = liveDigest;
@@ -584,7 +585,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
             maxClaimWindowSecs_,
             skewMarginSecs_
         );
-        operatorSigner = operatorSigner_;
+        _setAuthorizedSigner(operatorSigner_);
         treasury = treasury_;
         treasurySplitBps = treasurySplitBps_;
         stakeWei = stakeWei_;
@@ -617,7 +618,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
     {
         CertLib.Leg calldata leg = cert.legB; // leg B is ALWAYS the EVM leg
         if (
-            leg.chainTag != CHAIN_TAG || leg.contractId != bytes32(uint256(uint160(address(this))))
+            leg.chainTag != CHAIN_TAG || leg.contractId != _contractIdWord()
                 || leg.player != bytes32(uint256(uint160(m.player))) || leg.sessionKey != m.sessionKey
                 || cert.legA.sessionKey != m.counterSessionKey || leg.stake != m.stakeWei || leg.tranche != m.trancheWei
                 || cert.matchDeadline != m.matchDeadline || (cert.aIsP1 == 1) == m.playerIsP1
@@ -629,7 +630,7 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         liveDigest = cert.matchLiveDigest();
         _requireSigner(liveDigest, sigs[0], cert.legA.sessionKey);
         _requireSigner(liveDigest, sigs[1], leg.sessionKey);
-        _requireSigner(liveDigest, sigs[2], operatorSigner);
+        _requireOperatorSig(liveDigest, sigs[2]);
     }
 
     function _verifyCheckpoint(
@@ -656,6 +657,11 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
 
     function _requireSigner(bytes32 digest, bytes calldata sig, address expected) private pure {
         if (ECDSA.recover(digest, sig) != expected) revert BadSignature();
+    }
+
+    /// @dev Operator-signature gate — the AttesterGated base holds the key.
+    function _requireOperatorSig(bytes32 digest, bytes calldata sig) private view {
+        if (!_recoverAndCheck(digest, sig)) revert BadSignature();
     }
 
     /// @dev Split an amount into the treasury cut and its remainder. The
@@ -769,22 +775,5 @@ contract CrossChainGame is Ownable2Step, ReentrancyGuard, Pausable {
         require(ok, "transfer failed");
     }
 
-    /// @dev Pull-payment credit (M1). Accrues `amount` to `to`'s withdrawable
-    ///      balance; the recipient later pulls via withdraw(). Never reverts on
-    ///      a hostile recipient, so settlement/refund always completes.
-    function _credit(address to, uint256 amount) private {
-        withdrawable[to] += amount;
-    }
-
-    /// @notice Withdraw the caller's accrued balance (settled stake, treasury
-    ///         cut, or refund). CEI + nonReentrant: zero the balance before the
-    ///         transfer so a reverting recipient only fails its OWN withdraw.
-    function withdraw() external nonReentrant {
-        uint256 amount = withdrawable[msg.sender];
-        if (amount == 0) revert NothingToWithdraw();
-        withdrawable[msg.sender] = 0;
-        emit Withdrawn(msg.sender, amount);
-        (bool ok,) = payable(msg.sender).call{value: amount}("");
-        require(ok, "withdraw failed");
-    }
+    // Pull-payment credit + withdraw() live in the shared PullPayment base.
 }
