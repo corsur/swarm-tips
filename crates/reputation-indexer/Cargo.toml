@@ -1,0 +1,16 @@
+[package]
+name = "reputation-indexer"
+version = "0.1.0"
+edition = "2021"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+eigentrust = { path = "../../services/eigentrust" }
