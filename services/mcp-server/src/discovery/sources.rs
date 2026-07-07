@@ -19,12 +19,13 @@ use anyhow::{Context, Result};
 const OFFICIAL_REGISTRY_BASE: &str = "https://registry.modelcontextprotocol.io/v0/servers";
 
 /// Maximum servers to pull from the official registry per cycle. The registry
-/// passed 5,000 latest-version servers in July 2026 (the old 5k cap silently
-/// truncated the walk at page 50 and alphabetically-late entries — including
-/// our own io.github.corsur/* — never entered the catalog). 10k matches the
-/// MAX_PAGES bound (100 pages x 100/page); the cap still warn!s loudly when
-/// hit so the next growth spike is visible instead of silent.
-const MAX_SERVERS: usize = 10_000;
+/// passed 10,000 latest-version servers in July 2026 (both prior caps — 5k
+/// servers, then 100 pages — silently truncated the walk; alphabetical
+/// pagination makes that truncation DETERMINISTIC, so late-alphabet entries
+/// never enter the catalog rather than eventually arriving). 25k servers /
+/// 250 pages gives ~2x headroom; both caps warn! loudly when hit so the
+/// next growth spike is visible instead of silent.
+const MAX_SERVERS: usize = 25_000;
 
 /// User-Agent so the registry maintainers can identify us if we ever cause
 /// a problem. Per the discovery plan: "we don't want to be the asshole that
@@ -47,8 +48,9 @@ async fn pull_official_registry_from(
     let mut cursor: Option<String> = None;
     let mut pages_fetched = 0u32;
     // Hard cap on pages to bound time + memory even if pagination loops.
-    // 100 servers/page × 100 pages = 10k servers max.
-    const MAX_PAGES: u32 = 100;
+    // 100 servers/page × 250 pages = 25k servers max (~1s/page observed →
+    // a full walk stays under ~5 minutes).
+    const MAX_PAGES: u32 = 250;
 
     loop {
         if pages_fetched >= MAX_PAGES {
