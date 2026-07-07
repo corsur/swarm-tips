@@ -114,6 +114,7 @@ sol! {
         function commitGuess(bytes32 gameId, bytes32 commitment) external;
         function revealGuess(bytes32 gameId, bytes32 r, bytes32 rMatchup) external;
         function resolveTimeout(bytes32 gameId) external;
+        function withdraw() external;
     }
 }
 
@@ -470,6 +471,21 @@ pub fn build_resolve_timeout_parts(contract: [u8; 20], game_id: [u8; 32]) -> Uns
     build_resolve_timeout(Address::from(contract), game_id)
 }
 
+/// Build an unsigned `withdraw()` call (non-payable). CoordinationGame uses
+/// pull-payment (M1): resolution CREDITS `withdrawable[player]`; the recipient
+/// realizes it by calling `withdraw()`. A player who never withdraws leaves their
+/// payout stranded — so an autonomous player (e.g. the grok agent) must call this
+/// after a game resolves.
+pub fn build_withdraw(contract: Address) -> UnsignedEvmCall {
+    let data = CoordinationGame::withdrawCall {}.abi_encode();
+    call(contract, data, U256::ZERO)
+}
+
+/// Byte-array variant of [`build_withdraw`].
+pub fn build_withdraw_parts(contract: [u8; 20]) -> UnsignedEvmCall {
+    build_withdraw(Address::from(contract))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,9 +715,18 @@ mod tests {
             &CoordinationGame::resolveTimeoutCall::SELECTOR[..]
         );
 
+        // withdraw() is non-payable, no args → selector only (4 bytes), zero value.
+        let withdraw = build_withdraw(C);
+        assert_eq!(withdraw.value, U256::ZERO);
+        assert_eq!(withdraw.data.len(), 4);
+        assert_eq!(
+            &withdraw.data[..4],
+            &CoordinationGame::withdrawCall::SELECTOR[..]
+        );
+
         // Every function selector is distinct.
         let mut seen = std::collections::HashSet::new();
-        for tx in [&create, &join, &commit, &reveal, &timeout] {
+        for tx in [&create, &join, &commit, &reveal, &timeout, &withdraw] {
             assert!(
                 seen.insert(tx.data[..4].to_vec()),
                 "selectors must be distinct"
@@ -732,6 +757,10 @@ mod tests {
         assert_eq!(
             build_resolve_timeout_parts(contract, g).data,
             build_resolve_timeout(Address::from(contract), g).data
+        );
+        assert_eq!(
+            build_withdraw_parts(contract).data,
+            build_withdraw(Address::from(contract)).data
         );
     }
 }
