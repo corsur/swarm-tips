@@ -9,7 +9,6 @@ mod discovery;
 mod errors;
 mod game_proxy;
 mod game_session;
-mod layer3;
 mod listings;
 mod proxy;
 mod server;
@@ -92,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         game_sessions,
         session_binding,
         listings: Arc::clone(&listings_state),
+        discovery: discovery_state.clone(),
     });
 
     let ct = tokio_util::sync::CancellationToken::new();

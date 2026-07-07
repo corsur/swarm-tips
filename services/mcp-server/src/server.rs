@@ -57,6 +57,10 @@ pub struct SharedState {
     /// Firestore-cached `get_listings` flow that backs the
     /// `/internal/listings` HTTP endpoint.
     pub listings: Arc<ListingsState>,
+    /// Discovery pipeline (ingested MCP-server catalog + BM25 search
+    /// index). Powers `search_mcp_servers`. None when Firestore init
+    /// failed at startup — search then reports unavailable.
+    pub discovery: Option<Arc<crate::discovery::DiscoveryState>>,
 }
 
 /// The Swarm Tips MCP server — unified interface for all DAO verticals.
@@ -372,16 +376,20 @@ pub struct AgentTrustScoreArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct SearchMcpServersArgs {
-    /// Free-text needle, matched case-insensitively against entry
-    /// name, description, why-listed, and tags. Omit to skip text
-    /// filtering (and rely on `category` / `tier` instead).
+    /// Free-text capability query, BM25-ranked against server name,
+    /// description, classification, and README excerpt (e.g. "solana
+    /// defi swap"). Omit for browse mode (quality-ordered, filters
+    /// still apply). Queries matching nothing return zero results.
     pub query: Option<String>,
-    /// Filter by category (substring, case-insensitive). E.g.,
-    /// `"agent"` matches `agent-bounties`, `agent-tools-directory`,
-    /// etc.
+    /// Filter by classified category (substring, case-insensitive):
+    /// bounty, content, payment, infrastructure, game, social,
+    /// devtools, data, other.
     pub category: Option<String>,
-    /// Filter by vetting tier: `"first-party"`, `"vetted"`, or
-    /// `"discovered"`. Unknown values return zero results.
+    /// Filter by currency the server deals in (e.g. "usdc", "sol").
+    pub currency: Option<String>,
+    /// Filter by automated provenance: `"first-party"` (endpoint/repo
+    /// on a swarm.tips-operated domain) or `"external"`. Unknown
+    /// values return zero results.
     pub tier: Option<String>,
     /// Maximum results to return. Default 50, max 200.
     pub limit: Option<u32>,
@@ -1360,7 +1368,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "search_mcp_servers",
-        description = "[IN DEVELOPMENT] [READ] Search the Layer 3 curated directory of MCP servers and agent-work tools. The directory has 30 entries across three vetting tiers — `first-party` (operated by the swarm.tips DAO), `vetted` (third-party, we've used + verified), `discovered` (cataloged from public sources, not yet exercised). Filter by `query` (substring vs name/description/tags), `category` (substring), and `tier`. Results sort first-party → vetted → discovered. The same directory powers swarm.tips/discover; this tool exposes it programmatically. Use this when an agent needs to find an MCP server for a capability (DeFi, search, browser automation, etc.) instead of an opportunity (which `discover_opportunities` covers).",
+        description = "[READ] BM25 relevance search over the full ingested MCP-server catalog (~2k servers from the official MCP registry + awesome-lists, auto-classified by heuristics + LLM). Query by capability in free text (e.g. \"solana defi swap\", \"browser automation\") — results are relevance-gated, then ordered by fully AUTOMATED quality signals (multi-source corroboration, GitHub stars, npm downloads, upstream quality scores, LLM classification confidence); no manual curation influences ranking, and each hit discloses its ranking_signals for audit. Filter by `category`, `currency`, and `tier` (automated provenance: first-party = hosted on a swarm.tips-operated domain, external = everything else). Omit `query` to browse quality-ordered. Use this when an agent needs an MCP server for a capability; for earn/spend opportunities use discover_opportunities.",
         annotations(read_only_hint = true)
     )]
     async fn search_mcp_servers(
@@ -1368,35 +1376,55 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<SearchMcpServersArgs>,
     ) -> Result<CallToolResult, McpError> {
         let limit = args.limit.unwrap_or(50).min(200) as usize;
-        let filter = crate::layer3::Filter {
-            query: args.query.as_deref().filter(|s| !s.is_empty()),
-            category: args.category.as_deref().filter(|s| !s.is_empty()),
-            tier: args.tier.as_deref().filter(|s| !s.is_empty()),
-            limit: Some(limit),
+
+        let Some(discovery) = self.state.discovery.as_ref() else {
+            return Err(to_mcp_error(&McpServiceError::Internal(
+                "server-catalog search unavailable (discovery store not initialized)".to_string(),
+            )));
         };
-        let hits = crate::layer3::search(&filter);
+        let Some(index) = crate::discovery::get_or_build_search_index(discovery).await else {
+            return Err(to_mcp_error(&McpServiceError::Internal(
+                "server catalog is empty — trigger /internal/mcp/refresh and retry".to_string(),
+            )));
+        };
+
+        let filters = crate::discovery::search::SearchFilters {
+            category: args.category.as_deref().filter(|s| !s.is_empty()),
+            currency: args.currency.as_deref().filter(|s| !s.is_empty()),
+            provenance: args.tier.as_deref().filter(|s| !s.is_empty()),
+        };
+        let query = args.query.as_deref().unwrap_or("");
+        let hits = index.search(query, &filters, limit);
+
+        let catalog_age_hours = chrono::Utc::now()
+            .signed_duration_since(index.catalog_refreshed_at)
+            .num_hours();
+        if catalog_age_hours > 24 * 7 {
+            tracing::warn!(
+                catalog_age_hours,
+                "search served from a stale catalog snapshot — refresh overdue"
+            );
+        }
 
         tracing::info!(
             count = hits.len(),
-            query = args.query.as_deref().unwrap_or(""),
+            corpus = index.corpus_size(),
+            query,
             category = args.category.as_deref().unwrap_or(""),
+            currency = args.currency.as_deref().unwrap_or(""),
             tier = args.tier.as_deref().unwrap_or(""),
             "search_mcp_servers served"
         );
 
-        // Wrap with the directory-level metadata so the caller can
-        // tell at a glance how many entries the directory has and
-        // what the tier definitions mean. Mirrors the `/discover`
-        // page's legend.
-        let total_in_directory = crate::layer3::entries().len();
         let result = serde_json::json!({
             "results": hits,
-            "total_in_directory": total_in_directory,
             "returned": hits.len(),
-            "tier_definitions": {
-                "first-party": "Operated by the swarm.tips DAO or a vertical we own. Trust = same as the marketplace itself.",
-                "vetted": "Independently maintained by a third party; we have used it, confirmed the install path works, and verified the published capabilities match runtime behavior. Trust = we recommend it.",
-                "discovered": "Cataloged from public sources (MCP registry, awesome-mcp lists, GitHub). Not yet exercised end-to-end. Trust = read at your own risk; we surface it for discovery, not endorsement.",
+            "corpus_size": index.corpus_size(),
+            "catalog_age_hours": catalog_age_hours,
+            "ranking": "BM25 relevance gate × automated quality prior (source corroboration, GitHub stars, npm downloads, upstream quality, LLM confidence). No manual curation — see each hit's ranking_signals.",
+            "provenance_definitions": {
+                "first-party": "Endpoint or repo hosted on a swarm.tips-operated domain — an automated fact, same operator as this MCP server.",
+                "external": "Everything else in the public catalog. Presence is discovery, not endorsement.",
             },
             "browse_url": "https://swarm.tips/discover",
         });

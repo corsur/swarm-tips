@@ -13,6 +13,7 @@ pub mod deep_analysis;
 pub mod llm_classify;
 pub mod merge;
 pub mod models;
+pub mod search;
 pub mod sources;
 
 use crate::discovery::llm_classify::{LlmClassifier, MAX_SERVERS_PER_CYCLE};
@@ -44,6 +45,11 @@ pub struct DiscoveryState {
     pub db: FirestoreDb,
     pub http: reqwest::Client,
     pub cache: Mutex<Option<DiscoveryCache>>,
+    /// BM25 search index over the cached catalog. Rebuilt inside
+    /// `refresh_discovery`, invalidated whenever the cache is, and built
+    /// lazily on first search (Firestore-backed) after a cold start.
+    /// `Arc` so request handlers can search without holding the lock.
+    pub search_index: Mutex<Option<Arc<search::SearchIndex>>>,
     /// Layer 2 classifier — populated only if `xai-api-key` is loaded from
     /// GCP Secret Manager at startup. When None, `/internal/mcp/llm-classify`
     /// returns 503 and `refresh_discovery` skips Layer 2.
@@ -65,10 +71,64 @@ impl DiscoveryState {
             db,
             http,
             cache: Mutex::new(None),
+            search_index: Mutex::new(None),
             llm,
             github_token,
         }
     }
+}
+
+/// Get the current search index, building it from the cache (or Firestore
+/// on a cold start) if absent. Returns None only when both the cache and
+/// Firestore are unavailable — the caller should surface "search
+/// unavailable" rather than an empty result set.
+pub async fn get_or_build_search_index(
+    state: &Arc<DiscoveryState>,
+) -> Option<Arc<search::SearchIndex>> {
+    {
+        let idx = state.search_index.lock().await;
+        if let Some(existing) = idx.as_ref() {
+            return Some(Arc::clone(existing));
+        }
+    }
+
+    // Absent — build from the catalog cache, falling back to Firestore.
+    let (servers, refreshed_at) = {
+        let cache = state.cache.lock().await;
+        match cache.as_ref() {
+            Some(c) => (c.servers.clone(), c.last_refreshed_at),
+            None => (Vec::new(), chrono::Utc::now()),
+        }
+    };
+    let (servers, refreshed_at) = if servers.is_empty() {
+        match load_from_firestore(&state.db).await {
+            Ok(docs) if !docs.is_empty() => {
+                let now = chrono::Utc::now();
+                let mut cache = state.cache.lock().await;
+                *cache = Some(DiscoveryCache {
+                    servers: docs.clone(),
+                    last_refreshed_at: now,
+                });
+                (docs, now)
+            }
+            Ok(_) => return None,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load catalog for search index");
+                return None;
+            }
+        }
+    } else {
+        (servers, refreshed_at)
+    };
+
+    let built = Arc::new(search::SearchIndex::build(servers, refreshed_at));
+    tracing::info!(
+        corpus = built.corpus_size(),
+        "built BM25 search index over discovery catalog"
+    );
+    let mut idx = state.search_index.lock().await;
+    *idx = Some(Arc::clone(&built));
+    Some(built)
 }
 
 /// Refresh the discovery index: pull from all sources, merge + classify,
@@ -101,13 +161,19 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
     // so the in-memory copy is always fresh.
     let (written, write_errors) = persist_servers_to_firestore(&state.db, &merged).await;
 
-    // Update in-memory cache
+    // Update in-memory cache + rebuild the search index from the same
+    // snapshot so search never serves a different corpus than the cache.
     {
+        let refreshed_at = chrono::Utc::now();
+        let rebuilt = Arc::new(search::SearchIndex::build(merged.clone(), refreshed_at));
         let mut cache = state.cache.lock().await;
         *cache = Some(DiscoveryCache {
             servers: merged,
-            last_refreshed_at: chrono::Utc::now(),
+            last_refreshed_at: refreshed_at,
         });
+        drop(cache);
+        let mut idx = state.search_index.lock().await;
+        *idx = Some(rebuilt);
     }
 
     let elapsed_ms = started.elapsed().as_millis();
@@ -323,11 +389,15 @@ pub async fn run_layer2_pass(state: &Arc<DiscoveryState>) -> Result<Layer2Summar
     let considered = candidates.len();
     let counts = classify_layer2_candidates(llm, &state.db, &candidates).await;
 
-    // Invalidate the in-memory cache so the next earning-candidates query
-    // sees the new Layer 2 verdicts.
+    // Invalidate the in-memory cache (and the search index built from it)
+    // so the next earning-candidates query / search sees the new Layer 2
+    // verdicts.
     {
         let mut cache = state.cache.lock().await;
         *cache = None;
+        drop(cache);
+        let mut idx = state.search_index.lock().await;
+        *idx = None;
     }
 
     let elapsed_ms = started.elapsed().as_millis();
