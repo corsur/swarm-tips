@@ -309,6 +309,7 @@ mod tests {
     fn credit_web_contributes_only_above_the_gate() {
         // extensions_count = 0 → gated out (no contribution).
         let gated = compute_trust(&TrustInputs {
+            eigentrust: None,
             credit_web: Some(CreditWebInput {
                 position: Some(0.8),
                 extensions_count: 0,
@@ -322,6 +323,7 @@ mod tests {
 
         // extensions_count ≥ 1 → contributes; single signal renormalizes to 1.
         let active = compute_trust(&TrustInputs {
+            eigentrust: None,
             credit_web: Some(CreditWebInput {
                 position: Some(0.8),
                 extensions_count: 3,
@@ -338,6 +340,7 @@ mod tests {
     fn credit_web_renormalizes_alongside_shillbot() {
         // shillbot (0.45) + credit_web (0.20) → weights renormalize over 0.65.
         let result = compute_trust(&TrustInputs {
+            eigentrust: None,
             shillbot: Some(ShillbotInput {
                 average_score: Some(1_000_000.0),
                 score_max: 1_000_000,
@@ -370,6 +373,7 @@ mod tests {
     fn single_signal_renormalizes_weight_to_one() {
         // Only curator present.
         let result = compute_trust(&TrustInputs {
+            eigentrust: None,
             curator: Some(CuratorTier::FirstParty),
             ..Default::default()
         });
@@ -386,6 +390,7 @@ mod tests {
     fn shillbot_below_minimum_completed_is_skipped() {
         // average_score is set but total_completed = 0 → signal skipped.
         let result = compute_trust(&TrustInputs {
+            eigentrust: None,
             shillbot: Some(ShillbotInput {
                 average_score: Some(800_000.0),
                 score_max: 1_000_000,
@@ -402,6 +407,7 @@ mod tests {
     fn shillbot_combines_average_score_and_completion_rate_equally() {
         // average = 800k / 1M = 0.8; completion = 1.0; combined = 0.9
         let result = compute_trust(&TrustInputs {
+            eigentrust: None,
             shillbot: Some(ShillbotInput {
                 average_score: Some(800_000.0),
                 score_max: 1_000_000,
@@ -432,6 +438,7 @@ mod tests {
         // average = 1.0 (perfect score), completion = None →
         // combined value should be 1.0, not 0.5.
         let result = compute_trust(&TrustInputs {
+            eigentrust: None,
             shillbot: Some(ShillbotInput {
                 average_score: Some(1_000_000.0),
                 score_max: 1_000_000,
@@ -455,6 +462,7 @@ mod tests {
     fn game_below_minimum_games_is_skipped() {
         // win_rate set but total_games = 4 (below the 5-game floor) → skipped.
         let result = compute_trust(&TrustInputs {
+            eigentrust: None,
             game: Some(GameInput {
                 win_rate: Some(0.75),
                 total_games: 4,
@@ -476,6 +484,7 @@ mod tests {
         // Construct inputs where every signal contributes 1.0 → output
         // should be exactly 1.0 regardless of the weight constants.
         let result = compute_trust(&TrustInputs {
+            eigentrust: None,
             shillbot: Some(ShillbotInput {
                 average_score: Some(1_000_000.0),
                 score_max: 1_000_000,
@@ -506,6 +515,7 @@ mod tests {
         // Pre-renorm weights: 0.45 + 0.15 = 0.6. After renorm: each
         // scales by 1/0.6.
         let result = compute_trust(&TrustInputs {
+            eigentrust: None,
             shillbot: Some(ShillbotInput {
                 average_score: Some(500_000.0),
                 score_max: 1_000_000,
@@ -537,6 +547,7 @@ mod tests {
         // win_rate > 1 → clamp to 1. agent_rank > 1 → clamp to 1.
         // completion_rate > 1 → clamp to 1.
         let result = compute_trust(&TrustInputs {
+            eigentrust: None,
             shillbot: Some(ShillbotInput {
                 average_score: Some(2_000_000.0),
                 score_max: 1_000_000,
