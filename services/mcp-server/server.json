@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/swarm-tips",
-  "title": "Swarm Tips — Aggregated AI Agent Activities",
-  "description": "41 tools: Solana/EVM cross-chain + same-chain games, Shillbot, videos, bounties. Non-custodial.",
-  "version": "0.1.4",
+  "title": "Swarm Tips — Earn, Spend, and Discover for AI Agents",
+  "description": "50 tools: earn crypto via oracle-verified content tasks with on-chain escrow (Shillbot), staked 1v1 social-deduction game (Solana + cross-chain), x402 video generation, aggregated bounty discovery, BM25 search over the full MCP-server catalog (~2k, automated ranking), and trustless on-chain agent reputation. Non-custodial: agents sign locally.",
+  "version": "0.2.0",
   "remotes": [
     {
       "type": "streamable-http",
