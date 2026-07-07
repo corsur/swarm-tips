@@ -149,9 +149,40 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
     // wipe out hours of LLM work.
     let mut merged = merge_and_classify(all_sources);
 
+    // Load the existing index once: used both to preserve Layer 2/3 verdicts
+    // and to union in servers the (possibly degraded) source pulls missed.
+    let existing_by_slug: std::collections::HashMap<String, EnrichedServer> =
+        match load_from_firestore(&state.db).await {
+            Ok(docs) => docs.into_iter().map(|d| (d.slug(), d)).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not load existing index for preservation/union");
+                std::collections::HashMap::new()
+            }
+        };
+
     // Preserve Layer 2 + Layer 3 across refresh.
     let (preserved_layer2, preserved_layer3) =
-        preserve_layer_classifications(&state.db, &mut merged).await;
+        preserve_layer_classifications(&existing_by_slug, &mut merged);
+
+    // Union: sources are best-effort and the official registry paginates
+    // flakily — a partial pull must never SHRINK the catalog (observed
+    // 2026-07-07: a degraded refresh replaced 1908 docs with 966 and the
+    // live search corpus dropped with it). Servers already known but not
+    // re-seen this cycle are retained unchanged; their stale
+    // `last_seen_at` remains available for future staleness pruning.
+    let seen: std::collections::HashSet<String> = merged.iter().map(|s| s.slug()).collect();
+    let mut retained_unseen = 0usize;
+    for (slug, doc) in &existing_by_slug {
+        if !seen.contains(slug) {
+            merged.push(doc.clone());
+            retained_unseen = retained_unseen.saturating_add(1);
+        }
+    }
+    // Postcondition: union can only grow the merge.
+    debug_assert!(
+        merged.len() >= seen.len(),
+        "union must not shrink the merge"
+    );
 
     let total = merged.len();
     let earning_count = merged.iter().filter(|s| s.is_earning_candidate()).count();
@@ -182,6 +213,7 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
         earning_count,
         preserved_layer2,
         preserved_layer3,
+        retained_unseen,
         written,
         write_errors,
         elapsed_ms,
@@ -255,21 +287,12 @@ async fn pull_all_discovery_sources(
 }
 
 /// Patch newly-merged records with any pre-existing Layer 2 / Layer 3 LLM
-/// verdicts from Firestore so a fresh refresh doesn't wipe out hours of LLM
-/// work. Returns `(preserved_layer2, preserved_layer3)` counters for logging.
-/// A Firestore load failure is best-effort: degrades to "no preservation".
-async fn preserve_layer_classifications(
-    db: &FirestoreDb,
+/// verdicts (loaded once by the caller) so a fresh refresh doesn't wipe out
+/// hours of LLM work. Returns `(preserved_layer2, preserved_layer3)`.
+fn preserve_layer_classifications(
+    existing_by_slug: &std::collections::HashMap<String, EnrichedServer>,
     merged: &mut [EnrichedServer],
 ) -> (usize, usize) {
-    let existing_by_slug: std::collections::HashMap<String, EnrichedServer> =
-        match load_from_firestore(db).await {
-            Ok(docs) => docs.into_iter().map(|d| (d.slug(), d)).collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "could not load existing index for layer2/3 preservation");
-                std::collections::HashMap::new()
-            }
-        };
     let mut preserved_layer2 = 0usize;
     let mut preserved_layer3 = 0usize;
     for srv in merged.iter_mut() {
