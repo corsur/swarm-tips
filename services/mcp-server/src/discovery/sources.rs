@@ -65,7 +65,12 @@ async fn pull_official_registry_from(
             break;
         }
 
-        let mut url = format!("{base}?limit=100");
+        // `version=latest` collapses the per-version expansion (one entry
+        // per server instead of one per published version) — several-fold
+        // fewer pages AND it avoids the registry's slow query path: the
+        // unfiltered listing was observed timing out >30s per page while
+        // the filtered one answers in ~1s (2026-07-07).
+        let mut url = format!("{base}?limit=100&version=latest");
         if let Some(c) = &cursor {
             url.push_str("&cursor=");
             url.push_str(&urlencoding::encode(c));
@@ -90,6 +95,9 @@ async fn pull_official_registry_from(
                 let resp = client
                     .get(&url)
                     .header(reqwest::header::USER_AGENT, USER_AGENT)
+                    // Per-request override of the shared client's 30s
+                    // timeout: registry pages spike past it under load.
+                    .timeout(std::time::Duration::from_secs(60))
                     .send()
                     .await
                     .with_context(|| format!("GET {url}"))?;
