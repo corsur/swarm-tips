@@ -28,6 +28,11 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            # EigenTrust pre-trust anchor set for /internal/reputation/rebuild
+            # (comma-separated wallets; trust originates only here). Not a
+            # secret — a public wallet address.
+            - name: REPUTATION_ANCHORS
+              value: "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY"
           envFrom:
             - configMapRef:
                 name: swarm-tips-config

@@ -405,17 +405,35 @@ pub async fn backfill(
     let mut write_errors = 0usize;
 
     for (sig, block_time) in &sigs {
-        let tx = rpc_call(
-            http,
-            rpc_url,
-            "getTransaction",
-            serde_json::json!([sig, {"encoding": "json", "maxSupportedTransactionVersion": 0}]),
-        )
-        .await;
+        // Pace + retry: 656 back-to-back getTransaction calls tripped the
+        // RPC's rate limiter (-32429) and skipped txs silently dropped
+        // their join events (observed 2026-07-07). ~50ms pacing keeps us
+        // under the limit; rate-limited calls retry with linear backoff.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let mut tx: anyhow::Result<serde_json::Value> = Err(anyhow::anyhow!("unattempted"));
+        for attempt in 1..=3u32 {
+            tx = rpc_call(
+                http,
+                rpc_url,
+                "getTransaction",
+                serde_json::json!([sig, {"encoding": "json", "maxSupportedTransactionVersion": 0}]),
+            )
+            .await;
+            match &tx {
+                Ok(_) => break,
+                Err(e) if e.to_string().contains("rate limited") && attempt < 3 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        500_u64.saturating_mul(u64::from(attempt)),
+                    ))
+                    .await;
+                }
+                Err(_) => break,
+            }
+        }
         let tx = match tx {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!(sig, error = %e, "getTransaction failed — skipping");
+                tracing::warn!(sig, error = %e, "getTransaction failed after retries — skipping");
                 continue;
             }
         };
