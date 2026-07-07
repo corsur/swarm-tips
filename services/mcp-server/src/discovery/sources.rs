@@ -62,21 +62,44 @@ pub async fn pull_official_registry(client: &reqwest::Client) -> Result<Vec<RawS
             url.push_str(&urlencoding::encode(c));
         }
 
-        let resp = client
-            .get(&url)
-            .header(reqwest::header::USER_AGENT, USER_AGENT)
-            .send()
-            .await
-            .with_context(|| format!("GET {url}"))?;
-
-        if !resp.status().is_success() {
-            anyhow::bail!("official MCP registry returned {} for {url}", resp.status());
+        // A mid-pagination failure must NOT discard the pages already
+        // fetched: with all-or-nothing semantics one slow/flaky page drops
+        // the ENTIRE official source for that refresh, and every server
+        // that exists only in the official registry silently vanishes from
+        // the catalog (observed 2026-07-07: registry latency spikes left
+        // the catalog awesome-lists-only). Keep partial progress and log
+        // loudly; propagate an error only when the FIRST page fails, so a
+        // fully-down registry still surfaces as a source failure.
+        let page_result: Result<serde_json::Value> = async {
+            let resp = client
+                .get(&url)
+                .header(reqwest::header::USER_AGENT, USER_AGENT)
+                .send()
+                .await
+                .with_context(|| format!("GET {url}"))?;
+            if !resp.status().is_success() {
+                anyhow::bail!("official MCP registry returned {} for {url}", resp.status());
+            }
+            resp.json()
+                .await
+                .context("parse official registry response")
         }
+        .await;
 
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .context("parse official registry response")?;
+        let body = match page_result {
+            Ok(body) => body,
+            Err(e) if all.is_empty() => return Err(e),
+            Err(e) => {
+                tracing::warn!(
+                    source = "official_mcp",
+                    pages_fetched,
+                    partial_count = all.len(),
+                    error = %e,
+                    "registry page fetch failed mid-pagination — keeping partial results"
+                );
+                break;
+            }
+        };
 
         let servers = body
             .get("servers")
