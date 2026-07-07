@@ -19,9 +19,12 @@ use anyhow::{Context, Result};
 const OFFICIAL_REGISTRY_BASE: &str = "https://registry.modelcontextprotocol.io/v0/servers";
 
 /// Maximum servers to pull from the official registry per cycle. The registry
-/// has ~2,000 servers; we cap at 5,000 to give headroom while still bounding
-/// the work in case of an upstream growth spike.
-const MAX_SERVERS: usize = 5_000;
+/// passed 5,000 latest-version servers in July 2026 (the old 5k cap silently
+/// truncated the walk at page 50 and alphabetically-late entries — including
+/// our own io.github.corsur/* — never entered the catalog). 10k matches the
+/// MAX_PAGES bound (100 pages x 100/page); the cap still warn!s loudly when
+/// hit so the next growth spike is visible instead of silent.
+const MAX_SERVERS: usize = 10_000;
 
 /// User-Agent so the registry maintainers can identify us if we ever cause
 /// a problem. Per the discovery plan: "we don't want to be the asshole that
