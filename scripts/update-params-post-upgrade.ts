@@ -104,7 +104,8 @@ async function main() {
       before.pausedPlatforms,
       // Canonical post-upgrade defaults from constants.rs.
       new BN(3600), // rate_limit_window_seconds: 1 hour
-      10 // max_tasks_per_rate_window
+      10, // max_tasks_per_rate_window
+      new BN(604_800) // dispute_resolution_window_seconds: 7 days
     )
     .accountsPartial({
       globalState: globalPda,

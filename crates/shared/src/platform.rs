@@ -26,6 +26,12 @@ pub enum PlatformType {
     Podcast = 7,
     Blog = 8,
     Website = 9,
+    /// Deterministic Lean 4 proof check (verification engine vertical,
+    /// 2026-07-07). Tasks carry `verification_kind = 1` on-chain and are
+    /// verified by the allow-listed attester via `verify_task_attested`,
+    /// not the Switchboard oracle. Policy (pinned toolchain, axiom
+    /// allow-list, resource caps) = `policies/lean-attester-policy-v1.json`.
+    LeanProof = 10,
 }
 
 /// How the verifier scores submitted work for a platform.
@@ -60,6 +66,7 @@ impl PlatformType {
             7 => Some(Self::Podcast),
             8 => Some(Self::Blog),
             9 => Some(Self::Website),
+            10 => Some(Self::LeanProof),
             _ => None,
         }
     }
@@ -84,6 +91,7 @@ impl PlatformType {
             Self::Podcast => "Podcast",
             Self::Blog => "Blog",
             Self::Website => "Website Footer Backlink",
+            Self::LeanProof => "Lean Proof",
         }
     }
 
@@ -100,7 +108,7 @@ impl PlatformType {
             // expired/unavailable in the current production environment. Code
             // paths stay live; campaigns just don't get created.
             Self::YouTube | Self::Twitter => true,
-            Self::Referral | Self::GamePlay | Self::Website => false,
+            Self::Referral | Self::GamePlay | Self::Website | Self::LeanProof => false,
         }
     }
 
@@ -111,8 +119,10 @@ impl PlatformType {
     pub fn default_verification_delay_secs(self) -> u64 {
         match self {
             // Binary platforms: synchronous on-chain or Firestore lookups,
-            // 5 minutes lets the cluster propagate the resolving tx.
-            Self::Referral | Self::GamePlay => 5 * 60,
+            // 5 minutes lets the cluster propagate the resolving tx. The
+            // Lean attester is a deterministic local check with the same
+            // propagation needs.
+            Self::Referral | Self::GamePlay | Self::LeanProof => 5 * 60,
             // X has no fraud-detection delay built into the API; 2 days
             // catches early engagement spikes from organic discovery before
             // we measure.
@@ -134,7 +144,15 @@ impl PlatformType {
     /// score deterministically off a single source, so the challenge window
     /// is short — there's no oracle disagreement to resolve. Metrics-mode
     /// platforms get the full 24 h.
+    ///
+    /// LeanProof is Binary but keeps a 1-hour window: its payment releases
+    /// on a SINGLE attester signature (panel risk: single-attester trust),
+    /// so the window must be long enough for a human to react to a
+    /// compromised-key attestation — 15 s is not.
     pub fn default_challenge_window_secs(self) -> u64 {
+        if self == Self::LeanProof {
+            return 60 * 60;
+        }
         match self.scoring_style() {
             ScoringStyle::Binary => 15,
             ScoringStyle::EngagementMetrics => 24 * 60 * 60,
@@ -146,7 +164,9 @@ impl PlatformType {
     /// the platform client's check is the authoritative proof (Binary).
     pub fn scoring_style(self) -> ScoringStyle {
         match self {
-            Self::Referral | Self::GamePlay | Self::Website => ScoringStyle::Binary,
+            Self::Referral | Self::GamePlay | Self::Website | Self::LeanProof => {
+                ScoringStyle::Binary
+            }
             Self::YouTube | Self::Twitter => ScoringStyle::EngagementMetrics,
             Self::Farcaster | Self::TikTok | Self::Reddit | Self::Podcast | Self::Blog => {
                 ScoringStyle::EngagementMetrics
@@ -163,7 +183,9 @@ impl PlatformType {
     pub fn has_implicit_ai_disclosure(self) -> bool {
         match self {
             Self::YouTube => false,
-            Self::Twitter | Self::Referral | Self::GamePlay | Self::Website => true,
+            Self::Twitter | Self::Referral | Self::GamePlay | Self::Website | Self::LeanProof => {
+                true
+            }
             // Conservative default for not-yet-shipped platforms — if you
             // light one up, decide explicitly.
             Self::Farcaster | Self::TikTok | Self::Reddit | Self::Podcast | Self::Blog => false,
@@ -202,6 +224,7 @@ impl PlatformType {
             Self::Reddit => "Reddit post ID",
             Self::Podcast => "Podcast episode URL",
             Self::Blog => "Blog post URL",
+            Self::LeanProof => "URL of the Lean proof artifact (Proof.lean, max 5 MB)",
         }
     }
 }
@@ -304,6 +327,7 @@ mod tests {
         assert_eq!(PlatformType::from_u8(7), Some(PlatformType::Podcast));
         assert_eq!(PlatformType::from_u8(8), Some(PlatformType::Blog));
         assert_eq!(PlatformType::from_u8(9), Some(PlatformType::Website));
+        assert_eq!(PlatformType::from_u8(10), Some(PlatformType::LeanProof));
     }
 
     #[test]
@@ -313,6 +337,7 @@ mod tests {
         assert_eq!(PlatformType::Referral.discriminant(), 4);
         assert_eq!(PlatformType::GamePlay.discriminant(), 5);
         assert_eq!(PlatformType::Website.discriminant(), 9);
+        assert_eq!(PlatformType::LeanProof.discriminant(), 10);
     }
 
     #[test]
@@ -336,6 +361,7 @@ mod tests {
             PlatformType::Referral,
             PlatformType::GamePlay,
             PlatformType::Website,
+            PlatformType::LeanProof,
         ] {
             assert!(!p.is_disabled(), "{p:?} should be enabled");
         }
@@ -349,6 +375,10 @@ mod tests {
         assert_eq!(PlatformType::Referral.scoring_style(), ScoringStyle::Binary);
         assert_eq!(PlatformType::GamePlay.scoring_style(), ScoringStyle::Binary);
         assert_eq!(PlatformType::Website.scoring_style(), ScoringStyle::Binary);
+        assert_eq!(
+            PlatformType::LeanProof.scoring_style(),
+            ScoringStyle::Binary
+        );
         assert_eq!(
             PlatformType::YouTube.scoring_style(),
             ScoringStyle::EngagementMetrics
@@ -419,6 +449,13 @@ mod tests {
         for p in [PlatformType::YouTube, PlatformType::Twitter] {
             assert_eq!(p.default_challenge_window_secs(), 86_400, "{p:?}");
         }
+        // LeanProof is Binary but keeps a 1-hour window: payment releases on
+        // a SINGLE attester signature, so a human must be able to react to a
+        // compromised-key attestation before finalize.
+        assert_eq!(
+            PlatformType::LeanProof.default_challenge_window_secs(),
+            3_600
+        );
     }
 
     #[test]
@@ -432,6 +469,10 @@ mod tests {
         );
         assert_eq!(
             PlatformType::GamePlay.default_verification_delay_secs(),
+            300
+        );
+        assert_eq!(
+            PlatformType::LeanProof.default_verification_delay_secs(),
             300
         );
         assert_eq!(
@@ -450,7 +491,7 @@ mod tests {
 
     #[test]
     fn platform_type_from_u8_invalid() {
-        assert_eq!(PlatformType::from_u8(10), None);
+        assert_eq!(PlatformType::from_u8(11), None);
         assert_eq!(PlatformType::from_u8(255), None);
     }
 
@@ -467,6 +508,7 @@ mod tests {
             PlatformType::Podcast,
             PlatformType::Blog,
             PlatformType::Website,
+            PlatformType::LeanProof,
         ] {
             let bytes = borsh::to_vec(&variant).expect("serialize");
             let deserialized = PlatformType::try_from_slice(&bytes).expect("deserialize");

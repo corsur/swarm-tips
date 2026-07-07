@@ -153,4 +153,28 @@ pub enum ShillbotError {
 
     #[msg("Payout route target is invalid (must not be zero, the task PDA, or the client)")]
     InvalidPayoutTarget,
+
+    #[msg("Unknown verification kind (append-only: 0 = OracleMetrics, 1 = DeterministicAttested)")]
+    InvalidVerificationKind,
+
+    #[msg("Task's verification kind does not admit this verify instruction")]
+    VerificationKindMismatch,
+
+    #[msg("Attested score must be exactly 0 or MAX_SCORE (binary verification)")]
+    AttestedScoreNotBinary,
+
+    #[msg("quality_threshold == MAX_SCORE would pay 0 for a passing binary score — fix params")]
+    QualityThresholdTooHighForBinary,
+
+    #[msg("Attester must be arms-length from the task agent")]
+    ArmsLengthViolation,
+
+    #[msg("Deterministic tasks reject self-claims (agent must not be the client)")]
+    SelfClaimForbidden,
+
+    #[msg("Dispute default-resolution is disabled (dispute_resolution_window_seconds == 0)")]
+    DisputeWindowDisabled,
+
+    #[msg("Dispute resolution window still open — authority resolve_challenge only")]
+    DisputeWindowStillOpen,
 }

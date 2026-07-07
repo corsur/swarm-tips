@@ -12,11 +12,14 @@ use anchor_lang::prelude::*;
 /// Claimed --(emergency_return)--> [closed]
 /// Submitted --(approve_task: client signs)--> Approved
 /// Submitted --(expire_task: T+14d timeout)--> [closed]
-/// Approved --(verify_task: oracle authority)--> Verified
+/// Approved/Submitted --(verify_task: Switchboard, kind=0)--> Verified
+/// Approved/Submitted --(verify_task_attested: attester signer, kind=1)--> Verified
 /// Approved --(expire_task: T+14d timeout)--> [closed]
 /// Verified --(finalize_task)--> Finalized --> [closed]
 /// Verified --(challenge_task)--> Disputed
-/// Disputed --(resolve_challenge)--> Resolved --> [closed]
+/// Disputed --(resolve_challenge: authority)--> Resolved --> [closed]
+/// Disputed --(resolve_challenge_default: permissionless past
+///             dispute-resolution deadline)--> Resolved --> [closed]
 /// ```
 ///
 /// Note: `Approved = 7` is appended to preserve `#[repr(u8)]` discriminants
@@ -100,10 +103,19 @@ pub struct Task {
     /// Submitted tasks should ensure they're approved or expired before
     /// the program upgrade.**
     pub requires_approval: u8,
+    /// How this task's verification is adjudicated (2026-07-07, carved
+    /// from `_reserved` following the D1 precedent — bytewise-compatible
+    /// because the byte was zero). Wire-format twin:
+    /// `chain-core::verify_schema::VerificationKind` (append-only).
+    /// `0 = OracleMetrics` — legacy Switchboard path, `verify_task` only.
+    /// `1 = DeterministicAttested` — allow-listed attester path,
+    /// `verify_task_attested` only; score must be exactly 0 or MAX_SCORE.
+    /// The two verify entries are mutually exclusive on this byte.
+    pub verification_kind: u8,
     /// Reserved space for future fields without reallocation.
-    /// Reduced from 20 → 19 bytes by D1 (carved 1 byte for
-    /// `requires_approval`).
-    pub _reserved: [u8; 19],
+    /// Reduced from 20 → 19 by D1 (`requires_approval`) → 18 by the
+    /// 2026-07-07 `verification_kind` carve.
+    pub _reserved: [u8; 18],
     pub bump: u8,
     /// Payment-routing override (C2 — extension-credit). `Pubkey::default()`
     /// (zero) = pay the agent (`task.agent`); otherwise `finalize_task` pays
@@ -141,7 +153,8 @@ impl Task {
         + 4    // verification_timeout_override
         + 32   // verification_hash
         + 1    // requires_approval         (D1 — was reserved)
-        + 19   // _reserved (was 20, carved 1 by D1)
+        + 1    // verification_kind         (2026-07-07 — was reserved)
+        + 18   // _reserved (20 → 19 by D1 → 18 by verification_kind)
         + 1    // bump
         + 32; // payout_to (C2 — appended after bump; realloc 315 → 347)
               // Total = 347. Existing accounts are bytewise-identical for
@@ -178,6 +191,67 @@ mod tests {
             all.len(),
             "TaskState discriminants must all be distinct"
         );
+    }
+
+    /// Carve regression guard for `verification_kind` (2026-07-07).
+    ///
+    /// Builds a byte sequence in the PRE-CARVE layout (19-byte `_reserved`
+    /// after `requires_approval`, all zero) and deserializes it as the NEW
+    /// struct: every pre-existing field must keep its value, and
+    /// `verification_kind` must read as 0 (= OracleMetrics, the legacy
+    /// behavior) from the zeroed reserved byte.
+    #[test]
+    fn pre_carve_layout_deserializes_with_kind_zero() {
+        use anchor_lang::Discriminator;
+
+        let client = Pubkey::new_unique();
+        let agent = Pubkey::new_unique();
+        let payout_to = Pubkey::new_unique();
+
+        let mut bytes = Vec::with_capacity(Task::SPACE);
+        bytes.extend_from_slice(Task::DISCRIMINATOR);
+        bytes.extend_from_slice(&42u64.to_le_bytes()); // task_id
+        bytes.extend_from_slice(client.as_ref());
+        bytes.extend_from_slice(agent.as_ref());
+        bytes.push(TaskState::Submitted as u8); // state
+        bytes.push(9u8); // platform = Website
+        bytes.extend_from_slice(&1_000_000u64.to_le_bytes()); // escrow_lamports
+        bytes.extend_from_slice(&[0xAB; 32]); // content_hash
+        bytes.extend_from_slice(&[0xCD; 32]); // content_id_hash
+        bytes.extend_from_slice(&[0xEF; 16]); // task_nonce
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // composite_score
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // payment_amount
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // fee_amount
+        bytes.extend_from_slice(&2_000_000_000i64.to_le_bytes()); // deadline
+        bytes.extend_from_slice(&3_600i64.to_le_bytes()); // submit_margin
+        bytes.extend_from_slice(&14_400i64.to_le_bytes()); // claim_buffer
+        bytes.extend_from_slice(&1_900_000_000i64.to_le_bytes()); // created_at
+        bytes.extend_from_slice(&1_900_000_100i64.to_le_bytes()); // submitted_at
+        bytes.extend_from_slice(&0i64.to_le_bytes()); // verified_at
+        bytes.extend_from_slice(&0i64.to_le_bytes()); // challenge_deadline
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // attestation_delay_override
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // challenge_window_override
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // verification_timeout_override
+        bytes.extend_from_slice(&[0u8; 32]); // verification_hash
+        bytes.push(1u8); // requires_approval
+        bytes.extend_from_slice(&[0u8; 19]); // OLD 19-byte _reserved (zero)
+        bytes.push(254u8); // bump
+        bytes.extend_from_slice(payout_to.as_ref());
+        assert_eq!(bytes.len(), Task::SPACE);
+
+        let parsed = Task::try_deserialize(&mut &bytes[..])
+            .expect("pre-carve layout must deserialize cleanly under the new layout");
+        assert_eq!(parsed.task_id, 42);
+        assert_eq!(parsed.client, client);
+        assert_eq!(parsed.agent, agent);
+        assert_eq!(parsed.state, TaskState::Submitted);
+        assert_eq!(parsed.escrow_lamports, 1_000_000);
+        assert_eq!(parsed.requires_approval, 1);
+        // The carved byte reads as 0 = OracleMetrics — legacy behavior.
+        assert_eq!(parsed.verification_kind, 0);
+        assert_eq!(parsed._reserved, [0u8; 18]);
+        assert_eq!(parsed.bump, 254);
+        assert_eq!(parsed.payout_to, payout_to);
     }
 
     #[test]

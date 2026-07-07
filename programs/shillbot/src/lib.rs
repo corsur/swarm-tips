@@ -30,6 +30,11 @@ pub const MAX_CHALLENGE_BOND_MULTIPLIER: u8 = 10; // 10x full task price
 pub const DEFAULT_CHALLENGE_BOND_MULTIPLIER: u8 = 2;
 pub const DEFAULT_BOND_SLASH_TREASURY_BPS: u16 = 5_000; // 50%
 pub const MAX_CONTENT_ID_LENGTH: usize = 256;
+// Dispute-resolution liveness window (2026-07-07): bounds for the
+// permissionless resolve_challenge_default arming delay. 0 disables.
+pub const MIN_DISPUTE_RESOLUTION_WINDOW_SECONDS: i64 = 3_600; // 1 hour
+pub const MAX_DISPUTE_RESOLUTION_WINDOW_SECONDS: i64 = 2_592_000; // 30 days
+pub const DEFAULT_DISPUTE_RESOLUTION_WINDOW_SECONDS: i64 = 604_800; // 7 days
 
 #[program]
 pub mod shillbot {
@@ -67,6 +72,7 @@ pub mod shillbot {
         paused_platforms: u16,
         rate_limit_window_seconds: i64,
         max_tasks_per_rate_window: u32,
+        dispute_resolution_window_seconds: i64,
     ) -> Result<()> {
         instructions::update_params::update_params(
             ctx,
@@ -83,6 +89,7 @@ pub mod shillbot {
             paused_platforms,
             rate_limit_window_seconds,
             max_tasks_per_rate_window,
+            dispute_resolution_window_seconds,
         )
     }
 
@@ -99,6 +106,7 @@ pub mod shillbot {
         challenge_window_override: u32,
         verification_timeout_override: u32,
         requires_approval: bool,
+        verification_kind: u8,
     ) -> Result<()> {
         instructions::create_task::create_task(
             ctx,
@@ -112,6 +120,7 @@ pub mod shillbot {
             challenge_window_override,
             verification_timeout_override,
             requires_approval,
+            verification_kind,
         )
     }
 
@@ -155,6 +164,17 @@ pub mod shillbot {
         instructions::verify_task::verify_task(ctx, composite_score, verification_hash)
     }
 
+    /// Attester-signed verification for `verification_kind = 1` tasks —
+    /// the `oracle_authority` signs the transaction; `verification_hash`
+    /// is the chain-core `AttestationCert` digest.
+    pub fn verify_task_attested(
+        ctx: Context<VerifyTaskAttested>,
+        score: u64,
+        verification_hash: [u8; 32],
+    ) -> Result<()> {
+        instructions::verify_task_attested::verify_task_attested(ctx, score, verification_hash)
+    }
+
     pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
         instructions::finalize_task::finalize_task(ctx)
     }
@@ -165,6 +185,13 @@ pub mod shillbot {
 
     pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -> Result<()> {
         instructions::resolve_challenge::resolve_challenge(ctx, challenger_won)
+    }
+
+    /// Permissionless default resolution of a Disputed task once the
+    /// dispute-resolution window elapses without authority adjudication:
+    /// pinned payment executes, bond returns un-slashed.
+    pub fn resolve_challenge_default(ctx: Context<ResolveChallengeDefault>) -> Result<()> {
+        instructions::resolve_challenge_default::resolve_challenge_default(ctx)
     }
 
     pub fn expire_task(ctx: Context<ExpireTask>) -> Result<()> {

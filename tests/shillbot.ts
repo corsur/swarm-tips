@@ -239,7 +239,8 @@ describe("shillbot", () => {
           0, // attestation_delay_override: use global default
           0, // challenge_window_override: use global default
           0, // verification_timeout_override: use global default
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -312,7 +313,8 @@ describe("shillbot", () => {
             0,
             0,
             0, // timing overrides: use global defaults
-            true // D1 requires_approval — pre-D1 mandatory-approval behavior
+            true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+            0 // verification_kind: OracleMetrics (kind 0)
           )
           .accountsPartial({
             globalState: globalPda,
@@ -349,7 +351,8 @@ describe("shillbot", () => {
             0,
             0,
             0, // timing overrides: use global defaults
-            true // D1 requires_approval — pre-D1 mandatory-approval behavior
+            true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+            0 // verification_kind: OracleMetrics (kind 0)
           )
           .accountsPartial({
             globalState: globalPda,
@@ -395,7 +398,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -491,7 +495,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -571,7 +576,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -661,7 +667,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -833,7 +840,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -896,7 +904,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -960,7 +969,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1039,7 +1049,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1094,7 +1105,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1195,7 +1207,8 @@ describe("shillbot", () => {
             0,
             0,
             0, // timing overrides: use global defaults
-            true // D1 requires_approval — pre-D1 mandatory-approval behavior
+            true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+            0 // verification_kind: OracleMetrics (kind 0)
           )
           .accountsPartial({
             globalState: globalPda,
@@ -1252,7 +1265,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1309,7 +1323,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1618,7 +1633,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1679,7 +1695,8 @@ describe("shillbot", () => {
             0,
             0,
             0, // timing overrides: use global defaults
-            true // D1 requires_approval — pre-D1 mandatory-approval behavior
+            true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+            0 // verification_kind: OracleMetrics (kind 0)
           )
           .accountsPartial({
             globalState: globalPda,
@@ -1772,7 +1789,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1864,7 +1882,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1916,7 +1935,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1995,7 +2015,8 @@ describe("shillbot", () => {
           false,
           0,
           new BN(3600),
-          10
+          10,
+          new BN(604_800) // dispute_resolution_window_seconds (7d)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -2022,7 +2043,8 @@ describe("shillbot", () => {
           false,
           0,
           new BN(3600),
-          10
+          10,
+          new BN(604_800) // dispute_resolution_window_seconds (7d)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -2057,7 +2079,8 @@ describe("shillbot", () => {
             false,
             0,
             new BN(3600),
-            10
+            10,
+            new BN(604_800) // dispute_resolution_window_seconds (7d)
           )
           .accountsPartial({
             globalState: globalPda,
@@ -2087,7 +2110,8 @@ describe("shillbot", () => {
             false,
             0,
             new BN(3600),
-            10
+            10,
+            new BN(604_800) // dispute_resolution_window_seconds (7d)
           ) // 50 bps < 100 bps minimum
           .accountsPartial({
             globalState: globalPda,
@@ -2116,7 +2140,8 @@ describe("shillbot", () => {
             false,
             0,
             new BN(3600),
-            10
+            10,
+            new BN(604_800) // dispute_resolution_window_seconds (7d)
           ) // 3000 bps > 2500 bps maximum
           .accountsPartial({
             globalState: globalPda,
@@ -2145,7 +2170,8 @@ describe("shillbot", () => {
             false,
             0,
             new BN(3600),
-            10
+            10,
+            new BN(604_800) // dispute_resolution_window_seconds (7d)
           )
           .accountsPartial({
             globalState: globalPda,
@@ -2477,7 +2503,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          true
+          true,
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -2570,7 +2597,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          true
+          true,
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -2660,7 +2688,8 @@ describe("shillbot", () => {
           0,
           0,
           0,
-          true
+          true,
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -2734,7 +2763,8 @@ describe("shillbot", () => {
           0,
           0,
           0, // timing overrides: use global defaults
-          true // D1 requires_approval — pre-D1 mandatory-approval behavior
+          true, // D1 requires_approval — pre-D1 mandatory-approval behavior
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,

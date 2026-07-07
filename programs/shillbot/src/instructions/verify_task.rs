@@ -75,6 +75,12 @@ fn validate_verify_inputs(
         task.state == required_state,
         ShillbotError::InvalidTaskState
     );
+    // Mutual exclusion with `verify_task_attested`: the Switchboard path
+    // only admits kind 0 (OracleMetrics) tasks.
+    require!(
+        task.verification_kind == 0,
+        ShillbotError::VerificationKindMismatch
+    );
     require!(
         composite_score <= shared::MAX_SCORE,
         ShillbotError::ScoreOutOfBounds
@@ -88,7 +94,9 @@ fn validate_verify_inputs(
 
 /// Pure effect phase — write verification fields and the Verified
 /// transition. Resolves the per-task `challenge_window` override.
-fn commit_verify_state(
+/// Shared with `verify_task_attested` so both verify entries pin
+/// payment/fee and arm the challenge window identically.
+pub(crate) fn commit_verify_state(
     task: &mut Task,
     global: &GlobalState,
     composite_score: u64,

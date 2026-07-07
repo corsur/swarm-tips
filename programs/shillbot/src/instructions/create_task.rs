@@ -23,6 +23,12 @@ pub fn create_task(
     // gate (matches v4 #11 behavior). Per-task opt-in; campaign-
     // level UX is in the orchestrator.
     requires_approval: bool,
+    // verification_kind (2026-07-07): 0 = OracleMetrics (Switchboard
+    // verify_task), 1 = DeterministicAttested (attester-signed
+    // verify_task_attested). Kind 1 ↔ the LeanProof platform,
+    // bidirectionally enforced below. Wire twin:
+    // chain-core::verify_schema::VerificationKind (append-only).
+    verification_kind: u8,
 ) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let client_key = ctx.accounts.client.key();
@@ -38,6 +44,7 @@ pub fn create_task(
         attestation_delay_override,
         challenge_window_override,
         verification_timeout_override,
+        verification_kind,
         now,
     )?;
     // Effects: rate limit + global counter + derive nonce + init Task PDA.
@@ -73,6 +80,7 @@ pub fn create_task(
         challenge_window_override,
         verification_timeout_override,
         requires_approval,
+        verification_kind,
         now,
     );
     // Interactions: transfer escrow from client to task PDA.
@@ -115,6 +123,7 @@ fn validate_create_task_inputs(
     attestation_delay_override: u32,
     challenge_window_override: u32,
     verification_timeout_override: u32,
+    verification_kind: u8,
     now: i64,
 ) -> Result<()> {
     require!(!global.paused, ShillbotError::ProtocolPaused);
@@ -122,6 +131,20 @@ fn validate_create_task_inputs(
     require!(
         shared::PlatformType::from_u8(platform).is_some(),
         ShillbotError::InvalidPlatform
+    );
+
+    // verification_kind is append-only: 0 | 1 today. Kind 1
+    // (DeterministicAttested) ↔ the LeanProof platform, both directions —
+    // a deterministic task on an oracle platform (or vice versa) would
+    // dead-end at verify time, so reject at the boundary.
+    require!(
+        verification_kind <= 1,
+        ShillbotError::InvalidVerificationKind
+    );
+    let is_lean = platform == shared::PlatformType::LeanProof.discriminant();
+    require!(
+        (verification_kind == 1) == is_lean,
+        ShillbotError::VerificationKindMismatch
     );
 
     let platform_bit = 1u16
@@ -251,6 +274,7 @@ fn init_task_account(
     challenge_window_override: u32,
     verification_timeout_override: u32,
     requires_approval: bool,
+    verification_kind: u8,
     now: i64,
 ) {
     task.task_id = task_id;
@@ -277,7 +301,8 @@ fn init_task_account(
     task.verification_timeout_override = verification_timeout_override;
     task.verification_hash = [0u8; 32];
     task.requires_approval = u8::from(requires_approval);
-    task._reserved = [0u8; 19];
+    task.verification_kind = verification_kind;
+    task._reserved = [0u8; 18];
     task.bump = bump;
 }
 

@@ -30,6 +30,10 @@ pub fn update_params(
     // vestigial-zero for binary compat with deployed 227-byte accounts.
     rate_limit_window_seconds: i64,
     max_tasks_per_rate_window: u32,
+    // Dispute-resolution liveness window (2026-07-07). 0 = disabled
+    // (legacy: authority-only resolution); nonzero must fall in
+    // [MIN, MAX]_DISPUTE_RESOLUTION_WINDOW_SECONDS.
+    dispute_resolution_window_seconds: i64,
 ) -> Result<()> {
     let global = &ctx.accounts.global_state;
     // Checks: caller is authority
@@ -50,6 +54,7 @@ pub fn update_params(
         bond_slash_treasury_bps,
         rate_limit_window_seconds,
         max_tasks_per_rate_window,
+        dispute_resolution_window_seconds,
     )?;
     // Effects: commit the new parameter set.
     apply_update(
@@ -67,6 +72,7 @@ pub fn update_params(
         paused_platforms,
         rate_limit_window_seconds,
         max_tasks_per_rate_window,
+        dispute_resolution_window_seconds,
     );
     emit!(ParamsUpdated {
         protocol_fee_bps,
@@ -92,6 +98,7 @@ fn apply_update(
     paused_platforms: u16,
     rate_limit_window_seconds: i64,
     max_tasks_per_rate_window: u32,
+    dispute_resolution_window_seconds: i64,
 ) {
     global.protocol_fee_bps = protocol_fee_bps;
     global.quality_threshold = quality_threshold;
@@ -109,6 +116,7 @@ fn apply_update(
     // instruction reads it after the 2026-05-07 removal.
     global.rate_limit_window_seconds = rate_limit_window_seconds;
     global.max_tasks_per_rate_window = max_tasks_per_rate_window;
+    global.dispute_resolution_window_seconds = dispute_resolution_window_seconds;
 }
 
 /// Validate every per-field bound on the parameter set passed to
@@ -126,6 +134,7 @@ fn validate_update(
     bond_slash_treasury_bps: u16,
     rate_limit_window_seconds: i64,
     max_tasks_per_rate_window: u32,
+    dispute_resolution_window_seconds: i64,
 ) -> Result<()> {
     // Fee within bounds [100, 2500] bps
     require!(
@@ -178,6 +187,15 @@ fn validate_update(
             .contains(&max_tasks_per_rate_window),
         ShillbotError::RateLimitExceeded
     );
+    // Dispute-resolution window: 0 = disabled, else within [1h, 30d].
+    if dispute_resolution_window_seconds != 0 {
+        require!(
+            (crate::MIN_DISPUTE_RESOLUTION_WINDOW_SECONDS
+                ..=crate::MAX_DISPUTE_RESOLUTION_WINDOW_SECONDS)
+                .contains(&dispute_resolution_window_seconds),
+            ShillbotError::InvalidParameter
+        );
+    }
     Ok(())
 }
 

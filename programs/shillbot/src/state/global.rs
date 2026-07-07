@@ -74,11 +74,20 @@ pub struct GlobalState {
     /// Per-client task-creation rate-limit count within the window
     /// (D3). Same migration story.
     pub max_tasks_per_rate_window: u32,
+    /// Dispute-resolution liveness window (2026-07-07, carved from
+    /// `_reserved` — bytewise-compatible because the bytes were zero).
+    /// Seconds after `Challenge.created_at` at which the permissionless
+    /// `resolve_challenge_default` arms on a Disputed task, executing the
+    /// pinned payment and returning the bond un-slashed. `0` = disabled
+    /// (legacy behavior: only the authority's `resolve_challenge` can
+    /// unlock a dispute — the exact liveness hole this field closes).
+    /// Existing deployments read 0 until `update_params` sets it;
+    /// `initialize` defaults new deployments to 7 days.
+    pub dispute_resolution_window_seconds: i64,
     /// Reserved space for future fields without reallocation.
-    /// Reduced from 32 → 19 bytes by D2/D3 (carved 8 + 8 + 4 = 20
-    /// bytes; net loss is the 1 byte alignment between the new
-    /// fields and bump, conservatively rounded).
-    pub _reserved: [u8; 12],
+    /// 32 → 12 by D2/D3 → 4 by the 2026-07-07
+    /// `dispute_resolution_window_seconds` carve.
+    pub _reserved: [u8; 4],
     pub bump: u8,
 }
 
@@ -103,7 +112,8 @@ impl GlobalState {
         + 8    // min_escrow_lamports         (D2 — was const)
         + 8    // rate_limit_window_seconds   (D3 — was const)
         + 4    // max_tasks_per_rate_window   (D3 — was const)
-        + 12   // _reserved (was 32, carved 20 by D2+D3)
+        + 8    // dispute_resolution_window_seconds (2026-07-07 — was reserved)
+        + 4    // _reserved (32 → 12 by D2+D3 → 4 by dispute-window carve)
         + 1; // bump
              // Total = 227 (unchanged); bytewise-compatible with v4 layout
              // because the carved bytes were zero in `_reserved`.
@@ -184,11 +194,14 @@ mod tests {
         assert_eq!(parsed.quality_threshold, 200_000);
         assert_eq!(parsed.bump, bump);
 
-        // The 3 new fields MUST read as 0 (operator must `update_params`
-        // post-upgrade to set non-zero values).
+        // The carved fields MUST read as 0 (operator must `update_params`
+        // post-upgrade to set non-zero values). A zero
+        // dispute_resolution_window_seconds = default resolution disabled,
+        // preserving legacy dispute behavior until explicitly enabled.
         assert_eq!(parsed.min_escrow_lamports, 0);
         assert_eq!(parsed.rate_limit_window_seconds, 0);
         assert_eq!(parsed.max_tasks_per_rate_window, 0);
-        assert_eq!(parsed._reserved, [0u8; 12]);
+        assert_eq!(parsed.dispute_resolution_window_seconds, 0);
+        assert_eq!(parsed._reserved, [0u8; 4]);
     }
 }

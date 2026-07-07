@@ -246,7 +246,8 @@ async function main(): Promise<void> {
       0,
       0,
       0,
-      false
+      false,
+      0 // verification_kind: OracleMetrics (kind 0)
     )
     .accountsPartial({
       globalState: sbGlobal,

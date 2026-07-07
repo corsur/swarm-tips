@@ -245,7 +245,8 @@ async function createTask(
       0,
       0,
       0, // timing overrides: use global defaults
-      true // D1: requires_approval — keep v4 #3a flow for the lifecycle tests
+      true, // D1: requires_approval — keep v4 #3a flow for the lifecycle tests
+      0 // verification_kind: OracleMetrics (kind 0)
     )
     .accountsPartial({
       globalState: globalPda,
@@ -987,7 +988,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
           0,
           0,
           0,
-          true // D1: requires_approval — keep v4 #3a flow for these tests
+          true, // D1: requires_approval — keep v4 #3a flow for these tests
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1140,7 +1142,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
           0,
           0,
           0,
-          true
+          true,
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,
@@ -1377,7 +1380,8 @@ describe("shillbot-lifecycle (bankrun)", () => {
           0,
           0,
           0,
-          true
+          true,
+          0 // verification_kind: OracleMetrics (kind 0)
         )
         .accountsPartial({
           globalState: globalPda,

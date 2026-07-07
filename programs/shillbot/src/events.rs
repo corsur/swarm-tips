@@ -62,6 +62,18 @@ pub struct ChallengeResolved {
     pub bond_slashed: u64,
 }
 
+/// Emitted when a Disputed task is default-resolved permissionlessly after
+/// the dispute-resolution window elapsed with no authority adjudication.
+/// The pinned payment executed (agent-favoring) and the bond returned to
+/// the challenger un-slashed.
+#[event]
+pub struct ChallengeDefaultResolved {
+    pub task_id: u64,
+    pub payment_amount: u64,
+    pub fee_amount: u64,
+    pub bond_returned: u64,
+}
+
 #[event]
 pub struct TaskExpired {
     pub task_id: u64,

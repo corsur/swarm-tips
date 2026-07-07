@@ -5,8 +5,8 @@ use crate::state::GlobalState;
 use crate::{
     DEFAULT_ATTESTATION_DELAY_SECONDS, DEFAULT_BOND_SLASH_TREASURY_BPS,
     DEFAULT_CHALLENGE_BOND_MULTIPLIER, DEFAULT_CHALLENGE_WINDOW_SECONDS,
-    DEFAULT_MAX_CONCURRENT_CLAIMS, DEFAULT_STALENESS_WINDOW_SECONDS,
-    DEFAULT_VERIFICATION_TIMEOUT_SECONDS,
+    DEFAULT_DISPUTE_RESOLUTION_WINDOW_SECONDS, DEFAULT_MAX_CONCURRENT_CLAIMS,
+    DEFAULT_STALENESS_WINDOW_SECONDS, DEFAULT_VERIFICATION_TIMEOUT_SECONDS,
 };
 
 /// One-time initialization to create the GlobalState singleton.
@@ -112,7 +112,8 @@ fn init_global_state(
     global.min_escrow_lamports = 0;
     global.rate_limit_window_seconds = crate::constants::RATE_LIMIT_WINDOW_SECONDS;
     global.max_tasks_per_rate_window = crate::constants::MAX_TASKS_PER_RATE_WINDOW;
-    global._reserved = [0u8; 12];
+    global.dispute_resolution_window_seconds = DEFAULT_DISPUTE_RESOLUTION_WINDOW_SECONDS;
+    global._reserved = [0u8; 4];
     global.bump = bump;
 }
 

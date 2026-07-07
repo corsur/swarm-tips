@@ -24,14 +24,38 @@ Claimed ──(expire_task: past deadline)──► [escrow returned, account cl
 Claimed ──(emergency_return)──► [escrow returned, account closed]
 Submitted ──(approve_task: client signs)──► Approved
 Submitted ──(expire_task: T+14d verification timeout from submitted_at)──► [escrow returned, account closed]
-Approved ──(verify_task: oracle attestation)──► Verified
+Approved/Submitted ──(verify_task: Switchboard oracle, verification_kind=0)──► Verified
+Approved/Submitted ──(verify_task_attested: oracle_authority signer, verification_kind=1)──► Verified
 Approved ──(expire_task: T+14d verification timeout from submitted_at)──► [escrow returned, account closed]
 Verified ──(finalize_task: challenge window passes)──► Finalized → [payment released, account closed]
-Verified ──(challenge_task)──► Disputed
-Disputed ──(resolve_challenge)──► Resolved → [payments adjusted, account closed]
+Verified ──(challenge_task)──► Disputed [sets dispute-resolution deadline when window enabled]
+Disputed ──(resolve_challenge: authority adjudicates)──► Resolved → [payments adjusted, account closed]
+Disputed ──(resolve_challenge_default: permissionless, past challenge.created_at
+            + dispute_resolution_window_seconds)──► Resolved → [pinned payment executes,
+            bond returned un-slashed, account closed]
 ```
 
 Every instruction asserts valid source state(s) as a precondition. Invalid state transitions return `InvalidTaskState`.
+
+**Verification kinds (`Task.verification_kind`, carved from `_reserved` 2026-07-07):**
+`0 = OracleMetrics` (legacy Switchboard path — `verify_task` only), `1 = DeterministicAttested`
+(allow-listed attester path — `verify_task_attested` only; score must be exactly 0 or
+MAX_SCORE). The two verify entries are mutually exclusive on this byte. Wire-format twin:
+`chain-core::verify_schema::VerificationKind` (append-only). `verify_task_attested` requires
+the `oracle_authority` as a transaction `Signer` — the first instruction to enforce that
+(previously dormant) GlobalState field — and stores the `AttestationCert` digest as
+`verification_hash`. Arms-length guard: the attester must not equal `task.agent`, and
+kind-1 tasks reject self-claims (`agent != client`).
+
+**Dispute-resolution liveness (2026-07-07):** `challenge_task` previously moved a task into
+Disputed with NO bound on how long the single authority could sit on `resolve_challenge`
+(escrow + bond frozen forever if the authority disappears). `GlobalState.
+dispute_resolution_window_seconds` (carved from `_reserved`; 0 = disabled → legacy
+behavior) now arms a permissionless `resolve_challenge_default` once
+`now > challenge.created_at + window`: the pinned payment/fee execute (the task WAS
+verified — agent-favoring by design), the bond returns to the challenger un-slashed (no
+adjudication happened), and the task closes as Resolved. Challenges are a bounded delay,
+never a freeze or a grief profit.
 
 ---
 
@@ -59,10 +83,12 @@ See `state/*.rs` for full field layouts.
 - `claim_task()` — agent claims Open task; enforces claim_buffer and max concurrent claims via AgentState
 - `submit_work(content_id)` — agent submits content ID proof; enforces submit_margin
 - `approve_task()` — client signs to approve submitted content; transitions Submitted → Approved (Phase 3 blocker #3a). The verification timeout clock is NOT reset by approval — it remains anchored on `submitted_at`, so a client cannot indefinitely stall an agent's escrow by approving and then never funding oracle verification.
-- `verify_task(composite_score, verification_hash)` — oracle attestation on an Approved task; computes payment, sets challenge window
+- `verify_task(composite_score, verification_hash)` — Switchboard oracle attestation on a `verification_kind = 0` task; computes payment, sets challenge window
+- `verify_task_attested(score, verification_hash)` — attester-signed verification on a `verification_kind = 1` task; the `oracle_authority` signs the transaction, `score ∈ {0, MAX_SCORE}`, `verification_hash` = the `chain-core::verify_schema::AttestationCert` digest
 - `finalize_task()` — permissionless crank after challenge window; releases payment to agent, fee to treasury, remainder to client
 - `challenge_task()` — anyone posts bond (2-10x escrow) to dispute during challenge window
 - `resolve_challenge(challenger_won)` — authority resolves dispute; slashes loser's funds
+- `resolve_challenge_default()` — permissionless crank once `dispute_resolution_window_seconds` (when enabled) elapses on a Disputed task; executes the pinned payment/fee, returns the bond un-slashed
 - `expire_task()` — permissionless crank; returns escrow for expired Open/Claimed tasks or Submitted/Approved tasks past verification timeout (measured from `submitted_at`)
 - `emergency_return()` — authority-only batch return of Open/Claimed task escrows (up to 20 tasks)
 

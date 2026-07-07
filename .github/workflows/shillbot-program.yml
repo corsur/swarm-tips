@@ -82,7 +82,7 @@ jobs:
           solana airdrop 100
 
       - name: Run shillbot tests only
-        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/shillbot.ts" "tests/shillbot-lifecycle.ts"
+        run: npx ts-mocha -p ./tsconfig.json -t 1000000 --exit "tests/shillbot.ts" "tests/shillbot-lifecycle.ts" "tests/shillbot-attested.ts"
         env:
           ANCHOR_PROVIDER_URL: http://localhost:8899
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
