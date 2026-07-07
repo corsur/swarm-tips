@@ -13,18 +13,15 @@
 
 #![cfg(feature = "keccak")]
 
+mod common;
+
 use chain_core::cert_schema::{
     keccak256, CertLeg, Checkpoint, MatchLiveCert, OutcomeCert, OutcomeKind,
 };
+use common::{assert_fixture_current, hex, write_fixture};
 
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len().saturating_mul(2).saturating_add(2));
-    s.push_str("0x");
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
+const CERT_FIXTURE: &str = "cert-vectors.json";
+const DERIVATION_FIXTURE: &str = "outcome-derivation.json";
 
 fn leg(seed: u8) -> CertLeg {
     CertLeg {
@@ -116,10 +113,6 @@ fn build_json() -> String {
     )
 }
 
-fn fixture_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/cert-vectors.json")
-}
-
 // ---------------------------------------------------------------------------
 // Outcome-derivation truth table (M11). The serialization vectors above pin the
 // byte LAYOUT; this pins the DERIVATION — given a checkpoint's
@@ -208,57 +201,28 @@ fn build_derivation_json() -> String {
     )
 }
 
-fn derivation_fixture_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/outcome-derivation.json")
-}
-
 #[test]
 #[ignore = "regenerates the committed fixture; run intentionally"]
 fn write_derivation_vectors() {
-    let path = derivation_fixture_path();
-    std::fs::create_dir_all(path.parent().expect("fixture dir")).expect("create fixtures dir");
-    std::fs::write(&path, build_derivation_json()).expect("write outcome-derivation.json");
+    write_fixture(DERIVATION_FIXTURE, &build_derivation_json());
 }
 
 #[test]
 fn verify_derivation_vectors() {
-    let path = derivation_fixture_path();
-    let on_disk = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "missing {}: run the ignored write_derivation_vectors test to generate it ({e})",
-            path.display()
-        )
-    });
-    assert_eq!(
-        on_disk,
-        build_derivation_json(),
-        "outcome-derivation.json is stale — chain-core's derivation changed; regenerate with the \
-         ignored write_derivation_vectors test and confirm the Solidity CertLib mirror still passes"
+    assert_fixture_current(
+        DERIVATION_FIXTURE,
+        &build_derivation_json(),
+        "write_derivation_vectors",
     );
 }
 
 #[test]
 #[ignore = "regenerates the committed fixture; run intentionally"]
 fn write_vectors() {
-    let path = fixture_path();
-    std::fs::create_dir_all(path.parent().expect("fixture dir")).expect("create fixtures dir");
-    std::fs::write(&path, build_json()).expect("write cert-vectors.json");
+    write_fixture(CERT_FIXTURE, &build_json());
 }
 
 #[test]
 fn verify_vectors() {
-    let path = fixture_path();
-    let on_disk = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "missing {}: run the ignored write_vectors test to generate it ({e})",
-            path.display()
-        )
-    });
-    assert_eq!(
-        on_disk,
-        build_json(),
-        "cert-vectors.json is stale — the Rust encoder changed; regenerate with the \
-         ignored write_vectors test and update the Solidity mirror if needed"
-    );
+    assert_fixture_current(CERT_FIXTURE, &build_json(), "write_vectors");
 }

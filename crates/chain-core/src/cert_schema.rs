@@ -36,7 +36,7 @@ pub const SCHEMA_VERSION: u16 = 1;
 pub const MATCH_LIVE_WORDS: usize = 22;
 pub const CHECKPOINT_WORDS: usize = 12;
 pub const OUTCOME_WORDS: usize = 11;
-pub const WORD: usize = 32;
+pub use crate::words::WORD;
 
 /// A terminal transcript has all four steps: both commits + both reveals.
 pub const TERMINAL_STEP_COUNT: u8 = 4;
@@ -166,37 +166,7 @@ pub struct OutcomeCert {
     pub transcript_hash: [u8; 32],
 }
 
-fn push_word(out: &mut Vec<u8>, word: &[u8; 32]) {
-    out.extend_from_slice(word);
-}
-
-fn push_u128(out: &mut Vec<u8>, value: u128) {
-    let mut word = [0u8; 32];
-    word[16..].copy_from_slice(&value.to_be_bytes());
-    out.extend_from_slice(&word);
-}
-
-fn push_u64(out: &mut Vec<u8>, value: u64) {
-    push_u128(out, u128::from(value));
-}
-
-fn push_u32(out: &mut Vec<u8>, value: u32) {
-    push_u128(out, u128::from(value));
-}
-
-fn push_u16(out: &mut Vec<u8>, value: u16) {
-    push_u128(out, u128::from(value));
-}
-
-fn push_u8(out: &mut Vec<u8>, value: u8) {
-    push_u128(out, u128::from(value));
-}
-
-fn push_addr20(out: &mut Vec<u8>, addr: &[u8; 20]) {
-    let mut word = [0u8; 32];
-    word[12..].copy_from_slice(addr);
-    out.extend_from_slice(&word);
-}
+use crate::words::{push_addr20, push_u128, push_u16, push_u32, push_u64, push_u8, push_word};
 
 fn push_leg(out: &mut Vec<u8>, leg: &CertLeg) {
     push_word(out, &leg.chain_tag);

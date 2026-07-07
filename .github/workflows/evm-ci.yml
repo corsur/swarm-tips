@@ -7,12 +7,16 @@ on:
       - 'evm/**'
       - 'crates/chain-core/**'
       - 'tests/fixtures/cert-vectors.json'
+      - 'tests/fixtures/verify-vectors.json'
+      - 'policies/**'
       - '.github/workflows/evm-ci.yml'
   pull_request:
     paths:
       - 'evm/**'
       - 'crates/chain-core/**'
       - 'tests/fixtures/cert-vectors.json'
+      - 'tests/fixtures/verify-vectors.json'
+      - 'policies/**'
       - '.github/workflows/evm-ci.yml'
   workflow_dispatch:
 
@@ -53,3 +57,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Verify cert vectors are current
         run: cargo test -p chain-core --features keccak --test golden_vectors verify_vectors
+      - name: Verify verification-schema vectors are current
+        run: cargo test -p chain-core --features cosign --test verify_vectors verify_verify_vectors
