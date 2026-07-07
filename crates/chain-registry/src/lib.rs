@@ -167,7 +167,10 @@ const REGISTRY: &[ChainEntry] = &[
         // 0x54a6…9A30 == game-api xchain-operator-signer, so game-api's v=27/28
         // normalized createGame attestation verifies; prior 0x2F88…4664 orphaned).
         coordination_game_contract: Some("0x042fE7202d208C9D79AdFd276da77b928C64514b"),
-        shillbot_escrow_contract: None, // not yet deployed on this chain
+        // ShillbotEscrow deployed 2026-07-07 (S5 live demo): chainTag
+        // keccak256("eip155:84532"), attesterSigner is a demo key — rotate to
+        // the dedicated shillbot-attester EVM key via setConfig before real use.
+        shillbot_escrow_contract: Some("0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c"),
         x402_network: Some("base-sepolia"),
     },
 ];
