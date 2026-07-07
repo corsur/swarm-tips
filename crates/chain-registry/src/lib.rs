@@ -303,16 +303,26 @@ mod tests {
     }
 
     #[test]
-    fn shillbot_escrow_purpose_resolves_none_until_deployed() {
-        // The variant + field land ahead of the gated testnet deploy; the
-        // address arrives in a follow-up commit, so every entry is None today.
+    fn shillbot_escrow_resolves_on_base_sepolia_only() {
+        // Deployed to Base Sepolia 2026-07-07 (S5 live demo); every other entry
+        // stays None until its own deploy lands. Solana entries never carry an
+        // EVM escrow address (the Solana leg is the shillbot program itself).
         for e in REGISTRY {
             let chain = ChainId::parse(e.chain_id).expect("valid CAIP-2");
-            assert!(
-                contract_for(&chain, ContractPurpose::ShillbotEscrow).is_none(),
-                "{}: shillbot escrow address must stay None until the deploy lands",
-                e.chain_id
-            );
+            let resolved = contract_for(&chain, ContractPurpose::ShillbotEscrow);
+            if e.chain_id == "eip155:84532" {
+                assert_eq!(
+                    resolved,
+                    Some("0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c"),
+                    "Base Sepolia must resolve to the deployed ShillbotEscrow"
+                );
+            } else {
+                assert!(
+                    resolved.is_none(),
+                    "{}: shillbot escrow address must stay None until its deploy lands",
+                    e.chain_id
+                );
+            }
         }
     }
 
