@@ -19,12 +19,11 @@
 //! signals contributed (0..=4) so a caller can decide whether to
 //! trust the composite or wait for more inputs.
 //!
-//! **Not EigenTrust.** This is the off-chain composite formula
-//! the v4 roadmap calls "composite trust scoring." EigenTrust
-//! (queued as a separate task) computes a global trust graph; this
-//! formula is a per-agent weighted combination of independent
-//! signals. The two compose: EigenTrust scores can feed in as a
-//! fifth signal once that pipeline ships.
+//! **Composes with EigenTrust.** EigenTrust (the global settlement
+//! trust graph, `crates/reputation-indexer`) feeds in as the
+//! `eigentrust` signal — rank-normalized graph position from
+//! Firestore `agent_reputation/{wallet}`, recomputed event-driven
+//! on settlement.
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +46,13 @@ use serde::{Deserialize, Serialize};
 ///   voucher's own standing). The novel positive-reputation signal
 ///   (mund-creanc-witer); B4.
 const WEIGHT_SHILLBOT: f64 = 0.45;
+/// EigenTrust 0.35 — relational trust over on-chain settled work (who
+/// transacted with whom, anchored at first-party wallets). Second-highest
+/// weight: settlement-grounded like Shillbot but global/relational rather
+/// than local work quality — the two are deliberately orthogonal (the
+/// same settlement feeds the composite ONCE as quality, and the graph as
+/// an edge).
+const WEIGHT_EIGENTRUST: f64 = 0.35;
 const WEIGHT_AGENT_RANK: f64 = 0.25;
 const WEIGHT_GAME: f64 = 0.15;
 const WEIGHT_CURATOR: f64 = 0.15;
@@ -65,6 +71,11 @@ const WEIGHT_CREDIT_WEB: f64 = 0.20;
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TrustInputs {
     pub shillbot: Option<ShillbotInput>,
+    /// EigenTrust graph position, rank-normalized to 0..1 by the
+    /// reputation indexer (`AgentReputation.rank_normalized`). Read from
+    /// Firestore `agent_reputation/{wallet}`; absent until the wallet
+    /// appears in the settlement graph.
+    pub eigentrust: Option<f64>,
     pub game: Option<GameInput>,
     pub curator: Option<CuratorTier>,
     pub agent_rank: Option<f64>,
@@ -132,7 +143,7 @@ impl CuratorTier {
 pub struct TrustScore {
     /// Weighted average of the present signals, in 0..1.
     pub score: f64,
-    /// Number of signals that contributed (0..=5). Lower numbers
+    /// Number of signals that contributed (0..=6). Lower numbers
     /// mean less reliable composite.
     pub confidence: u8,
     /// Per-signal breakdown for transparency. Each entry is a
@@ -188,6 +199,16 @@ pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
                 });
             }
         }
+    }
+
+    // EigenTrust — relational graph position (6th signal). Already
+    // rank-normalized to 0..1 by the reputation indexer.
+    if let Some(e) = inputs.eigentrust {
+        signals.push(TrustContribution {
+            signal: "eigentrust".to_string(),
+            value: e.clamp(0.0, 1.0),
+            weight: WEIGHT_EIGENTRUST,
+        });
     }
 
     // Game — requires ≥ 5 games for the signal to be meaningful.

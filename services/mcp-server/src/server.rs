@@ -1048,7 +1048,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_trust_score",
-        description = "[READ] Composite trust score (0..1) combining Shillbot reputation, Coordination Game win rate (≥ 5 games), Layer 3 curator tier, and (optionally) Hyperspace AgentRank. Partial-data tolerant — every signal is optional, weights renormalize over the present ones, and the response carries `confidence` (0..=4, how many signals contributed). Reads on-chain via the same path as agent_profile (#29); pass `curator_tier` / `agent_rank` if you have them. Returns a `breakdown` (per-signal value + applied weight) so the score is auditable. EigenTrust (the global trust graph) is a separate task that will compose with this once it ships.",
+        description = "[READ] Composite trust score (0..1) combining EigenTrust settlement-graph position (relational trust over on-chain settled work, anchored at first-party wallets), Shillbot reputation, Coordination Game win rate (≥ 5 games), Layer 3 curator tier, extension-credit web position, and (optionally) AgentRank. Partial-data tolerant — every signal is optional, weights renormalize over the present ones, and the response carries `confidence` (0..=6, how many signals contributed). Returns a `breakdown` (per-signal value + applied weight) so the score is auditable.",
         annotations(read_only_hint = true)
     )]
     async fn agent_trust_score(
@@ -1076,8 +1076,19 @@ impl SwarmTipsMcp {
         // where extension-registry isn't deployed).
         let credit_web = self.read_credit_web_input(&target_wallet).await;
 
+        // eigentrust (WS2): rank-normalized settlement-graph position from
+        // Firestore agent_reputation/{wallet}, recomputed event-driven on
+        // settlement. Absent (None) until the wallet enters the graph.
+        let eigentrust = match self.state.discovery.as_ref() {
+            Some(d) => crate::reputation::get_agent_reputation(&d.db, &target_wallet)
+                .await
+                .map(|r| r.rank_normalized),
+            None => None,
+        };
+
         let inputs = TrustInputs {
             shillbot: shillbot_input,
+            eigentrust,
             game: game_input,
             curator,
             agent_rank: args.agent_rank,

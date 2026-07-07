@@ -37,6 +37,7 @@ chain-registry = { workspace = true }
 chain-core = { workspace = true, features = ["keccak"] }
 evm-chain = { workspace = true }
 eigentrust = { path = "../eigentrust" }
+reputation-indexer = { workspace = true }
 bm25 = "2.3"
 futures-util = "0.3"
 solana-sdk = "2.2"

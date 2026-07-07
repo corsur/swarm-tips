@@ -11,6 +11,7 @@ mod game_proxy;
 mod game_session;
 mod listings;
 mod proxy;
+mod reputation;
 mod server;
 mod session_binding;
 mod solana_reads;
@@ -101,9 +102,11 @@ async fn main() -> anyhow::Result<()> {
         StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token()),
     );
 
+    let reputation_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
     let router = build_router(
         listings_state,
         discovery_state,
+        reputation_db,
         rpc_url_mainnet,
         rpc_url_devnet,
         service,
@@ -267,6 +270,7 @@ async fn load_per_network_rpcs(cfg: &StartupConfig) -> (String, String) {
 fn build_router(
     listings_state: Arc<ListingsState>,
     discovery_state: Option<Arc<DiscoveryState>>,
+    reputation_db: Arc<firestore::FirestoreDb>,
     rpc_url_mainnet: String,
     rpc_url_devnet: String,
     mcp_service: StreamableHttpService<SwarmTipsMcp, LocalSessionManager>,
@@ -301,6 +305,10 @@ fn build_router(
                     .body(axum::body::Body::empty())
                     .unwrap()
             }),
+        )
+        .route(
+            "/internal/reputation/rebuild",
+            reputation::rebuild_handler(reputation_db),
         )
         .route(
             // Plain-HTTP reputation read for the swarm.tips/reputation page

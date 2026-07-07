@@ -69,6 +69,11 @@ pub struct AgentReputation {
     pub eigentrust_score: f64,
     /// 1-based rank by score (1 = most trusted).
     pub rank: u32,
+    /// Rank-normalized score in [0, 1]: `1 - (rank-1)/n`. Rank 1 → 1.0.
+    /// This is the value `composite_trust` consumes — raw EigenTrust
+    /// scores sum to 1.0 across the whole graph, so their magnitude is
+    /// graph-size-dependent and meaningless as a per-agent 0..1 signal.
+    pub rank_normalized: f64,
     /// Settlements where this wallet was paid (incoming edges).
     pub settlements_received: u32,
     /// Settlements where this wallet paid (outgoing edges).
@@ -145,10 +150,12 @@ pub fn build_reputation(
     let mut scored: Vec<(String, f64)> = result.scores.into_iter().collect();
     scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
+    let n = scored.len().max(1) as f64;
     let agents: Vec<AgentReputation> = scored
         .into_iter()
         .enumerate()
         .map(|(i, (wallet, score))| AgentReputation {
+            rank_normalized: 1.0 - (i as f64) / n,
             settlements_received: received.get(wallet.as_str()).copied().unwrap_or(0),
             settlements_paid: paid.get(wallet.as_str()).copied().unwrap_or(0),
             counterparty_count: counterparties
@@ -268,6 +275,8 @@ mod tests {
         )
         .expect("build");
         let a = build.agents.iter().find(|x| x.wallet == "agent_a").unwrap();
+        assert!(a.rank_normalized > 0.0 && a.rank_normalized <= 1.0);
+        assert_eq!(build.agents[0].rank_normalized, 1.0); // rank 1 → 1.0
         assert_eq!(a.settlements_received, 3);
         assert_eq!(a.settlements_paid, 0);
         assert_eq!(a.counterparty_count, 2); // anchor + other_client
