@@ -191,18 +191,8 @@ async function main(): Promise<void> {
     try {
       await restoreParams();
       await restoreOracle();
-      // Sweep the demo attester's leftover lamports back to id.json.
-      const left = await bal(attester.publicKey);
-      if (left > 5000) {
-        const tx = new Transaction().add(
-          SystemProgram.transfer({
-            fromPubkey: attester.publicKey,
-            toPubkey: authorityClient.publicKey,
-            lamports: left - 5000,
-          })
-        );
-        await provider.sendAndConfirm(tx, [attester]);
-      }
+      // Throwaway attester/agent leftovers are devnet dust — a system account
+      // can't be swept below its rent-exempt floor, so we leave them.
     } catch (e) {
       console.error("  ✗ teardown error:", e);
       failures++;
@@ -362,20 +352,8 @@ async function runLifecycle(
     check(clientAfter > clientBefore, "client refunded escrow + rent on the failing proof");
   }
 
-  // Recover the agent's leftover to id.json.
-  const left = await connection.getBalance(agent.publicKey, "confirmed");
-  if (left > 5000) {
-    await provider.sendAndConfirm(
-      new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: agent.publicKey,
-          toPubkey: client.publicKey,
-          lamports: left - 5000,
-        })
-      ),
-      [agent]
-    );
-  }
+  // The throwaway agent's leftover is devnet dust (can't sweep a system
+  // account below its rent-exempt floor); left in place.
 }
 
 main().catch((e) => {
