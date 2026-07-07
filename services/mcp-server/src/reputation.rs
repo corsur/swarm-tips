@@ -198,3 +198,464 @@ mod tests {
         assert!(got.is_empty() || !got.is_empty()); // env-dependent; just must not panic
     }
 }
+
+// ---------------------------------------------------------------------------
+// Archival backfill — mint trust_edges from the on-chain event history.
+//
+// Task PDAs are CLOSED on settlement, so the only durable per-settlement
+// record is the event chain in transaction history. The backfill walks the
+// program's signatures oldest→newest, joins the per-task event chain
+// (TaskCreated → TaskClaimed → TaskVerified → TaskFinalized /
+// ChallengeResolved) by task_id, and writes one idempotent
+// trust_edges/{tx_sig} doc per settlement. Safe to re-run: doc ids are the
+// settlement signatures.
+// ---------------------------------------------------------------------------
+
+/// CAIP-2 id for Solana mainnet-beta.
+const SOLANA_MAINNET_CAIP2: &str = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+/// Composite-score scale (shared::MAX_SCORE in the program workspace).
+const MAX_SCORE: u64 = 1_000_000;
+/// Bound on how many signatures one backfill call will walk.
+const MAX_BACKFILL_SIGNATURES: usize = 20_000;
+
+fn event_discriminator(name: &str) -> [u8; 8] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(format!("event:{name}").as_bytes());
+    let h: [u8; 32] = hasher.finalize().into();
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&h[0..8]);
+    out
+}
+
+fn read_u64(b: &[u8], at: usize) -> Option<u64> {
+    b.get(at..at.saturating_add(8))?
+        .try_into()
+        .ok()
+        .map(u64::from_le_bytes)
+}
+
+fn read_pubkey_b58(b: &[u8], at: usize) -> Option<String> {
+    b.get(at..at.saturating_add(32))
+        .map(|s| bs58::encode(s).into_string())
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct BackfillSummary {
+    pub signatures_scanned: usize,
+    pub finalized_edges: usize,
+    pub challenge_edges: usize,
+    pub skipped_incomplete: usize,
+    pub firestore_writes: usize,
+    pub firestore_write_errors: usize,
+    pub elapsed_ms: u64,
+}
+
+/// One decoded settlement-relevant event.
+enum ChainEvent {
+    Created { task_id: u64, client: String },
+    Claimed { task_id: u64, agent: String },
+    Verified { task_id: u64, composite_score: u64 },
+    Finalized { task_id: u64, agent: String },
+    ChallengeResolved { task_id: u64, challenger_won: bool },
+}
+
+fn decode_event(data: &[u8]) -> Option<ChainEvent> {
+    let disc: [u8; 8] = data.get(0..8)?.try_into().ok()?;
+    let b = data.get(8..)?;
+    if disc == event_discriminator("TaskCreated") {
+        Some(ChainEvent::Created {
+            task_id: read_u64(b, 0)?,
+            client: read_pubkey_b58(b, 8)?,
+        })
+    } else if disc == event_discriminator("TaskClaimed") {
+        Some(ChainEvent::Claimed {
+            task_id: read_u64(b, 0)?,
+            agent: read_pubkey_b58(b, 8)?,
+        })
+    } else if disc == event_discriminator("TaskVerified") {
+        Some(ChainEvent::Verified {
+            task_id: read_u64(b, 0)?,
+            composite_score: read_u64(b, 8)?,
+        })
+    } else if disc == event_discriminator("TaskFinalized") {
+        Some(ChainEvent::Finalized {
+            task_id: read_u64(b, 0)?,
+            agent: read_pubkey_b58(b, 8)?,
+        })
+    } else if disc == event_discriminator("ChallengeResolved") {
+        Some(ChainEvent::ChallengeResolved {
+            task_id: read_u64(b, 0)?,
+            challenger_won: b.get(8).map(|v| *v != 0)?,
+        })
+    } else {
+        None
+    }
+}
+
+/// Extract decoded events from a transaction's log messages.
+fn events_from_logs(logs: &[String]) -> Vec<ChainEvent> {
+    use base64::Engine as _;
+    logs.iter()
+        .filter_map(|l| l.strip_prefix("Program data: "))
+        .filter_map(|b64| {
+            base64::engine::general_purpose::STANDARD
+                .decode(b64.trim())
+                .ok()
+        })
+        .filter_map(|data| decode_event(&data))
+        .collect()
+}
+
+async fn rpc_call(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
+    });
+    let resp: serde_json::Value = http.post(rpc_url).json(&body).send().await?.json().await?;
+    if let Some(err) = resp.get("error") {
+        anyhow::bail!("{method} RPC error: {err}");
+    }
+    Ok(resp
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
+}
+
+/// Walk the full signature history (newest→oldest pages), returning
+/// signatures in CHRONOLOGICAL order for event-chain joining.
+async fn all_signatures(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    program: &str,
+) -> anyhow::Result<Vec<(String, Option<i64>)>> {
+    let mut out: Vec<(String, Option<i64>)> = Vec::new();
+    let mut before: Option<String> = None;
+    loop {
+        if out.len() >= MAX_BACKFILL_SIGNATURES {
+            tracing::warn!(count = out.len(), "backfill signature cap hit");
+            break;
+        }
+        let mut opts = serde_json::json!({"limit": 1000});
+        if let Some(b) = &before {
+            opts["before"] = serde_json::json!(b);
+        }
+        let result = rpc_call(
+            http,
+            rpc_url,
+            "getSignaturesForAddress",
+            serde_json::json!([program, opts]),
+        )
+        .await?;
+        let batch = result.as_array().cloned().unwrap_or_default();
+        if batch.is_empty() {
+            break;
+        }
+        let batch_len = batch.len();
+        for entry in &batch {
+            // Skip failed transactions — their events never took effect.
+            if !entry.get("err").map(|e| e.is_null()).unwrap_or(false) {
+                continue;
+            }
+            if let Some(sig) = entry.get("signature").and_then(|s| s.as_str()) {
+                out.push((
+                    sig.to_string(),
+                    entry.get("blockTime").and_then(|t| t.as_i64()),
+                ));
+            }
+        }
+        before = batch
+            .last()
+            .and_then(|e| e.get("signature"))
+            .and_then(|s| s.as_str())
+            .map(String::from);
+        if batch_len < 1000 {
+            break;
+        }
+    }
+    out.reverse(); // chronological
+    Ok(out)
+}
+
+/// Backfill trust_edges from the Shillbot program's full event history.
+pub async fn backfill(
+    db: &FirestoreDb,
+    http: &reqwest::Client,
+    rpc_url: &str,
+) -> anyhow::Result<BackfillSummary> {
+    let started = std::time::Instant::now();
+    let program = crate::solana_reads::SHILLBOT_PROGRAM_ID_BASE58;
+
+    let sigs = all_signatures(http, rpc_url, program).await?;
+    let signatures_scanned = sigs.len();
+
+    // Per-task join state, built chronologically.
+    let mut client_by_task: std::collections::HashMap<u64, String> = Default::default();
+    let mut agent_by_task: std::collections::HashMap<u64, String> = Default::default();
+    let mut score_by_task: std::collections::HashMap<u64, u64> = Default::default();
+
+    let mut finalized_edges = 0usize;
+    let mut challenge_edges = 0usize;
+    let mut skipped_incomplete = 0usize;
+    let mut writes = 0usize;
+    let mut write_errors = 0usize;
+
+    for (sig, block_time) in &sigs {
+        let tx = rpc_call(
+            http,
+            rpc_url,
+            "getTransaction",
+            serde_json::json!([sig, {"encoding": "json", "maxSupportedTransactionVersion": 0}]),
+        )
+        .await;
+        let tx = match tx {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(sig, error = %e, "getTransaction failed — skipping");
+                continue;
+            }
+        };
+        let logs: Vec<String> = tx
+            .pointer("/meta/logMessages")
+            .and_then(|l| l.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for event in events_from_logs(&logs) {
+            let settled_at = block_time
+                .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+                .unwrap_or_else(chrono::Utc::now);
+            match event {
+                ChainEvent::Created { task_id, client } => {
+                    client_by_task.insert(task_id, client);
+                }
+                ChainEvent::Claimed { task_id, agent } => {
+                    agent_by_task.insert(task_id, agent);
+                }
+                ChainEvent::Verified {
+                    task_id,
+                    composite_score,
+                } => {
+                    score_by_task.insert(task_id, composite_score);
+                }
+                ChainEvent::Finalized { task_id, agent } => {
+                    let Some(client) = client_by_task.get(&task_id) else {
+                        skipped_incomplete = skipped_incomplete.saturating_add(1);
+                        continue;
+                    };
+                    let weight = score_by_task
+                        .get(&task_id)
+                        .map(|s| (*s as f64 / MAX_SCORE as f64).clamp(0.0, 1.0))
+                        .unwrap_or(0.0);
+                    let doc = TrustEdgeDoc {
+                        tx_sig: sig.clone(),
+                        from: client.clone(),
+                        to: agent,
+                        weight,
+                        task_id,
+                        source: "shillbot_finalize".to_string(),
+                        chain: SOLANA_MAINNET_CAIP2.to_string(),
+                        settled_at,
+                    };
+                    finalized_edges = finalized_edges.saturating_add(1);
+                    write_edge(db, &doc, &mut writes, &mut write_errors).await;
+                }
+                ChainEvent::ChallengeResolved {
+                    task_id,
+                    challenger_won,
+                } => {
+                    if !challenger_won {
+                        continue; // agent won — the Finalized path pays out
+                    }
+                    let (Some(client), Some(agent)) =
+                        (client_by_task.get(&task_id), agent_by_task.get(&task_id))
+                    else {
+                        skipped_incomplete = skipped_incomplete.saturating_add(1);
+                        continue;
+                    };
+                    let doc = TrustEdgeDoc {
+                        tx_sig: sig.clone(),
+                        from: client.clone(),
+                        to: agent.clone(),
+                        weight: 0.0,
+                        task_id,
+                        source: "challenge_resolved".to_string(),
+                        chain: SOLANA_MAINNET_CAIP2.to_string(),
+                        settled_at,
+                    };
+                    challenge_edges = challenge_edges.saturating_add(1);
+                    write_edge(db, &doc, &mut writes, &mut write_errors).await;
+                }
+            }
+        }
+    }
+
+    let summary = BackfillSummary {
+        signatures_scanned,
+        finalized_edges,
+        challenge_edges,
+        skipped_incomplete,
+        firestore_writes: writes,
+        firestore_write_errors: write_errors,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    };
+    tracing::info!(
+        signatures = summary.signatures_scanned,
+        finalized = summary.finalized_edges,
+        challenges = summary.challenge_edges,
+        skipped = summary.skipped_incomplete,
+        writes = summary.firestore_writes,
+        "trust_edges backfill complete"
+    );
+    Ok(summary)
+}
+
+async fn write_edge(
+    db: &FirestoreDb,
+    doc: &TrustEdgeDoc,
+    writes: &mut usize,
+    write_errors: &mut usize,
+) {
+    match db
+        .fluent()
+        .update()
+        .in_col(TRUST_EDGES_COLLECTION)
+        .document_id(&doc.tx_sig)
+        .object(doc)
+        .execute::<()>()
+        .await
+    {
+        Ok(_) => *writes = writes.saturating_add(1),
+        Err(e) => {
+            *write_errors = write_errors.saturating_add(1);
+            tracing::warn!(tx_sig = %doc.tx_sig, error = %e, "trust_edge write failed");
+        }
+    }
+}
+
+/// POST /internal/reputation/backfill → BackfillSummary. Idempotent; safe
+/// to re-run (doc ids are settlement signatures).
+pub fn backfill_handler(
+    db: Arc<FirestoreDb>,
+    http: reqwest::Client,
+    rpc_url: String,
+) -> axum::routing::MethodRouter {
+    use axum::response::IntoResponse;
+    axum::routing::post(move || {
+        let db = Arc::clone(&db);
+        let http = http.clone();
+        let rpc_url = rpc_url.clone();
+        async move {
+            match backfill(&db, &http, &rpc_url).await {
+                Ok(summary) => axum::Json(summary).into_response(),
+                Err(e) => {
+                    tracing::error!(error = %e, "trust_edges backfill failed");
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("{{\"error\": \"{e}\"}}"),
+                    )
+                        .into_response()
+                }
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+mod backfill_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    fn encode_event(name: &str, body: &[u8]) -> String {
+        let mut data = event_discriminator(name).to_vec();
+        data.extend_from_slice(body);
+        format!(
+            "Program data: {}",
+            base64::engine::general_purpose::STANDARD.encode(data)
+        )
+    }
+
+    #[test]
+    fn decodes_task_finalized_event_from_logs() {
+        let mut body = 42u64.to_le_bytes().to_vec(); // task_id
+        body.extend_from_slice(&[7u8; 32]); // agent pubkey
+        body.extend_from_slice(&5000u64.to_le_bytes()); // payment
+        body.extend_from_slice(&50u64.to_le_bytes()); // fee
+        let logs = vec![
+            "Program log: something".to_string(),
+            encode_event("TaskFinalized", &body),
+        ];
+        let events = events_from_logs(&logs);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ChainEvent::Finalized { task_id, agent } => {
+                assert_eq!(*task_id, 42);
+                assert_eq!(*agent, bs58::encode([7u8; 32]).into_string());
+            }
+            _ => panic!("wrong event kind"),
+        }
+    }
+
+    #[test]
+    fn decodes_created_verified_chain() {
+        let mut created = 7u64.to_le_bytes().to_vec();
+        created.extend_from_slice(&[9u8; 32]); // client
+        created.extend_from_slice(&[0u8; 33]); // escrow+deadline+... (trailing ignored)
+        let mut verified = 7u64.to_le_bytes().to_vec();
+        verified.extend_from_slice(&800_000u64.to_le_bytes()); // composite_score
+        verified.extend_from_slice(&[0u8; 48]);
+        let logs = vec![
+            encode_event("TaskCreated", &created),
+            encode_event("TaskVerified", &verified),
+        ];
+        let events = events_from_logs(&logs);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], ChainEvent::Created { task_id: 7, .. }));
+        match &events[1] {
+            ChainEvent::Verified {
+                task_id,
+                composite_score,
+            } => {
+                assert_eq!(*task_id, 7);
+                assert_eq!(*composite_score, 800_000);
+            }
+            _ => panic!("wrong event kind"),
+        }
+    }
+
+    #[test]
+    fn unknown_discriminators_are_ignored() {
+        let logs = vec![
+            encode_event("SomeOtherEvent", &[1, 2, 3]),
+            "Program log: noise".to_string(),
+        ];
+        assert!(events_from_logs(&logs).is_empty());
+    }
+
+    #[test]
+    fn challenge_resolved_decodes_challenger_won_flag() {
+        let mut body = 3u64.to_le_bytes().to_vec();
+        body.push(1); // challenger_won = true
+        body.extend_from_slice(&100u64.to_le_bytes());
+        let logs = vec![encode_event("ChallengeResolved", &body)];
+        let events = events_from_logs(&logs);
+        match &events[0] {
+            ChainEvent::ChallengeResolved {
+                task_id,
+                challenger_won,
+            } => {
+                assert_eq!(*task_id, 3);
+                assert!(*challenger_won);
+            }
+            _ => panic!("wrong event kind"),
+        }
+    }
+}

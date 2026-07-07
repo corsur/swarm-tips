@@ -308,7 +308,15 @@ fn build_router(
         )
         .route(
             "/internal/reputation/rebuild",
-            reputation::rebuild_handler(reputation_db),
+            reputation::rebuild_handler(reputation_db.clone()),
+        )
+        .route(
+            "/internal/reputation/backfill",
+            reputation::backfill_handler(
+                reputation_db,
+                reqwest::Client::new(),
+                rpc_url_mainnet.clone(),
+            ),
         )
         .route(
             // Plain-HTTP reputation read for the swarm.tips/reputation page

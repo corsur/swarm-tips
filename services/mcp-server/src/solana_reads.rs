@@ -21,7 +21,7 @@ use base64::Engine;
 use crate::errors::McpServiceError;
 
 /// Shillbot program ID (mainnet + devnet — same address).
-const SHILLBOT_PROGRAM_ID_BASE58: &str = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi";
+pub(crate) const SHILLBOT_PROGRAM_ID_BASE58: &str = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi";
 
 /// Coordination Game program ID.
 const COORDINATION_GAME_PROGRAM_ID_BASE58: &str = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P";
