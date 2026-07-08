@@ -53,6 +53,12 @@ function pda(seeds: (Buffer | Uint8Array)[], programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(seeds, programId)[0];
 }
 
+// A per-call compute-budget nonce keeps repeated `updateParams` txs (e.g. a
+// set-then-restore pair) from colliding on bankrun's static blockhash, which
+// would surface as "already processed" instead of applying the restore. Same
+// pattern the resolve_challenge_default battery uses below.
+let paramNonce = 500_000;
+
 describe("shillbot-attested (bankrun)", () => {
   let context: Awaited<ReturnType<typeof startAnchor>>;
   let provider: BankrunProvider;
@@ -179,6 +185,13 @@ describe("shillbot-attested (bankrun)", () => {
   ): Promise<void> {
     await program.methods
       .verifyTaskAttested(new BN(score), attestationHash(taskId, score) as any)
+      // Unique per call: two logically-identical attested verifies (e.g. a
+      // rejected verify followed by a retry after a param fix) would otherwise
+      // hash to the same tx on bankrun's static blockhash — the second gets
+      // deduped to the first's cached FAILURE instead of re-running.
+      .preInstructions([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: paramNonce++ }),
+      ])
       .accountsPartial({
         task: taskPda,
         globalState: globalPda,
@@ -495,6 +508,9 @@ describe("shillbot-attested (bankrun)", () => {
             10,
             new BN(DISPUTE_WINDOW)
           )
+          .preInstructions([
+            ComputeBudgetProgram.setComputeUnitLimit({ units: paramNonce++ }),
+          ])
           .accountsPartial({
             globalState: globalPda,
             authority: authority.publicKey,
@@ -700,6 +716,9 @@ describe("shillbot-attested (bankrun)", () => {
             10,
             new BN(w)
           )
+          .preInstructions([
+            ComputeBudgetProgram.setComputeUnitLimit({ units: paramNonce++ }),
+          ])
           .accountsPartial({
             globalState: globalPda,
             authority: authority.publicKey,
