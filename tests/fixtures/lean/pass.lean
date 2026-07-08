@@ -1,0 +1,1 @@
+theorem proof : statementProp := trivial
