@@ -246,6 +246,30 @@ export async function withChallengeWindow(
   }
 }
 
+/** Run `body` with the challenge + verification-timeout windows shrunk to
+ *  seconds (both only need `> 0` on-chain), restoring the snapshot after — so
+ *  the finalize / challenge / expire terminal outcomes resolve in-run. The
+ *  dispute-resolution window is NOT shrunk: its on-chain MIN is 1 hour, so the
+ *  default-resolve outcome can't run in-run live (it's covered by the bankrun
+ *  matrix via clock-warp). */
+export async function withShrunkWindows(
+  h: DevnetHarness,
+  secs: { challenge: number; verificationTimeout: number },
+  body: () => Promise<void>
+): Promise<void> {
+  const snap = await snapshotParams(h);
+  await applyParams(h, {
+    ...snap,
+    challengeWindowSeconds: new BN(secs.challenge),
+    verificationTimeoutSeconds: new BN(secs.verificationTimeout),
+  });
+  try {
+    await body();
+  } finally {
+    await applyParams(h, snap);
+  }
+}
+
 /** Ensure a keypair holds at least `minLamports` (top up from the authority). */
 export async function ensureFunded(
   h: DevnetHarness,
