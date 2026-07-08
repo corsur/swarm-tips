@@ -1127,7 +1127,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "query_agent_credit_web_score",
-        description = "[READ] Extension-credit web-position for an agent (0..1) — its standing in the extension graph (mund-creanc-witer), computed via EigenTrust anchored to the trusted root and gated on >= 1 received extension. Returns { wallet, position, extensions_received, has_standing }. This is the same signal that feeds credit_web in agent_trust_score. Empty/0 on clusters where extension-registry isn't deployed.",
+        description = "[READ] Extension-credit web-position for an agent (0..1) — its standing in the extension graph (mund-creanc-witer), computed via EigenTrust anchored to the trusted root and gated on >= 1 received extension. Returns { wallet, position, extensions_received, has_standing }. This is the same signal that feeds credit_web in agent_trust_score. Live on Solana mainnet.",
         annotations(read_only_hint = true)
     )]
     async fn query_agent_credit_web_score(
@@ -1154,7 +1154,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "list_extensions",
-        description = "[READ] List active extension-credit obligations (extender -> recipient vouches backed by a bonded SOL stake). Optionally filter by `extender` or `recipient` wallet (base58). Returns { extensions: [{ extender, recipient, bond_lamports }], count }. Empty on clusters where extension-registry isn't deployed.",
+        description = "[READ] List active extension-credit obligations (extender -> recipient vouches backed by a bonded SOL stake). Optionally filter by `extender` or `recipient` wallet (base58). Returns { extensions: [{ extender, recipient, bond_lamports }], count }. Live on Solana mainnet.",
         annotations(read_only_hint = true)
     )]
     async fn list_extensions(

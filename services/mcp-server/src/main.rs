@@ -327,9 +327,9 @@ fn build_router(
         .route(
             // Plain-HTTP reputation read for the swarm.tips/reputation page
             // (B8). Two signals in one response: the extension-credit
-            // web-position (on-chain read; network param, default devnet
-            // until extension-registry is live on mainnet) and the
-            // EigenTrust settlement-graph record (Firestore, mainnet
+            // web-position (on-chain read; network param, default mainnet
+            // since the 2026-07-08 extension-registry mainnet deploy) and
+            // the EigenTrust settlement-graph record (Firestore, mainnet
             // settlements — network-independent).
             "/internal/agent-reputation",
             axum::routing::get({
@@ -342,7 +342,7 @@ fn build_router(
                     let rep_db = Arc::clone(&rep_db);
                     async move {
                         let wallet = q.get("wallet").cloned().unwrap_or_default();
-                        let net = q.get("network").map(String::as_str).unwrap_or("devnet");
+                        let net = q.get("network").map(String::as_str).unwrap_or("mainnet");
                         let rpc = if net == "mainnet" { &mainnet } else { &devnet };
                         let client = reqwest::Client::new();
                         let (web_position, extensions_received) =

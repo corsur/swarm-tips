@@ -54,18 +54,28 @@ describe("extension-registry", () => {
     provider.connection.getBalance(pk, "confirmed");
 
   before(async () => {
-    try {
-      await program.methods
-        .initialize(authority, authority)
-        .accountsPartial({
-          globalState,
-          payer: authority,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc({ commitment: "confirmed" });
-    } catch (_e) {
-      // already initialized (validator not reset) — fine
+    // Idempotent init, but VERIFIED: swallowing every error here once let a
+    // transient failure (validator warm-up) through silently, and the
+    // default_extension tests then failed with AccountNotInitialized. Retry
+    // until the account demonstrably exists.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await program.methods
+          .initialize(authority, authority)
+          .accountsPartial({
+            globalState,
+            payer: authority,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc({ commitment: "confirmed" });
+      } catch (_e) {
+        // possibly already initialized — the existence check below decides
+      }
+      const info = await provider.connection.getAccountInfo(globalState);
+      if (info !== null) return;
+      await new Promise((r) => setTimeout(r, 2000));
     }
+    throw new Error("global_state failed to initialize after 5 attempts");
   });
 
   it("submit → withdraw returns the full bond + rent to the extender (conservation)", async () => {
