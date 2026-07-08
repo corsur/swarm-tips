@@ -5313,6 +5313,7 @@ name = "shillbot"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "serde_json",
  "shared",
  "solana-sha256-hasher",
  "switchboard-on-demand",

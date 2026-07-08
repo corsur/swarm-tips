@@ -108,6 +108,44 @@ pub fn compute_challenge_bond(escrow_lamports: u64, multiplier: u8) -> Result<u6
 mod tests {
     use super::*;
 
+    // --- Cross-impl golden-vector parity ---
+
+    #[test]
+    fn payout_vectors_match_compute_payment() {
+        // The cross-language payout contract. The TS oracle
+        // (sdk/task-outcome-oracle.ts) generates this file; the Solidity mirror
+        // (evm/test/ShillbotEscrowVectors.t.sol) and this test read the SAME
+        // bytes. If any implementation's payment/fee formula drifts, exactly one
+        // side's test fails — they can never silently diverge. Regenerate
+        // intentionally with `npx tsx scripts/gen-task-payout-vectors.ts`.
+        let raw = include_str!("../../../tests/fixtures/task-payout-vectors.json");
+        let doc: serde_json::Value = serde_json::from_str(raw).expect("valid fixture json");
+        let vectors = doc["vectors"].as_array().expect("vectors array");
+        assert!(!vectors.is_empty(), "fixture has no vectors");
+        for (i, v) in vectors.iter().enumerate() {
+            let s = &v["scenario"];
+            let score = s["compositeScore"].as_u64().expect("score");
+            let threshold = s["qualityThreshold"].as_u64().expect("threshold");
+            let escrow: u64 = s["escrowLamports"]
+                .as_str()
+                .expect("escrow str")
+                .parse()
+                .expect("escrow parse");
+            let fee_bps = u16::try_from(s["protocolFeeBps"].as_u64().expect("fee bps"))
+                .expect("fee bps fits u16");
+            let (payment, fee) =
+                compute_payment(score, threshold, escrow, fee_bps).expect("compute_payment");
+            let exp_payment: u64 = v["payment"]
+                .as_str()
+                .expect("payment str")
+                .parse()
+                .expect("p");
+            let exp_fee: u64 = v["fee"].as_str().expect("fee str").parse().expect("f");
+            assert_eq!(payment, exp_payment, "vector {i}: payment mismatch");
+            assert_eq!(fee, exp_fee, "vector {i}: fee mismatch");
+        }
+    }
+
     // --- Payment computation tests ---
 
     #[test]

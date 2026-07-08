@@ -7,12 +7,16 @@
 // scenario is portable across runtimes — which is what makes the metamorphic
 // (cross-target) verification in the property battery possible.
 
-import { Program } from "@coral-xyz/anchor";
+import { Idl, Program } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
 import { CoordinationGame } from "../../target/types/coordination_game";
 
-export interface SolanaRuntime {
-  readonly program: Program<CoordinationGame>;
+// Generic over the loaded program IDL so the same seam serves both products:
+// the coordination game (default type param → all existing usage unchanged) and
+// shillbot (`SolanaRuntime<Shillbot>` in shillbot-bankrun.ts). Every capability
+// below is program-agnostic; only `program` carries the product's typed methods.
+export interface SolanaRuntime<P extends Idl = CoordinationGame> {
+  readonly program: Program<P>;
   /** Default fee-payer / authority for setup transactions. */
   readonly payer: PublicKey;
 
