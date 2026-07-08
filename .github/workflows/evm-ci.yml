@@ -8,14 +8,18 @@ on:
       - 'crates/chain-core/**'
       - 'tests/fixtures/cert-vectors.json'
       - 'tests/fixtures/verify-vectors.json'
+      - 'tests/fixtures/task-payout-vectors.json'
       - 'policies/**'
       - '.github/workflows/evm-ci.yml'
+      - 'crates/chain-registry/**'
   pull_request:
     paths:
       - 'evm/**'
       - 'crates/chain-core/**'
+      - 'crates/chain-registry/**'
       - 'tests/fixtures/cert-vectors.json'
       - 'tests/fixtures/verify-vectors.json'
+      - 'tests/fixtures/task-payout-vectors.json'
       - 'policies/**'
       - '.github/workflows/evm-ci.yml'
   workflow_dispatch:
@@ -59,3 +63,52 @@ jobs:
         run: cargo test -p chain-core --features keccak --test golden_vectors verify_vectors
       - name: Verify verification-schema vectors are current
         run: cargo test -p chain-core --features cosign --test verify_vectors verify_verify_vectors
+
+  registry-deployed-parity:
+    # Finding #6: the registry's stake_base_units / max_tranche_base_units and the
+    # deployed CrossChainGame's stakeWei() / maxTrancheWei() MUST agree, or the
+    # cross-chain settle digest check fails on live matches. This reads the live
+    # on-chain values and fails CI on any divergence — closing the comment-only
+    # "keep these in lockstep" gap. Only deployed (is_live) EVM chains are checked;
+    # scaffolded mainnet entries (contract = None) are skipped until their deploy.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Foundry (cast)
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Registry ↔ on-chain stake/tranche parity
+        run: |
+          set -euo pipefail
+          # cast_read <contract> <sig> <rpcs-csv> — try each RPC until one answers,
+          # strip cast's "[3.2e15]" annotation to leave the bare decimal.
+          cast_read() {
+            local contract="$1" sig="$2" rpcs="$3" out=""
+            IFS=',' read -ra urls <<< "$rpcs"
+            for url in "${urls[@]}"; do
+              if out=$(cast call "$contract" "$sig" --rpc-url "$url" 2>/dev/null); then
+                echo "$out" | awk '{print $1}'
+                return 0
+              fi
+            done
+            return 1
+          }
+          fail=0
+          while IFS=$'\t' read -r chain contract stake tranche rpcs; do
+            [ -z "${chain:-}" ] && continue
+            echo "checking $chain ($contract)"
+            onchain_stake=$(cast_read "$contract" "stakeWei()(uint256)" "$rpcs") \
+              || { echo "::error::$chain: all RPCs failed reading stakeWei()"; fail=1; continue; }
+            onchain_tranche=$(cast_read "$contract" "maxTrancheWei()(uint256)" "$rpcs") \
+              || { echo "::error::$chain: all RPCs failed reading maxTrancheWei()"; fail=1; continue; }
+            if [ "$onchain_stake" != "$stake" ]; then
+              echo "::error::$chain stake mismatch: registry=$stake on-chain=$onchain_stake"; fail=1
+            fi
+            if [ "$onchain_tranche" != "$tranche" ]; then
+              echo "::error::$chain tranche mismatch: registry=$tranche on-chain=$onchain_tranche"; fail=1
+            fi
+          done < <(cargo run -q -p chain-registry --example evm_parity_export)
+          exit $fail

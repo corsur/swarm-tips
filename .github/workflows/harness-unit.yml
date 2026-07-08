@@ -36,6 +36,6 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - name: Lint harness sources
-        run: npx prettier "tests/harness/**/*.ts" "sdk/outcome-oracle.ts" "sdk/battery.ts" --check
+        run: npx prettier "tests/harness/**/*.ts" "sdk/outcome-oracle.ts" "sdk/task-outcome-oracle.ts" "sdk/battery.ts" --check
       - name: Run harness unit tests (no validator)
         run: npx ts-mocha -p ./tsconfig.json --exit "tests/harness/*.unit.test.ts"

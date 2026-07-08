@@ -8,6 +8,11 @@ on:
       - 'crates/shared/**'
       - 'tests/shillbot.ts'
       - 'tests/shillbot-lifecycle.ts'
+      - 'tests/shillbot-attested.ts'
+      - 'tests/shillbot-matrix.ts'
+      - 'tests/shillbot-guards.ts'
+      - 'tests/harness/**'
+      - 'tests/fixtures/task-payout-vectors.json'
       - 'tsconfig.json'
       - 'package.json'
       - 'Anchor.toml'
@@ -17,6 +22,8 @@ on:
       - 'programs/shillbot/**'
       - 'crates/shared/**'
       - 'tests/shillbot*.ts'
+      - 'tests/harness/**'
+      - 'tests/fixtures/task-payout-vectors.json'
       - 'tsconfig.json'
       - 'package.json'
       - 'Anchor.toml'
@@ -71,6 +78,12 @@ jobs:
 
       - run: pnpm run lint
 
+      # Bankrun suites run in-process (no validator) — fast, and they include the
+      # combinatorial matrix + guards. anchor-bankrun loads the built .so from
+      # target/deploy, so the Build step above is the only prerequisite.
+      - name: Run bankrun suites (no validator)
+        run: npx ts-mocha -p ./tsconfig.json -t 1000000 --exit "tests/shillbot-lifecycle.ts" "tests/shillbot-attested.ts" "tests/shillbot-matrix.ts" "tests/shillbot-guards.ts"
+
       - name: Start local validator
         run: |
           solana-test-validator \
@@ -81,8 +94,8 @@ jobs:
           solana config set --url localhost --keypair /home/runner/.config/solana/id.json
           solana airdrop 100
 
-      - name: Run shillbot tests only
-        run: npx ts-mocha -p ./tsconfig.json -t 1000000 --exit "tests/shillbot.ts" "tests/shillbot-lifecycle.ts" "tests/shillbot-attested.ts"
+      - name: Run validator suite (live-lifecycle)
+        run: npx ts-mocha -p ./tsconfig.json -t 1000000 --exit "tests/shillbot.ts"
         env:
           ANCHOR_PROVIDER_URL: http://localhost:8899
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
