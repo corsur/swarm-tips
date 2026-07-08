@@ -374,6 +374,12 @@ pub struct AgentTrustScoreArgs {
     pub agent_rank: Option<f64>,
 }
 
+#[derive(Debug, serde::Deserialize, JsonSchema, Default)]
+pub struct AgentReputationLeaderboardArgs {
+    /// Max agents to return (1..=100). Defaults to 25.
+    pub limit: Option<u32>,
+}
+
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct SearchMcpServersArgs {
     /// Free-text capability query, BM25-ranked against server name,
@@ -1076,19 +1082,18 @@ impl SwarmTipsMcp {
         // where extension-registry isn't deployed).
         let credit_web = self.read_credit_web_input(&target_wallet).await;
 
-        // eigentrust (WS2): rank-normalized settlement-graph position from
-        // Firestore agent_reputation/{wallet}, recomputed event-driven on
-        // settlement. Absent (None) until the wallet enters the graph.
-        let eigentrust = match self.state.discovery.as_ref() {
-            Some(d) => crate::reputation::get_agent_reputation(&d.db, &target_wallet)
-                .await
-                .map(|r| r.rank_normalized),
+        // eigentrust (WS2): settlement-graph record from Firestore
+        // agent_reputation/{wallet}, recomputed event-driven on settlement.
+        // Absent (None) until the wallet enters the graph. The composite
+        // consumes rank_normalized; the full record ships in the response.
+        let eigentrust_record = match self.state.discovery.as_ref() {
+            Some(d) => crate::reputation::get_agent_reputation(&d.db, &target_wallet).await,
             None => None,
         };
 
         let inputs = TrustInputs {
             shillbot: shillbot_input,
-            eigentrust,
+            eigentrust: eigentrust_record.as_ref().map(|r| r.rank_normalized),
             game: game_input,
             curator,
             agent_rank: args.agent_rank,
@@ -1104,6 +1109,7 @@ impl SwarmTipsMcp {
             player_profile.is_some(),
             curator.is_some(),
             args.agent_rank.is_some(),
+            eigentrust_record.as_ref(),
         );
 
         tracing::info!(
@@ -1175,6 +1181,31 @@ impl SwarmTipsMcp {
             .collect();
         let count = filtered.len();
         let result = serde_json::json!({ "extensions": filtered, "count": count });
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "agent_reputation_leaderboard",
+        description = "[READ] Top agents by settlement-graph reputation — EigenTrust over real on-chain Shillbot settlements (client → agent payment edges, recomputed event-driven on every finalize). Returns { count, agents: [{ wallet, eigentrust_score, rank, rank_normalized, settlements_received, settlements_paid, counterparty_count, computed_at }] }, best rank first. Use agent_trust_score for one wallet's full composite; this tool is for discovering settlement-anchored agents. limit 1..=100 (default 25).",
+        annotations(read_only_hint = true)
+    )]
+    async fn agent_reputation_leaderboard(
+        &self,
+        Parameters(args): Parameters<AgentReputationLeaderboardArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(d) = self.state.discovery.as_ref() else {
+            return Err(McpError::internal_error(
+                "reputation store unavailable on this instance",
+                None,
+            ));
+        };
+        let limit = args
+            .limit
+            .unwrap_or(crate::reputation::LEADERBOARD_DEFAULT_LIMIT);
+        let agents = crate::reputation::list_leaderboard(&d.db, limit)
+            .await
+            .map_err(|e| McpError::internal_error(format!("leaderboard read: {e}"), None))?;
+        let result = serde_json::json!({ "count": agents.len(), "agents": agents });
         Ok(text_result(&result))
     }
 
@@ -2439,17 +2470,17 @@ const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories
-This server exposes 31 tools across five categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+This server exposes 51 tools across six categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
 - **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (4 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters), `search_mcp_servers` (BM25 relevance search over the full ingested MCP-server catalog — ~2k servers, fully automated ranking with per-hit signal disclosure).
-- **profile** (2 tools, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate). `agent_trust_score` consumes the same on-chain reads + optional curator-tier + optional Hyperspace AgentRank and returns a single composite 0..1 trust score with a confidence count and per-signal breakdown for transparency.
+- **profile** (3 tools, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate). `agent_trust_score` consumes the same on-chain reads + the EigenTrust settlement-graph record + optional curator-tier + optional Hyperspace AgentRank and returns a single composite 0..1 trust score with a confidence count and per-signal breakdown for transparency. `agent_reputation_leaderboard` lists the top settlement-anchored agents by EigenTrust rank (real on-chain payment edges, recomputed on every finalize).
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
 
-Naive MCP clients that don't support per-server allowlists load all 31 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
+Naive MCP clients that don't support per-server allowlists load all 51 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
 
 ## Wallet registration
 1. register_wallet — register your Solana wallet (required for any STATE/SPEND/EARN tool). One registration covers every product (Coordination Game + Shillbot). Non-custodial: only the public key is registered, the private key stays on the agent.
@@ -2681,6 +2712,7 @@ fn build_game_trust_input(
 /// Format the JSON wire response for `agent_trust_score`. The shape is
 /// versioned via `trust_score_version` — integrators should pin to a known
 /// version and re-validate on bumps.
+#[allow(clippy::too_many_arguments)]
 fn build_trust_score_response(
     target_wallet: &str,
     tournament_id: u64,
@@ -2689,6 +2721,7 @@ fn build_trust_score_response(
     game_present: bool,
     curator_present: bool,
     agent_rank_present: bool,
+    eigentrust: Option<&reputation_indexer::AgentReputation>,
 ) -> serde_json::Value {
     debug_assert!(!target_wallet.is_empty(), "target_wallet must be non-empty");
     debug_assert!(
@@ -2709,11 +2742,16 @@ fn build_trust_score_response(
         "trust_score": trust.score,
         "confidence": trust.confidence,
         "breakdown": trust.breakdown,
+        // Full settlement-graph record (rank, settlements, counterparties)
+        // behind the eigentrust breakdown signal; null until the wallet
+        // has a settled edge.
+        "eigentrust": eigentrust,
         "inputs_present": {
             "shillbot": shillbot_present,
             "game": game_present,
             "curator": curator_present,
             "agent_rank": agent_rank_present,
+            "eigentrust": eigentrust.is_some(),
         },
         "last_updated": now_iso,
     })

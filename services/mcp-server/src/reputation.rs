@@ -143,6 +143,67 @@ pub async fn get_agent_reputation(db: &FirestoreDb, wallet: &str) -> Option<Agen
     }
 }
 
+/// Max leaderboard entries one request may return (bounded query).
+pub const LEADERBOARD_MAX_LIMIT: u32 = 100;
+/// Leaderboard entries returned when the caller doesn't ask for a count.
+pub const LEADERBOARD_DEFAULT_LIMIT: u32 = 25;
+
+/// List the settlement-graph leaderboard, best rank first. `limit` is
+/// clamped to [1, LEADERBOARD_MAX_LIMIT] before the query runs.
+pub async fn list_leaderboard(
+    db: &FirestoreDb,
+    limit: u32,
+) -> anyhow::Result<Vec<AgentReputation>> {
+    let limit = limit.clamp(1, LEADERBOARD_MAX_LIMIT);
+    let agents: Vec<AgentReputation> = db
+        .fluent()
+        .select()
+        .from(AGENT_REPUTATION_COLLECTION)
+        .order_by([("rank", firestore::FirestoreQueryDirection::Ascending)])
+        .limit(limit)
+        .obj()
+        .query()
+        .await
+        .map_err(|e| anyhow::anyhow!("load agent_reputation leaderboard: {e}"))?;
+    // Postcondition: the bound held.
+    debug_assert!(agents.len() <= LEADERBOARD_MAX_LIMIT as usize);
+    Ok(agents)
+}
+
+/// GET /internal/reputation/leaderboard?limit=N → `{count, agents: [...]}`.
+/// Public read (CORS *) backing the swarm.tips/reputation leaderboard and
+/// the `agent_reputation_leaderboard` MCP tool.
+pub fn leaderboard_handler(db: Arc<FirestoreDb>) -> axum::routing::MethodRouter {
+    use axum::response::IntoResponse;
+    axum::routing::get(
+        move |q: axum::extract::Query<std::collections::HashMap<String, String>>| {
+            let db = Arc::clone(&db);
+            async move {
+                let limit = q
+                    .get("limit")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(LEADERBOARD_DEFAULT_LIMIT);
+                match list_leaderboard(&db, limit).await {
+                    Ok(agents) => (
+                        [("Access-Control-Allow-Origin", "*")],
+                        axum::Json(serde_json::json!({ "count": agents.len(), "agents": agents })),
+                    )
+                        .into_response(),
+                    Err(e) => {
+                        tracing::error!(error = %e, "leaderboard read failed");
+                        (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            [("Access-Control-Allow-Origin", "*")],
+                            format!("{{\"error\": \"{e}\"}}"),
+                        )
+                            .into_response()
+                    }
+                }
+            }
+        },
+    )
+}
+
 #[derive(Debug, serde::Deserialize, Default)]
 struct RebuildRequest {
     anchors: Option<Vec<String>>,

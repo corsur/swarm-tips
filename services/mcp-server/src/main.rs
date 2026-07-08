@@ -313,21 +313,33 @@ fn build_router(
         .route(
             "/internal/reputation/backfill",
             reputation::backfill_handler(
-                reputation_db,
+                Arc::clone(&reputation_db),
                 reqwest::Client::new(),
                 rpc_url_mainnet.clone(),
             ),
         )
         .route(
+            // Settlement-graph leaderboard for the swarm.tips/reputation
+            // page and the agent_reputation_leaderboard MCP tool.
+            "/internal/reputation/leaderboard",
+            reputation::leaderboard_handler(Arc::clone(&reputation_db)),
+        )
+        .route(
             // Plain-HTTP reputation read for the swarm.tips/reputation page
-            // (B8). Defaults to devnet, where extension-registry is deployed.
+            // (B8). Two signals in one response: the extension-credit
+            // web-position (on-chain read; network param, default devnet
+            // until extension-registry is live on mainnet) and the
+            // EigenTrust settlement-graph record (Firestore, mainnet
+            // settlements — network-independent).
             "/internal/agent-reputation",
             axum::routing::get({
                 let mainnet = rpc_url_mainnet.clone();
                 let devnet = rpc_url_devnet.clone();
+                let rep_db = Arc::clone(&reputation_db);
                 move |q: axum::extract::Query<std::collections::HashMap<String, String>>| {
                     let mainnet = mainnet.clone();
                     let devnet = devnet.clone();
+                    let rep_db = Arc::clone(&rep_db);
                     async move {
                         let wallet = q.get("wallet").cloned().unwrap_or_default();
                         let net = q.get("network").map(String::as_str).unwrap_or("devnet");
@@ -335,6 +347,7 @@ fn build_router(
                         let client = reqwest::Client::new();
                         let (web_position, extensions_received) =
                             crate::web_position::agent_web_position(&client, rpc, &wallet).await;
+                        let eigentrust = reputation::get_agent_reputation(&rep_db, &wallet).await;
                         (
                             [("Access-Control-Allow-Origin", "*")],
                             axum::Json(serde_json::json!({
@@ -343,6 +356,7 @@ fn build_router(
                                 "extensions_received": extensions_received,
                                 "has_standing": web_position.is_some()
                                     && extensions_received >= 1,
+                                "eigentrust": eigentrust,
                             })),
                         )
                     }
