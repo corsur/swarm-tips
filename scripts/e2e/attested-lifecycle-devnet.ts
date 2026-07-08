@@ -1,383 +1,162 @@
 /**
  * Devnet e2e — the deterministic ATTESTED verification lifecycle against the
- * LIVE devnet shillbot program. Proves the S2 verify_task_attested path
- * end-to-end on real devnet:
+ * LIVE devnet shillbot program, driven through the SHARED harness + steps:
  *
  *   create_task(kind=1, LeanProof) → claim → submit_work → verify_task_attested
- *   (signed by the allow-listed attester) → finalize → payment asserted.
+ *   (signed by the armed attester = devnet oracle_authority = test.json) →
+ *   finalize → payment asserted against deriveTaskOutcome (the SAME payout oracle
+ *   the bankrun matrix uses). This is the live "cell" for the attested path.
  *
  * Plus the failing-proof branch: a second task attested with score 0 finalizes
  * with zero payment (full escrow refunded to the client).
  *
- * Uses the REAL armed attester: oracle_authority on devnet is test.json (the
- * key also held in the shillbot-attester-keypair secret), so this signs
- * verify_task_attested with test.json directly — no oracle rotation, no
- * throwaway signer. id.json (the GlobalState authority) only shrinks the
- * global challenge_window to a few seconds so finalize can run in-demo, then
- * restores it in a finally block. The attested-verify step is the novel path;
- * the
- * challenge→defaultResolve dispute path is exhaustively covered by the bankrun
- * suite (tests/shillbot-attested.ts) with clock warping and needs a ≥1h live
- * wait, so it is not re-proven here.
- *
- * verification_hash is any non-zero 32 bytes here: the on-chain program only
- * requires it non-zero (the AttestationCert-digest binding is an off-chain
- * audit property the attester SERVICE enforces, not the program).
+ * Keys are persistent (no ephemeral keypairs): client/authority = id.json,
+ * attester = test.json, agent = shillbot-game-platform-agent.json (arms-length).
+ * The dispute (challenge→defaultResolve) path needs a ≥1h live wait and is
+ * exhaustively covered by the bankrun matrix + guards with clock warping, so it
+ * is not re-proven here.
  *
  * NOT a CI test (real devnet, mutates global params). Run manually:
  *   npx tsx scripts/e2e/attested-lifecycle-devnet.ts   (exit 0 = pass)
  */
-import * as anchor from "@coral-xyz/anchor";
 import { BN } from "@coral-xyz/anchor";
 import {
-  Connection,
-  Keypair,
-  PublicKey,
-  SystemProgram,
-  SYSVAR_SLOT_HASHES_PUBKEY,
-  Transaction,
-} from "@solana/web3.js";
-import { createHash, randomBytes } from "crypto";
-import { readFileSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
-import type { Shillbot } from "../../target/types/shillbot";
+  connectDevnet,
+  devnetCtx,
+  Checker,
+  withChallengeWindow,
+  ensureFunded,
+  sleep,
+  DevnetHarness,
+} from "./devnet-harness";
+import {
+  ShillbotCtx,
+  createTask,
+  claimTask,
+  submitWork,
+  verifyTaskAttested,
+  finalizeTask,
+  LEAN_PROOF_PLATFORM,
+} from "../../tests/harness/shillbot-steps";
+import {
+  deriveTaskOutcome,
+  TaskOutcomeKind,
+  MAX_SCORE,
+} from "../../sdk/task-outcome-oracle";
 
-const DEVNET =
-  process.env.DEVNET_RPC ??
-  process.env.RPC_URL ??
-  "https://api.devnet.solana.com";
 const ESCROW = new BN(2_000_000); // 0.002 SOL
-const MAX_SCORE = 1_000_000;
-const LEAN_PROOF_PLATFORM = 10;
-const DEMO_CHALLENGE_WINDOW = 6; // seconds — shrunk global window for the demo
-const AGENT_FUNDING = 6_000_000;
-
-let failures = 0;
-function check(cond: boolean, msg: string): void {
-  console.log(`  ${cond ? "✓" : "✗"} ${msg}`);
-  if (!cond) failures++;
-}
-function loadKeypair(path: string): Keypair {
-  return Keypair.fromSecretKey(
-    Uint8Array.from(JSON.parse(readFileSync(path, "utf8")) as number[])
-  );
-}
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const DEMO_WINDOW = 6; // seconds — shrunk global challenge window for the demo
 
 async function main(): Promise<void> {
-  const authorityClient = loadKeypair(
-    join(homedir(), ".config/solana/id.json")
-  );
-  // The real armed attester = devnet oracle_authority = test.json (also the
-  // shillbot-attester-keypair secret). No throwaway, no rotation.
-  const attester = loadKeypair(join(homedir(), ".config/solana/test.json"));
-  const connection = new Connection(DEVNET, "confirmed");
-  const provider = new anchor.AnchorProvider(
-    connection,
-    new anchor.Wallet(authorityClient),
-    { commitment: "confirmed" }
-  );
-  anchor.setProvider(provider);
-  const program = new anchor.Program(
-    JSON.parse(
-      readFileSync(
-        join(__dirname, "..", "..", "target", "idl", "shillbot.json"),
-        "utf8"
-      )
-    ) as anchor.Idl,
-    provider
-  ) as unknown as anchor.Program<Shillbot>;
+  const h = connectDevnet();
+  const ctx = await devnetCtx(h);
+  const chk = new Checker();
 
-  const [globalPda] = PublicKey.findProgramAddressSync(
-    [Buffer.from("shillbot_global")],
-    program.programId
-  );
-  const bal = (pk: PublicKey) => connection.getBalance(pk, "confirmed");
+  console.log(`authority/client: ${h.authority.publicKey.toBase58()}`);
+  console.log(`attester:         ${h.attester.publicKey.toBase58()}`);
+  console.log(`agent:            ${h.agent.publicKey.toBase58()}`);
 
-  console.log(`authority/client: ${authorityClient.publicKey.toBase58()}`);
-  console.log(`demo attester:    ${attester.publicKey.toBase58()}`);
-
-  const snap = await program.account.globalState.fetch(globalPda);
-  check(
-    snap.oracleAuthority.toBase58() === attester.publicKey.toBase58(),
+  const g = await h.program.account.globalState.fetch(h.globalPda);
+  chk.check(
+    (g.oracleAuthority as { toBase58(): string }).toBase58() ===
+      h.attester.publicKey.toBase58(),
     "devnet oracle_authority == test.json (the armed attester)"
   );
-  const restoreParams = () =>
-    program.methods
-      .updateParams(
-        snap.protocolFeeBps,
-        snap.qualityThreshold as BN,
-        snap.challengeWindowSeconds as BN,
-        snap.verificationTimeoutSeconds as BN,
-        snap.attestationDelaySeconds as BN,
-        snap.stalenessWindowSeconds as BN,
-        snap.maxConcurrentClaims,
-        snap.challengeBondMultiplierBps as unknown as number,
-        snap.bondSlashTreasuryBps,
-        snap.paused,
-        snap.pausedPlatforms,
-        snap.rateLimitWindowSeconds as BN,
-        snap.maxTasksPerRateWindow,
-        snap.disputeResolutionWindowSeconds as BN
-      )
-      .accountsPartial({
-        globalState: globalPda,
-        authority: authorityClient.publicKey,
-      })
-      .rpc();
-  try {
-    // Top up the attester (test.json) so it can fee-pay verify_task_attested.
-    await provider.sendAndConfirm(
-      new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: authorityClient.publicKey,
-          toPubkey: attester.publicKey,
-          lamports: 20_000_000,
-        })
-      )
-    );
+  await ensureFunded(h, h.attester.publicKey, 20_000_000);
+  await ensureFunded(h, h.agent.publicKey, 6_000_000);
 
-    // Shrink the global challenge window so finalize can run in-demo.
-    console.log("\n[setup] shrink challenge window");
-    await program.methods
-      .updateParams(
-        snap.protocolFeeBps,
-        snap.qualityThreshold as BN,
-        new BN(DEMO_CHALLENGE_WINDOW),
-        snap.verificationTimeoutSeconds as BN,
-        snap.attestationDelaySeconds as BN,
-        snap.stalenessWindowSeconds as BN,
-        snap.maxConcurrentClaims,
-        snap.challengeBondMultiplierBps as unknown as number,
-        snap.bondSlashTreasuryBps,
-        snap.paused,
-        snap.pausedPlatforms,
-        snap.rateLimitWindowSeconds as BN,
-        snap.maxTasksPerRateWindow,
-        snap.disputeResolutionWindowSeconds as BN
-      )
-      .accountsPartial({
-        globalState: globalPda,
-        authority: authorityClient.publicKey,
-      })
-      .rpc();
-
+  await withChallengeWindow(h, DEMO_WINDOW, async () => {
     await runLifecycle(
-      program,
-      connection,
-      provider,
-      globalPda,
-      authorityClient,
-      attester,
+      h,
+      ctx,
+      chk,
       MAX_SCORE,
       "happy path (score = MAX): agent paid"
     );
     await runLifecycle(
-      program,
-      connection,
-      provider,
-      globalPda,
-      authorityClient,
-      attester,
+      h,
+      ctx,
+      chk,
       0,
-      "failing proof (score = 0): full refund to client"
+      "failing proof (score = 0): full refund"
     );
-  } finally {
-    console.log("\n[teardown] restore challenge-window params");
-    try {
-      await restoreParams();
-      // Throwaway agent leftovers are devnet dust — a system account can't be
-      // swept below its rent-exempt floor, so we leave them.
-    } catch (e) {
-      console.error("  ✗ teardown error:", e);
-      failures++;
-    }
-  }
+  });
 
-  console.log(
-    `\n${failures === 0 ? "PASS" : "FAIL"} — ${failures} check(s) failed`
-  );
-  process.exit(failures === 0 ? 0 : 1);
+  chk.finish();
 }
 
 async function runLifecycle(
-  program: anchor.Program<Shillbot>,
-  connection: Connection,
-  provider: anchor.AnchorProvider,
-  globalPda: PublicKey,
-  client: Keypair,
-  attester: Keypair,
+  h: DevnetHarness,
+  ctx: ShillbotCtx,
+  chk: Checker,
   score: number,
   label: string
 ): Promise<void> {
   console.log(`\n=== ${label} ===`);
-  const agent = Keypair.generate();
-  await provider.sendAndConfirm(
-    new Transaction().add(
-      SystemProgram.transfer({
-        fromPubkey: client.publicKey,
-        toPubkey: agent.publicKey,
-        lamports: AGENT_FUNDING,
-      })
-    )
-  );
+  const created = await createTask(ctx, h.authority, {
+    escrowLamports: ESCROW,
+    platform: LEAN_PROOF_PLATFORM,
+    verificationKind: 1,
+    requiresApproval: false,
+    challengeWindowOverride: 0, // use the shrunk global window
+    contentTag: `theorem-${Date.now()}`,
+  });
+  const createdTask = await h.program.account.task.fetch(created.task);
+  chk.check(createdTask.verificationKind === 1, "verification_kind = 1");
 
-  const g = await program.account.globalState.fetch(globalPda);
-  const counter = g.taskCounter as BN;
-  const [taskPda] = PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("task"),
-      counter.toArrayLike(Buffer, "le", 8),
-      client.publicKey.toBuffer(),
-    ],
-    program.programId
+  await claimTask(ctx, h.agent, created.task);
+  await submitWork(
+    ctx,
+    h.agent,
+    created.task,
+    "https://artifacts.example/proof.lean"
   );
-  const [clientStatePda] = PublicKey.findProgramAddressSync(
-    [Buffer.from("client_state"), client.publicKey.toBuffer()],
-    program.programId
-  );
-  const [agentStatePda] = PublicKey.findProgramAddressSync(
-    [Buffer.from("agent_state"), agent.publicKey.toBuffer()],
-    program.programId
-  );
+  await verifyTaskAttested(ctx, created.task, created.taskId, score);
 
-  const statement = `theorem_${counter.toString()}`;
-  const contentHash = Array.from(
-    createHash("sha256").update(statement).digest()
-  );
-  const now = Math.floor(Date.now() / 1000);
-
-  // create_task kind=1 (LeanProof), requires_approval=false so the attester
-  // verifies directly from Submitted.
-  await program.methods
-    .createTask(
-      ESCROW,
-      contentHash as never,
-      new BN(now + 86_400),
-      new BN(3600),
-      new BN(14_400),
-      LEAN_PROOF_PLATFORM,
-      0,
-      0, // challenge_window_override 0 = use the (shrunk) global window
-      0,
-      false,
-      1 // verification_kind = DeterministicAttested
-    )
-    .accountsPartial({
-      globalState: globalPda,
-      task: taskPda,
-      clientState: clientStatePda,
-      client: client.publicKey,
-      slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
-      systemProgram: SystemProgram.programId,
-    })
-    .rpc();
-  const created = await program.account.task.fetch(taskPda);
-  check(
-    created.verificationKind === 1,
-    "task created with verification_kind = 1"
-  );
-
-  // claim (fresh agent — arms-length from client) + submit artifact URL.
-  await program.methods
-    .claimTask()
-    .accountsPartial({
-      task: taskPda,
-      globalState: globalPda,
-      agentState: agentStatePda,
-      agent: agent.publicKey,
-      systemProgram: SystemProgram.programId,
-    })
-    .signers([agent])
-    .rpc();
-  await program.methods
-    .submitWork(Buffer.from("https://artifacts.example/proof.lean"))
-    .accountsPartial({
-      task: taskPda,
-      agentState: agentStatePda,
-      agent: agent.publicKey,
-    })
-    .signers([agent])
-    .rpc();
-
-  // verify_task_attested — signed by the demo attester (= oracle_authority).
-  const verificationHash = Array.from(randomBytes(32));
-  await program.methods
-    .verifyTaskAttested(new BN(score), verificationHash as never)
-    .accountsPartial({
-      task: taskPda,
-      globalState: globalPda,
-      attester: attester.publicKey,
-    })
-    .signers([attester])
-    .rpc();
-  const verified = await program.account.task.fetch(taskPda);
-  check(
+  const verified = await h.program.account.task.fetch(created.task);
+  chk.check(
     JSON.stringify(verified.state) === JSON.stringify({ verified: {} }),
     "state = Verified"
   );
-  const escrow = (verified.escrowLamports as BN).toNumber();
-  const payment = (verified.paymentAmount as BN).toNumber();
-  const fee = (verified.feeAmount as BN).toNumber();
-  if (score === MAX_SCORE) {
-    const expectedFee = Math.floor(
-      (escrow * (g.protocolFeeBps as number)) / 10_000
-    );
-    check(
-      payment === escrow - expectedFee,
-      `payment = escrow − fee (${payment})`
-    );
-  } else {
-    check(payment === 0 && fee === 0, "score 0 ⇒ payment and fee are 0");
-  }
 
-  // Wait past the shrunk challenge window, then finalize (permissionless).
-  await sleep((DEMO_CHALLENGE_WINDOW + 3) * 1000);
-  const agentBefore = await connection.getBalance(agent.publicKey, "confirmed");
-  const clientBefore = await connection.getBalance(
-    client.publicKey,
+  const g = await h.program.account.globalState.fetch(h.globalPda);
+  const expected = deriveTaskOutcome({
+    escrowLamports: BigInt(ESCROW.toString()),
+    qualityThreshold: (g.qualityThreshold as BN).toNumber(),
+    protocolFeeBps: g.protocolFeeBps,
+    compositeScore: score,
+    verificationKind: 1,
+    challengeBondMultiplier: g.challengeBondMultiplierBps,
+    bondSlashTreasuryBps: g.bondSlashTreasuryBps,
+    outcome: TaskOutcomeKind.Finalized,
+  });
+  chk.check(
+    (verified.paymentAmount as BN).toString() ===
+      expected.agentLamports.toString(),
+    `payment == oracle agentLamports (${expected.agentLamports})`
+  );
+
+  await sleep((DEMO_WINDOW + 3) * 1000);
+  const agentBefore = await h.connection.getBalance(
+    h.agent.publicKey,
     "confirmed"
   );
-  await program.methods
-    .finalizeTask()
-    .accountsPartial({
-      task: taskPda,
-      globalState: globalPda,
-      agent: agent.publicKey,
-      client: client.publicKey,
-      treasury: g.treasury,
-    })
-    .remainingAccounts([
-      { pubkey: agentStatePda, isSigner: false, isWritable: true },
-    ])
-    .rpc();
-  const closed = await connection.getAccountInfo(taskPda, "confirmed");
-  check(closed === null, "task account closed after finalize");
-  const agentAfter = await connection.getBalance(agent.publicKey, "confirmed");
-  const clientAfter = await connection.getBalance(
-    client.publicKey,
+  await finalizeTask(
+    ctx,
+    created.task,
+    h.agent.publicKey,
+    h.authority.publicKey
+  );
+  const closed = await h.connection.getAccountInfo(created.task, "confirmed");
+  chk.check(closed === null, "task account closed after finalize");
+  const agentAfter = await h.connection.getBalance(
+    h.agent.publicKey,
     "confirmed"
   );
-  if (score === MAX_SCORE) {
-    check(
-      agentAfter - agentBefore === payment,
-      `agent received the payment (${payment})`
-    );
-  } else {
-    // Full escrow + PDA rent refunded to the client; agent gets nothing.
-    check(
-      agentAfter === agentBefore,
-      "agent received nothing on the failing proof"
-    );
-    check(
-      clientAfter > clientBefore,
-      "client refunded escrow + rent on the failing proof"
-    );
-  }
-
-  // The throwaway agent's leftover is devnet dust (can't sweep a system
-  // account below its rent-exempt floor); left in place.
+  chk.check(
+    BigInt(agentAfter - agentBefore) === expected.agentLamports,
+    `agent delta == oracle agentLamports (${expected.agentLamports})`
+  );
 }
 
 main().catch((e) => {
