@@ -313,6 +313,7 @@ pub struct BackfillSummary {
 }
 
 /// One decoded settlement-relevant event.
+#[derive(Debug)]
 enum ChainEvent {
     Created { task_id: u64, client: String },
     Claimed { task_id: u64, agent: String },
@@ -736,5 +737,100 @@ mod backfill_tests {
             }
             _ => panic!("wrong event kind"),
         }
+    }
+
+    // ---- combinatorial log-sequence matrix -------------------------------
+    //
+    // The decoder must extract exactly the valid events from any interleaving
+    // of valid frames, foreign frames, truncated frames, and non-event noise
+    // — silently skipping garbage, never panicking, never inventing events.
+
+    fn created_frame(task_id: u64) -> String {
+        let mut body = task_id.to_le_bytes().to_vec();
+        body.extend_from_slice(&[9u8; 32]);
+        body.extend_from_slice(&[0u8; 33]);
+        encode_event("TaskCreated", &body)
+    }
+
+    fn finalized_frame(task_id: u64) -> String {
+        let mut body = task_id.to_le_bytes().to_vec();
+        body.extend_from_slice(&[7u8; 32]);
+        body.extend_from_slice(&[0u8; 16]);
+        encode_event("TaskFinalized", &body)
+    }
+
+    fn noise_variants() -> Vec<(&'static str, String)> {
+        vec![
+            ("plain-log", "Program log: hello".to_string()),
+            ("foreign-event", encode_event("SomeOtherEvent", &[1, 2, 3])),
+            (
+                "truncated-frame",
+                encode_event("TaskFinalized", &[1, 2, 3]), // far too short
+            ),
+            ("non-base64", "Program data: !!!not-base64!!!".to_string()),
+            (
+                "short-discriminator",
+                format!(
+                    "Program data: {}",
+                    base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3])
+                ),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_noise_interleaving_extracts_exactly_the_valid_events() {
+        // Two valid frames × every noise variant × every insertion slot
+        // (before / between / after) — the extraction must be identical.
+        for (noise_name, noise) in noise_variants() {
+            for slot in 0..3 {
+                let mut logs = vec![created_frame(1), finalized_frame(1)];
+                logs.insert(slot, noise.clone());
+                let events = events_from_logs(&logs);
+                assert_eq!(
+                    events.len(),
+                    2,
+                    "noise {noise_name:?} at slot {slot}: expected 2 events, got {}",
+                    events.len()
+                );
+                assert!(
+                    matches!(events[0], ChainEvent::Created { task_id: 1, .. }),
+                    "noise {noise_name:?} at slot {slot}: first event wrong"
+                );
+                assert!(
+                    matches!(events[1], ChainEvent::Finalized { task_id: 1, .. }),
+                    "noise {noise_name:?} at slot {slot}: second event wrong"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn interleaved_tasks_keep_their_ids_straight() {
+        // Frames from two tasks interleaved in one transaction's logs: the
+        // decoder is order-preserving and never cross-wires task ids.
+        let logs = vec![
+            created_frame(10),
+            created_frame(20),
+            finalized_frame(20),
+            finalized_frame(10),
+        ];
+        let events = events_from_logs(&logs);
+        assert_eq!(events.len(), 4);
+        let ids: Vec<u64> = events
+            .iter()
+            .map(|e| match e {
+                ChainEvent::Created { task_id, .. } => *task_id,
+                ChainEvent::Finalized { task_id, .. } => *task_id,
+                other => panic!("unexpected event {other:?}"),
+            })
+            .collect();
+        assert_eq!(ids, vec![10, 20, 20, 10]);
+    }
+
+    #[test]
+    fn all_noise_no_signal_yields_nothing() {
+        let logs: Vec<String> = noise_variants().into_iter().map(|(_, n)| n).collect();
+        assert!(events_from_logs(&logs).is_empty());
     }
 }

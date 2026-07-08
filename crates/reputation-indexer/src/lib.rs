@@ -326,4 +326,162 @@ mod tests {
             assert!(good.eigentrust_score > bad.eigentrust_score);
         }
     }
+
+    // ---- combinatorial graph-shape matrix -------------------------------
+    //
+    // Every (topology × anchor-set × weight-level) point must uphold the
+    // build invariants: ranks are a 1..=n permutation, rank_normalized
+    // follows its formula, settlement counters match the deduped edge
+    // multiset, and the build converges.
+
+    fn topology(name: &str, w: f64) -> Vec<TrustEdgeDoc> {
+        let e = |tx: &str, from: &str, to: &str| edge(tx, from, to, w);
+        match name {
+            "single" => vec![e("t1", "anchor", "a")],
+            "chain" => vec![e("t1", "anchor", "a"), e("t2", "a", "b"), e("t3", "b", "c")],
+            "star_out" => vec![
+                e("t1", "anchor", "a"),
+                e("t2", "anchor", "b"),
+                e("t3", "anchor", "c"),
+            ],
+            "star_in" => vec![
+                e("t1", "anchor", "hub"),
+                e("t2", "a", "hub"),
+                e("t3", "b", "hub"),
+            ],
+            "diamond" => vec![
+                e("t1", "anchor", "a"),
+                e("t2", "anchor", "b"),
+                e("t3", "a", "c"),
+                e("t4", "b", "c"),
+            ],
+            "ring_detached" => vec![
+                e("t1", "anchor", "honest"),
+                e("s1", "x", "y"),
+                e("s2", "y", "x"),
+            ],
+            "dup_sigs" => vec![
+                e("t1", "anchor", "a"),
+                e("t1", "anchor", "a"),
+                e("t2", "a", "b"),
+            ],
+            other => panic!("unknown topology {other}"),
+        }
+    }
+
+    #[test]
+    fn graph_shape_matrix_upholds_build_invariants() {
+        let topologies = [
+            "single",
+            "chain",
+            "star_out",
+            "star_in",
+            "diamond",
+            "ring_detached",
+            "dup_sigs",
+        ];
+        let anchor_sets: [&[&str]; 3] = [
+            &["anchor"],
+            &["anchor", "a"],
+            &["not_in_graph"], // anchor never appears in any edge
+        ];
+        for topo in topologies {
+            for anchors in anchor_sets {
+                for weight in [0.0, 0.5, 1.0] {
+                    let docs = topology(topo, weight);
+                    let build = build_reputation(
+                        &docs,
+                        &pre(anchors),
+                        &EigenTrustConfig::default(),
+                        chrono::Utc::now(),
+                    )
+                    .unwrap_or_else(|e| panic!("{topo}/{anchors:?}/{weight}: {e}"));
+                    let label = format!("{topo}/{anchors:?}/{weight}");
+
+                    // Ranks are a 1..=n permutation.
+                    let mut ranks: Vec<u32> = build.agents.iter().map(|a| a.rank).collect();
+                    ranks.sort_unstable();
+                    assert_eq!(
+                        ranks,
+                        (1..=build.agents.len() as u32).collect::<Vec<_>>(),
+                        "{label}: ranks are not a permutation"
+                    );
+
+                    let n = build.agents.len() as f64;
+                    let mut unique_sigs: std::collections::HashSet<&str> =
+                        std::collections::HashSet::new();
+                    for d in &docs {
+                        unique_sigs.insert(&d.tx_sig);
+                    }
+                    assert_eq!(
+                        build.edge_count,
+                        unique_sigs.len(),
+                        "{label}: edge count != unique tx sigs"
+                    );
+                    assert_eq!(
+                        build.duplicate_edges_dropped,
+                        docs.len() - unique_sigs.len(),
+                        "{label}: dedup count wrong"
+                    );
+
+                    for a in &build.agents {
+                        let expected_norm = 1.0 - ((a.rank as f64 - 1.0) / n.max(1.0));
+                        assert!(
+                            (a.rank_normalized - expected_norm).abs() < 1e-9,
+                            "{label}: rank_normalized formula violated for {}",
+                            a.wallet
+                        );
+                        // Settlement counters replay the deduped multiset.
+                        let mut seen: std::collections::HashSet<&str> =
+                            std::collections::HashSet::new();
+                        let (mut recv, mut paid) = (0u32, 0u32);
+                        for d in &docs {
+                            if !seen.insert(&d.tx_sig) {
+                                continue;
+                            }
+                            if d.to == a.wallet {
+                                recv += 1;
+                            }
+                            if d.from == a.wallet {
+                                paid += 1;
+                            }
+                        }
+                        assert_eq!(
+                            (a.settlements_received, a.settlements_paid),
+                            (recv, paid),
+                            "{label}: settlement counters wrong for {}",
+                            a.wallet
+                        );
+                    }
+                    assert!(build.converged, "{label}: did not converge");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn anchored_agents_outrank_detached_across_weights_and_anchor_sets() {
+        for weight in [0.5, 1.0] {
+            let docs = topology("ring_detached", weight);
+            let build = build_reputation(
+                &docs,
+                &pre(&["anchor"]),
+                &EigenTrustConfig::default(),
+                chrono::Utc::now(),
+            )
+            .expect("build");
+            let rank_of = |w: &str| {
+                build
+                    .agents
+                    .iter()
+                    .find(|a| a.wallet == w)
+                    .map(|a| a.rank)
+                    .unwrap_or(u32::MAX)
+            };
+            assert!(
+                rank_of("honest") < rank_of("x") && rank_of("honest") < rank_of("y"),
+                "weight {weight}: detached ring outranked the anchored agent"
+            );
+        }
+    }
 }

@@ -10,6 +10,8 @@ mod errors;
 mod game_proxy;
 mod game_session;
 mod listings;
+#[cfg(test)]
+mod matrix_tests;
 mod proxy;
 mod reputation;
 mod server;

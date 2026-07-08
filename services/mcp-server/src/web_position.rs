@@ -54,22 +54,70 @@ pub fn compute_web_positions(extensions: &[ExtensionEdge], root: &str) -> HashMa
         Err(_) => return HashMap::new(),
     };
 
-    let max_non_root = result
-        .scores
-        .iter()
-        .filter(|(id, _)| id.as_str() != root)
-        .map(|(_, s)| *s)
-        .fold(0.0_f64, f64::max);
-    if max_non_root <= 0.0 {
-        return HashMap::new();
-    }
-
-    result
+    let mut scores: HashMap<String, f64> = result
         .scores
         .into_iter()
         .filter(|(id, _)| id != root)
+        .collect();
+    cap_at_entry_points(&mut scores, extensions, root);
+
+    let max_non_root = scores.values().copied().fold(0.0_f64, f64::max);
+    if max_non_root <= 0.0 {
+        return HashMap::new();
+    }
+    scores
+        .into_iter()
         .map(|(id, s)| (id, (s / max_non_root).clamp(0.0, 1.0)))
         .collect()
+}
+
+/// Path-monotonicity cap: trust flows outward from the root, so no agent may
+/// outrank the vouch chain that connects it to the root. Without this, a
+/// mutual-vouch ring behind a single vouch traps random-walk mass and
+/// outranks its own entry point — found by the topology matrix, and nearly
+/// free to exploit because `withdraw_extension` refunds bonds.
+///
+/// `cap(v) = max over incoming edges (u -> v) of min(cap(u), score(u))`,
+/// with the root uncapped — a widest-path relaxation. Each agent's score is
+/// then clamped to its cap; unreachable agents (detached rings, self-vouch
+/// islands) cap at 0.
+fn cap_at_entry_points(
+    scores: &mut HashMap<String, f64>,
+    extensions: &[ExtensionEdge],
+    root: &str,
+) {
+    let mut caps: HashMap<String, f64> = scores.keys().map(|k| (k.clone(), 0.0)).collect();
+    // Bounded fixpoint (Rule 2): caps only increase and the longest simple
+    // path has |agents| hops, so |agents| passes suffice.
+    for _ in 0..=scores.len() {
+        let mut changed = false;
+        for e in extensions {
+            if e.recipient == root || e.extender == e.recipient {
+                continue;
+            }
+            let inflow = if e.extender == root {
+                f64::INFINITY
+            } else {
+                let from_cap = caps.get(&e.extender).copied().unwrap_or(0.0);
+                let from_score = scores.get(&e.extender).copied().unwrap_or(0.0);
+                from_cap.min(from_score)
+            };
+            let entry = caps.entry(e.recipient.clone()).or_insert(0.0);
+            if inflow > *entry {
+                *entry = inflow;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (agent, score) in scores.iter_mut() {
+        let cap = caps.get(agent).copied().unwrap_or(0.0);
+        if *score > cap {
+            *score = cap;
+        }
+    }
 }
 
 /// Root of trust for web-position (B6 — the deploy / treasury wallet). All
