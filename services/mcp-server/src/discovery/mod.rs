@@ -678,6 +678,62 @@ pub fn earning_candidates_handler(state: Arc<DiscoveryState>) -> axum::routing::
     })
 }
 
+/// GET /internal/mcp/search?query=&category=&currency=&provenance=&limit=
+///
+/// Plain-HTTP twin of the `search_mcp_servers` MCP tool for the
+/// swarm.tips/discover page — same index, same ranking, same response
+/// shape (the frontend-and-MCP-share-one-source symmetry the listings
+/// surface already follows). CORS `*`: it's a public read.
+pub fn search_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {
+    axum::routing::get(
+        move |q: axum::extract::Query<std::collections::HashMap<String, String>>| {
+            let state = state.clone();
+            async move {
+                let Some(index) = get_or_build_search_index(&state).await else {
+                    return (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        [("Access-Control-Allow-Origin", "*")],
+                        "{\"error\": \"server catalog is empty\"}".to_string(),
+                    )
+                        .into_response();
+                };
+                let limit = q
+                    .get("limit")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(50)
+                    .min(200);
+                let get = |k: &str| q.get(k).map(String::as_str).filter(|s| !s.is_empty());
+                let filters = search::SearchFilters {
+                    category: get("category"),
+                    currency: get("currency"),
+                    provenance: get("provenance"),
+                };
+                let query = q.get("query").map(String::as_str).unwrap_or("");
+                let hits = index.search(query, &filters, limit);
+                let catalog_age_hours = chrono::Utc::now()
+                    .signed_duration_since(index.catalog_refreshed_at)
+                    .num_hours();
+                tracing::info!(
+                    count = hits.len(),
+                    corpus = index.corpus_size(),
+                    query,
+                    "served /internal/mcp/search"
+                );
+                (
+                    [("Access-Control-Allow-Origin", "*")],
+                    axum::Json(serde_json::json!({
+                        "results": hits,
+                        "returned": hits.len(),
+                        "corpus_size": index.corpus_size(),
+                        "catalog_age_hours": catalog_age_hours,
+                    })),
+                )
+                    .into_response()
+            }
+        },
+    )
+}
+
 /// POST /internal/mcp/refresh → trigger a fresh pull + classify cycle.
 /// Returns the RefreshSummary as JSON.
 pub fn refresh_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {

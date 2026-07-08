@@ -377,6 +377,10 @@ fn build_router(
                 discovery::primitives_handler(state.clone()),
             )
             .route(
+                "/internal/mcp/search",
+                discovery::search_handler(state.clone()),
+            )
+            .route(
                 "/internal/mcp/refresh",
                 discovery::refresh_handler(state.clone()),
             )
