@@ -9,11 +9,13 @@
  * Plus the failing-proof branch: a second task attested with score 0 finalizes
  * with zero payment (full escrow refunded to the client).
  *
- * Self-contained: id.json is the devnet GlobalState authority, so this script
- * temporarily (a) rotates oracle_authority to a throwaway demo attester it
- * controls and (b) shrinks the global challenge_window to a few seconds so
- * finalize can run in-demo — then RESTORES both from the pre-run snapshot in a
- * finally block. The attested-verify step is the novel path; the
+ * Uses the REAL armed attester: oracle_authority on devnet is test.json (the
+ * key also held in the shillbot-attester-keypair secret), so this signs
+ * verify_task_attested with test.json directly — no oracle rotation, no
+ * throwaway signer. id.json (the GlobalState authority) only shrinks the
+ * global challenge_window to a few seconds so finalize can run in-demo, then
+ * restores it in a finally block. The attested-verify step is the novel path;
+ * the
  * challenge→defaultResolve dispute path is exhaustively covered by the bankrun
  * suite (tests/shillbot-attested.ts) with clock warping and needs a ≥1h live
  * wait, so it is not re-proven here.
@@ -41,7 +43,7 @@ import { homedir } from "os";
 import { join } from "path";
 import type { Shillbot } from "../../target/types/shillbot";
 
-const DEVNET = "https://api.devnet.solana.com";
+const DEVNET = process.env.DEVNET_RPC ?? process.env.RPC_URL ?? "https://api.devnet.solana.com";
 const ESCROW = new BN(2_000_000); // 0.002 SOL
 const MAX_SCORE = 1_000_000;
 const LEAN_PROOF_PLATFORM = 10;
@@ -62,7 +64,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
   const authorityClient = loadKeypair(join(homedir(), ".config/solana/id.json"));
-  const attester = Keypair.generate(); // throwaway demo oracle_authority
+  // The real armed attester = devnet oracle_authority = test.json (also the
+  // shillbot-attester-keypair secret). No throwaway, no rotation.
+  const attester = loadKeypair(join(homedir(), ".config/solana/test.json"));
   const connection = new Connection(DEVNET, "confirmed");
   const provider = new anchor.AnchorProvider(
     connection,
@@ -90,6 +94,10 @@ async function main(): Promise<void> {
   console.log(`demo attester:    ${attester.publicKey.toBase58()}`);
 
   const snap = await program.account.globalState.fetch(globalPda);
+  check(
+    snap.oracleAuthority.toBase58() === attester.publicKey.toBase58(),
+    "devnet oracle_authority == test.json (the armed attester)"
+  );
   const restoreParams = () =>
     program.methods
       .updateParams(
@@ -113,17 +121,8 @@ async function main(): Promise<void> {
         authority: authorityClient.publicKey,
       })
       .rpc();
-  const restoreOracle = () =>
-    program.methods
-      .updateOracleAuthority(snap.oracleAuthority)
-      .accountsPartial({
-        globalState: globalPda,
-        authority: authorityClient.publicKey,
-      })
-      .rpc();
-
   try {
-    // Fund the demo attester (fee-payer for verify_task_attested).
+    // Top up the attester (test.json) so it can fee-pay verify_task_attested.
     await provider.sendAndConfirm(
       new Transaction().add(
         SystemProgram.transfer({
@@ -134,15 +133,8 @@ async function main(): Promise<void> {
       )
     );
 
-    // Rotate oracle_authority → demo attester; shrink the challenge window.
-    console.log("\n[setup] rotate oracle_authority + shrink challenge window");
-    await program.methods
-      .updateOracleAuthority(attester.publicKey)
-      .accountsPartial({
-        globalState: globalPda,
-        authority: authorityClient.publicKey,
-      })
-      .rpc();
+    // Shrink the global challenge window so finalize can run in-demo.
+    console.log("\n[setup] shrink challenge window");
     await program.methods
       .updateParams(
         snap.protocolFeeBps,
@@ -187,12 +179,11 @@ async function main(): Promise<void> {
       "failing proof (score = 0): full refund to client"
     );
   } finally {
-    console.log("\n[teardown] restore oracle_authority + params");
+    console.log("\n[teardown] restore challenge-window params");
     try {
       await restoreParams();
-      await restoreOracle();
-      // Throwaway attester/agent leftovers are devnet dust — a system account
-      // can't be swept below its rent-exempt floor, so we leave them.
+      // Throwaway agent leftovers are devnet dust — a system account can't be
+      // swept below its rent-exempt floor, so we leave them.
     } catch (e) {
       console.error("  ✗ teardown error:", e);
       failures++;

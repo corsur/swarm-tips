@@ -34,7 +34,7 @@ import { join } from "path";
 import type { ExtensionRegistry } from "../../target/types/extension_registry";
 import type { ExtensionCredit } from "../../target/types/extension_credit";
 
-const DEVNET = "https://api.devnet.solana.com";
+const DEVNET = process.env.DEVNET_RPC ?? process.env.RPC_URL ?? "https://api.devnet.solana.com";
 const TYPE_CAPABILITY_VALIDATION = 0;
 const BOND = new BN(5_000_000); // 0.005 SOL
 const ADVANCE = new BN(2_000_000); // 0.002 SOL
