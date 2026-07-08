@@ -15,6 +15,12 @@
  *   3. tools/call query_agent_credit_web_score{wallet:dogfood} -> has_standing
  *   4. GET /internal/agent-reputation -> parity with the MCP tool
  *   5. negative control: a random wallet has_standing == false
+ *   6. settlement graph: agent_trust_score carries the eigentrust record;
+ *      agent_reputation_leaderboard is rank-ordered and matches the HTTP
+ *      endpoint (Firestore agent_reputation — mainnet settlements,
+ *      network-independent)
+ *   7. search_mcp_servers: BM25 over the ingested catalog returns ranked
+ *      hits with per-hit signal disclosure
  *
  * Assumes the MCP server is running and pointed at devnet (run-mcp-reputation-devnet.sh
  * / e2e.yml start it). Override its URL with MCP_URL (default http://localhost:8090).
@@ -190,6 +196,81 @@ async function main(): Promise<void> {
     rep.web_position === score.position &&
       rep.extensions_received === score.extensions_received,
     "reputation endpoint matches the MCP tool (shared compute)"
+  );
+
+  console.log(
+    "\n[mcp] settlement graph: agent_trust_score -> agent_reputation_leaderboard"
+  );
+  const trust = (await mcpCall(sid, "agent_trust_score", {
+    wallet: ROOT,
+  })) as {
+    trust_score: number;
+    confidence: number;
+    eigentrust: { rank: number; rank_normalized: number } | null;
+    inputs_present: { eigentrust: boolean };
+  };
+  check(
+    typeof trust.trust_score === "number" &&
+      trust.trust_score > 0 &&
+      trust.trust_score <= 1,
+    `agent_trust_score returns a composite in (0, 1] (${trust.trust_score})`
+  );
+  check(
+    trust.eigentrust !== null && trust.eigentrust.rank >= 1,
+    "agent_trust_score carries the eigentrust settlement record"
+  );
+  check(
+    trust.inputs_present.eigentrust === true,
+    "inputs_present flags the eigentrust signal"
+  );
+
+  const board = (await mcpCall(sid, "agent_reputation_leaderboard", {
+    limit: 10,
+  })) as {
+    count: number;
+    agents: { wallet: string; rank: number; settlements_received: number }[];
+  };
+  check(board.count >= 1, `leaderboard has settlement-anchored agents (${board.count})`);
+  const ranksAscending = board.agents.every(
+    (a, i) => i === 0 || a.rank >= board.agents[i - 1].rank
+  );
+  check(
+    board.agents[0]?.rank === 1 && ranksAscending,
+    "leaderboard is best-rank-first"
+  );
+
+  const httpBoard = (await (
+    await fetch(`${MCP_URL}/internal/reputation/leaderboard?limit=10`)
+  ).json()) as { count: number; agents: { wallet: string }[] };
+  check(
+    httpBoard.count === board.count &&
+      httpBoard.agents[0]?.wallet === board.agents[0]?.wallet,
+    "leaderboard endpoint matches the MCP tool (shared read)"
+  );
+
+  console.log("\n[mcp] search_mcp_servers over the ingested catalog");
+  const search = (await mcpCall(sid, "search_mcp_servers", {
+    query: "solana",
+    limit: 5,
+  })) as {
+    corpus_size: number;
+    returned: number;
+    results: {
+      name: string;
+      ranking_signals: { bm25_score: number; final_score: number };
+    }[];
+  };
+  check(
+    search.corpus_size > 1000,
+    `ingested catalog behind search (corpus ${search.corpus_size})`
+  );
+  check(search.returned >= 1, "capability query returns hits");
+  check(
+    search.results.every(
+      (r) =>
+        r.ranking_signals.bm25_score > 0 && r.ranking_signals.final_score > 0
+    ),
+    "every hit discloses its ranking signals"
   );
 
   console.log(
