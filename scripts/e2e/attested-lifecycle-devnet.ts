@@ -111,7 +111,13 @@ async function runLifecycle(
     created.task,
     "https://artifacts.example/proof.lean"
   );
-  await verifyTaskAttested(ctx, created.task, created.taskId, score);
+  await verifyTaskAttested(
+    ctx,
+    created.task,
+    created.taskId,
+    score,
+    h.attester
+  );
 
   const verified = await h.program.account.task.fetch(created.task);
   chk.check(

@@ -150,15 +150,17 @@ export function connectDevnet(): DevnetHarness {
 }
 
 /** A ShillbotCtx over the ALREADY-INITIALIZED devnet global (no `initialize`).
- *  treasury is read from on-chain; authority = attester = the devnet
- *  oracle_authority (test.json) so verifyTaskAttested signs correctly. */
+ *  `authority` is the GLOBAL authority (id.json) — the signer resolve_challenge
+ *  and update_params require. verify_task_attested needs the oracle_authority
+ *  (test.json) instead, so callers pass `h.attester` EXPLICITLY to
+ *  verifyTaskAttested; on devnet these are two different keys. */
 export async function devnetCtx(h: DevnetHarness): Promise<ShillbotCtx> {
   const g = await h.program.account.globalState.fetch(h.globalPda);
   return {
     rt: h.runtime,
     globalPda: h.globalPda,
     treasury: g.treasury as PublicKey,
-    authority: h.attester,
+    authority: h.authority,
   };
 }
 
