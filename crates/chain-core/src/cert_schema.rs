@@ -343,6 +343,47 @@ pub fn keccak256(payload: &[u8]) -> [u8; 32] {
     out
 }
 
+/// The canonical OutcomeKind derivation truth table — the SINGLE source every
+/// VM's derivation is pinned to. Columns:
+/// `(step_count, p1_guess, p2_guess, first_committer, matchup_type, expected_kind)`,
+/// with `255 = UNREVEALED` and `expected_kind` the raw `OutcomeKind as u8`.
+///
+/// Cross-VM parity (M11/M10/#3) is enforced mechanically off THIS const — no
+/// hand-copied duplicates that can silently drift. chain-core's own unit test
+/// asserts `derive_outcome_kind()` equals the hand-authored `expected_kind`
+/// (an independent audit of the reference impl); `tests/golden_vectors.rs` emits
+/// these rows to `tests/fixtures/outcome-derivation.json`, which `CertLib.t.sol`
+/// (Solidity) reads and asserts; and the Solana BPF test
+/// (`programs/coordination-game/src/cert.rs::derive_claim_outcome`) iterates this
+/// same const. Hand-authored `expected_kind` values catch a bug in
+/// `derive_outcome_kind` itself rather than laundering it through the generator.
+pub const DERIVATION_TRUTH_TABLE: &[(u8, u8, u8, u8, u8, u8)] = &[
+    (4, 0, 0, 1, 0, 0), // homog both correct (fc irrelevant)
+    (4, 0, 0, 2, 0, 0),
+    (4, 0, 1, 1, 0, 1), // homog p1 correct
+    (4, 1, 0, 1, 0, 2), // homog p2 correct
+    (4, 1, 1, 1, 0, 3), // homog both wrong
+    (4, 1, 0, 1, 1, 4), // hetero p1 correct
+    (4, 0, 1, 1, 1, 5), // hetero p2 correct
+    (4, 1, 1, 1, 1, 4), // hetero both correct, tie → first_committer 1
+    (4, 1, 1, 2, 1, 5), // hetero both correct, tie → first_committer 2
+    (4, 0, 0, 1, 1, 3), // hetero both wrong
+    (4, 0, 0, 2, 1, 3),
+    (0, 255, 255, 255, 1, 8), // timeout step 0
+    (0, 255, 255, 0, 0, 8),
+    (1, 255, 255, 1, 1, 6), // timeout step 1: committer wins
+    (1, 255, 255, 2, 1, 7),
+    (1, 255, 255, 0, 1, 8), // inconsistent committer → forfeit
+    (1, 255, 255, 3, 1, 8),
+    (2, 255, 255, 1, 1, 8), // timeout step 2
+    (2, 255, 255, 2, 0, 8),
+    (3, 1, 255, 1, 1, 6), // timeout step 3: sole revealer wins
+    (3, 255, 1, 1, 1, 7),
+    (3, 255, 255, 1, 1, 8), // neither revealed
+    (3, 1, 0, 1, 1, 8),     // both revealed (guard) → forfeit
+    (3, 0, 1, 2, 0, 8),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,46 +499,65 @@ mod tests {
         }
     }
 
-    /// The exhaustive (step, p1, p2, first_committer, matchup, expected_kind)
-    /// truth table — the same rows `tests/golden_vectors.rs` writes to
-    /// `outcome-derivation.json` (which `CertLib.deriveClaimOutcome` reads) and
-    /// `programs/.../cert.rs` mirrors. Hand-authored expected values here are the
-    /// independent audit of this reference impl. 255 = UNREVEALED. Covers every
-    /// branch of `derive_outcome_kind` + `derive_terminal_outcome`.
-    const DERIVATION_TRUTH_TABLE: &[(u8, u8, u8, u8, u8, u8)] = &[
-        (4, 0, 0, 1, 0, 0), // homog both correct (fc irrelevant)
-        (4, 0, 0, 2, 0, 0),
-        (4, 0, 1, 1, 0, 1), // homog p1 correct
-        (4, 1, 0, 1, 0, 2), // homog p2 correct
-        (4, 1, 1, 1, 0, 3), // homog both wrong
-        (4, 1, 0, 1, 1, 4), // hetero p1 correct
-        (4, 0, 1, 1, 1, 5), // hetero p2 correct
-        (4, 1, 1, 1, 1, 4), // hetero both correct, tie → first_committer 1
-        (4, 1, 1, 2, 1, 5), // hetero both correct, tie → first_committer 2
-        (4, 0, 0, 1, 1, 3), // hetero both wrong
-        (4, 0, 0, 2, 1, 3),
-        (0, 255, 255, 255, 1, 8), // timeout step 0
-        (0, 255, 255, 0, 0, 8),
-        (1, 255, 255, 1, 1, 6), // timeout step 1: committer wins
-        (1, 255, 255, 2, 1, 7),
-        (1, 255, 255, 0, 1, 8), // inconsistent committer → forfeit
-        (1, 255, 255, 3, 1, 8),
-        (2, 255, 255, 1, 1, 8), // timeout step 2
-        (2, 255, 255, 2, 0, 8),
-        (3, 1, 255, 1, 1, 6), // timeout step 3: sole revealer wins
-        (3, 255, 1, 1, 1, 7),
-        (3, 255, 255, 1, 1, 8), // neither revealed
-        (3, 1, 0, 1, 1, 8),     // both revealed (guard) → forfeit
-        (3, 0, 1, 2, 0, 8),
-    ];
-
     #[test]
     fn derive_outcome_kind_matches_truth_table() {
-        for &(step, p1, p2, fc, m, expected) in DERIVATION_TRUTH_TABLE {
+        // Iterate the canonical pub const (the SAME rows the golden fixture and
+        // the Solana BPF test consume) — hand-authored expected vs computed.
+        for &(step, p1, p2, fc, m, expected) in super::DERIVATION_TRUTH_TABLE {
             assert_eq!(
                 cp(step, p1, p2, fc, m).derive_outcome_kind() as u8,
                 expected,
                 "row step={step} p1={p1} p2={p2} first_committer={fc} matchup={m}"
+            );
+        }
+    }
+
+    /// Distinct-per-field (M10/M11): prove every input field is actually
+    /// consumed by the derivation. For each field, two checkpoints differing
+    /// ONLY in that field must yield different outcomes — so a derivation that
+    /// silently ignored a field could never pass.
+    #[test]
+    fn every_derivation_field_is_load_bearing() {
+        let kind = |c: Checkpoint| c.derive_outcome_kind();
+        // step_count: terminal (4) vs one-commit timeout (1) with all else equal.
+        assert_ne!(
+            kind(cp(4, 1, 255, 1, 1)),
+            kind(cp(1, 1, 255, 1, 1)),
+            "step_count"
+        );
+        // p1_guess: homog p1-correct(1) vs both-wrong(3).
+        assert_ne!(kind(cp(4, 0, 1, 1, 0)), kind(cp(4, 1, 1, 1, 0)), "p1_guess");
+        // p2_guess: homog both-correct(0) vs p1-correct(1).
+        assert_ne!(kind(cp(4, 0, 0, 1, 0)), kind(cp(4, 0, 1, 1, 0)), "p2_guess");
+        // first_committer: hetero tie → P1(4) vs P2(5).
+        assert_ne!(
+            kind(cp(4, 1, 1, 1, 1)),
+            kind(cp(4, 1, 1, 2, 1)),
+            "first_committer"
+        );
+        // matchup_type: same guesses, homog both-correct(0) vs hetero both-wrong(3).
+        assert_ne!(
+            kind(cp(4, 0, 0, 1, 0)),
+            kind(cp(4, 0, 0, 1, 1)),
+            "matchup_type"
+        );
+    }
+
+    /// The heterogeneous (cross-team) outcomes MUST be represented in the
+    /// canonical table — these are the leg-A(Solana) ↔ leg-B(EVM) winner-takes
+    /// cases whose cross-VM agreement the table pins. Guards against a future
+    /// edit that drops hetero coverage and hides a cross-VM divergence.
+    #[test]
+    fn truth_table_covers_hetero_and_timeout_winners() {
+        for k in [
+            OutcomeKind::HeteroP1Wins as u8,
+            OutcomeKind::HeteroP2Wins as u8,
+            OutcomeKind::TimeoutP1Wins as u8,
+            OutcomeKind::TimeoutP2Wins as u8,
+        ] {
+            assert!(
+                super::DERIVATION_TRUTH_TABLE.iter().any(|r| r.5 == k),
+                "hetero/timeout winner kind {k} missing from table"
             );
         }
     }

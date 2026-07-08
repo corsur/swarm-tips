@@ -399,25 +399,16 @@ mod tests {
         assert!(nonterminal.verify_matchup_binding(&commitment).is_ok());
     }
 
-    /// The BPF copy of the derivation, pinned to the SAME exhaustive truth table
-    /// chain-core (`cert_schema::DERIVATION_TRUTH_TABLE`) generates into
-    /// `outcome-derivation.json` and `CertLib.deriveClaimOutcome` reads. Any drift
-    /// between this on-chain copy and the others surfaces here. 255 = UNREVEALED;
-    /// the expected column is the raw `XKIND_*` value (OutcomeKind as u8).
-    #[rustfmt::skip]
-    const DERIVATION_TRUTH_TABLE: &[(u8, u8, u8, u8, u8, u8)] = &[
-        (4, 0, 0, 1, 0, 0), (4, 0, 0, 2, 0, 0), (4, 0, 1, 1, 0, 1), (4, 1, 0, 1, 0, 2),
-        (4, 1, 1, 1, 0, 3), (4, 1, 0, 1, 1, 4), (4, 0, 1, 1, 1, 5), (4, 1, 1, 1, 1, 4),
-        (4, 1, 1, 2, 1, 5), (4, 0, 0, 1, 1, 3), (4, 0, 0, 2, 1, 3),
-        (0, 255, 255, 255, 1, 8), (0, 255, 255, 0, 0, 8),
-        (1, 255, 255, 1, 1, 6), (1, 255, 255, 2, 1, 7), (1, 255, 255, 0, 1, 8), (1, 255, 255, 3, 1, 8),
-        (2, 255, 255, 1, 1, 8), (2, 255, 255, 2, 0, 8),
-        (3, 1, 255, 1, 1, 6), (3, 255, 1, 1, 1, 7), (3, 255, 255, 1, 1, 8), (3, 1, 0, 1, 1, 8), (3, 0, 1, 2, 0, 8),
-    ];
-
+    /// The BPF derivation is pinned to the CANONICAL truth table exported by
+    /// chain-core (`cert_schema::DERIVATION_TRUTH_TABLE`) — the SAME const the
+    /// golden fixture (`outcome-derivation.json`, read by `CertLib.deriveClaimOutcome`)
+    /// is generated from. Iterating it here (rather than a hand-copied duplicate)
+    /// means any edit to the canonical table is enforced on all three VMs at once;
+    /// there is no on-chain copy left to silently drift. Expected is the const's
+    /// hand-authored `OutcomeKind as u8` column.
     #[test]
     fn derive_claim_outcome_matches_truth_table() {
-        for &(step, p1, p2, fc, m, expected) in DERIVATION_TRUTH_TABLE {
+        for &(step, p1, p2, fc, m, expected) in cs::DERIVATION_TRUTH_TABLE {
             assert_eq!(
                 cp(step, p1, p2, fc, m).derive_claim_outcome(),
                 expected,

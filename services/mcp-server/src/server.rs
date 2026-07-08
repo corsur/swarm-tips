@@ -510,6 +510,7 @@ impl SwarmTipsMcp {
             .map_err(|e| to_mcp_error(&e))?;
 
         tracing::info!(
+            event = "shillbot_claim_task",
             task_id = %args.task_id,
             wallet = %wallet_pubkey,
             network = network.unwrap_or("mainnet"),
@@ -556,6 +557,7 @@ impl SwarmTipsMcp {
             .map_err(|e| to_mcp_error(&e))?;
 
         tracing::info!(
+            event = "shillbot_submit_work",
             task_id = %args.task_id,
             content_id = %args.content_id,
             wallet = %wallet_pubkey,
@@ -1240,7 +1242,7 @@ impl SwarmTipsMcp {
             .and_then(|s| s.as_str())
             .unwrap_or("unknown");
 
-        tracing::info!(status = %status, "generate_video called");
+        tracing::info!(event = "generate_video", status = %status, "generate_video called");
         Ok(text_result(&result))
     }
 
@@ -1449,6 +1451,7 @@ impl SwarmTipsMcp {
         }
 
         tracing::info!(
+            event = "search_mcp_servers",
             count = hits.len(),
             corpus = index.corpus_size(),
             query,
@@ -1570,7 +1573,12 @@ impl SwarmTipsMcp {
             let _ = self.state.session_binding.bind(&session_id, &wallet).await;
         }
 
-        tracing::info!(wallet = %wallet, balance, "game wallet registered");
+        tracing::info!(
+            event = "register_wallet_solana",
+            wallet = %wallet,
+            balance,
+            "game wallet registered"
+        );
 
         let response = serde_json::json!({
             "wallet": wallet,

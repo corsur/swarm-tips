@@ -117,48 +117,20 @@ fn build_json() -> String {
 // Outcome-derivation truth table (M11). The serialization vectors above pin the
 // byte LAYOUT; this pins the DERIVATION — given a checkpoint's
 // (step_count, guesses, first_committer, matchup_type), which OutcomeKind it
-// resolves to. chain-core is the reference: it computes `expected_kind` here, and
-// `CertLib.deriveClaimOutcome` (Solidity) reads the same file and must agree, so
-// the Rust↔Solidity derivations can never silently diverge. The BPF copy
-// (`programs/.../cert.rs::derive_claim_outcome`) and chain-core itself are pinned
-// to the SAME inputs by exhaustive hand-authored unit tests in their own crates.
+// resolves to. chain-core is the reference: it computes `expected_kind` from the
+// CANONICAL `cert_schema::DERIVATION_TRUTH_TABLE` here, `CertLib.deriveClaimOutcome`
+// (Solidity) reads the resulting file, and the Solana BPF test
+// (`programs/.../cert.rs::derive_claim_outcome`) iterates the SAME const — so all
+// three VMs are pinned to ONE source with no hand-copied duplicate that can drift.
 // ---------------------------------------------------------------------------
 
 /// Exhaustive (step_count, p1_guess, p2_guess, first_committer, matchup_type)
-/// rows covering every branch of `derive_outcome_kind` + `derive_terminal_outcome`.
-/// 255 = UNREVEALED. Hand-authored inputs; chain-core computes the expected kind.
-const DERIVATION_ROWS: &[(u8, u8, u8, u8, u8)] = &[
-    // Terminal (step 4), homogeneous (matchup 0): correct = guess == 0.
-    (4, 0, 0, 1, 0), // both correct -> HomogBothCorrect(0)
-    (4, 0, 0, 2, 0), // first_committer irrelevant when homogeneous -> 0
-    (4, 0, 1, 1, 0), // p1 correct only -> HomogP1Correct(1)
-    (4, 1, 0, 1, 0), // p2 correct only -> HomogP2Correct(2)
-    (4, 1, 1, 1, 0), // both wrong -> BothWrong(3)
-    // Terminal (step 4), heterogeneous (matchup 1): correct = guess == 1.
-    (4, 1, 0, 1, 1), // p1 correct only -> HeteroP1Wins(4)
-    (4, 0, 1, 1, 1), // p2 correct only -> HeteroP2Wins(5)
-    (4, 1, 1, 1, 1), // both correct, tie -> first_committer 1 -> HeteroP1Wins(4)
-    (4, 1, 1, 2, 1), // both correct, tie -> first_committer 2 -> HeteroP2Wins(5)
-    (4, 0, 0, 1, 1), // both wrong -> BothWrong(3)
-    (4, 0, 0, 2, 1), // both wrong, first_committer irrelevant -> 3
-    // Timeout step 0 (nobody committed) -> always TimeoutBothForfeit(8).
-    (0, 255, 255, 255, 1),
-    (0, 255, 255, 0, 0),
-    // Timeout step 1 (one commit): committer wins; bad committer -> forfeit.
-    (1, 255, 255, 1, 1), // TimeoutP1Wins(6)
-    (1, 255, 255, 2, 1), // TimeoutP2Wins(7)
-    (1, 255, 255, 0, 1), // inconsistent -> TimeoutBothForfeit(8)
-    (1, 255, 255, 3, 1), // inconsistent -> 8
-    // Timeout step 2 (both committed, none revealed) -> forfeit.
-    (2, 255, 255, 1, 1),
-    (2, 255, 255, 2, 0),
-    // Timeout step 3 (both committed, one reveals): sole revealer wins.
-    (3, 1, 255, 1, 1),   // p1 revealed only -> TimeoutP1Wins(6)
-    (3, 255, 1, 1, 1),   // p2 revealed only -> TimeoutP2Wins(7)
-    (3, 255, 255, 1, 1), // neither revealed -> 8
-    (3, 1, 0, 1, 1),     // both revealed (guard) -> 8
-    (3, 0, 1, 2, 0),     // both revealed (guard) -> 8
-];
+/// covering every branch of `derive_outcome_kind` + `derive_terminal_outcome`.
+/// 255 = UNREVEALED. The rows come from the CANONICAL
+/// `chain_core::cert_schema::DERIVATION_TRUTH_TABLE` (single source pinned across
+/// all VMs) — this generator emits its inputs, chain-core computes the expected
+/// kind, and `CertLib.t.sol` reads the result.
+use chain_core::cert_schema::DERIVATION_TRUTH_TABLE;
 
 fn derivation_cp(step: u8, p1: u8, p2: u8, first: u8, matchup: u8) -> Checkpoint {
     Checkpoint {
@@ -181,9 +153,13 @@ fn u8_json_array(vals: impl Iterator<Item = u8>) -> String {
 }
 
 fn build_derivation_json() -> String {
-    let col = |sel: fn(&(u8, u8, u8, u8, u8)) -> u8| u8_json_array(DERIVATION_ROWS.iter().map(sel));
+    type Row = (u8, u8, u8, u8, u8, u8);
+    let col = |sel: fn(&Row) -> u8| u8_json_array(DERIVATION_TRUTH_TABLE.iter().map(sel));
+    // chain-core recomputes the expected kind from the canonical inputs (the
+    // const's own r.5 column is the independent hand-authored audit, checked in
+    // cert_schema's unit test).
     let kinds = u8_json_array(
-        DERIVATION_ROWS
+        DERIVATION_TRUTH_TABLE
             .iter()
             .map(|r| derivation_cp(r.0, r.1, r.2, r.3, r.4).derive_outcome_kind() as u8),
     );
