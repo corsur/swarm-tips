@@ -99,6 +99,15 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     uint32 public maxClaimWindowSecs;
     uint32 public skewMarginSecs;
 
+    // M6 — rolling-24h aggregate tranche-lock cap. maxTrancheWei bounds ONE
+    // match; this bounds how much of the float pool can be committed across a
+    // day, so a leaked operator key can't lock+drain the whole pool faster than
+    // detection + pause. Owner-tuned to the pool size (>= one max tranche).
+    uint128 public dailyTrancheCapWei;
+    uint128 public trancheLockedInWindow; // tranche locked since windowStart
+    uint64 public trancheWindowStart; // unix start of the current 24h window
+    uint32 private constant TRANCHE_WINDOW_SECS = 1 days;
+
     uint16 private constant MIN_SPLIT_BPS = 2000;
     uint16 private constant MAX_SPLIT_BPS = 8000;
     uint16 private constant BPS_DENOM = 10000;
@@ -133,6 +142,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     error TrancheTooLarge();
     error BadOutcome();
     error BadConfig();
+    error DailyTrancheCapExceeded();
 
     constructor(
         bytes32 chainTag,
@@ -142,6 +152,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         uint16 treasurySplitBps_,
         uint128 stakeWei_,
         uint128 maxTrancheWei_,
+        uint128 dailyTrancheCapWei_,
         uint32 maxClaimWindowSecs_,
         uint32 skewMarginSecs_
     ) Ownable(initialOwner) ChainTagged(chainTag) {
@@ -152,6 +163,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
             treasurySplitBps_,
             stakeWei_,
             maxTrancheWei_,
+            dailyTrancheCapWei_,
             maxClaimWindowSecs_,
             skewMarginSecs_
         );
@@ -160,6 +172,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         treasurySplitBps = treasurySplitBps_;
         stakeWei = stakeWei_;
         maxTrancheWei = maxTrancheWei_;
+        dailyTrancheCapWei = dailyTrancheCapWei_;
         maxClaimWindowSecs = maxClaimWindowSecs_;
         skewMarginSecs = skewMarginSecs_;
     }
@@ -180,6 +193,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         uint16 treasurySplitBps_,
         uint128 stakeWei_,
         uint128 maxTrancheWei_,
+        uint128 dailyTrancheCapWei_,
         uint32 maxClaimWindowSecs_,
         uint32 skewMarginSecs_
     ) private pure {
@@ -194,6 +208,9 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         if (maxTrancheWei_ < stakeWei_ || maxTrancheWei_ > stakeWei_ * MAX_TRANCHE_MULTIPLE) {
             revert BadConfig();
         }
+        // The daily cap must admit at least one max-tranche match (else no
+        // cross-chain match could ever lock), and is the pool-blast-radius knob.
+        if (dailyTrancheCapWei_ < maxTrancheWei_) revert BadConfig();
         if (maxClaimWindowSecs_ < MIN_WINDOW_SECS || maxClaimWindowSecs_ > MAX_WINDOW_SECS) revert BadConfig();
         if (skewMarginSecs_ < MIN_WINDOW_SECS || skewMarginSecs_ > MAX_WINDOW_SECS) revert BadConfig();
     }
@@ -286,8 +303,19 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         if (trancheWei > maxTrancheWei) revert TrancheTooLarge();
         if (poolFree < trancheWei) revert PoolInsufficient();
 
+        // M6: enforce the rolling-24h aggregate tranche-lock cap. Compute the
+        // window-adjusted running total (reset if the window rolled over) and
+        // reject before any pool mutation — a compromised operator key can lock
+        // at most dailyTrancheCapWei per day, bounding pool drain to a rate that
+        // detection + pause can catch.
+        bool newWindow = block.timestamp >= uint256(trancheWindowStart) + TRANCHE_WINDOW_SECS;
+        uint256 windowLocked = newWindow ? 0 : trancheLockedInWindow;
+        if (windowLocked + trancheWei > dailyTrancheCapWei) revert DailyTrancheCapExceeded();
+
         poolFree -= trancheWei;
         poolLocked += trancheWei;
+        if (newWindow) trancheWindowStart = uint64(block.timestamp);
+        trancheLockedInWindow = uint128(windowLocked + trancheWei);
         m.trancheWei = trancheWei;
         m.lockedAt = uint64(block.timestamp);
         // Snapshot the refund backstop from the config in force at lock time, so a
@@ -572,6 +600,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         uint16 treasurySplitBps_,
         uint128 stakeWei_,
         uint128 maxTrancheWei_,
+        uint128 dailyTrancheCapWei_,
         uint32 maxClaimWindowSecs_,
         uint32 skewMarginSecs_
     ) external onlyOwner {
@@ -582,6 +611,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
             treasurySplitBps_,
             stakeWei_,
             maxTrancheWei_,
+            dailyTrancheCapWei_,
             maxClaimWindowSecs_,
             skewMarginSecs_
         );
@@ -590,6 +620,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         treasurySplitBps = treasurySplitBps_;
         stakeWei = stakeWei_;
         maxTrancheWei = maxTrancheWei_;
+        dailyTrancheCapWei = dailyTrancheCapWei_;
         maxClaimWindowSecs = maxClaimWindowSecs_;
         skewMarginSecs = skewMarginSecs_;
         emit ConfigUpdated();

@@ -18,6 +18,7 @@ import {CrossChainGame} from "../src/CrossChainGame.sol";
 ///   XCHAIN_TREASURY_BPS    treasury split, 2000..8000
 ///   XCHAIN_STAKE_WEI       per-match stake
 ///   XCHAIN_MAX_TRANCHE_WEI per-match tranche clamp
+///   XCHAIN_DAILY_TRANCHE_CAP_WEI  rolling-24h aggregate tranche-lock cap (M6)
 ///   XCHAIN_CLAIM_WINDOW    contested-claim window (secs)
 ///   XCHAIN_SKEW_MARGIN     cross-chain skew margin (secs)
 ///
@@ -33,12 +34,22 @@ contract DeployScript is Script {
         uint16 treasuryBps = uint16(vm.envUint("XCHAIN_TREASURY_BPS"));
         uint128 stakeWei = uint128(vm.envUint("XCHAIN_STAKE_WEI"));
         uint128 maxTrancheWei = uint128(vm.envUint("XCHAIN_MAX_TRANCHE_WEI"));
+        uint128 dailyTrancheCapWei = uint128(vm.envUint("XCHAIN_DAILY_TRANCHE_CAP_WEI"));
         uint32 claimWindow = uint32(vm.envUint("XCHAIN_CLAIM_WINDOW"));
         uint32 skewMargin = uint32(vm.envUint("XCHAIN_SKEW_MARGIN"));
 
         vm.startBroadcast();
         game = new CrossChainGame(
-            chainTag, owner, operatorSigner, treasury, treasuryBps, stakeWei, maxTrancheWei, claimWindow, skewMargin
+            chainTag,
+            owner,
+            operatorSigner,
+            treasury,
+            treasuryBps,
+            stakeWei,
+            maxTrancheWei,
+            dailyTrancheCapWei,
+            claimWindow,
+            skewMargin
         );
         vm.stopBroadcast();
 

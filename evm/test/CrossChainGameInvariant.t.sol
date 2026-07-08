@@ -149,7 +149,16 @@ contract CrossChainGameInvariantTest is Test {
         vm.warp(1_765_000_000);
         vm.prank(owner);
         game = new CrossChainGame(
-            keccak256("eip155:84532"), owner, vm.addr(0xA11CE), treasury, 5000, 0.0025 ether, 0.005 ether, 3600, 900
+            keccak256("eip155:84532"),
+            owner,
+            vm.addr(0xA11CE),
+            treasury,
+            5000,
+            0.0025 ether,
+            0.005 ether,
+            100 ether, // M6 daily tranche cap: above the 50-ether pool, so never binds here
+            3600,
+            900
         );
         vm.deal(owner, 100 ether);
         vm.prank(owner);

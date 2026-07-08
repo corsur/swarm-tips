@@ -52,6 +52,10 @@ pub struct ChainEntry {
     /// Minimum agreeing providers for a quorum read.
     pub quorum_m: usize,
     pub finality: Finality,
+    /// True for real-money chains (Solana mainnet, Base, Ethereum). Gates
+    /// real-money-only guards — e.g. the cross-chain FX sanity band, which is
+    /// meaningless on testnets whose stakes are nominal rather than USD-tuned.
+    pub is_mainnet: bool,
     pub native_symbol: &'static str,
     pub native_decimals: u8,
     /// Per-match stake in native base units (lamports / wei), tuned to
@@ -89,6 +93,16 @@ impl ChainEntry {
             ContractPurpose::ShillbotEscrow => self.shillbot_escrow_contract,
         }
     }
+
+    /// Whether a product is LIVE (deployed) on this chain. A deployed contract
+    /// address IS the deployment truth — a chain scaffolded here with a `None`
+    /// address is "coming soon", not playable. Backend and frontend gate every
+    /// real transaction on this; no separate `deployed` bool that could drift
+    /// from the address (single source of truth). A mainnet entry ships with
+    /// `None` and flips live the moment the follow-up commit records its address.
+    pub fn is_live(&self, purpose: ContractPurpose) -> bool {
+        self.contract_for(purpose).is_some()
+    }
 }
 
 /// Testnet stake parity note: 0.05 SOL and 0.0025 ETH are within the
@@ -101,6 +115,7 @@ const REGISTRY: &[ChainEntry] = &[
         rpc_urls: &["https://api.devnet.solana.com"],
         quorum_m: 1,
         finality: Finality::SolanaFinalized,
+        is_mainnet: false,
         native_symbol: "SOL",
         native_decimals: 9,
         // Cross-chain leg parity with the $5 EVM anchor (0.0032 ETH): ~0.068 SOL
@@ -123,6 +138,7 @@ const REGISTRY: &[ChainEntry] = &[
         rpc_urls: &["https://api.mainnet-beta.solana.com"],
         quorum_m: 1,
         finality: Finality::SolanaFinalized,
+        is_mainnet: true,
         native_symbol: "SOL",
         native_decimals: 9,
         stake_base_units: 50_000_000,
@@ -144,6 +160,7 @@ const REGISTRY: &[ChainEntry] = &[
         ],
         quorum_m: 2,
         finality: Finality::EvmFinalizedTag,
+        is_mainnet: false,
         native_symbol: "ETH",
         native_decimals: 18,
         // Testnet: MUST match the deployed CrossChainGame's stakeWei/maxTrancheWei
@@ -172,6 +189,66 @@ const REGISTRY: &[ChainEntry] = &[
         // the dedicated shillbot-attester EVM key via setConfig before real use.
         shillbot_escrow_contract: Some("0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c"),
         x402_network: Some("base-sepolia"),
+    },
+    // ── Mainnet EVM chains (scaffolded, NOT yet live) ────────────────────────
+    // All contract addresses are None until the gated mainnet deploy lands; a
+    // follow-up commit records each deployed address (verified against the
+    // on-chain stakeWei/maxTrancheWei by the evm-ci parity guard). Until then
+    // `is_live(..)` is false and no code path may build a real tx for them.
+    // Stakes below are the $5-anchor CONFIG (re-tuned at the gated deploy to the
+    // then-current ETH price); tranche is 2× stake. They must match the deploy
+    // workflow's XCHAIN_STAKE_WEI/XCHAIN_MAX_TRANCHE_WEI for that network in
+    // lockstep — the parity guard fails CI on divergence once deployed.
+    ChainEntry {
+        chain_id: "eip155:8453",
+        display_name: "Base",
+        rpc_urls: &[
+            "https://mainnet.base.org",
+            "https://base-rpc.publicnode.com",
+            "https://base.drpc.org",
+        ],
+        quorum_m: 2,
+        finality: Finality::EvmFinalizedTag,
+        is_mainnet: true,
+        native_symbol: "ETH",
+        native_decimals: 18,
+        // $5 anchor at ETH≈$3125 (0.0016 ETH). Base L2 gas is cents, so a $5
+        // stake is economically sane here (gas ≪ stake). Re-tune at deploy.
+        stake_base_units: 1_600_000_000_000_000, // 0.0016 ETH
+        max_tranche_base_units: 3_200_000_000_000_000, // 0.0032 ETH (2× stake)
+        claim_window_secs: 3_600,
+        skew_margin_secs: 900,
+        game_contract: None,
+        coordination_game_contract: None,
+        shillbot_escrow_contract: None,
+        x402_network: Some("base"),
+    },
+    ChainEntry {
+        chain_id: "eip155:1",
+        display_name: "Ethereum",
+        rpc_urls: &[
+            "https://ethereum-rpc.publicnode.com",
+            "https://eth.drpc.org",
+            "https://cloudflare-eth.com",
+        ],
+        quorum_m: 2,
+        finality: Finality::EvmFinalizedTag,
+        is_mainnet: true,
+        native_symbol: "ETH",
+        native_decimals: 18,
+        // Ethereum L1 gas dwarfs a $5 stake — a commit/reveal/settle round can
+        // cost more in gas than the stake at risk, making tiny-stake play
+        // uneconomical. Stake is set HIGHER (0.01 ETH ≈ $31) so gas is a
+        // minority of at-risk value; still flagged for founder review before
+        // the L1 deploy (Base mainnet is the economically-sensible EVM home).
+        stake_base_units: 10_000_000_000_000_000, // 0.01 ETH
+        max_tranche_base_units: 20_000_000_000_000_000, // 0.02 ETH (2× stake)
+        claim_window_secs: 3_600,
+        skew_margin_secs: 900,
+        game_contract: None,
+        coordination_game_contract: None,
+        shillbot_escrow_contract: None,
+        x402_network: None,
     },
 ];
 
@@ -273,11 +350,54 @@ mod tests {
 
         let solana_count = entries_for(Namespace::Solana).count();
         assert_eq!(solana_count, 2);
+        // Base Sepolia + Base mainnet + Ethereum mainnet.
         let evm_count = entries_for(Namespace::Eip155).count();
-        assert_eq!(evm_count, 1);
+        assert_eq!(evm_count, 3);
 
-        let unknown = ChainId::parse("eip155:1").unwrap();
+        // eip155:1 is now Ethereum mainnet (registered); use an unregistered id.
+        let unknown = ChainId::parse("eip155:999999").unwrap();
         assert!(super::entry(&unknown).is_none());
+    }
+
+    #[test]
+    fn is_mainnet_matches_known_networks() {
+        let m = |c: &str| entry(&ChainId::parse(c).unwrap()).unwrap().is_mainnet;
+        assert!(!m("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"), "devnet");
+        assert!(!m("eip155:84532"), "base sepolia");
+        assert!(
+            m("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"),
+            "solana mainnet"
+        );
+        assert!(m("eip155:8453"), "base mainnet");
+        assert!(m("eip155:1"), "ethereum mainnet");
+    }
+
+    #[test]
+    fn mainnet_evm_chains_are_scaffolded_but_not_live() {
+        // Base + Ethereum mainnet exist in the registry (so backend/frontend can
+        // show "coming soon") but carry NO contract addresses until the gated
+        // deploy — is_live must be false for every purpose, and no lookup may
+        // resolve a contract.
+        for caip in ["eip155:8453", "eip155:1"] {
+            let id = ChainId::parse(caip).unwrap();
+            let e = entry(&id).unwrap_or_else(|| panic!("{caip} registered"));
+            assert_eq!(e.native_symbol, "ETH");
+            for purpose in [
+                ContractPurpose::CrossChainGame,
+                ContractPurpose::CoordinationGame,
+                ContractPurpose::ShillbotEscrow,
+            ] {
+                assert!(
+                    !e.is_live(purpose),
+                    "{caip} must not be live until its deploy lands"
+                );
+                assert!(e.contract_for(purpose).is_none());
+            }
+        }
+        // Base Sepolia (testnet) IS live for the game contracts — is_live true.
+        let sepolia = entry(&ChainId::parse("eip155:84532").unwrap()).unwrap();
+        assert!(sepolia.is_live(ContractPurpose::CrossChainGame));
+        assert!(sepolia.is_live(ContractPurpose::CoordinationGame));
     }
 
     #[test]
@@ -297,7 +417,7 @@ mod tests {
         assert!(contract_for(&sol, ContractPurpose::CoordinationGame).is_none());
         assert!(contract_for(&sol, ContractPurpose::CrossChainGame).is_some());
         // Unregistered chain → None for any purpose.
-        let unknown = ChainId::parse("eip155:1").unwrap();
+        let unknown = ChainId::parse("eip155:999999").unwrap();
         assert!(contract_for(&unknown, ContractPurpose::CoordinationGame).is_none());
         assert!(contract_for(&unknown, ContractPurpose::ShillbotEscrow).is_none());
     }

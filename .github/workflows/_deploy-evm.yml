@@ -1,14 +1,24 @@
 name: _deploy-evm
 
 # Reusable EVM contract deployer — the EVM analog of _deploy-service.yml.
-# Parameterized by `contract`, so the repo deploys ANY Foundry contract through
-# ONE mechanism (vs. a per-contract copy-paste). Manual-only at the caller:
-# deploying a fresh contract orphans prior state, so it's always an explicit
-# decision. The deployed address is recorded into crates/chain-registry (the
-# single source of truth) in a follow-up commit.
+# Parameterized by BOTH `contract` (which Foundry contract) and `network` (which
+# chain), so ONE mechanism deploys any contract to any chain — testnet today,
+# Base/Ethereum mainnet at the gated launch. Manual-only at the caller: deploying
+# a fresh contract orphans prior state, so it's always an explicit decision. The
+# deployed address is recorded into crates/chain-registry (the single source of
+# truth) in a follow-up commit, then verified against the on-chain
+# stakeWei/maxTrancheWei by the evm-ci parity guard.
 #
-# To add a contract: add a `script/Deploy<Name>.s.sol`, a `contract` value, and
-# a per-contract deploy step below with its contract-specific env.
+# Per-network config (stake, tranche) lives in the "Resolve network config" step
+# and MUST match the crates/chain-registry entry for that CAIP-2 chain in
+# lockstep — the parity guard fails CI on divergence once a chain is live. The
+# chainTag is DERIVED from the CAIP-2 string via `cast keccak` (no hardcoded
+# duplicate). The deployer key is selected by network: testnet → EVM_TESTNET_DEPLOYER
+# (a CI-only throwaway), mainnet → EVM_MAINNET_DEPLOYER.
+#
+# To add a chain: add a `network` case below + a crates/chain-registry entry +
+# (for mainnet) a foundry.toml rpc_endpoints alias. To add a contract: add a
+# `script/Deploy<Name>.s.sol`, a `contract` value, and a per-contract deploy step.
 
 on:
   workflow_call:
@@ -18,13 +28,20 @@ on:
         required: true
         type: string
       network:
-        description: 'Target network (must exist in foundry.toml rpc_endpoints)'
+        description: 'Target network: base_sepolia | base | ethereum'
         required: false
         default: base_sepolia
         type: string
     secrets:
       EVM_TESTNET_DEPLOYER:
-        required: true
+        required: false
+      EVM_MAINNET_DEPLOYER:
+        required: false
+      # Optional keyed mainnet RPC (Alchemy/Infura URL). Public mainnet RPCs
+      # rate-limit forge broadcasts; supply this for a reliable mainnet deploy.
+      # Empty → the deploy falls back to the foundry.toml alias for `network`.
+      EVM_MAINNET_RPC_URL:
+        required: false
 
 jobs:
   deploy:
@@ -33,21 +50,19 @@ jobs:
       run:
         working-directory: evm
     env:
-      # Shared testnet config (identical for every contract). CI-only deploy key
-      # (per CLAUDE.md: CI values → GitHub Secrets). TESTNET-ONLY — rotate before
-      # any mainnet deploy. Stake is the SETTLED $5 anchor (0.0032 ETH); the
-      # audit-fixed contracts enforce MIN_STAKE_WEI = 1e14 (L1 bounds), so the old
-      # 0.00001-ETH smoke stake would now REVERT at deploy. Must equal the
-      # crates/chain-registry eip155:84532 stake_base_units (a mismatch fails the
-      # live settle digest). Production parity re-tunes at the gated mainnet deploy.
-      DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
+      # Owner / operator / treasury are the SAME across networks (founder decision:
+      # reuse the xchain authority key, then transfer on-chain owner + operatorSigner
+      # to a fresh key post-mainnet-deploy — Ownable2Step). operatorSigner ==
+      # game-api's xchain-operator-signer (GCP Secret Manager), so game-api's
+      # normalized v=27/28 attestations verify on-chain.
       XCHAIN_OWNER: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
-      # Dedicated secp256k1 operator/attestor (public address; the private key
-      # lives in GCP Secret Manager as xchain-operator-signer for game-api).
       XCHAIN_OPERATOR_SIGNER: '0x54a600649C2906f7Bb0D52E74818Ce025afd9A30'
       XCHAIN_TREASURY: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
       XCHAIN_TREASURY_BPS: '5000'
-      XCHAIN_STAKE_WEI: '3200000000000000' # 0.0032 ETH ($5 anchor; == registry stake_base_units)
+      # Both deployer secrets in env (masked); the deploy step picks by network.
+      EVM_TESTNET_DEPLOYER: ${{ secrets.EVM_TESTNET_DEPLOYER }}
+      EVM_MAINNET_DEPLOYER: ${{ secrets.EVM_MAINNET_DEPLOYER }}
+      EVM_MAINNET_RPC_URL: ${{ secrets.EVM_MAINNET_RPC_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,17 +73,74 @@ jobs:
         with:
           version: stable
 
+      - name: Resolve network config
+        # Stake/tranche MUST equal the crates/chain-registry entry for this CAIP-2
+        # (the parity guard enforces it once live). IS_MAINNET selects the deployer
+        # key and gates the mainnet-secret presence check below.
+        run: |
+          set -euo pipefail
+          case "${{ inputs.network }}" in
+            base_sepolia)
+              echo "CAIP2=eip155:84532" >> "$GITHUB_ENV"
+              echo "IS_MAINNET=false" >> "$GITHUB_ENV"
+              echo "XCHAIN_STAKE_WEI=3200000000000000" >> "$GITHUB_ENV"                # 0.0032 ETH
+              echo "XCHAIN_MAX_TRANCHE_WEI=6400000000000000" >> "$GITHUB_ENV"          # 0.0064 ETH
+              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=64000000000000000" >> "$GITHUB_ENV"   # 0.064 ETH (~10 matches/day)
+              ;;
+            base)
+              echo "CAIP2=eip155:8453" >> "$GITHUB_ENV"
+              echo "IS_MAINNET=true" >> "$GITHUB_ENV"
+              echo "XCHAIN_STAKE_WEI=1600000000000000" >> "$GITHUB_ENV"                # 0.0016 ETH
+              echo "XCHAIN_MAX_TRANCHE_WEI=3200000000000000" >> "$GITHUB_ENV"          # 0.0032 ETH
+              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=32000000000000000" >> "$GITHUB_ENV"   # 0.032 ETH (~10 matches/day)
+              ;;
+            ethereum)
+              echo "CAIP2=eip155:1" >> "$GITHUB_ENV"
+              echo "IS_MAINNET=true" >> "$GITHUB_ENV"
+              echo "XCHAIN_STAKE_WEI=10000000000000000" >> "$GITHUB_ENV"               # 0.01 ETH
+              echo "XCHAIN_MAX_TRANCHE_WEI=20000000000000000" >> "$GITHUB_ENV"          # 0.02 ETH
+              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=200000000000000000" >> "$GITHUB_ENV"   # 0.2 ETH (~10 matches/day)
+              ;;
+            *)
+              echo "::error::unknown network '${{ inputs.network }}' (expected base_sepolia | base | ethereum)"
+              exit 1
+              ;;
+          esac
+
+      - name: Select deployer key and RPC target
+        # Pick the network's deployer secret and fail loudly if the required one
+        # is unset — a mainnet deploy must never silently fall back to the testnet key.
+        run: |
+          set -euo pipefail
+          if [ "$IS_MAINNET" = "true" ]; then
+            if [ -z "$EVM_MAINNET_DEPLOYER" ]; then
+              echo "::error::EVM_MAINNET_DEPLOYER secret is required for a mainnet deploy"
+              exit 1
+            fi
+            echo "DEPLOYER_PK=$EVM_MAINNET_DEPLOYER" >> "$GITHUB_ENV"
+            echo "RPC_TARGET=${EVM_MAINNET_RPC_URL:-${{ inputs.network }}}" >> "$GITHUB_ENV"
+          else
+            if [ -z "$EVM_TESTNET_DEPLOYER" ]; then
+              echo "::error::EVM_TESTNET_DEPLOYER secret is required for a testnet deploy"
+              exit 1
+            fi
+            echo "DEPLOYER_PK=$EVM_TESTNET_DEPLOYER" >> "$GITHUB_ENV"
+            echo "RPC_TARGET=${{ inputs.network }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Derive chain tag
+        # chainTag = keccak256(CAIP-2 string bytes) — byte-identical to the registry's
+        # chain_tag and what both on-chain programs check leg membership against.
+        run: echo "XCHAIN_CHAIN_TAG=$(cast keccak "$CAIP2")" >> "$GITHUB_ENV"
+
       - name: Deploy CrossChainGame
         if: inputs.contract == 'crosschain'
         env:
-          # chainTag mirrors crates/chain-registry (Base Sepolia row).
-          XCHAIN_CHAIN_TAG: '0x8a9a9c58b754a98f1ff302a7ead652cfd23eb36a5791767b5d185067dd9481c2'
-          XCHAIN_MAX_TRANCHE_WEI: '6400000000000000' # 0.0064 ETH (2× stake; == registry max_tranche_base_units)
           XCHAIN_CLAIM_WINDOW: '3600'
           XCHAIN_SKEW_MARGIN: '900'
         run: |
           forge script script/Deploy.s.sol \
-            --rpc-url ${{ inputs.network }} \
+            --rpc-url "$RPC_TARGET" \
             --private-key "$DEPLOYER_PK" \
             --broadcast
 
@@ -79,15 +151,14 @@ jobs:
           COORD_REVEAL_TIMEOUT: '7200' # Revealing
         run: |
           forge script script/DeployCoordinationGame.s.sol \
-            --rpc-url ${{ inputs.network }} \
+            --rpc-url "$RPC_TARGET" \
             --private-key "$DEPLOYER_PK" \
             --broadcast
 
       - name: Deploy ShillbotEscrow
         if: inputs.contract == 'shillbot'
         env:
-          # chainTag mirrors crates/chain-registry (Base Sepolia row).
-          SHILLBOT_ESCROW_CHAIN_TAG: '0x8a9a9c58b754a98f1ff302a7ead652cfd23eb36a5791767b5d185067dd9481c2'
+          SHILLBOT_ESCROW_CHAIN_TAG: ${{ env.XCHAIN_CHAIN_TAG }}
           SHILLBOT_ESCROW_OWNER: ${{ env.XCHAIN_OWNER }}
           # Bootstrap attester = the shared xchain operator key (satisfies the
           # signer != owner != treasury gate). Rotate to the dedicated
@@ -105,6 +176,6 @@ jobs:
           SHILLBOT_ESCROW_MAX_ESCROW_WEI: '1000000000000000000' # 1 ETH (testnet cap)
         run: |
           forge script script/DeployShillbotEscrow.s.sol \
-            --rpc-url ${{ inputs.network }} \
+            --rpc-url "$RPC_TARGET" \
             --private-key "$DEPLOYER_PK" \
             --broadcast

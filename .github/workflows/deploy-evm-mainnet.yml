@@ -1,0 +1,59 @@
+name: Deploy EVM Mainnet
+
+# Manual-only, founder-triggered entry point for deploying an EVM contract to a
+# MAINNET chain (Base eip155:8453 or Ethereum eip155:1). Real funds, irreversible —
+# so it is gated three ways: (1) a typed confirmation phrase, (2) a dedicated
+# EVM_MAINNET_DEPLOYER secret the testnet path never touches, (3) after deploy you
+# MUST record the address into crates/chain-registry (a follow-up PR) — the
+# evm-ci parity guard then verifies registry == on-chain before the chain flips live.
+#
+# Pre-flight (founder): set EVM_MAINNET_DEPLOYER (funded) and, recommended,
+# EVM_MAINNET_RPC_URL (a keyed Alchemy/Infura URL — public RPCs rate-limit
+# broadcasts). Per decision.md §6 this deploy is also gated on the founder's
+# accepted external-audit + legal risk call; that go/no-go is theirs, not CI's.
+on:
+  workflow_dispatch:
+    inputs:
+      contract:
+        description: 'Which contract to deploy'
+        required: true
+        type: choice
+        options:
+          - coordination
+          - crosschain
+          - shillbot
+        default: crosschain
+      network:
+        description: 'Mainnet chain'
+        required: true
+        type: choice
+        options:
+          - base
+          - ethereum
+        default: base
+      confirm:
+        description: 'Type DEPLOY-MAINNET to confirm real-money deploy'
+        required: true
+        type: string
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify confirmation phrase
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DEPLOY-MAINNET" ]; then
+            echo "::error::confirmation phrase mismatch — type exactly DEPLOY-MAINNET to proceed"
+            exit 1
+          fi
+          echo "Confirmed mainnet deploy: ${{ github.event.inputs.contract }} → ${{ github.event.inputs.network }}"
+
+  deploy:
+    needs: guard
+    uses: ./.github/workflows/_deploy-evm.yml
+    with:
+      contract: ${{ github.event.inputs.contract }}
+      network: ${{ github.event.inputs.network }}
+    secrets:
+      EVM_MAINNET_DEPLOYER: ${{ secrets.EVM_MAINNET_DEPLOYER }}
+      EVM_MAINNET_RPC_URL: ${{ secrets.EVM_MAINNET_RPC_URL }}

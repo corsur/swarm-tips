@@ -30,3 +30,4 @@ jobs:
       network: ${{ github.event.inputs.network }}
     secrets:
       EVM_TESTNET_DEPLOYER: ${{ secrets.EVM_TESTNET_DEPLOYER }}
+      # Mainnet secrets intentionally NOT passed — this entry point is testnet-only.

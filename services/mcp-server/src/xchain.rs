@@ -20,6 +20,10 @@ fn chain_json(e: &chain_registry::ChainEntry) -> Value {
     let namespace = chain_core::ChainId::parse(e.chain_id)
         .map(|c| c.namespace().as_str())
         .unwrap_or("unknown");
+    // `live` is the deployment truth: a scaffolded mainnet chain (Base, Ethereum)
+    // has no game contract yet, so it lists as "coming soon" — an agent must not
+    // try to stake there. Base Sepolia is live today.
+    let live = e.is_live(chain_registry::ContractPurpose::CrossChainGame);
     json!({
         "chain_id": e.chain_id,
         "namespace": namespace,
@@ -30,6 +34,8 @@ fn chain_json(e: &chain_registry::ChainEntry) -> Value {
         "max_tranche_base_units": e.max_tranche_base_units.to_string(),
         "claim_window_secs": e.claim_window_secs,
         "game_contract": e.game_contract,
+        "live": live,
+        "status": if live { "live" } else { "coming_soon" },
     })
 }
 

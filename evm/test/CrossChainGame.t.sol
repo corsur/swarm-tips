@@ -16,6 +16,9 @@ contract CrossChainGameTest is Test {
     bytes32 internal constant CHAIN_TAG = keccak256("eip155:84532");
     uint128 internal constant STAKE = 0.0025 ether;
     uint128 internal constant MAX_TRANCHE = 0.005 ether;
+    // M6: generous so ordinary tests never trip the daily cap; the dedicated M6
+    // test lowers it via setConfig to prove the rolling-24h cap enforces.
+    uint128 internal constant DAILY_CAP = 100 ether;
     uint32 internal constant CLAIM_WINDOW = 3600;
     uint32 internal constant SKEW = 900;
     uint16 internal constant SPLIT_BPS = 5000;
@@ -45,7 +48,7 @@ contract CrossChainGameTest is Test {
 
         vm.prank(owner);
         game = new CrossChainGame(
-            CHAIN_TAG, owner, operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, SKEW
+            CHAIN_TAG, owner, operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, SKEW
         );
 
         vm.deal(owner, 100 ether);
@@ -110,8 +113,21 @@ contract CrossChainGameTest is Test {
     }
 
     /// Build a match-live cert whose EVM leg (legB) matches the recorded
-    /// escrow terms for `matchId`.
+    /// escrow terms for `matchId`. Uses the default fund-time matchDeadline.
     function _cert(bytes32 matchId, bool playerIsP1, uint128 tranche)
+        internal
+        view
+        returns (CertLib.MatchLiveCert memory cert)
+    {
+        return _certMd(matchId, playerIsP1, tranche, uint64(block.timestamp), uint64(block.timestamp + 2 days));
+    }
+
+    /// Same as `_cert` but with explicit `quoteTimestamp` + `matchDeadline`, so a
+    /// lock built after a time-warp still matches a match funded earlier (the
+    /// contract binds cert.matchDeadline == m.matchDeadline and checks quote
+    /// freshness against the warped block time — and `vm.warp` does not update
+    /// the test frame's own `block.timestamp` reads, so both must be passed in).
+    function _certMd(bytes32 matchId, bool playerIsP1, uint128 tranche, uint64 quoteTimestamp, uint64 matchDeadline)
         internal
         view
         returns (CertLib.MatchLiveCert memory cert)
@@ -138,12 +154,27 @@ contract CrossChainGameTest is Test {
             matchupCommitment: sha256(abi.encodePacked(R_MATCHUP)),
             legA: legA,
             legB: legB,
-            quoteTimestamp: uint64(block.timestamp),
+            quoteTimestamp: quoteTimestamp,
             quoteMaxAgeSecs: 300,
-            matchDeadline: uint64(block.timestamp + 2 days),
+            matchDeadline: matchDeadline,
             claimWindowSecs: CLAIM_WINDOW,
             aIsP1: playerIsP1 ? 0 : 1
         });
+    }
+
+    /// Fund a match with explicit deadlines (default `_fund` derives them from
+    /// fund-time, which a later warp would invalidate).
+    function _fundWithDeadlines(bytes32 matchId, bool playerIsP1, uint64 fundDeadline, uint64 matchDeadline) internal {
+        vm.prank(player);
+        game.createMatch{value: STAKE}(
+            matchId,
+            localSession,
+            counterSession,
+            playerIsP1,
+            fundDeadline,
+            matchDeadline,
+            _createMatchSig(matchId, player, localSession, counterSession, playerIsP1, fundDeadline, matchDeadline)
+        );
     }
 
     function _sign(uint256 pk, bytes32 digest) internal view returns (bytes memory) {
@@ -275,16 +306,16 @@ contract CrossChainGameTest is Test {
         vm.startPrank(owner);
         // stake below the dust floor
         vm.expectRevert(CrossChainGame.BadConfig.selector);
-        game.setConfig(operatorSigner, treasury, SPLIT_BPS, 1, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, 1, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, SKEW);
         // maxTranche over 10x stake
         vm.expectRevert(CrossChainGame.BadConfig.selector);
-        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, STAKE * 11, CLAIM_WINDOW, SKEW);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, STAKE * 11, DAILY_CAP, CLAIM_WINDOW, SKEW);
         // claim window below the 60s floor
         vm.expectRevert(CrossChainGame.BadConfig.selector);
-        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 59, SKEW);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, 59, SKEW);
         // skew over the 30-day cap
         vm.expectRevert(CrossChainGame.BadConfig.selector);
-        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, 31 days);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, 31 days);
         vm.stopPrank();
     }
 
@@ -413,6 +444,68 @@ contract CrossChainGameTest is Test {
         game.lockTranche(cert, _sign(operatorPk, CertLib.matchLiveDigest(cert)));
     }
 
+    // --- M6: rolling-24h aggregate tranche-lock cap ------------------------
+
+    function test_M6_setConfigRejectsCapBelowMaxTranche() public {
+        // The daily cap must admit at least one max-tranche match.
+        vm.prank(owner);
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, MAX_TRANCHE - 1, CLAIM_WINDOW, SKEW);
+    }
+
+    function test_M6_dailyTrancheCap_blocksExcessLocksInWindow() public {
+        // Lower the cap to exactly one max tranche: the first lock fills the
+        // day, the second (same window) is rejected — bounding a compromised
+        // operator to dailyTrancheCapWei per day.
+        vm.prank(owner);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+
+        bytes32 id1 = keccak256("m6a");
+        bytes32 id2 = keccak256("m6b");
+        _fund(id1, true);
+        _fund(id2, true);
+
+        _lock(id1, MAX_TRANCHE); // fills the daily cap
+        assertEq(uint256(game.trancheLockedInWindow()), MAX_TRANCHE);
+
+        CertLib.MatchLiveCert memory cert = _cert(id2, true, MAX_TRANCHE);
+        vm.expectRevert(CrossChainGame.DailyTrancheCapExceeded.selector);
+        game.lockTranche(cert, _sign(operatorPk, CertLib.matchLiveDigest(cert)));
+    }
+
+    function test_M6_dailyTrancheCap_resetsAfterWindow() public {
+        vm.prank(owner);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+
+        // Fund BOTH matches now with far-future deadlines so they survive a warp
+        // past the 24h tranche window (the lock cert binds matchDeadline, so it
+        // must equal the fund-time value).
+        uint64 t0 = uint64(block.timestamp);
+        uint64 md = t0 + 5 days;
+        uint64 fd = t0 + 4 days;
+        bytes32 id1 = keccak256("m6c");
+        bytes32 id2 = keccak256("m6d");
+        _fundWithDeadlines(id1, true, fd, md);
+        _fundWithDeadlines(id2, true, fd, md);
+
+        // Lock id1 → fills the daily cap for this window.
+        CertLib.MatchLiveCert memory c1 = _certMd(id1, true, MAX_TRANCHE, t0, md);
+        game.lockTranche(c1, _sign(operatorPk, CertLib.matchLiveDigest(c1)));
+        assertEq(uint256(game.trancheLockedInWindow()), MAX_TRANCHE);
+
+        // Roll past the 24h window (still well before the 5-day match deadline):
+        // the next lock resets the running total and succeeds. Pass the warped
+        // time explicitly as the quote timestamp (vm.warp doesn't update the test
+        // frame's own block.timestamp reads).
+        uint64 warped = t0 + 1 days + 1;
+        vm.warp(warped);
+        CertLib.MatchLiveCert memory c2 = _certMd(id2, true, MAX_TRANCHE, warped, md);
+        game.lockTranche(c2, _sign(operatorPk, CertLib.matchLiveDigest(c2)));
+
+        assertEq(uint256(game.trancheLockedInWindow()), MAX_TRANCHE, "window reset to a single tranche");
+        assertEq(uint256(_status(id2)), uint256(CrossChainGame.Status.Locked));
+    }
+
     // --- permissionless lock: operator-sig authorizes, caller pays gas -----
 
     function test_lockTranche_permissionless_anyCallerCanLock() public {
@@ -528,7 +621,7 @@ contract CrossChainGameTest is Test {
         // Shrink maxClaimWindowSecs to the floor (60), far below the locked cert's
         // claimWindowSecs (CLAIM_WINDOW=3600).
         vm.prank(owner);
-        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 60, SKEW);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, 60, SKEW);
 
         CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
         bytes32 liveDigest = CertLib.matchLiveDigest(cert);
@@ -782,7 +875,7 @@ contract CrossChainGameTest is Test {
 
         // Owner shrinks window + skew to the floor (60) AFTER the lock.
         vm.prank(owner);
-        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, 60, 60);
+        game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, 60, 60);
 
         // A non-snapshotted opensAt would be matchDeadline + 60 + 2*60 = +180; warp
         // past that but before the snapshot (matchDeadline + 3600 + 1800) — the
@@ -803,18 +896,22 @@ contract CrossChainGameTest is Test {
     /// the owner/upgrade authority or the treasury.
     function test_constructor_rejectsOperatorEqualsOwner() public {
         vm.expectRevert(CrossChainGame.BadConfig.selector);
-        new CrossChainGame(CHAIN_TAG, owner, owner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+        new CrossChainGame(
+            CHAIN_TAG, owner, owner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, SKEW
+        );
     }
 
     function test_constructor_rejectsOperatorEqualsTreasury() public {
         vm.expectRevert(CrossChainGame.BadConfig.selector);
-        new CrossChainGame(CHAIN_TAG, owner, treasury, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+        new CrossChainGame(
+            CHAIN_TAG, owner, treasury, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, SKEW
+        );
     }
 
     function test_setConfig_rejectsOperatorEqualsOwner() public {
         vm.prank(owner);
         vm.expectRevert(CrossChainGame.BadConfig.selector);
-        game.setConfig(owner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, CLAIM_WINDOW, SKEW);
+        game.setConfig(owner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, SKEW);
     }
 
     /// Finding #5: on the operator-less contested path, a TERMINAL claim
