@@ -1,0 +1,750 @@
+/**
+ * LIVE Base Sepolia OUTCOME/SCORE MATRIX for ShillbotEscrow — the full
+ * verification-kind × score × terminal-outcome axis, driven against the real
+ * deployed contract (default 0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c). This
+ * is the EVM counterpart of scripts/e2e/matrix-devnet.ts: every cell reaches a
+ * terminal state on-chain and asserts the REALIZED pull-payment credits
+ * (withdrawable deltas) EXACTLY against sdk/task-outcome-oracle.deriveTaskOutcome.
+ *
+ * EVM verifyTaskAttested takes the score straight from the attester signature
+ * (no Switchboard), so BOTH kind 0 (OracleMetrics continuum) and kind 1
+ * (DeterministicAttested {0, MAX}) are fully score-controllable here.
+ *
+ * Terminals exercised:
+ *   finalize (after the challenge window) · challenge→agent-wins ·
+ *   challenge→challenger-wins · expire (full refund)
+ *
+ * Terminals SKIPPED live, with reason (noted in the run log):
+ *   - default-resolve: needs the dispute window to lapse; disputeWindowSecs is
+ *     already at the on-chain MIN (1 hour), so the permissionless crank can't
+ *     fire in-run. Covered by the Solana bankrun matrix with clock-warp.
+ *   - Submitted-state expiry: needs verificationTimeoutSecs (MIN 1 hour) to
+ *     lapse. We instead drive the SAME Expired oracle outcome (full client
+ *     refund) from the Open state via a short task deadline — no long wait,
+ *     no owner privilege.
+ *
+ * setConfig is NOT used: all three windows already sit at their contract MINs
+ * (challenge 60s, dispute 1h, verification-timeout 1h), so there is nothing to
+ * shrink. The 60s challenge window is waited out once (batched across all
+ * finalize cells) so the run stays ~2 minutes.
+ *
+ * Roles (funded Base Sepolia keystores; deployed config read live):
+ *   client/owner = xchain-testnet · worker = evmgame-player-a ·
+ *   attester = evmgame-player-b (signs the digest off-chain, also relays the
+ *   challenge as challenger). treasury is read from the contract (== worker on
+ *   the current deploy — a demo overlap; the oracle's agent+treasury fields are
+ *   therefore validated as one combined delta on that address, still exact).
+ *
+ * NOT a CI test (real testnet gas + a 60s wait). Run:
+ *   ESCROW_ADDR=0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c \
+ *   npx tsx tests/live/shillbot-escrow-matrix-testnet.ts
+ */
+import { readFileSync } from "fs";
+import { createHash } from "crypto";
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  encodeAbiParameters,
+  keccak256,
+  parseAbi,
+  formatEther,
+  type Hex,
+  type Address,
+  type WalletClient,
+  type PublicClient,
+} from "viem";
+import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import { baseSepolia } from "viem/chains";
+import {
+  deriveTaskOutcome,
+  computePayment,
+  TaskOutcomeKind,
+  TaskPayout,
+  TaskScenario,
+  MAX_SCORE,
+} from "../../sdk/task-outcome-oracle";
+
+const RPC = process.env.RPC_URL ?? "https://sepolia.base.org";
+const ESCROW = (process.env.ESCROW_ADDR ??
+  "0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c") as Address;
+const CAIP2 = "eip155:84532";
+const CHAIN_TAG = keccak256(Buffer.from(CAIP2));
+const ATTEST_MAGIC = keccak256(Buffer.from("SWARM_ATTEST_V1"));
+// keccak256 of policies/lean-attester-policy-v1.json (VerifyLib.LEAN_POLICY_V1_ID).
+const POLICY_ID =
+  "0xd52a2aa68bdbc5f34d3acb0bc4dcdfd4936ea8ab930e6d0cd37174df19db1eab" as Hex;
+
+// Small escrow — value never leaves our controlled keys (it moves between
+// worker/client/treasury/challenger, all ours, as withdrawable credit), so real
+// spend is gas only; the escrow just bounds ETH locked in the contract.
+const ESCROW_WEI = 50_000_000_000_000n; // 5e13 = 0.00005 ETH
+const K = TaskOutcomeKind;
+
+class Checker {
+  private failures = 0;
+  private passes = 0;
+  check(cond: boolean, msg: string): void {
+    console.log(`  ${cond ? "✓" : "✗"} ${msg}`);
+    if (cond) this.passes++;
+    else this.failures++;
+  }
+  finish(): void {
+    console.log(
+      `\n${this.failures === 0 ? "PASS" : "FAIL"} — ${this.passes} passed, ${
+        this.failures
+      } failed`
+    );
+    process.exit(this.failures === 0 ? 0 : 1);
+  }
+}
+
+function loadKey(name: string): Hex {
+  const raw = readFileSync(
+    `${process.env.HOME}/.foundry/keystores/${name}.key`,
+    "utf8"
+  ).trim();
+  return `0x${raw.replace(/^0x/, "")}` as Hex;
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sha256Hex = (s: string): Hex =>
+  `0x${createHash("sha256").update(s).digest("hex")}` as Hex;
+
+const ABI = parseAbi([
+  "struct Task { address client; address worker; uint8 state; uint8 verificationKind; bool requiresApproval; uint128 escrowWei; bytes32 statementCommitment; bytes32 policyId; bytes32 contentIdHash; bytes32 artifactHash; uint64 deadline; uint64 submittedAt; uint64 verifiedAt; uint64 challengeDeadline; uint64 resolutionDeadline; uint32 challengeWindowSecs; uint32 disputeWindowSecs; uint32 verificationTimeoutSecs; uint128 paymentWei; uint128 feeWei; address challenger; uint128 bondWei; }",
+  "function createTask(bytes32 statementCommitment, bytes32 policyId, uint8 verificationKind, uint64 deadline, bool requiresApproval) payable returns (uint64)",
+  "function claimTask(uint64 id)",
+  "function submitWork(uint64 id, bytes32 contentIdHash, bytes32 artifactHash)",
+  "function verifyTaskAttested(uint64 id, uint64 score, bytes sig)",
+  "function challengeTask(uint64 id) payable",
+  "function resolveChallenge(uint64 id, bool challengerWon)",
+  "function finalizeTask(uint64 id)",
+  "function expireTask(uint64 id)",
+  "function withdrawable(address) view returns (uint256)",
+  "function nextTaskId() view returns (uint64)",
+  "function getTask(uint64 id) view returns (Task)",
+  "function treasury() view returns (address)",
+  "function protocolFeeBps() view returns (uint16)",
+  "function qualityThreshold() view returns (uint64)",
+  "function challengeBondMultiplier() view returns (uint8)",
+  "function bondSlashTreasuryBps() view returns (uint16)",
+]);
+
+interface Descriptor {
+  verificationKind: number;
+  statementCommitment: Hex;
+  policyId: Hex;
+  artifactHash: Hex;
+}
+
+/** Mirror VerifyLib.attestationDigest exactly (abi.encode of value types). */
+function attestationDigest(taskId: bigint, d: Descriptor, score: bigint): Hex {
+  const contractWord = `0x${ESCROW.slice(2)
+    .toLowerCase()
+    .padStart(64, "0")}` as Hex;
+  const payload = encodeAbiParameters(
+    [
+      { type: "bytes32" }, // ATTEST_MAGIC
+      { type: "uint256" }, // version
+      { type: "bytes32" }, // chainTag
+      { type: "bytes32" }, // contract (address left-padded to 32)
+      { type: "uint256" }, // subjectId
+      { type: "uint256" }, // verificationKind
+      { type: "bytes32" }, // statementCommitment
+      { type: "bytes32" }, // policyId
+      { type: "bytes32" }, // artifactHash
+      { type: "uint256" }, // score
+    ],
+    [
+      ATTEST_MAGIC,
+      1n,
+      CHAIN_TAG,
+      contractWord,
+      taskId,
+      BigInt(d.verificationKind),
+      d.statementCommitment,
+      d.policyId,
+      d.artifactHash,
+      score,
+    ]
+  );
+  return keccak256(payload);
+}
+
+interface Cell {
+  name: string;
+  kind: 0 | 1;
+  score: number;
+  outcome: TaskOutcomeKind;
+}
+
+// qualityThreshold is 200000 on the live deploy (asserted at startup). The
+// kind-0 score axis samples {0, threshold-1, threshold, mid, MAX}; kind-1 the
+// legal binary {0, MAX}. Full outcome cross-product is pruned to a coverage-rich
+// slate: the whole score axis under finalize (cheap, pins payment), the bond
+// mechanics under challenge terminals at representative scores, and one expire.
+const THRESHOLD = 200_000;
+const CELLS: Cell[] = [
+  // ---- finalize: full score axis, both kinds (batched 60s window) ----
+  { name: "k0 score=0 finalize", kind: 0, score: 0, outcome: K.Finalized },
+  {
+    name: "k0 score=threshold-1 finalize",
+    kind: 0,
+    score: THRESHOLD - 1,
+    outcome: K.Finalized,
+  },
+  {
+    name: "k0 score=threshold finalize",
+    kind: 0,
+    score: THRESHOLD,
+    outcome: K.Finalized,
+  },
+  {
+    name: "k0 score=mid(600000) finalize",
+    kind: 0,
+    score: 600_000,
+    outcome: K.Finalized,
+  },
+  {
+    name: "k0 score=MAX finalize",
+    kind: 0,
+    score: MAX_SCORE,
+    outcome: K.Finalized,
+  },
+  { name: "k1 score=0 finalize", kind: 1, score: 0, outcome: K.Finalized },
+  {
+    name: "k1 score=MAX finalize",
+    kind: 1,
+    score: MAX_SCORE,
+    outcome: K.Finalized,
+  },
+  // ---- challenge → agent-wins (payment + slashed bond) ----
+  {
+    name: "k1 score=MAX agent-wins",
+    kind: 1,
+    score: MAX_SCORE,
+    outcome: K.ResolvedAgentWins,
+  },
+  {
+    name: "k1 score=0 agent-wins (0 pay + slashed bond)",
+    kind: 1,
+    score: 0,
+    outcome: K.ResolvedAgentWins,
+  },
+  {
+    name: "k0 score=mid agent-wins",
+    kind: 0,
+    score: 600_000,
+    outcome: K.ResolvedAgentWins,
+  },
+  // ---- challenge → challenger-wins (escrow refund, bond returned) ----
+  {
+    name: "k1 score=MAX challenger-wins",
+    kind: 1,
+    score: MAX_SCORE,
+    outcome: K.ResolvedChallengerWins,
+  },
+  {
+    name: "k0 score=mid challenger-wins",
+    kind: 0,
+    score: 600_000,
+    outcome: K.ResolvedChallengerWins,
+  },
+  // ---- expire (full client refund; driven from Open via short deadline) ----
+  {
+    name: "expire (full refund from Open)",
+    kind: 1,
+    score: 0,
+    outcome: K.Expired,
+  },
+];
+
+interface Config {
+  treasury: Address;
+  protocolFeeBps: number;
+  qualityThreshold: number;
+  challengeBondMultiplier: number;
+  bondSlashTreasuryBps: number;
+}
+
+interface Roles {
+  client: PrivateKeyAccount;
+  worker: PrivateKeyAccount;
+  attester: PrivateKeyAccount;
+  challenger: PrivateKeyAccount;
+  treasury: Address;
+}
+
+interface Env {
+  pub: PublicClient;
+  clientW: WalletClient;
+  workerW: WalletClient;
+  challengerW: WalletClient;
+  roles: Roles;
+  cfg: Config;
+  chk: Checker;
+  txlog: Record<string, Hex>;
+}
+
+async function writeAndWait(
+  env: Env,
+  wallet: WalletClient,
+  account: PrivateKeyAccount,
+  functionName: string,
+  args: unknown[],
+  value?: bigint
+): Promise<Hex> {
+  const hash = await wallet.writeContract({
+    address: ESCROW,
+    abi: ABI,
+    functionName: functionName as never,
+    args: args as never,
+    account,
+    chain: baseSepolia,
+    ...(value !== undefined ? { value } : {}),
+  });
+  await env.pub.waitForTransactionReceipt({ hash });
+  return hash;
+}
+
+async function getTask(env: Env, taskId: bigint) {
+  return (await env.pub.readContract({
+    address: ESCROW,
+    abi: ABI,
+    functionName: "getTask",
+    args: [taskId],
+  })) as {
+    state: number;
+    verificationKind: number;
+    statementCommitment: Hex;
+    policyId: Hex;
+    artifactHash: Hex;
+    paymentWei: bigint;
+    feeWei: bigint;
+    challengeDeadline: bigint;
+    deadline: bigint;
+  };
+}
+
+async function withdrawable(env: Env, addr: Address): Promise<bigint> {
+  return (await env.pub.readContract({
+    address: ESCROW,
+    abi: ABI,
+    functionName: "withdrawable",
+    args: [addr],
+  })) as bigint;
+}
+
+function scenarioFor(cfg: Config, cell: Cell): TaskScenario {
+  return {
+    escrowLamports: ESCROW_WEI,
+    qualityThreshold: cfg.qualityThreshold,
+    protocolFeeBps: cfg.protocolFeeBps,
+    compositeScore: cell.score,
+    verificationKind: cell.kind,
+    challengeBondMultiplier: cfg.challengeBondMultiplier,
+    bondSlashTreasuryBps: cfg.bondSlashTreasuryBps,
+    outcome: cell.outcome,
+  };
+}
+
+/** Collapse the oracle's four role payouts onto their on-chain addresses
+ *  (handles the worker==treasury overlap by summing). */
+function expectedByAddress(roles: Roles, o: TaskPayout): Map<Address, bigint> {
+  const m = new Map<Address, bigint>();
+  const add = (a: Address, v: bigint) =>
+    m.set(
+      a.toLowerCase() as Address,
+      (m.get(a.toLowerCase() as Address) ?? 0n) + v
+    );
+  add(roles.worker.address, o.agentLamports);
+  add(roles.treasury, o.treasuryLamports);
+  add(roles.client.address, o.clientLamports);
+  add(roles.challenger.address, o.challengerLamports);
+  return m;
+}
+
+/** Snapshot withdrawable for every role address (deduped). */
+async function snapshot(env: Env): Promise<Map<Address, bigint>> {
+  const addrs = new Set<Address>(
+    [
+      env.roles.worker.address,
+      env.roles.treasury,
+      env.roles.client.address,
+      env.roles.challenger.address,
+    ].map((a) => a.toLowerCase() as Address)
+  );
+  const m = new Map<Address, bigint>();
+  for (const a of addrs) m.set(a, await withdrawable(env, a));
+  return m;
+}
+
+async function assertDeltas(
+  env: Env,
+  cell: Cell,
+  before: Map<Address, bigint>,
+  expected: Map<Address, bigint>
+): Promise<void> {
+  const after = await snapshot(env);
+  for (const [addr, prev] of before.entries()) {
+    const delta = (after.get(addr) ?? 0n) - prev;
+    const exp = expected.get(addr) ?? 0n;
+    env.chk.check(
+      delta === exp,
+      `${cell.name}: withdrawable[${addr.slice(
+        0,
+        8
+      )}] delta ${delta} == oracle ${exp}`
+    );
+  }
+}
+
+/** create → claim → submit → verify(attester sig). Returns taskId + on-chain
+ *  challengeDeadline. Also asserts the PINNED payment/fee against the oracle. */
+async function toVerified(
+  env: Env,
+  cell: Cell
+): Promise<{ taskId: bigint; challengeDeadline: bigint }> {
+  const { client, worker, attester } = env.roles;
+  const statement = `matrix_${cell.name}_${Date.now()}`;
+  const statementCommitment =
+    cell.kind === 1 ? sha256Hex(statement) : (`0x${"00".repeat(32)}` as Hex);
+  const policyId =
+    cell.kind === 1 ? POLICY_ID : (`0x${"00".repeat(32)}` as Hex);
+  const artifactHash = sha256Hex("artifact:" + statement);
+
+  const taskId = (await env.pub.readContract({
+    address: ESCROW,
+    abi: ABI,
+    functionName: "nextTaskId",
+  })) as bigint;
+
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 86_400);
+  env.txlog[`${cell.name}/create`] = await writeAndWait(
+    env,
+    env.clientW,
+    client,
+    "createTask",
+    [statementCommitment, policyId, cell.kind, deadline, false],
+    ESCROW_WEI
+  );
+  env.txlog[`${cell.name}/claim`] = await writeAndWait(
+    env,
+    env.workerW,
+    worker,
+    "claimTask",
+    [taskId]
+  );
+  env.txlog[`${cell.name}/submit`] = await writeAndWait(
+    env,
+    env.workerW,
+    worker,
+    "submitWork",
+    [taskId, sha256Hex("content:" + statement), artifactHash]
+  );
+
+  const t = await getTask(env, taskId);
+  const digest = attestationDigest(
+    taskId,
+    {
+      verificationKind: t.verificationKind,
+      statementCommitment: t.statementCommitment,
+      policyId: t.policyId,
+      artifactHash: t.artifactHash,
+    },
+    BigInt(cell.score)
+  );
+  const sig = await attester.sign({ hash: digest });
+  env.txlog[`${cell.name}/verify`] = await writeAndWait(
+    env,
+    env.clientW,
+    client,
+    "verifyTaskAttested",
+    [taskId, BigInt(cell.score), sig]
+  );
+
+  const v = await getTask(env, taskId);
+  const pinned = computePayment(
+    cell.score,
+    env.cfg.qualityThreshold,
+    ESCROW_WEI,
+    env.cfg.protocolFeeBps
+  );
+  env.chk.check(
+    v.state === 3,
+    `${cell.name}: state == Verified after attested verify`
+  );
+  env.chk.check(
+    v.paymentWei === pinned.payment,
+    `${cell.name}: pinned payment ${v.paymentWei} == oracle ${pinned.payment}`
+  );
+  env.chk.check(
+    v.feeWei === pinned.fee,
+    `${cell.name}: pinned fee ${v.feeWei} == oracle ${pinned.fee}`
+  );
+  return { taskId, challengeDeadline: v.challengeDeadline };
+}
+
+async function runChallengeCell(env: Env, cell: Cell): Promise<void> {
+  console.log(`\n=== ${cell.name} ===`);
+  const { taskId } = await toVerified(env, cell);
+  const expected = expectedByAddress(
+    env.roles,
+    deriveTaskOutcome(scenarioFor(env.cfg, cell))
+  );
+
+  const bond = ESCROW_WEI * BigInt(env.cfg.challengeBondMultiplier);
+  env.txlog[`${cell.name}/challenge`] = await writeAndWait(
+    env,
+    env.challengerW,
+    env.roles.challenger,
+    "challengeTask",
+    [taskId],
+    bond
+  );
+
+  const before = await snapshot(env);
+  const challengerWon = cell.outcome === K.ResolvedChallengerWins;
+  env.txlog[`${cell.name}/resolve`] = await writeAndWait(
+    env,
+    env.clientW,
+    env.roles.client,
+    "resolveChallenge",
+    [taskId, challengerWon]
+  );
+  await assertDeltas(env, cell, before, expected);
+}
+
+async function runExpireCell(
+  env: Env,
+  cell: Cell
+): Promise<{
+  taskId: bigint;
+  expireAt: number;
+  expected: Map<Address, bigint>;
+}> {
+  console.log(`\n=== ${cell.name} (setup) ===`);
+  // Open-state expiry: create with a short deadline, never claim. expireTask
+  // opens strictly after the deadline → full escrow refunded to the client.
+  const deadline = Math.floor(Date.now() / 1000) + 40;
+  const taskId = (await env.pub.readContract({
+    address: ESCROW,
+    abi: ABI,
+    functionName: "nextTaskId",
+  })) as bigint;
+  env.txlog[`${cell.name}/create`] = await writeAndWait(
+    env,
+    env.clientW,
+    env.roles.client,
+    "createTask",
+    [sha256Hex(cell.name), POLICY_ID, cell.kind, BigInt(deadline), false],
+    ESCROW_WEI
+  );
+  const expected = expectedByAddress(
+    env.roles,
+    deriveTaskOutcome(scenarioFor(env.cfg, cell))
+  );
+  return { taskId, expireAt: deadline, expected };
+}
+
+async function main(): Promise<void> {
+  const chk = new Checker();
+  const client = privateKeyToAccount(loadKey("xchain-testnet"));
+  const worker = privateKeyToAccount(loadKey("evmgame-player-a"));
+  const attester = privateKeyToAccount(loadKey("evmgame-player-b"));
+  const challenger = attester; // attester EOA doubles as challenger (distinct from worker/client)
+
+  const pub = createPublicClient({
+    chain: baseSepolia,
+    transport: http(RPC),
+  }) as PublicClient;
+  const clientW = createWalletClient({
+    account: client,
+    chain: baseSepolia,
+    transport: http(RPC),
+  });
+  const workerW = createWalletClient({
+    account: worker,
+    chain: baseSepolia,
+    transport: http(RPC),
+  });
+  const challengerW = createWalletClient({
+    account: challenger,
+    chain: baseSepolia,
+    transport: http(RPC),
+  });
+
+  const read = async (fn: string) =>
+    pub.readContract({ address: ESCROW, abi: ABI, functionName: fn as never });
+  const cfg: Config = {
+    treasury: (await read("treasury")) as Address,
+    protocolFeeBps: Number(await read("protocolFeeBps")),
+    qualityThreshold: Number(await read("qualityThreshold")),
+    challengeBondMultiplier: Number(await read("challengeBondMultiplier")),
+    bondSlashTreasuryBps: Number(await read("bondSlashTreasuryBps")),
+  };
+
+  console.log(`escrow contract: ${ESCROW}`);
+  console.log(`client/owner:    ${client.address}`);
+  console.log(`worker:          ${worker.address}`);
+  console.log(`attester/chall:  ${attester.address}`);
+  console.log(`treasury(cfg):   ${cfg.treasury}`);
+  console.log(
+    `cfg: feeBps=${cfg.protocolFeeBps} threshold=${cfg.qualityThreshold} bondMult=${cfg.challengeBondMultiplier} slashTreasuryBps=${cfg.bondSlashTreasuryBps}`
+  );
+  console.log(`escrow/cell: ${formatEther(ESCROW_WEI)} ETH`);
+
+  chk.check(
+    cfg.qualityThreshold === THRESHOLD,
+    `live qualityThreshold == ${THRESHOLD} (score axis assumption)`
+  );
+
+  const roles: Roles = {
+    client,
+    worker,
+    attester,
+    challenger,
+    treasury: cfg.treasury,
+  };
+  const env: Env = {
+    pub,
+    clientW,
+    workerW,
+    challengerW,
+    roles,
+    cfg,
+    chk,
+    txlog: {},
+  };
+
+  const balBefore = await pub.getBalance({ address: client.address });
+
+  const finalizeCells = CELLS.filter((c) => c.outcome === K.Finalized);
+  const challengeCells = CELLS.filter(
+    (c) =>
+      c.outcome === K.ResolvedAgentWins ||
+      c.outcome === K.ResolvedChallengerWins
+  );
+  const expireCell = CELLS.find((c) => c.outcome === K.Expired)!;
+
+  // 1) Challenge terminals — immediate (owner adjudicates within the dispute window).
+  for (const cell of challengeCells) {
+    try {
+      await runChallengeCell(env, cell);
+    } catch (e) {
+      chk.check(false, `${cell.name}: threw ${String(e).slice(0, 200)}`);
+    }
+  }
+
+  // 2) Finalize setup + expire setup (no waits yet), then one batched wait.
+  const pendingFinalize: {
+    cell: Cell;
+    taskId: bigint;
+    challengeDeadline: bigint;
+    expected: Map<Address, bigint>;
+  }[] = [];
+  for (const cell of finalizeCells) {
+    try {
+      console.log(`\n=== ${cell.name} (setup) ===`);
+      const { taskId, challengeDeadline } = await toVerified(env, cell);
+      pendingFinalize.push({
+        cell,
+        taskId,
+        challengeDeadline,
+        expected: expectedByAddress(
+          roles,
+          deriveTaskOutcome(scenarioFor(cfg, cell))
+        ),
+      });
+    } catch (e) {
+      chk.check(false, `${cell.name}: setup threw ${String(e).slice(0, 200)}`);
+    }
+  }
+  const expireSetup = await runExpireCell(env, expireCell).catch((e) => {
+    chk.check(
+      false,
+      `${expireCell.name}: setup threw ${String(e).slice(0, 200)}`
+    );
+    return null;
+  });
+
+  const targets = [
+    ...pendingFinalize.map((p) => Number(p.challengeDeadline)),
+    ...(expireSetup ? [expireSetup.expireAt] : []),
+  ];
+  const waitUntil = Math.max(...targets) + 5;
+  const waitMs = Math.max(0, waitUntil - Math.floor(Date.now() / 1000)) * 1000;
+  console.log(
+    `\n… batched wait ${Math.round(
+      waitMs / 1000
+    )}s for challenge windows + expiry deadline`
+  );
+  await sleep(waitMs);
+
+  // 3) Finalize each verified task + assert.
+  for (const p of pendingFinalize) {
+    try {
+      console.log(`\n=== ${p.cell.name} (finalize) ===`);
+      const before = await snapshot(env);
+      env.txlog[`${p.cell.name}/finalize`] = await writeAndWait(
+        env,
+        clientW,
+        client,
+        "finalizeTask",
+        [p.taskId]
+      );
+      await assertDeltas(env, p.cell, before, p.expected);
+    } catch (e) {
+      chk.check(
+        false,
+        `${p.cell.name}: finalize threw ${String(e).slice(0, 200)}`
+      );
+    }
+  }
+
+  // 4) Expire + assert.
+  if (expireSetup) {
+    try {
+      console.log(`\n=== ${expireCell.name} (expire) ===`);
+      const before = await snapshot(env);
+      env.txlog[`${expireCell.name}/expire`] = await writeAndWait(
+        env,
+        clientW,
+        client,
+        "expireTask",
+        [expireSetup.taskId]
+      );
+      await assertDeltas(env, expireCell, before, expireSetup.expected);
+    } catch (e) {
+      chk.check(
+        false,
+        `${expireCell.name}: expire threw ${String(e).slice(0, 200)}`
+      );
+    }
+  }
+
+  const balAfter = await pub.getBalance({ address: client.address });
+  console.log(
+    `\nclient ETH before=${formatEther(balBefore)} after=${formatEther(
+      balAfter
+    )}`
+  );
+
+  console.log("\n--- tx hashes ---");
+  for (const [k, v] of Object.entries(env.txlog)) console.log(`  ${k}: ${v}`);
+
+  console.log("\nSKIPPED live (with reason):");
+  console.log(
+    "  default-resolve: disputeWindowSecs at on-chain MIN (1h) — permissionless crank can't fire in-run"
+  );
+  console.log(
+    "  Submitted-state expiry: verificationTimeoutSecs at on-chain MIN (1h) — used Open-state expiry instead"
+  );
+
+  chk.finish();
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
