@@ -19,6 +19,15 @@ on:
       - 'Anchor.toml'
       - '.github/workflows/extension-registry-program.yml'
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'Deploy target cluster (mainnet requires explicitly selecting it)'
+        required: true
+        default: devnet
+        type: choice
+        options:
+          - devnet
+          - mainnet
 
 jobs:
   test:
@@ -80,7 +89,7 @@ jobs:
         run: pkill -f solana-test-validator || true
 
   deploy-devnet:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -115,3 +124,67 @@ jobs:
             --upgrade-authority ~/.config/solana/id.json \
             --program-id H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j \
             target/deploy/extension_registry.so
+
+  deploy-mainnet:
+    # Manual only — never auto-deploy to mainnet on push (real SOL churn +
+    # unreviewed-change risk). See MAINNET_DEPLOY.md.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'
+    environment: mainnet
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Write deploy + program keypairs
+        run: |
+          mkdir -p ~/.config/solana target/deploy
+          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
+          echo '${{ secrets.EXTENSION_REGISTRY_PROGRAM_KEYPAIR }}' > target/deploy/extension_registry-keypair.json
+
+      - name: Build program
+        run: anchor build -p extension-registry
+
+      - name: Deploy to mainnet
+        run: |
+          solana program deploy \
+            --url https://api.mainnet-beta.solana.com \
+            --upgrade-authority ~/.config/solana/id.json \
+            --program-id H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j \
+            target/deploy/extension_registry.so
+
+      - name: Initialize GlobalState (idempotent)
+        run: npx tsx scripts/init-extension-registry.ts
+        env:
+          RPC_URL: https://api.mainnet-beta.solana.com
+
+      - name: Verify upgrade authority (mainnet)
+        run: |
+          bash scripts/check-upgrade-authority.sh \
+            --cluster mainnet-beta \
+            --program-id H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j
+        env:
+          EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY

@@ -23,12 +23,12 @@ adds status:
 |---|---|---|
 | `coordination_game` | `2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P` | ✅ Live. Deploy manually when releasing a reviewed change. |
 | `shillbot` | `2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi` | ⚠️ **FROZEN.** `main` carries the C2 `Task.payout_to` change (347‑byte Task layout). It is **not** cleared for mainnet: it needs the settlement audit, and would break existing 242/244/315‑byte Task accounts without a migration path for every legacy size. **Do not dispatch a shillbot mainnet deploy until C2 is audited + that migration ships.** |
+| `extension_registry` | `H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j` | 🆕 Cleared 2026-07-08 (founder call: the credit_web signal goes real on mainnet). Its `deploy-mainnet` job also runs the idempotent `GlobalState` initialize (authority = treasury = root wallet). Not yet dispatched. |
 
 ## Devnet-only (in development — never mainnet)
 
 | Program | Program ID |
 |---|---|
-| `extension_registry` | `H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j` |
 | `extension_credit` | `GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm` |
 
 These have **no `deploy-mainnet` job**. They run on devnet for the
