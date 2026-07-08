@@ -169,11 +169,13 @@ jobs:
         run: anchor build -p extension-registry
 
       - name: Deploy to mainnet
+        # --program-id takes the KEYPAIR file: an initial deploy must sign
+        # with the program keypair (pubkey-only works only for upgrades).
         run: |
           solana program deploy \
             --url https://api.mainnet-beta.solana.com \
             --upgrade-authority ~/.config/solana/id.json \
-            --program-id H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j \
+            --program-id target/deploy/extension_registry-keypair.json \
             target/deploy/extension_registry.so
 
       - name: Initialize GlobalState (idempotent)
