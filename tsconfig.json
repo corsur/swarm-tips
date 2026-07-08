@@ -12,6 +12,7 @@
     "node_modules",
     "target",
     ".anchor",
-    "sdk/aas-verifier-ts"
+    "sdk/aas-verifier-ts",
+    "tests/live"
   ]
 }

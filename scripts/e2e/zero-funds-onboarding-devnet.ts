@@ -49,7 +49,10 @@ import type { ExtensionRegistry } from "../../target/types/extension_registry";
 import type { ExtensionCredit } from "../../target/types/extension_credit";
 import type { Shillbot } from "../../target/types/shillbot";
 
-const DEVNET = process.env.DEVNET_RPC ?? process.env.RPC_URL ?? "https://api.devnet.solana.com";
+const DEVNET =
+  process.env.DEVNET_RPC ??
+  process.env.RPC_URL ??
+  "https://api.devnet.solana.com";
 const REPUTATION_URL = "https://mcp.swarm.tips/internal/agent-reputation";
 const TYPE_CAP = 0;
 const BOND = new BN(1_000_000); // 0.001 SOL min bond per vouch

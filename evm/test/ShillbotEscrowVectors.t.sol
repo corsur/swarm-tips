@@ -74,9 +74,7 @@ contract ShillbotEscrowVectorsTest is Test {
         assertEq(treasury, vm.parseUint(vm.parseJsonString(json, string.concat(po, ".treasuryLamports"))), "treasury");
         assertEq(client, vm.parseUint(vm.parseJsonString(json, string.concat(po, ".clientLamports"))), "client");
         assertEq(
-            challenger,
-            vm.parseUint(vm.parseJsonString(json, string.concat(po, ".challengerLamports"))),
-            "challenger"
+            challenger, vm.parseUint(vm.parseJsonString(json, string.concat(po, ".challengerLamports"))), "challenger"
         );
     }
 

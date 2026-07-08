@@ -295,7 +295,6 @@ export async function reveal(
       playerTwoWallet: m.p2.publicKey,
       globalConfig: ctx.globalConfigPda,
       treasury: ctx.treasury,
-      systemProgram: SystemProgram.programId,
       player: player.publicKey,
     })
     .signers([player])

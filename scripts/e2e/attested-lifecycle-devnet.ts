@@ -43,7 +43,10 @@ import { homedir } from "os";
 import { join } from "path";
 import type { Shillbot } from "../../target/types/shillbot";
 
-const DEVNET = process.env.DEVNET_RPC ?? process.env.RPC_URL ?? "https://api.devnet.solana.com";
+const DEVNET =
+  process.env.DEVNET_RPC ??
+  process.env.RPC_URL ??
+  "https://api.devnet.solana.com";
 const ESCROW = new BN(2_000_000); // 0.002 SOL
 const MAX_SCORE = 1_000_000;
 const LEAN_PROOF_PLATFORM = 10;
@@ -63,7 +66,9 @@ function loadKeypair(path: string): Keypair {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
-  const authorityClient = loadKeypair(join(homedir(), ".config/solana/id.json"));
+  const authorityClient = loadKeypair(
+    join(homedir(), ".config/solana/id.json")
+  );
   // The real armed attester = devnet oracle_authority = test.json (also the
   // shillbot-attester-keypair secret). No throwaway, no rotation.
   const attester = loadKeypair(join(homedir(), ".config/solana/test.json"));
@@ -238,7 +243,9 @@ async function runLifecycle(
   );
 
   const statement = `theorem_${counter.toString()}`;
-  const contentHash = Array.from(createHash("sha256").update(statement).digest());
+  const contentHash = Array.from(
+    createHash("sha256").update(statement).digest()
+  );
   const now = Math.floor(Date.now() / 1000);
 
   // create_task kind=1 (LeanProof), requires_approval=false so the attester
@@ -267,7 +274,10 @@ async function runLifecycle(
     })
     .rpc();
   const created = await program.account.task.fetch(taskPda);
-  check(created.verificationKind === 1, "task created with verification_kind = 1");
+  check(
+    created.verificationKind === 1,
+    "task created with verification_kind = 1"
+  );
 
   // claim (fresh agent — arms-length from client) + submit artifact URL.
   await program.methods
@@ -303,13 +313,21 @@ async function runLifecycle(
     .signers([attester])
     .rpc();
   const verified = await program.account.task.fetch(taskPda);
-  check(JSON.stringify(verified.state) === JSON.stringify({ verified: {} }), "state = Verified");
+  check(
+    JSON.stringify(verified.state) === JSON.stringify({ verified: {} }),
+    "state = Verified"
+  );
   const escrow = (verified.escrowLamports as BN).toNumber();
   const payment = (verified.paymentAmount as BN).toNumber();
   const fee = (verified.feeAmount as BN).toNumber();
   if (score === MAX_SCORE) {
-    const expectedFee = Math.floor((escrow * (g.protocolFeeBps as number)) / 10_000);
-    check(payment === escrow - expectedFee, `payment = escrow − fee (${payment})`);
+    const expectedFee = Math.floor(
+      (escrow * (g.protocolFeeBps as number)) / 10_000
+    );
+    check(
+      payment === escrow - expectedFee,
+      `payment = escrow − fee (${payment})`
+    );
   } else {
     check(payment === 0 && fee === 0, "score 0 ⇒ payment and fee are 0");
   }
@@ -317,7 +335,10 @@ async function runLifecycle(
   // Wait past the shrunk challenge window, then finalize (permissionless).
   await sleep((DEMO_CHALLENGE_WINDOW + 3) * 1000);
   const agentBefore = await connection.getBalance(agent.publicKey, "confirmed");
-  const clientBefore = await connection.getBalance(client.publicKey, "confirmed");
+  const clientBefore = await connection.getBalance(
+    client.publicKey,
+    "confirmed"
+  );
   await program.methods
     .finalizeTask()
     .accountsPartial({
@@ -334,13 +355,25 @@ async function runLifecycle(
   const closed = await connection.getAccountInfo(taskPda, "confirmed");
   check(closed === null, "task account closed after finalize");
   const agentAfter = await connection.getBalance(agent.publicKey, "confirmed");
-  const clientAfter = await connection.getBalance(client.publicKey, "confirmed");
+  const clientAfter = await connection.getBalance(
+    client.publicKey,
+    "confirmed"
+  );
   if (score === MAX_SCORE) {
-    check(agentAfter - agentBefore === payment, `agent received the payment (${payment})`);
+    check(
+      agentAfter - agentBefore === payment,
+      `agent received the payment (${payment})`
+    );
   } else {
     // Full escrow + PDA rent refunded to the client; agent gets nothing.
-    check(agentAfter === agentBefore, "agent received nothing on the failing proof");
-    check(clientAfter > clientBefore, "client refunded escrow + rent on the failing proof");
+    check(
+      agentAfter === agentBefore,
+      "agent received nothing on the failing proof"
+    );
+    check(
+      clientAfter > clientBefore,
+      "client refunded escrow + rent on the failing proof"
+    );
   }
 
   // The throwaway agent's leftover is devnet dust (can't sweep a system

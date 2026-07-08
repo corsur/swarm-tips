@@ -31,9 +31,13 @@ async function main(): Promise<void> {
   }
   const root = loadKeypair(join(homedir(), ".config/solana/id.json"));
   const connection = new Connection(rpcUrl, "confirmed");
-  const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(root), {
-    commitment: "confirmed",
-  });
+  const provider = new anchor.AnchorProvider(
+    connection,
+    new anchor.Wallet(root),
+    {
+      commitment: "confirmed",
+    }
+  );
   anchor.setProvider(provider);
   const idl = JSON.parse(
     readFileSync(
@@ -54,7 +58,9 @@ async function main(): Promise<void> {
   const existing = await connection.getAccountInfo(globalState);
   if (existing) {
     console.log(
-      `global_state already initialized at ${globalState.toBase58()} (${existing.data.length} bytes) — nothing to do`
+      `global_state already initialized at ${globalState.toBase58()} (${
+        existing.data.length
+      } bytes) — nothing to do`
     );
     return;
   }

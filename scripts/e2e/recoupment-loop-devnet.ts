@@ -48,7 +48,10 @@ import type { ExtensionCredit } from "../../target/types/extension_credit";
 import type { Shillbot } from "../../target/types/shillbot";
 
 const API = "https://api.shillbot.org";
-const DEVNET = process.env.DEVNET_RPC ?? process.env.RPC_URL ?? "https://api.devnet.solana.com";
+const DEVNET =
+  process.env.DEVNET_RPC ??
+  process.env.RPC_URL ??
+  "https://api.devnet.solana.com";
 const COORD_GAME = new PublicKey(
   "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 );

@@ -39,7 +39,10 @@ import { homedir } from "os";
 import { join } from "path";
 import type { Shillbot } from "../../target/types/shillbot";
 
-const DEVNET = process.env.DEVNET_RPC ?? process.env.RPC_URL ?? "https://api.devnet.solana.com";
+const DEVNET =
+  process.env.DEVNET_RPC ??
+  process.env.RPC_URL ??
+  "https://api.devnet.solana.com";
 const ESCROW = new BN(500_000); // 0.0005 SOL — minimal; stays locked (see header)
 const AGENT_FUNDING = 4_000_000; // ~enough for AgentState rent (no fee buffer needed — sponsored)
 

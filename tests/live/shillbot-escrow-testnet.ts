@@ -84,7 +84,9 @@ function attestationDigest(
   artifactHash: Hex,
   score: bigint
 ): Hex {
-  const contractWord = `0x${ESCROW.slice(2).toLowerCase().padStart(64, "0")}` as Hex;
+  const contractWord = `0x${ESCROW.slice(2)
+    .toLowerCase()
+    .padStart(64, "0")}` as Hex;
   const payload = encodeAbiParameters(
     [
       { type: "bytes32" }, // ATTEST_MAGIC
@@ -163,7 +165,12 @@ async function main(): Promise<void> {
     abi: ABI,
     functionName: "getTask",
     args: [taskId],
-  })) as { state: number; verificationKind: number; paymentWei: bigint; feeWei: bigint };
+  })) as {
+    state: number;
+    verificationKind: number;
+    paymentWei: bigint;
+    feeWei: bigint;
+  };
   check(
     task.verificationKind === KIND_DETERMINISTIC,
     "task created with verificationKind = 1"
@@ -205,8 +212,16 @@ async function main(): Promise<void> {
     abi: ABI,
     functionName: "getTask",
     args: [taskId],
-  })) as { state: number; verificationKind: number; paymentWei: bigint; feeWei: bigint };
-  check(task.state === 3, "state = Verified (attester signature accepted on-chain)");
+  })) as {
+    state: number;
+    verificationKind: number;
+    paymentWei: bigint;
+    feeWei: bigint;
+  };
+  check(
+    task.state === 3,
+    "state = Verified (attester signature accepted on-chain)"
+  );
   const payment = task.paymentWei;
   check(
     payment === escrowWei - (escrowWei * 1000n) / 10_000n,
