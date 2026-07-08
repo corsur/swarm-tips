@@ -395,7 +395,12 @@ mod tests {
 
     #[test]
     fn build_ws_url_appends_session_after_network() {
-        let url = build_ws_url("http://localhost:8080", "jwt", Some("eip155:84532"), Some("sess-1"));
+        let url = build_ws_url(
+            "http://localhost:8080",
+            "jwt",
+            Some("eip155:84532"),
+            Some("sess-1"),
+        );
         assert_eq!(
             url,
             "ws://localhost:8080/ws?token=jwt&network=eip155:84532&session=sess-1"
