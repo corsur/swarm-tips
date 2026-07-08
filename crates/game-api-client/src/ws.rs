@@ -86,15 +86,22 @@ pub struct WsConnection {
 /// connection to the correct per-network queue. Without it, all
 /// WebSocket connections land on the mainnet queue regardless of
 /// where the caller's HTTP queue join went.
-fn build_ws_url(base_url: &str, jwt: &str, network: Option<&str>) -> String {
+fn build_ws_url(base_url: &str, jwt: &str, network: Option<&str>, session: Option<&str>) -> String {
     let ws_url = base_url
         .replacen("http://", "ws://", 1)
         .replacen("https://", "wss://", 1);
-    let base = format!("{}/ws?token={}", ws_url.trim_end_matches('/'), jwt);
-    match network {
-        Some(n) if !n.is_empty() => format!("{}&network={}", base, n),
-        _ => base,
+    let mut url = format!("{}/ws?token={}", ws_url.trim_end_matches('/'), jwt);
+    if let Some(n) = network {
+        if !n.is_empty() {
+            url.push_str(&format!("&network={n}"));
+        }
     }
+    if let Some(s) = session {
+        if !s.is_empty() {
+            url.push_str(&format!("&session={s}"));
+        }
+    }
+    url
 }
 
 /// Parse a raw WebSocket text frame into a `ServerMessage`.
@@ -150,7 +157,19 @@ impl WsConnection {
         jwt: &str,
         network: Option<&str>,
     ) -> Result<Self> {
-        let url = build_ws_url(base_url, jwt, network);
+        Self::connect_with_session(base_url, jwt, network, None).await
+    }
+
+    /// Connect with an optional `network` AND `session` query param. Same-chain
+    /// EVM callers pass the `session_id` learned at pairing so game-api can
+    /// resolve the chat session on any pod (the `?session=` hint).
+    pub async fn connect_with_session(
+        base_url: &str,
+        jwt: &str,
+        network: Option<&str>,
+        session: Option<&str>,
+    ) -> Result<Self> {
+        let url = build_ws_url(base_url, jwt, network, session);
         let (ws_stream, _) = connect_async(&url)
             .await
             .context("WebSocket connect failed")?;
@@ -309,43 +328,43 @@ mod tests {
 
     #[test]
     fn build_ws_url_converts_http_to_ws() {
-        let url = build_ws_url("http://localhost:8080", "my-jwt", None);
+        let url = build_ws_url("http://localhost:8080", "my-jwt", None, None);
         assert_eq!(url, "ws://localhost:8080/ws?token=my-jwt");
     }
 
     #[test]
     fn build_ws_url_converts_https_to_wss() {
-        let url = build_ws_url("https://api.example.com", "tok123", None);
+        let url = build_ws_url("https://api.example.com", "tok123", None, None);
         assert_eq!(url, "wss://api.example.com/ws?token=tok123");
     }
 
     #[test]
     fn build_ws_url_strips_trailing_slash() {
-        let url = build_ws_url("http://localhost:8080/", "jwt", None);
+        let url = build_ws_url("http://localhost:8080/", "jwt", None, None);
         assert_eq!(url, "ws://localhost:8080/ws?token=jwt");
     }
 
     #[test]
     fn build_ws_url_strips_multiple_trailing_slashes() {
-        let url = build_ws_url("https://api.example.com///", "jwt", None);
+        let url = build_ws_url("https://api.example.com///", "jwt", None, None);
         assert_eq!(url, "wss://api.example.com/ws?token=jwt");
     }
 
     #[test]
     fn build_ws_url_preserves_path() {
-        let url = build_ws_url("http://localhost:8080/api/v1", "jwt", None);
+        let url = build_ws_url("http://localhost:8080/api/v1", "jwt", None, None);
         assert_eq!(url, "ws://localhost:8080/api/v1/ws?token=jwt");
     }
 
     #[test]
     fn build_ws_url_only_replaces_first_http_occurrence() {
-        let url = build_ws_url("http://host/http://other", "jwt", None);
+        let url = build_ws_url("http://host/http://other", "jwt", None, None);
         assert_eq!(url, "ws://host/http://other/ws?token=jwt");
     }
 
     #[test]
     fn build_ws_url_empty_jwt() {
-        let url = build_ws_url("http://localhost:8080", "", None);
+        let url = build_ws_url("http://localhost:8080", "", None, None);
         assert_eq!(url, "ws://localhost:8080/ws?token=");
     }
 
@@ -358,20 +377,32 @@ mod tests {
     // stale grok-agent instead.
     #[test]
     fn build_ws_url_appends_network_when_set() {
-        let url = build_ws_url("http://localhost:8080", "jwt", Some("devnet"));
+        let url = build_ws_url("http://localhost:8080", "jwt", Some("devnet"), None);
         assert_eq!(url, "ws://localhost:8080/ws?token=jwt&network=devnet");
     }
 
     #[test]
     fn build_ws_url_omits_network_when_empty() {
-        let url = build_ws_url("http://localhost:8080", "jwt", Some(""));
+        let url = build_ws_url("http://localhost:8080", "jwt", Some(""), None);
         assert_eq!(url, "ws://localhost:8080/ws?token=jwt");
     }
 
     #[test]
     fn build_ws_url_omits_network_when_none() {
-        let url = build_ws_url("http://localhost:8080", "jwt", None);
+        let url = build_ws_url("http://localhost:8080", "jwt", None, None);
         assert_eq!(url, "ws://localhost:8080/ws?token=jwt");
+    }
+
+    #[test]
+    fn build_ws_url_appends_session_after_network() {
+        let url = build_ws_url("http://localhost:8080", "jwt", Some("eip155:84532"), Some("sess-1"));
+        assert_eq!(
+            url,
+            "ws://localhost:8080/ws?token=jwt&network=eip155:84532&session=sess-1"
+        );
+        // session alone (no network) also appends.
+        let url2 = build_ws_url("http://localhost:8080", "jwt", None, Some("sess-2"));
+        assert_eq!(url2, "ws://localhost:8080/ws?token=jwt&session=sess-2");
     }
 
     // -----------------------------------------------------------------------
