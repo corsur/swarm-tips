@@ -220,8 +220,11 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 1_000_000_000_000_000, // 0.001 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
+        // Cross-chain CrossChainGame not yet deployed on Base mainnet (Phase 5).
         game_contract: None,
-        coordination_game_contract: None,
+        // Same-chain CoordinationGame deployed to Base mainnet 2026-07-09 (0.0005
+        // ETH launch stake; owner/operatorSigner = xchain key / xchain-operator-signer).
+        coordination_game_contract: Some("0x778F6FDA3ffd0ecD3708FDa0E6c2940606529fe9"),
         shillbot_escrow_contract: None,
         x402_network: Some("base"),
     },
@@ -375,27 +378,29 @@ mod tests {
     }
 
     #[test]
-    fn mainnet_evm_chains_are_scaffolded_but_not_live() {
-        // Base + Ethereum mainnet exist in the registry (so backend/frontend can
-        // show "coming soon") but carry NO contract addresses until the gated
-        // deploy — is_live must be false for every purpose, and no lookup may
-        // resolve a contract.
-        for caip in ["eip155:8453", "eip155:1"] {
-            let id = ChainId::parse(caip).unwrap();
-            let e = entry(&id).unwrap_or_else(|| panic!("{caip} registered"));
-            assert_eq!(e.native_symbol, "ETH");
-            for purpose in [
-                ContractPurpose::CrossChainGame,
-                ContractPurpose::CoordinationGame,
-                ContractPurpose::ShillbotEscrow,
-            ] {
-                assert!(
-                    !e.is_live(purpose),
-                    "{caip} must not be live until its deploy lands"
-                );
-                assert!(e.contract_for(purpose).is_none());
-            }
+    fn mainnet_evm_chains_go_live_only_where_deployed() {
+        // Ethereum mainnet is fully scaffolded-but-not-live (no deploy yet).
+        let eth = entry(&ChainId::parse("eip155:1").unwrap()).unwrap();
+        for purpose in [
+            ContractPurpose::CrossChainGame,
+            ContractPurpose::CoordinationGame,
+            ContractPurpose::ShillbotEscrow,
+        ] {
+            assert!(!eth.is_live(purpose), "ethereum not live until its deploy");
+            assert!(eth.contract_for(purpose).is_none());
         }
+        // Base mainnet: same-chain CoordinationGame deployed 2026-07-09 → live for
+        // that purpose ONLY; cross-chain + shillbot stay None until their deploys.
+        let base = entry(&ChainId::parse("eip155:8453").unwrap()).unwrap();
+        assert!(
+            base.is_live(ContractPurpose::CoordinationGame),
+            "base same-chain live"
+        );
+        assert!(
+            !base.is_live(ContractPurpose::CrossChainGame),
+            "base xchain not yet"
+        );
+        assert!(!base.is_live(ContractPurpose::ShillbotEscrow));
         // Base Sepolia (testnet) IS live for the game contracts — is_live true.
         let sepolia = entry(&ChainId::parse("eip155:84532").unwrap()).unwrap();
         assert!(sepolia.is_live(ContractPurpose::CrossChainGame));
