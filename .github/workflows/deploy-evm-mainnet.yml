@@ -55,5 +55,8 @@ jobs:
       contract: ${{ github.event.inputs.contract }}
       network: ${{ github.event.inputs.network }}
     secrets:
-      EVM_MAINNET_DEPLOYER: ${{ secrets.EVM_MAINNET_DEPLOYER }}
+      # Reuse the funded xchain deployer key (already in EVM_TESTNET_DEPLOYER and
+      # loaded with Base-mainnet ETH) — no separate mainnet secret to set. Falls
+      # back to a dedicated EVM_MAINNET_DEPLOYER if one is ever configured.
+      EVM_MAINNET_DEPLOYER: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
       EVM_MAINNET_RPC_URL: ${{ secrets.EVM_MAINNET_RPC_URL }}

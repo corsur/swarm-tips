@@ -212,10 +212,12 @@ const REGISTRY: &[ChainEntry] = &[
         is_mainnet: true,
         native_symbol: "ETH",
         native_decimals: 18,
-        // $5 anchor at ETH≈$3125 (0.0016 ETH). Base L2 gas is cents, so a $5
-        // stake is economically sane here (gas ≪ stake). Re-tune at deploy.
-        stake_base_units: 1_600_000_000_000_000, // 0.0016 ETH
-        max_tranche_base_units: 3_200_000_000_000_000, // 0.0032 ETH (2× stake)
+        // Low launch stake (~$1.50 at ETH≈$3000) for the initial minimal-budget
+        // Base-mainnet run (~20 games). Base L2 gas is cents, so even a tiny stake
+        // is economically sane here (gas ≪ stake). Bump post-launch as desired;
+        // keep in lockstep with the deploy workflow's base XCHAIN_STAKE_WEI.
+        stake_base_units: 500_000_000_000_000, // 0.0005 ETH
+        max_tranche_base_units: 1_000_000_000_000_000, // 0.001 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         game_contract: None,
