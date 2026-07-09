@@ -97,9 +97,9 @@ jobs:
             ethereum)
               echo "CAIP2=eip155:1" >> "$GITHUB_ENV"
               echo "IS_MAINNET=true" >> "$GITHUB_ENV"
-              echo "XCHAIN_STAKE_WEI=10000000000000000" >> "$GITHUB_ENV"               # 0.01 ETH
-              echo "XCHAIN_MAX_TRANCHE_WEI=20000000000000000" >> "$GITHUB_ENV"          # 0.02 ETH
-              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=200000000000000000" >> "$GITHUB_ENV"   # 0.2 ETH (~10 matches/day)
+              echo "XCHAIN_STAKE_WEI=2500000000000000" >> "$GITHUB_ENV"                 # 0.0025 ETH (~$4 anchor == 0.05 SOL)
+              echo "XCHAIN_MAX_TRANCHE_WEI=5000000000000000" >> "$GITHUB_ENV"           # 0.005 ETH (2× stake)
+              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=50000000000000000" >> "$GITHUB_ENV"    # 0.05 ETH (~10 matches/day)
               ;;
             *)
               echo "::error::unknown network '${{ inputs.network }}' (expected base_sepolia | base | ethereum)"

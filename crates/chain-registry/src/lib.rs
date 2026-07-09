@@ -241,13 +241,16 @@ const REGISTRY: &[ChainEntry] = &[
         is_mainnet: true,
         native_symbol: "ETH",
         native_decimals: 18,
-        // Ethereum L1 gas dwarfs a $5 stake — a commit/reveal/settle round can
-        // cost more in gas than the stake at risk, making tiny-stake play
-        // uneconomical. Stake is set HIGHER (0.01 ETH ≈ $31) so gas is a
-        // minority of at-risk value; still flagged for founder review before
-        // the L1 deploy (Base mainnet is the economically-sensible EVM home).
-        stake_base_units: 10_000_000_000_000_000, // 0.01 ETH
-        max_tranche_base_units: 20_000_000_000_000_000, // 0.02 ETH (2× stake)
+        // Anchored to the decided cross-chain peg: 0.0025 ETH ≈ $4 ≈ 0.05 SOL
+        // (decision.md §4.1), so an Ethereum same-chain game costs the same as
+        // Solana. For CROSS-chain matches the Solana leg is priced dynamically
+        // off this EVM anchor at match time (game-api `build_xmatch_terms`), so
+        // both legs are always equal in live USD. Re-tune this literal only at
+        // (re)deploy; keep it in lockstep with `_deploy-evm.yml` ethereum stake.
+        // Note: L1 gas can rival the stake during congestion — acceptable per
+        // founder (uniform pricing preferred over gas-minimized L1 stakes).
+        stake_base_units: 2_500_000_000_000_000, // 0.0025 ETH
+        max_tranche_base_units: 5_000_000_000_000_000, // 0.005 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         game_contract: None,
