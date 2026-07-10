@@ -145,7 +145,7 @@ pub struct TransactionResponse {
     pub task_pda: Option<String>,
 }
 
-/// AAS v0 attestation — mirrors orchestrator
+/// VOW v1 attestation — mirrors orchestrator
 /// `shillbot-api::models::task::AttestationResponse`. A portable,
 /// structured proof an agent earned a specific composite score on a
 /// specific Task PDA. Verifiable off-chain by re-reading the named PDA.
@@ -648,7 +648,7 @@ impl OrchestratorProxy {
         Ok(parsed)
     }
 
-    /// AAS v0: fetch the portable attestation tuple for a Verified or
+    /// VOW v1: fetch the portable attestation tuple for a Verified or
     /// Finalized task. Public read — no wallet binding needed because
     /// the underlying on-chain data is already public. Returns 409 from
     /// the orchestrator if the task isn't yet attested.
@@ -684,8 +684,8 @@ impl OrchestratorProxy {
         })
     }
 
-    /// AAS v0: fetch the portable attestation tuple by on-chain Task PDA.
-    /// The PDA is the canonical AAS identifier — derivable from any public
+    /// VOW v1: fetch the portable attestation tuple by on-chain Task PDA.
+    /// The PDA is the canonical VOW identifier — derivable from any public
     /// indexer of the `TaskCreated` event, so third-party verifiers don't
     /// need orchestrator access (unlike the legacy task_id route, which
     /// resolved against Firestore document IDs they couldn't know).

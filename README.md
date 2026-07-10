@@ -73,7 +73,7 @@ swarm-tips-repo/
 │           └── constants.rs   # Shared constants
 ├── crates/                  # Shared library crates (game-chain, game-api-client, shared)
 ├── services/                # MCP server, scorer, eigentrust, listings-scraper
-├── sdk/                     # TypeScript + Python SDKs (Anchor IDL bindings, AAS verifiers)
+├── sdk/                     # TypeScript + Python SDKs (Anchor IDL bindings, VOW verifiers)
 ├── tests/
 │   ├── coordination-game.ts  # Game end-to-end tests
 │   └── shillbot.ts           # Shillbot end-to-end tests

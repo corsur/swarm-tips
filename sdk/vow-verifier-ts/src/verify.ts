@@ -9,7 +9,7 @@ import type {
 } from "./types.js";
 
 /**
- * Step-by-step verifier per `docs/specs/aas-v1.md` §4.
+ * Step-by-step verifier per `docs/specs/vow-v1.md` §4.
  *
  * Steps split:
  *   - `verifyV1Schema` — pure (steps 1, 6).

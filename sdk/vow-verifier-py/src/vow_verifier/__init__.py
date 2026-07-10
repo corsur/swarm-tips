@@ -1,8 +1,8 @@
-"""AAS v1 reference verifier (Python).
+"""VOW v1 reference verifier (Python).
 
 Public API mirrors the TypeScript reference at
-``sdk/aas-verifier-ts``. Spec lives at
-``docs/specs/aas-v1.md``.
+``sdk/vow-verifier-ts``. Spec lives at
+``docs/specs/vow-v1.md``.
 """
 
 from .types import (

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * `aas-verify <attestation.json> [--rpc <url>]`
+ * `vow-verify <attestation.json> [--rpc <url>]`
  *
- * MVP CLI entrypoint. Reads an AAS v1 attestation from a file path or
+ * MVP CLI entrypoint. Reads a VOW v1 attestation from a file path or
  * stdin, runs the full 7-step verifier against the named network's
  * default RPC (or the `--rpc` override), prints the verdict as JSON.
  *
@@ -23,8 +23,8 @@ async function main(): Promise<number> {
   const args = process.argv.slice(2);
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     process.stderr.write(
-      "Usage: aas-verify <attestation.json> [--rpc <url>]\n" +
-        "       aas-verify - [--rpc <url>]   (read from stdin)\n"
+      "Usage: vow-verify <attestation.json> [--rpc <url>]\n" +
+        "       vow-verify - [--rpc <url>]   (read from stdin)\n"
     );
     return 2;
   }

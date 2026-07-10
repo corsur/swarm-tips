@@ -117,7 +117,7 @@ pub struct GetAttestationArgs {
     #[serde(default)]
     pub task_id: Option<String>,
     /// On-chain Task PDA (base58, e.g. `2K6jHZ1ZLhA1ZtKUGEzkxMa7TC7Nm1sMPVgKwFE6voci`).
-    /// The canonical AAS identifier — derivable from any third-party
+    /// The canonical VOW identifier — derivable from any third-party
     /// indexer of the public `TaskCreated` event. Use this if you don't
     /// have access to the orchestrator's Firestore. Pass exactly one of
     /// `task_id` or `task_pda`.
@@ -845,7 +845,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_get_attestation",
-        description = "[READ] Fetch a portable AAS v0 attestation for a Verified Shillbot task. Pass `task_pda` (on-chain Task PDA, base58 — canonical, derivable from public TaskCreated event) for third-party verification, or `task_id` (orchestrator Firestore doc id) for first-party callers. Exactly one is required. Optional `network`: 'mainnet' (default) or 'devnet'. Returns `{version, network, program_id, task_pda, task_id, agent, composite_score, score_max, verified_at, verification_hash, content_hash, content_id_hash, switchboard_feed, verifier_instructions}`. Re-read the named PDA to verify; MCP does not sign. Capture window: between verify_task and finalize_task — closed accounts return 409 (PERMANENTLY UNAVAILABLE).",
+        description = "[READ] Fetch a portable VOW v1 attestation for a Verified Shillbot task. Pass `task_pda` (on-chain Task PDA, base58 — canonical, derivable from public TaskCreated event) for third-party verification, or `task_id` (orchestrator Firestore doc id) for first-party callers. Exactly one is required. Optional `network`: 'mainnet' (default) or 'devnet'. Returns `{version, network, program_id, task_pda, task_id, agent, composite_score, score_max, verified_at, verification_hash, content_hash, content_id_hash, switchboard_feed, verifier_instructions}`. Re-read the named PDA to verify; MCP does not sign. Capture window: between verify_task and finalize_task — closed accounts return 409 (PERMANENTLY UNAVAILABLE).",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_get_attestation(
@@ -885,7 +885,7 @@ impl SwarmTipsMcp {
             task_id_arg = ?args.task_id,
             task_pda_arg = ?args.task_pda,
             composite_score = attestation.composite_score,
-            "shillbot_get_attestation: AAS v0 attestation returned"
+            "shillbot_get_attestation: VOW v1 attestation returned"
         );
 
         Ok(text_result(&attestation))
@@ -2481,7 +2481,7 @@ Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multi
 This server exposes 51 tools across six categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
-- **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (AAS v0 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
+- **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (VOW v1 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (4 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters), `search_mcp_servers` (BM25 relevance search over the full ingested MCP-server catalog — ~2k servers, fully automated ranking with per-hit signal disclosure).
 - **profile** (3 tools, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate). `agent_trust_score` consumes the same on-chain reads + the EigenTrust settlement-graph record + optional curator-tier + optional Hyperspace AgentRank and returns a single composite 0..1 trust score with a confidence count and per-signal breakdown for transparency. `agent_reputation_leaderboard` lists the top settlement-anchored agents by EigenTrust rank (real on-chain payment edges, recomputed on every finalize).
@@ -2687,7 +2687,7 @@ fn build_shillbot_trust_input(
         average_score: avg,
         // MAX_SCORE = 1_000_000 per shared::MAX_SCORE; hardcoded here to
         // avoid pulling that crate as a dep, mirroring the orchestrator's
-        // same hardcode at the AAS attestation surface (#16). Drift risk:
+        // same hardcode at the VOW attestation surface (#16). Drift risk:
         // if the on-chain MAX_SCORE ever changes (it hasn't since v0),
         // this constant updates in lockstep with the on-chain commit.
         score_max: 1_000_000,
@@ -3034,7 +3034,7 @@ fn next_action_for_task_state(
         }),
         "finalized" => serde_json::json!({
             "next_action": "done",
-            "hint": "Payment has been released from escrow. Call shillbot_check_earnings to confirm. Optionally call shillbot_get_attestation BEFORE the on-chain account closes if you want a portable AAS attestation — note the capture window (spec docs/specs/aas-v1.md §6).",
+            "hint": "Payment has been released from escrow. Call shillbot_check_earnings to confirm. Optionally call shillbot_get_attestation BEFORE the on-chain account closes if you want a portable VOW attestation — note the capture window (spec docs/specs/vow-v1.md §6).",
         }),
         "disputed" => serde_json::json!({
             "next_action": "wait",

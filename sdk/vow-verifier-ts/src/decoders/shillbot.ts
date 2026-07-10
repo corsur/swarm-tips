@@ -12,7 +12,7 @@ import type {
  * Accepts the on-chain Task account body — i.e. the bytes AFTER the
  * 8-byte Anchor discriminator. Layout mirrors
  * `programs/shillbot/src/state/task.rs::Task` exactly. Only the
- * fields the AAS verifier needs are decoded; the rest of the body
+ * fields the VOW verifier needs are decoded; the rest of the body
  * (escrow_lamports, deadlines, overrides, _reserved, bump) is
  * skipped via byte offsets.
  *
@@ -54,7 +54,7 @@ export const decodeShillbotTask: AccountDecoder = (data, accountKind) => {
   }
   if (data.length < 286) {
     throw new Error(
-      `Shillbot Task body too short: ${data.length} bytes (need >= 286 for the AAS-relevant fields)`
+      `Shillbot Task body too short: ${data.length} bytes (need >= 286 for the VOW-relevant fields)`
     );
   }
 
@@ -117,7 +117,7 @@ export const resolveShillbotState: StateResolver = (state, accountKind) => {
   }
 };
 
-/** Shillbot's "states valid for attestation" policy, per `docs/specs/aas-v1.md`
+/** Shillbot's "states valid for attestation" policy, per `docs/specs/vow-v1.md`
  *  §6 capture window: only Verified is attestable. Finalize closes the on-chain
  *  account, so post-finalize the attestation is permanently unverifiable. */
 export const shillbotValidStates = (accountKind: string): readonly string[] => {

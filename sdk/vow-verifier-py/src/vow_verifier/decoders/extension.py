@@ -1,6 +1,6 @@
 """extension-registry ``Extension`` account decoder — the mund-creanc-witer
 obligation edge. Mirrors ``programs/extension-registry/src/state/extension.rs``
-and the TS reference at ``sdk/aas-verifier-ts/src/decoders/extension.ts``
+and the TS reference at ``sdk/vow-verifier-ts/src/decoders/extension.ts``
 (either is authoritative; both track the same on-chain layout).
 
 Unlike Shillbot's ``Task``, an ``Extension`` has no on-chain state enum: the

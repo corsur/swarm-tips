@@ -3,7 +3,7 @@ import type { AasV1Attestation, FailureReason } from "./types.js";
 
 /**
  * Step 1 — schema check. Implements the well-formed-per-type table
- * from `docs/specs/aas-v1.md` §4. Returns the first failure reason
+ * from `docs/specs/vow-v1.md` §4. Returns the first failure reason
  * encountered, or null if the schema check passes.
  *
  * Pure — no RPC, no I/O.
@@ -14,7 +14,7 @@ export function checkSchema(input: unknown): FailureReason | null {
   }
   const a = input as Record<string, unknown>;
 
-  if (a.version !== "aas/v1") return "schema_invalid:version";
+  if (a.version !== "vow/v1") return "schema_invalid:version";
   if (!isPubkey(a.program_id)) return "schema_invalid:program_id";
   if (!isPubkey(a.account)) return "schema_invalid:account";
   if (!isPubkey(a.client)) return "schema_invalid:client";

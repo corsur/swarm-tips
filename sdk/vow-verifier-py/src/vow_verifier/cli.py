@@ -1,4 +1,4 @@
-"""CLI entrypoint: ``aas-verify <attestation.json> [--rpc <url>]``.
+"""CLI entrypoint: ``vow-verify <attestation.json> [--rpc <url>]``.
 
 MVP — reads an attestation from a file path or stdin, runs the
 full 7-step verifier against the named network's default RPC (or
@@ -30,8 +30,8 @@ _DEFAULT_RPC = {
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="aas-verify",
-        description="Verify an AAS v1 attestation against on-chain state.",
+        prog="vow-verify",
+        description="Verify a VOW v1 attestation against on-chain state.",
     )
     parser.add_argument(
         "path",

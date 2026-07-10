@@ -23,13 +23,13 @@ services/
 ├── eigentrust/              # Reputation library crate (Phase 2 future-defense)
 └── listings-scraper/        # Sidecar HTTP fetcher (BoringSSL fingerprint, kept out of mcp-server's link graph)
 
-sdk/                         # TypeScript / Python SDKs (Anchor IDL types + AAS reference verifiers)
+sdk/                         # TypeScript / Python SDKs (Anchor IDL types + VOW reference verifiers)
 tests/                       # End-to-end TypeScript tests against local validator
 ```
 
 Instruction handlers must be thin — validate, delegate to a pure function, emit event. Business logic lives in pure functions, not handlers. Each instruction is its own file.
 
-**Multichain (per the root CLAUDE.md "Multichain Frameworks" locked standard):** `programs/` stays pure Anchor — Solidity lives in the top-level `evm/` Foundry workspace with its own CI job, never inside `programs/`. The `shared` crate's platform-agnostic types and AAS attestation schemas use CAIP-2/CAIP-10 identifiers (on-chain account layouts keep `Pubkey`). Rust EVM interaction is alloy via `crates/evm-chain`; per-chain config lives only in `crates/chain-registry`; the canonical certificate byte layout has one Rust implementation in `crates/chain-core::cert_schema` (no_std — BPF program and backend share it) held equal to the Solidity `CertLib` by golden test vectors in `tests/fixtures/`.
+**Multichain (per the root CLAUDE.md "Multichain Frameworks" locked standard):** `programs/` stays pure Anchor — Solidity lives in the top-level `evm/` Foundry workspace with its own CI job, never inside `programs/`. The `shared` crate's platform-agnostic types and VOW attestation schemas use CAIP-2/CAIP-10 identifiers (on-chain account layouts keep `Pubkey`). Rust EVM interaction is alloy via `crates/evm-chain`; per-chain config lives only in `crates/chain-registry`; the canonical certificate byte layout has one Rust implementation in `crates/chain-core::cert_schema` (no_std — BPF program and backend share it) held equal to the Solidity `CertLib` by golden test vectors in `tests/fixtures/`.
 
 ---
 

@@ -1,6 +1,6 @@
-"""AAS v1 verifier — pure-step unit tests.
+"""VOW v1 verifier — pure-step unit tests.
 
-Mirrors ``sdk/aas-verifier-ts/__tests__/verify.test.ts`` for the
+Mirrors ``sdk/vow-verifier-ts/__tests__/verify.test.ts`` for the
 schema and on-chain steps. Step 2-5 are exercised against a stub RPC
 fetcher (no network).
 """
@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import pytest
 
-from aas_verifier import (
+from vow_verifier import (
     SHILLBOT_PROTOCOL,
     anchor_discriminator,
     check_schema,
@@ -22,7 +22,7 @@ from aas_verifier import (
 
 def _fixture(**overrides: Any) -> Dict[str, Any]:
     base: Dict[str, Any] = {
-        "version": "aas/v1",
+        "version": "vow/v1",
         "network": "mainnet",
         "program_id": "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
         "account": "11111111111111111111111111111112",
@@ -52,7 +52,7 @@ def test_schema_accepts_well_formed():
 
 
 def test_schema_rejects_wrong_version():
-    assert check_schema(_fixture(version="aas/v0")) == "schema_invalid:version"
+    assert check_schema(_fixture(version="vow/v0")) == "schema_invalid:version"
 
 
 def test_schema_rejects_non_base58_pubkey():
@@ -194,8 +194,8 @@ from datetime import datetime, timezone
 
 import base58
 
-from aas_verifier import ProtocolHandler, verify_v1
-from aas_verifier.types import DecodedAccount
+from vow_verifier import ProtocolHandler, verify_v1
+from vow_verifier.types import DecodedAccount
 
 
 _HAPPY_TASK_ID = 42
@@ -221,7 +221,7 @@ def _build_happy_account_bytes(state_byte: int = 3) -> bytes:
     pass 7 to test a state-invalid scenario.
 
     Layout per ``decoders/shillbot.py``."""
-    from aas_verifier.discriminator import anchor_discriminator
+    from vow_verifier.discriminator import anchor_discriminator
 
     body = bytearray(307)
     struct.pack_into("<Q", body, 0, _HAPPY_TASK_ID)
@@ -247,7 +247,7 @@ def _build_happy_account_bytes(state_byte: int = 3) -> bytes:
 
 def _happy_attestation(**overrides: Any) -> Dict[str, Any]:
     base = {
-        "version": "aas/v1",
+        "version": "vow/v1",
         "network": "mainnet",
         "program_id": _SHILLBOT_PROGRAM_ID,
         "account": _HAPPY_ACCOUNT,

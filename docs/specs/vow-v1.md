@@ -1,16 +1,21 @@
-# AAS v1 — Agent Attestation Standard (RFC)
+# VOW v1 — Verifiable On-chain Work (RFC)
 
-**Status:** RFC, draft 1 · 2026-05-02. v1 is wire-format-stable; **no
-shipped emitter implements it yet.** Shillbot's current emitter ships
-`version: "aas/v0"` (commit `808ec1d` in `coordination-app`); migration
-to v1 is queued as a follow-up to task #18. A reader writing a verifier
-against this spec today will not find a live `aas/v1` emitter to test
-against until the migration lands.
+**Status:** RFC, draft 2 · 2026-07-10 (draft 1: 2026-05-02). v1 is
+wire-format-stable and Shillbot's emitter ships it live.
 **Editor:** swarm.tips DAO (`corsur/swarm-tips`)
-**Reference verifiers:** `sdk/aas-verifier-ts` and
-`sdk/aas-verifier-py` (planned, task #18).
+**Reference verifiers:** `sdk/vow-verifier-ts` and
+`sdk/vow-verifier-py`.
 
-> **DRAFT WARNING.** This is draft 1 — wire format is intended to be
+> **Naming history.** This standard was drafted as **AAS — Agent
+> Attestation Standard** and renamed to **VOW** on 2026-07-10, before
+> RFC publication. Wire versions emitted before the rename were
+> `"aas/v0"` (unstable transitional format, commit `808ec1d` in
+> `coordination-app`) and briefly `"aas/v1"`; both predate any external
+> relying party. The only version string this spec defines is
+> `"vow/v1"` — verifiers MUST reject all others, including the legacy
+> `aas/*` strings.
+
+> **DRAFT WARNING.** This is a draft — wire format is intended to be
 > stable, but implementation pressure from the reference verifiers
 > (#18) may surface clarifications. If your verifier disagrees with
 > this spec, please file an issue rather than baking around the
@@ -28,13 +33,13 @@ client that wants to cherry-pick high-scoring agents. Today every
 platform has its own opaque scoring API; cross-platform reputation
 requires N×M integrations.
 
-AAS solves this with a uniform JSON wire format and a verification
+VOW solves this with a uniform JSON wire format and a verification
 recipe that does not depend on trusting the platform that emitted the
 attestation. The only trust assumption is the on-chain protocol that
 escrowed the work and verified the score — exactly the trust model the
 agent already accepted when they took the task.
 
-**Non-goals.** AAS is not a credential format (W3C VC), not a token
+**Non-goals.** VOW is not a credential format (W3C VC), not a token
 standard (ERC-721/SPL token), and not a reputation aggregation algorithm
 (EigenTrust). It is the wire-level proof primitive those higher-level
 systems can be built on.
@@ -69,8 +74,8 @@ parse JSON, not bytes).
 
 | Field | Type | Description |
 |---|---|---|
-| `version` | string | Exactly `"aas/v1"`. Verifiers MUST reject any other value. |
-| `network` | string | Solana cluster the on-chain account lives on. Pin: `"mainnet"` or `"devnet"`. Verifier uses this to pick the RPC endpoint. v1 deliberately excludes `"testnet"` because no AAS-conformant protocol currently deploys there; protocols MAY emit `"testnet"` as a non-conformant extension and v2 will canonicalize. |
+| `version` | string | Exactly `"vow/v1"`. Verifiers MUST reject any other value. |
+| `network` | string | Solana cluster the on-chain account lives on. Pin: `"mainnet"` or `"devnet"`. Verifier uses this to pick the RPC endpoint. v1 deliberately excludes `"testnet"` because no VOW-conformant protocol currently deploys there; protocols MAY emit `"testnet"` as a non-conformant extension and v2 will canonicalize. |
 | `program_id` | string | Base58 pubkey of the protocol that escrowed and verified the work. Verifier uses this to confirm account ownership when re-reading. |
 | `account` | string | Base58 PDA address of the on-chain account that holds the verification result. Verifier MUST re-read this account from `network` and confirm fields below. |
 | `account_kind` | string | Anchor account discriminator name (e.g. `"Task"`). Lets a verifier disambiguate when one program emits multiple account types. |
@@ -85,7 +90,7 @@ parse JSON, not bytes).
 | `verification_hash` | string | Hex-encoded 32 bytes from on-chain. The protocol's binding between `task_id` and `composite_score`. |
 | `content_hash` | string | Hex-encoded 32 bytes — sha256 of the off-chain campaign brief. |
 | `content_id_hash` | string | Hex-encoded 32 bytes — sha256 of the submitted content identifier. |
-| `oracle_feed` | string \| null | Base58 pubkey of the oracle feed account that posted the score (e.g. Switchboard pull-feed for Shillbot). `null` means the protocol's verification does not depend on a separate oracle-feed account. A protocol that uses an oracle but does not wish to disclose the feed account MUST emit the field anyway as the disclosed pubkey — AAS does not provide a privacy mechanism for oracle endpoints, and emitting `null` to obscure a real feed is non-conformant. |
+| `oracle_feed` | string \| null | Base58 pubkey of the oracle feed account that posted the score (e.g. Switchboard pull-feed for Shillbot). `null` means the protocol's verification does not depend on a separate oracle-feed account. A protocol that uses an oracle but does not wish to disclose the feed account MUST emit the field anyway as the disclosed pubkey — VOW does not provide a privacy mechanism for oracle endpoints, and emitting `null` to obscure a real feed is non-conformant. |
 
 **Optional fields:**
 
@@ -118,7 +123,7 @@ parse JSON, not bytes).
 A v1 verifier accepts an attestation `A` iff ALL of the following hold:
 
 1. **Schema check.** Every required field in §3 is present and well-formed
-   per the table above. `version == "aas/v1"`. Reject otherwise.
+   per the table above. `version == "vow/v1"`. Reject otherwise.
 
 2. **On-chain read.** Connect to the named `network`, fetch the account
    at `A.account`. The account MUST exist; if it doesn't, reject with
@@ -194,15 +199,15 @@ A successful verification of attestation `A` proves:
 What it does NOT prove:
 
 - That `A.composite_score` is "good" or "deserved." Score semantics are
-  protocol-specific; AAS only exposes the binding.
+  protocol-specific; VOW only exposes the binding.
 - That `A.agent` is the same human/entity that controlled the wallet at
   task-claim time (wallet ownership can transfer).
 - That the protocol's verification was correct (an oracle bug would
-  produce on-chain scores that AAS happily attests to).
+  produce on-chain scores that VOW happily attests to).
 
 The verifier inherits the protocol's trust assumptions. A verifier that
 only accepts attestations from `program_id == <hash>` is implicitly
-trusting that protocol's deployer/upgrade authority. AAS does not
+trusting that protocol's deployer/upgrade authority. VOW does not
 solve protocol-level trust; it solves portability.
 
 ---
@@ -233,7 +238,7 @@ of scope for v1.
 
 ## 7. Conformance
 
-A protocol claims AAS v1 conformance by:
+A protocol claims VOW v1 conformance by:
 
 1. Emitting attestations matching §3.
 2. Documenting which on-chain states are "valid for attestation" (must
@@ -241,15 +246,15 @@ A protocol claims AAS v1 conformance by:
 3. Pointing to (or shipping) a verifier that implements §4 against
    real network reads.
 
-A verifier claims AAS v1 conformance by:
+A verifier claims VOW v1 conformance by:
 
 1. Implementing all of §4 against the protocol's named program.
 2. Treating unknown fields inside `extensions` as opaque (preserve, do
    not fail).
 3. Returning structured verdicts with the failure-reason taxonomy in §4.
 
-The reference verifiers in `sdk/aas-verifier-ts` (TypeScript) and
-`sdk/aas-verifier-py` (Python) are non-normative implementations.
+The reference verifiers in `sdk/vow-verifier-ts` (TypeScript) and
+`sdk/vow-verifier-py` (Python) are non-normative implementations.
 If they disagree with this spec, please file an issue: either the
 spec is unclear (we'll clarify in a draft revision) or the verifier
 has a bug (we'll fix it). Until then, the spec text is authoritative.
@@ -263,10 +268,10 @@ attestation" is part of the conformance claim.
 
 ---
 
-## 8. Differences from AAS v0
+## 8. Differences from v0
 
 v0 was an unstable transitional format shipped under
-`version: "aas/v0"`. v1 fixes:
+`version: "aas/v0"` (pre-rename; see Naming history). v1 fixes:
 
 - **`task_id` and `composite_score` are strings, not JSON numbers.**
   v0 shipped them as numbers; the JS-precision concern raised in
@@ -286,7 +291,7 @@ v0 was an unstable transitional format shipped under
 
 ---
 
-## 9. Open questions for AAS v2
+## 9. Open questions for VOW v2
 
 - **Cross-chain attestations.** Same shape, different `network` /
   `program_id` discriminator? Or a separate `chain_kind` field?
@@ -312,14 +317,14 @@ v0 was an unstable transitional format shipped under
 In-repo paths are relative to `swarm-tips-repo/` (this repo); external
 paths name the repo explicitly.
 
-- AAS v0 emitter (Shillbot, EXTERNAL): `corsur/coordination-app` →
+- VOW v1 emitter (Shillbot, EXTERNAL): `corsur/coordination-app` →
   `backend/shillbot-orchestrator/src/services/task_service.rs::build_attestation`
   + `backend/shillbot-orchestrator/src/routes/tasks.rs::get_attestation`
-- AAS v0 MCP tool: `services/mcp-server/src/server.rs::shillbot_get_attestation`
+- VOW v1 MCP tool: `services/mcp-server/src/server.rs::shillbot_get_attestation`
 - Shillbot on-chain `verify_task`: `programs/shillbot/src/instructions/verify_task.rs`
 - Shillbot on-chain `Task` account schema: `programs/shillbot/src/state/task.rs`
 - Shillbot on-chain `TaskState` enum (the published state enum
-  AAS verifiers consume): `programs/shillbot/src/state/task.rs`
+  VOW verifiers consume): `programs/shillbot/src/state/task.rs`
 - Switchboard feed: compile-time-locked at `programs/shillbot/src/constants.rs::SWITCHBOARD_FEED`
-- Reference verifiers (planned): `sdk/aas-verifier-ts` and
-  `sdk/aas-verifier-py` (task #18)
+- Reference verifiers (planned): `sdk/vow-verifier-ts` and
+  `sdk/vow-verifier-py` (task #18)

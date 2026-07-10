@@ -1,5 +1,5 @@
 /**
- * AAS v1 reference verifier — pure-step unit tests.
+ * VOW v1 reference verifier — pure-step unit tests.
  *
  * Covers the parts of the protocol that don't touch RPC: step 1
  * (schema check, including the well-formed-per-type table) and step 6
@@ -24,7 +24,7 @@ function fixtureAttestation(
   overrides: Partial<AasV1Attestation> = {}
 ): AasV1Attestation {
   return {
-    version: "aas/v1",
+    version: "vow/v1",
     network: "mainnet",
     program_id: "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
     account: "11111111111111111111111111111112",
@@ -51,7 +51,7 @@ describe("schema check (step 1)", () => {
   });
 
   it("rejects wrong version", () => {
-    const a = fixtureAttestation({ version: "aas/v0" as "aas/v1" });
+    const a = fixtureAttestation({ version: "vow/v0" as "vow/v1" });
     expect(checkSchema(a)).toBe("schema_invalid:version");
   });
 
@@ -300,7 +300,7 @@ function happyAttestation(
   overrides: Partial<AasV1Attestation> = {}
 ): AasV1Attestation {
   return {
-    version: "aas/v1",
+    version: "vow/v1",
     network: "mainnet",
     program_id: SHILLBOT_PROGRAM_ID,
     account: HAPPY_ACCOUNT,

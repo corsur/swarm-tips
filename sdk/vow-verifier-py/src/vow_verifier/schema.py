@@ -1,7 +1,7 @@
-"""Step 1 of the AAS v1 verifier — pure schema check.
+"""Step 1 of the VOW v1 verifier — pure schema check.
 
 Implements the well-formed-per-type table from
-``docs/specs/aas-v1.md`` §4. Returns the first failure reason
+``docs/specs/vow-v1.md`` §4. Returns the first failure reason
 encountered, or ``None`` if the attestation passes.
 """
 
@@ -32,7 +32,7 @@ def check_schema(input_value: Any) -> Optional[str]:
 
     a = input_value
 
-    if a.get("version") != "aas/v1":
+    if a.get("version") != "vow/v1":
         return "schema_invalid:version"
 
     if not _is_pubkey(a.get("program_id")):

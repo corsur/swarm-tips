@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aas-verifier"
+name = "vow-verifier"
 version = "0.1.0"
-description = "AAS v1 reference verifier — Python. Implements the 7-step protocol from docs/specs/aas-v1.md."
+description = "VOW v1 reference verifier — Python. Implements the 7-step protocol from docs/specs/vow-v1.md."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -19,7 +19,7 @@ dev = [
 ]
 
 [project.scripts]
-aas-verify = "aas_verifier.cli:main"
+vow-verify = "vow_verifier.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

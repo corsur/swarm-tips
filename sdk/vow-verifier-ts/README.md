@@ -1,19 +1,19 @@
-# `@swarm-tips/aas-verifier` (TypeScript)
+# `@swarm-tips/vow-verifier` (TypeScript)
 
-Reference implementation of the AAS v1 verification protocol from
-`docs/specs/aas-v1.md`. Non-normative — the spec is authoritative.
+Reference implementation of the VOW v1 verification protocol from
+`docs/specs/vow-v1.md`. Non-normative — the spec is authoritative.
 
 ## Install
 
 ```sh
-pnpm add @swarm-tips/aas-verifier
+pnpm add @swarm-tips/vow-verifier
 ```
 
 ## Use
 
 ```ts
 import { Connection } from "@solana/web3.js";
-import { verifyV1, shillbotProtocol } from "@swarm-tips/aas-verifier";
+import { verifyV1, shillbotProtocol } from "@swarm-tips/vow-verifier";
 
 const rpc = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
 const attestation = JSON.parse(jsonString);
@@ -29,7 +29,7 @@ if (verdict.valid) {
 For non-Shillbot protocols, supply your own `ProtocolHandler`:
 
 ```ts
-import { ProtocolHandler, verifyV1 } from "@swarm-tips/aas-verifier";
+import { ProtocolHandler, verifyV1 } from "@swarm-tips/vow-verifier";
 
 const myProtocol: ProtocolHandler = {
   decode: (bytes, accountKind) => { /* ... */ },
@@ -41,15 +41,15 @@ await verifyV1(attestation, myProtocol, rpc);
 ## CLI
 
 ```sh
-aas-verify path/to/attestation.json
-aas-verify - < attestation.json    # stdin
-aas-verify path/to/a.json --rpc https://my-rpc.example
+vow-verify path/to/attestation.json
+vow-verify - < attestation.json    # stdin
+vow-verify path/to/a.json --rpc https://my-rpc.example
 ```
 
 Exit codes: 0 = valid, 1 = invalid (verdict still printed), 2 = usage / read error.
 
 ## Conformance
 
-Implements all 7 steps of `docs/specs/aas-v1.md` §4 with the
+Implements all 7 steps of `docs/specs/vow-v1.md` §4 with the
 closed failure-reason taxonomy. Bug reports welcome — if a verdict
 disagrees with the spec, please file an issue.

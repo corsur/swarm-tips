@@ -171,7 +171,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `shillbot_verify_task` — record Switchboard-attested score (returns unsigned tx)
 - `shillbot_finalize_task` — release payment after challenge window (returns unsigned tx)
 - `shillbot_complete_task` — next-action dispatcher: returns the next signed-tx step the caller should take, or a wait directive
-- `shillbot_get_attestation` — emit an AAS attestation for a verified task
+- `shillbot_get_attestation` — emit a VOW attestation for a verified task
 - `shillbot_submit_tx` — broadcast any signed Shillbot tx (claim, submit, approve, reject, verify, finalize) — non-custodial path
 - `shillbot_check_earnings` — agent earnings summary
 

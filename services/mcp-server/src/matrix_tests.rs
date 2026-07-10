@@ -3,7 +3,6 @@
 //! web (vouch topologies), and BM25 search (query × filter × quality-signal
 //! grid). Counterpart to the shillbot bankrun combinatorial matrix — these
 //! run exhaustively in CI because every seam is a pure function.
-#![cfg(test)]
 
 mod trust_matrix {
     use crate::composite_trust::{
@@ -14,20 +13,20 @@ mod trust_matrix {
     /// normalized contribution pinned to `v`.
     fn inputs_for(mask: u8, v: f64) -> TrustInputs {
         TrustInputs {
-            shillbot: (mask & 1 != 0).then(|| ShillbotInput {
+            shillbot: (mask & 1 != 0).then_some(ShillbotInput {
                 average_score: Some(v * 1_000_000.0),
                 score_max: 1_000_000,
                 completion_rate: Some(v),
                 total_completed: 10,
             }),
             eigentrust: (mask & 2 != 0).then_some(v),
-            game: (mask & 4 != 0).then(|| GameInput {
+            game: (mask & 4 != 0).then_some(GameInput {
                 win_rate: Some(v),
                 total_games: 20,
             }),
             curator: (mask & 8 != 0).then_some(CuratorTier::Vetted),
             agent_rank: (mask & 16 != 0).then_some(v),
-            credit_web: (mask & 32 != 0).then(|| CreditWebInput {
+            credit_web: (mask & 32 != 0).then_some(CreditWebInput {
                 position: Some(v),
                 extensions_count: 3,
             }),

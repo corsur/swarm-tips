@@ -1,6 +1,6 @@
 """extension-registry ``Extension`` decoder tests.
 
-Mirrors ``sdk/aas-verifier-ts/__tests__/extension.test.ts``. The primary
+Mirrors ``sdk/vow-verifier-ts/__tests__/extension.test.ts``. The primary
 fixture is a REAL devnet Extension account (the permanent dogfood extension
 root CKsZ... -> agent B9H6..., PDA 4gAYnHAChB6PMroRa6Rv7C2MTkf86R2f6qqe6kbWwvSZ),
 captured verbatim as base64 — so this decodes a genuine on-chain record,
@@ -13,7 +13,7 @@ import base64
 
 import pytest
 
-from aas_verifier import (
+from vow_verifier import (
     EXTENSION_ACCOUNT_KIND,
     EXTENSION_MIN_BODY_LEN,
     anchor_discriminator,

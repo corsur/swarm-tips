@@ -1,11 +1,11 @@
 /**
- * AAS v1 wire format. Mirrors the type table in
- * `docs/specs/aas-v1.md` §3. All u64-typed on-chain values are
+ * VOW v1 wire format. Mirrors the type table in
+ * `docs/specs/vow-v1.md` §3. All u64-typed on-chain values are
  * decimal strings on the wire (per v1 §3 to avoid JS
  * Number.MAX_SAFE_INTEGER truncation).
  */
 export interface AasV1Attestation {
-  version: "aas/v1";
+  version: "vow/v1";
   network: "mainnet" | "devnet";
   program_id: string;
   account: string;
@@ -27,7 +27,7 @@ export interface AasV1Attestation {
 }
 
 /**
- * Closed taxonomy of failure reasons, matching `docs/specs/aas-v1.md`
+ * Closed taxonomy of failure reasons, matching `docs/specs/vow-v1.md`
  * §4 step-to-reason table. The string is the entire taxonomy — a
  * verifier MUST return one of these strings (with the named field
  * substituted into `field_mismatch:<field>` and `schema_invalid:<field>`).
@@ -59,7 +59,7 @@ export type Verdict =
 /**
  * Decoded representation of the on-chain account body (sans the 8-byte
  * Anchor discriminator). The reference shillbot decoder lives in
- * `decoders/shillbot.ts`; protocols emit their own decoder for AAS v1
+ * `decoders/shillbot.ts`; protocols emit their own decoder for VOW v1
  * conformance. The verifier compares each field below to the
  * attestation's wire-format claim.
  */
@@ -112,7 +112,7 @@ export type ValidStates = (accountKind: string) => readonly string[];
 
 /**
  * The three pluggable hooks a non-Shillbot protocol passes when calling
- * the verifier. For Shillbot, `sdk/aas-verifier-ts/src/decoders/shillbot.ts`
+ * the verifier. For Shillbot, `sdk/vow-verifier-ts/src/decoders/shillbot.ts`
  * exports all three with the canonical Task layout, TaskState enum,
  * and the `["verified"]`-only attestation policy.
  */

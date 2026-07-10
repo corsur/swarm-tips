@@ -1,12 +1,12 @@
 {
-  "name": "@swarm-tips/aas-verifier",
+  "name": "@swarm-tips/vow-verifier",
   "version": "0.1.0",
-  "description": "AAS v1 reference verifier — TypeScript. Implements the 7-step verification protocol from docs/specs/aas-v1.md.",
+  "description": "VOW v1 reference verifier — TypeScript. Implements the 7-step verification protocol from docs/specs/vow-v1.md.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "aas-verify": "dist/cli.js"
+    "vow-verify": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p .",

@@ -2,7 +2,7 @@
 canonical layout in ``programs/shillbot/src/state/task.rs``.
 
 Field offsets within the body (post-discriminator) — see the TS
-reference at ``sdk/aas-verifier-ts/src/decoders/shillbot.ts``
+reference at ``sdk/vow-verifier-ts/src/decoders/shillbot.ts``
 for the full annotated map. Both implementations track the same
 on-chain layout; either is authoritative.
 """
@@ -25,7 +25,7 @@ def decode_shillbot_task(data: bytes, account_kind: str) -> DecodedAccount:
     if len(data) < 286:
         raise ValueError(
             f"Shillbot Task body too short: {len(data)} bytes "
-            f"(need >= 286 for the AAS-relevant fields)"
+            f"(need >= 286 for the VOW-relevant fields)"
         )
 
     task_id = struct.unpack_from("<Q", data, 0)[0]
@@ -71,7 +71,7 @@ def resolve_shillbot_state(state: int, account_kind: str) -> Optional[str]:
 
 def shillbot_valid_states(account_kind: str):
     """Shillbot's "states valid for attestation" policy. Per
-    ``docs/specs/aas-v1.md`` §6 capture window: only Verified is
+    ``docs/specs/vow-v1.md`` §6 capture window: only Verified is
     attestable — finalize closes the on-chain account."""
     if account_kind != "Task":
         return ()

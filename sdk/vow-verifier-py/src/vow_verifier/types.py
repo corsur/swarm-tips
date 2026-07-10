@@ -1,4 +1,4 @@
-"""AAS v1 wire format and verifier types. Mirrors the TS reference."""
+"""VOW v1 wire format and verifier types. Mirrors the TS reference."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Literal, Optional, Sequence, TypedDict, 
 
 
 class AasV1Attestation(TypedDict, total=False):
-    """v1 wire format. Mirrors ``docs/specs/aas-v1.md`` §3.
+    """v1 wire format. Mirrors ``docs/specs/vow-v1.md`` §3.
 
     Required fields are listed here; ``verifier_instructions`` and
     ``extensions`` are optional. ``total=False`` keeps ``TypedDict``
@@ -15,7 +15,7 @@ class AasV1Attestation(TypedDict, total=False):
     enforced by ``check_schema``.
     """
 
-    version: Literal["aas/v1"]
+    version: Literal["vow/v1"]
     network: Literal["mainnet", "devnet"]
     program_id: str
     account: str
