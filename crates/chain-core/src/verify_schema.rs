@@ -50,6 +50,17 @@ pub const LEAN_POLICY_V1_ID: [u8; 32] = [
     0x93, 0x6e, 0xa8, 0xab, 0x93, 0x0e, 0x6d, 0x0c, 0xd3, 0x71, 0x74, 0xdf, 0x19, 0xdb, 0x1e, 0xab,
 ];
 
+/// keccak256 of the exact bytes of `policies/lean-attester-policy-v2.json`
+/// — the v2 `mathlib` verification policy (pinned mathlib rev + toolchain
+/// `leanprover/lean4:v4.30.0`, `import_allowlist: ["Mathlib"]`, same axiom
+/// allow-list as v1, raised resource caps). A NEW policy version = a NEW id;
+/// v1 is never mutated. Still `verification_kind = DeterministicAttested` —
+/// only the 32-byte policy id changes on the wire.
+pub const LEAN_POLICY_V2_ID: [u8; 32] = [
+    0x3f, 0xd3, 0x2d, 0x5b, 0xa4, 0x9a, 0xf6, 0x4e, 0x26, 0xec, 0xef, 0xc7, 0x26, 0x22, 0x34, 0xe1,
+    0x47, 0x32, 0xfe, 0xed, 0xbe, 0xbc, 0xce, 0xaa, 0xac, 0x3c, 0x99, 0x8c, 0x1a, 0x4d, 0x4e, 0xa0,
+];
+
 /// How a task's verification is adjudicated. The numeric values are part
 /// of the cross-chain wire format AND the on-chain `Task.verification_kind`
 /// byte — append-only, never reorder.
@@ -238,6 +249,53 @@ mod tests {
             LEAN_POLICY_V1_ID,
             "policy manifest bytes changed — a policy change is a NEW policy \
              version with a new id, never a mutation of v1"
+        );
+    }
+
+    #[cfg(feature = "keccak")]
+    #[test]
+    fn lean_policy_v2_id_pins_the_manifest_bytes() {
+        use crate::cert_schema::keccak256;
+        let manifest = include_bytes!("../../../policies/lean-attester-policy-v2.json");
+        assert_eq!(
+            keccak256(manifest),
+            LEAN_POLICY_V2_ID,
+            "v2 policy manifest bytes changed — a policy change is a NEW policy \
+             version with a new id, never a mutation of an existing one"
+        );
+    }
+
+    #[cfg(feature = "keccak")]
+    #[test]
+    fn v2_policy_id_is_bound_into_the_attestation_digest() {
+        // The descriptor/attestation encoding is policy-id-agnostic (the v1
+        // golden vectors pin the byte layout), so the v2 id flows through the
+        // same Rust↔Solidity encode + on-chain verification_hash / EVM
+        // createTask(policyId) path unchanged. This confirms the id is actually
+        // in the SIGNED digest preimage: swapping v1→v2 changes the digest, and
+        // it stays deterministic.
+        let cart = |pid: [u8; 32]| AttestationCert {
+            chain_tag: [0x61; 32],
+            contract: [0x62; 32],
+            subject_id: 42,
+            descriptor: VerifyDescriptor {
+                verification_kind: VerificationKind::DeterministicAttested as u8,
+                statement_commitment: [0x51; 32],
+                policy_id: pid,
+                artifact_hash: [0x53; 32],
+            },
+            score: 1_000_000,
+        };
+        let v1_digest = cart(LEAN_POLICY_V1_ID).digest();
+        let v2_digest = cart(LEAN_POLICY_V2_ID).digest();
+        assert_ne!(
+            v1_digest, v2_digest,
+            "policy id must be bound into the attestation digest"
+        );
+        assert_eq!(
+            v2_digest,
+            cart(LEAN_POLICY_V2_ID).digest(),
+            "digest must be deterministic"
         );
     }
 
