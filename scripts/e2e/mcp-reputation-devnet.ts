@@ -230,7 +230,10 @@ async function main(): Promise<void> {
     count: number;
     agents: { wallet: string; rank: number; settlements_received: number }[];
   };
-  check(board.count >= 1, `leaderboard has settlement-anchored agents (${board.count})`);
+  check(
+    board.count >= 1,
+    `leaderboard has settlement-anchored agents (${board.count})`
+  );
   const ranksAscending = board.agents.every(
     (a, i) => i === 0 || a.rank >= board.agents[i - 1].rank
   );
