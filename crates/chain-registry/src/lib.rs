@@ -220,8 +220,9 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 1_000_000_000_000_000, // 0.001 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        // Cross-chain CrossChainGame not yet deployed on Base mainnet (Phase 5).
-        game_contract: None,
+        // Cross-chain CrossChainGame deployed to Base mainnet 2026-07-11 (0.0005
+        // ETH stake; owner/operatorSigner = xchain key / xchain-operator-signer).
+        game_contract: Some("0xC2DbD950400965b3f4d9A4D6B1af4a0eb65CC365"),
         // Same-chain CoordinationGame deployed to Base mainnet 2026-07-09 (0.0005
         // ETH launch stake; owner/operatorSigner = xchain key / xchain-operator-signer).
         coordination_game_contract: Some("0x778F6FDA3ffd0ecD3708FDa0E6c2940606529fe9"),
@@ -253,8 +254,10 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 5_000_000_000_000_000, // 0.005 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        game_contract: None,
-        coordination_game_contract: None,
+        // Both deployed to Ethereum L1 mainnet 2026-07-11 (0.0025 ETH stake;
+        // owner/operatorSigner = xchain key / xchain-operator-signer).
+        game_contract: Some("0x5E9eb986927bDF70F2f9fE5BccAFF3dEE74949EB"),
+        coordination_game_contract: Some("0xd52adFf967F7efbf2Bbb29252E0aA219bD5305B3"),
         shillbot_escrow_contract: None,
         x402_network: None,
     },
@@ -382,26 +385,29 @@ mod tests {
 
     #[test]
     fn mainnet_evm_chains_go_live_only_where_deployed() {
-        // Ethereum mainnet is fully scaffolded-but-not-live (no deploy yet).
+        // Ethereum L1: both game contracts deployed 2026-07-11 → live; shillbot
+        // escrow not deployed there, stays None.
         let eth = entry(&ChainId::parse("eip155:1").unwrap()).unwrap();
-        for purpose in [
-            ContractPurpose::CrossChainGame,
-            ContractPurpose::CoordinationGame,
-            ContractPurpose::ShillbotEscrow,
-        ] {
-            assert!(!eth.is_live(purpose), "ethereum not live until its deploy");
-            assert!(eth.contract_for(purpose).is_none());
-        }
-        // Base mainnet: same-chain CoordinationGame deployed 2026-07-09 → live for
-        // that purpose ONLY; cross-chain + shillbot stay None until their deploys.
+        assert!(
+            eth.is_live(ContractPurpose::CoordinationGame),
+            "eth same-chain live"
+        );
+        assert!(
+            eth.is_live(ContractPurpose::CrossChainGame),
+            "eth cross-chain live"
+        );
+        assert!(!eth.is_live(ContractPurpose::ShillbotEscrow));
+        assert!(eth.contract_for(ContractPurpose::ShillbotEscrow).is_none());
+        // Base mainnet: same-chain + cross-chain game contracts live (2026-07-09 /
+        // 2026-07-11); shillbot escrow stays None until its deploy.
         let base = entry(&ChainId::parse("eip155:8453").unwrap()).unwrap();
         assert!(
             base.is_live(ContractPurpose::CoordinationGame),
             "base same-chain live"
         );
         assert!(
-            !base.is_live(ContractPurpose::CrossChainGame),
-            "base xchain not yet"
+            base.is_live(ContractPurpose::CrossChainGame),
+            "base cross-chain live"
         );
         assert!(!base.is_live(ContractPurpose::ShillbotEscrow));
         // Base Sepolia (testnet) IS live for the game contracts — is_live true.
