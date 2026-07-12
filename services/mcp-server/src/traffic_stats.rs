@@ -334,12 +334,35 @@ async fn fetch_funnel_inner(state: &TrafficStatsState) -> Result<Value, anyhow::
     )
     .await?;
 
+    // ListTimeSeries only accepts ONE metric.type per request (prefix
+    // filters are rejected there) — discover the swarm_funnel_* names via
+    // the descriptors API, then query each metric individually.
+    let descriptors = client
+        .get()
+        .list_metric_descriptors(
+            gcloud_sdk::google::monitoring::v3::ListMetricDescriptorsRequest {
+                name: format!("projects/{}", state.gcp_project_id),
+                filter: format!("metric.type = starts_with(\"{FUNNEL_METRIC_PREFIX}\")"),
+                ..Default::default()
+            },
+        )
+        .await?
+        .into_inner();
+    let metric_types: Vec<String> = descriptors
+        .metric_descriptors
+        .into_iter()
+        .map(|d| d.r#type)
+        .collect();
+
     let mut windows = serde_json::Map::new();
     for (label, secs) in WINDOWS {
-        let filter = format!("metric.type = starts_with(\"{FUNNEL_METRIC_PREFIX}\")");
-        let request = build_list_request(&state.gcp_project_id, &filter, secs);
-        let response = client.get().list_time_series(request).await?.into_inner();
-        let series = sum_series(response.time_series);
+        let mut series = Vec::new();
+        for metric_type in &metric_types {
+            let filter = format!("metric.type = \"{metric_type}\"");
+            let request = build_list_request(&state.gcp_project_id, &filter, secs);
+            let response = client.get().list_time_series(request).await?.into_inner();
+            series.extend(sum_series(response.time_series));
+        }
         windows.insert(label.to_string(), Value::Object(summarize_funnel(series)));
     }
 
