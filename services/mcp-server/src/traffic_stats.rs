@@ -195,8 +195,10 @@ async fn fetch_site(
         .error_for_status()?
         .json()
         .await?;
-    let website_id = share["id"]
+    // Umami v3 field name; older releases used `id`.
+    let website_id = share["websiteId"]
         .as_str()
+        .or_else(|| share["id"].as_str())
         .ok_or_else(|| anyhow::anyhow!("share response missing website id"))?
         .to_string();
     let share_token = share["token"]
@@ -255,10 +257,13 @@ async fn umami_get(
     url: &str,
     query: &[(&str, String)],
 ) -> Result<Value, anyhow::Error> {
+    // v3 rejects share tokens presented outside a "share context" — the
+    // context header is a literal "1" (mirrors useApi.ts in umami source).
     Ok(state
         .http
         .get(url)
         .header("x-umami-share-token", share_token)
+        .header("x-umami-share-context", "1")
         .query(query)
         .send()
         .await?
