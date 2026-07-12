@@ -162,7 +162,10 @@ async function awaitVerified(
   key: PublicKey,
   label: string
 ): Promise<void> {
-  const MAX_ATTEMPTS = 90; // ~270s at 3s cadence (covers the mathlib build cap)
+  // Generous: the runner elaborates ~90s, but concurrent checks queue behind
+  // the per-pod concurrency cap, so a busy runner can push a single attest well
+  // past 90s. 8min covers the mathlib cap + queueing.
+  const MAX_ATTEMPTS = 160; // ~480s at 3s cadence
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
     const acc = await conn.getAccountInfo(key, "confirmed");
     if (acc !== null && acc.data[TASK_STATE_OFFSET] === STATE_VERIFIED) return;
