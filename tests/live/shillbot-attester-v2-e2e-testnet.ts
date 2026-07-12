@@ -67,9 +67,13 @@ import {
 const API_BASE = process.env.SHILLBOT_API ?? "https://api.shillbot.org";
 const ESCROW = new BN(2_000_000); // 0.002 SOL
 const DEMO_WINDOW = 8; // seconds — shrunk global challenge window for the run
-// import Mathlib + a decidable prime fact; the def makes the goal opaque so the
-// proof must unfold it (see fixtures). This statement is unstateable under v1.
-const STATEMENT = "import Mathlib\ndef statementProp : Prop := Nat.Prime 101";
+// A mathlib prime fact; the def makes the goal opaque so the proof must unfold
+// it (see fixtures). This statement is unstateable under v1. NOTE: a TARGETED
+// import (`Mathlib.Tactic.NormNum.Prime`) elaborates in ~90s; the umbrella
+// `import Mathlib` loads all ~5GB of oleans and times out at the 240s cap.
+// Catalog statements (V2-5) must likewise import narrowly.
+const STATEMENT =
+  "import Mathlib.Tactic.NormNum.Prime\ndef statementProp : Prop := Nat.Prime 101";
 
 // keccak256 of the v2 policy manifest — chain_core::verify_schema::LEAN_POLICY_V2_ID.
 const LEAN_POLICY_V2_ID =
