@@ -18,6 +18,7 @@ mod server;
 mod session_binding;
 mod solana_reads;
 mod solana_tx;
+mod traffic_stats;
 mod web_position;
 mod xchain;
 
@@ -70,6 +71,13 @@ async fn main() -> anyhow::Result<()> {
     ));
     let discovery_state = build_discovery_state(&cfg.gcp_project_id, &rpc_client).await;
 
+    let traffic_stats_state = Arc::new(traffic_stats::TrafficStatsState::new(
+        rpc_client.clone(),
+        cfg.gcp_project_id.clone(),
+        load_env_or("UMAMI_BASE_URL", "https://analytics.coordination.game"),
+        config::load_optional_secret(&cfg.gcp_project_id, "umami-share-tokens").await,
+    ));
+
     let game_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
     let (rpc_url_mainnet, rpc_url_devnet) = load_per_network_rpcs(&cfg).await;
     let game_sessions = Arc::new(GameSessionManager::new(
@@ -107,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
     let reputation_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
     let router = build_router(
         listings_state,
+        traffic_stats_state,
         discovery_state,
         reputation_db,
         rpc_url_mainnet,
@@ -271,6 +280,7 @@ async fn load_per_network_rpcs(cfg: &StartupConfig) -> (String, String) {
 
 fn build_router(
     listings_state: Arc<ListingsState>,
+    traffic_stats_state: Arc<traffic_stats::TrafficStatsState>,
     discovery_state: Option<Arc<DiscoveryState>>,
     reputation_db: Arc<firestore::FirestoreDb>,
     rpc_url_mainnet: String,
@@ -285,6 +295,10 @@ fn build_router(
         .route(
             "/internal/listings",
             listings::listings_handler(listings_state),
+        )
+        .route(
+            "/internal/traffic-stats",
+            traffic_stats::traffic_stats_handler(traffic_stats_state),
         )
         .route(
             "/internal/build-verify-tx",
