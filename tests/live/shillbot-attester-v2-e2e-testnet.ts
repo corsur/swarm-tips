@@ -132,6 +132,7 @@ async function broadcast(conn: Connection, signedB64: string): Promise<string> {
 /** On-chain Task.state byte offset (layout pinned in shillbot-attester/solana.rs). */
 const TASK_STATE_OFFSET = 80;
 const STATE_SUBMITTED = 2;
+const STATE_VERIFIED = 3;
 
 /** The deployed attester reads Task accounts at FINALIZED commitment and requires
  *  state Submitted(2). Wait for the finalized state before triggering run-attest. */
@@ -149,6 +150,25 @@ async function awaitFinalizedSubmitted(
   throw new Error(
     `${label} not finalized in Submitted state after ${MAX_ATTEMPTS} polls`
   );
+}
+
+/** Mathlib attest is ASYNC end to end: a mathlib proof elaborates in ~90s, but
+ *  the GCP LB backend timeout 504s the synchronous client at ~30s while the
+ *  attester keeps running and lands verify_task_attested SERVER-SIDE. (This is
+ *  also the real production trigger — a Google Workflow, not a waiting client.)
+ *  So we tolerate the run-attest response and poll the on-chain task to Verified. */
+async function awaitVerified(
+  conn: Connection,
+  key: PublicKey,
+  label: string
+): Promise<void> {
+  const MAX_ATTEMPTS = 90; // ~270s at 3s cadence (covers the mathlib build cap)
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const acc = await conn.getAccountInfo(key, "confirmed");
+    if (acc !== null && acc.data[TASK_STATE_OFFSET] === STATE_VERIFIED) return;
+    await sleep(3000);
+  }
+  throw new Error(`${label} not Verified after ${MAX_ATTEMPTS} polls`);
 }
 
 /** build (orchestrator) → sign → broadcast → confirm (orchestrator). */
@@ -226,22 +246,27 @@ async function runLifecycle(
   console.log("  waiting for finalized Submitted state of the task...");
   await awaitFinalizedSubmitted(conn, taskKey, "submitted task");
 
-  // Trigger the DEPLOYED attester+runner (mathlib elaboration ~30-90s).
-  console.log("  running attest (deployed pod runs mathlib)...");
-  const attest = await api("POST", `/internal/run-attest/${taskId}`, clientPk, {
-    task_id: taskId,
-  });
-  console.log(`  attester response: ${JSON.stringify(attest)}`);
-  const landedScore = Number(attest.score);
-  chk.check(
-    landedScore === expectedScore,
-    `attester landed score ${landedScore} (expected ${expectedScore}) — a mathlib PASS proves policy v2 ran`
+  // Trigger the DEPLOYED attester+runner. Mathlib elaboration is ~90s; tolerate
+  // the client-side 504 (the attester finishes server-side — see awaitVerified).
+  console.log("  triggering attest (deployed pod runs mathlib, async ~90s)...");
+  try {
+    await api("POST", `/internal/run-attest/${taskId}`, clientPk, {
+      task_id: taskId,
+    });
+  } catch (e) {
+    console.log(
+      `  run-attest client returned (tolerated): ${String(e).slice(0, 90)}`
+    );
+  }
+  console.log(
+    "  polling on-chain for Verified (attester lands it server-side)..."
   );
-  chk.check(
-    typeof attest.tx === "string" && (attest.tx as string).length > 0,
-    `verify_task_attested tx: ${attest.tx}`
-  );
+  await awaitVerified(conn, taskKey, "attested task");
 
+  // Everything below is asserted from ON-CHAIN state — the deployed
+  // attester+runner's verdict, not the (possibly-504'd) HTTP response. The
+  // payment_amount == oracle check below IS the score assertion: a mathlib PASS
+  // paying MAX is only reachable via policy v2 (v1 can't elaborate mathlib).
   const verified = await h.program.account.task.fetch(taskKey);
   chk.check(
     JSON.stringify(verified.state) === JSON.stringify({ verified: {} }),
