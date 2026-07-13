@@ -28,9 +28,11 @@ import {
   encodeAbiParameters,
   keccak256,
   parseAbi,
+  parseEventLogs,
   getContract,
   type Hex,
   type Address,
+  type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
@@ -61,6 +63,35 @@ function loadKey(name: string): Hex {
   return `0x${raw.replace(/^0x/, "")}` as Hex;
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Poll getTask(taskId).state until it reaches `expected`, or time out. The
+// public Base Sepolia RPC is load-balanced: waitForTransactionReceipt confirms
+// the tx is mined, but a following read (or the NEXT write's eth_estimateGas)
+// can hit a replica that hasn't yet seen that block — so it observes the prior
+// state and a state-guarded step reverts InvalidStatus (0xf525e320). Gating each
+// dependent step on the state actually being visible removes that flake.
+async function waitTaskState(
+  pub: PublicClient,
+  taskId: bigint,
+  expected: number,
+  timeoutMs = 45_000
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let last = -1;
+  for (let i = 0; i < 90; i++) {
+    const t = (await pub.readContract({
+      address: ESCROW,
+      abi: ABI,
+      functionName: "getTask",
+      args: [taskId],
+    })) as { state: number };
+    last = t.state;
+    if (last === expected) return last;
+    if (Date.now() >= deadline) break;
+    await sleep(1_000);
+  }
+  return last;
+}
 const sha256Hex = (s: string): Hex =>
   `0x${require("crypto").createHash("sha256").update(s).digest("hex")}` as Hex;
 
@@ -75,6 +106,7 @@ const ABI = parseAbi([
   "function withdrawable(address) view returns (uint256)",
   "function nextTaskId() view returns (uint64)",
   "function getTask(uint64 id) view returns (Task)",
+  "event TaskCreated(uint64 indexed taskId, address indexed client, uint128 escrowWei, uint64 deadline, uint8 verificationKind)",
 ]);
 
 /** Mirror VerifyLib.attestationDigest exactly (abi.encode of value types). */
@@ -143,14 +175,11 @@ async function main(): Promise<void> {
   const statementCommitment = sha256Hex(statement);
   const artifactHash = sha256Hex("Proof.lean:" + statement);
 
-  const taskId = await pub.readContract({
-    address: ESCROW,
-    abi: ABI,
-    functionName: "nextTaskId",
-  });
-  console.log(`\n=== attested lifecycle (task ${taskId}) ===`);
-
-  // createTask (kind=1) with escrow.
+  // createTask (kind=1) with escrow. The real task id comes from THIS tx's
+  // TaskCreated event, not a pre-read of nextTaskId() — the counter is global
+  // and a concurrent createTask (parallel session / the matrix suite share
+  // these keys) would advance it between the read and our create, leaving us
+  // claiming someone else's already-claimed task (InvalidStatus / 0xf525e320).
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 86_400);
   let hash = await clientW.writeContract({
     address: ESCROW,
@@ -159,7 +188,23 @@ async function main(): Promise<void> {
     args: [statementCommitment, POLICY_ID, KIND_DETERMINISTIC, deadline, false],
     value: escrowWei,
   });
-  await pub.waitForTransactionReceipt({ hash });
+  const createRcpt = await pub.waitForTransactionReceipt({ hash });
+  const created = parseEventLogs({
+    abi: ABI,
+    eventName: "TaskCreated",
+    logs: createRcpt.logs,
+  }).find(
+    (l) =>
+      (l.args.client as Address).toLowerCase() ===
+      clientW.account.address.toLowerCase()
+  );
+  if (!created) throw new Error("createTask emitted no TaskCreated for client");
+  const taskId = created.args.taskId as bigint;
+  console.log(`\n=== attested lifecycle (task ${taskId}) ===`);
+  // Gate on the created task being VISIBLE, not on state==0: a not-yet-propagated
+  // task on a lagging RPC replica also reads as an all-zero struct (state 0,
+  // kind 0, escrow 0), so state==0 can't distinguish "Open" from "not there yet".
+  // Poll until the escrow (set at creation) is visible.
   let task = (await pub.readContract({
     address: ESCROW,
     abi: ABI,
@@ -168,9 +213,19 @@ async function main(): Promise<void> {
   })) as {
     state: number;
     verificationKind: number;
+    escrowWei: bigint;
     paymentWei: bigint;
     feeWei: bigint;
   };
+  for (let i = 0; i < 45 && task.escrowWei === 0n; i++) {
+    await sleep(1_000);
+    task = (await pub.readContract({
+      address: ESCROW,
+      abi: ABI,
+      functionName: "getTask",
+      args: [taskId],
+    })) as typeof task;
+  }
   check(
     task.verificationKind === KIND_DETERMINISTIC,
     "task created with verificationKind = 1"
@@ -184,6 +239,10 @@ async function main(): Promise<void> {
     args: [taskId],
   });
   await pub.waitForTransactionReceipt({ hash });
+  check(
+    (await waitTaskState(pub, taskId, 1)) === 1,
+    "claimTask accepted — state = Claimed"
+  );
   hash = await workerW.writeContract({
     address: ESCROW,
     abi: ABI,
@@ -191,6 +250,10 @@ async function main(): Promise<void> {
     args: [taskId, sha256Hex("content-id"), artifactHash],
   });
   await pub.waitForTransactionReceipt({ hash });
+  check(
+    (await waitTaskState(pub, taskId, 2)) === 2,
+    "submitWork accepted — state = Submitted"
+  );
 
   // Attester signs the VerifyLib digest off-chain (v=27/28), anyone relays it.
   const digest = attestationDigest(
@@ -207,6 +270,7 @@ async function main(): Promise<void> {
     args: [taskId, MAX_SCORE, sig],
   });
   await pub.waitForTransactionReceipt({ hash });
+  await waitTaskState(pub, taskId, 3); // Verified — ensure propagation before the read
   task = (await pub.readContract({
     address: ESCROW,
     abi: ABI,
@@ -238,6 +302,10 @@ async function main(): Promise<void> {
     args: [taskId],
   });
   await pub.waitForTransactionReceipt({ hash });
+  check(
+    (await waitTaskState(pub, taskId, 4)) === 4,
+    "finalizeTask accepted — state = Finalized"
+  );
   const wd = await pub.readContract({
     address: ESCROW,
     abi: ABI,
