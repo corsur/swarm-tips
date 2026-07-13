@@ -1,0 +1,26 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: mcp-server
+  namespace: swarm-tips
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mcp-server
+  # min 2 so the agent entry point is never a single point of failure —
+  # a marketing push targets agents hitting mcp.swarm.tips, and one
+  # expensive/blocking call must not take down the whole surface.
+  minReplicaCount: 2
+  maxReplicaCount: 5
+  pollingInterval: 15
+  cooldownPeriod: 60
+  triggers:
+    - type: metrics-api
+      metadata:
+        # In-flight request count per pod (main.rs track_inflight). Scale
+        # up past ~40 concurrent requests/pod. Baseline noise (health +
+        # KEDA polls) is a handful, so this only fires on real load.
+        targetValue: "40"
+        url: "http://mcp-server.swarm-tips:80/internal/scaling-metric"
+        valueLocation: "value"

@@ -4,7 +4,9 @@ metadata:
   name: mcp-server
   namespace: swarm-tips
 spec:
-  replicas: 1
+  # replicas is intentionally omitted — the KEDA ScaledObject
+  # (scaled-object.yaml, min 2 / max 5) owns the replica count. Setting it
+  # here would fight KEDA on every kubectl apply.
   progressDeadlineSeconds: 900
   selector:
     matchLabels:

@@ -290,8 +290,24 @@ fn build_router(
     let mainnet_for_verify = rpc_url_mainnet.clone();
     let devnet_for_verify = rpc_url_devnet.clone();
 
+    // KEDA scaling signal: in-flight request count across the whole server
+    // (including the /mcp agent transport). mcp-server was a single fixed
+    // replica — this + the ScaledObject let it scale under a spike so one
+    // expensive call can't block every agent.
+    let inflight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     let mut router = axum::Router::new()
         .route("/health", axum::routing::get(build_health_handler()))
+        .route(
+            "/internal/scaling-metric",
+            axum::routing::get({
+                let inflight = Arc::clone(&inflight);
+                move || {
+                    let value = inflight.load(std::sync::atomic::Ordering::Relaxed);
+                    async move { axum::Json(serde_json::json!({ "value": value })) }
+                }
+            }),
+        )
         .route(
             "/internal/listings",
             listings::listings_handler(listings_state),
@@ -414,6 +430,31 @@ fn build_router(
     router
         .layer(axum::extract::DefaultBodyLimit::max(1_048_576))
         .nest_service("/mcp", mcp_service)
+        // In-flight counter wraps EVERYTHING (incl. /mcp) so the scaling
+        // metric reflects real agent load, not just the internal API.
+        .layer(axum::middleware::from_fn_with_state(
+            inflight,
+            track_inflight,
+        ))
+}
+
+/// Increments the in-flight counter for the duration of each request. The
+/// guard decrements on drop so the count is correct even if the handler
+/// panics or the client disconnects mid-response.
+async fn track_inflight(
+    axum::extract::State(inflight): axum::extract::State<Arc<std::sync::atomic::AtomicUsize>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    struct Guard(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let _guard = Guard(inflight);
+    next.run(req).await
 }
 
 fn build_health_handler() -> impl Fn() -> std::pin::Pin<
