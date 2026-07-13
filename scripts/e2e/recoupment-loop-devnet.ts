@@ -46,6 +46,7 @@ import { homedir } from "os";
 import { join } from "path";
 import type { ExtensionCredit } from "../../target/types/extension_credit";
 import type { Shillbot } from "../../target/types/shillbot";
+import { waitAccountsClosed } from "./devnet-harness";
 
 const API = "https://api.shillbot.org";
 const DEVNET =
@@ -421,7 +422,7 @@ async function main(): Promise<void> {
     })
     .rpc({ commitment: "confirmed" });
   check(
-    (await connection.getAccountInfo(advance)) === null,
+    await waitAccountsClosed(connection, [advance]),
     "advance closed (rent reclaimed by backer)"
   );
 
