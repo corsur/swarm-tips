@@ -401,16 +401,21 @@ function certFromPayload(p: any): MatchLiveCert {
       const program = new Program(idl, provider);
       await submitMatchmakerCosigned(connection, player, solFund);
 
-      // 3) Fund EVM leg (playerIsP1 = a_is_p1 == 0).
+      // 3) Fund EVM leg (playerIsP1 = a_is_p1 == 0). The deployed contract's
+      // createMatch carries the operator authorization (M4 squat guard): 7 args
+      // incl. `bytes operatorSig`, and the operator signs a specific
+      // `fund_deadline` — so both come from the relay payload verbatim, not a
+      // locally-recomputed deadline.
       const evmStake = BigInt(payload.leg_b.stake_base_units);
       castSend([
-        "createMatch(bytes32,address,address,bool,uint64,uint64)",
+        "createMatch(bytes32,address,address,bool,uint64,uint64,bytes)",
         matchIdHex,
         toHex(legB.address),
         toHex(legA.address),
         payload.a_is_p1 === 0 ? "true" : "false",
-        String(payload.match_deadline - 300),
+        String(payload.fund_deadline),
         String(payload.match_deadline),
+        payload.create_match_operator_sig,
         "--value",
         evmStake.toString(),
       ]);
