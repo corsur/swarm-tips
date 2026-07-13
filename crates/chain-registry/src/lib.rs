@@ -215,9 +215,14 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 6_400_000_000_000_000, // 0.0064 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        // Filled by the post-deploy follow-up commit (is_live stays false until then).
-        game_contract: None,
-        coordination_game_contract: None,
+        // Deployed to Ethereum Sepolia 2026-07-13 via deploy-evm-testnet.yml
+        // (network=ethereum_sepolia; EVM_TESTNET_DEPLOYER; operatorSigner
+        // 0x54a6…9A30 == game-api xchain-operator-signer, so game-api's
+        // v=27/28-normalized attestations verify on-chain). On-chain
+        // stakeWei/maxTrancheWei verified == 3.2e15/6.4e15 (parity guard).
+        game_contract: Some("0x94138De32c41Ea8e7b3357679AE20Bc8969E2537"),
+        coordination_game_contract: Some("0xB4C9397ed5948e7058b206059caFFF4D52D293e4"),
+        // ShillbotEscrow deferred on this testnet (not needed for game combos).
         shillbot_escrow_contract: None,
         x402_network: None,
     },
