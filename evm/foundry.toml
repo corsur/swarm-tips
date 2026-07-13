@@ -17,6 +17,7 @@ fs_permissions = [{ access = "read", path = "../tests/fixtures" }]
 
 [rpc_endpoints]
 base_sepolia = "https://sepolia.base.org"
+ethereum_sepolia = "https://ethereum-sepolia-rpc.publicnode.com"
 # Mainnet aliases (public endpoints). Public RPCs rate-limit broadcasts — the
 # gated mainnet deploy should pass a keyed URL via the EVM_MAINNET_RPC_URL secret
 # (overrides these). The CAIP-2 chain ids are eip155:8453 (base) / eip155:1 (ethereum).

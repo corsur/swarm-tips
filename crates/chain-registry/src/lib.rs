@@ -190,6 +190,37 @@ const REGISTRY: &[ChainEntry] = &[
         shillbot_escrow_contract: Some("0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c"),
         x402_network: Some("base-sepolia"),
     },
+    // Ethereum Sepolia — second EVM testnet, added for full testnet parity so
+    // every game combination (same-chain EVM + Solana↔Ethereum / Base↔Ethereum
+    // cross-chain) is verifiable with test funds, no real money. SCAFFOLDED:
+    // contracts are None until the `ethereum_sepolia` deploy lands (dispatch
+    // deploy-evm-testnet.yml network=ethereum_sepolia), at which point a
+    // follow-up commit records the addresses and the parity guard validates
+    // stakeWei/maxTrancheWei. Stake matches Base Sepolia's $5 testnet anchor
+    // (== _deploy-evm.yml ethereum_sepolia XCHAIN_STAKE_WEI, in lockstep).
+    ChainEntry {
+        chain_id: "eip155:11155111",
+        display_name: "Ethereum Sepolia",
+        rpc_urls: &[
+            "https://ethereum-sepolia-rpc.publicnode.com",
+            "https://eth-sepolia.public.blastapi.io",
+            "https://sepolia.drpc.org",
+        ],
+        quorum_m: 2,
+        finality: Finality::EvmFinalizedTag,
+        is_mainnet: false,
+        native_symbol: "ETH",
+        native_decimals: 18,
+        stake_base_units: 3_200_000_000_000_000, // 0.0032 ETH ($5 anchor, == deploy stakeWei)
+        max_tranche_base_units: 6_400_000_000_000_000, // 0.0064 ETH (2× stake)
+        claim_window_secs: 3_600,
+        skew_margin_secs: 900,
+        // Filled by the post-deploy follow-up commit (is_live stays false until then).
+        game_contract: None,
+        coordination_game_contract: None,
+        shillbot_escrow_contract: None,
+        x402_network: None,
+    },
     // ── Mainnet EVM chains (scaffolded, NOT yet live) ────────────────────────
     // All contract addresses are None until the gated mainnet deploy lands; a
     // follow-up commit records each deployed address (verified against the
@@ -361,9 +392,9 @@ mod tests {
 
         let solana_count = entries_for(Namespace::Solana).count();
         assert_eq!(solana_count, 2);
-        // Base Sepolia + Base mainnet + Ethereum mainnet.
+        // Base Sepolia + Ethereum Sepolia + Base mainnet + Ethereum mainnet.
         let evm_count = entries_for(Namespace::Eip155).count();
-        assert_eq!(evm_count, 3);
+        assert_eq!(evm_count, 4);
 
         // eip155:1 is now Ethereum mainnet (registered); use an unregistered id.
         let unknown = ChainId::parse("eip155:999999").unwrap();
