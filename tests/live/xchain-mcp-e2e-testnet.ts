@@ -61,8 +61,12 @@ const PROGRAM_ID = new PublicKey(
 );
 const CONTRACT = (process.env.CONTRACT ??
   "0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4") as `0x${string}`;
-const SOLANA_CHAIN = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
-const EVM_CHAIN = "eip155:84532";
+// CAIP-2s the two legs queue on. Override to mainnet (solana:5eykt… /
+// eip155:8453) to spot-check the real cross-chain path — which is also the
+// ONLY way to exercise the mainnet-gated dynamic Solana-leg pricing + FX band.
+const SOLANA_CHAIN =
+  process.env.SOLANA_CHAIN ?? "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+const EVM_CHAIN = process.env.EVM_CHAIN ?? "eip155:84532";
 const IDL_PATH =
   process.env.IDL_PATH ??
   `${homedir()}/swarm/swarm-tips-repo/target/idl/coordination_game.json`;
