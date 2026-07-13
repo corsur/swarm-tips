@@ -38,6 +38,7 @@ import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { Shillbot } from "../../target/types/shillbot";
+import { waitAccountsClosed } from "./devnet-harness";
 
 const DEVNET =
   process.env.DEVNET_RPC ??
@@ -248,7 +249,7 @@ async function main(): Promise<void> {
     .signers([client])
     .rpc({ commitment: "confirmed" });
   check(
-    (await connection.getAccountInfo(taskPda)) === null,
+    await waitAccountsClosed(connection, [taskPda]),
     "task closed + escrow returned via emergency_return"
   );
 

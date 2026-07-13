@@ -48,6 +48,7 @@ import { join } from "path";
 import type { ExtensionRegistry } from "../../target/types/extension_registry";
 import type { ExtensionCredit } from "../../target/types/extension_credit";
 import type { Shillbot } from "../../target/types/shillbot";
+import { waitAccountsClosed } from "./devnet-harness";
 
 const DEVNET =
   process.env.DEVNET_RPC ??
@@ -389,8 +390,7 @@ async function main(): Promise<void> {
     .signers([onbAuth])
     .rpc({ commitment: "confirmed" });
   check(
-    (await connection.getAccountInfo(taskPda)) === null &&
-      (await connection.getAccountInfo(advancePda)) === null,
+    await waitAccountsClosed(connection, [taskPda, advancePda]),
     "task + advance closed; escrow, both bonds, and advance rent recovered"
   );
 

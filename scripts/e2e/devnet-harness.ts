@@ -67,6 +67,41 @@ export class Checker {
 export const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Poll until every `pubkey` is closed, or the timeout elapses. Reads at
+ * "confirmed" (never "processed") to tolerate load-balanced-RPC lag right after
+ * the closing tx.
+ *
+ * "Closed" means one of two things, because the program closes accounts two ways:
+ *   - Anchor `#[account(close = ..)]` → the account is reaped → getAccountInfo
+ *     returns `null`.
+ *   - `emergency_return`'s manual close (drain lamports to 0 + `assign` to the
+ *     System Program + zero the data) → the account LINGERS as a 0-lamport,
+ *     system-owned ghost that getAccountInfo still returns for a while. A program
+ *     account must be rent-exempt (lamports > 0) to hold data, so `lamports === 0`
+ *     is definitionally closed — all escrow + rent has left for the client.
+ * So an account counts as closed iff it is null OR has 0 lamports.
+ */
+export async function waitAccountsClosed(
+  connection: Connection,
+  pubkeys: PublicKey[],
+  timeoutMs = 20_000
+): Promise<boolean> {
+  const closed = (info: { lamports: number } | null): boolean =>
+    info === null || info.lamports === 0;
+  const deadline = Date.now() + timeoutMs;
+  const maxPolls = 60; // bounded: timeoutMs/step can't loop forever
+  for (let i = 0; i < maxPolls; i++) {
+    const infos = await Promise.all(
+      pubkeys.map((pk) => connection.getAccountInfo(pk, "confirmed"))
+    );
+    if (infos.every(closed)) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(1_000);
+  }
+  return false;
+}
+
 export interface DevnetHarness {
   connection: Connection;
   provider: anchor.AnchorProvider;
