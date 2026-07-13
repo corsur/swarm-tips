@@ -27,13 +27,17 @@ import {
   type Address,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { base, baseSepolia } from "viem/chains";
 import { deriveTerminalOutcome, OutcomeKind } from "../helpers/outcome-oracle";
 
 const GAME_API = process.env.GAME_API ?? "https://api.coordination.game";
 const RPC = process.env.RPC_URL ?? "https://sepolia.base.org";
 const TOURNAMENT = Number(process.env.TOURNAMENT_ID ?? 2);
-const CHAIN = "eip155:84532";
+// CAIP-2 the harness queues on — game-api resolves the CoordinationGame
+// contract for this chain. Override CHAIN=eip155:8453 to spot-check Base
+// mainnet; the viem chain follows so the tx broadcasts to the right network.
+const CHAIN = process.env.CHAIN ?? "eip155:84532";
+const VIEM_CHAIN = CHAIN === "eip155:8453" ? base : baseSepolia;
 const ZERO32 = `0x${"00".repeat(32)}` as Hex;
 
 const ABI = parseAbi([
@@ -113,15 +117,15 @@ async function main() {
       process.env.B_KEYFILE ?? "~/.foundry/keystores/evmgame-player-b.key"
     )
   );
-  const pub = createPublicClient({ chain: baseSepolia, transport: http(RPC) });
+  const pub = createPublicClient({ chain: VIEM_CHAIN, transport: http(RPC) });
   const aw = createWalletClient({
     account: aAcct,
-    chain: baseSepolia,
+    chain: VIEM_CHAIN,
     transport: http(RPC),
   });
   const bw = createWalletClient({
     account: bAcct,
-    chain: baseSepolia,
+    chain: VIEM_CHAIN,
     transport: http(RPC),
   });
   console.log(`A (creator) ${aAcct.address}\nB (joiner)  ${bAcct.address}`);
@@ -245,7 +249,7 @@ async function main() {
     `✅ game RESOLVED on-chain: p1Guess=${p1Guess} p2Guess=${p2Guess} matchupType=${matchupType} firstCommitter=${firstCommitter} → ${OutcomeKind[expected]}`
   );
   console.log(
-    "\nPASS — same-chain EVM end-to-end on Base Sepolia; operator-sig v-normalization confirmed live; resolved per the canonical payoff matrix."
+    `\nPASS — same-chain EVM end-to-end on ${CHAIN}; operator-sig v-normalization confirmed live; resolved per the canonical payoff matrix.`
   );
 }
 
