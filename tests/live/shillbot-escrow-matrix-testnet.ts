@@ -48,6 +48,7 @@ import {
   encodeAbiParameters,
   keccak256,
   parseAbi,
+  parseEventLogs,
   formatEther,
   type Hex,
   type Address,
@@ -128,6 +129,7 @@ const ABI = parseAbi([
   "function qualityThreshold() view returns (uint64)",
   "function challengeBondMultiplier() view returns (uint8)",
   "function bondSlashTreasuryBps() view returns (uint16)",
+  "event TaskCreated(uint64 indexed taskId, address indexed client, uint128 escrowWei, uint64 deadline, uint8 verificationKind)",
 ]);
 
 interface Descriptor {
@@ -307,6 +309,66 @@ async function writeAndWait(
   return hash;
 }
 
+// createTask, returning the real task id from THIS tx's TaskCreated event (not a
+// pre-read of nextTaskId, which is off-by-one under any interleaving) and gating
+// on the task being visible before returning — the public Base Sepolia RPC is
+// load-balanced, so a follow-up read/estimateGas can hit a replica behind the
+// create block and observe an all-zero (state 0, escrow 0) struct.
+async function createTaskViaEvent(
+  env: Env,
+  cellName: string,
+  client: PrivateKeyAccount,
+  args: unknown[]
+): Promise<bigint> {
+  const hash = await env.clientW.writeContract({
+    address: ESCROW,
+    abi: ABI,
+    functionName: "createTask",
+    args: args as never,
+    account: client,
+    chain: baseSepolia,
+    value: ESCROW_WEI,
+  });
+  const rcpt = await env.pub.waitForTransactionReceipt({ hash });
+  env.txlog[`${cellName}/create`] = hash;
+  const created = parseEventLogs({
+    abi: ABI,
+    eventName: "TaskCreated",
+    logs: rcpt.logs,
+  }).find(
+    (l) =>
+      (l.args.client as Address).toLowerCase() === client.address.toLowerCase()
+  );
+  if (!created)
+    throw new Error(`${cellName}: createTask emitted no TaskCreated`);
+  const taskId = created.args.taskId as bigint;
+  for (let i = 0; i < 45; i++) {
+    if ((await getTask(env, taskId)).deadline !== 0n) break;
+    await sleep(1_000);
+  }
+  return taskId;
+}
+
+// Poll getTask(taskId).state until it reaches `expected` (or time out), so a
+// state-guarded next step doesn't estimateGas against a lagging replica and
+// revert InvalidStatus (0xf525e320).
+async function waitTaskState(
+  env: Env,
+  taskId: bigint,
+  expected: number,
+  timeoutMs = 45_000
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let last = -1;
+  for (let i = 0; i < 90; i++) {
+    last = (await getTask(env, taskId)).state;
+    if (last === expected) return last;
+    if (Date.now() >= deadline) break;
+    await sleep(1_000);
+  }
+  return last;
+}
+
 async function getTask(env: Env, taskId: bigint) {
   return (await env.pub.readContract({
     address: ESCROW,
@@ -385,7 +447,24 @@ async function assertDeltas(
   before: Map<Address, bigint>,
   expected: Map<Address, bigint>
 ): Promise<void> {
-  const after = await snapshot(env);
+  // The withdrawable credit from finalize/resolve is not instantly visible on the
+  // load-balanced RPC (a challenge cell reads it right after resolve, with no
+  // challenge-window sleep to hide the lag) — poll until the observed deltas match
+  // the oracle, or time out, so a lagging replica doesn't read a stale 0.
+  const matches = (after: Map<Address, bigint>): boolean => {
+    for (const [addr, prev] of before.entries()) {
+      if ((after.get(addr) ?? 0n) - prev !== (expected.get(addr) ?? 0n)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  let after = await snapshot(env);
+  const deadline = Date.now() + 45_000;
+  while (!matches(after) && Date.now() < deadline) {
+    await sleep(1_000);
+    after = await snapshot(env);
+  }
   for (const [addr, prev] of before.entries()) {
     const delta = (after.get(addr) ?? 0n) - prev;
     const exp = expected.get(addr) ?? 0n;
@@ -413,21 +492,14 @@ async function toVerified(
     cell.kind === 1 ? POLICY_ID : (`0x${"00".repeat(32)}` as Hex);
   const artifactHash = sha256Hex("artifact:" + statement);
 
-  const taskId = (await env.pub.readContract({
-    address: ESCROW,
-    abi: ABI,
-    functionName: "nextTaskId",
-  })) as bigint;
-
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 86_400);
-  env.txlog[`${cell.name}/create`] = await writeAndWait(
-    env,
-    env.clientW,
-    client,
-    "createTask",
-    [statementCommitment, policyId, cell.kind, deadline, false],
-    ESCROW_WEI
-  );
+  const taskId = await createTaskViaEvent(env, cell.name, client, [
+    statementCommitment,
+    policyId,
+    cell.kind,
+    deadline,
+    false,
+  ]);
   env.txlog[`${cell.name}/claim`] = await writeAndWait(
     env,
     env.workerW,
@@ -435,6 +507,7 @@ async function toVerified(
     "claimTask",
     [taskId]
   );
+  await waitTaskState(env, taskId, 1);
   env.txlog[`${cell.name}/submit`] = await writeAndWait(
     env,
     env.workerW,
@@ -442,6 +515,7 @@ async function toVerified(
     "submitWork",
     [taskId, sha256Hex("content:" + statement), artifactHash]
   );
+  await waitTaskState(env, taskId, 2);
 
   const t = await getTask(env, taskId);
   const digest = attestationDigest(
@@ -462,6 +536,7 @@ async function toVerified(
     "verifyTaskAttested",
     [taskId, BigInt(cell.score), sig]
   );
+  await waitTaskState(env, taskId, 3);
 
   const v = await getTask(env, taskId);
   const pinned = computePayment(
@@ -502,6 +577,7 @@ async function runChallengeCell(env: Env, cell: Cell): Promise<void> {
     [taskId],
     bond
   );
+  await waitTaskState(env, taskId, 5); // Disputed — before resolveChallenge
 
   const before = await snapshot(env);
   const challengerWon = cell.outcome === K.ResolvedChallengerWins;
@@ -527,19 +603,13 @@ async function runExpireCell(
   // Open-state expiry: create with a short deadline, never claim. expireTask
   // opens strictly after the deadline → full escrow refunded to the client.
   const deadline = Math.floor(Date.now() / 1000) + 40;
-  const taskId = (await env.pub.readContract({
-    address: ESCROW,
-    abi: ABI,
-    functionName: "nextTaskId",
-  })) as bigint;
-  env.txlog[`${cell.name}/create`] = await writeAndWait(
-    env,
-    env.clientW,
-    env.roles.client,
-    "createTask",
-    [sha256Hex(cell.name), POLICY_ID, cell.kind, BigInt(deadline), false],
-    ESCROW_WEI
-  );
+  const taskId = await createTaskViaEvent(env, cell.name, env.roles.client, [
+    sha256Hex(cell.name),
+    POLICY_ID,
+    cell.kind,
+    BigInt(deadline),
+    false,
+  ]);
   const expected = expectedByAddress(
     env.roles,
     deriveTaskOutcome(scenarioFor(env.cfg, cell))
