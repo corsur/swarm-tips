@@ -113,7 +113,12 @@ jobs:
           solana airdrop 100
 
       - name: Run coordination-game tests
-        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/coordination-game.ts"
+        # xchain.ts covers the UNCONTESTED Solana cross-chain path
+        # (create_xmatch → lock → settle_xmatch + refunds) against the local
+        # validator — the contested path runs under bankrun above. It was
+        # previously wired into no workflow (orphaned), so the happy-path
+        # settle had zero CI coverage.
+        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/coordination-game.ts" "tests/xchain.ts"
         env:
           ANCHOR_PROVIDER_URL: http://localhost:8899
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
