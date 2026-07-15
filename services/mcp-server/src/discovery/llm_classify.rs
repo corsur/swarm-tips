@@ -22,12 +22,15 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::Deserialize;
 
-const MODEL: &str = "grok-3-mini";
+// grok-4.5 (2026-07): org-wide bump to the Cursor-trained flagship for better
+// classification accuracy. Costlier than the old grok-3-mini (~$0.01/call vs
+// ~$0.0003) — the per-cycle cap below is what bounds the budget.
+const MODEL: &str = "grok-4.5";
 const API_URL: &str = "https://api.x.ai/v1/chat/completions";
 const SYSTEM_PROMPT: &str = include_str!("prompts/discovery_classify.txt");
 
 /// Per-cycle cap on the number of servers Layer 2 will classify in one pass.
-/// Bounds budget exposure: at ~$0.0003/call this caps a single run at $0.06.
+/// Bounds budget exposure: at ~$0.01/call (grok-4.5) this caps a run at ~$2.
 pub const MAX_SERVERS_PER_CYCLE: usize = 200;
 
 /// Grok API client for Layer 2 classification. Hand-rolled reqwest instead of
