@@ -103,6 +103,16 @@ pub struct TaskSummary {
     /// to forward it to the agent verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<serde_json::Value>,
+    /// Campaign client wallet that funded the task (task ownership). Lets an
+    /// agent see who it would be working for (e.g. to skip first-party org
+    /// tasks). Optional: older orchestrator responses omit it.
+    #[serde(default)]
+    pub client: Option<String>,
+    /// On-chain Task PDA (base58; the orchestrator's
+    /// `TaskDoc::on_chain_address`). `null` until create_task confirms.
+    /// Optional: older orchestrator responses omit it.
+    #[serde(default)]
+    pub task_pda: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1032,6 +1042,8 @@ mod tests {
             "campaign_id": "campaign-uuid",
             "campaign_topic": "Play a round of coordination.game",
             "state": "open",
+            "client": "ClientWallet1111111111111111111111111111111",
+            "task_pda": "TaskPda111111111111111111111111111111111111",
             "agent": null,
             "content_id": null,
             "composite_score": null,
@@ -1063,6 +1075,14 @@ mod tests {
             Some("Play a round of coordination.game")
         );
         assert!(parsed.brief.is_some());
+        assert_eq!(
+            parsed.client.as_deref(),
+            Some("ClientWallet1111111111111111111111111111111")
+        );
+        assert_eq!(
+            parsed.task_pda.as_deref(),
+            Some("TaskPda111111111111111111111111111111111111")
+        );
     }
 
     #[test]
@@ -1226,7 +1246,14 @@ mod tests {
                 .and(query_param("network", "devnet"))
                 .and(query_param("limit", "20"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "tasks": [],
+                    "tasks": [{
+                        "task_id": "c:t",
+                        "state": "open",
+                        "platform": 5,
+                        "quality_threshold": 0,
+                        "client": "ClientWallet111",
+                        "task_pda": "TaskPda111",
+                    }],
                     "next_cursor": null,
                 })))
                 .expect(1)
@@ -1238,7 +1265,12 @@ mod tests {
                 .list_tasks(None, None, Some("devnet"))
                 .await
                 .expect("ok");
-            assert!(result.tasks.is_empty());
+            assert_eq!(result.tasks.len(), 1);
+            // The new optional ownership fields must round-trip through the
+            // proxy's TaskSummary so MCP agents can see who funds the task
+            // and its on-chain PDA.
+            assert_eq!(result.tasks[0].client.as_deref(), Some("ClientWallet111"));
+            assert_eq!(result.tasks[0].task_pda.as_deref(), Some("TaskPda111"));
         }
 
         #[tokio::test]
