@@ -10,6 +10,11 @@ name = "coordination_game"
 
 [features]
 default = []
+# Selects the mainnet Solana genesis for the cross-chain leg-A chain tag
+# (`solana_chain_tag`). A program binary can't detect its own cluster at
+# runtime, so the CI mainnet deploy builds with this feature; devnet builds
+# without it. See MAINNET_DEPLOY.md.
+mainnet = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []

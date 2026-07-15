@@ -661,12 +661,22 @@ fn verify_checkpoint(
     Ok(())
 }
 
-/// keccak256 of this leg's CAIP-2 chain string — the chain tag a cert's
-/// leg A must carry. Mirrors crates/chain-registry (Solana devnet row); a
-/// cert for any other chain fails the leg-A check. The program ID is the
-/// contract binding.
+/// keccak256 of this Solana cluster's CAIP-2 chain string — the chain tag a
+/// cert's leg A must carry. Mirrors crates/chain-registry (the matching Solana
+/// row); a cert for any other chain fails the leg-A check. The program ID is
+/// the contract binding.
+///
+/// A program binary can't observe its own cluster's genesis at runtime, so the
+/// cluster is selected at BUILD time: the CI mainnet deploy builds with
+/// `--features mainnet`, devnet builds without it. Without this, a mainnet
+/// cross-chain match's cert (mainnet tag) never matched the constant and every
+/// `lock_xtranche`/`settle_xmatch` failed with `XCertMismatch`.
 fn solana_chain_tag() -> [u8; 32] {
-    crate::cert::keccak256(b"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+    #[cfg(feature = "mainnet")]
+    let genesis: &[u8] = b"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+    #[cfg(not(feature = "mainnet"))]
+    let genesis: &[u8] = b"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+    crate::cert::keccak256(genesis)
 }
 
 /// Reconstruct leg A (the Solana leg) from authoritative on-chain match
@@ -1086,4 +1096,34 @@ pub struct CloseXMatch<'info> {
     /// CHECK: rent recipient, validated to equal the recorded match player.
     #[account(mut, constraint = player.key() == xmatch.player @ CoordinationError::XCertMismatch)]
     pub player: AccountInfo<'info>,
+}
+
+#[cfg(test)]
+mod chain_tag_tests {
+    use super::solana_chain_tag;
+    use crate::cert::keccak256;
+
+    // The two cluster CAIP-2 strings (must mirror crates/chain-registry).
+    const DEVNET: &[u8] = b"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+    const MAINNET: &[u8] = b"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+
+    #[test]
+    fn tag_matches_the_build_feature_cluster() {
+        // A binary built without `mainnet` binds the devnet tag; with it, mainnet.
+        // This is the exact equality `lock_xtranche`/`settle_xmatch` enforce
+        // against the cert's leg-A tag, so a wrong build silently breaks all
+        // cross-chain settlement on that cluster.
+        let expected = if cfg!(feature = "mainnet") {
+            MAINNET
+        } else {
+            DEVNET
+        };
+        assert_eq!(solana_chain_tag(), keccak256(expected));
+    }
+
+    #[test]
+    fn the_two_clusters_produce_distinct_tags() {
+        // If these ever collided a devnet cert would satisfy a mainnet lock.
+        assert_ne!(keccak256(DEVNET), keccak256(MAINNET));
+    }
 }

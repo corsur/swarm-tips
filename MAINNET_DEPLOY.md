@@ -40,11 +40,24 @@ new program requires adding it to the "cleared" table above first.
 Only for a program in the **Cleared** table, after its changes are reviewed:
 
 ```
-gh workflow run "Coordination Game" --ref main   # then the deploy-mainnet job
+gh workflow run coordination-game.yml --ref main -f target=mainnet   # deploy-mainnet job
 ```
 
-or trigger `deploy-mainnet` from the Actions UI. The `test` job remains the
-automatic push gate; deploys are always an explicit, separate action.
+or trigger `deploy-mainnet` from the Actions UI (select `target=mainnet`). The
+`test` job remains the automatic push gate; deploys are always an explicit,
+separate action.
+
+### `coordination_game` builds mainnet WITH `--features mainnet`
+
+A Solana program binary can't observe its own cluster at runtime, but the
+cross-chain leg-A chain tag (`solana_chain_tag`) must be this cluster's genesis.
+So the cluster is a **build-time** feature: the `deploy-mainnet` job builds
+`anchor build -p coordination-game -- --features mainnet` (mainnet Solana
+genesis); every other build (test job, devnet job, local) omits it (devnet
+genesis). **If a mainnet build ever ships without `--features mainnet`, all
+cross-chain settlement breaks with `XCertMismatch`** — the same-chain game is
+unaffected (the tag is cross-chain-only). This is enforced only by the workflow
+step; keep the flag on that step.
 
 ## Devnet SOL
 

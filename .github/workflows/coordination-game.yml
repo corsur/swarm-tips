@@ -307,7 +307,11 @@ jobs:
           echo '${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}' > target/deploy/coordination_game-keypair.json
 
       - name: Build coordination game only
-        run: anchor build -p coordination-game
+        # `--features mainnet` selects the mainnet Solana chain tag in
+        # solana_chain_tag() (cross-chain leg-A binding). MUST be present on
+        # every mainnet build — without it, cross-chain settlement breaks with
+        # XCertMismatch. See MAINNET_DEPLOY.md.
+        run: anchor build -p coordination-game -- --features mainnet
 
       - name: Deploy coordination game to mainnet
         run: anchor deploy -p coordination_game --provider.cluster mainnet
