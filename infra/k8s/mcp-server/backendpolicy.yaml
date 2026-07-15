@@ -14,3 +14,12 @@ spec:
     timeoutSec: 3600
     connectionDraining:
       drainingTimeoutSec: 60
+    # The MCP streamable-http session lives in-memory per pod (rmcp
+    # LocalSessionManager). With KEDA min-2 and no affinity, a multi-step agent
+    # flow round-robins to a pod without its session → "Session not found".
+    # CLIENT_IP affinity pins an agent (stable source IP) to one pod for the
+    # session lifetime, so initialize + every follow-up land on the same pod
+    # while keeping horizontal autoscaling. (A shared/Firestore-backed session
+    # store would remove the IP dependency entirely — future hardening.)
+    sessionAffinity:
+      type: CLIENT_IP
