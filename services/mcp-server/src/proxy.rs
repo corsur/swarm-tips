@@ -1547,4 +1547,260 @@ mod tests {
             }
         }
     }
+
+    /// Flow tests for the paid video path (`generate_video` /
+    /// `check_video_status` proxies) and the VOW attestation reads — the
+    /// tool surfaces that previously had zero coverage. Same wiremock
+    /// pattern as `network_flow_tests`.
+    mod video_and_attestation_flow_tests {
+        use super::*;
+        use base64::Engine;
+        use wiremock::matchers::{body_partial_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn proxy_for(server: &MockServer) -> OrchestratorProxy {
+            OrchestratorProxy::new(server.uri(), server.uri())
+        }
+
+        fn full_attestation_json() -> serde_json::Value {
+            serde_json::json!({
+                "version": "vow/v1",
+                "network": "devnet",
+                "program_id": "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
+                "task_pda": "TaskPda111",
+                "task_id": 42,
+                "client": "ClientWallet1",
+                "agent": "AgentWallet1",
+                "state": "verified",
+                "platform": 0,
+                "composite_score": 910_000,
+                "score_max": 1_000_000,
+                "verified_at": "2026-07-15T00:00:00Z",
+                "verification_hash": "vh",
+                "content_hash": "ch",
+                "content_id_hash": "cih",
+                "switchboard_feed": "Feed111",
+                "verifier_instructions": "instructions",
+            })
+        }
+
+        #[tokio::test]
+        async fn create_short_crypto_sends_body_and_payment_header() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/shorts/create-crypto"))
+                .and(body_partial_json(serde_json::json!({
+                    "prompt": "make a short",
+                    "url": "https://example.com",
+                })))
+                .and(header("payment-signature", "b64payload"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "session_id": "sess-1", "status": "generating" }),
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let result = proxy_for(&server)
+                .create_short_crypto(
+                    "make a short",
+                    Some("https://example.com"),
+                    Some("b64payload"),
+                )
+                .await
+                .expect("ok");
+            assert_eq!(result["session_id"], "sess-1");
+        }
+
+        #[tokio::test]
+        async fn create_short_crypto_402_parses_payment_required_header() {
+            let server = MockServer::start().await;
+            let details = serde_json::json!({
+                "chain": "solana",
+                "address": "PayHere111",
+                "amount": "5",
+                "memo": "m-1",
+            });
+            let encoded = base64::engine::general_purpose::STANDARD
+                .encode(serde_json::to_vec(&details).expect("encode"));
+            Mock::given(method("POST"))
+                .and(path("/shorts/create-crypto"))
+                .respond_with(
+                    ResponseTemplate::new(402).insert_header("Payment-Required", encoded.as_str()),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            // First call (no tx_signature) → stable payment_required envelope.
+            let result = proxy_for(&server)
+                .create_short_crypto("make a short", None, None)
+                .await
+                .expect("402 is a successful envelope, not an error");
+            assert_eq!(result["status"], "payment_required");
+            assert_eq!(result["payment_details"]["address"], "PayHere111");
+            assert_eq!(result["payment_details"]["amount"], "5");
+        }
+
+        #[tokio::test]
+        async fn create_short_crypto_402_without_header_is_an_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/shorts/create-crypto"))
+                .respond_with(ResponseTemplate::new(402))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let err = proxy_for(&server)
+                .create_short_crypto("p", None, None)
+                .await
+                .expect_err("missing Payment-Required header must fail");
+            match err {
+                McpServiceError::OrchestratorError(msg) => {
+                    assert!(msg.contains("Payment-Required"), "names the header: {msg}")
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn create_short_crypto_surfaces_server_error_with_status() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/shorts/create-crypto"))
+                .respond_with(
+                    ResponseTemplate::new(500)
+                        .set_body_json(serde_json::json!({ "error": "generation backend down" })),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let err = proxy_for(&server)
+                .create_short_crypto("p", None, None)
+                .await
+                .expect_err("500 must fail");
+            match err {
+                McpServiceError::OrchestratorError(msg) => {
+                    assert!(msg.contains("500"), "carries the status: {msg}");
+                    assert!(
+                        msg.contains("generation backend down"),
+                        "carries body: {msg}"
+                    );
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn get_short_status_fetches_by_session_id() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/shorts/sess-9"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "status": "done", "video_url": "https://v/x.mp4" }),
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let result = proxy_for(&server)
+                .get_short_status("sess-9")
+                .await
+                .expect("ok");
+            assert_eq!(result["video_url"], "https://v/x.mp4");
+        }
+
+        #[tokio::test]
+        async fn get_short_status_rejects_empty_session_id_without_calling() {
+            let server = MockServer::start().await;
+            // No mock mounted: an HTTP call would 404 and fail differently.
+            let err = proxy_for(&server)
+                .get_short_status("")
+                .await
+                .expect_err("empty session_id must be rejected at the boundary");
+            assert!(matches!(err, McpServiceError::InvalidInput(_)));
+        }
+
+        #[tokio::test]
+        async fn get_attestation_fetches_and_parses_the_vow_tuple() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tasks/task-42/attestation"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(full_attestation_json()))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let att = proxy_for(&server)
+                .get_attestation("task-42", None)
+                .await
+                .expect("ok");
+            assert_eq!(att.version, "vow/v1");
+            assert_eq!(att.task_id, 42);
+            assert_eq!(att.agent, "AgentWallet1");
+            assert_eq!(att.composite_score, 910_000);
+        }
+
+        #[tokio::test]
+        async fn get_attestation_by_pda_uses_the_pda_route() {
+            // Must be base58-pubkey-shaped: the proxy rejects short ids at the boundary.
+            const PDA: &str = "GtBz1WcJs5tKMLQWaZdd3osYsGzK59onCvbNVPMaQSLU";
+            let server = MockServer::start().await;
+            let mut body = full_attestation_json();
+            body["task_pda"] = serde_json::json!(PDA);
+            Mock::given(method("GET"))
+                .and(path(format!("/tasks/by-pda/{PDA}/attestation")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let att = proxy_for(&server)
+                .get_attestation_by_pda(PDA, None)
+                .await
+                .expect("ok");
+            assert_eq!(att.task_pda, PDA);
+        }
+
+        #[tokio::test]
+        async fn get_attestation_surfaces_409_not_yet_attested() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tasks/task-1/attestation"))
+                .respond_with(ResponseTemplate::new(409).set_body_string("task not yet attested"))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let err = proxy_for(&server)
+                .get_attestation("task-1", None)
+                .await
+                .expect_err("409 must fail");
+            match err {
+                McpServiceError::OrchestratorError(msg) => {
+                    assert!(msg.contains("409"), "carries status: {msg}");
+                    assert!(msg.contains("not yet attested"), "carries body: {msg}");
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn attestation_lookups_reject_empty_identifiers() {
+            let server = MockServer::start().await;
+            let p = proxy_for(&server);
+            assert!(matches!(
+                p.get_attestation("", None).await.expect_err("must fail"),
+                McpServiceError::InvalidInput(_)
+            ));
+            assert!(matches!(
+                p.get_attestation_by_pda("", None)
+                    .await
+                    .expect_err("must fail"),
+                McpServiceError::InvalidInput(_)
+            ));
+        }
+    }
 }

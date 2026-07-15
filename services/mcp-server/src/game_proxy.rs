@@ -237,3 +237,320 @@ fn map_game_api_error(err: game_api_client::GameApiError) -> McpServiceError {
     );
     McpServiceError::GameApiError(err.to_string())
 }
+
+// Flow tests with mocked I/O (backend standard): every proxy fn that the
+// game_*/xchain_* tools route through gets a happy-path test asserting the
+// exact HTTP shape (method, path, body/query threading) against a wiremock
+// game-api, plus error-path coverage for the shared non-2xx mapping. Mirrors
+// the OrchestratorProxy wiremock tests in proxy.rs.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{body_partial_json, header, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn proxy(server: &MockServer) -> GameApiProxy {
+        GameApiProxy::new(server.uri()).expect("proxy builds against mock uri")
+    }
+
+    #[tokio::test]
+    async fn auth_challenge_posts_wallet_and_parses_nonce() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/challenge"))
+            .and(body_partial_json(json!({ "wallet": "walletA" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "nonce": "n-123" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server).auth_challenge("walletA").await.expect("ok");
+        assert_eq!(resp.nonce, "n-123");
+    }
+
+    #[tokio::test]
+    async fn join_queue_sends_bearer_token_and_external_flag() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/queue/join"))
+            .and(header("authorization", "Bearer jwt-1"))
+            // The proxy serves external agents: is_internal must be false.
+            .and(body_partial_json(
+                json!({ "tournament_id": 7, "is_ai": false, "is_internal": false }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({ "matched": true, "session_id": "s-1", "cohort_name": null }),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server)
+            .join_queue("jwt-1", 7, false, "test/v1")
+            .await
+            .expect("ok");
+        assert!(resp.matched);
+        assert_eq!(resp.session_id.as_deref(), Some("s-1"));
+    }
+
+    #[tokio::test]
+    async fn xqueue_join_threads_full_request_and_parses_matched() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/join"))
+            .and(body_partial_json(json!({
+                "wallet": "So1Wallet",
+                "chain": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+                "session_key": "0x1111111111111111111111111111111111111111",
+                "tournament_id": 2,
+            })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    json!({ "status": "matched", "match": { "match_id": "0xabc" } }),
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server)
+            .xqueue_join(
+                "So1Wallet",
+                "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+                "0x1111111111111111111111111111111111111111",
+                2,
+            )
+            .await
+            .expect("ok");
+        assert_eq!(resp.status, "matched");
+        assert_eq!(resp.match_payload.expect("payload")["match_id"], "0xabc");
+    }
+
+    #[tokio::test]
+    async fn xqueue_status_queries_by_wallet() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/internal/xqueue/status"))
+            .and(query_param("wallet", "So1Wallet"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "waiting" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server).xqueue_status("So1Wallet").await.expect("ok");
+        assert_eq!(resp.status, "waiting");
+        assert!(resp.match_payload.is_none());
+    }
+
+    #[tokio::test]
+    async fn evmgame_join_and_status_hit_the_evmgame_endpoints() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/evmgame/join"))
+            .and(body_partial_json(
+                json!({ "wallet": "0xabc", "chain": "eip155:8453", "tournament_id": 3 }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "waiting" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/internal/evmgame/status"))
+            .and(query_param("wallet", "0xabc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "status": "matched", "match": { "game_id": "0xg" } })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let p = proxy(&server);
+        let joined = p.evmgame_join("0xabc", "eip155:8453", 3).await.expect("ok");
+        assert_eq!(joined.status, "waiting");
+        let status = p.evmgame_status("0xabc").await.expect("ok");
+        assert_eq!(status.match_payload.expect("payload")["game_id"], "0xg");
+    }
+
+    #[tokio::test]
+    async fn evmgame_committed_posts_game_and_wallet() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/evmgame/committed"))
+            .and(body_partial_json(
+                json!({ "game_id": "0xg", "wallet": "0xabc" }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "both_committed": true, "r_matchup": "0xr" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server)
+            .evmgame_committed("0xg", "0xabc")
+            .await
+            .expect("ok");
+        assert_eq!(resp["both_committed"], true);
+        assert_eq!(resp["r_matchup"], "0xr");
+    }
+
+    #[tokio::test]
+    async fn build_sol_fund_parses_the_cosigned_tx_bundle() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/build-sol-fund"))
+            .and(body_partial_json(json!({ "wallet": "So1Wallet" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "unsigned_tx": "dHg=",
+                "blockhash": "Bh111",
+                "matchmaker_signature": "c2ln",
+                "match_id": "0xm",
+                "action": "create_xmatch",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server)
+            .xqueue_build_sol_fund("So1Wallet")
+            .await
+            .expect("ok");
+        assert_eq!(resp.unsigned_tx, "dHg=");
+        assert_eq!(resp.matchmaker_signature, "c2ln");
+        assert_eq!(resp.action, "create_xmatch");
+    }
+
+    #[tokio::test]
+    async fn sol_lock_outcome_cosign_and_gameplay_pass_through_json() {
+        let server = MockServer::start().await;
+        for (p, m) in [
+            ("/internal/xqueue/build-sol-lock", "POST"),
+            ("/internal/xqueue/outcome-cosign", "POST"),
+            ("/internal/xqueue/gameplay", "GET"),
+        ] {
+            Mock::given(method(m))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "endpoint": p })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+
+        let p = proxy(&server);
+        let lock = p.xqueue_build_sol_lock("w").await.expect("ok");
+        assert_eq!(lock["endpoint"], "/internal/xqueue/build-sol-lock");
+        let cosign = p.xqueue_outcome_cosign("w").await.expect("ok");
+        assert_eq!(cosign["endpoint"], "/internal/xqueue/outcome-cosign");
+        let gameplay = p.xqueue_gameplay("w").await.expect("ok");
+        assert_eq!(gameplay["endpoint"], "/internal/xqueue/gameplay");
+    }
+
+    #[tokio::test]
+    async fn build_sol_refund_threads_match_id_and_kind() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/build-sol-refund"))
+            .and(body_partial_json(
+                json!({ "wallet": "So1Wallet", "match_id": "0xm", "kind": "timeout" }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "action": "refund_xmatch_timeout" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server)
+            .xqueue_build_sol_refund("So1Wallet", "0xm", "timeout")
+            .await
+            .expect("ok");
+        assert_eq!(resp["action"], "refund_xmatch_timeout");
+    }
+
+    #[tokio::test]
+    async fn commit_sign_reveal_thread_gameplay_bodies() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/commit"))
+            .and(body_partial_json(json!({ "wallet": "w", "commit": "0xc" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "ok" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/sign"))
+            .and(body_partial_json(
+                json!({ "wallet": "w", "step": 4, "signature": "0xs" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "relayed": true })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/reveal"))
+            .and(body_partial_json(
+                json!({ "wallet": "w", "preimage": "0xp" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "revealed": true })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let p = proxy(&server);
+        assert_eq!(
+            p.xqueue_commit("w", "0xc").await.expect("ok")["status"],
+            "ok"
+        );
+        assert_eq!(
+            p.xqueue_sign("w", 4, "0xs").await.expect("ok")["relayed"],
+            true
+        );
+        assert_eq!(
+            p.xqueue_reveal("w", "0xp").await.expect("ok")["revealed"],
+            true
+        );
+    }
+
+    // Error path: a non-2xx from game-api must surface as GameApiError (with
+    // the body preserved for diagnostics), never a silent default.
+    #[tokio::test]
+    async fn non_2xx_maps_to_game_api_error_with_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/join"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"error":"bad_request"}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let err = proxy(&server)
+            .xqueue_join("w", "chain", "0xkey", 1)
+            .await
+            .expect_err("must fail");
+        match err {
+            McpServiceError::GameApiError(msg) => {
+                assert!(msg.contains("400"), "carries the status: {msg}");
+                assert!(msg.contains("bad_request"), "carries the body: {msg}");
+            }
+            other => panic!("wrong error variant: {other:?}"),
+        }
+    }
+
+    // Error path: connection-level failure (game-api down) also maps to
+    // GameApiError rather than panicking or swallowing.
+    #[tokio::test]
+    async fn connection_failure_maps_to_game_api_error() {
+        // Bind-then-drop a server so the port is dead.
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        drop(server);
+
+        let p = GameApiProxy::new(uri).expect("builds");
+        let err = p.xqueue_status("w").await.expect_err("must fail");
+        assert!(matches!(err, McpServiceError::GameApiError(_)));
+    }
+}

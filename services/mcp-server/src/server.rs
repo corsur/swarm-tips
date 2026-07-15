@@ -3235,4 +3235,88 @@ mod tests {
             "error message should name the rejected token and the valid set, got: {msg}"
         );
     }
+
+    // -- shillbot_reject_task / shillbot_complete_task pure builders --------
+    // These back the two tools' response payloads; the HTTP orchestration
+    // around them is covered by the proxy wiremock flow tests.
+
+    #[test]
+    fn expire_deadline_is_submitted_at_plus_verification_timeout() {
+        let deadline = compute_expire_task_deadline(Some("2026-07-01T00:00:00Z"))
+            .expect("valid rfc3339 parses");
+        // 1_209_600 s = 14 days after submitted_at.
+        assert_eq!(deadline.to_rfc3339(), "2026-07-15T00:00:00+00:00");
+    }
+
+    #[test]
+    fn expire_deadline_absent_or_garbage_input_yields_none() {
+        assert!(compute_expire_task_deadline(None).is_none());
+        assert!(compute_expire_task_deadline(Some("not-a-timestamp")).is_none());
+    }
+
+    #[test]
+    fn reject_stub_carries_expiry_and_no_onchain_action() {
+        let expires = compute_expire_task_deadline(Some("2026-07-01T00:00:00Z"));
+        let stub = build_reject_v1_stub_response("task-9", Some("2026-07-01T00:00:00Z"), expires);
+        assert_eq!(stub["action"], "reject_v1_stub");
+        assert_eq!(stub["task_id"], "task-9");
+        // v1 reject is implicit — it must never claim an on-chain action.
+        assert_eq!(stub["on_chain_action"], "none");
+        assert_eq!(stub["expires_at"], "2026-07-15T00:00:00+00:00");
+        assert_eq!(stub["verification_timeout_secs"], 1_209_600);
+    }
+
+    #[test]
+    fn reject_stub_without_submitted_at_leaves_expiry_null() {
+        let stub = build_reject_v1_stub_response("task-9", None, None);
+        assert!(stub["expires_at"].is_null());
+        assert!(stub["submitted_at"].is_null());
+    }
+
+    #[test]
+    fn next_action_routes_every_task_state_to_the_right_step() {
+        // (state, expected next_action, expected next_tool-or-"")
+        let cases = [
+            ("open", "tool_call", "shillbot_claim_task"),
+            ("claimed", "tool_call", "shillbot_submit_work"),
+            ("submitted", "wait", ""),
+            ("approved", "wait_or_call", "shillbot_verify_task"),
+            ("verified", "wait_then_call", "shillbot_finalize_task"),
+            ("finalized", "done", ""),
+            ("disputed", "wait", ""),
+            ("resolved", "done", ""),
+            ("expired", "done", ""),
+        ];
+        for (state, action, tool) in cases {
+            let next = next_action_for_task_state(state, "t-1", "2026-07-15T00:00:00Z");
+            assert_eq!(next["next_action"], action, "state {state}");
+            if tool.is_empty() {
+                assert!(next["next_tool"].is_null(), "state {state} has no tool");
+            } else {
+                assert_eq!(next["next_tool"], tool, "state {state}");
+                assert_eq!(
+                    next["args"]["task_id"], "t-1",
+                    "state {state} threads task_id"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn next_action_unknown_state_is_flagged_not_guessed() {
+        let next = next_action_for_task_state("weird", "t-1", "");
+        assert_eq!(next["next_action"], "unknown");
+        let hint = next["hint"].as_str().expect("hint");
+        assert!(hint.contains("weird"), "names the unknown state: {hint}");
+    }
+
+    #[test]
+    fn next_action_submitted_falls_back_when_expiry_unknown() {
+        let next = next_action_for_task_state("submitted", "t-1", "");
+        let hint = next["hint"].as_str().expect("hint");
+        assert!(
+            hint.contains("~14 days"),
+            "empty expiry uses the fallback wording: {hint}"
+        );
+    }
 }
