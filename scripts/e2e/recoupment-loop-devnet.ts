@@ -280,6 +280,26 @@ async function main(): Promise<void> {
     ],
     credit.programId
   );
+  // Idempotency: an interrupted prior run can leave this (backer, recipient)
+  // advance open, so open_advance fails "already in use". mark_default lets the
+  // backer close a not-fully-recouped advance (routed earnings + rent → backer;
+  // it eats the unrecouped principal), clearing the orphan so the run is repeatable.
+  if ((await connection.getAccountInfo(advance)) !== null) {
+    console.log(
+      "  [cleanup] pre-existing advance found — mark_default to clear it"
+    );
+    await credit.methods
+      .markDefault()
+      .accountsPartial({
+        advance,
+        backer: root.publicKey,
+        recipient: agent.publicKey,
+      })
+      .signers([root])
+      .rpc({ commitment: "confirmed" });
+    await waitAccountsClosed(connection, [advance]);
+  }
+
   const rentFloor = await connection.getMinimumBalanceForRentExemption(
     ADVANCE_SPACE
   );
