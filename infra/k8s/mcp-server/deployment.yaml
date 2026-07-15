@@ -49,15 +49,26 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+          # Readiness = the dependency check (/ready hits game-api + Solana RPC,
+          # up to ~4s). A failing dependency drains traffic from this pod; it does
+          # NOT kill it. timeoutSeconds must exceed the handler's worst case.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Liveness = trivial /health (no outbound calls). Only a truly hung
+          # process fails this — a slow game-api/RPC never kills a healthy pod
+          # (the previous /health-with-deps + default 1s timeout was the Exit-137
+          # restart loop).
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3

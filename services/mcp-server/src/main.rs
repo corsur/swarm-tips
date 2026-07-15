@@ -297,7 +297,19 @@ fn build_router(
     let inflight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let mut router = axum::Router::new()
-        .route("/health", axum::routing::get(build_health_handler()))
+        // Liveness: trivial — proves the process/event-loop is alive. It MUST NOT
+        // make outbound calls: a slow game-api or Solana RPC must never get a
+        // healthy pod killed. Depending on those here was the Exit-137 liveness
+        // restart loop that periodically dropped every agent's streamable-http
+        // session (the intermittent MCP auth failures).
+        .route(
+            "/health",
+            axum::routing::get(|| async { (axum::http::StatusCode::OK, "ok") }),
+        )
+        // Readiness / observability: the game-api + Solana RPC dependency check.
+        // Wired to the readiness probe only — a failing dependency drains traffic,
+        // it never kills the process.
+        .route("/ready", axum::routing::get(build_readiness_handler()))
         .route(
             "/internal/scaling-metric",
             axum::routing::get({
@@ -457,7 +469,10 @@ async fn track_inflight(
     next.run(req).await
 }
 
-fn build_health_handler() -> impl Fn() -> std::pin::Pin<
+/// Readiness / dependency probe — checks game-api + Solana RPC reachability.
+/// Wired to the readiness probe and `/ready` ONLY, never liveness: a failing
+/// dependency should drain traffic from this pod, never kill the (healthy) process.
+fn build_readiness_handler() -> impl Fn() -> std::pin::Pin<
     Box<dyn std::future::Future<Output = (axum::http::StatusCode, &'static str)> + Send + 'static>,
 > + Clone
        + Send
@@ -475,7 +490,7 @@ fn build_health_handler() -> impl Fn() -> std::pin::Pin<
             }
 
             let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(3))
+                .timeout(std::time::Duration::from_secs(2))
                 .build()
                 .unwrap_or_default();
 
