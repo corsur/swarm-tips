@@ -106,10 +106,23 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let ct = tokio_util::sync::CancellationToken::new();
+    // Stateless transport: the rmcp session is otherwise pod-local (in-memory
+    // LocalSessionManager), so with KEDA min-2 a multi-step agent flow that
+    // round-robins to the other pod 404s "Session not found". In stateless mode
+    // each request is self-contained and any pod can serve it. The app's own
+    // session state (wallet binding, game session) is already Firestore-backed
+    // and re-hydrated per request in `resolve_wallet`, so no server-side session
+    // is needed here. `json_response` returns plain JSON (POST-only; the SDK
+    // tolerates the resulting 405 on its optional GET stream). The
+    // `ensure_mcp_session_id` middleware below still threads an `Mcp-Session-Id`
+    // so the Firestore wallet binding keeps a stable correlation key.
     let service = StreamableHttpService::new(
         move || Ok(SwarmTipsMcp::new(shared.clone())),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token()),
+        StreamableHttpServerConfig::default()
+            .with_stateful_mode(false)
+            .with_json_response(true)
+            .with_cancellation_token(ct.child_token()),
     );
 
     let reputation_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
@@ -448,6 +461,34 @@ fn build_router(
             inflight,
             track_inflight,
         ))
+        // Thread a stable Mcp-Session-Id so the Firestore wallet binding has a
+        // cross-pod correlation key even though the transport is stateless.
+        .layer(axum::middleware::from_fn(ensure_mcp_session_id))
+}
+
+/// Ensure every `/mcp` response carries an `Mcp-Session-Id`. In stateless rmcp
+/// mode the transport mints none, but the Firestore wallet binding
+/// (`session_binding.rs`) and `resolve_wallet` key on this header. So we thread
+/// a stable id: echo the client's if present, otherwise mint one on the first
+/// (`initialize`) call. A spec-compliant MCP client captures the header from the
+/// response and echoes it on every later request, giving cross-pod-stable wallet
+/// correlation without any pod-local session state.
+async fn ensure_mcp_session_id(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let header = axum::http::HeaderName::from_static("mcp-session-id");
+    let is_mcp = req.uri().path().starts_with("/mcp");
+    let client_id = req.headers().get(&header).cloned();
+    let mut resp = next.run(req).await;
+    if is_mcp && !resp.headers().contains_key(&header) {
+        let value = client_id
+            .or_else(|| axum::http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()).ok());
+        if let Some(value) = value {
+            resp.headers_mut().insert(header, value);
+        }
+    }
+    resp
 }
 
 /// Increments the in-flight counter for the duration of each request. The
