@@ -39,7 +39,13 @@ const API_BASE = process.env.SHILLBOT_API ?? "https://api.shillbot.org";
 const RPC = process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
 const WORKER_WALLET = "GCEdpAHSE5s4NNgBY77TRfvdKmpLjPc16QNHj9uZbThU";
 const LEANPROOF_PLATFORM = 10;
-const STATEMENT = "def statementProp : Prop := True";
+// Default is trivially-true (ladder `by trivial` solves it). Override with a
+// statement the ladder (trivial|rfl|simp|decide|norm_num|tauto) can't close to
+// force the worker's Grok proof-construction path, e.g.
+//   STATEMENT='def statementProp : Prop := ∀ a b : Nat, a + b = b + a'
+// (add_comm is not a default simp lemma → ladder misses it → Grok must prove it).
+const STATEMENT = process.env.STATEMENT ?? "def statementProp : Prop := True";
+const LEAN_POLICY = process.env.LEAN_POLICY ? Number(process.env.LEAN_POLICY) : undefined;
 const BUDGET_LAMPORTS = 20_000_000;
 const CLIENT_KEYFILE = `${__dirname}/.worker-e2e-client.json`; // shared with the website e2e
 
@@ -130,6 +136,7 @@ async function main(): Promise<void> {
     budget_lamports: BUDGET_LAMPORTS,
     platform: LEANPROOF_PLATFORM,
     statement_lean: STATEMENT,
+    ...(LEAN_POLICY !== undefined ? { lean_policy: LEAN_POLICY } : {}),
   });
   const campaignId = camp.campaign_id as string;
   console.log(`campaign: ${campaignId}`);
