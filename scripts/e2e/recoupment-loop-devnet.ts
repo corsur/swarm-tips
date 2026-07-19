@@ -284,7 +284,15 @@ async function main(): Promise<void> {
   // advance open, so open_advance fails "already in use". mark_default lets the
   // backer close a not-fully-recouped advance (routed earnings + rent → backer;
   // it eats the unrecouped principal), clearing the orphan so the run is repeatable.
-  if ((await connection.getAccountInfo(advance)) !== null) {
+  // Only act on a LIVE advance (owned by the credit program with lamports): a
+  // closed advance lingers as a 0-lamport System-owned ghost that getAccountInfo
+  // still returns — mark_default on that fails AccountOwnedByWrongProgram.
+  const existingAdvance = await connection.getAccountInfo(advance);
+  if (
+    existingAdvance !== null &&
+    existingAdvance.owner.equals(credit.programId) &&
+    existingAdvance.lamports > 0
+  ) {
     console.log(
       "  [cleanup] pre-existing advance found — mark_default to clear it"
     );
