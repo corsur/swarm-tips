@@ -122,7 +122,11 @@ async function main(): Promise<void> {
       })
     );
     await sendAndConfirmTransaction(conn, tx, [funder]);
-    console.log(`funded client with ${(BUDGET_LAMPORTS + 30_000_000) / LAMPORTS_PER_SOL} SOL`);
+    console.log(
+      `funded client with ${
+        (BUDGET_LAMPORTS + 30_000_000) / LAMPORTS_PER_SOL
+      } SOL`
+    );
   }
 
   // 1) Create the Website campaign as the external client.
@@ -168,10 +172,15 @@ async function main(): Promise<void> {
     task = await api("GET", `/tasks/${taskId}?network=devnet`, clientPk);
     const state = String(task.state ?? "?");
     if (state !== last) {
-      console.log(`  state -> ${state} (agent=${task.agent ?? "-"}, content_id=${task.content_id ?? "-"})`);
+      console.log(
+        `  state -> ${state} (agent=${task.agent ?? "-"}, content_id=${
+          task.content_id ?? "-"
+        })`
+      );
       last = state;
     }
-    if (["submitted", "approved", "verified", "finalized"].includes(state)) break;
+    if (["submitted", "approved", "verified", "finalized"].includes(state))
+      break;
     await sleep(10_000);
   }
 

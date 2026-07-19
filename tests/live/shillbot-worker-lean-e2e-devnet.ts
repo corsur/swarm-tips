@@ -45,7 +45,9 @@ const LEANPROOF_PLATFORM = 10;
 //   STATEMENT='def statementProp : Prop := ∀ a b : Nat, a + b = b + a'
 // (add_comm is not a default simp lemma → ladder misses it → Grok must prove it).
 const STATEMENT = process.env.STATEMENT ?? "def statementProp : Prop := True";
-const LEAN_POLICY = process.env.LEAN_POLICY ? Number(process.env.LEAN_POLICY) : undefined;
+const LEAN_POLICY = process.env.LEAN_POLICY
+  ? Number(process.env.LEAN_POLICY)
+  : undefined;
 const BUDGET_LAMPORTS = 20_000_000;
 const CLIENT_KEYFILE = `${__dirname}/.worker-e2e-client.json`; // shared with the website e2e
 
@@ -59,7 +61,10 @@ async function api(
 ): Promise<Record<string, unknown>> {
   const res = await fetch(API_BASE + path, {
     method,
-    headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+      "Content-Type": "application/json",
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -103,14 +108,19 @@ function loadOrCreateClient(): Keypair {
 async function main(): Promise<void> {
   const conn = new Connection(RPC, "confirmed");
   const funder = Keypair.fromSecretKey(
-    Uint8Array.from(JSON.parse(readFileSync(`${homedir()}/.config/solana/id.json`, "utf8")))
+    Uint8Array.from(
+      JSON.parse(readFileSync(`${homedir()}/.config/solana/id.json`, "utf8"))
+    )
   );
   const client = loadOrCreateClient();
   const clientPk = client.publicKey.toBase58();
   console.log(`external client: ${clientPk}`);
   console.log(`worker wallet:   ${WORKER_WALLET}`);
 
-  if ((await conn.getBalance(client.publicKey)) < BUDGET_LAMPORTS + 20_000_000) {
+  if (
+    (await conn.getBalance(client.publicKey)) <
+    BUDGET_LAMPORTS + 20_000_000
+  ) {
     await sendAndConfirmTransaction(
       conn,
       new Transaction().add(
@@ -142,12 +152,20 @@ async function main(): Promise<void> {
   console.log(`campaign: ${campaignId}`);
 
   // 2) Fund → client-signed create_task → confirm. Last harness action.
-  const fund = await api("POST", `/campaigns/${campaignId}/fund?network=devnet`, clientPk, {
-    amount_lamports: BUDGET_LAMPORTS,
-  });
+  const fund = await api(
+    "POST",
+    `/campaigns/${campaignId}/fund?network=devnet`,
+    clientPk,
+    {
+      amount_lamports: BUDGET_LAMPORTS,
+    }
+  );
   const taskId = fund.task_id as string;
   const taskPda = fund.task_pda as string | undefined;
-  const sig = await broadcast(conn, signBase64(fund.transaction as string, client));
+  const sig = await broadcast(
+    conn,
+    signBase64(fund.transaction as string, client)
+  );
   await api("POST", `/tasks/${taskId}/confirm?network=devnet`, clientPk, {
     tx_signature: sig,
     action: "create",
@@ -165,10 +183,15 @@ async function main(): Promise<void> {
     task = await api("GET", `/tasks/${taskId}?network=devnet`, clientPk);
     const state = String(task.state ?? "?");
     if (state !== last) {
-      console.log(`  state -> ${state} (agent=${task.agent ?? "-"}, content_id=${task.content_id ?? "-"})`);
+      console.log(
+        `  state -> ${state} (agent=${task.agent ?? "-"}, content_id=${
+          task.content_id ?? "-"
+        })`
+      );
       last = state;
     }
-    if (["submitted", "approved", "verified", "finalized"].includes(state)) break;
+    if (["submitted", "approved", "verified", "finalized"].includes(state))
+      break;
     await sleep(10_000);
   }
 
@@ -178,15 +201,20 @@ async function main(): Promise<void> {
   if (!["submitted", "approved", "verified", "finalized"].includes(state)) {
     throw new Error(`FAIL: task never reached submitted (state=${state})`);
   }
-  if (agent !== WORKER_WALLET) throw new Error(`FAIL: agent ${agent} != worker wallet`);
+  if (agent !== WORKER_WALLET)
+    throw new Error(`FAIL: agent ${agent} != worker wallet`);
   if (!/^https:\/\/storage\.googleapis\.com\/.*\.lean$/.test(contentId)) {
-    throw new Error(`FAIL: content_id is not a raw GCS .lean URL: ${contentId}`);
+    throw new Error(
+      `FAIL: content_id is not a raw GCS .lean URL: ${contentId}`
+    );
   }
 
   // 4) The proof artifact must define `proof` at statementProp.
   const proof = await fetch(contentId).then((r) => r.text());
   if (!/theorem\s+proof\s*:/.test(proof)) {
-    throw new Error(`FAIL: artifact does not define 'theorem proof': ${proof.slice(0, 120)}`);
+    throw new Error(
+      `FAIL: artifact does not define 'theorem proof': ${proof.slice(0, 120)}`
+    );
   }
   console.log(`proof artifact OK:\n---\n${proof.trim()}\n---`);
 

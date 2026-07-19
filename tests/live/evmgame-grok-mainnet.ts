@@ -44,7 +44,10 @@ const ABI = parseAbi([
 ]);
 
 const loadKey = (p: string): Hex => {
-  const raw = readFileSync(p.replace("~", process.env.HOME ?? ""), "utf8").trim();
+  const raw = readFileSync(
+    p.replace("~", process.env.HOME ?? ""),
+    "utf8"
+  ).trim();
   return `0x${raw.replace(/^0x/, "")}` as Hex;
 };
 const api = async (path: string, init?: RequestInit) => {
@@ -69,7 +72,9 @@ const committed = (game_id: string, wallet: string) =>
   });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function commitSecret(guess: 0 | 1): Promise<{ r: Hex; commitment: Hex }> {
+async function commitSecret(
+  guess: 0 | 1
+): Promise<{ r: Hex; commitment: Hex }> {
   const r = new Uint8Array(32);
   webcrypto.getRandomValues(r);
   r[31] = (r[31] & 0xfe) | guess;
@@ -92,119 +97,126 @@ async function untilStatus(
       functionName: "games",
       args: [gameId],
     })) as unknown as unknown[];
-    if (Number((g as number[])[0]) >= min) return (g as unknown[]).map(Number) as number[];
+    if (Number((g as number[])[0]) >= min)
+      return (g as unknown[]).map(Number) as number[];
     await sleep(3000);
   }
   throw new Error(`timed out waiting for status >= ${min} (${label})`);
 }
 
 async function main() {
-    const aAcct = privateKeyToAccount(
-      loadKey(process.env.A_KEYFILE ?? "~/.foundry/keystores/evmgame-player-a.key")
-    );
-    const pub = createPublicClient({ chain: VIEM_CHAIN, transport: http(RPC) });
-    const aw = createWalletClient({ account: aAcct, chain: VIEM_CHAIN, transport: http(RPC) });
-    console.log(`human (creator) ${aAcct.address}\ngrok (P2)       ${GROK_EVM}`);
+  const aAcct = privateKeyToAccount(
+    loadKey(
+      process.env.A_KEYFILE ?? "~/.foundry/keystores/evmgame-player-a.key"
+    )
+  );
+  const pub = createPublicClient({ chain: VIEM_CHAIN, transport: http(RPC) });
+  const aw = createWalletClient({
+    account: aAcct,
+    chain: VIEM_CHAIN,
+    transport: http(RPC),
+  });
+  console.log(`human (creator) ${aAcct.address}\ngrok (P2)       ${GROK_EVM}`);
 
-    // 1) Human joins ALONE -> Waiting -> schedules the AI fallback.
-    const jr = await join(aAcct.address);
-    console.log(`join -> ${jr.status} (waiting on grok fallback ~20-25s)`);
+  // 1) Human joins ALONE -> Waiting -> schedules the AI fallback.
+  const jr = await join(aAcct.address);
+  console.log(`join -> ${jr.status} (waiting on grok fallback ~20-25s)`);
 
-    // 2) Poll until grok fills the match (fallback spawns grok as P2).
-    let match: any = null;
-    for (let i = 0; i < 40 && !match; i++) {
-      await sleep(5000);
-      const s = await evmStatus(aAcct.address);
-      if (s.status === "matched" && s.match) match = s.match;
+  // 2) Poll until grok fills the match (fallback spawns grok as P2).
+  let match: any = null;
+  for (let i = 0; i < 40 && !match; i++) {
+    await sleep(5000);
+    const s = await evmStatus(aAcct.address);
+    if (s.status === "matched" && s.match) match = s.match;
+  }
+  assert(match, "grok never joined — AI fallback did not fill P2 in time");
+  const contract = match.contract as Address;
+  const gameId = match.game_id as Hex;
+  assert.equal(
+    match.create_call.player.toLowerCase(),
+    aAcct.address.toLowerCase(),
+    "human should be the creator"
+  );
+  console.log(`✅ grok filled P2 — game ${gameId} on ${contract}`);
+
+  // 3) Human createGame (operator-attested).
+  const cc = match.create_call;
+  const ch = await aw.sendTransaction({
+    to: cc.to as Address,
+    data: cc.data as Hex,
+    value: BigInt(cc.value_wei),
+  });
+  assert.equal(
+    (await pub.waitForTransactionReceipt({ hash: ch })).status,
+    "success",
+    "createGame reverted"
+  );
+  console.log(`✅ human createGame: ${ch}`);
+
+  // 4) grok joinGame's on its own -> Active. Read player2 from the raw view
+  // (untilStatus returns numeric-coerced fields, so re-read for the address).
+  await untilStatus(pub, contract, gameId, 2, "active (grok joined)");
+  const gRead = (await pub.readContract({
+    address: contract,
+    abi: ABI,
+    functionName: "games",
+    args: [gameId],
+  })) as unknown as unknown[];
+  assert.equal(
+    (gRead[2] as string).toLowerCase(),
+    GROK_EVM,
+    "P2 on-chain must be grok's wallet"
+  );
+  console.log(`✅ grok joinGame'd as P2`);
+
+  // 5) Human commits, notify game-api.
+  const aSec = await commitSecret(1);
+  const commitData = encodeFunctionData({
+    abi: ABI,
+    functionName: "commitGuess",
+    args: [gameId, aSec.commitment],
+  });
+  await pub.waitForTransactionReceipt({
+    hash: await aw.sendTransaction({ to: contract, data: commitData }),
+  });
+  await committed(gameId, aAcct.address);
+  console.log(`✅ human committed; waiting for grok to commit...`);
+
+  // 6) grok commits on its own -> both committed, r_matchup released. grok
+  // runs a full ~3-min persona chat loop before deciding + committing, so
+  // wait past that (this is the real product pace, not a hang).
+  let bComm: any = null;
+  for (let i = 0; i < 90; i++) {
+    const r = await committed(gameId, aAcct.address);
+    if (r.both_committed && r.r_matchup) {
+      bComm = r;
+      break;
     }
-    assert(match, "grok never joined — AI fallback did not fill P2 in time");
-    const contract = match.contract as Address;
-    const gameId = match.game_id as Hex;
-    assert.equal(
-      match.create_call.player.toLowerCase(),
-      aAcct.address.toLowerCase(),
-      "human should be the creator"
-    );
-    console.log(`✅ grok filled P2 — game ${gameId} on ${contract}`);
+    await sleep(3000);
+  }
+  assert(bComm, "grok never committed (waited 4.5min past its chat loop)");
+  await untilStatus(pub, contract, gameId, 4, "revealing");
+  console.log(`✅ both committed; r_matchup released`);
 
-    // 3) Human createGame (operator-attested).
-    const cc = match.create_call;
-    const ch = await aw.sendTransaction({
-      to: cc.to as Address,
-      data: cc.data as Hex,
-      value: BigInt(cc.value_wei),
-    });
-    assert.equal(
-      (await pub.waitForTransactionReceipt({ hash: ch })).status,
-      "success",
-      "createGame reverted"
-    );
-    console.log(`✅ human createGame: ${ch}`);
+  // 7) Human reveals first WITH r_matchup; grok reveals second on its own.
+  const revealData = encodeFunctionData({
+    abi: ABI,
+    functionName: "revealGuess",
+    args: [gameId, aSec.r, bComm.r_matchup as Hex],
+  });
+  await pub.waitForTransactionReceipt({
+    hash: await aw.sendTransaction({ to: contract, data: revealData }),
+  });
+  console.log(`✅ human revealed; waiting for grok to reveal + resolve...`);
 
-    // 4) grok joinGame's on its own -> Active. Read player2 from the raw view
-    // (untilStatus returns numeric-coerced fields, so re-read for the address).
-    await untilStatus(pub, contract, gameId, 2, "active (grok joined)");
-    const gRead = (await pub.readContract({
-      address: contract,
-      abi: ABI,
-      functionName: "games",
-      args: [gameId],
-    })) as unknown as unknown[];
-    assert.equal(
-      (gRead[2] as string).toLowerCase(),
-      GROK_EVM,
-      "P2 on-chain must be grok's wallet"
-    );
-    console.log(`✅ grok joinGame'd as P2`);
-
-    // 5) Human commits, notify game-api.
-    const aSec = await commitSecret(1);
-    const commitData = encodeFunctionData({
-      abi: ABI,
-      functionName: "commitGuess",
-      args: [gameId, aSec.commitment],
-    });
-    await pub.waitForTransactionReceipt({
-      hash: await aw.sendTransaction({ to: contract, data: commitData }),
-    });
-    await committed(gameId, aAcct.address);
-    console.log(`✅ human committed; waiting for grok to commit...`);
-
-    // 6) grok commits on its own -> both committed, r_matchup released. grok
-    // runs a full ~3-min persona chat loop before deciding + committing, so
-    // wait past that (this is the real product pace, not a hang).
-    let bComm: any = null;
-    for (let i = 0; i < 90; i++) {
-      const r = await committed(gameId, aAcct.address);
-      if (r.both_committed && r.r_matchup) {
-        bComm = r;
-        break;
-      }
-      await sleep(3000);
-    }
-    assert(bComm, "grok never committed (waited 4.5min past its chat loop)");
-    await untilStatus(pub, contract, gameId, 4, "revealing");
-    console.log(`✅ both committed; r_matchup released`);
-
-    // 7) Human reveals first WITH r_matchup; grok reveals second on its own.
-    const revealData = encodeFunctionData({
-      abi: ABI,
-      functionName: "revealGuess",
-      args: [gameId, aSec.r, bComm.r_matchup as Hex],
-    });
-    await pub.waitForTransactionReceipt({
-      hash: await aw.sendTransaction({ to: contract, data: revealData }),
-    });
-    console.log(`✅ human revealed; waiting for grok to reveal + resolve...`);
-
-    // 8) grok reveals -> RESOLVED.
-    const resolved = await untilStatus(pub, contract, gameId, 5, "resolved", 60);
-    console.log(
-      `✅ RESOLVED on-chain: p1Guess=${resolved[3]} p2Guess=${resolved[4]} matchupType=${resolved[6]} firstCommitter=${resolved[5]}`
-    );
-    console.log(
-      `\nPASS — human vs grok, real game on ${CHAIN}; grok joined + played + resolved as P2 (${GROK_EVM}).`
-    );
+  // 8) grok reveals -> RESOLVED.
+  const resolved = await untilStatus(pub, contract, gameId, 5, "resolved", 60);
+  console.log(
+    `✅ RESOLVED on-chain: p1Guess=${resolved[3]} p2Guess=${resolved[4]} matchupType=${resolved[6]} firstCommitter=${resolved[5]}`
+  );
+  console.log(
+    `\nPASS — human vs grok, real game on ${CHAIN}; grok joined + played + resolved as P2 (${GROK_EVM}).`
+  );
 }
 
 main()
