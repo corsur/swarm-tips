@@ -26,6 +26,7 @@
 import { execFileSync } from "child_process";
 import { expect } from "chai";
 import {
+  encodeAbiParameters,
   encodeFunctionData,
   keccak256 as viemKeccak,
   toBytes,
@@ -247,14 +248,46 @@ const randBytes32 = (): Uint8Array => {
       const legB = newSessionSigner(); // local EVM player's session key
 
       // createMatch: local player (deployer) funds stake; playerIsP1 = true.
+      // The deployed contract requires an operator authorization sig (M4 squat
+      // guard): the operator signs the exact creation params bound to msg.sender.
+      // Recompute that digest byte-identically to the contract's abi.encode and
+      // sign it with the operator key (7-param createMatch(..., bytes)).
+      const createMatchDigest = viemKeccak(
+        encodeAbiParameters(
+          [
+            { type: "uint256" }, // block.chainid
+            { type: "address" }, // address(this)
+            { type: "bytes32" }, // matchId
+            { type: "address" }, // msg.sender
+            { type: "address" }, // sessionKey
+            { type: "address" }, // counterSessionKey
+            { type: "bool" }, // playerIsP1
+            { type: "uint64" }, // fundDeadline
+            { type: "uint64" }, // matchDeadline
+          ],
+          [
+            84532n, // Base Sepolia chain id (== on-chain block.chainid)
+            CONTRACT,
+            matchIdHex,
+            DEPLOYER,
+            addr(legB.address),
+            addr(legA.address),
+            true,
+            BigInt(fundDeadline),
+            BigInt(matchDeadline),
+          ]
+        )
+      );
+      const createMatchSig = signEvm(operator, toBytes(createMatchDigest));
       castSend(CONTRACT, [
-        "createMatch(bytes32,address,address,bool,uint64,uint64)",
+        "createMatch(bytes32,address,address,bool,uint64,uint64,bytes)",
         matchIdHex,
         addr(legB.address),
         addr(legA.address),
         "true",
         String(fundDeadline),
         String(matchDeadline),
+        createMatchSig,
         "--value",
         stake.toString(),
       ]);
@@ -372,8 +405,16 @@ const randBytes32 = (): Uint8Array => {
         "poolLocked released by tranche"
       );
       expect(readUint("poolFree")).to.equal(poolFreePreSettle + tranche);
-      const balAfter = balanceOf();
-      expect(balPreSettle - balAfter).to.equal(stake);
+      // balanceOf is eth_getBalance on the load-balanced RPC — a different method
+      // than the poolFree/poolLocked state reads, so it can lag a block behind the
+      // settle tx even after those reflect it. Poll the delta until it converges
+      // to the expected stake payout (KeepStake refunds the player's stake).
+      const balDelta = await poll(
+        () => balPreSettle - balanceOf(),
+        (d) => d === stake,
+        "contract balance debited by the stake payout"
+      );
+      expect(balDelta).to.equal(stake);
     });
 
     function readUint(fn: "poolFree" | "poolLocked"): bigint {
