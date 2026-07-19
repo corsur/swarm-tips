@@ -61,6 +61,20 @@ pub const LEAN_POLICY_V2_ID: [u8; 32] = [
     0x47, 0x32, 0xfe, 0xed, 0xbe, 0xbc, 0xce, 0xaa, 0xac, 0x3c, 0x99, 0x8c, 0x1a, 0x4d, 0x4e, 0xa0,
 ];
 
+/// keccak256 of the exact bytes of `policies/lean-attester-policy-v3.json`
+/// — the v3 `mathlib-heavy` verification policy: identical to v2 (same
+/// pinned mathlib rev + toolchain `leanprover/lean4:v4.30.0`, same axiom
+/// allow-list) except `max_build_secs` is raised 240 → 600. It exists for
+/// statements whose targeted Mathlib imports pull a heavy transitive stack
+/// (e.g. `Mathlib.NumberTheory.LSeries.RiemannZeta` alone loads in ~411s,
+/// over the v2 cap). A NEW policy version = a NEW id; v2 is never mutated.
+/// Still `verification_kind = DeterministicAttested` — only the 32-byte
+/// policy id changes on the wire.
+pub const LEAN_POLICY_V3_ID: [u8; 32] = [
+    0x98, 0x48, 0x53, 0xe2, 0xec, 0x3a, 0x1c, 0x9d, 0xcc, 0x98, 0x66, 0x12, 0x11, 0x20, 0x40, 0x0f,
+    0x09, 0xdd, 0x93, 0x52, 0x86, 0x3d, 0xcd, 0x04, 0x72, 0x80, 0x72, 0x59, 0x87, 0x28, 0x09, 0xa3,
+];
+
 /// How a task's verification is adjudicated. The numeric values are part
 /// of the cross-chain wire format AND the on-chain `Task.verification_kind`
 /// byte — append-only, never reorder.
@@ -261,6 +275,19 @@ mod tests {
             keccak256(manifest),
             LEAN_POLICY_V2_ID,
             "v2 policy manifest bytes changed — a policy change is a NEW policy \
+             version with a new id, never a mutation of an existing one"
+        );
+    }
+
+    #[cfg(feature = "keccak")]
+    #[test]
+    fn lean_policy_v3_id_pins_the_manifest_bytes() {
+        use crate::cert_schema::keccak256;
+        let manifest = include_bytes!("../../../policies/lean-attester-policy-v3.json");
+        assert_eq!(
+            keccak256(manifest),
+            LEAN_POLICY_V3_ID,
+            "v3 policy manifest bytes changed — a policy change is a NEW policy \
              version with a new id, never a mutation of an existing one"
         );
     }
