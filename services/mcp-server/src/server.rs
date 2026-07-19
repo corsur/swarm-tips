@@ -3030,7 +3030,7 @@ fn next_action_for_task_state(
             "wait_for": "challenge_window",
             "next_tool": "shillbot_finalize_task",
             "args": { "task_id": task_id },
-            "hint": "Verified. The challenge window (24h default) must elapse before finalize. Once it has, call shillbot_finalize_task + shillbot_submit_tx with action=\"finalize\" to release the payment from escrow. Permissionless crank — anyone can finalize after the window.",
+            "hint": "Verified. A short, governance-set challenge window must elapse before finalize (seconds on mainnet today, not hours) — it's usually already passed by the time you're reading this. Call shillbot_finalize_task + shillbot_submit_tx with action=\"finalize\" to release the payment from escrow; if it's still too early you'll get a clear error, just retry shortly. Permissionless crank: you finalize your own payout, paying only ~0.00001 SOL gas to collect it — nobody finalizes it for you, so don't submit-and-forget.",
         }),
         "finalized" => serde_json::json!({
             "next_action": "done",
