@@ -63,25 +63,26 @@ where the def IS the spec), ONE-DIRECTIONAL/upgradable = 18 below.
 - [x] 111 exact minDepth = min leaf-path length
 - [x] 120 sol = min over all real descents (achievable+optimal template)
 - [x] 71 canonical-path semantics
-- [ ] 208 full trie spec (contains ↔ inserted-word set) — medium
-- [ ] 1166 same shape as 208 — medium
+- [x] 208 full trie spec: sol_empty + frame (sol_insert_ne) + exact one-equation spec (sol_insert) + batch (sol_insertAll: found ↔ inserted)
+- [x] 1166 full spec: sol_empty + frame + exact one-equation spec (sol_create: created path holds value, others untouched)
 - [x] 759 emitted-gap characterization ((g1,g2) ∈ sol l ↔ consecutive pair boundaries)
 - [x] 3466 optimality over switch-sequences (achievable+optimal)
 - [x] 3742 optimality over move-sequences (achievable+optimal)
-- [ ] 1823 exact Josephus process spec — HARD-B (elimination-process model ~150 ln; park OK)
+- [PARKED] 1823 exact Josephus process spec — needs an explicit elimination-process model (~150 ln circular-list semantics); the recurrence J(n+1)=(J(n)+k) mod (n+1) IS the textbook identity and the bound corr is real; full process equivalence deferred
 
 **Band C — citation-backed (bib pre-staged in paper.tex):**
 - [x] 142 docstring: Phase-2/full correctness cited — AFP TortoiseHare (Gammie 2015)
 - [x] 516 docstring: optimality core cited — afp_dp Longest_Common_Subsequence; LPS(s)=LCS(s,rev s)
 
 **Band D — hard core (park with notes unless a reframe appears):**
-- [ ] 188 k-transaction optimality (no citation exists; 200-400 ln; park expected)
-- [ ] 543 exact tree diameter (no citation exists; path formalization; park expected)
+- [PARKED] 188 k-transaction optimality — no formalization exists anywhere to cite; the achievable+optimal grind over plan-space was attempted twice historically (~200-400 ln index-max invariants, HS1-extend thicket) and abandoned; monotone-in-k corr stands as the honest one-directional cert
+- [PARKED] 543 exact tree diameter — nothing citable (Mathlib SimpleGraph.Diam is a definition, not the algorithm); exact max-path needs a tree-path formalization (~150-300 ln); diam ≤ 2·height corr stands as the honest bound
 
 Not upgraded on purpose (def IS the spec, or corr already the full law): 94, 104, 209, 541,
 647, 736, 1239, 1385, 1387, 1868, 1915, 2149, 2423, 2791, 2965 — identity tier, disclosed.
 
 ## Completed
+- [x] Turn 7 (Band B done + parks): 208/1166 full trie specs (frame + exact equations, batch characterization for 208); 1823/188/543 PARKED with reasons. WORKLIST EXHAUSTED — next turn: Closing steps. Gotcha: cases hcx : c x substitutes occurrences — a following rw [hcx] fails; matches on literal constructors reduce definitionally, use show.
 - [x] Turn 6 (Band B flagship): 20 — strict checker `check` (Option-depth fold, pop-on-empty fails), `check_iff_balanced` (accepts ↔ Mathlib's Dyck condition: prefix-closes ≤ opens ∧ totals equal), `check_sol_bridge` (lenient stack = replicate of strict depth), strict ground instances incl. the ")" rejection the lenient model missed. THE modelling-gap catch of the run — cite in paper §4 as evidence the upgrade process has teeth.
 - [x] Turn 5 (Band B): 3742 play/achievable/optimal — sol = exact max affordable path score over move-strategies (boundary-0 branches mirrored in play). Gotcha: set-folding (set b' := …) desyncs with simp unfolds — inline the expression; rewrite h (if_pos/heq) BEFORE max_eq_* selection.
 - NOTE for 20 (next): current lenient stack (tail on empty) means sol s = [] does NOT imply balanced (e.g. ")"). Upgrade = strict checker (Option (List Char) fold, pop-on-empty ⇒ none) + own inductive Balanced grammar + iff; adjust cls conj + vec accordingly. DyckWord import optional — own Balanced is cleaner.

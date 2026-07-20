@@ -52,4 +52,52 @@ theorem corr (t : FS) (path : List ℕ) (val : ℤ) : sol (createPath t path val
 theorem vec : sol (createPath (createPath empty [1] 1) [1, 2] 2) [1, 2] = some 2 ∧
     sol (createPath (createPath empty [1] 1) [1, 2] 2) [3] = none := by decide
 
+
+theorem sol_empty : ∀ p : List ℕ, sol empty p = none
+  | [] => rfl
+  | _ :: _ => rfl
+
+/-- FRAME: creating one path leaves every other path's lookup untouched. -/
+theorem sol_create_ne : ∀ (q p : List ℕ) (t : FS) (val : ℤ), q ≠ p →
+    sol (createPath t p val) q = sol t q := by
+  intro q
+  induction q with
+  | nil =>
+    intro p t val hne
+    cases t with
+    | node v c =>
+      match p with
+      | [] => exact absurd rfl hne
+      | _ :: _ => rfl
+  | cons x qs ih =>
+    intro p t val hne
+    cases t with
+    | node v c =>
+      match p with
+      | [] => rfl
+      | y :: ps =>
+        by_cases hxy : x = y
+        · subst hxy
+          have hqp : qs ≠ ps := fun h => hne (by rw [h])
+          simp only [createPath, sol]
+          rw [if_pos trivial]
+          cases hcx : c x with
+          | some t' =>
+            show sol (createPath t' ps val) qs = sol t' qs
+            exact ih ps t' val hqp
+          | none =>
+            show sol (createPath empty ps val) qs = none
+            rw [ih ps empty val hqp, sol_empty]
+        · simp only [createPath, sol]
+          rw [if_neg hxy]
+
+/-- EXACT SPEC (upgrades `corr`): one equation describing lookup after create completely — the
+    created path holds the new value, everything else is exactly as before. -/
+theorem sol_create (t : FS) (p q : List ℕ) (val : ℤ) :
+    sol (createPath t p val) q = if q = p then some val else sol t q := by
+  by_cases hqp : q = p
+  · subst hqp
+    simp [corr]
+  · simp [hqp, sol_create_ne q p t val hqp]
+
 end LC.P1166

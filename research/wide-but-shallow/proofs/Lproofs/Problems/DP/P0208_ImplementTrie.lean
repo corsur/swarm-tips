@@ -72,4 +72,63 @@ theorem corr (t : Trie) (w : List ℕ) : sol (insert t w) w = true := by
 theorem vec : sol (insert empty [1, 2, 2, 3, 4]) [1, 2, 2, 3, 4] = true ∧
     sol (insert empty [1, 2, 2, 3, 4]) [1, 2, 2] = false := by decide
 
+
+theorem sol_empty : ∀ w : List ℕ, sol empty w = false
+  | [] => rfl
+  | _ :: _ => rfl
+
+/-- FRAME: inserting one word leaves every other word's search result untouched. -/
+theorem sol_insert_ne : ∀ (w v : List ℕ) (t : Trie), w ≠ v →
+    sol (insert t v) w = sol t w := by
+  intro w
+  induction w with
+  | nil =>
+    intro v t hne
+    cases t with
+    | node e c =>
+      match v with
+      | [] => exact absurd rfl hne
+      | _ :: _ => rfl
+  | cons x ws ih =>
+    intro v t hne
+    cases t with
+    | node e c =>
+      match v with
+      | [] => rfl
+      | y :: vs =>
+        by_cases hxy : x = y
+        · subst hxy
+          have hwv : ws ≠ vs := fun h => hne (by rw [h])
+          simp only [insert, sol]
+          rw [if_pos trivial]
+          cases hcx : c x with
+          | some t' =>
+            show sol (insert t' vs) ws = sol t' ws
+            exact ih vs t' hwv
+          | none =>
+            show sol (insert empty vs) ws = false
+            rw [ih vs empty hwv, sol_empty]
+        · simp only [insert, sol]
+          rw [if_neg hxy]
+
+/-- EXACT SPEC (upgrades `corr`): one equation describing search after insert completely — the
+    inserted word is found, everything else is exactly as before. -/
+theorem sol_insert (t : Trie) (v w : List ℕ) :
+    sol (insert t v) w = (decide (w = v) || sol t w) := by
+  by_cases hwv : w = v
+  · subst hwv
+    simp [corr]
+  · simp [hwv, sol_insert_ne w v t hwv]
+
+/-- Batch form: after inserting a word list into the empty trie, search finds exactly them. -/
+def insertAll (ws : List (List ℕ)) : Trie := ws.foldr (fun w t => insert t w) empty
+
+theorem sol_insertAll (ws : List (List ℕ)) (w : List ℕ) :
+    sol (insertAll ws) w = true ↔ w ∈ ws := by
+  induction ws with
+  | nil => simp [insertAll, sol_empty]
+  | cons v ws ih =>
+    rw [show insertAll (v :: ws) = insert (insertAll ws) v from rfl, sol_insert]
+    simp only [Bool.or_eq_true, decide_eq_true_eq, ih, List.mem_cons]
+
 end LC.P0208
