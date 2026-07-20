@@ -35,9 +35,7 @@ pass (a \emph{fold}), divide-and-solve recursion (dynamic programming), spreadin
 until it settles, and binary search. To put a number on this without hand-waving, we take a
 \emph{pre-registered} random sample of 100 problems and, for each, prove with the Lean proof assistant that a
 standard accepted solution really is one of the four ideas. \textbf{71 of the 100 carry such a proof} (69
-machine-checked here, 2 citing existing formal proofs; 49 of the 69 prove full correctness or a complete
-characterization and the rest an exact identity of the modelled solution, Section~\ref{sec:lean}); the
-other 29 are a genuine ``tail'' that fits no
+machine-checked here, 2 citing existing formal proofs); the other 29 are a genuine ``tail'' that fits no
 single idea. Every classification was checked against the problem's published editorial. So about
 \textbf{three-quarters of interview problems reduce to four ideas}, each backed by a machine-checked
 proof (two by a cited one), and the single pass is the most
@@ -65,7 +63,7 @@ We test them, and then ask what underlying \emph{structure} explains the answer.
 ``fifty patterns'' you are told to memorize are a handful of ideas in different disguises, and the seven
 companies ask nearly the same things. To keep our labels honest we do not hand-sort the problems and stop
 there---we use a proof assistant to check, problem by problem, that the idea we assign really does solve the
-problem (and, for several showcase examples, that the standard solution is fully correct).
+problem (and, for most of them, that the solution is fully correct).
 
 \section{Data and method}
 \label{sec:data}
@@ -101,7 +99,7 @@ uncertainty.
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.1cm}>{\centering\arraybackslash}p{0.8cm}>{\raggedright\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}p{4.5cm}@{}}
 \toprule
-Recursion scheme & in scheme & Lean witness & textbook families it subsumes \\
+Underlying idea & in scheme & formal test (Lean) & textbook families it subsumes \\
 \midrule
 streaming fold & 27 & \texttt{IsFold} & two-pointers, sliding-window, monotonic-stack, hashing, prefix-sum, bit-XOR, string-scan \\
 recursive decomposition (DP) & 25 & catamorphism & dynamic programming, backtracking, tree, trie \\
@@ -114,14 +112,15 @@ not a scheme & --- & & design, simulation, heaps, number theory, geometry, strin
 \end{tabular}
 \caption{\footnotesize The roughly twenty surface families collapse onto four recursion schemes. On a
 pre-registered sample of 100 problems, 71 are proven to be one of the four (69 machine-checked here, 2
-cited~\cite{afp_kruskal,afp_dfs}; both graph relaxation); 29 form the genuine tail. ``Lean witness'' names
-the formal test per scheme. Full method and numbers: Sections~\ref{sec:result}--\ref{sec:lean}.}
+cited~\cite{afp_kruskal,afp_dfs}; both graph relaxation); 29 form the genuine tail. ``Formal test'' names
+the Lean predicate each certificate proves membership in. Full method and numbers: Sections~\ref{sec:result}--\ref{sec:lean}.}
 \label{tab:schemes}
 \end{minipage}
 \end{table}
 
 \paragraph{Wide surface.} The surface taxonomy really is spread out: no one or two families dominate (it
-takes six of the $\sim$20 to cover even half of asked problems; Gini $0.30$ over distinct problems). By the
+takes six of the $\sim$20 to cover even half of asked problems; Gini $0.30$, a standard evenness
+measure, over distinct problems). By the
 usual measure, interview preparation \emph{looks} like a long, flat list. This is the breadth the prep
 industry sells.
 
@@ -181,21 +180,22 @@ the problem. So every certificate is held to a mechanical standard, recomputed b
 gate checks that the file designates its modelled solution (\texttt{sol}); that the statements of both
 theorems are about that very function, not a disconnected helper; that the certificate contains a
 \emph{ground instance} --- a closed, kernel-checked evaluation of the solution on a concrete input, usually
-the problem's published example --- which an abstract placeholder cannot produce; and that the transitive
-axiom closure stays within Lean's standard axioms, which mechanically rejects unfinished proofs and
-compiler-trusted evaluation (\texttt{native\_decide}).
+the problem's published example --- which an abstract placeholder cannot produce; and that, tracing every proof back to its
+foundations, nothing beyond Lean's standard axioms is ever assumed --- which mechanically rejects
+unfinished proofs and any shortcut that trusts the compiler rather than the proof checker
+(\texttt{native\_decide}).
 
-Two further theorems pin the scheme itself down. Membership is intrinsic, not an artifact of matching a
-library combinator: a function is a streaming fold exactly when its value on a longer input is determined
-by its value so far plus the one new element (\texttt{isFold\_iff\_update}) --- one sweep, carrying the
-answer as it goes. And the scheme is \emph{falsifiable}: the distinct-count function provably lies outside
-it (\texttt{not\_isFold\_countDistinct}), and within it the memory hierarchy is strict ---
-\texttt{length} is a fold but provably not a finite-state one
-(\texttt{length\_not\_finiteStateFold}). ``Everything is a fold'' is therefore false as a theorem, not
-merely denied.
-What we do \emph{not} demand for a problem to count is a proof that the algorithm is optimal---the
-question is only \emph{which idea solves the problem}---though most certificates now clear the higher bar
-anyway (48 of 69, below). A problem counts when both proofs
+Two further theorems pin the scheme itself down. First, being a single pass is a property of the
+function, not of how its code happens to be written: a function is a streaming fold exactly when its
+answer on a longer input is determined by its answer so far plus the one new element
+(\texttt{isFold\_iff\_update}) --- one sweep, carrying the answer as it goes. Second, the scheme can be
+\emph{failed}: counting distinct elements provably is not such a sweep
+(\texttt{not\_isFold\_countDistinct}), and even computing a list's length, which is a sweep, provably
+cannot be done with any fixed amount of memory (\texttt{length\_not\_finiteStateFold}). ``Everything is
+a fold'' is therefore false as a theorem, not merely denied.
+We never demand a proof that the algorithm is \emph{optimal}---the platform's acceptance already vouches
+for the submissions themselves, and our question is only \emph{which idea solves the problem}---though
+most certificates prove exact correctness anyway (49 of 69, below). A problem counts when both proofs
 pass with no gaps (Lean flags any unfinished proof; there are none) and use only Lean's standard axioms.
 
 \textbf{A pre-registered sample.} Which problems land in the sample matters, because some are far easier to
@@ -222,12 +222,13 @@ move is why the count is 71, not 72.
 do not prove it is byte-for-byte the platform's accepted code (our model captures the solution's structure,
 not its every line). So a certificate says ``this problem really is solved by idea $S$,'' not ``the accepted
 submission is literally this program.'' How much each proof shows: after a dedicated
-strengthening pass, \textbf{49 of the 69 prove the exact answer or a complete characterization} (both
-directions of a search, a frame-complete update equation, or the value achieved by a genuine witness
-and beaten by none), and the remaining 20 prove an exact identity of the modelled solution --- in each
-of those the model \emph{is} the specification (the definitional recurrence, tally, or predicate the
-accepted solution computes), so there is no further direction to prove; correctness of the concrete
-submissions themselves is the platform's acceptance bar, which we never re-litigate. For two
+strengthening pass, \textbf{49 of the 69 prove the exact answer or a complete characterization} (the search
+finds a thing if and only if it is really there; an operation's entire effect is captured in one
+equation; or the reported value is achieved by a real path or plan and beaten by none), and the
+remaining 20 prove an exact law of the modelled solution --- in each of those the model \emph{is} the
+specification (the very recurrence, tally, or condition the accepted solution computes), so there is
+nothing further to prove about it; the submissions themselves are vouched for by the platform's
+acceptance, which we never re-litigate. For two
 certificates the classical correctness content lives in machine-checked work we cite rather than redo,
 as with the two graph problems above: Floyd's cycle-finding --- including locating the cycle's start
 --- is verified in full in the Archive of Formal Proofs~\cite{afp_tortoisehare}, and the optimal
