@@ -18,7 +18,7 @@ def hasPrefix : Trie → List ℕ → Prop
   | .node _ c, x :: xs => ∃ t, c x = some t ∧ hasPrefix t xs
 
 /-- SCHEME (fold over the typed prefix): the descent is a left fold carrying the current node. -/
-theorem cls (t : Trie) : IsFold (fun w : List ℕ => w.foldl stepNode (some t)) := LC.P0208.cls t
+theorem cls (t : Trie) : IsFold (fun w : List ℕ => w.foldl stepNode (some t)) := (LC.P0208.cls t).1
 
 /-- CORRECT: after inserting sentence `w`, its full path is navigable from the root — so every prefix
     of `w` descends to a node beneath which `w` is a completion. -/

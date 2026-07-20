@@ -39,4 +39,13 @@ theorem corr (cost : ℕ → ℕ) (budget : ℕ) (h : ∃ t, tooCostly cost budg
     IsLeast {t | tooCostly cost budget t} (sol cost budget h) :=
   bisection_isLeast (tooCostly cost budget) h
 
+
+/-- TEST VECTOR (official example 1, best machine): composition [1,1,1], zero stock, metal costs
+    [1,2,3] make `t` alloys cost `6t`; budget 15 — the least unaffordable count is 3, so the
+    maximum producible is 2, the judge's answer. -/
+theorem vec : sol (fun t => 6 * t) 15 ⟨3, by decide⟩ = 3 := by
+  simp only [sol]
+  rw [Nat.find_eq_iff]
+  decide
+
 end LC.P2861

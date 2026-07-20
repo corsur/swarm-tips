@@ -13,9 +13,22 @@ from collections import defaultdict
 from sensitivity import SCHEME
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RAW = os.path.join(HERE, "data", "raw")
-PROB = os.path.join(HERE, "lproofs", "Lproofs", "Problems")
+# Layout-agnostic roots: the working tree keeps everything beside this script (lproofs/, labels.csv);
+# the released artifact nests it (scripts/build_manifest.py, proofs/, data/*.csv). Resolve both.
+ROOT = HERE if any(os.path.isdir(os.path.join(HERE, d)) for d in ("lproofs", "proofs")) \
+    else os.path.dirname(HERE)
+PROOFS = next(p for p in (os.path.join(ROOT, "lproofs"), os.path.join(ROOT, "proofs"))
+              if os.path.isdir(p))
+RAW = os.path.join(ROOT, "data", "raw")
+PROB = os.path.join(PROOFS, "Lproofs", "Problems")
 HDR = re.compile(r"@lc\s+(\d+)\s*\|(.*)")
+
+
+def find_data(name):
+    for cand in (os.path.join(ROOT, name), os.path.join(ROOT, "data", name)):
+        if os.path.exists(cand):
+            return cand
+    raise SystemExit(f"required data file {name} not found under {ROOT}")
 
 
 def importance():
@@ -29,44 +42,22 @@ def importance():
     return imp
 
 
-# NON-GENUINE certificates (panel audit, 2026-06-19): corr does NOT reference the concrete problem —
-# it is scheme-generic (proven over an abstract relation/predicate, would certify any problem in that
-# scheme), vacuous (Iff.rfl against a spec defined as the solution), or a verbatim re-export of another
-# problem. These BUILD but do not count toward the genuine-coverage headline. Remove a num here only
-# when its corr has been rewritten to a problem-specific statement (then re-run this script).
-NOT_GENUINE = {
-    # relaxation — abstract V/relation, corr = bellman_isLeast / reachability over an uninstantiated r
-    # (strengthened 2026-06-19: 733,3387,102,863,815,332,1719,2858,505,1778 now use a concrete relation)
-    # (strengthened: 417 drainage, 212 search states, 1368 path connectivity, 1584 MST connectivity)
-    # (strengthened: 2092 time-respecting spread relation — reachable set respects meeting timestamps)
-    # bisection — corr over a free abstract predicate, not the concrete problem condition
-    # (strengthened: 240, 1818 concrete sorted array; 278 concrete isBad oracle)
-    # (strengthened: 162 peak-existence via global-max argument; cls = interval-halving step)
-    "3161": "abstract predicate",
-    # relaxation — DEMOTED 2026-06-19 (panel re-review): these prove only the generic `lfp = reachable
-    # set` over a concrete-but-universal adjacency `v ∈ g u` — the same theorem ANY reachability problem
-    # satisfies. Their genuine problem content (Eulerian path, MST cost, 0-1-BFS cost, tree-count,
-    # bridges, grid word-search) needs multi-file machinery, so we leave them uncounted rather than
-    # count a scheme-generic certificate. The fresh-seed (20260619) round certifies to a strict
-    # problem-specific standard and does not rely on these.
-    "332": "generic reachable-set (Eulerian path is the real, multi-file content)",
-    "1368": "generic reachable-set (0-1 BFS min-cost is the real content)",
-    "1584": "generic reachable-set (MST cost is the real, multi-file content)",
-    "1719": "generic reachable-set (tree-reconstruction count is the real content)",
-    # 2858 RECOVERED 2026-06-22: it is a tree (unique root->node paths), so min-reversals is not a
-    # minimisation but a deterministic re-rooting DP; certified via the +/-1 re-rooting recurrence.
-    "3387": "generic reachable-set (canonical bare reachability)",
-    "212": "generic reachable-set (grid word-search backtracking is the real content)",
-    # dp/fold — vacuous, re-export, definitional, or abstract window predicate
-    # (strengthened: 98 inorder-sorted<->bounded-BST, 833 scan=flatMap per-position replacement)
-    # (strengthened: 545 boundary soundness; 211 wildcard search; 642 prefix navigation)
-    # (strengthened: 992 atMost(k)=atMost(k-1)+exactly(k) identity; 76 min-window = IsLeast covering len)
-    # (strengthened: 2444 inclusion-exclusion sieve over four bounded-subarray counts)
-    "312": "trivial base case only (DP optimality not formalized)",
-}
+# GENUINENESS is decided mechanically by the Lean gate (`cd lproofs && lake exe gate`), which
+# recomputes per-problem verdicts from the elaborated environment: `sol` exists, the *types* of
+# `cls` and `corr` reference it, a closed kernel-checked ground-instance theorem (`vec*`) about
+# `sol` exists, and the transitive axiom closure of all three is within
+# {propext, Quot.sound, Classical.choice} (which mechanically rejects `sorry` and `native_decide`).
+# There is no hand-maintained allowlist or blocklist; this replaced the former NOT_GENUINE dict
+# (panel audit of 2026-06-19) on 2026-07-19 — the gate reproduces those verdicts from the formal
+# objects alone.
+def load_gate():
+    path = os.path.join(PROOFS, "gate.csv")
+    if not os.path.exists(path):
+        raise SystemExit(f"{path} missing — run `lake exe gate` in the proofs directory first")
+    return {r["num"]: r["pass"] == "True" for r in csv.DictReader(open(path))}
 
 
-def parse_file(path):
+def parse_file(path, gate):
     txt = open(path).read()
     m = HDR.search(txt)
     if not m:
@@ -76,11 +67,12 @@ def parse_file(path):
     corr = re.search(r"theorem\s+corr\b", txt) is not None
     bad = re.search(r"\bsorry\b|\badmit\b", txt) is not None
     num = m.group(1)
-    # BUILDS = file has cls + corr + no sorry/admit (syntactic). GENUINE = builds AND corr is
-    # problem-specific (references the concrete problem, not an abstract relation/predicate). Only
-    # genuine certs count toward the headline coverage number.
+    # BUILDS = file has cls + corr + no sorry/admit (syntactic). GENUINE = the mechanical Lean gate
+    # passes (sol-referencing cls/corr, closed ground-instance vec, standard axioms — recomputed
+    # from the elaborated environment by `lake exe gate`, no human list). Only genuine certs count
+    # toward the headline coverage number.
     builds = cls and corr and not bad
-    genuine = builds and num not in NOT_GENUINE
+    genuine = builds and gate.get(num, False)
     return {"num": num, "name": fields.get("name", ""), "scheme": fields.get("scheme", ""),
             "family": fields.get("family", ""), "complexity": fields.get("complexity", ""),
             "source": fields.get("source", ""), "cls": cls, "corr": corr, "sorry": bad,
@@ -89,16 +81,18 @@ def parse_file(path):
 
 def main():
     imp = importance()
-    labels = {r["num"]: r["family"] for r in csv.DictReader(open(os.path.join(HERE, "labels.csv")))}
+    labels_path = find_data("labels.csv")
+    labels = {r["num"]: r["family"] for r in csv.DictReader(open(labels_path))}
     # Editorial reclassification to tail (EDITORIAL_VERIFICATION.md): 258 Add Digits' canonical accepted
     # solution is the O(1) digital-root formula, which is outside the four ideas; the digit-sum fold is
     # only a fallback, so we conservatively move it to the tail rather than count it as a scheme.
     tail_override = {"258"}
     relevant = {num: fam for num, fam in labels.items()
                 if SCHEME.get(fam, "tail") != "tail" and num not in tail_override}
+    gate = load_gate()
     files = {}
     for p in glob.glob(os.path.join(PROB, "*", "*.lean")):
-        r = parse_file(p)
+        r = parse_file(p, gate)
         if r:
             files[r["num"]] = r
 
@@ -116,15 +110,17 @@ def main():
                      "source": "", "cls": False, "corr": False, "sorry": False, "done": False, "file": ""})
 
     cols = ["num", "name", "scheme", "family", "cls", "corr", "complexity", "source", "sorry", "done", "genuine", "file"]
-    with open(os.path.join(HERE, "certs.csv"), "w", newline="") as fh:
+    with open(os.path.join(os.path.dirname(labels_path), "certs.csv"), "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols); w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k, "") for k in cols})
 
     tot = sum(imp.values())
     done = {r["num"] for r in rows if r["done"]}
-    relevant_mass = sum(imp.get(n, 0) for n in relevant) / tot * 100
-    certified_mass = sum(imp.get(n, 0) for n in done) / tot * 100
+    # data/raw is withheld in the released artifact (platform ToS); the frequency-weighted mass
+    # figures need it, the per-problem counts and the sample headline below do not.
+    relevant_mass = sum(imp.get(n, 0) for n in relevant) / tot * 100 if tot else float("nan")
+    certified_mass = sum(imp.get(n, 0) for n in done) / tot * 100 if tot else float("nan")
 
     byfam = defaultdict(lambda: [0, 0])
     for r in rows:
@@ -167,7 +163,7 @@ def main():
         return (max(0.0, c - h), min(1.0, c + h))
 
     genuine = {r["num"] for r in rows if r.get("genuine")}
-    sample_path = os.path.join(HERE, "sample.csv")
+    sample_path = find_data("sample.csv")
     if os.path.exists(sample_path):
         srows = list(csv.DictReader(open(sample_path)))
         n = len(srows)

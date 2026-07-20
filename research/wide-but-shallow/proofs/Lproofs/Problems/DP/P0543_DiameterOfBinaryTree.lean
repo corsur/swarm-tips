@@ -7,7 +7,7 @@ import Lproofs.Schemes.Fold
     node, both its height and the best diameter seen, combining `height(left) + height(right)` at each
     node. CLASSIFICATION: a tree catamorphism (`depth` is `Tree.fold`). CORRECTNESS: we certify the
     genuine bound the algorithm's structure guarantees — the diameter is at most twice the height
-    (`diam t ≤ 2 * depth t`), proven by structural induction. -/
+    (`sol t ≤ 2 * depth t`), proven by structural induction. -/
 
 namespace LC.P0543
 
@@ -19,13 +19,16 @@ def depth : T → ℕ
   | .node l _ r => 1 + max (depth l) (depth r)
 
 /-- Diameter (in edges): best of the children's diameters and the through-root path `hₗ + hᵣ`. -/
-def diam : T → ℕ
+def sol : T → ℕ
   | .leaf => 0
-  | .node l _ r => max (max (diam l) (diam r)) (depth l + depth r)
+  | .node l _ r => max (max (sol l) (sol r)) (depth l + depth r)
 
-/-- SCHEME (dp / catamorphism): the height aggregate is a genuine `Tree.fold`. -/
-theorem cls : (depth : T → ℕ) =
-    Interview.Patterns.Tree.fold 0 (fun dl _ dr => 1 + max dl dr) := by
+/-- SCHEME (dp / catamorphism): `sol` combines the children's diameters with the through-root
+    path (the DFS recurrence), and the height aggregate it reads is a genuine `Tree.fold`. -/
+theorem cls : (∀ (l : T) (v : ℤ) (r : T),
+      sol (.node l v r) = max (max (sol l) (sol r)) (depth l + depth r)) ∧
+    (depth : T → ℕ) = Interview.Patterns.Tree.fold 0 (fun dl _ dr => 1 + max dl dr) := by
+  refine ⟨fun _ _ _ => rfl, ?_⟩
   funext t
   induction t with
   | leaf => rfl
@@ -33,9 +36,16 @@ theorem cls : (depth : T → ℕ) =
 
 /-- CORRECT: the diameter is at most twice the height — the longest path cannot exceed two root-to-leaf
     descents. A genuine inductive bound, not the bare recurrence. -/
-theorem corr (t : T) : diam t ≤ 2 * depth t := by
+theorem corr (t : T) : sol t ≤ 2 * depth t := by
   induction t with
-  | leaf => simp [diam, depth]
-  | node l v r ihl ihr => simp only [diam, depth] <;> omega
+  | leaf => simp [sol, depth]
+  | node l v r ihl ihr => simp only [sol, depth] <;> omega
+
+
+/-- GROUND INSTANCE (official example 1): tree [1,2,3,4,5] has diameter 3 (path 4–2–1–3). -/
+def exT : T :=
+  .node (.node (.node .leaf 4 .leaf) 2 (.node .leaf 5 .leaf)) 1 (.node .leaf 3 .leaf)
+
+theorem vec : sol exT = 3 := by decide
 
 end LC.P0543

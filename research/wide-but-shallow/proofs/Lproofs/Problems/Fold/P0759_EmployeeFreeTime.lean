@@ -14,15 +14,27 @@ namespace LC.P0759
 /-- `[a, b]` is busy at `x`. -/
 def busy (a b x : ℤ) : Prop := a ≤ x ∧ x ≤ b
 
-/-- SCHEME (fold): a free gap `(b₁, a₂)` between consecutive merged intervals is symmetric in the two
-    endpoints it borders (the sweep treats the closing and opening boundary uniformly). -/
-theorem cls (b1 a2 : ℤ) : (max b1 a2, min b1 a2) = (max a2 b1, min a2 b1) := by
-  rw [max_comm, min_comm]
+/-- The sweep's final pass: emit the gap between each pair of consecutive merged intervals. -/
+def sol : List (ℤ × ℤ) → List (ℤ × ℤ)
+  | p :: q :: rest => (p.2, q.1) :: sol (q :: rest)
+  | _ => []
 
-/-- CORRECT: a point strictly inside the gap between a merged interval ending at `b₁` and the next
-    starting at `a₂` (so `b₁ < a₂`) is busy in neither — it is genuine free time. -/
+/-- SCHEME (fold): `sol` streams the merged intervals once, emitting one gap per adjacent pair. -/
+theorem cls : (∀ (p q : ℤ × ℤ) (rest : List (ℤ × ℤ)),
+    sol (p :: q :: rest) = (p.2, q.1) :: sol (q :: rest)) ∧ sol [] = [] :=
+  ⟨fun _ _ _ => rfl, rfl⟩
+
+/-- CORRECT: the gap `sol` emits between a merged interval ending at `b₁` and the next starting at
+    `a₂` is genuine free time — any point strictly inside it (possible iff `b₁ < a₂`) is busy in
+    neither bordering interval. -/
 theorem corr (a1 b1 a2 b2 x : ℤ) (hx1 : b1 < x) (hx2 : x < a2) :
-    ¬ busy a1 b1 x ∧ ¬ busy a2 b2 x := by
-  refine ⟨fun h => ?_, fun h => ?_⟩ <;> · obtain ⟨hl, hr⟩ := h; omega
+    (b1, a2) ∈ sol [(a1, b1), (a2, b2)] ∧ ¬ busy a1 b1 x ∧ ¬ busy a2 b2 x := by
+  refine ⟨List.mem_singleton.mpr rfl, fun h => ?_, fun h => ?_⟩ <;>
+    · obtain ⟨hl, hr⟩ := h; omega
+
+
+/-- GROUND INSTANCE (official example 1): merged busy time [(1,3),(4,10)] leaves exactly the
+    free interval (3,4). -/
+theorem vec : sol [(1, 3), (4, 10)] = [(3, 4)] := by decide
 
 end LC.P0759

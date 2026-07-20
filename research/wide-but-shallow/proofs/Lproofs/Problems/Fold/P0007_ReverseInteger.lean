@@ -18,11 +18,13 @@ def toNat : List ℕ → ℕ
   | d :: ds => d * 10 ^ ds.length + toNat ds
 
 /-- Horner step the reversal repeats: fold popped digits into a running value. -/
-def eval (ds : List ℕ) : ℕ := ds.foldl (fun a d => a * 10 + d) 0
+def sol (ds : List ℕ) : ℕ := ds.foldl (fun a d => a * 10 + d) 0
 
-/-- SCHEME (fold): the running value is a left fold with a scalar accumulator. -/
-theorem cls : IsFold (fun ds : List ℕ => ds.foldl (fun a d => a * 10 + d) 0) :=
-  ⟨(fun a d => a * 10 + d), 0, fun _ => rfl⟩
+/-- SCHEME (fold): the running value is a left fold with a scalar accumulator — and `sol` is
+    exactly that fold. -/
+theorem cls : IsFold (fun ds : List ℕ => ds.foldl (fun a d => a * 10 + d) 0) ∧
+    ∀ ds : List ℕ, sol ds = ds.foldl (fun a d => a * 10 + d) 0 :=
+  ⟨⟨(fun a d => a * 10 + d), 0, fun _ => rfl⟩, fun _ => rfl⟩
 
 /-- The Horner fold accumulates positionally in its seed — genuine incremental arithmetic state. -/
 theorem foldl_horner (ds : List ℕ) (c : ℕ) :
@@ -35,12 +37,16 @@ theorem foldl_horner (ds : List ℕ) (c : ℕ) :
     ring
 
 /-- NON-VACUITY: the Horner fold equals the positional value of the processed digit sequence. -/
-theorem corr (ds : List ℕ) : eval ds = toNat ds := by
+theorem corr (ds : List ℕ) : sol ds = toNat ds := by
   induction ds with
   | nil => rfl
   | cons d ds ih =>
-    rw [eval, List.foldl_cons, foldl_horner ds (0 * 10 + d), toNat]
+    rw [sol, List.foldl_cons, foldl_horner ds (0 * 10 + d), toNat]
     simp only [Nat.zero_mul, Nat.zero_add]
-    rw [← eval, ih]
+    rw [← sol, ih]
+
+
+/-- GROUND INSTANCE (official example 1): reversing 123 pops digits 3,2,1 into 321. -/
+theorem vec : sol [3, 2, 1] = 321 := by decide
 
 end LC.P0007

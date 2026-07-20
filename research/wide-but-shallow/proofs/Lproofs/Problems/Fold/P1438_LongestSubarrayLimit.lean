@@ -50,8 +50,9 @@ def sol (limit : ℤ) (a : List ℤ) : ℤ := (a.foldr (step limit) (0, [])).1
 
 /-- SCHEME (fold): the answer is a single fold over the array, carrying the running best length and
     the `(max, min, length)` of the subarrays starting at the current position. -/
-theorem cls (limit : ℤ) : IsRightFold (fun a : List ℤ => a.foldr (step limit) (0, [])) :=
-  ⟨step limit, (0, []), fun _ => rfl⟩
+theorem cls (limit : ℤ) : IsRightFold (fun a : List ℤ => a.foldr (step limit) (0, [])) ∧
+    ∀ a : List ℤ, sol limit a = (a.foldr (step limit) (0, [])).1 :=
+  ⟨⟨step limit, (0, []), fun _ => rfl⟩, fun _ => rfl⟩
 
 /-- The fold accumulates exactly `(bestLen, startTriples)` at every prefix. -/
 theorem fold_eq (limit : ℤ) : ∀ a : List ℤ,
@@ -61,5 +62,10 @@ theorem fold_eq (limit : ℤ) : ∀ a : List ℤ,
 
 /-- CORRECT: the fold's running best equals the max valid length over all nonempty subarrays. -/
 theorem corr (limit : ℤ) (a : List ℤ) : sol limit a = bestLen limit a := by rw [sol, fold_eq]
+
+
+/-- GROUND INSTANCE (official example 1): nums [8,2,4,7], limit 4 — longest valid subarray
+    length 2. -/
+theorem vec : sol 4 [8, 2, 4, 7] = 2 := by decide
 
 end LC.P1438

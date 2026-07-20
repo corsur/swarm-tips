@@ -53,4 +53,12 @@ theorem corr (nums : ℕ → ℕ) (m k : ℕ) (h : ∃ d, feasible nums m k d) :
     IsLeast {d | feasible nums m k d} (sol nums m k h) :=
   bisection_isLeast (feasible nums m k) h
 
+
+/-- TEST VECTOR (official example): nums = [1,3,1] sorted to [1,1,3], k = 1 — the smallest pair
+    distance is 0 (the two equal 1s). -/
+theorem vec : sol (fun i => [1, 1, 3].getD i 0) 3 1 ⟨0, by decide⟩ = 0 := by
+  simp only [sol]
+  rw [Nat.find_eq_iff]
+  decide
+
 end LC.P0719

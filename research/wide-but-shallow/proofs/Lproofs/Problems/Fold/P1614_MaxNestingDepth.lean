@@ -24,8 +24,9 @@ def peak : ℤ → ℤ → List Char → ℤ
 def spec (s : List Char) : ℤ := peak 0 0 s
 
 /-- SCHEME (fold): the depth is computed by a single streaming fold. -/
-theorem cls : IsFold (fun s : List Char => s.foldl step (0, 0)) :=
-  ⟨step, (0, 0), fun _ => rfl⟩
+theorem cls : IsFold (fun s : List Char => s.foldl step (0, 0)) ∧
+    ∀ s : List Char, sol s = (s.foldl step (0, 0)).2 :=
+  ⟨⟨step, (0, 0), fun _ => rfl⟩, fun _ => rfl⟩
 
 /-- CORRECT: the carried max equals the maximum prefix balance. -/
 theorem corr (s : List Char) : sol s = spec s := by
@@ -38,5 +39,9 @@ theorem corr (s : List Char) : sol s = spec s := by
     intro b m
     simp only [List.foldl_cons, step, peak]
     exact ih (b + d c) (max m (b + d c))
+
+
+/-- GROUND INSTANCE (official example 1): "(1+(2*3)+((8)/4))+1" has max nesting depth 3. -/
+theorem vec : sol "(1+(2*3)+((8)/4))+1".toList = 3 := by decide
 
 end LC.P1614

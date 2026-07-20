@@ -36,4 +36,35 @@ theorem corr (g : ℕ → List ℕ) (start : ℕ) : spec g start (sol g start) :
   ext v
   simp [Set.mem_singleton_iff]
 
+
+/-- Official example 1 (letters w,e,r,t,f as 0..4): the derived precedence edges are
+    w→e, e→r, r→t, t→f — the chain behind the order "wertf". -/
+def exG : ℕ → List ℕ
+  | 0 => [1]
+  | 1 => [2]
+  | 2 => [3]
+  | 3 => [4]
+  | _ => []
+
+/-- TEST VECTOR (official example 1): f (4) is forced after w (0), while a sixth letter (5)
+    is unconstrained. -/
+theorem vec : 4 ∈ sol exG 0 ∧ 5 ∉ sol exG 0 := by
+  have h := corr exG 0
+  unfold spec at h
+  rw [h]
+  simp only [Set.mem_setOf_eq]
+  constructor
+  · exact .head (show precedes exG 0 1 by simp [precedes, exG])
+      (.head (show precedes exG 1 2 by simp [precedes, exG])
+        (.head (show precedes exG 2 3 by simp [precedes, exG])
+          (.head (show precedes exG 3 4 by simp [precedes, exG]) .refl)))
+  · intro hr
+    have bound : ∀ v, Relation.ReflTransGen (precedes exG) 0 v → v ≤ 4 := by
+      intro v hv
+      induction hv with
+      | refl => omega
+      | @tail b c _ step ih =>
+        interval_cases b <;> simp [precedes, exG] at step <;> omega
+    exact absurd (bound 5 hr) (by omega)
+
 end LC.P0269

@@ -19,27 +19,36 @@ def inorder : T → List ℤ
   | .node l v r => inorder l ++ v :: inorder r
 
 /-- Column-tagged traversal: each node emits `(column, value)`, left child `c−1`, right child `c+1`. -/
-def cols : T → ℤ → List (ℤ × ℤ)
+def sol : T → ℤ → List (ℤ × ℤ)
   | .leaf, _ => []
-  | .node l v r, c => (c, v) :: (cols l (c - 1) ++ cols r (c + 1))
+  | .node l v r, c => (c, v) :: (sol l (c - 1) ++ sol r (c + 1))
 
 /-- SCHEME (catamorphism): the column traversal recurses left at `c−1` and right at `c+1` — the
     column-assigning step the BFS performs. -/
 theorem cls (l : T) (v : ℤ) (r : T) (c : ℤ) :
-    cols (.node l v r) c = (c, v) :: (cols l (c - 1) ++ cols r (c + 1)) := rfl
+    sol (.node l v r) c = (c, v) :: (sol l (c - 1) ++ sol r (c + 1)) := rfl
 
 /-- CORRECT (soundness): every value the vertical-order traversal reports is a genuine tree value,
     whatever column it is tagged with — the traversal invents no nodes. -/
-theorem corr (t : T) (c col : ℤ) (x : ℤ) (h : (col, x) ∈ cols t c) : x ∈ inorder t := by
+theorem corr (t : T) (c col : ℤ) (x : ℤ) (h : (col, x) ∈ sol t c) : x ∈ inorder t := by
   induction t generalizing c with
-  | leaf => simp [cols] at h
+  | leaf => simp [sol] at h
   | node l v r ihl ihr =>
-    simp only [cols, List.mem_cons, List.mem_append] at h
+    simp only [sol, List.mem_cons, List.mem_append] at h
     simp only [inorder, List.mem_append, List.mem_cons]
     rcases h with h | h | h
     · have hx : x = v := (Prod.ext_iff.mp h).2
       exact Or.inr (Or.inl hx)
     · exact Or.inl (ihl (c - 1) h)
     · exact Or.inr (Or.inr (ihr (c + 1) h))
+
+
+/-- Official example 1: [3,9,20,null,null,15,7]. -/
+def exT : T :=
+  .node (.node .leaf 9 .leaf) 3 (.node (.node .leaf 15 .leaf) 20 (.node .leaf 7 .leaf))
+
+/-- GROUND INSTANCE (official example 1): the column-tagged traversal from column 0 — 9 in
+    column −1, {3,15} in column 0, 20 in column 1, 7 in column 2 (the judge's grouping). -/
+theorem vec : sol exT 0 = [(0, 3), (-1, 9), (1, 20), (0, 15), (2, 7)] := by decide
 
 end LC.P0314

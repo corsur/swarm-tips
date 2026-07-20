@@ -13,20 +13,25 @@ namespace LC.P1823
 open Interview.Patterns
 
 /-- 0-indexed Josephus survivor among `m` people eliminating every `k`-th. -/
-def joseph (k : ℕ) : ℕ → ℕ
+def sol (k : ℕ) : ℕ → ℕ
   | 0 => 0
-  | n + 1 => (joseph k n + k) % (n + 1)
+  | n + 1 => (sol k n + k) % (n + 1)
 
 /-- SCHEME (fold): the survivor is a left fold of the recurrence over circle sizes `1..n`. -/
 theorem cls (k n : ℕ) :
-    joseph k n = (List.range n).foldl (fun acc i => (acc + k) % (i + 1)) 0 := by
+    sol k n = (List.range n).foldl (fun acc i => (acc + k) % (i + 1)) 0 := by
   induction n with
   | zero => rfl
-  | succ m ih => rw [joseph, ih, List.range_succ, List.foldl_append]; rfl
+  | succ m ih => rw [sol, ih, List.range_succ, List.foldl_append]; rfl
 
 /-- CORRECT: the survivor is always a valid seat — `J(n+1) < n+1` — since the modulus bounds it. -/
-theorem corr (k n : ℕ) : joseph k (n + 1) < n + 1 := by
-  simp only [joseph]
+theorem corr (k n : ℕ) : sol k (n + 1) < n + 1 := by
+  simp only [sol]
   exact Nat.mod_lt _ (Nat.succ_pos n)
+
+
+/-- GROUND INSTANCE (official example 1): n = 5, k = 2 — the winner is friend 3, i.e. 0-indexed
+    seat 2. -/
+theorem vec : sol 2 5 = 2 := by decide
 
 end LC.P1823

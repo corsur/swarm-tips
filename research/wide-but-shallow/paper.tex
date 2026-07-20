@@ -175,7 +175,14 @@ example, ``this function is a single left-to-right pass''). Then, for each sampl
 standard accepted solution and prove two things: that it has the \emph{shape} of its idea, and that it
 satisfies a property of the \emph{specific} problem---its actual grid, array, or condition. The second part
 is what gives the proof teeth: a statement about an abstract relation would certify the \emph{category}, not
-the problem, so we require (and a released script enforces) that the property names the concrete problem.
+the problem. So every certificate is held to a mechanical standard, recomputed by a released Lean program
+(\texttt{lake exe gate}) directly from the compiled proofs --- no per-problem allowlist or blocklist. The
+gate checks that the file designates its modelled solution (\texttt{sol}); that the statements of both
+theorems are about that very function, not a disconnected helper; that the certificate contains a
+\emph{ground instance} --- a closed, kernel-checked evaluation of the solution on a concrete input, usually
+the problem's published example --- which an abstract placeholder cannot produce; and that the transitive
+axiom closure stays within Lean's standard axioms, which mechanically rejects unfinished proofs and
+compiler-trusted evaluation (\texttt{native\_decide}).
 What we do \emph{not} demand is a proof that the algorithm is optimal---that bar is far higher than the
 question we are asking, which is only \emph{which idea solves the problem}. A problem counts when both proofs
 pass with no gaps (Lean flags any unfinished proof; there are none) and use only Lean's standard axioms.
@@ -268,7 +275,9 @@ than fifty patterns shallowly, and prepare for ``technical interviews,'' not for
 All derived statistics, the pre-registration of the sampling seed (\texttt{PREREGISTRATION.md}, committed
 before the sample was drawn or scored), the per-problem proof list (from which the 71/100 re-derives), the
 editorial cross-check, and the complete Lean development are released. The gate that decides which proofs
-count is a released, mechanical script, so the count is reproducible rather than a matter of our judgement.
+count is a released Lean program (\texttt{lake exe gate}) that recomputes every verdict from the compiled
+proofs themselves --- solution-reference, ground instance, axiom closure --- so the count is reproducible
+rather than a matter of our judgement.
 The raw per-company frequency tables are withheld under the platform's terms, so the headline numbers
 reproduce from the released derived data even though the scrape itself is not redistributed. The proofs build
 with \texttt{lake build} with no gaps; the ``standard axioms'' claim is checkable, not merely asserted, by

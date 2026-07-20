@@ -36,4 +36,14 @@ theorem corr (countLE : ℕ → ℕ) (k : ℕ) (h : ∃ v, enough countLE k v) :
     IsLeast {v | enough countLE k v} (sol countLE k h) :=
   bisection_isLeast (enough countLE k) h
 
+
+/-- Official example: entry count `≤ v` over matrix `[[1,5,9],[10,11,13],[12,13,15]]`. -/
+def exCountLE : ℕ → ℕ := fun v => ([1, 5, 9, 10, 11, 13, 12, 13, 15].countP (· ≤ v))
+
+/-- TEST VECTOR (official example): k = 8 — the 8th smallest entry is 13. -/
+theorem vec : sol exCountLE 8 ⟨13, by decide⟩ = 13 := by
+  simp only [sol]
+  rw [Nat.find_eq_iff]
+  decide
+
 end LC.P0378

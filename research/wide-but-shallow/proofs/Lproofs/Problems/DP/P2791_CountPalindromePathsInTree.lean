@@ -13,27 +13,32 @@ import Lproofs.Schemes.Fold
 namespace LC.P2791
 
 /-- Root-to-node parity mask after walking the edge-bit list `es` (one XOR-bit per edge). -/
-def rootMask : List ℕ → ℕ
+def sol : List ℕ → ℕ
   | [] => 0
-  | e :: es => e ^^^ rootMask es
+  | e :: es => e ^^^ sol es
 
 /-- XOR of the bits on a contiguous segment of `j` edges starting at offset into `es`. -/
-def segMask (es : List ℕ) (j : ℕ) : ℕ := rootMask (es.take j)
+def segMask (es : List ℕ) (j : ℕ) : ℕ := sol (es.take j)
 
 /-- SCHEME (dp / tree fold): the root mask folds the edge bits with XOR --- one bit per edge. -/
-theorem cls (e : ℕ) (es : List ℕ) : rootMask (e :: es) = e ^^^ rootMask es := rfl
+theorem cls (e : ℕ) (es : List ℕ) : sol (e :: es) = e ^^^ sol es := rfl
 
-theorem rootMask_append (a b : List ℕ) : rootMask (a ++ b) = rootMask a ^^^ rootMask b := by
+theorem rootMask_append (a b : List ℕ) : sol (a ++ b) = sol a ^^^ sol b := by
   induction a with
-  | nil => simp [rootMask]
-  | cons e es ih => simp only [List.cons_append, rootMask, ih]; rw [Nat.xor_assoc]
+  | nil => simp [sol]
+  | cons e es ih => simp only [List.cons_append, sol, ih]; rw [Nat.xor_assoc]
 
 /-- CORRECT: the path mask telescopes --- the root mask of a descendant is the root mask of an
     ancestor XOR the segment between them. This is the prefix-XOR identity (`segment = mask u XOR
     mask v`) the palindrome test rests on. -/
 theorem corr (es : List ℕ) (j : ℕ) (hj : j ≤ es.length) :
-    rootMask es = rootMask (es.take j) ^^^ rootMask (es.drop j) := by
+    sol es = sol (es.take j) ^^^ sol (es.drop j) := by
   conv_lhs => rw [← List.take_append_drop j es]
   rw [rootMask_append]
+
+
+/-- GROUND INSTANCE: the edge-bit path [1,2,1] has parity mask 2 (the 1-bits cancel — one letter
+    odd, so the path is palindrome-permutable); [1,1] cancels fully to 0. -/
+theorem vec : sol [1, 2, 1] = 2 ∧ sol [1, 1] = 0 := by decide
 
 end LC.P2791

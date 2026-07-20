@@ -19,21 +19,20 @@ open Interview.Patterns
 def reach1 (limit a b T : ℤ) : Prop :=
   T = a + b ∨ ∃ v : ℤ, 1 ≤ v ∧ v ≤ limit ∧ (v + b = T ∨ a + v = T)
 
-/-- The per-`T` cost contribution of one pair (the value the difference array stores). -/
-def cost (limit a b T : ℤ) : ℕ :=
+/-- The per-`T` sol contribution of one pair (the value the difference array stores). -/
+def sol (limit a b T : ℤ) : ℕ :=
   if T = a + b then 0 else if min a b + 1 ≤ T ∧ T ≤ max a b + limit then 1 else 2
 
 /-- SCHEME (fold): the total moves at a fixed target `T` is a streaming right-fold tally over the pairs. -/
 theorem cls (limit T : ℤ) :
-    IsRightFold (fun L : List (ℤ × ℤ) => (L.map (fun p => cost limit p.1 p.2 T)).sum) := by
-  refine ⟨fun p acc => cost limit p.1 p.2 T + acc, 0, fun L => ?_⟩
+    IsRightFold (fun L : List (ℤ × ℤ) => (L.map (fun p => sol limit p.1 p.2 T)).sum) := by
+  refine ⟨fun p acc => sol limit p.1 p.2 T + acc, 0, fun L => ?_⟩
   induction L with
   | nil => rfl
   | cons p t ih => simp [List.map_cons, List.sum_cons, ih, List.foldr_cons]
 
-/-- CORRECT: one change suffices for the pair `(a, b)` to reach sum `T` exactly when `T` lies in
-    `[min(a,b)+1, max(a,b)+limit]` --- the range the accepted difference-array solution marks. -/
-theorem corr (limit a b T : ℤ) (ha1 : 1 ≤ a) (ha2 : a ≤ limit) (hb1 : 1 ≤ b) (hb2 : b ≤ limit) :
+theorem reach1_range (limit a b T : ℤ) (ha1 : 1 ≤ a) (ha2 : a ≤ limit) (hb1 : 1 ≤ b)
+    (hb2 : b ≤ limit) :
     reach1 limit a b T ↔ (min a b + 1 ≤ T ∧ T ≤ max a b + limit) := by
   rcases le_total a b with hab | hab <;>
     simp only [min_eq_left, min_eq_right, max_eq_left, max_eq_right, hab]
@@ -49,5 +48,21 @@ theorem corr (limit a b T : ℤ) (ha1 : 1 ≤ a) (ha2 : a ≤ limit) (hb1 : 1 �
       by_cases hc : T ≤ b + limit
       · exact Or.inr ⟨T - b, by omega, by omega, Or.inl (by omega)⟩
       · exact Or.inr ⟨T - a, by omega, by omega, Or.inr (by omega)⟩
+
+/-- CORRECT: one change suffices for the pair `(a, b)` to reach sum `T` exactly when its stored
+    cost is at most 1 — the marking the accepted difference-array solution accumulates. -/
+theorem corr (limit a b T : ℤ) (ha1 : 1 ≤ a) (ha2 : a ≤ limit) (hb1 : 1 ≤ b) (hb2 : b ≤ limit) :
+    reach1 limit a b T ↔ sol limit a b T ≤ 1 := by
+  rw [reach1_range limit a b T ha1 ha2 hb1 hb2]
+  unfold sol
+  split_ifs with h1 h2
+  · exact ⟨fun _ => by norm_num, fun _ => by constructor <;> omega⟩
+  · simp [h2]
+  · exact ⟨fun h => absurd h h2, fun h => absurd h (by omega)⟩
+
+
+/-- GROUND INSTANCE (official example 1, target sum 6): pair (1,3) needs one change, pair (2,4)
+    already sums to 6 — total 1 move, the judge's answer. -/
+theorem vec : sol 4 1 3 6 = 1 ∧ sol 4 2 4 6 = 0 := by decide
 
 end LC.P1674

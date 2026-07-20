@@ -27,17 +27,51 @@ noncomputable def sol (nums : ℕ → ℕ) (src v : ℕ) : ℕ :=
 def spec (nums : ℕ → ℕ) (src v : ℕ) (d : ℕ) : Prop :=
   IsLeast {n | Reaches (jumpRel nums) src v n} d
 
-/-- SCHEME (relaxation): reachable in `≤ n` jumps is exactly the `n+1`-st bounded relaxation iterate
-    of the concrete jump relation — the BFS layers the algorithm expands. -/
-theorem cls (nums : ℕ → ℕ) (src : ℕ) :
-    ∀ (n : ℕ) (v : ℕ), v ∈ (reachOp ({src} : Set ℕ) (jumpRel nums))^[n + 1] (∅ : Set ℕ) ↔
-      ∃ m ≤ n, Reaches (jumpRel nums) src v m :=
-  mem_reachOp_iterate src (jumpRel nums)
+/-- SCHEME (relaxation): the BFS layers decide the answer — index `v` lies in the `n+1`-st bounded
+    relaxation iterate of the concrete jump relation iff `sol` (the minimum jump count) is ≤ `n`. -/
+theorem cls (nums : ℕ → ℕ) (src v : ℕ) (h : ∃ n, Reaches (jumpRel nums) src v n) (n : ℕ) :
+    v ∈ (reachOp ({src} : Set ℕ) (jumpRel nums))^[n + 1] (∅ : Set ℕ) ↔ sol nums src v ≤ n := by
+  rw [mem_reachOp_iterate src (jumpRel nums) n v]
+  constructor
+  · rintro ⟨m, hmn, hm⟩
+    exact le_trans (Nat.sInf_le hm) hmn
+  · intro hle
+    exact ⟨sol nums src v, hle, Nat.sInf_mem h⟩
 
 /-- CORRECT: `sol` is the least number of jumps reaching `v` — the genuine minimum-jump count over
     the concrete adjacency + prime-teleport relation. -/
 theorem corr (nums : ℕ → ℕ) (src v : ℕ) (h : ∃ n, Reaches (jumpRel nums) src v n) :
     spec nums src v (sol nums src v) :=
   ⟨Nat.sInf_mem h, fun _ hn => Nat.sInf_le hn⟩
+
+
+/-- Example instance nums = [1,2,4,6] (index ↦ value; off-array reads 0). -/
+def exNums : ℕ → ℕ
+  | 0 => 1
+  | 1 => 2
+  | 2 => 4
+  | 3 => 6
+  | _ => 0
+
+/-- GROUND INSTANCE: from index 0, index 3 takes exactly 2 jumps — step to index 1, whose prime
+    value 2 divides nums[3] = 6, then teleport; no single jump reaches it. -/
+theorem vec : sol exNums 0 3 = 2 := by
+  have hleast : IsLeast {n | Reaches (jumpRel exNums) 0 3 n} 2 := by
+    constructor
+    · show Reaches (jumpRel exNums) 0 3 2
+      refine .step (.step .refl (Or.inl rfl)) (Or.inr (Or.inr ⟨?_, ?_⟩)) <;> decide
+    · intro m hm
+      by_contra hlt
+      push_neg at hlt
+      interval_cases m
+      · cases hm
+      · cases hm with
+        | step h0 he =>
+          cases h0
+          rcases he with h | h | ⟨hp, _⟩
+          · omega
+          · omega
+          · exact absurd hp (by decide)
+  exact hleast.csInf_eq
 
 end LC.P3629

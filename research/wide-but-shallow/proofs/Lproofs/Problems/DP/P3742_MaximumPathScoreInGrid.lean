@@ -21,28 +21,28 @@ def nextBest (val : ℕ → ℕ → ℕ) (m n : ℕ) (rec : ℕ → ℕ → ℕ 
       (if j + 1 < n then rec i (j + 1) budget else 0)
 
 /-- DP: max score from `(i,j)` to the corner within `budget`, moving right/down (`fuel`-bounded). -/
-def best (val : ℕ → ℕ → ℕ) (m n : ℕ) : ℕ → ℕ → ℕ → ℕ → ℕ
+def sol (val : ℕ → ℕ → ℕ) (m n : ℕ) : ℕ → ℕ → ℕ → ℕ → ℕ
   | 0, _, _, _ => 0
   | f + 1, i, j, budget =>
     if cellCost (val i j) > budget then 0
-    else val i j + nextBest val m n (best val m n f) i j (budget - cellCost (val i j))
+    else val i j + nextBest val m n (sol val m n f) i j (budget - cellCost (val i j))
 
-/-- SCHEME (dp): an affordable cell decomposes into its value plus the best onward move --- the
+/-- SCHEME (dp): an affordable cell decomposes into its value plus the sol onward move --- the
     right/down recurrence. -/
 theorem cls (val : ℕ → ℕ → ℕ) (m n f i j budget : ℕ) (hb : cellCost (val i j) ≤ budget) :
-    best val m n (f + 1) i j budget =
-      val i j + nextBest val m n (best val m n f) i j (budget - cellCost (val i j)) := by
-  simp only [best]; rw [if_neg (by omega)]
+    sol val m n (f + 1) i j budget =
+      val i j + nextBest val m n (sol val m n f) i j (budget - cellCost (val i j)) := by
+  simp only [sol]; rw [if_neg (by omega)]
 
 /-- CORRECT: the DP value is monotone in the budget --- raising the cost allowance never lowers the
     achievable score. A genuine property of the actual budget DP, no optimality claimed. -/
 theorem corr (val : ℕ → ℕ → ℕ) (m n f i j : ℕ) :
-    Monotone (best val m n f i j) := by
+    Monotone (sol val m n f i j) := by
   induction f generalizing i j with
-  | zero => intro a b _; simp [best]
+  | zero => intro a b _; simp [sol]
   | succ f ih =>
     intro a b hab
-    simp only [best, nextBest]
+    simp only [sol, nextBest]
     by_cases hcb : cellCost (val i j) > b
     · simp [hcb, show cellCost (val i j) > a from by omega]
     · by_cases hca : cellCost (val i j) > a
@@ -56,5 +56,10 @@ theorem corr (val : ℕ → ℕ → ℕ) (m n f i j : ℕ) :
         · split
           · exact ih i (j + 1) hsub
           · exact le_refl 0
+
+
+/-- GROUND INSTANCE (grid [[0,1],[1,2]], budget 1): the best affordable path scores 1 — the
+    2-cell corner is unaffordable after spending the budget on either middle cell. -/
+theorem vec : sol (fun i j => ([[0, 1], [1, 2]].getD i []).getD j 0) 2 2 3 0 0 1 = 1 := by decide
 
 end LC.P3742

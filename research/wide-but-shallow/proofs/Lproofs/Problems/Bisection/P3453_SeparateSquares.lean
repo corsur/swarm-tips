@@ -47,4 +47,14 @@ theorem corr (b s : ℕ → ℕ) (m total : ℕ) (h : ∃ Y, enough b s m total 
     IsLeast {Y | enough b s m total Y} (sol b s m total h) :=
   bisection_isLeast (enough b s m total) h
 
+
+/-- TEST VECTOR (official example 1, coordinates doubled to stay integral): one square at
+    (0,0) with side 2 — total area 4, and the least height with half the area below is 1
+    (the judge's 0.5, scaled by 2). -/
+theorem vec :
+    sol (fun _ => 0) (fun _ => 2) 1 4 ⟨1, by decide⟩ = 1 := by
+  simp only [sol]
+  rw [Nat.find_eq_iff]
+  decide
+
 end LC.P3453

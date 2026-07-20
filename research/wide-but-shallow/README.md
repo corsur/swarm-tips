@@ -41,6 +41,20 @@ data/raw/problems.json              num -> {name, diff}  (769 problems)
   `--weight rank` is the robustness pass.
 - **`lproofs/`** — Lean 4 / Mathlib project (build: `cd lproofs && lake build`; all standard
   axioms, no `sorry`).
+  - **`lake exe gate`** — the mechanical genuineness gate (added 2026-07-19, replacing the former
+    hand-maintained `NOT_GENUINE` blacklist in `build_manifest.py`). A Lean metaprogram recomputes
+    every certificate's verdict from the **elaborated environment**: the file designates `sol`;
+    the *types* of `cls` and `corr` reference it; a closed kernel-checked **ground-instance
+    theorem** (`vec*`) evaluates `sol` on a concrete input (usually the problem's published
+    example — an abstract placeholder cannot produce one); and the transitive axiom closure of
+    all three stays within `{propext, Quot.sound, Classical.choice}` (mechanically rejecting
+    `sorry` and `native_decide`). Emits `gate.csv`, consumed by `build_manifest.py`; all 69
+    in-sample certs pass, and every certificate the 2026-06-19 panel had blacklisted fails the
+    gate naturally, with no list consulted.
+  - Deferred (recorded, not planned): a mutation harness (corr must fail on a gutted `sol`) is
+    largely subsumed by the gate's sol-reference check — definitional mutants already break the
+    `rfl`/`unfold`-tied proofs; its only residual value is against self-referentially trivial
+    `corr` statements (e.g. `sol xs = sol xs`), which no current certificate has.
   - `Generators.lean` — `range_fold` (group scan), `agg_hom` (semiring polymorphism), `bellman_*` (relaxation = least fixpoint).
   - `Classify.lean` — per-problem classification certs (Climbing Stairs = DP fold, Range Sum = scan, reachability = lfp).
   - `Patterns.lean` — the **four recursion schemes** (~80% of load): `IsFold` with 5 instances proving prefix-sum/XOR/reverse/running-max/seen-set are *one fold* (the merge); `bisection_threshold`/`bisection_isLeast` (binary search); `depth_isCata` (tree), `subsets_card` (backtracking).

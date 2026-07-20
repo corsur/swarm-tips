@@ -33,4 +33,11 @@ theorem cls (isBad : ℕ → Bool) (mono : ∀ a b, a ≤ b → bad isBad a → 
 theorem corr (isBad : ℕ → Bool) (h : ∃ n, bad isBad n) : spec isBad (sol isBad h) :=
   bisection_isLeast (bad isBad) h
 
+
+/-- TEST VECTOR (official example): n = 5 with versions ≥ 4 bad — the search returns 4. -/
+theorem vec : sol (fun n => decide (4 ≤ n)) ⟨4, by decide⟩ = 4 := by
+  simp only [sol]
+  rw [Nat.find_eq_iff]
+  decide
+
 end LC.P0278

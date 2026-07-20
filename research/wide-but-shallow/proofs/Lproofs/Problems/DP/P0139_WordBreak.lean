@@ -30,35 +30,35 @@ theorem strip_sound : ∀ (w s rest : List Char), strip w s = some rest → w ++
     · exact absurd h (by simp)
 
 /-- Enumerate segmentations of `s` into dictionary words (fuel bounds the recursion). -/
-def segs (dict : List (List Char)) : ℕ → List Char → List (List (List Char))
+def sol (dict : List (List Char)) : ℕ → List Char → List (List (List Char))
   | 0, _ => []
   | _ + 1, [] => [[]]
   | fuel + 1, s =>
       dict.flatMap (fun w =>
         match strip w s with
-        | some rest => (segs dict fuel rest).map (w :: ·)
+        | some rest => (sol dict fuel rest).map (w :: ·)
         | none => [])
 
 /-- SCHEME (dp / recursive decomposition): for a nonempty string, try each dictionary word as a
     prefix and recurse on the remaining suffix — the genuine subproblem decomposition. -/
 theorem cls (dict : List (List Char)) (fuel : ℕ) (c : Char) (s : List Char) :
-    segs dict (fuel + 1) (c :: s) =
+    sol dict (fuel + 1) (c :: s) =
       dict.flatMap (fun w =>
         match strip w (c :: s) with
-        | some rest => (segs dict fuel rest).map (w :: ·)
+        | some rest => (sol dict fuel rest).map (w :: ·)
         | none => []) :=
   rfl
 
 /-- NON-VACUITY (soundness): every enumerated segmentation concatenates back to the original string. -/
 theorem corr : ∀ (dict : List (List Char)) (fuel : ℕ) (s : List Char) (seg : List (List Char)),
-    seg ∈ segs dict fuel s → seg.flatten = s := by
+    seg ∈ sol dict fuel s → seg.flatten = s := by
   intro dict fuel
   induction fuel with
-  | zero => intro s seg h; simp [segs] at h
+  | zero => intro s seg h; simp [sol] at h
   | succ f ih =>
     intro s seg h
     match s with
-    | [] => simp only [segs, List.mem_singleton] at h; subst h; rfl
+    | [] => simp only [sol, List.mem_singleton] at h; subst h; rfl
     | c :: s' =>
       rw [cls, List.mem_flatMap] at h
       obtain ⟨w, _, hw⟩ := h
@@ -68,5 +68,11 @@ theorem corr : ∀ (dict : List (List Char)) (fuel : ℕ) (s : List Char) (seg :
         obtain ⟨seg', hseg', rfl⟩ := hw
         rw [List.flatten_cons, ih rest seg' hseg', strip_sound w (c :: s') rest hstrip]
       · simp at hw
+
+
+/-- GROUND INSTANCE (official example 1): "leetcode" segments over dict ["leet","code"] in
+    exactly one way — the judge's yes-instance, with the witness enumerated. -/
+theorem vec : sol ["leet".toList, "code".toList] 8 "leetcode".toList =
+    [["leet".toList, "code".toList]] := by decide
 
 end LC.P0139

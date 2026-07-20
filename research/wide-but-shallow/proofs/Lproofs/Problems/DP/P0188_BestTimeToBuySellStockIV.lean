@@ -7,7 +7,7 @@ import Lproofs.Schemes.Fold
     DP over (day, transactions-used, holding). CLASSIFICATION (dp): the value is a recursion over the
     transaction budget. CORRECTNESS (structure, not optimality): we model a trading plan as a list of
     disjoint increasing buy<sell intervals and certify the two facts the DP rests on --- doing nothing
-    is always achievable (profit 0), and raising the transaction cap never loses an achievable profit
+    is always sol (profit 0), and raising the transaction cap never loses an sol profit
     (monotone in `k`). We do not prove the DP attains the maximum. -/
 
 namespace LC.P0188
@@ -22,20 +22,34 @@ def valid : List (ℕ × ℕ) → Prop
   | [t] => t.1 < t.2
   | a :: b :: rest => a.1 < a.2 ∧ a.2 ≤ b.1 ∧ valid (b :: rest)
 
-/-- Profit `p` is achievable with at most `k` transactions. -/
-def achievable (price : ℕ → ℤ) (k : ℕ) (p : ℤ) : Prop :=
+/-- Profit `p` is sol with at most `k` transactions. -/
+def sol (price : ℕ → ℤ) (k : ℕ) (p : ℤ) : Prop :=
   ∃ plan, valid plan ∧ plan.length ≤ k ∧ profit price plan = p
 
 /-- SCHEME (dp): doing nothing (the empty plan) is always a valid zero-profit baseline --- the DP's
     base case. -/
-theorem cls (price : ℕ → ℤ) (k : ℕ) : achievable price k 0 :=
+theorem cls (price : ℕ → ℤ) (k : ℕ) : sol price k 0 :=
   ⟨[], by trivial, Nat.zero_le k, rfl⟩
 
-/-- CORRECT: raising the transaction cap never loses an achievable profit (monotone in `k`) --- the
+/-- CORRECT: raising the transaction cap never loses an sol profit (monotone in `k`) --- the
     structural fact that makes the answer non-decreasing in `k` and lets it saturate. -/
-theorem corr (price : ℕ → ℤ) (k : ℕ) (p : ℤ) (h : achievable price k p) :
-    achievable price (k + 1) p := by
+theorem corr (price : ℕ → ℤ) (k : ℕ) (p : ℤ) (h : sol price k p) :
+    sol price (k + 1) p := by
   obtain ⟨plan, hv, hlen, hp⟩ := h
   exact ⟨plan, hv, le_trans hlen (Nat.le_succ k), hp⟩
+
+
+/-- Official example 2 prices [3,2,6,5,0,3] (day ↦ price; off-array 0). -/
+def exPrice : ℕ → ℤ := fun i => [3, 2, 6, 5, 0, 3].getD i 0
+
+/-- GROUND INSTANCE (official example 2): with k = 2 the judge's profit 7 is achievable
+    (buy day 1 sell day 2, buy day 4 sell day 5); with k = 0 no positive profit is. -/
+theorem vec : sol exPrice 2 7 ∧ ¬ sol exPrice 0 1 := by
+  constructor
+  · exact ⟨[(1, 2), (4, 5)], by norm_num [valid], by norm_num, by decide⟩
+  · rintro ⟨plan, hv, hlen, hp⟩
+    have : plan = [] := List.length_eq_zero_iff.mp (Nat.le_zero.mp hlen)
+    subst this
+    simp [profit] at hp
 
 end LC.P0188

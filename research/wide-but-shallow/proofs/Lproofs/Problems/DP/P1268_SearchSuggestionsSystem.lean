@@ -12,17 +12,23 @@ import Lproofs.Schemes.Fold
 namespace LC.P1268
 
 /-- Suggestions for a typed prefix `p`: the products that have `p` as a prefix. -/
-def suggest (products : List (List Char)) (p : List Char) : List (List Char) :=
+def sol (products : List (List Char)) (p : List Char) : List (List Char) :=
   products.filter fun w => decide (p <+: w)
 
 /-- SCHEME (fold): suggestions are computed by a single streaming filter pass over the products (a
     fold keeping those that match the typed prefix). -/
 theorem cls (products : List (List Char)) (p : List Char) :
-    suggest products p = products.filter (fun w => decide (p <+: w)) := rfl
+    sol products p = products.filter (fun w => decide (p <+: w)) := rfl
 
 /-- CORRECT (soundness): every suggested product genuinely starts with the typed prefix. -/
-theorem corr (products : List (List Char)) (p w : List Char) (h : w ∈ suggest products p) : p <+: w := by
-  simp only [suggest, List.mem_filter, decide_eq_true_eq] at h
+theorem corr (products : List (List Char)) (p w : List Char) (h : w ∈ sol products p) : p <+: w := by
+  simp only [sol, List.mem_filter, decide_eq_true_eq] at h
   exact h.2
+
+
+/-- GROUND INSTANCE (official example 1): typing "mou" against the five products suggests
+    exactly ["mouse","mousepad"]. -/
+theorem vec : sol ["mobile".toList, "mouse".toList, "moneypot".toList, "monitor".toList,
+    "mousepad".toList] "mou".toList = ["mouse".toList, "mousepad".toList] := by decide
 
 end LC.P1268

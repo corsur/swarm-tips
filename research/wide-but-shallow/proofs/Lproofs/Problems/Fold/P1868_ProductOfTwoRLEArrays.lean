@@ -12,15 +12,19 @@ namespace LC.P1868
 open Interview.Patterns
 
 /-- Decode a run-length encoding `[(value, count), …]` into the flat array. -/
-def decode (rle : List (ℤ × ℕ)) : List ℤ := rle.flatMap fun p => List.replicate p.2 p.1
+def sol (rle : List (ℤ × ℕ)) : List ℤ := rle.flatMap fun p => List.replicate p.2 p.1
 
 /-- SCHEME (fold): decoding streams run by run — expand the head run and prepend to the rest. -/
 theorem cls (p : ℤ × ℕ) (t : List (ℤ × ℕ)) :
-    decode (p :: t) = List.replicate p.2 p.1 ++ decode t := by
-  simp [decode, List.flatMap_cons]
+    sol (p :: t) = List.replicate p.2 p.1 ++ sol t := by
+  simp [sol, List.flatMap_cons]
 
 /-- CORRECT: the decoded length is the sum of the run counts — the index alignment the product relies on. -/
-theorem corr (rle : List (ℤ × ℕ)) : (decode rle).length = (rle.map Prod.snd).sum := by
-  simp [decode, List.length_flatMap, List.length_replicate]
+theorem corr (rle : List (ℤ × ℕ)) : (sol rle).length = (rle.map Prod.snd).sum := by
+  simp [sol, List.length_flatMap, List.length_replicate]
+
+
+/-- GROUND INSTANCE (official example 1): encoded1 = [[1,3],[2,3]] decodes to [1,1,1,2,2,2]. -/
+theorem vec : sol [(1, 3), (2, 3)] = [1, 1, 1, 2, 2, 2] := by decide
 
 end LC.P1868

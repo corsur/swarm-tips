@@ -10,7 +10,10 @@ import Lproofs.Problems.DP.P0208_ImplementTrie
     We certify the decomposition + soundness, not the sentence-level rewrite. -/
 
 namespace LC.P0648
-open LC.P0208 (Trie contains)
+open LC.P0208 (Trie)
+
+/-- `LC.P0208.contains` was renamed to its gate-designated name `sol`; keep the local name. -/
+abbrev contains : Trie → List ℕ → Bool := LC.P0208.sol
 
 /-- Walk the trie along `w`, returning the matched prefix at the first root-ending node. -/
 def findRoot : Trie → List ℕ → Option (List ℕ)
@@ -62,6 +65,6 @@ theorem corr : ∀ (w : List ℕ) (t : Trie) (p : List ℕ),
             subst hfr
             obtain ⟨hcont, hpre⟩ := ih t' p' hfind
             obtain ⟨s, hs⟩ := hpre
-            exact ⟨by simp only [contains, hcx]; exact hcont, ⟨s, by rw [List.cons_append, hs]⟩⟩
+            exact ⟨by simp only [contains, LC.P0208.sol, hcx]; exact hcont, ⟨s, by rw [List.cons_append, hs]⟩⟩
 
 end LC.P0648

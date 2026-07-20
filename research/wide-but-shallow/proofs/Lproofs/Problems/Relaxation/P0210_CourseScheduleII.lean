@@ -37,4 +37,32 @@ theorem corr (g : ℕ → List ℕ) (start : ℕ) : spec g start (sol g start) :
   ext v
   simp [Set.mem_singleton_iff]
 
+
+/-- Official example 2: prerequisites [[1,0],[2,0],[3,1],[3,2]] — course 3 requires 1 and 2,
+    which require 0. -/
+def exG : ℕ → List ℕ
+  | 1 => [0]
+  | 2 => [0]
+  | 3 => [1, 2]
+  | _ => []
+
+/-- TEST VECTOR (official example 2): course 0 is a transitive prerequisite of course 3
+    (so it precedes 3 in every valid order), while a fifth course 4 is not. -/
+theorem vec : 0 ∈ sol exG 3 ∧ 4 ∉ sol exG 3 := by
+  have h := corr exG 3
+  unfold spec at h
+  rw [h]
+  simp only [Set.mem_setOf_eq]
+  constructor
+  · exact .head (show prereq exG 3 1 by simp [prereq, exG])
+      (.head (show prereq exG 1 0 by simp [prereq, exG]) .refl)
+  · intro hr
+    have bound : ∀ v, Relation.ReflTransGen (prereq exG) 3 v → v ≤ 3 := by
+      intro v hv
+      induction hv with
+      | refl => omega
+      | @tail b c _ step ih =>
+        interval_cases b <;> simp [prereq, exG] at step <;> omega
+    exact absurd (bound 4 hr) (by omega)
+
 end LC.P0210

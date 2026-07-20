@@ -20,7 +20,7 @@ def wmatch : Trie → List (Option ℕ) → Prop
   | .node _ c, none :: ps => ∃ x t, c x = some t ∧ wmatch t ps
 
 /-- SCHEME (fold over the word): exact descent is a left fold carrying the current node. -/
-theorem cls (t : Trie) : IsFold (fun w : List ℕ => w.foldl stepNode (some t)) := LC.P0208.cls t
+theorem cls (t : Trie) : IsFold (fun w : List ℕ => w.foldl stepNode (some t)) := (LC.P0208.cls t).1
 
 /-- CORRECT: after adding `w`, the all-wildcard pattern of length `|w|` matches it — the `.` wildcard
     descends edge-by-edge to the just-inserted word. -/

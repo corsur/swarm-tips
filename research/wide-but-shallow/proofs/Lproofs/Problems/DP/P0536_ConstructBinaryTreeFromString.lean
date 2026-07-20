@@ -20,29 +20,38 @@ def inorder : T → List ℤ
   | .node l v r => inorder l ++ v :: inorder r
 
 /-- The value-token stream of the string encoding (value, then left then right subtree tokens). -/
-def serialize : T → List ℤ
+def sol : T → List ℤ
   | .leaf => []
-  | .node l v r => v :: (serialize l ++ serialize r)
+  | .node l v r => v :: (sol l ++ sol r)
 
 /-- SCHEME (dp / catamorphism): the encoding is a genuine `Tree.fold`. -/
-theorem cls : (serialize : T → List ℤ) =
+theorem cls : (sol : T → List ℤ) =
     Interview.Patterns.Tree.fold [] (fun l v r => v :: (l ++ r)) := by
   funext t
   induction t with
   | leaf => rfl
-  | node l v r ihl ihr => simp [serialize, Interview.Patterns.Tree.fold, ihl, ihr]
+  | node l v r ihl ihr => simp [sol, Interview.Patterns.Tree.fold, ihl, ihr]
 
 /-- CORRECT (soundness): every node value appears in the serialized token stream --- the encoding
     preserves all nodes. -/
-theorem corr (t : T) (x : ℤ) (h : x ∈ inorder t) : x ∈ serialize t := by
+theorem corr (t : T) (x : ℤ) (h : x ∈ inorder t) : x ∈ sol t := by
   induction t with
   | leaf => simp [inorder] at h
   | node l v r ihl ihr =>
     simp only [inorder, List.mem_append, List.mem_cons] at h
-    simp only [serialize, List.mem_cons, List.mem_append]
+    simp only [sol, List.mem_cons, List.mem_append]
     rcases h with h | h | h
     · exact Or.inr (Or.inl (ihl h))
     · exact Or.inl h
     · exact Or.inr (Or.inr (ihr h))
+
+
+/-- Official example 1: "4(2(3)(1))(6(5))". -/
+def exT : T :=
+  .node (.node (.node .leaf 3 .leaf) 2 (.node .leaf 1 .leaf)) 4
+    (.node (.node .leaf 5 .leaf) 6 .leaf)
+
+/-- GROUND INSTANCE (official example 1): the token stream is value-first, [4,2,3,1,6,5]. -/
+theorem vec : sol exT = [4, 2, 3, 1, 6, 5] := by decide
 
 end LC.P0536

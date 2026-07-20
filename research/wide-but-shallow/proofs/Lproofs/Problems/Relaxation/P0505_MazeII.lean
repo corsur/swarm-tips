@@ -35,4 +35,30 @@ theorem corr (g : ℕ → List ℕ) (start : ℕ) : spec g start (sol g start) :
   ext v
   simp [Set.mem_singleton_iff]
 
+
+/-- A concrete roll graph (stop cells 0..3 of a small corridor maze): from stop 0 the ball can
+    roll to stops 1 or 2; from 1 it reaches 3; stop 4 is walled off. -/
+def exG : ℕ → List ℕ
+  | 0 => [1, 2]
+  | 1 => [3]
+  | _ => []
+
+/-- TEST VECTOR: destination stop 3 is reachable from the start by rolling, stop 4 is not. -/
+theorem vec : 3 ∈ sol exG 0 ∧ 4 ∉ sol exG 0 := by
+  have h := corr exG 0
+  unfold spec at h
+  rw [h]
+  simp only [Set.mem_setOf_eq]
+  constructor
+  · exact .head (show roll exG 0 1 by simp [roll, exG])
+      (.head (show roll exG 1 3 by simp [roll, exG]) .refl)
+  · intro hr
+    have bound : ∀ v, Relation.ReflTransGen (roll exG) 0 v → v ≤ 3 := by
+      intro v hv
+      induction hv with
+      | refl => omega
+      | @tail b c _ step ih =>
+        interval_cases b <;> simp [roll, exG] at step <;> omega
+    exact absurd (bound 4 hr) (by omega)
+
 end LC.P0505

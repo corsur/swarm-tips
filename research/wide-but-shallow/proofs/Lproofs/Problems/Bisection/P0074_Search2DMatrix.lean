@@ -38,4 +38,16 @@ theorem corr (mat : ℕ → ℤ) (target : ℤ) (h : ∃ i, reached mat target i
     IsLeast {i | reached mat target i} (sol mat target h) :=
   bisection_isLeast (reached mat target) h
 
+
+/-- Official example, flattened row-major: `[[1,3,5,7],[10,11,16,20],[23,30,34,60]]`. -/
+def exMat : ℕ → ℤ := fun i => [1, 3, 5, 7, 10, 11, 16, 20, 23, 30, 34, 60].getD i 60
+
+/-- TEST VECTOR (official example): target 3 — the search lands on flattened index 1, whose
+    entry equals the target (present, as the judge expects). -/
+theorem vec : sol exMat 3 ⟨1, by decide⟩ = 1 ∧ exMat 1 = 3 := by
+  refine ⟨?_, by decide⟩
+  simp only [sol]
+  rw [Nat.find_eq_iff]
+  decide
+
 end LC.P0074

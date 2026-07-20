@@ -1,7 +1,7 @@
 import Lproofs.Schemes.Fold
 
 /-! @lc 71 | name:Simplify Path | scheme:fold | family:pairing-stack | complexity:O(n) |
-    source:https://leetcode.com/problems/simplify-path/
+    source:https://leetcode.com/problems/sol-path/
 
     A Unix path is canonicalised by scanning its `/`-separated components onto a stack: `""` and `"."`
     are skipped, `".."` pops, any real name is pushed. CLASSIFICATION (fold): the canonical stack is a
@@ -21,10 +21,13 @@ def step (stack : List String) (c : String) : List String :=
   else stack ++ [c]
 
 /-- Canonical components of the path. -/
-def simplify (comps : List String) : List String := comps.foldl step []
+def sol (comps : List String) : List String := comps.foldl step []
 
-/-- SCHEME (fold): the canonical stack is a left fold of the scan step over the components. -/
-theorem cls (comps : List String) : simplify comps = comps.foldl step [] := rfl
+/-- SCHEME (fold): the canonical stack is a left fold of the scan step over the components —
+    and `sol` is exactly that fold. -/
+theorem cls : Interview.Patterns.IsFold (fun comps : List String => comps.foldl step []) ∧
+    ∀ comps : List String, sol comps = comps.foldl step [] :=
+  ⟨⟨step, [], fun _ => rfl⟩, fun _ => rfl⟩
 
 /-- A scan step preserves the "all components are real names" invariant. -/
 theorem step_preserves (stack : List String) (c : String) (h : ∀ s ∈ stack, valid s) :
@@ -48,7 +51,13 @@ theorem foldl_preserves (comps : List String) :
   | cons c t ih => exact fun stack h => ih (step stack c) (step_preserves stack c h)
 
 /-- CORRECT: every component of the simplified path is a real name — the canonical-form invariant. -/
-theorem corr (comps : List String) : ∀ s ∈ simplify comps, valid s :=
+theorem corr (comps : List String) : ∀ s ∈ sol comps, valid s :=
   foldl_preserves comps [] (by simp)
+
+
+/-- GROUND INSTANCE (official examples 1 and 2): "/home/" splits to ["", "home", ""] and
+    simplifies to ["home"]; "/home//foo/" collapses the empty component. -/
+theorem vec : sol ["", "home", ""] = ["home"] ∧
+    sol ["", "home", "", "foo", ""] = ["home", "foo"] := by decide
 
 end LC.P0071

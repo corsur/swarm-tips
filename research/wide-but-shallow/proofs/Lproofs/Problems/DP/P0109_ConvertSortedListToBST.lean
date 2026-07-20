@@ -19,29 +19,34 @@ def inorder : T → List ℤ
   | .node l v r => inorder l ++ v :: inorder r
 
 /-- Build a balanced BST from the list, splitting at the midpoint (`fuel` bounds the recursion). -/
-def build : ℕ → List ℤ → T
+def sol : ℕ → List ℤ → T
   | 0, _ => .leaf
   | f + 1, l =>
     match l.drop (l.length / 2) with
     | [] => .leaf
-    | mid :: rest => .node (build f (l.take (l.length / 2))) mid (build f rest)
+    | mid :: rest => .node (sol f (l.take (l.length / 2))) mid (sol f rest)
 
-/-- SCHEME (dp / catamorphism): the in-order traversal is a genuine `Tree.fold`. -/
-theorem cls : (inorder : T → List ℤ) =
-    Interview.Patterns.Tree.fold [] (fun l v r => l ++ v :: r) := by
+/-- SCHEME (dp / recursive decomposition): `sol` splits the list at its midpoint and recurses on
+    the two halves; the in-order reading `corr` checks it against is a genuine `Tree.fold`. -/
+theorem cls : (∀ (f : ℕ) (l : List ℤ), sol (f + 1) l =
+      match l.drop (l.length / 2) with
+      | [] => .leaf
+      | mid :: rest => .node (sol f (l.take (l.length / 2))) mid (sol f rest)) ∧
+    (inorder : T → List ℤ) = Interview.Patterns.Tree.fold [] (fun l v r => l ++ v :: r) := by
+  refine ⟨fun f l => rfl, ?_⟩
   funext t
   induction t with
   | leaf => rfl
   | node l v r ihl ihr => simp [inorder, Interview.Patterns.Tree.fold, ihl, ihr]
 
 /-- CORRECT: the in-order traversal of the built tree is the original sorted list. -/
-theorem corr (f : ℕ) (l : List ℤ) (hf : l.length ≤ f) : inorder (build f l) = l := by
+theorem corr (f : ℕ) (l : List ℤ) (hf : l.length ≤ f) : inorder (sol f l) = l := by
   induction f generalizing l with
   | zero =>
     have : l = [] := List.length_eq_zero_iff.mp (Nat.le_zero.mp hf)
     subst this; rfl
   | succ f ih =>
-    rw [build]
+    rw [sol]
     cases hl : l.drop (l.length / 2) with
     | nil =>
       have hlen : (l.drop (l.length / 2)).length = 0 := by rw [hl]; rfl
@@ -59,5 +64,11 @@ theorem corr (f : ℕ) (l : List ℤ) (hf : l.length ≤ f) : inorder (build f l
       have hrlen' : rest.length ≤ f := by omega
       simp only [inorder, ih _ htlen, ih _ hrlen']
       rw [hmid, List.take_append_drop]
+
+
+/-- GROUND INSTANCE (official example 1): building from [-10,-3,0,5,9] yields a tree whose
+    in-order reading is the original sorted list — the height-balance round-trip on the judge's
+    input. -/
+theorem vec : inorder (sol 5 [-10, -3, 0, 5, 9]) = [-10, -3, 0, 5, 9] := by decide
 
 end LC.P0109

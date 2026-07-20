@@ -13,10 +13,13 @@ namespace LC.P0209
 open Interview.Patterns
 
 /-- Running window sum: fold the values with `+`. -/
-def wsum (xs : List ℕ) : ℕ := xs.foldl (· + ·) 0
+def sol (xs : List ℕ) : ℕ := xs.foldl (· + ·) 0
 
-/-- SCHEME (fold): the running sum is a left fold with a scalar accumulator. -/
-theorem cls : IsFold (fun xs : List ℕ => xs.foldl (· + ·) 0) := ⟨(· + ·), 0, fun _ => rfl⟩
+/-- SCHEME (fold): the running sum is a left fold with a scalar accumulator — and `sol` is
+    exactly that fold. -/
+theorem cls : IsFold (fun xs : List ℕ => xs.foldl (· + ·) 0) ∧
+    ∀ xs : List ℕ, sol xs = xs.foldl (· + ·) 0 :=
+  ⟨⟨(· + ·), 0, fun _ => rfl⟩, fun _ => rfl⟩
 
 /-- The window sum accumulates linearly in its seed — genuine incremental state. -/
 theorem foldl_add (xs : List ℕ) (c : ℕ) : xs.foldl (· + ·) c = c + xs.foldl (· + ·) 0 := by
@@ -25,7 +28,12 @@ theorem foldl_add (xs : List ℕ) (c : ℕ) : xs.foldl (· + ·) c = c + xs.fold
   | cons x xs ih => simp only [List.foldl_cons, Nat.zero_add]; rw [ih (c + x), ih x]; omega
 
 /-- NON-VACUITY (prefix-sum recurrence): extending the window by `x` adds `x` to its sum. -/
-theorem corr (xs : List ℕ) (x : ℕ) : wsum (xs ++ [x]) = wsum xs + x := by
-  simp only [wsum, List.foldl_append, List.foldl_cons, List.foldl_nil]
+theorem corr (xs : List ℕ) (x : ℕ) : sol (xs ++ [x]) = sol xs + x := by
+  simp only [sol, List.foldl_append, List.foldl_cons, List.foldl_nil]
+
+
+/-- GROUND INSTANCE (official example 1): the full-array window over [2,3,1,2,4,3] carries sum
+    15, and the winning window [4,3] carries 7 = target. -/
+theorem vec : sol [2, 3, 1, 2, 4, 3] = 15 ∧ sol [4, 3] = 7 := by decide
 
 end LC.P0209

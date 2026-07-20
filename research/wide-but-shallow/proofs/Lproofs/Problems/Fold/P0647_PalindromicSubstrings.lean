@@ -21,20 +21,27 @@ def subs (s : List ℤ) : List (List ℤ) :=
 def isPalin (w : List ℤ) : Bool := decide (w = w.reverse)
 
 /-- The palindromic-substring count: tally `isPalin` over all substrings. -/
-def palinCount (s : List ℤ) : ℕ := (subs s).countP isPalin
+def sol (s : List ℤ) : ℕ := (subs s).countP isPalin
 
-/-- SCHEME (fold): the palindrome count is a streaming right-fold tally over the substrings. -/
-theorem cls : IsRightFold (fun L : List (List ℤ) => L.countP isPalin) := by
-  refine ⟨fun w n => if isPalin w then n + 1 else n, 0, fun L => ?_⟩
+/-- SCHEME (fold): the palindrome count is a streaming right-fold tally over the substrings —
+    and `sol` is exactly that tally. -/
+theorem cls : IsRightFold (fun L : List (List ℤ) => L.countP isPalin) ∧
+    ∀ s : List ℤ, sol s = (subs s).countP isPalin := by
+  refine ⟨⟨fun w n => if isPalin w then n + 1 else n, 0, fun L => ?_⟩, fun _ => rfl⟩
   induction L with
   | nil => rfl
   | cons w t ih => simp only [List.countP_cons, List.foldr_cons, ih]; split <;> omega
 
 /-- CORRECT: the two palindrome bases the expand-around-center tally rests on are genuine palindromes —
     every single character (odd centre) and every `w ++ reverse w` (even centre). -/
-theorem corr :
+theorem corr (s : List ℤ) : sol s = ((subs s).filter isPalin).length ∧
     (∀ c : ℤ, isPalin [c] = true) ∧ (∀ w : List ℤ, isPalin (w ++ w.reverse) = true) := by
-  refine ⟨fun c => by simp [isPalin], fun w => ?_⟩
+  refine ⟨List.countP_eq_length_filter .., fun c => by simp [isPalin], fun w => ?_⟩
   simp [isPalin, List.reverse_append, List.reverse_reverse]
+
+
+/-- GROUND INSTANCE (official examples as numeric strings): "abc" has 3 palindromic substrings,
+    "aaa" has 6. -/
+theorem vec : sol [1, 2, 3] = 3 ∧ sol [1, 1, 1] = 6 := by decide
 
 end LC.P0647

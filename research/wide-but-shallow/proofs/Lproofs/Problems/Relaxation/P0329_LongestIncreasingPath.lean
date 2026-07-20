@@ -45,4 +45,38 @@ theorem corr (val : Cell → ℤ) (start : Cell) : spec val start (sol val start
   ext v
   simp [Set.mem_singleton_iff]
 
+
+/-- A concrete 2×2 grid `[[1,2],[4,3]]` (row r, column c ↦ value); cells off the grid read 0. -/
+def exVal : Cell → ℤ := fun c =>
+  if c = (0, 0) then 1 else if c = (0, 1) then 2
+  else if c = (1, 1) then 3 else if c = (1, 0) then 4 else 0
+
+/-- TEST VECTOR: from the 1-cell the increasing path 1→2→3→4 reaches the 4-cell; the off-grid
+    cell (5,5) (value 0) is unreachable, since every step strictly increases the value above 1. -/
+theorem vec : ((1, 0) : Cell) ∈ sol exVal (0, 0) ∧ ((5, 5) : Cell) ∉ sol exVal (0, 0) := by
+  have h := corr exVal (0, 0)
+  unfold spec at h
+  rw [h]
+  simp only [Set.mem_setOf_eq]
+  constructor
+  · exact .head (show incStep exVal (0, 0) (0, 1) by exact ⟨by simp [adjacent], by decide⟩)
+      (.head (show incStep exVal (0, 1) (1, 1) by exact ⟨by simp [adjacent], by decide⟩)
+        (.head (show incStep exVal (1, 1) (1, 0) by exact ⟨by simp [adjacent], by decide⟩) .refl))
+  · intro hr
+    have grow : ∀ v, Relation.ReflTransGen (incStep exVal) (0, 0) v →
+        v = ((0, 0) : Cell) ∨ exVal (0, 0) < exVal v := by
+      intro v hv
+      induction hv with
+      | refl => exact Or.inl rfl
+      | tail _ step ih =>
+        rename_i b c
+        rcases ih with hb | hb
+        · subst hb
+          exact Or.inr step.2
+        · exact Or.inr (lt_trans hb step.2)
+    rcases grow (5, 5) hr with h5 | h5
+    · exact absurd h5 (by decide)
+    · rw [show exVal (5, 5) = 0 by decide, show exVal (0, 0) = 1 by decide] at h5
+      omega
+
 end LC.P0329

@@ -19,3 +19,9 @@ name = "Lproofs"
 # Build the whole tree (infra + every per-problem certificate under Lproofs/Problems), so a bare
 # `lake build` compiles and checks all certificates — matching the reproducibility claim.
 globs = ["Lproofs.+"]
+
+[[lean_exe]]
+name = "gate"
+root = "Gate"
+# The mechanical genuineness gate: recomputes per-problem certificate verdicts from the elaborated
+# environment (sol-reference, closed test vectors, standard-axiom closure). Run: `lake exe gate`.

@@ -17,10 +17,13 @@ def step (stk : List Char) (c : Char) : List Char :=
   if c = '(' then '(' :: stk else if c = ')' then stk.tail else stk
 
 /-- Scan the string through the matching stack. -/
-def run (s : List Char) : List Char := s.foldl step []
+def sol (s : List Char) : List Char := s.foldl step []
 
-/-- SCHEME (fold): the bracket matching is a left fold with the unmatched-opener stack. -/
-theorem cls : IsFold (fun s : List Char => s.foldl step []) := ⟨step, [], fun _ => rfl⟩
+/-- SCHEME (fold): the bracket matching is a left fold with the unmatched-opener stack — and
+    `sol` is exactly that fold. -/
+theorem cls : IsFold (fun s : List Char => s.foldl step []) ∧
+    ∀ s : List Char, sol s = s.foldl step [] :=
+  ⟨⟨step, [], fun _ => rfl⟩, fun _ => rfl⟩
 
 /-- One step preserves "stack holds only openers". -/
 theorem step_open (stk : List Char) (c : Char) (h : ∀ x ∈ stk, x = '(') :
@@ -35,13 +38,18 @@ theorem step_open (stk : List Char) (c : Char) (h : ∀ x ∈ stk, x = '(') :
   · exact h
 
 /-- NON-VACUITY: at every point the stack holds only opening brackets — the matching invariant. -/
-theorem corr (s : List Char) : ∀ x ∈ run s, x = '(' := by
-  unfold run
+theorem corr (s : List Char) : ∀ x ∈ sol s, x = '(' := by
+  unfold sol
   have key : ∀ (xs : List Char) stk, (∀ x ∈ stk, x = '(') → ∀ x ∈ xs.foldl step stk, x = '(' := by
     intro xs
     induction xs with
     | nil => intro stk h; exact h
     | cons c rest ih => intro stk h; exact ih (step stk c) (step_open stk c h)
   exact key s [] (by simp)
+
+
+/-- GROUND INSTANCE (official examples 1 and 3): "()" matches to an empty stack (valid);
+    an unclosed "(" survives the scan (invalid). -/
+theorem vec : sol "()".toList = [] ∧ sol "((".toList = ['(', '('] := by decide
 
 end LC.P0020
