@@ -70,6 +70,48 @@ theorem corr : ∀ (dict : List (List Char)) (fuel : ℕ) (s : List Char) (seg :
       · simp at hw
 
 
+/-- `strip` is complete: stripping a word off itself-plus-rest always succeeds. -/
+theorem strip_complete : ∀ (w r : List Char), strip w (w ++ r) = some r
+  | [], _ => rfl
+  | a :: w, r => by
+    simp only [List.cons_append, strip, if_pos]
+    exact strip_complete w r
+
+/-- COMPLETENESS (the other direction of `corr`): with enough fuel, every genuine segmentation —
+    dictionary words concatenating to the string — is enumerated. Together with `corr` this makes
+    the certificate a full characterization: `seg ∈ sol dict fuel s ↔ seg is a segmentation of s`
+    (for nonempty dictionary words and fuel > |s|). -/
+theorem complete (dict : List (List Char)) (hne : ∀ w ∈ dict, w ≠ []) :
+    ∀ (fuel : ℕ) (seg : List (List Char)), (∀ w ∈ seg, w ∈ dict) →
+      seg.flatten.length < fuel → seg ∈ sol dict fuel seg.flatten := by
+  intro fuel
+  induction fuel with
+  | zero => intro seg _ hlen; omega
+  | succ f ih =>
+    intro seg hmem hlen
+    match seg with
+    | [] => simp [sol]
+    | w :: rest =>
+      have hw : w ∈ dict := hmem w List.mem_cons_self
+      match hww : w with
+      | [] => exact absurd rfl (hne [] (hww ▸ hw))
+      | a :: w' =>
+        have hflat : (((a :: w') :: rest) : List (List Char)).flatten =
+            a :: (w' ++ rest.flatten) := by
+          simp [List.flatten_cons]
+        rw [hflat, cls]
+        refine List.mem_flatMap.mpr ⟨a :: w', hww ▸ hw, ?_⟩
+        have hstrip : strip (a :: w') (a :: (w' ++ rest.flatten)) = some rest.flatten := by
+          simpa using strip_complete (a :: w') rest.flatten
+        rw [hstrip]
+        refine List.mem_map.mpr ⟨rest, ?_, rfl⟩
+        refine ih rest (fun x hx => hmem x (List.mem_cons_of_mem _ hx)) ?_
+        have : (((a :: w') :: rest) : List (List Char)).flatten.length =
+            w'.length + 1 + rest.flatten.length := by
+          simp [List.flatten_cons]
+          omega
+        omega
+
 /-- GROUND INSTANCE (official example 1): "leetcode" segments over dict ["leet","code"] in
     exactly one way — the judge's yes-instance, with the witness enumerated. -/
 theorem vec : sol ["leet".toList, "code".toList] 8 "leetcode".toList =
