@@ -176,7 +176,8 @@ standard accepted solution and prove two things: that it has the \emph{shape} of
 satisfies a property of the \emph{specific} problem---its actual grid, array, or condition. The second part
 is what gives the proof teeth: a statement about an abstract relation would certify the \emph{category}, not
 the problem. So every certificate is held to a mechanical standard, recomputed by a released Lean program
-(\texttt{lake exe gate}) directly from the compiled proofs --- no per-problem allowlist or blocklist. The
+(\texttt{lake exe gate}) directly from the compiled proofs, with no per-problem human judgement anywhere
+in the count. The
 gate checks that the file designates its modelled solution (\texttt{sol}); that the statements of both
 theorems are about that very function, not a disconnected helper; that the certificate contains a
 \emph{ground instance} --- a closed, kernel-checked evaluation of the solution on a concrete input, usually
