@@ -192,9 +192,10 @@ answer as it goes. And the scheme is \emph{falsifiable}: the distinct-count func
 it (\texttt{not\_isFold\_countDistinct}), and within it the memory hierarchy is strict ---
 \texttt{length} is a fold but provably not a finite-state one
 (\texttt{length\_not\_finiteStateFold}). ``Everything is a fold'' is therefore false as a theorem, not
-merely denied: the classification the certificates establish is one a problem can provably fail.
-What we do \emph{not} demand is a proof that the algorithm is optimal---that bar is far higher than the
-question we are asking, which is only \emph{which idea solves the problem}. A problem counts when both proofs
+merely denied.
+What we do \emph{not} demand for a problem to count is a proof that the algorithm is optimal---the
+question is only \emph{which idea solves the problem}---though most certificates now clear the higher bar
+anyway (48 of 69, below). A problem counts when both proofs
 pass with no gaps (Lean flags any unfinished proof; there are none) and use only Lean's standard axioms.
 
 \textbf{A pre-registered sample.} Which problems land in the sample matters, because some are far easier to
@@ -231,10 +232,7 @@ longest-common-subsequence recursion behind the palindromic-subsequence certific
 in~\cite{afp_dp}; the last three (k-transaction trading, tree diameter, the Josephus process) are
 recorded as open. The strengthening pass also demonstrated its own worth: demanding the full
 balanced-string equivalence for bracket matching exposed a lenient model that silently accepted a stray
-closing bracket --- the strict checker now carries the full equivalence, machine-checked. For a few
-textbook cases we close even the modelling gap: Kadane's algorithm for Maximum Subarray is literally one
-pass carrying a running pair, and we prove it returns exactly the largest subarray sum; Single Number is the
-XOR pass proven to return the lone unpaired value. And we do not
+closing bracket --- the strict checker now carries the full equivalence, machine-checked. And we do not
 re-prove the deep theory behind the ideas---that shortest paths and dynamic programming are formally
 well-founded is already established~\cite{afp_dijkstra,afp_kleene,lehmann77,afp_dp}, which we cite rather than
 redo.
@@ -267,9 +265,9 @@ the surface-family tags it starts from are the platform's---single-source and un
 surface'' count inherits whatever splits that taxonomy chose. \textbf{We model the solution, not the submission.} The proofs are about a solution we write down to capture
 the standard accepted approach, not the platform's exact code; we checked every candidate against the published
 editorials to guard against strawmen, but ``this captures the accepted approach'' remains a modelling
-judgement, not something the proof itself certifies. \textbf{Which idea is a choice.} The proof shows a
-problem \emph{can} be solved by an idea; it does not certify that ``which idea it is'' is the only sensible
-way to describe what an interview tests. \textbf{A single-sample estimate.} 71\% comes from one
+judgement, not something the proof itself certifies. \textbf{Which idea is a choice.} The proofs certify that an idea solves the problem
+(and, per \texttt{not\_isFold\_countDistinct}, that this is a claim a problem can provably fail), not
+that it is the only sensible description. \textbf{A single-sample estimate.} 71\% comes from one
 pre-registered sample, so the 95\% interval $[61\%,79\%]$, not the point value, is the honest summary; it
 errs low if anything, since the four ideas absorb some borderline ``greedy''/``simulation'' problems we left
 in the tail. \textbf{Window dependence.} The company difference is not
