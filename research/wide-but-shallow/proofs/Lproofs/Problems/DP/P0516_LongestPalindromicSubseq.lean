@@ -1,5 +1,9 @@
 import Lproofs.Schemes.Fold
 
+/-! CITATION-BACKED (optimality core): the optimal longest-common-subsequence recursion is
+    machine-checked in AFP Monad_Memo_DP (`Longest_Common_Subsequence`; `afp_dp` in the paper),
+    and LPS(s) = LCS(s, reverse s). The certificate below machine-checks the interval-recurrence
+    scheme membership and base case here; the optimality direction is cited. -/
 /-! @lc 516 | name:Longest Palindromic Subsequence | scheme:dp | family:interval-dp | complexity:O(n²) |
     source:https://leetcode.com/problems/longest-palindromic-subsequence/
 

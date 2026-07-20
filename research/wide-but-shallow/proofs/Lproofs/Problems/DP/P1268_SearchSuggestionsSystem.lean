@@ -31,4 +31,12 @@ theorem corr (products : List (List Char)) (p w : List Char) (h : w ∈ sol prod
 theorem vec : sol ["mobile".toList, "mouse".toList, "moneypot".toList, "monitor".toList,
     "mousepad".toList] "mou".toList = ["mouse".toList, "mousepad".toList] := by decide
 
+
+/-- COMPLETENESS (the other direction of `corr`): every product that starts with the typed
+    prefix is suggested. With `corr` this is a full characterization of the suggestion list. -/
+theorem complete (products : List (List Char)) (p w : List Char)
+    (hw : w ∈ products) (hp : p <+: w) : w ∈ sol products p := by
+  simp only [sol, List.mem_filter, decide_eq_true_eq]
+  exact ⟨hw, hp⟩
+
 end LC.P1268

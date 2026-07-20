@@ -43,10 +43,46 @@ in the paper is from June; the definitive list comes from the files.
 - **Band C, citation-backed:** 142 (AFP TortoiseHare), 516 (afp_dp LCS + reduction note).
 - **Band D, hard core (park with notes unless a reframe appears):** 188, 543.
 
-## Derived worklist (fill in Step 0)
-- [ ] …
+## Derived worklist (Step 0 DONE 2026-07-19, from the corr statements)
+Tier counts as-derived: EXACT/full ≈ 36 (incl. all bisection IsLeast, relaxation spec-equality,
+iff-certs, closed forms, round-trips), exact-IDENTITY ≈ 15 (recurrences, telescoping, conservation
+where the def IS the spec), ONE-DIRECTIONAL/upgradable = 18 below.
+
+**Band A — near-free converses:**
+- [x] 1268 completeness of the filter (prefixed product ∈ sol) — mem_filter
+- [x] 1492 completeness (0<d ∣ n, 0<n → d ∈ sol n) — mem_filter + le_of_dvd
+- [x] 314 converse (every tree value gets a column: x ∈ inorder t → ∃ col, (col,x) ∈ sol t c)
+- [x] 536 converse (sol t ⊆ inorder t — same induction as corr)
+- [ ] 939 accept-completeness (4 corners present ∧ nondegenerate → accept = true; near-rfl)
+- [ ] 3043 maximality (any common prefix of xs,ys is a prefix of sol xs ys)
+- [ ] 88 sorted-merge upgrade (Sorted a → Sorted b → Sorted (sol a b) ∧ perm (a++b))
+- [ ] 101 bonus: inorder (sol t) = (inorder t).reverse (mirror effect, clone of 226)
+
+**Band B — template work:**
+- [ ] 20 DyckWord iff (import Mathlib.Combinatorics.Enumerative.DyckWord)
+- [ ] 111 exact minDepth = min leaf-path length
+- [ ] 120 sol = min over all real descents (achievable+optimal template)
+- [ ] 71 canonical-path semantics
+- [ ] 208 full trie spec (contains ↔ inserted-word set) — medium
+- [ ] 1166 same shape as 208 — medium
+- [ ] 759 emitted-gap characterization ((g1,g2) ∈ sol l ↔ consecutive pair boundaries)
+- [ ] 3466 optimality over switch-sequences (achievable+optimal)
+- [ ] 3742 optimality over move-sequences (achievable+optimal)
+- [ ] 1823 exact Josephus process spec — HARD-B (elimination-process model ~150 ln; park OK)
+
+**Band C — citation-backed (bib pre-staged in paper.tex):**
+- [x] 142 docstring: Phase-2/full correctness cited — AFP TortoiseHare (Gammie 2015)
+- [x] 516 docstring: optimality core cited — afp_dp Longest_Common_Subsequence; LPS(s)=LCS(s,rev s)
+
+**Band D — hard core (park with notes unless a reframe appears):**
+- [ ] 188 k-transaction optimality (no citation exists; 200-400 ln; park expected)
+- [ ] 543 exact tree diameter (no citation exists; path formalization; park expected)
+
+Not upgraded on purpose (def IS the spec, or corr already the full law): 94, 104, 209, 541,
+647, 736, 1239, 1385, 1387, 1868, 1915, 2149, 2423, 2791, 2965 — identity tier, disclosed.
 
 ## Completed
+- [x] Turn 1 (Step 0 + Band C + Band A×4): 1268, 1492, 314, 536 upgraded to full characterizations; 142/516 citation-noted.
 - [x] 139 Word Break → FULL characterization (`strip_complete` + `complete`, commit b2c5623).
 
 ## Closing steps (after the worklist is exhausted)

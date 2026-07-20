@@ -54,4 +54,19 @@ def exT : T :=
 /-- GROUND INSTANCE (official example 1): the token stream is value-first, [4,2,3,1,6,5]. -/
 theorem vec : sol exT = [4, 2, 3, 1, 6, 5] := by decide
 
+
+/-- COMPLETENESS (the other direction of `corr`): every serialized token is a genuine node value
+    — the encoding adds nothing. With `corr`, the token stream carries exactly the tree's
+    values. -/
+theorem complete (t : T) (x : ℤ) (h : x ∈ sol t) : x ∈ inorder t := by
+  induction t with
+  | leaf => simp [sol] at h
+  | node l v r ihl ihr =>
+    simp only [sol, List.mem_cons, List.mem_append] at h
+    simp only [inorder, List.mem_append, List.mem_cons]
+    rcases h with h | h | h
+    · exact Or.inr (Or.inl h)
+    · exact Or.inl (ihl h)
+    · exact Or.inr (Or.inr (ihr h))
+
 end LC.P0536

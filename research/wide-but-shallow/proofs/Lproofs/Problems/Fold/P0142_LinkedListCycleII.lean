@@ -1,5 +1,10 @@
 import Lproofs.Schemes.Fold
 
+/-! CITATION-BACKED (full correctness): the complete Tortoise-and-Hare algorithm — including
+    Phase 2, locating the cycle's start — is machine-checked in the Archive of Formal Proofs
+    ("The Tortoise and the Hare Algorithm", P. Gammie, 2015; `afp_tortoisehare` in the paper).
+    The certificate below machine-checks the scheme membership and the Phase-1 meeting guarantee
+    here; the remaining direction is cited, per the LC 1489/1192 precedent. -/
 /-! @lc 142 | name:Linked List Cycle II | scheme:fold | family:fast-sol | complexity:O(n) |
     source:https://leetcode.com/problems/linked-list-cycle-ii/
 

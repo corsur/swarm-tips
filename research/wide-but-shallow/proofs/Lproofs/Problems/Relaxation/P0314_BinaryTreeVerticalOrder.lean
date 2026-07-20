@@ -51,4 +51,25 @@ def exT : T :=
     column −1, {3,15} in column 0, 20 in column 1, 7 in column 2 (the judge's grouping). -/
 theorem vec : sol exT 0 = [(0, 3), (-1, 9), (1, 20), (0, 15), (2, 7)] := by decide
 
+
+/-- COMPLETENESS (the other direction of `corr`): every tree value is reported in some column —
+    the traversal drops no nodes. With `corr`, the emitted pairs are exactly the tree's values,
+    each tagged with its column. -/
+theorem complete (t : T) (c : ℤ) (x : ℤ) (h : x ∈ inorder t) : ∃ col, (col, x) ∈ sol t c := by
+  induction t generalizing c with
+  | leaf => simp [inorder] at h
+  | node l v r ihl ihr =>
+    simp only [inorder, List.mem_append, List.mem_cons] at h
+    rcases h with h | h | h
+    · obtain ⟨col, hc⟩ := ihl (c - 1) h
+      refine ⟨col, ?_⟩
+      simp only [sol]
+      exact List.mem_cons_of_mem _ (List.mem_append_left _ hc)
+    · refine ⟨c, ?_⟩
+      simp [sol, h]
+    · obtain ⟨col, hc⟩ := ihr (c + 1) h
+      refine ⟨col, ?_⟩
+      simp only [sol]
+      exact List.mem_cons_of_mem _ (List.mem_append_right _ hc)
+
 end LC.P0314

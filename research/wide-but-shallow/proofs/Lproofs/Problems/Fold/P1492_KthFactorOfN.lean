@@ -35,4 +35,11 @@ theorem corr (n d : ℕ) (h : d ∈ sol n) : 0 < d ∧ d ∣ n := by
     the judge's answer 3. -/
 theorem vec : sol 12 = [1, 2, 3, 4, 6, 12] ∧ (sol 12).getD 2 0 = 3 := by decide
 
+
+/-- COMPLETENESS (the other direction of `corr`): every positive divisor of a positive `n` is
+    collected by the scan. With `corr` the list is exactly the divisors, in increasing order. -/
+theorem complete (n d : ℕ) (hn : 0 < n) (h0 : 0 < d) (hd : d ∣ n) : d ∈ sol n := by
+  simp only [sol, List.mem_filter, List.mem_range, decide_eq_true_eq]
+  exact ⟨Nat.lt_succ_of_le (Nat.le_of_dvd hn hd), h0, hd⟩
+
 end LC.P1492
