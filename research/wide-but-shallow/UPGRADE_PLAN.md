@@ -59,7 +59,7 @@ where the def IS the spec), ONE-DIRECTIONAL/upgradable = 18 below.
 - [x] 101 bonus: inorder (sol t) = (inorder t).reverse (mirror effect, clone of 226)
 
 **Band B — template work:**
-- [ ] 20 DyckWord iff (import Mathlib.Combinatorics.Enumerative.DyckWord)
+- [x] 20 strict checker + Dyck-condition iff (no import needed — spec matches Mathlib DyckWord condition verbatim)
 - [x] 111 exact minDepth = min leaf-path length
 - [x] 120 sol = min over all real descents (achievable+optimal template)
 - [x] 71 canonical-path semantics
@@ -82,6 +82,7 @@ Not upgraded on purpose (def IS the spec, or corr already the full law): 94, 104
 647, 736, 1239, 1385, 1387, 1868, 1915, 2149, 2423, 2791, 2965 — identity tier, disclosed.
 
 ## Completed
+- [x] Turn 6 (Band B flagship): 20 — strict checker `check` (Option-depth fold, pop-on-empty fails), `check_iff_balanced` (accepts ↔ Mathlib's Dyck condition: prefix-closes ≤ opens ∧ totals equal), `check_sol_bridge` (lenient stack = replicate of strict depth), strict ground instances incl. the ")" rejection the lenient model missed. THE modelling-gap catch of the run — cite in paper §4 as evidence the upgrade process has teeth.
 - [x] Turn 5 (Band B): 3742 play/achievable/optimal — sol = exact max affordable path score over move-strategies (boundary-0 branches mirrored in play). Gotcha: set-folding (set b' := …) desyncs with simp unfolds — inline the expression; rewrite h (if_pos/heq) BEFORE max_eq_* selection.
 - NOTE for 20 (next): current lenient stack (tail on empty) means sol s = [] does NOT imply balanced (e.g. ")"). Upgrade = strict checker (Option (List Char) fold, pop-on-empty ⇒ none) + own inductive Balanced grammar + iff; adjust cls conj + vec accordingly. DyckWord import optional — own Balanced is cleaner.
 - [x] Turn 4 (Band B×3): 759 sol_eq_zip (gaps = exactly adjacent-pair boundaries); 71 three laws + laws_unique (initial-algebra full spec); 3466 play/achievable/optimal (sol = exact max over switch-strategies). Gotcha: sw-1 leaves `s+1-1` unreduced — simp only [Nat.add_sub_cancel] after if_pos.
