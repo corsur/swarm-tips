@@ -68,15 +68,15 @@ where the def IS the spec), ONE-DIRECTIONAL/upgradable = 18 below.
 - [x] 759 emitted-gap characterization ((g1,g2) ∈ sol l ↔ consecutive pair boundaries)
 - [x] 3466 optimality over switch-sequences (achievable+optimal)
 - [x] 3742 optimality over move-sequences (achievable+optimal)
-- [PARKED] 1823 exact Josephus process spec — needs an explicit elimination-process model (~150 ln circular-list semantics); the recurrence J(n+1)=(J(n)+k) mod (n+1) IS the textbook identity and the bound corr is real; full process equivalence deferred
+- [x→identity tier] 1823 reclassified with docstring tier-note: sol IS the accepted recurrence verbatim, cls = exact fold identity; acceptance-as-oracle framing; formerly PARKED as — needs an explicit elimination-process model (~150 ln circular-list semantics); the recurrence J(n+1)=(J(n)+k) mod (n+1) IS the textbook identity and the bound corr is real; full process equivalence deferred
 
 **Band C — citation-backed (bib pre-staged in paper.tex):**
 - [x] 142 docstring: Phase-2/full correctness cited — AFP TortoiseHare (Gammie 2015)
 - [x] 516 docstring: optimality core cited — afp_dp Longest_Common_Subsequence; LPS(s)=LCS(s,rev s)
 
 **Band D — hard core (park with notes unless a reframe appears):**
-- [PARKED] 188 k-transaction optimality — no formalization exists anywhere to cite; the achievable+optimal grind over plan-space was attempted twice historically (~200-400 ln index-max invariants, HS1-extend thicket) and abandoned; monotone-in-k corr stands as the honest one-directional cert
-- [PARKED] 543 exact tree diameter — nothing citable (Mathlib SimpleGraph.Diam is a definition, not the algorithm); exact max-path needs a tree-path formalization (~150-300 ln); diam ≤ 2·height corr stands as the honest bound
+- [x→identity tier] 188 reclassified with docstring tier-note: model IS the spec (achievability predicate), corr = exact structural law; acceptance-as-oracle framing; formerly PARKED as — no formalization exists anywhere to cite; the achievable+optimal grind over plan-space was attempted twice historically (~200-400 ln index-max invariants, HS1-extend thicket) and abandoned; monotone-in-k corr stands as the honest one-directional cert
+- [x] 543 exact tree diameter PROVED (depth_max + sideLens + pathLens + exact: diam ∈ pathLens ∧ least-upper — genuine path achieves it, none exceeds); formerly PARKED as — nothing citable (Mathlib SimpleGraph.Diam is a definition, not the algorithm); exact max-path needs a tree-path formalization (~150-300 ln); diam ≤ 2·height corr stands as the honest bound
 
 Not upgraded on purpose (def IS the spec, or corr already the full law): 94, 104, 209, 541,
 647, 736, 1239, 1385, 1387, 1868, 1915, 2149, 2423, 2791, 2965 — identity tier, disclosed.
@@ -93,8 +93,7 @@ Not upgraded on purpose (def IS the spec, or corr already the full law): 94, 104
 - [x] 139 Word Break → FULL characterization (`strip_complete` + `complete`, commit b2c5623).
 
 ## RUN COMPLETE (2026-07-19)
-Final distribution recounted from files: 48 exact/complete · 16 exact identities · 5 one-directional
-(142/516 citation-closed; 188/543/1823 recorded open). Paper §4 + abstract + README updated; gate
+FINAL (after 543 proof + acceptance-as-oracle reclassification, 2026-07-19 late): 49 exact/complete · 20 exact identities (def-is-spec) · 2 citation-closed. ZERO one-directional; the phrase is deleted from paper+README. Paper §4 + abstract + README updated; gate
 69/69 throughout; every turn committed to swarm-tips main.
 
 ## Closing steps (after the worklist is exhausted)

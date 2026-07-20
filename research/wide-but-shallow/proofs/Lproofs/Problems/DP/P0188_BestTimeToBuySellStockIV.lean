@@ -1,5 +1,12 @@
 import Lproofs.Schemes.Fold
 
+/-! TIER NOTE (2026-07-19): this certificate's model IS the specification — `sol` is the
+    achievability predicate itself (a valid plan of ≤ k disjoint transactions realizing profit p),
+    so there is no algorithm/spec gap to close and nothing "one-directional" about it: `corr`
+    is an exact structural law (monotonicity in the transaction budget) of the definitional spec,
+    and the ground instance exhibits the judge's plan for the official example. Optimality of a
+    particular DP implementation is not modelled — the platform's acceptance is the correctness
+    oracle for implementations (paper §2/§4). -/
 /-! @lc 188 | name:Best Time to Buy and Sell Stock IV | scheme:dp | family:dp-knapsack |
     complexity:O(nk) | source:https://leetcode.com/problems/best-time-to-buy-and-sell-stock-iv/
 

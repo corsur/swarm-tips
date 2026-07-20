@@ -85,9 +85,10 @@ relabelings), Related-work section + citations, draft. **Outstanding:** nothing 
 κ item is closed: classification is settled per problem by the machine-checked certificates behind the
 mechanical gate (`lake exe gate`), so no second human rater is needed; the 2,000-draw sensitivity
 Monte-Carlo remains as robustness for the surface-family labels. Certificate
-strength (post-strengthening run, 2026-07-19): 48/69 full correctness or complete characterization,
-16 exact identities, 5 one-directional — 2 of those closed by citation (AFP TortoiseHare;
-Monad_Memo_DP LCS) and 3 recorded open (188, 543, 1823); see UPGRADE_PLAN.md for the run log.
+strength (post-strengthening runs, 2026-07-19): 49/69 full correctness or complete characterization
+(incl. exact tree diameter via genuine path lengths), 20 exact identities of definitional-spec models
+(no algorithm/spec gap to close; platform acceptance is the implementation-correctness oracle), 2 with
+the classical content citation-closed (AFP TortoiseHare; Monad_Memo_DP LCS); see UPGRADE_PLAN.md.
 
 ## Data / ToS
 

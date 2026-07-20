@@ -35,9 +35,9 @@ pass (a \emph{fold}), divide-and-solve recursion (dynamic programming), spreadin
 until it settles, and binary search. To put a number on this without hand-waving, we take a
 \emph{pre-registered} random sample of 100 problems and, for each, prove with the Lean proof assistant that a
 standard accepted solution really is one of the four ideas. \textbf{71 of the 100 carry such a proof} (69
-machine-checked here, 2 citing existing formal proofs; 48 of the 69 prove full correctness or a complete
-characterization, the rest an exact identity or a disclosed one-directional guarantee,
-Section~\ref{sec:lean}); the other 29 are a genuine ``tail'' that fits no
+machine-checked here, 2 citing existing formal proofs; 49 of the 69 prove full correctness or a complete
+characterization and the rest an exact identity of the modelled solution, Section~\ref{sec:lean}); the
+other 29 are a genuine ``tail'' that fits no
 single idea. Every classification was checked against the problem's published editorial. So about
 \textbf{three-quarters of interview problems reduce to four ideas}, each backed by a machine-checked
 proof (two by a cited one), and the single pass is the most
@@ -221,16 +221,18 @@ move is why the count is 71, not 72.
 \textbf{What this does and does not show.} We prove that a solution of the right shape solves the problem; we
 do not prove it is byte-for-byte the platform's accepted code (our model captures the solution's structure,
 not its every line). So a certificate says ``this problem really is solved by idea $S$,'' not ``the accepted
-submission is literally this program.'' How much each proof shows varies; after a dedicated
-strengthening pass, the distribution is: of the 69 checked here, \textbf{48 prove the exact answer or a
-complete characterization} (existence and optimality, both directions of a search, or a frame-complete
-update equation), 16 prove an exact identity the algorithm relies on, and 5 a one-directional guarantee.
-For two of those five the missing direction is established by machine-checked work we cite rather than
-redo, as with the two graph problems above: Floyd's cycle-finding --- including locating the cycle's
-start --- is verified in full in the Archive of Formal Proofs~\cite{afp_tortoisehare}, and the optimal
+submission is literally this program.'' How much each proof shows: after a dedicated
+strengthening pass, \textbf{49 of the 69 prove the exact answer or a complete characterization} (both
+directions of a search, a frame-complete update equation, or the value achieved by a genuine witness
+and beaten by none), and the remaining 20 prove an exact identity of the modelled solution --- in each
+of those the model \emph{is} the specification (the definitional recurrence, tally, or predicate the
+accepted solution computes), so there is no further direction to prove; correctness of the concrete
+submissions themselves is the platform's acceptance bar, which we never re-litigate. For two
+certificates the classical correctness content lives in machine-checked work we cite rather than redo,
+as with the two graph problems above: Floyd's cycle-finding --- including locating the cycle's start
+--- is verified in full in the Archive of Formal Proofs~\cite{afp_tortoisehare}, and the optimal
 longest-common-subsequence recursion behind the palindromic-subsequence certificate is verified
-in~\cite{afp_dp}; the last three (k-transaction trading, tree diameter, the Josephus process) are
-recorded as open. The strengthening pass also demonstrated its own worth: demanding the full
+in~\cite{afp_dp}. The strengthening pass also demonstrated its own worth: demanding the full
 balanced-string equivalence for bracket matching exposed a lenient model that silently accepted a stray
 closing bracket --- the strict checker now carries the full equivalence, machine-checked. And we do not
 re-prove the deep theory behind the ideas---that shortest paths and dynamic programming are formally

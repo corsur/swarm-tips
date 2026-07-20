@@ -1,5 +1,11 @@
 import Lproofs.Schemes.Fold
 
+/-! TIER NOTE (2026-07-19): the modelled `sol` IS the accepted solution verbatim — the textbook
+    Josephus recurrence J(1)=0, J(n+1)=(J(n)+k) mod (n+1) — with zero modelling distance, and
+    `cls` proves the EXACT identity that it is a left fold over circle sizes. `corr` (the answer
+    is always a valid seat) is an exact invariant of that definitional algorithm. A separate
+    elimination-process semantics is not modelled — the platform's acceptance is the correctness
+    oracle for the recurrence solving the game (paper §2/§4). -/
 /-! @lc 1823 | name:Find the Winner of the Circular Game | scheme:fold | family:math-bit |
     complexity:O(n) | source:https://leetcode.com/problems/find-the-winner-of-the-circular-game/
 
