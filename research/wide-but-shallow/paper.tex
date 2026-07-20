@@ -241,9 +241,15 @@ redo.
 \section{Related work}
 \label{sec:related}
 
-Two literatures bracket this paper. On the \emph{empirical} side, interview preparation is organized by
-pattern catalogues~\cite{prashad} that enumerate surface families; we are not aware of prior work that tests
-whether those families are generatively distinct, or whether firms differ in the mix they ask. On the
+Two literatures bracket this paper. On the \emph{empirical} side, software-engineering
+research has studied the interview \emph{process} --- developer sentiment about
+it~\cite{behroozi19}, the effect of stress and format on performance~\cite{behroozi20}, and how
+candidates prepare~\cite{bell25} --- while preparation itself is organized by pattern
+catalogues~\cite{prashad} that enumerate surface families. We are not aware of prior work that
+tests whether those families are generatively distinct, or whether firms differ in the mix they
+ask. Closest in spirit, machine-learning work classifies competitive-programming problems by
+\emph{predicted} solution type~\cite{algolabel}; we settle the same kind of label by proof
+rather than prediction. On the
 \emph{structural} side, the observation that wide families of programs are instances of a few recursion
 schemes is the Bird--Meertens tradition of program calculation~\cite{bird-demoor} and its formal-methods
 descendants: associative aggregation over a sliding window is a verified fold~\cite{afp_sliding}, dynamic
@@ -303,6 +309,15 @@ central claims stand or fall on the released data and the proofs, not on how it 
 
 \begin{thebibliography}{99}
 \bibitem{prashad} S.~Prashad. LeetCode Patterns. \url{https://seanprashad.com/leetcode-patterns/}, 2020.
+\bibitem{behroozi19} M.~Behroozi, S.~Shirolkar, T.~Barik, and C.~Parnin. Hiring is broken:
+what do developers say about technical interviews? In \emph{IEEE Symp.\ Visual Languages and
+Human-Centric Computing (VL/HCC)}, 2019.
+\bibitem{behroozi20} M.~Behroozi, S.~Shirolkar, T.~Barik, and C.~Parnin. Does stress impact
+technical interview performance? In \emph{Proc.\ ESEC/FSE}, 2020.
+\bibitem{bell25} B.~Bell, T.~Thomas, S.~W.~Lee, and C.~Brown. How do software engineering
+candidates prepare for technical interviews? arXiv:2507.02068, 2025.
+\bibitem{algolabel} R.~C.~A.~Iacob et al. AlgoLabel: a large dataset for multi-label
+classification of algorithmic challenges. \emph{Mathematics}, 8(11):1995, 2020.
 \bibitem{cramer46} H.~Cram\'er. \emph{Mathematical Methods of Statistics}. Princeton
 University Press, 1946.
 \bibitem{bergsma13} W.~Bergsma. A bias-correction for Cram\'er's \emph{V} and Tschuprow's
