@@ -79,16 +79,17 @@ programming,'' and so on), which we consolidate into about twenty broad families
 
 We map each problem to one of four underlying \emph{ideas} (formally, \emph{recursion schemes}) by the
 \emph{shape} of its standard solution, or to a leftover ``tail'' for problems that fit no single idea
-(Table~\ref{tab:schemes}). We ask two separate questions and keep them apart. \emph{Coverage}---what fraction
-of problems the four ideas explain---is settled per problem by a machine-checked proof, not by a label: on a
-pre-registered random sample we prove, for each problem, that a standard accepted solution really is the
-assigned idea (Section~\ref{sec:lean}); the coverage figure is the fraction that go through. (A
-written-in-advance family-to-idea rule, Appendix~\ref{sec:rule}, supplies the initial guess of which idea to
-try---it is a starting point for the proofs, not the basis of the count.) Separately, the \emph{company}
-comparison---do firms ask different mixes?---weights each idea by how often it is asked
-(Section~\ref{sec:result}): a seven-firm by four-idea table of asked-problem counts
-($n=1{,}400$), with the finer twenty-family view alongside as a robustness check; all difference
-measures are bias-corrected~\cite{bergsma13} and reported with uncertainty.
+(Table~\ref{tab:schemes}). We ask two separate questions and keep them apart. The first is \emph{coverage}: what
+fraction of problems do the four ideas explain? This is settled problem by problem with proofs,
+not labels. For each problem in a pre-registered random sample of 100, we attempt to prove that a
+standard accepted solution really is one of the four ideas (Section~\ref{sec:lean}); coverage is
+the fraction of proofs that succeed. A rule written in advance (Appendix~\ref{sec:rule}) picks
+only which idea to attempt first --- it never decides whether a problem counts. The second
+question is the \emph{company} comparison: do firms ask different mixes? Here each idea is
+weighted by how often it is asked --- a seven-firm by four-idea table of asked-problem counts
+($n=1{,}400$), with the finer twenty-family view as a robustness check
+(Section~\ref{sec:result}); all difference measures are bias-corrected~\cite{bergsma13} and
+reported with uncertainty.
 
 \section{Result: four ideas, not dozens}
 \label{sec:result}
