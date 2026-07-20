@@ -142,13 +142,10 @@ ad-hoc number theory---is a genuine tail we do not force into a scheme.
 ask on a standard $0$-to-$1$ scale (bias-corrected Cram\'er's \V~\cite{cramer46,bergsma13}, where $0$ means
 identical and the usual cutoffs call $0.1$ ``small'' and $0.3$ ``moderate''). Across the four ideas the firms
 score just $\V = 0.091$ (95\% bootstrap interval $[0.06,0.12]$)---small, with the whole interval well below
-``moderate,'' so the difference is genuinely bounded, not merely undetected. We report the four-idea
-grouping because its score stands clear of the small difference that random chance alone would produce in a
-sample this size ($0.091$ against a chance level of $0.065$); at the finer twenty-family level the
-score falls \emph{below} its own chance level
-($0.064$ against $0.116$; each grouping has its own chance level, set by its number of
-categories)---indistinguishable from identical---so the finer view, if anything, makes the firms
-look more alike, not less. Comparing firms two at a time, the only real differences all involve
+``moderate,'' so the difference is genuinely bounded, not merely undetected. We report the four-idea grouping because its $0.091$ stands clear of its $0.065$ chance level
+(the score sampling noise alone would produce); the finer twenty-family score falls
+\emph{below} its own, larger chance level ($0.064$ vs.\ $0.116$)---indistinguishable from
+identical---so the finer view, if anything, makes the firms look more alike. Comparing firms two at a time, the only real differences all involve
 \textbf{Uber}, which asks more graph problems and fewer single-pass ones (its largest
 gap, versus Google, is still only ``small''; Figure~\ref{fig:resid}); \textbf{the other six firms are
 statistically indistinguishable}. One caveat: we compare the \emph{mix of problem types}, not how hard the
@@ -158,7 +155,7 @@ wasted effort.
 
 \begin{figure}[t]
 \centering
-\begin{minipage}{0.78\linewidth}
+\begin{minipage}{0.62\linewidth}
 \centering
 \includegraphics[width=\linewidth]{figs/residual_scheme.png}
 \caption{\footnotesize How much each firm over- or under-asks each idea, relative to the shared average
@@ -177,34 +174,28 @@ A classification is only as good as its labels, and the usual check---a second h
 whether two people read a label the same way. We do something stronger: we settle each label with a
 \emph{proof assistant}, a tool that mechanically verifies mathematical claims. Working in Lean~4~\cite{lean4}
 with its library Mathlib~\cite{mathlib20}, we write each of the four ideas as a precise test on programs (for
-example, ``this function is a single left-to-right pass''). Then, for each sampled problem, we model a
-standard accepted solution and prove two things: that it has the \emph{shape} of its idea, and that it
-satisfies a property of the \emph{specific} problem---its actual grid, array, or condition. The second part
-is what gives the proof teeth: a statement about an abstract relation would certify the \emph{category}, not
-the problem. So every certificate is held to a mechanical standard: a released Lean program
-(\texttt{lake exe gate}) recomputes each verdict directly from the compiled proofs, and no
-human judgement decides whether a finished certificate counts. It checks three things. Both
-theorems must be statements about the modelled solution itself. The certificate must evaluate that
-solution on a concrete input --- usually the
-problem's published example --- as a kernel-checked theorem, something no abstract placeholder can
-produce. And every proof must rest on Lean's standard axioms alone, which rules out unfinished proofs and
-shortcuts that trust the compiler rather than the proof checker.
+example, ``this function is a single left-to-right pass''). Then, for each sampled problem, we model a standard accepted solution and prove two things:
+it has the \emph{shape} of its idea, and it satisfies a property of the \emph{specific}
+problem---its actual grid, array, or condition. The second part gives the proof teeth: an
+abstract statement would certify the \emph{category}, not the problem. So every certificate is held to a mechanical standard: a released Lean program
+(\texttt{lake exe gate}) recomputes each verdict from the compiled proofs --- both theorems
+must be about the modelled solution itself; a kernel-checked evaluation of that solution on a
+concrete input (usually the problem's published example) must be present, which no abstract
+placeholder can supply; and only Lean's standard axioms may be used, ruling out unfinished
+proofs and compiler-trusted shortcuts. No human judgement decides whether a finished
+certificate counts.
 
-Two further theorems pin down the most common scheme, the streaming fold. First, being a
-single pass is a property of the function, not of how its code happens to be written: a function is
-a streaming fold exactly when its
-answer on a longer input is determined by its answer so far plus the one new element
-(\texttt{isFold\_iff\_update}) --- one sweep, carrying the answer as it goes. Second, the
-scheme can be \emph{failed}: a sweep whose carried value is just the running
-count provably cannot count distinct elements (\texttt{not\_isFold\_countDistinct})---that
-task needs a richer carried value, the ``seen set'' of Table~\ref{tab:schemes}---and even
-computing a list's length, which is a sweep, provably
-cannot be done with any fixed amount of memory (\texttt{length\_not\_finiteStateFold}). ``Everything is
-a fold'' is therefore false as a theorem, not merely denied.
+Two further theorems pin down the most common scheme, the streaming fold. Membership is a
+property of the function, not its code: a function is a fold exactly when its answer on a
+longer input is determined by its answer so far plus the one new element
+(\texttt{isFold\_iff\_update}). And membership can be \emph{failed}: carrying only a running
+count provably cannot count distinct elements (\texttt{not\_isFold\_countDistinct}; the task
+needs the richer ``seen set'' of Table~\ref{tab:schemes}), and computing a length provably
+needs unbounded memory (\texttt{length\_not\_finiteStateFold}). ``Everything is a fold'' is
+false as a theorem, not merely denied.
 We never demand a proof that the algorithm is \emph{optimal}---the platform's acceptance already vouches
-for the submissions themselves, and our question is only \emph{which idea solves the problem}---though
-most certificates prove exact correctness anyway (49 of 69, below). A problem counts when both proofs
-pass with no gaps (Lean flags any unfinished proof; there are none) and use only Lean's standard axioms.
+for the submissions themselves, and our question is only \emph{which idea solves the problem}---though most
+certificates prove exact correctness anyway (49 of 69, below).
 
 \textbf{A pre-registered sample.} Which problems land in the sample matters, because some are far easier to
 formalize than others. An earlier draft drew from a seed we had, in effect, chosen well---we had proved that
@@ -219,13 +210,12 @@ substantial formalization, so
 rather than redo it we cite an existing machine-checked proof~\cite{afp_kruskal,afp_dfs} that the algorithm
 is the graph computation we classify it as.
 
-\textbf{Checked against the editorials.} The proofs are about solutions we \emph{model}; to guard against
-modelling a convenient strawman, we cross-checked every candidate against the problem's published editorial
-and confirmed the standard accepted solution really is the idea we assigned. Three needed a note: two were a
-different one of the four than our first guess (we relabelled them---both still in scope), and one (Add
-Digits) we moved to the tail, because its \emph{optimal} accepted solution is a constant-time arithmetic
-formula outside the four---a single-pass solution also passes, but we count it conservatively as tail. That
-move is why the count is 71, not 72.
+\textbf{Checked against the editorials.} To guard against modelling a strawman, every
+candidate was cross-checked against the problem's published editorial. Three needed a note:
+two were relabelled to a different one of the four (both still in scope), and Add Digits moved
+to the tail --- its optimal accepted solution is a constant-time formula outside the four, so
+we count it conservatively even though a single-pass solution also passes. That move is why
+the count is 71, not 72.
 
 \textbf{What this does and does not show.} We prove that a solution of the right shape solves the problem; we
 do not prove it is byte-for-byte the platform's accepted code (our model captures the solution's structure,
@@ -237,14 +227,10 @@ entire effect is captured in one equation, or the reported value is achieved by 
 plan and beaten by none. The remaining 20 prove an exact law of the modelled solution; in each
 of those the model \emph{is} the specification --- the very recurrence, tally, or condition the
 accepted solution computes --- so there is nothing further to prove about it. The submissions
-themselves are vouched for by the platform's acceptance, which we never re-litigate. Two of those 20
---- cycle detection and longest palindromic subsequence --- \emph{are}
-counted among the 69, because their scheme membership and problem-specific laws are
-machine-checked here; only the textbook correctness of the underlying classical algorithms is
-taken from work we cite rather than redo (Floyd's cycle-finding, including locating the cycle's
-start~\cite{afp_tortoisehare}; the optimal longest-common-subsequence
-recursion~\cite{afp_dp}). They are distinct from LC~1489 and LC~1192 above, the two problems we
-do \emph{not} count as machine-checked here. This bar earns its keep: demanding the full
+themselves are vouched for by the platform's acceptance, which we never re-litigate. Two of the 20 (cycle detection; longest palindromic subsequence) additionally cite verified
+classical work for the underlying algorithm's textbook
+correctness~\cite{afp_tortoisehare,afp_dp}; unlike LC~1489 and LC~1192 above they \emph{are}
+counted among the 69, since their own theorems are machine-checked here. This bar earns its keep: demanding the full
 balanced-string equivalence for bracket matching exposed a lenient model that silently accepted a stray
 closing bracket --- the strict checker now carries the full equivalence, machine-checked. And we do not
 re-prove the deep theory behind the ideas---that shortest paths and dynamic programming are formally
@@ -270,13 +256,11 @@ scheme assignment per problem rather than assert it.
 \section{Threats to validity}
 \label{sec:threats}
 
-\textbf{One platform.} The frequencies come from a single prep platform and may reflect its own collection
-process as much as what employers truly ask; we describe \emph{commonly-asked} problems, not any firm's
-private bar. \textbf{Top-200 cap.} Each firm's frequencies are its \emph{most-asked} top-200 list per recency
-window, not the full distribution, so the rare tail is truncated; the company comparison is over the heads of
-the distributions, where the data are densest. \textbf{Borrowed labels.} The family-to-idea rule is ours, but
-the surface-family tags it starts from are the platform's---single-source and un-audited---so the ``wide
-surface'' count inherits whatever splits that taxonomy chose. \textbf{We model the solution, not the
+\textbf{One platform, truncated lists.} The frequencies come from a single prep platform ---
+we describe \emph{commonly-asked} problems, not any firm's private bar --- and each firm's
+list is its top-200 per recency window, so the rare tail is truncated and the company
+comparison runs over the heads of the distributions, where the data are densest. \textbf{Borrowed labels.} The surface-family tags are the platform's---single-source and
+un-audited---so the ``wide surface'' count inherits that taxonomy's splits. \textbf{We model the solution, not the
 submission.} The proofs are about a solution we write down to capture
 the standard accepted approach, not the platform's exact code; we checked every candidate against the published
 editorials to guard against strawmen, but ``this captures the accepted approach'' remains a modelling
@@ -286,13 +270,11 @@ certify that an idea solves the problem
 that it is the only sensible description. \textbf{A single-sample estimate.} 71\% comes from one
 pre-registered sample, so the 95\% interval $[61\%,79\%]$, not the point value, is the honest summary; it
 errs low if anything, since the four ideas absorb some borderline ``greedy''/``simulation'' problems we left
-in the tail. \textbf{Window dependence.} The company difference is not
-constant across recency windows: the bias-corrected \V\ ranges from below its chance level (computed
-per window) in the short windows
-up to $0.125$ in the six-month window (still ``small''), so ``one shared syllabus'' is a statement about the
-pooled data, not every slice. \textbf{Two separate questions.} Coverage counts each distinct problem once; the
-company comparison weights by how often a problem is asked. Both matter to a candidate, and we keep them
-apart. \textbf{Shallow is not easy.} ``Same idea'' does not mean ``same difficulty''---two single-pass
+in the tail. \textbf{Window dependence.} The bias-corrected \V\ ranges from below its per-window chance
+level in short windows to $0.125$ at six months (still ``small''), so ``one shared syllabus''
+describes the pooled data, not every slice. \textbf{Two separate questions.} Coverage counts
+each distinct problem once; the company comparison weights by asking frequency. Both matter,
+and we keep them apart. \textbf{Shallow is not easy.} ``Same idea'' does not mean ``same difficulty''---two single-pass
 problems can differ hugely in how hard the running value is to find. We claim shallow \emph{structure}, not
 that the problems are easy.
 
@@ -306,18 +288,15 @@ than dozens of patterns shallowly, and prepare for ``technical interviews,'' not
 
 \section*{Reproducibility and AI-use disclosure}
 
-All derived statistics, the pre-registration of the sampling seed (\texttt{PREREGISTRATION.md}, committed
-before the sample was drawn or scored), the per-problem proof list (from which the 71/100 re-derives), the
-editorial cross-check, and the complete Lean development are released at
-\url{https://github.com/corsur/swarm-tips/tree/main/research/wide-but-shallow}. The gate that
-decides which proofs
-count is a released Lean program (\texttt{lake exe gate}) that recomputes every verdict from the compiled
-proofs themselves (Section~\ref{sec:lean}), so the count is reproducible rather than a matter of our
-judgement.
-The raw per-company frequency tables are withheld under the platform's terms, so the headline numbers
-reproduce from the released derived data even though the scrape itself is not redistributed. The proofs build
-with \texttt{lake build} with no gaps; the ``standard axioms'' claim is checkable, not merely asserted, by
-running \texttt{\#print axioms} on the main theorems. This paper was written by one human author
+All derived statistics, the pre-registration of the sampling seed
+(\texttt{PREREGISTRATION.md}, committed before the sample was drawn), the per-problem proof
+list from which the 71/100 re-derives, the editorial cross-check, and the complete Lean
+development are released at
+\url{https://github.com/corsur/swarm-tips/tree/main/research/wide-but-shallow}; the raw
+scrape alone is withheld under the platform's terms. The proofs build with
+\texttt{lake build} with no gaps, \texttt{lake exe gate} recomputes every certificate
+verdict (Section~\ref{sec:lean}), and \texttt{\#print axioms} checks the standard-axioms
+claim. This paper was written by one human author
 with substantial AI assistance for drafting,
 statistical code, and the formalization; all claims, numbers, and proofs were checked by the author, and the
 machine-checked results are independently verifiable by re-running the proofs. We say so plainly: the paper's
@@ -361,14 +340,11 @@ A biased survey. In \emph{Automated Technology for Verification and Analysis (AT
 \section{Initial family-to-idea guess}
 \label{sec:rule}
 
-To decide which idea to \emph{try proving} for each problem, we start from a written-in-advance map from
-surface family to idea, by the shape of the canonical accepted solution: a single left-to-right pass
-carrying one accumulator $\to$ \emph{streaming fold}; a recurrence that decomposes a structure into
-sub-results $\to$ \emph{recursive decomposition (DP)}; iterative improvement toward a fixed point over a
-graph $\to$ \emph{graph relaxation}; a monotone predicate located by halving $\to$ \emph{bisection}; anything
-else (bespoke data structures, simulation, geometry, ad-hoc number theory, string matching) $\to$
-\emph{tail}. This is only the starting guess; the per-problem Lean proof (Section~\ref{sec:lean}), checked
-against the editorial, is what settles each classification, and a few problems were relabelled to a
-different one of the four when the editorial disagreed with the initial guess.
+The written-in-advance map from surface family to idea, by the shape of the canonical
+accepted solution: one pass carrying an accumulator $\to$ \emph{streaming fold}; a recurrence
+over sub-results $\to$ \emph{recursive decomposition (DP)}; iteration to a fixed point over a
+graph $\to$ \emph{graph relaxation}; a monotone condition located by halving $\to$
+\emph{bisection}; anything else $\to$ \emph{tail}. This is only the starting guess: the
+per-problem proof, checked against the editorial, settles each classification.
 
 \end{document}
