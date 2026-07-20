@@ -60,8 +60,8 @@ where the def IS the spec), ONE-DIRECTIONAL/upgradable = 18 below.
 
 **Band B — template work:**
 - [ ] 20 DyckWord iff (import Mathlib.Combinatorics.Enumerative.DyckWord)
-- [ ] 111 exact minDepth = min leaf-path length
-- [ ] 120 sol = min over all real descents (achievable+optimal template)
+- [x] 111 exact minDepth = min leaf-path length
+- [x] 120 sol = min over all real descents (achievable+optimal template)
 - [ ] 71 canonical-path semantics
 - [ ] 208 full trie spec (contains ↔ inserted-word set) — medium
 - [ ] 1166 same shape as 208 — medium
@@ -82,6 +82,7 @@ Not upgraded on purpose (def IS the spec, or corr already the full law): 94, 104
 647, 736, 1239, 1385, 1387, 1868, 1915, 2149, 2423, 2791, 2965 — identity tier, disclosed.
 
 ## Completed
+- [x] Turn 3 (Band B×2): 120 achievable+optimal (sol = exact min over all descents, pathSum choice-lists); 111 exact (sol ∈ leafDepths ∧ least — genuine shortest root-to-leaf). Gotchas: simp only [leafDepths] unfolds recursively — use single rw [leafDepths] + explicit if_neg hcond; add_le_add le_rfl for c+a ≤ c+b.
 - [x] Turn 2 (Band A closed): 939 accept-completeness, 3043 maximality (sol = THE longest common prefix), 88 merge_perm + merge_sorted (full functional spec), 101 mirror-inorder effect. Gotchas: List.Sorted is gone in this Mathlib — use List.Pairwise (· ≤ ·) + pairwise_cons; sol-unfold turns `a = a` conditions into `if True` — close with if_pos trivial.
 - [x] Turn 1 (Step 0 + Band C + Band A×4): 1268, 1492, 314, 536 upgraded to full characterizations; 142/516 citation-noted.
 - [x] 139 Word Break → FULL characterization (`strip_complete` + `complete`, commit b2c5623).

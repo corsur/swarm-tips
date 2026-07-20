@@ -72,4 +72,102 @@ def exT : T :=
 
 theorem vec : sol exT = 2 := by decide
 
+
+/-- Root-to-leaf path lengths: nodes counted along each path to a childless node. -/
+def leafDepths : T → List ℕ
+  | .leaf => []
+  | .node l _ r =>
+    if (leafDepths l ++ leafDepths r).isEmpty then [1]
+    else (leafDepths l ++ leafDepths r).map (· + 1)
+
+theorem leafDepths_ne_nil (l : T) (v : ℤ) (r : T) : leafDepths (.node l v r) ≠ [] := by
+  simp only [leafDepths]
+  split
+  · simp
+  · rename_i h
+    simp only [ne_eq, List.map_eq_nil_iff]
+    simpa [List.isEmpty_iff] using h
+
+/-- EXACT (upgrades `corr`): the DP value is the least root-to-leaf path length — it is a
+    genuine path length, and no path is shorter. -/
+theorem exact : ∀ t : T, t ≠ .leaf → sol t ∈ leafDepths t ∧ ∀ d ∈ leafDepths t, sol t ≤ d := by
+  intro t
+  induction t with
+  | leaf => exact fun h => absurd rfl h
+  | node l v r ihl ihr =>
+    intro _
+    cases l with
+    | leaf =>
+      cases r with
+      | leaf => refine ⟨by simp [sol, leafDepths], ?_⟩; simp [sol, leafDepths]
+      | node rl rv rr =>
+        obtain ⟨hmem, hbound⟩ := ihr nofun
+        have hcond : ¬((leafDepths (.node rl rv rr)).isEmpty = true) := by
+          simp only [List.isEmpty_iff]
+          exact leafDepths_ne_nil rl rv rr
+        have hld : leafDepths (.node .leaf v (.node rl rv rr)) =
+            (leafDepths (.node rl rv rr)).map (· + 1) := by
+          rw [leafDepths, show leafDepths (.leaf : T) = [] from rfl, List.nil_append,
+            if_neg hcond]
+        rw [hld]
+        constructor
+        · exact List.mem_map.mpr ⟨sol (.node rl rv rr), hmem, by simp only [sol]; omega⟩
+        · intro d hd
+          obtain ⟨d', hd', rfl⟩ := List.mem_map.mp hd
+          have := hbound d' hd'
+          simp only [sol]
+          omega
+    | node ll lv lr =>
+      cases r with
+      | leaf =>
+        obtain ⟨hmem, hbound⟩ := ihl nofun
+        have hcond : ¬((leafDepths (.node ll lv lr)).isEmpty = true) := by
+          simp only [List.isEmpty_iff]
+          exact leafDepths_ne_nil ll lv lr
+        have hld : leafDepths (.node (.node ll lv lr) v .leaf) =
+            (leafDepths (.node ll lv lr)).map (· + 1) := by
+          rw [leafDepths, show leafDepths (.leaf : T) = [] from rfl, List.append_nil,
+            if_neg hcond]
+        rw [hld]
+        constructor
+        · exact List.mem_map.mpr ⟨sol (.node ll lv lr), hmem, by simp only [sol]; omega⟩
+        · intro d hd
+          obtain ⟨d', hd', rfl⟩ := List.mem_map.mp hd
+          have := hbound d' hd'
+          simp only [sol]
+          omega
+      | node rl rv rr =>
+        obtain ⟨hmeml, hboundl⟩ := ihl nofun
+        obtain ⟨hmemr, hboundr⟩ := ihr nofun
+        have hcond : ¬(((leafDepths (.node ll lv lr) ++
+            leafDepths (.node rl rv rr))).isEmpty = true) := by
+          simp only [List.isEmpty_iff, List.append_eq_nil_iff]
+          exact fun h => absurd h.1 (leafDepths_ne_nil ll lv lr)
+        have hld : leafDepths (.node (.node ll lv lr) v (.node rl rv rr)) =
+            (leafDepths (.node ll lv lr) ++ leafDepths (.node rl rv rr)).map (· + 1) := by
+          rw [leafDepths, if_neg hcond]
+        rw [hld]
+        constructor
+        · rcases le_total (sol (.node ll lv lr)) (sol (.node rl rv rr)) with h | h
+          · refine List.mem_map.mpr ⟨sol (.node ll lv lr), List.mem_append_left _ hmeml, ?_⟩
+            simp only [sol]
+            rw [min_eq_left h]
+            omega
+          · refine List.mem_map.mpr ⟨sol (.node rl rv rr), List.mem_append_right _ hmemr, ?_⟩
+            simp only [sol]
+            rw [min_eq_right h]
+            omega
+        · intro d hd
+          obtain ⟨d', hd', rfl⟩ := List.mem_map.mp hd
+          simp only [sol]
+          rcases List.mem_append.mp hd' with h' | h'
+          · have := hboundl d' h'
+            have hm : min (sol (.node ll lv lr)) (sol (.node rl rv rr)) ≤
+                sol (.node ll lv lr) := min_le_left _ _
+            omega
+          · have := hboundr d' h'
+            have hm : min (sol (.node ll lv lr)) (sol (.node rl rv rr)) ≤
+                sol (.node rl rv rr) := min_le_right _ _
+            omega
+
 end LC.P0111
