@@ -37,4 +37,16 @@ theorem corr (a1 b1 a2 b2 x : ℤ) (hx1 : b1 < x) (hx2 : x < a2) :
     free interval (3,4). -/
 theorem vec : sol [(1, 3), (4, 10)] = [(3, 4)] := by decide
 
+
+/-- FULL CHARACTERIZATION (upgrades `corr`): the emitted gaps are exactly one per adjacent pair
+    of merged intervals — the end of each interval paired with the start of the next. -/
+theorem sol_eq_zip : ∀ l : List (ℤ × ℤ),
+    sol l = (l.zip l.tail).map fun pq => (pq.1.2, pq.2.1)
+  | [] => rfl
+  | [_] => rfl
+  | p :: q :: rest => by
+    rw [show sol (p :: q :: rest) = (p.2, q.1) :: sol (q :: rest) from rfl,
+      sol_eq_zip (q :: rest)]
+    rfl
+
 end LC.P0759

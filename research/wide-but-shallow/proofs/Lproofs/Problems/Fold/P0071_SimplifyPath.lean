@@ -60,4 +60,38 @@ theorem corr (comps : List String) : ∀ s ∈ sol comps, valid s :=
 theorem vec : sol ["", "home", ""] = ["home"] ∧
     sol ["", "home", "", "foo", ""] = ["home", "foo"] := by decide
 
+
+/-- The three canonical-path laws: `..` pops, `""`/`"."` are skipped, real names push. -/
+theorem law_pop (comps : List String) : sol (comps ++ [".."]) = (sol comps).dropLast := by
+  simp [sol, List.foldl_append, step]
+
+theorem law_skip (comps : List String) (c : String) (h : c = "" ∨ c = ".") :
+    sol (comps ++ [c]) = sol comps := by
+  simp [sol, List.foldl_append, step, h]
+
+theorem law_push (comps : List String) (c : String) (h : valid c) :
+    sol (comps ++ [c]) = sol comps ++ [c] := by
+  obtain ⟨h1, h2, h3⟩ := h
+  simp [sol, List.foldl_append, step, h1, h2, h3]
+
+/-- FULL FUNCTIONAL SPEC (upgrades `corr`): the three laws plus the empty case determine the
+    canonical stack uniquely — any function satisfying them IS `sol`. -/
+theorem laws_unique (g : List String → List String) (h0 : g [] = [])
+    (hpop : ∀ comps, g (comps ++ [".."]) = (g comps).dropLast)
+    (hskip : ∀ comps c, (c = "" ∨ c = ".") → g (comps ++ [c]) = g comps)
+    (hpush : ∀ comps c, valid c → g (comps ++ [c]) = g comps ++ [c]) :
+    g = sol := by
+  funext comps
+  induction comps using List.reverseRecOn with
+  | nil => simpa [sol] using h0
+  | append_singleton comps c ih =>
+    by_cases hc1 : c = "" ∨ c = "."
+    · rw [hskip comps c hc1, law_skip comps c hc1, ih]
+    · by_cases hc2 : c = ".."
+      · subst hc2
+        rw [hpop comps, law_pop comps, ih]
+      · push_neg at hc1
+        have hv : valid c := ⟨hc1.1, hc1.2, hc2⟩
+        rw [hpush comps c hv, law_push comps c hv, ih]
+
 end LC.P0071

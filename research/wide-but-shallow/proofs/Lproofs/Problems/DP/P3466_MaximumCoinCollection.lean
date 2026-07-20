@@ -62,4 +62,101 @@ theorem corr (coin : ℕ → ℕ → ℤ) (len f pos lane : ℕ) :
 theorem vec : sol (fun p l => ([[1, 2], [10, 20]].getD l []).getD p 0) 2 3 0 0 1 = 21 ∧
     sol (fun p l => ([[1, 2], [10, 20]].getD l []).getD p 0) 2 3 0 0 0 = 3 := by decide
 
+
+/-- Play a concrete strategy: at each step, `true` means switch lanes (if a switch remains),
+    anything else means stay. -/
+def play (coin : ℕ → ℕ → ℤ) (len : ℕ) : List Bool → ℕ → ℕ → ℕ → ℤ
+  | [], _, _, _ => 0
+  | d :: ds, pos, lane, sw =>
+    if pos ≥ len then 0
+    else coin pos lane +
+      match d, sw with
+      | true, s + 1 => play coin len ds (pos + 1) (other lane) s
+      | _, _ => play coin len ds (pos + 1) lane sw
+
+/-- ACHIEVABLE: the DP value is realized by some concrete switch-strategy. -/
+theorem achievable (coin : ℕ → ℕ → ℤ) (len : ℕ) :
+    ∀ (f pos lane sw : ℕ), ∃ ds : List Bool,
+      ds.length = f ∧ sol coin len f pos lane sw = play coin len ds pos lane sw := by
+  intro f
+  induction f with
+  | zero => exact fun _ _ _ => ⟨[], rfl, rfl⟩
+  | succ f ih =>
+    intro pos lane sw
+    by_cases hp : pos ≥ len
+    · refine ⟨List.replicate (f + 1) false, List.length_replicate, ?_⟩
+      rw [List.replicate_succ]
+      simp [sol, play, hp]
+    · match sw with
+      | 0 =>
+        obtain ⟨ds, hlen, heq⟩ := ih (pos + 1) lane 0
+        refine ⟨false :: ds, by simp [hlen], ?_⟩
+        rw [show play coin len (false :: ds) pos lane 0 =
+            coin pos lane + play coin len ds (pos + 1) lane 0 from by simp [play, hp]]
+        simp only [sol, if_neg hp, nextMove]
+        rw [if_neg (by omega), max_self, heq]
+      | s + 1 =>
+        rcases le_total (sol coin len f (pos + 1) lane (s + 1))
+            (sol coin len f (pos + 1) (other lane) s) with h | h
+        · obtain ⟨ds, hlen, heq⟩ := ih (pos + 1) (other lane) s
+          refine ⟨true :: ds, by simp [hlen], ?_⟩
+          rw [show play coin len (true :: ds) pos lane (s + 1) =
+              coin pos lane + play coin len ds (pos + 1) (other lane) s from by
+            simp [play, hp]]
+          simp only [sol, if_neg hp, nextMove]
+          rw [if_pos (by omega)]
+          simp only [Nat.add_sub_cancel]
+          rw [max_eq_right h, heq]
+        · obtain ⟨ds, hlen, heq⟩ := ih (pos + 1) lane (s + 1)
+          refine ⟨false :: ds, by simp [hlen], ?_⟩
+          rw [show play coin len (false :: ds) pos lane (s + 1) =
+              coin pos lane + play coin len ds (pos + 1) lane (s + 1) from by
+            simp [play, hp]]
+          simp only [sol, if_neg hp, nextMove]
+          rw [if_pos (by omega)]
+          simp only [Nat.add_sub_cancel]
+          rw [max_eq_left h, heq]
+
+/-- OPTIMAL: no strategy of the right length beats the DP value. With `achievable`, `sol` is
+    exactly the maximum coins collectable — full correctness over the strategy space. -/
+theorem optimal (coin : ℕ → ℕ → ℤ) (len : ℕ) :
+    ∀ (f pos lane sw : ℕ) (ds : List Bool), ds.length = f →
+      play coin len ds pos lane sw ≤ sol coin len f pos lane sw := by
+  intro f
+  induction f with
+  | zero =>
+    intro pos lane sw ds hds
+    rw [List.length_eq_zero_iff.mp hds]
+    exact le_refl _
+  | succ f ih =>
+    intro pos lane sw ds hds
+    match ds with
+    | d :: ds' =>
+      have hlen : ds'.length = f := by simpa using hds
+      by_cases hp : pos ≥ len
+      · simp [sol, play, hp]
+      · rw [show sol coin len (f + 1) pos lane sw =
+            coin pos lane + nextMove coin (sol coin len f) pos lane sw from by
+          simp [sol, hp]]
+        match d, sw with
+        | true, s + 1 =>
+          rw [show play coin len (true :: ds') pos lane (s + 1) =
+              coin pos lane + play coin len ds' (pos + 1) (other lane) s from by
+            simp [play, hp]]
+          refine add_le_add le_rfl (le_trans (ih (pos + 1) (other lane) s ds' hlen) ?_)
+          simp only [nextMove]
+          rw [if_pos (by omega)]
+          simp only [Nat.add_sub_cancel]
+          exact le_max_right _ _
+        | true, 0 =>
+          rw [show play coin len (true :: ds') pos lane 0 =
+              coin pos lane + play coin len ds' (pos + 1) lane 0 from by simp [play, hp]]
+          refine add_le_add le_rfl (le_trans (ih (pos + 1) lane 0 ds' hlen) ?_)
+          exact le_max_left _ _
+        | false, sw =>
+          rw [show play coin len (false :: ds') pos lane sw =
+              coin pos lane + play coin len ds' (pos + 1) lane sw from by simp [play, hp]]
+          refine add_le_add le_rfl (le_trans (ih (pos + 1) lane sw ds' hlen) ?_)
+          exact le_max_left _ _
+
 end LC.P3466
