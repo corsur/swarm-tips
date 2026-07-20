@@ -61,4 +61,12 @@ def exInS : Pt → Bool := fun p => decide (p ∈ [((1 : ℤ), (1 : ℤ)), (1, 3
     counts exactly one of the two. -/
 theorem vec : sol exInS [(1, 1, 3, 3), (1, 1, 2, 3)] = 1 ∧ area 1 1 3 3 = 4 := by decide
 
+
+/-- COMPLETENESS (the other direction of `corr`): every non-degenerate diagonal whose four
+    corners are present IS accepted — the scan misses no rectangle. With `corr`, accepted
+    candidates are exactly the genuine rectangles. -/
+theorem complete (inS : Pt → Bool) (x1 y1 x2 y2 : ℤ) (hx : x1 ≠ x2) (hy : y1 ≠ y2)
+    (hr : formsRect inS x1 y1 x2 y2 = true) : accept inS x1 y1 x2 y2 = true := by
+  simp [accept, hx, hy, hr]
+
 end LC.P0939

@@ -40,4 +40,32 @@ theorem corr (xs ys : List ℕ) : sol xs ys <+: xs ∧ sol xs ys <+: ys := by
     lists) is 100 — length 3, the judge's answer. -/
 theorem vec : sol [1, 0, 0] [1, 0, 0, 0] = [1, 0, 0] := by decide
 
+
+/-- MAXIMALITY (the other direction of `corr`): every common prefix of the two inputs is a
+    prefix of `sol xs ys` — so with `corr`, `sol` is exactly the longest common prefix. -/
+theorem complete : ∀ (xs ys p : List ℕ), p <+: xs → p <+: ys → p <+: sol xs ys := by
+  intro xs
+  induction xs with
+  | nil =>
+    intro ys p hx _
+    simp only [List.prefix_nil] at hx
+    simp [hx]
+  | cons x xs ih =>
+    intro ys p hx hy
+    cases ys with
+    | nil =>
+      simp only [List.prefix_nil] at hy
+      simp [hy]
+    | cons y ys =>
+      cases p with
+      | nil => simp
+      | cons a p' =>
+        rw [List.cons_prefix_cons] at hx hy
+        obtain ⟨rfl, hx'⟩ := hx
+        obtain ⟨hay, hy'⟩ := hy
+        subst hay
+        simp only [sol]
+        rw [if_pos trivial, List.cons_prefix_cons]
+        exact ⟨rfl, ih ys p' hx' hy'⟩
+
 end LC.P3043

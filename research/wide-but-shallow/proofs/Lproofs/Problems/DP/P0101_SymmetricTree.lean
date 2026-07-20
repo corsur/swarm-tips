@@ -46,4 +46,19 @@ theorem vec : sol exT = exT ∧
     sol exT2 = .node (.node (.node .leaf 3 .leaf) 2 .leaf) 1
       (.node (.node .leaf 3 .leaf) 2 .leaf) := ⟨rfl, rfl⟩
 
+
+/-- In-order values (left–root–right). -/
+def inorder : T → List ℤ
+  | .leaf => []
+  | .node l v r => inorder l ++ v :: inorder r
+
+/-- EFFECT (upgrades the involution): mirroring reverses the in-order reading — the precise
+    left-right swap the symmetric-tree check relies on. -/
+theorem mirror_inorder (t : T) : inorder (sol t) = (inorder t).reverse := by
+  induction t with
+  | leaf => rfl
+  | node l v r ihl ihr =>
+    simp only [sol, inorder, List.reverse_append, List.reverse_cons, ihl, ihr]
+    simp [List.append_assoc]
+
 end LC.P0101
