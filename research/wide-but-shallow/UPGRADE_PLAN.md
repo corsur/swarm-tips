@@ -92,6 +92,11 @@ Not upgraded on purpose (def IS the spec, or corr already the full law): 94, 104
 - [x] Turn 1 (Step 0 + Band C + Band A×4): 1268, 1492, 314, 536 upgraded to full characterizations; 142/516 citation-noted.
 - [x] 139 Word Break → FULL characterization (`strip_complete` + `complete`, commit b2c5623).
 
+## RUN COMPLETE (2026-07-19)
+Final distribution recounted from files: 48 exact/complete · 16 exact identities · 5 one-directional
+(142/516 citation-closed; 188/543/1823 recorded open). Paper §4 + abstract + README updated; gate
+69/69 throughout; every turn committed to swarm-tips main.
+
 ## Closing steps (after the worklist is exhausted)
 1. Recount tiers from the files; update §4's 29/22/18 sentence and the abstract's strength
    clause to the new honest numbers. (The `afp_tortoisehare` bib entry and the §4
