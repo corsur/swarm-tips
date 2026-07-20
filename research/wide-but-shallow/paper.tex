@@ -36,7 +36,8 @@ pass (a \emph{fold}), divide-and-solve recursion (dynamic programming), spreadin
 until it settles, and binary search. To put a number on this without hand-waving, we take a
 \emph{pre-registered} random sample of 100 problems and, for each, prove with the Lean proof assistant that a
 standard accepted solution really is one of the four ideas. \textbf{71 of the 100 carry such a proof} (69
-machine-checked here, 2 citing existing formal proofs); the other 29 are a genuine ``tail'' that fits no
+machine-checked here, 2 citing existing formal proofs; certificate strength varies from full correctness to
+a one-directional guarantee, Section~\ref{sec:lean}); the other 29 are a genuine ``tail'' that fits no
 single idea. Every classification was checked against the problem's published editorial. So about
 \textbf{three-quarters of interview problems reduce to four ideas}, each backed by a machine-checked
 proof (two by a cited one), and the single pass is the most
@@ -183,6 +184,15 @@ theorems are about that very function, not a disconnected helper; that the certi
 the problem's published example --- which an abstract placeholder cannot produce; and that the transitive
 axiom closure stays within Lean's standard axioms, which mechanically rejects unfinished proofs and
 compiler-trusted evaluation (\texttt{native\_decide}).
+
+Two further theorems pin the scheme itself down. Membership is intrinsic, not an artifact of matching a
+library combinator: a function is a streaming fold exactly when its value on a longer input is determined
+by its value so far plus the one new element (\texttt{isFold\_iff\_update}) --- one sweep, carrying the
+answer as it goes. And the scheme is \emph{falsifiable}: the distinct-count function provably lies outside
+it (\texttt{not\_isFold\_countDistinct}), and within it the memory hierarchy is strict ---
+\texttt{length} is a fold but provably not a finite-state one
+(\texttt{length\_not\_finiteStateFold}). ``Everything is a fold'' is therefore false as a theorem, not
+merely denied: the classification the certificates establish is one a problem can provably fail.
 What we do \emph{not} demand is a proof that the algorithm is optimal---that bar is far higher than the
 question we are asking, which is only \emph{which idea solves the problem}. A problem counts when both proofs
 pass with no gaps (Lean flags any unfinished proof; there are none) and use only Lean's standard axioms.

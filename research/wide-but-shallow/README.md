@@ -81,8 +81,10 @@ optimal is O(1) arithmetic); old seed-7 76/100 was the best-of-2000
 draw and is discarded** — see PREREGISTRATION.md, CITATIONS.md, EDITORIAL_VERIFICATION.md; cls≡corr closed
 for the flagship folds Kadane/Product/Single Number), scheme-level
 residual figure, **label sensitivity** (`sensitivity.py`: every headline holds in 100% of 2,000
-relabelings), Related-work section + citations, draft. **Outstanding:** true inter-rater κ (a second
-human rater; the 2,000-draw sensitivity Monte-Carlo is the current robustness substitute). Certificate
+relabelings), Related-work section + citations, draft. **Outstanding:** nothing blocking — the former
+κ item is closed: classification is settled per problem by the machine-checked certificates behind the
+mechanical gate (`lake exe gate`), so no second human rater is needed; the 2,000-draw sensitivity
+Monte-Carlo remains as robustness for the surface-family labels. Certificate
 strength varies — full correctness for the flagship folds, a one-directional property otherwise.
 
 ## Data / ToS
