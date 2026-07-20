@@ -54,6 +54,52 @@ theorem isFold_iff_update {α β : Type*} (f : List α → β) :
     | append_singleton ys y ih =>
       rw [h, ih, List.foldl_append, List.foldl_cons, List.foldl_nil]
 
+/-- **The scheme is falsifiable: not everything is a fold.** `IsFold` requires the function's
+    own output to be the carried state (no final readout), so the answer-so-far must determine
+    the sweep's future — and for the distinct-count function it does not: the prefixes `[1]` and
+    `[2]` have the same count but diverge when `1` arrives. A natural list function, provably
+    outside the scheme. -/
+theorem not_isFold_countDistinct : ¬ IsFold (fun xs : List ℕ => xs.toFinset.card) := by
+  rw [isFold_iff_update]
+  rintro ⟨step, h⟩
+  have h1 := h [1] 1
+  have h2 := h [2] 1
+  simp only [List.cons_append, List.nil_append] at h1 h2
+  rw [show ([1, 1] : List ℕ).toFinset.card = 1 from by decide,
+      show ([1] : List ℕ).toFinset.card = 1 from by decide] at h1
+  rw [show ([2, 1] : List ℕ).toFinset.card = 2 from by decide,
+      show ([2] : List ℕ).toFinset.card = 1 from by decide] at h2
+  omega
+
+/-- **Bounded-memory sweep** (the automata tier): the answer is read off a carried state living
+    in a *finite* type — a DFA over the input. Unlike readout-free `IsFold`, the readout form
+    with unrestricted state is universal; bounding the state restores falsifiability. -/
+def IsFiniteStateFold {α γ : Type*} (f : List α → γ) : Prop :=
+  ∃ (β : Type) (_ : Fintype β) (step : β → α → β) (init : β) (out : β → γ),
+    ∀ xs, f xs = out (xs.foldl step init)
+
+/-- **The bounded tier is strictly smaller: `length` needs unbounded memory.** A pigeonhole
+    argument — on single-letter inputs a finite-state sweep revisits a state, so some two
+    different lengths would collide. `length` IS a fold (carry a ℕ counter); it is provably not
+    a *finite-state* fold, so the memory-class ladder has strict, machine-checked separations. -/
+theorem length_not_finiteStateFold : ¬ IsFiniteStateFold (List.length : List Unit → ℕ) := by
+  rintro ⟨β, _, step, init, out, h⟩
+  have key : ∀ (n : ℕ) (b : β),
+      (List.replicate n ()).foldl step b = (fun s => step s ())^[n] b := by
+    intro n
+    induction n with
+    | zero => intro b; rfl
+    | succ n ih =>
+      intro b
+      rw [List.replicate_succ, List.foldl_cons, ih, Function.iterate_succ_apply]
+  obtain ⟨m, n, hmn, hs⟩ :=
+    Finite.exists_ne_map_eq_of_infinite (fun n : ℕ => (fun s => step s ())^[n] init)
+  apply hmn
+  have hm := h (List.replicate m ())
+  have hn := h (List.replicate n ())
+  rw [List.length_replicate, key] at hm hn
+  rw [hm, hn, hs]
+
 /-- The right-fold counterpart: `f` is a list catamorphism iff the answer for a list is
     determined by its head and the answer for its tail — the structural-recursion update law. -/
 theorem isRightFold_iff_rec {α β : Type*} (f : List α → β) :
