@@ -187,24 +187,21 @@ placeholder can supply; and only Lean's standard axioms may be used, ruling out 
 proofs and compiler-trusted shortcuts. No human judgement decides whether a finished
 certificate counts.
 
-Two further theorems pin down the most common scheme, the streaming fold. Membership is a
-property of the function, not its code: a function is a fold exactly when its answer on a
-longer input is determined by its answer so far plus the one new element
-(\texttt{isFold\_iff\_update}). And membership can be \emph{failed}: carrying only a running
-count provably cannot count distinct elements (\texttt{not\_isFold\_countDistinct}; the task
-needs the richer ``seen set'' of Table~\ref{tab:schemes}), and computing a length provably
-needs unbounded memory (\texttt{length\_not\_finiteStateFold}). ``Everything is a fold'' is
-false as a theorem, not merely denied.
-We never demand a proof that the algorithm is \emph{optimal}---the platform's acceptance already vouches
-for the submissions themselves, and our question is only \emph{which idea solves the problem}---though most
-certificates prove exact correctness anyway (49 of 69, below).
+Could ``streaming fold'' be so loose that everything qualifies? No, and that is itself a
+theorem: a function is a fold exactly when its answer on a longer input is determined by its
+answer so far plus the one new element (\texttt{isFold\_iff\_update}), and this test can be
+failed --- carrying only a running count provably cannot count distinct elements
+(\texttt{not\_isFold\_countDistinct}). We never demand a proof that the algorithm is
+\emph{optimal}: the platform's acceptance vouches for the submissions themselves, and our
+question is only \emph{which idea solves the problem} --- though most certificates prove exact
+correctness anyway (49 of 69, below).
 
-\textbf{A pre-registered sample.} Which problems land in the sample matters, because some are far easier to
-formalize than others. An earlier draft drew from a seed we had, in effect, chosen well---we had proved that
-one sample to near-completion, which measures how hard we worked, not how often the four ideas
-hold (scored afterward by how many of its problems our then-existing proofs covered, it ranked
-first out of 2{,}000 random draws). We discarded it, fixed a new seed \emph{before drawing}
-(recorded in the released \texttt{PREREGISTRATION.md}), and report whatever it yields. On that sample,
+\textbf{A pre-registered sample.} Which problems land in the sample matters, because some are
+far easier to formalize than others. An earlier draft used a sample we had already spent weeks
+proving --- and, scored by how many of its problems our proofs covered at the time, that sample
+ranked first out of 2{,}000 random draws. Its high coverage measured our effort, not the truth.
+So we discarded it, fixed a fresh seed \emph{before} drawing (recorded in the released
+\texttt{PREREGISTRATION.md}), and report whatever the new sample yields. On that sample,
 \textbf{71 of 100 problems} are proven to be one of the four ideas; the other 29 are the genuine tail. Of the
 71, \textbf{69 are machine-checked here}; the remaining two---finding a minimum spanning tree (LC~1489) and
 finding the bridges of a graph (LC~1192)---rest on a classic algorithm whose correctness is itself a
