@@ -35,6 +35,38 @@ def IsFold {α β : Type*} (f : List α → β) : Prop :=
 def IsRightFold {α β : Type*} (f : List α → β) : Prop :=
   ∃ (step : α → β → β) (init : β), ∀ xs, f xs = xs.foldr step init
 
+/-- **The update law — the machine-independent characterization of the streaming scheme.**
+    A function is a fold *iff* its own output is a sufficient statistic of the input seen so far:
+    the value on a longer input is determined by the value already in hand plus the one new
+    element. `List.foldl` is an implementation of this property, not its definition — scheme
+    membership is intrinsic ("one sweep, carried state"), not an artifact of matching a
+    particular combinator. -/
+theorem isFold_iff_update {α β : Type*} (f : List α → β) :
+    IsFold f ↔ ∃ step : β → α → β, ∀ (xs : List α) (x : α), f (xs ++ [x]) = step (f xs) x := by
+  constructor
+  · rintro ⟨step, init, h⟩
+    exact ⟨step, fun xs x => by
+      rw [h, h, List.foldl_append, List.foldl_cons, List.foldl_nil]⟩
+  · rintro ⟨step, h⟩
+    refine ⟨step, f [], fun xs => ?_⟩
+    induction xs using List.reverseRecOn with
+    | nil => rfl
+    | append_singleton ys y ih =>
+      rw [h, ih, List.foldl_append, List.foldl_cons, List.foldl_nil]
+
+/-- The right-fold counterpart: `f` is a list catamorphism iff the answer for a list is
+    determined by its head and the answer for its tail — the structural-recursion update law. -/
+theorem isRightFold_iff_rec {α β : Type*} (f : List α → β) :
+    IsRightFold f ↔ ∃ step : α → β → β, ∀ (x : α) (xs : List α), f (x :: xs) = step x (f xs) := by
+  constructor
+  · rintro ⟨step, init, h⟩
+    exact ⟨step, fun x xs => by rw [h, h, List.foldr_cons]⟩
+  · rintro ⟨step, h⟩
+    refine ⟨step, f [], fun xs => ?_⟩
+    induction xs with
+    | nil => rfl
+    | cons x xs ih => rw [h, ih, List.foldr_cons]
+
 -- prefix-sum / running aggregate (accumulator: a scalar)
 theorem fold_prefixSum {α : Type*} [AddMonoid α] :
     IsFold (fun xs : List α => xs.foldl (· + ·) 0) := ⟨(· + ·), 0, fun _ => rfl⟩
