@@ -29,21 +29,19 @@
 \begin{abstract}
 Interview-prep advice rests on two claims: that different companies test different skills, and that you must
 memorize dozens of separate problem ``patterns.'' We test both against how often each problem appears among
-seven major technology firms' most-asked lists (769 distinct problems), and both mostly fail. The roughly
-twenty ``patterns'' you are told to learn are really \textbf{four underlying ideas}: a single left-to-right
+seven major technology firms' most-asked lists (769 distinct problems), and both mostly fail. The dozens of ``patterns'' you are told to learn are really \textbf{four underlying ideas}: a single left-to-right
 pass (a \emph{fold}), divide-and-solve recursion (dynamic programming), spreading information across a graph
 until it settles, and binary search. To put a number on this without hand-waving, we take a
 \emph{pre-registered} random sample of 100 problems and, for each, prove with the Lean proof assistant that a
 standard accepted solution really is one of the four ideas. \textbf{71 of the 100 carry such a proof} (69
 machine-checked here, 2 citing existing formal proofs); the other 29 are a genuine ``tail'' that fits no
 single idea. Every classification was checked against the problem's published editorial. So about
-\textbf{three-quarters of interview problems reduce to four ideas}, each backed by a machine-checked
-proof (two by a cited one), and the single pass is the most
+\textbf{three-quarters of interview problems reduce to four ideas}, each backed by a machine-checked proof, and the single pass is the most
 common---many tricks taught as unrelated (prefix sums, the XOR trick, a hash ``seen set,'' reversing a list,
 the sliding window) are the \emph{same} pass, differing only in what running value they carry. Separately,
 the seven firms ask almost the same mix: on a $0$-to-$1$ scale of how differently
-they ask (bias-corrected Cram\'er's \V, where $0$ is identical), they score just $0.091$, above the $0.065$
-chance level but far below ``moderate''---six of the seven are statistically indistinguishable, and only Uber
+they ask (bias-corrected Cram\'er's \V, where $0$ is identical), they score just $0.091$, above the $0.065$ that sampling noise alone would
+produce but far below ``moderate''---six of the seven are statistically indistinguishable, and only Uber
 stands out (it leans on graph problems). We describe which problems are \emph{commonly asked}, not how hard
 they are or whether company-specific drilling pays off. In short: interview problems are \emph{wide on the
 surface but shallow underneath}, and essentially one shared syllabus covers nearly every company. All derived
@@ -60,7 +58,7 @@ monotonic stack, union--find, prefix sums, and so on---each learned separately, 
 catalogues present them~\cite{prashad}. Both are widely repeated and, as far as we can tell, never tested.
 
 We test them, and then ask what underlying \emph{structure} explains the answer. The short version: the
-``fifty patterns'' you are told to memorize are a handful of ideas in different disguises, and the seven
+``dozens of patterns'' you are told to memorize are a handful of ideas in different disguises, and the seven
 companies ask nearly the same things. To keep our labels honest we do not hand-sort the problems and stop
 there---we use a proof assistant to check, problem by problem, that the idea we assign really does solve the
 problem (and, for most of them, that the solution is fully correct).
@@ -69,7 +67,7 @@ problem (and, for most of them, that the solution is fully correct).
 \label{sec:data}
 
 For seven firms (Amazon, Apple, Bloomberg, Google, Meta, Microsoft, Uber) we scraped a public
-interview-prep platform for how often each problem appears among that firm's \emph{most-asked} problems
+interview-prep platform (LeetCode) for how often each problem appears among that firm's \emph{most-asked} problems
 (the platform exposes a top-200 list per firm and recency window, so rarely-asked problems are truncated;
 we note this where it matters). Across firms this covers 769 distinct problems, broken down by recency. The
 platform tags each one with a \emph{surface family} (``sliding window,'' ``monotonic stack,'' ``dynamic
@@ -84,11 +82,12 @@ assigned idea (Section~\ref{sec:lean}); the coverage figure is the fraction that
 written-in-advance family-to-idea rule, Appendix~\ref{sec:rule}, supplies the initial guess of which idea to
 try---it is a starting point for the proofs, not the basis of the count.) Separately, the \emph{company}
 comparison---do firms ask different mixes?---weights each idea by how often it is asked
-(Section~\ref{sec:result}); it groups by the four ideas, with the finer twenty-family view alongside as a
+(Section~\ref{sec:result}); the comparison is over a seven-firm by four-idea table of
+asked-problem counts ($n=1{,}400$); it groups by the four ideas, with the finer twenty-family view alongside as a
 robustness check, and all difference measures are bias-corrected~\cite{bergsma13} and reported with
 uncertainty.
 
-\section{Result: four ideas, not fifty}
+\section{Result: four ideas, not dozens}
 \label{sec:result}
 
 \begin{table}[t]
@@ -118,16 +117,15 @@ the Lean predicate each certificate proves membership in. Full method and number
 \end{minipage}
 \end{table}
 
-\paragraph{Wide surface.} The surface taxonomy really is spread out: no one or two families dominate (it
-takes six of the $\sim$20 to cover even half of asked problems; Gini $0.30$, a standard evenness
-measure, over distinct problems). By the
+\paragraph{Wide surface.} The surface taxonomy really is spread out: no one or two families dominate (it takes six of the $\sim$20 families to cover even half of asked problems; counting each
+distinct problem once instead, the spread is similarly flat---Gini $0.30$, where $0$ is a
+perfectly even split and $1$ is total concentration). By the
 usual measure, interview preparation \emph{looks} like a long, flat list. This is the breadth the prep
 industry sells.
 
 \paragraph{Shallow root.} But that breadth is mostly repackaging. Sorting the same problems by the
 \emph{shape} of their standard solution, about three-quarters reduce to just four ideas---\textbf{71 of a
-random sample of 100, each backed by a machine-checked proof} (Section~\ref{sec:lean}; 95\% interval
-$[61\%,79\%]$)---with the single left-to-right pass the most common. Tricks memorized as unrelated---prefix
+random sample of 100, each backed by a machine-checked proof} (Section~\ref{sec:lean}; 95\% Wilson interval $[61\%,79\%]$)---with the single left-to-right pass the most common. Tricks memorized as unrelated---prefix
 sums, the XOR trick, a hash ``seen set,'' reversing a list, matching parentheses with a stack, the sliding
 window---are the \emph{same} pass; they differ only in what running value they carry. The variety is in the
 bookkeeping, not in the computation. The remaining quarter---bespoke data structures, simulation, geometry,
@@ -136,11 +134,12 @@ ad-hoc number theory---is a genuine tail we do not force into a scheme.
 \paragraph{One shared syllabus.} The same data dissolve the company myth. We score how differently the firms
 ask on a standard $0$-to-$1$ scale (bias-corrected Cram\'er's \V~\cite{cramer46,bergsma13}, where $0$ means
 identical and the usual cutoffs call $0.1$ ``small'' and $0.3$ ``moderate''). Across the four ideas the firms
-score just $\V = 0.091$ (95\% confidence interval $[0.06,0.12]$)---small, with the whole interval well below
+score just $\V = 0.091$ (95\% bootstrap interval $[0.06,0.12]$)---small, with the whole interval well below
 ``moderate,'' so the difference is genuinely bounded, not merely undetected. We report the four-idea
 grouping because its score stands clear of the small difference that random chance alone would produce in a
 sample this size ($0.091$ against a chance level of $0.065$); at the finer twenty-family level the score
-falls \emph{below} that chance level ($0.064$ against $0.116$)---indistinguishable from identical---so the
+falls \emph{below} its own chance level---each grouping has one, set by its number of
+categories---($0.064$ against $0.116$)---indistinguishable from identical---so the
 finer view, if anything, makes the firms look more alike, not less. Comparing firms two at a time, the only
 real
 differences all involve \textbf{Uber}, which asks more graph problems and fewer single-pass ones (its largest
@@ -176,19 +175,19 @@ standard accepted solution and prove two things: that it has the \emph{shape} of
 satisfies a property of the \emph{specific} problem---its actual grid, array, or condition. The second part
 is what gives the proof teeth: a statement about an abstract relation would certify the \emph{category}, not
 the problem. So every certificate is held to a mechanical standard: a released Lean program
-(\texttt{lake exe gate}) recomputes each verdict directly from the compiled proofs, with no per-problem
-human judgement anywhere in the count. It checks three things. Both theorems must be statements about the
+(\texttt{lake exe gate}) recomputes each verdict directly from the compiled proofs, and no human
+judgement decides whether a finished certificate counts. It checks three things. Both theorems must be statements about the
 modelled solution itself. The certificate must evaluate that solution on a concrete input --- usually the
 problem's published example --- as a kernel-checked theorem, something no abstract placeholder can
 produce. And every proof must rest on Lean's standard axioms alone, which rules out unfinished proofs and
 shortcuts that trust the compiler rather than the proof checker.
 
-Two further theorems pin the scheme itself down. First, being a single pass is a property of the
+Two further theorems pin down the most common scheme, the streaming fold. First, being a single pass is a property of the
 function, not of how its code happens to be written: a function is a streaming fold exactly when its
 answer on a longer input is determined by its answer so far plus the one new element
-(\texttt{isFold\_iff\_update}) --- one sweep, carrying the answer as it goes. Second, the scheme can be
-\emph{failed}: counting distinct elements provably is not such a sweep
-(\texttt{not\_isFold\_countDistinct}), and even computing a list's length, which is a sweep, provably
+(\texttt{isFold\_iff\_update}) --- one sweep, carrying the answer as it goes. Second, the scheme can be \emph{failed}: a sweep whose carried value is just the running
+count provably cannot count distinct elements (\texttt{not\_isFold\_countDistinct})---that
+task needs a richer carried value, the ``seen set'' of Table~\ref{tab:schemes}---and even computing a list's length, which is a sweep, provably
 cannot be done with any fixed amount of memory (\texttt{length\_not\_finiteStateFold}). ``Everything is
 a fold'' is therefore false as a theorem, not merely denied.
 We never demand a proof that the algorithm is \emph{optimal}---the platform's acceptance already vouches
@@ -198,8 +197,8 @@ pass with no gaps (Lean flags any unfinished proof; there are none) and use only
 
 \textbf{A pre-registered sample.} Which problems land in the sample matters, because some are far easier to
 formalize than others. An earlier draft drew from a seed we had, in effect, chosen well---we had proved that
-one sample to near-completion, which measures how hard we worked, not how often the four ideas hold (checked
-afterward, it was the best-scoring draw out of 2000). We discarded it, fixed a new seed \emph{before drawing}
+one sample to near-completion, which measures how hard we worked, not how often the four ideas hold (scored afterward by how many of its
+problems our then-existing proofs covered, it ranked first out of 2{,}000 random draws). We discarded it, fixed a new seed \emph{before drawing}
 (recorded in the released \texttt{PREREGISTRATION.md}), and report whatever it yields. On that sample,
 \textbf{71 of 100 problems} are proven to be one of the four ideas; the other 29 are the genuine tail. Of the
 71, \textbf{69 are machine-checked here}; the remaining two---finding a minimum spanning tree (LC~1489) and
@@ -219,19 +218,19 @@ move is why the count is 71, not 72.
 \textbf{What this does and does not show.} We prove that a solution of the right shape solves the problem; we
 do not prove it is byte-for-byte the platform's accepted code (our model captures the solution's structure,
 not its every line). So a certificate says ``this problem really is solved by idea $S$,'' not ``the accepted
-submission is literally this program.'' How much each proof shows: after a dedicated
-strengthening pass, \textbf{49 of the 69 prove the exact answer or a complete characterization} (the search
-finds a thing if and only if it is really there; an operation's entire effect is captured in one
-equation; or the reported value is achieved by a real path or plan and beaten by none), and the
-remaining 20 prove an exact law of the modelled solution --- in each of those the model \emph{is} the
-specification (the very recurrence, tally, or condition the accepted solution computes), so there is
-nothing further to prove about it; the submissions themselves are vouched for by the platform's
-acceptance, which we never re-litigate. For two
-certificates the classical correctness content lives in machine-checked work we cite rather than redo,
-as with the two graph problems above: Floyd's cycle-finding --- including locating the cycle's start
---- is verified in full in the Archive of Formal Proofs~\cite{afp_tortoisehare}, and the optimal
-longest-common-subsequence recursion behind the palindromic-subsequence certificate is verified
-in~\cite{afp_dp}. The strengthening pass also demonstrated its own worth: demanding the full
+submission is literally this program.'' How much each proof shows: \textbf{49 of the 69 prove the exact answer or a complete
+characterization} --- the search finds a thing if and only if it is really there, an operation's
+entire effect is captured in one equation, or the reported value is achieved by a real path or
+plan and beaten by none. The remaining 20 prove an exact law of the modelled solution; in each
+of those the model \emph{is} the specification --- the very recurrence, tally, or condition the
+accepted solution computes --- so there is nothing further to prove about it. The submissions
+themselves are vouched for by the platform's acceptance, which we never re-litigate. Two of those 20 --- cycle detection and longest palindromic subsequence --- \emph{are}
+counted among the 69, because their scheme membership and problem-specific laws are
+machine-checked here; only the textbook correctness of the underlying classical algorithms is
+taken from work we cite rather than redo (Floyd's cycle-finding, including locating the cycle's
+start~\cite{afp_tortoisehare}; the optimal longest-common-subsequence
+recursion~\cite{afp_dp}). They are distinct from LC~1489 and LC~1192 above, the two problems we
+do \emph{not} count as machine-checked here. This bar earns its keep: demanding the full
 balanced-string equivalence for bracket matching exposed a lenient model that silently accepted a stray
 closing bracket --- the strict checker now carries the full equivalence, machine-checked. And we do not
 re-prove the deep theory behind the ideas---that shortest paths and dynamic programming are formally
@@ -272,7 +271,7 @@ that it is the only sensible description. \textbf{A single-sample estimate.} 71\
 pre-registered sample, so the 95\% interval $[61\%,79\%]$, not the point value, is the honest summary; it
 errs low if anything, since the four ideas absorb some borderline ``greedy''/``simulation'' problems we left
 in the tail. \textbf{Window dependence.} The company difference is not
-constant across recency windows: the bias-corrected \V\ ranges from below its noise floor in the short windows
+constant across recency windows: the bias-corrected \V\ ranges from below its chance level (computed per window) in the short windows
 up to $0.125$ in the six-month window (still ``small''), so ``one shared syllabus'' is a statement about the
 pooled data, not every slice. \textbf{Two separate questions.} Coverage counts each distinct problem once; the
 company comparison weights by how often a problem is asked. Both matter to a candidate, and we keep them
@@ -286,13 +285,14 @@ Interview problems are wide on the surface but shallow underneath. On a pre-regi
 71 of 100 problems (69 with a machine-checked proof here, 2 citing existing formal proofs) are one of four ideas
 (the single left-to-right pass is the most common); the rest are a genuine tail. And the seven firms ask
 essentially one shared syllabus. For a candidate, the takeaway is blunt: learn the four ideas deeply rather
-than fifty patterns shallowly, and prepare for ``technical interviews,'' not for any one company.
+than dozens of patterns shallowly, and prepare for ``technical interviews,'' not for any one company.
 
 \section*{Reproducibility and AI-use disclosure}
 
 All derived statistics, the pre-registration of the sampling seed (\texttt{PREREGISTRATION.md}, committed
 before the sample was drawn or scored), the per-problem proof list (from which the 71/100 re-derives), the
-editorial cross-check, and the complete Lean development are released. The gate that decides which proofs
+editorial cross-check, and the complete Lean development are released at
+\url{https://github.com/corsur/swarm-tips/tree/main/research/wide-but-shallow}. The gate that decides which proofs
 count is a released Lean program (\texttt{lake exe gate}) that recomputes every verdict from the compiled
 proofs themselves (Section~\ref{sec:lean}), so the count is reproducible rather than a matter of our
 judgement.
