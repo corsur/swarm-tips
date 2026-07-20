@@ -175,16 +175,13 @@ example, ``this function is a single left-to-right pass''). Then, for each sampl
 standard accepted solution and prove two things: that it has the \emph{shape} of its idea, and that it
 satisfies a property of the \emph{specific} problem---its actual grid, array, or condition. The second part
 is what gives the proof teeth: a statement about an abstract relation would certify the \emph{category}, not
-the problem. So every certificate is held to a mechanical standard, recomputed by a released Lean program
-(\texttt{lake exe gate}) directly from the compiled proofs, with no per-problem human judgement anywhere
-in the count. The
-gate checks that the file designates its modelled solution (\texttt{sol}); that the statements of both
-theorems are about that very function, not a disconnected helper; that the certificate contains a
-\emph{ground instance} --- a closed, kernel-checked evaluation of the solution on a concrete input, usually
-the problem's published example --- which an abstract placeholder cannot produce; and that, tracing every proof back to its
-foundations, nothing beyond Lean's standard axioms is ever assumed --- which mechanically rejects
-unfinished proofs and any shortcut that trusts the compiler rather than the proof checker
-(\texttt{native\_decide}).
+the problem. So every certificate is held to a mechanical standard: a released Lean program
+(\texttt{lake exe gate}) recomputes each verdict directly from the compiled proofs, with no per-problem
+human judgement anywhere in the count. It checks three things. Both theorems must be statements about the
+modelled solution itself. The certificate must evaluate that solution on a concrete input --- usually the
+problem's published example --- as a kernel-checked theorem, something no abstract placeholder can
+produce. And every proof must rest on Lean's standard axioms alone, which rules out unfinished proofs and
+shortcuts that trust the compiler rather than the proof checker.
 
 Two further theorems pin the scheme itself down. First, being a single pass is a property of the
 function, not of how its code happens to be written: a function is a streaming fold exactly when its
