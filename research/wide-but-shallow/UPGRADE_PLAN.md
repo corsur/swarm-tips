@@ -67,7 +67,7 @@ where the def IS the spec), ONE-DIRECTIONAL/upgradable = 18 below.
 - [ ] 1166 same shape as 208 — medium
 - [x] 759 emitted-gap characterization ((g1,g2) ∈ sol l ↔ consecutive pair boundaries)
 - [x] 3466 optimality over switch-sequences (achievable+optimal)
-- [ ] 3742 optimality over move-sequences (achievable+optimal)
+- [x] 3742 optimality over move-sequences (achievable+optimal)
 - [ ] 1823 exact Josephus process spec — HARD-B (elimination-process model ~150 ln; park OK)
 
 **Band C — citation-backed (bib pre-staged in paper.tex):**
@@ -82,6 +82,8 @@ Not upgraded on purpose (def IS the spec, or corr already the full law): 94, 104
 647, 736, 1239, 1385, 1387, 1868, 1915, 2149, 2423, 2791, 2965 — identity tier, disclosed.
 
 ## Completed
+- [x] Turn 5 (Band B): 3742 play/achievable/optimal — sol = exact max affordable path score over move-strategies (boundary-0 branches mirrored in play). Gotcha: set-folding (set b' := …) desyncs with simp unfolds — inline the expression; rewrite h (if_pos/heq) BEFORE max_eq_* selection.
+- NOTE for 20 (next): current lenient stack (tail on empty) means sol s = [] does NOT imply balanced (e.g. ")"). Upgrade = strict checker (Option (List Char) fold, pop-on-empty ⇒ none) + own inductive Balanced grammar + iff; adjust cls conj + vec accordingly. DyckWord import optional — own Balanced is cleaner.
 - [x] Turn 4 (Band B×3): 759 sol_eq_zip (gaps = exactly adjacent-pair boundaries); 71 three laws + laws_unique (initial-algebra full spec); 3466 play/achievable/optimal (sol = exact max over switch-strategies). Gotcha: sw-1 leaves `s+1-1` unreduced — simp only [Nat.add_sub_cancel] after if_pos.
 - [x] Turn 3 (Band B×2): 120 achievable+optimal (sol = exact min over all descents, pathSum choice-lists); 111 exact (sol ∈ leafDepths ∧ least — genuine shortest root-to-leaf). Gotchas: simp only [leafDepths] unfolds recursively — use single rw [leafDepths] + explicit if_neg hcond; add_le_add le_rfl for c+a ≤ c+b.
 - [x] Turn 2 (Band A closed): 939 accept-completeness, 3043 maximality (sol = THE longest common prefix), 88 merge_perm + merge_sorted (full functional spec), 101 mirror-inorder effect. Gotchas: List.Sorted is gone in this Mathlib — use List.Pairwise (· ≤ ·) + pairwise_cons; sol-unfold turns `a = a` conditions into `if True` — close with if_pos trivial.
