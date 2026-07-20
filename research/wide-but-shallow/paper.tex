@@ -221,7 +221,12 @@ do not prove it is byte-for-byte the platform's accepted code (our model capture
 not its every line). So a certificate says ``this problem really is solved by idea $S$,'' not ``the accepted
 submission is literally this program.'' How much each proof shows varies: of the 69 checked here, about
 half (29) prove the exact answer and another 22 an exact identity the algorithm relies on, while 18 prove a
-one-directional guarantee (everything reported is valid, or the value only moves one way). For a few
+one-directional guarantee (everything reported is valid, or the value only moves one way). For some of the
+latter, the missing direction is already established by machine-checked work we cite rather than redo, as
+with the two graph problems above: Floyd's cycle-finding --- including locating the cycle's start --- is
+verified in full in the Archive of Formal Proofs~\cite{afp_tortoisehare}, and the optimal
+longest-common-subsequence recursion behind the palindromic-subsequence certificate is verified
+in~\cite{afp_dp}. For a few
 textbook cases we close even the modelling gap: Kadane's algorithm for Maximum Subarray is literally one
 pass carrying a running pair, and we prove it returns exactly the largest subarray sum; Single Number is the
 XOR pass proven to return the lone unpaired value. And we do not
@@ -315,6 +320,8 @@ language. In \emph{Automated Deduction (CADE-28)}, 2021.
 programming. \emph{Archive of Formal Proofs}, 2018.
 \bibitem{afp_kruskal} M.~P.~L. Haslbeck, P.~Lammich, and J.~Biendarra. Kruskal's algorithm for
 minimum spanning forest. \emph{Archive of Formal Proofs}, 2019.
+\bibitem{afp_tortoisehare} P.~Gammie. The Tortoise and the Hare algorithm. \emph{Archive of
+Formal Proofs}, 2015.
 \bibitem{afp_dfs} P.~Lammich and R.~Neumann. A framework for verifying depth-first search
 algorithms. \emph{Archive of Formal Proofs}, 2016; see also \emph{Proc.\ CPP}, 137--146, 2015.
 \bibitem{bird-demoor} R.~Bird and O.~de Moor. \emph{Algebra of Programming}. Prentice Hall, 1997.
