@@ -401,6 +401,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected AlreadyCommitted error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "AlreadyCommitted");
     }
   });
@@ -445,6 +448,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected CommitmentMismatch error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "CommitmentMismatch");
     }
   });
@@ -470,6 +476,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected NotAParticipant error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "NotAParticipant");
     }
   });
@@ -521,6 +530,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected AlreadyRevealed error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "AlreadyRevealed");
     }
   });
@@ -582,6 +594,9 @@ describe("coordination-game", () => {
       await program.account.game.fetch(gamePda);
       assert.fail("Expected game account to be closed");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "Account does not exist");
     }
   });
@@ -621,6 +636,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected CannotJoinOwnGame error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "CannotJoinOwnGame");
     }
   });
@@ -668,6 +686,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected TimeoutNotElapsed error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "TimeoutNotElapsed");
     }
   });
@@ -689,6 +710,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected InvalidTournamentTimes error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "InvalidTournamentTimes");
     }
   });
@@ -724,6 +748,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected StakeMismatch error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "StakeMismatch");
     }
   });
@@ -760,6 +787,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected StakeMismatch error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "StakeMismatch");
     }
   });
@@ -783,6 +813,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected NotAParticipant error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "NotAParticipant");
     }
   });
@@ -800,6 +833,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected TournamentNotEnded error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "TournamentNotEnded");
     }
   });
@@ -817,6 +853,9 @@ describe("coordination-game", () => {
         .rpc();
       assert.fail("Expected TournamentNotFinalized error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "TournamentNotFinalized");
     }
   });
@@ -1281,6 +1320,9 @@ describe("coordination-game", () => {
       await depositStake(expiredId, expiredTournamentPda, player1);
       assert.fail("Expected OutsideTournamentWindow error");
     } catch (e: any) {
+      // assert.fail above throws AssertionError — re-throw it so the
+      // no-rejection path cannot satisfy this catch's substring assert.
+      if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "OutsideTournamentWindow");
     }
   });

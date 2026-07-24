@@ -50,7 +50,7 @@ pub fn submit_work_session(ctx: Context<SubmitWorkSession>, content_id: Vec<u8>)
 /// the session is not expired (`expires_at == 0` means "no expiry").
 fn validate_submit_session_constraints(session: &SessionDelegate, now: i64) -> Result<()> {
     require!(
-        session.allowed_instructions & 0x02 != 0,
+        session.allowed_instructions & SessionDelegate::SUBMIT_WORK_BIT != 0,
         ShillbotError::InvalidSessionDelegate
     );
     if session.expires_at > 0 {

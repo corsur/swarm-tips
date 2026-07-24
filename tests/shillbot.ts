@@ -327,6 +327,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected InvalidParameter error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "InvalidParameter");
       }
     });
@@ -365,6 +368,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected DeadlineExpired error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "DeadlineExpired");
       }
     });
@@ -461,6 +467,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected InvalidTaskState error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "InvalidTaskState");
       }
     });
@@ -617,6 +626,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected NotTaskAgent error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         // Will fail because either the agentState doesn't exist or NotTaskAgent
         const errStr = e.toString();
         assert.isTrue(
@@ -733,6 +745,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         // Will fail on feed mismatch or attestation staleness
         const errStr = e.toString();
         assert.isTrue(
@@ -759,6 +774,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         // ScoreOutOfBounds, AttestationStale, or Switchboard errors
         const errStr = e.toString();
         assert.isTrue(
@@ -866,6 +884,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected InvalidTaskState error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         // Could be InvalidTaskState or a constraint error (agent mismatch since
         // the task has no agent in Open state)
         const errStr = e.toString();
@@ -937,6 +958,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected InvalidTaskState error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "InvalidTaskState");
       }
     });
@@ -1009,6 +1033,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         // Will fail because the Challenge account does not exist
         // or InvalidTaskState because task is Open, not Disputed
         const errStr = e.toString();
@@ -1072,6 +1099,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected DeadlineExpired error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "DeadlineExpired");
       }
     });
@@ -1349,6 +1379,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected MaxConcurrentClaimsExceeded error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "MaxConcurrentClaimsExceeded");
       }
     });
@@ -1425,6 +1458,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected InvalidSessionDelegate error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "InvalidSessionDelegate");
       }
     });
@@ -1437,6 +1473,9 @@ describe("shillbot", () => {
         program.programId
       );
 
+      // NB: assert.fail must not run inside the try — its own message would
+      // satisfy the catch's substring assert and the test could never fail.
+      let rejected = false;
       try {
         await program.methods
           .createSession(0x04, new BN(86_400))
@@ -1448,10 +1487,11 @@ describe("shillbot", () => {
           })
           .signers([agent])
           .rpc();
-        assert.fail("Expected InvalidSessionDelegate error");
       } catch (e: any) {
+        rejected = true;
         assert.include(e.toString(), "InvalidSessionDelegate");
       }
+      assert.isTrue(rejected, "createSession(0x04) must be rejected");
     });
 
     it("revokes the session delegate", async () => {
@@ -1512,6 +1552,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected error from non-agent revoke");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         // Anchor's has_one constraint will reject because imposter != session.agent
         const errStr = e.toString();
         assert.isTrue(
@@ -1661,6 +1704,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected ClaimBufferInsufficient error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "ClaimBufferInsufficient");
       }
     });
@@ -1910,6 +1956,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected NotAuthority error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "NotAuthority");
       }
     });
@@ -1987,6 +2036,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected InvalidTaskState error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "InvalidTaskState");
       }
     });
@@ -2090,6 +2142,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected NotAuthority error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "NotAuthority");
       }
     });
@@ -2120,6 +2175,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected ProtocolFeeBoundsExceeded error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "ProtocolFeeBoundsExceeded");
       }
     });
@@ -2150,6 +2208,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected ProtocolFeeBoundsExceeded error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "ProtocolFeeBoundsExceeded");
       }
     });
@@ -2180,6 +2241,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected QualityThresholdBoundsExceeded error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "QualityThresholdBoundsExceeded");
       }
     });
@@ -2254,6 +2318,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected NotAuthority");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "NotAuthority");
       }
     });
@@ -2269,6 +2336,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected ZeroPubkey");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "ZeroPubkey");
       }
     });
@@ -2325,6 +2395,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected NotAuthority");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "NotAuthority");
       }
     });
@@ -2340,6 +2413,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected ZeroPubkey");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "ZeroPubkey");
       }
     });
@@ -2393,6 +2469,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected NotAuthority");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "NotAuthority");
       }
     });
@@ -2408,6 +2487,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected ZeroPubkey");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "ZeroPubkey");
       }
     });
@@ -2631,6 +2713,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected InvalidSessionDelegate");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "InvalidSessionDelegate");
       }
     });
@@ -2736,6 +2821,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected InvalidSessionDelegate");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "InvalidSessionDelegate");
       }
     });
@@ -2788,6 +2876,9 @@ describe("shillbot", () => {
           .rpc();
         assert.fail("Expected InvalidTaskState error");
       } catch (e: any) {
+        // assert.fail above throws AssertionError — re-throw it so the
+        // no-rejection path cannot satisfy this catch's substring assert.
+        if (e?.name === "AssertionError") throw e;
         assert.include(e.toString(), "InvalidTaskState");
       }
     });

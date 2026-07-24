@@ -45,7 +45,7 @@ fn validate_claim_session_inputs(
 ) -> Result<()> {
     require!(!global.paused, ShillbotError::ProtocolPaused);
     require!(
-        session.allowed_instructions & 0x01 != 0,
+        session.allowed_instructions & SessionDelegate::CLAIM_TASK_BIT != 0,
         ShillbotError::InvalidSessionDelegate
     );
     if session.expires_at > 0 {

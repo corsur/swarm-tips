@@ -12,9 +12,16 @@ pub fn create_session(
 ) -> Result<()> {
     let clock = Clock::get()?;
 
-    // Checks: allowed_instructions is a valid bitmask — must be nonzero
+    // Checks: allowed_instructions is a valid bitmask — nonzero, and only
+    // bits with defined meaning may be granted. Rejecting unknown bits at
+    // the boundary means a future permission bit only becomes grantable
+    // when the code that consults it ships.
     require!(
         allowed_instructions > 0,
+        crate::errors::ShillbotError::InvalidSessionDelegate
+    );
+    require!(
+        allowed_instructions & !SessionDelegate::DEFINED_INSTRUCTION_BITS == 0,
         crate::errors::ShillbotError::InvalidSessionDelegate
     );
 

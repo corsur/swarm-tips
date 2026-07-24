@@ -46,6 +46,14 @@ pub struct SessionDelegate {
 }
 
 impl SessionDelegate {
+    /// Permission bit: session key may call `claim_task_session`.
+    pub const CLAIM_TASK_BIT: u8 = 0x01;
+    /// Permission bit: session key may call `submit_work_session`.
+    pub const SUBMIT_WORK_BIT: u8 = 0x02;
+    /// All bits with defined meaning. `create_session` rejects any grant
+    /// outside this mask (reject at the boundary — see that handler).
+    pub const DEFINED_INSTRUCTION_BITS: u8 = Self::CLAIM_TASK_BIT | Self::SUBMIT_WORK_BIT;
+
     // 8 + 32 + 32 + 1 + 8 + 8 + 32 + 1 = 122
     pub const SPACE: usize = 8   // discriminator
         + 32   // agent
@@ -64,6 +72,18 @@ mod tests {
     #[test]
     fn challenge_space_is_100() {
         assert_eq!(Challenge::SPACE, 100);
+    }
+
+    #[test]
+    fn defined_session_bits_are_claim_and_submit_only() {
+        assert_eq!(SessionDelegate::DEFINED_INSTRUCTION_BITS, 0x03);
+        // Any bit outside the mask must trip the create_session boundary check.
+        for undefined_bit in [0x04u8, 0x08, 0x10, 0x20, 0x40, 0x80] {
+            assert_ne!(
+                undefined_bit & !SessionDelegate::DEFINED_INSTRUCTION_BITS,
+                0
+            );
+        }
     }
 
     #[test]
