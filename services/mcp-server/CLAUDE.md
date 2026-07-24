@@ -121,9 +121,9 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (41 active)
+## Tools (51 active)
 
-### Cross-chain game (10 tools)
+### Cross-chain game (14 tools)
 - `xchain_build_create_match` — [SPEND] build the unsigned EVM `createMatch` tx (via `crates/evm-chain`) from a matched relay payload so the EVM-leg player can fund their leg. Parses the payload's `leg_b` (contract/session-key/stake) + `leg_a` session key as counterparty, derives `playerIsP1 = (a_is_p1 == 0)` and a `fund_deadline` before `match_deadline`; returns `{to, data, value_wei, chain, fund/match deadlines}` for client-side signing. `build_evm_create_match_call` in `src/xchain.rs`.
 - `xchain_supported_chains` — [READ] registry-driven discovery of the chains a cross-chain Coordination Game match can run on (CAIP-2 id, native coin, per-match stake/tranche in base units, claim window, deployed game-contract address) plus a plain-language description of the stake + certificate-settlement model. No wallet required; the entry point an agent calls before `register_wallet` to choose a Solana (base58) vs EVM (`0x`) wallet. Backed by `crates/chain-registry` via `src/xchain.rs`.
 - `xchain_find_match` — [STATE] join the cross-chain queue and pair with an opposite-chain player. The agent generates a per-match secp256k1 session key locally and passes its `0x` address (server never sees the private key); the matchmaker co-signs the certificate against it. Resolves the session-bound wallet to `(chain, address)` via `resolve_xchain_wallet`, proxies game-api's `/internal/xqueue/join` through `GameApiProxy::xqueue_join`. Returns `waiting` or `matched` + the co-signed relay payload.
@@ -133,6 +133,10 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `xchain_build_lock_xmatch` — [STATE] Solana-leg analog of `xchain_build_lock`: proxies game-api's `/internal/xqueue/build-sol-lock`, which reconstructs the cert from the stored pending match and builds the permissionless `lock_xtranche` tx (authorized by the operator's stored match-live signature — no matchmaker cosign; the player is the cranker/fee payer). Returns `{unsigned_tx, blockhash, match_id, action}`; the player signs + broadcasts via `game_submit_tx` (action `lock_xtranche`). Solana-leg only.
 - `xchain_build_refund` — [STATE] build the unsigned EVM refund tx (`refundTimeout` / `refundNoCert`, both permissionless) so the EVM-leg player can reclaim their stake — after the claim window (`kind=timeout`) or when a funded match never locked/cosigned (`kind=nocert`). `build_evm_refund_call` in `src/xchain.rs` via `evm_chain::build_refund_{timeout,no_cert}_parts`. Returns `{to, data, value_wei, chain}` for client-side signing.
 - `xchain_build_refund_xmatch` — [STATE] Solana-leg refund (permissionless), proxying game-api's `/internal/xqueue/build-sol-refund`: builds the unsigned `refund_xmatch_{timeout,nocert}` tx for the player to sign + broadcast via `game_submit_tx`. Solana-leg only.
+- `xchain_commit_guess` — [STATE] commit the human/AI guess for the cross-chain match (relay-based commit leg).
+- `xchain_sign_checkpoint` — [STATE] co-sign the chat/gameplay checkpoint the settlement certificate derives from.
+- `xchain_reveal_guess` — [STATE] reveal the committed guess once both checkpoints are co-signed.
+- `xchain_gameplay_status` — [READ] poll the relay for the cross-chain match's gameplay state.
 - `xchain_build_settle` — [STATE] get the operator-cosigned match OUTCOME, ready to settle, proxying game-api's `/internal/xqueue/outcome-cosign`. The operator DERIVES the outcome from the relayed co-signed checkpoint (never caller input) and signs only that (`oc_sigs[2]`); returns the canonical outcome (reproducible `outcome_digest`), the operator outcome signature, and the operator match-live signature (`live_sigs[2]`). The agent signs `outcome_digest` with its session key and assembles the permissionless settle on both legs (Solana `settle_xmatch` via `game_submit_tx`; EVM `settle` from its wallet). Equivocated matches are rejected → contested claim path.
 
 ### Universal opportunity discovery (2 tools)
@@ -143,12 +147,20 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `discover_opportunities` — surface MCP servers across the Layer 1-3 discovery pipeline that match a query (`vetted` / `verified` / `all` tiers).
 - `search_mcp_servers` — keyword search across the indexed MCP-server catalog with vetting-tier filters.
 
-### On-chain agent reputation (2 tools, mainnet, read-only)
+### On-chain agent reputation (5 tools, mainnet, read-only)
 - `agent_profile` — trustless lookup of an agent's `AgentState` and `PlayerProfile` PDAs directly from Solana via `getAccountInfo`. No orchestrator hop, no Firestore cache.
 - `agent_trust_score` — composite trust score (0..=4 confidence) over Shillbot completion + game win rate + Layer 3 curator tier; foundation for the future EigenTrust layer.
+- `query_agent_credit_web_score` — extension-credit web position (bonded vouch edges) for a wallet.
+- `list_extensions` — enumerate the credit-web extension edges around a wallet.
+- `agent_reputation_leaderboard` — settlement-graph EigenTrust leaderboard (same data as swarm.tips/reputation).
 
 ### Wallet registration (1 tool, cross-product)
 - `register_wallet` — register your Solana pubkey (base58) OR an EVM `0x` address (non-custodial, no private key). A Solana registration covers every same-chain product (Coordination Game + Shillbot + video); an EVM `0x` address (validated to `0x`+40 hex, stored as its CAIP-10 account on `eip155:84532`) registers for the cross-chain game leg (testnet Base Sepolia) — no Solana session, no balance read (the server holds no EVM RPC client; cross-chain txs are unsigned calls the agent signs/submits locally). The `0x` branch in the handler emits `register_wallet_evm` (the mainnet-gate demand signal that superseded the old `register_wallet_bounce` rejection now that EVM is accepted on testnet). Persisted via `Mcp-Session-Id` → wallet binding in Firestore so a pod restart doesn't strand the agent. Was previously named `game_register_wallet`; renamed 2026-04-08 to reflect cross-product use.
+
+### Same-chain EVM game (3 tools, Base)
+- `game_find_evm_match` — join the same-chain EVM queue (session-key model, one popup parity with Solana).
+- `game_evm_match_status` — poll for the EVM match.
+- `game_evm_committed` — signal the on-chain commit landed so the opponent can proceed.
 
 ### Coordination Game (9 tools, non-custodial)
 - `game_get_leaderboard` — tournament rankings (read-only, `tournament_id` defaults to 1)

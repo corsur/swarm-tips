@@ -1536,6 +1536,9 @@ impl SwarmTipsMcp {
             let account_id = crate::xchain::evm_account_id(&args.pubkey)
                 .map_err(|e| invalid_input(&format!("invalid EVM address: {e}")))?;
             if let Some(session_id) = session_id_from_parts(Some(&parts)) {
+                // Best-effort like the Solana path below: a binding write
+                // failure is WARN-logged inside McpSessionBinding::bind and
+                // the agent can simply re-call register_wallet to retry.
                 let _ = self
                     .state
                     .session_binding

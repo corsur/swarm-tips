@@ -167,7 +167,7 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
     );
     let (to, data, value) = call.to_hex_parts();
     Ok(json!({
-        "chain": str_at(leg_b, "chain").unwrap_or_default(),
+        "chain": str_at(leg_b, "chain")?,
         "to": to,
         "data": data,
         "value_wei": value,
@@ -239,7 +239,7 @@ pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
     let call = evm_chain::build_lock_tranche_parts(contract, cert, operator_sig);
     let (to, data, value) = call.to_hex_parts();
     Ok(json!({
-        "chain": str_at(leg_b, "chain").unwrap_or_default(),
+        "chain": str_at(leg_b, "chain")?,
         "to": to,
         "data": data,
         "value_wei": value,
@@ -275,7 +275,7 @@ pub fn build_evm_refund_call(payload: &Value, kind: &str) -> Result<Value, Strin
     };
     let (to, data, value) = call.to_hex_parts();
     Ok(json!({
-        "chain": leg_b.get("chain").and_then(|x| x.as_str()).unwrap_or_default(),
+        "chain": leg_b.get("chain").and_then(|x| x.as_str()).ok_or("missing leg_b.chain")?,
         "to": to,
         "data": data,
         "value_wei": value,

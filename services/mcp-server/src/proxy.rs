@@ -271,6 +271,12 @@ impl OrchestratorProxy {
 
         if !response.status().is_success() {
             let status = response.status();
+            // `unwrap_or_default()` on the error body (here and in the other
+            // error branches of this file) is deliberate, not error
+            // swallowing: we are already on the failure path, the status is
+            // preserved, and the body only enriches the logged/returned
+            // message — an unreadable body degrades to "" instead of masking
+            // the real error with a second one.
             let body = response.text().await.unwrap_or_default();
             tracing::error!(service = "coordination-mcp-server", status = %status, body = %body, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
