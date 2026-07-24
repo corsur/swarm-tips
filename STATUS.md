@@ -8,7 +8,7 @@ Updated when topologies change. Each service section names its current
 replica count, failure modes, downtime budget, and the trigger that would
 cause us to scale it up.
 
-**Last updated: 2026-05-01**
+**Last updated: 2026-07-24**
 
 ---
 
@@ -82,14 +82,14 @@ credential edits. Queue mode is the only honest path to multi-replica.
 
 **Current phase**: mixed.
 - Coordination Game (`coordination.game`, game-api, mcp.swarm.tips game tools) — **mainnet (Phase 1+)**.
-- Shillbot (`shillbot.org`, orchestrator, verifier, MCP write tools) — **devnet only**. Phase 3 mainnet launch is gated on the 5 blockers tracked in `~/swarm/swarm-tips/CLAUDE.md` (FTC disclosure ToS, nonce fingerprinting, content approval, Switchboard feed lock, sybil farming economics) plus PR #1 / #2 / #3 merging.
+- Shillbot (`shillbot.org`, orchestrator, verifier, MCP write tools) — **mainnet program deployed (2026-07-19); deterministic-attested (LeanProof) bounty flow live on mainnet; oracle-metrics (YouTube) verification remains devnet-gated.** Phase 3 has NOT been declared — the oracle-path blockers tracked in `~/swarm/swarm-tips/CLAUDE.md` (FTC disclosure ToS, nonce fingerprinting, content approval, Switchboard feed lock, sybil farming economics) still gate the full marketplace launch.
 
 The SLOs below are **operational targets that apply IF a service reaches the named phase**, not statements of current uptime:
 
 - `mcp.swarm.tips` (MCP server) — 99% target in Phase 1 (current), 99.5% target in Phase 3.
 - `swarm.tips` static site — 99% monthly (current).
 - `coordination.game` (game-api) — same as mcp.swarm.tips per phase (Phase 1, current).
-- Shillbot write path (orchestrator + verifier + MCP write tools) — 99.5% target **once Phase 3 declared** with p99 < 5s for `claim_task`, `submit_work`, `approve_task`. **Not yet operational** — currently devnet only.
+- Shillbot write path (orchestrator + verifier + MCP write tools) — 99.5% target **once Phase 3 declared** with p99 < 5s for `claim_task`, `submit_work`, `approve_task`. **Phase 3 not declared** — mainnet serves the LeanProof bounty flow; the oracle-metrics path is devnet-gated.
 
 Phase 3 declaration criteria: PR #1 / #2 / #3 all merged AND mainnet program upgrade deployed AND ≥ 1 paying client interacting against mainnet. Until then, Shillbot stays "devnet."
 
