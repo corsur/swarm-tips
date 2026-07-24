@@ -41,7 +41,14 @@ function check(cond: boolean, msg: string): void {
 }
 
 // --- minimal MCP streamable-http client (the agent's transport) ---
-function parseSse(body: string): Record<string, unknown> {
+// Streamable HTTP allows either framing for a POST response: plain
+// application/json (what the stateless rmcp transport returns since
+// ed612e0) or text/event-stream. Accept both, like a spec client.
+function parseRpcResponse(body: string): Record<string, unknown> {
+  const trimmed = body.trim();
+  if (trimmed.startsWith("{")) {
+    return JSON.parse(trimmed) as Record<string, unknown>;
+  }
   for (const line of body.split("\n")) {
     const t = line.trim();
     if (t.startsWith("data:")) {
@@ -55,7 +62,7 @@ function parseSse(body: string): Record<string, unknown> {
       }
     }
   }
-  throw new Error(`no JSON-RPC data in SSE response: ${body.slice(0, 200)}`);
+  throw new Error(`no JSON-RPC data in response: ${body.slice(0, 200)}`);
 }
 
 const MCP_HEADERS = {
@@ -108,7 +115,7 @@ async function mcpCall(
       params: { name, arguments: args },
     }),
   });
-  const rpc = parseSse(await res.text());
+  const rpc = parseRpcResponse(await res.text());
   if (rpc.error)
     throw new Error(`MCP tool ${name} error: ${JSON.stringify(rpc.error)}`);
   const result = rpc.result as { content?: { text?: string }[] };

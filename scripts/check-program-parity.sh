@@ -19,9 +19,16 @@
 
 set -euo pipefail
 
+# Per-program BEHIND tolerance (bytes). coordination_game mainnet is built
+# with `--features mainnet` (9ffac19, cross-chain leg-A genesis tag) while
+# devnet builds without it, so the two binaries legitimately differ by
+# ~12KB of codegen — and programdata `space` never shrinks, so it reflects
+# each network's historical max. 16KiB absorbs that structural gap while
+# still alarming on gross multi-version staleness (the 2026-05-09 case).
+# shillbot builds identically on both networks; keep it tight.
 PROGRAMS=(
-  "coordination_game:2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
-  "shillbot:2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
+  "coordination_game:2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P:16384"
+  "shillbot:2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi:256"
 )
 
 drift_count=0
@@ -53,8 +60,7 @@ program_data_size() {
 }
 
 for entry in "${PROGRAMS[@]}"; do
-  name="${entry%%:*}"
-  pubkey="${entry##*:}"
+  IFS=: read -r name pubkey behind_tolerance <<<"$entry"
   m_size=$(program_data_size "mainnet-beta" "$pubkey")
   d_size=$(program_data_size "devnet" "$pubkey")
   if [[ -z $m_size || -z $d_size ]]; then
@@ -71,8 +77,8 @@ for entry in "${PROGRAMS[@]}"; do
   # caused the 2026-05-09 `AccountDidNotDeserialize` outage. Size is an imperfect
   # ahead/behind proxy, but it catches the dangerous case while unblocking
   # intentional testnet-first deploys.
-  if (( d_size + 256 < m_size )); then
-    echo "FAIL: $name devnet is BEHIND mainnet (devnet=$d_size < mainnet=$m_size, diff=$((m_size - d_size)))"
+  if (( d_size + behind_tolerance < m_size )); then
+    echo "FAIL: $name devnet is BEHIND mainnet (devnet=$d_size < mainnet=$m_size, diff=$((m_size - d_size)), tolerance=$behind_tolerance)"
     echo "  Likely cause: a deploy-devnet CI run failed (often on anchor's"
     echo "  IDL upgrade with 0xbc4 / AccountNotInitialized when the on-chain"
     echo "  IDL is wedged). Bypass the IDL step by using \`solana program"
