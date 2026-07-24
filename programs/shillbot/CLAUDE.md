@@ -8,7 +8,7 @@ Solana program (Anchor) for the Shillbot task marketplace. For product context a
 
 Manages the full task lifecycle: task creation with escrow, agent claiming, proof submission, oracle-verified scoring, optimistic finalization with challenge window, and performance-scaled payment release.
 
-Uses `init` exclusively for all accounts except `AgentState`, which uses `init_if_needed` (agent pays, no escrow funds, idempotent across first claim).
+Uses `init` exclusively for all accounts except `AgentState` and `ClientState`, which use `init_if_needed` (the signing agent/client pays for their own PDA, no escrow funds, idempotent). `ClientState` has no close instruction, so its rate-limit counters cannot be reset by close-and-recreate.
 
 ---
 

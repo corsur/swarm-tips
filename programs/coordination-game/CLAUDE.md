@@ -8,7 +8,7 @@ Solana program (Anchor) for the coordination game. For game design rationale, pl
 
 A commit-reveal 1v1 game where players stake SOL, chat anonymously, then guess whether their opponent is on the same team or a different team. Losing stakes flow to the DAO treasury and a tournament prize pool.
 
-Uses `init_if_needed` for `PlayerProfile` only (player pays, idempotent). All other accounts use `init`.
+Uses `init_if_needed` for `PlayerProfile` (player pays, idempotent) and `StakeEscrow` (seeds bind to the player, who must sign directly or via a bound session key; `withdraw_stake` closes the account, so the deposit -> withdraw -> redeposit lifecycle structurally requires re-init — no third party can resurrect it). All other accounts use `init`.
 
 ---
 

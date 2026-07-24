@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 41 tools live: Coordination Game (9), cross-chain game (10: `xchain_supported_chains`, `xchain_find_match`, `xchain_match_status`, `xchain_build_create_match`, `xchain_build_create_xmatch`, `xchain_build_lock`, `xchain_build_lock_xmatch`, `xchain_build_refund`, `xchain_build_refund_xmatch`, `xchain_build_settle`), cross-product `register_wallet` (1), Shillbot marketplace (13, mainnet, all `shillbot_*`-prefixed), video generation (2), universal opportunity discovery (2: `list_earning_opportunities`, `list_spending_opportunities`), MCP-ecosystem discovery (2: `discover_opportunities`, `search_mcp_servers`), and on-chain agent reputation (2: `agent_profile`, `agent_trust_score`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 51 tools live (count them: `grep -c '#[tool(' src/server.rs`): same-chain Solana game (10 incl. `register_wallet`), same-chain EVM game (3: `game_find_evm_match`, `game_evm_match_status`, `game_evm_committed`), cross-chain game (14, all `xchain_*`-prefixed incl. gameplay `xchain_commit_guess`/`xchain_sign_checkpoint`/`xchain_reveal_guess`/`xchain_gameplay_status`), Shillbot marketplace (13, all `shillbot_*`-prefixed), video generation (2), listings/discovery (4: `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities`, `search_mcp_servers`), and agent reputation (5: `agent_profile`, `agent_trust_score`, `query_agent_credit_web_score`, `list_extensions`, `agent_reputation_leaderboard`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -16,7 +16,7 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 41 tools live: Coordinatio
 | Status | active |
 | Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
 
-v0.1.3 was published on 2026-04-08 with a 20-tool description; the registry copy is stale relative to the current 31-tool surface. The local `server.json` description has been updated; run `mcp-publisher publish` from `services/mcp-server/` to push the refreshed inventory + description (if OAuth tokens expire, run `mcp-publisher login github` first for the interactive browser flow).
+v0.1.3 was published on 2026-04-08 with a 20-tool description; the registry copy is stale relative to the current 51-tool surface. The local `server.json` description has been updated; run `mcp-publisher publish` from `services/mcp-server/` to push the refreshed inventory + description (if OAuth tokens expire, run `mcp-publisher login github` first for the interactive browser flow).
 
 **Auth tokens** are stored in `services/mcp-server/.mcpregistry_github_token` and `.mcpregistry_registry_token` (gitignored). Both expire periodically.
 
@@ -231,7 +231,7 @@ mcp-server-specific notes:
 
 mcp-server-specific notes:
 
-- **`src/config.rs::load_optional_secret`** is the reusable helper (copied verbatim from `backend/x-bridge/src/config.rs`). For secrets whose absence should crash-loop the pod, add a sibling `load_secret` that panics on failure — match `backend/chatwoot-responder/src/config.rs::load_secret`.
+- **`src/config.rs::load_optional_secret`** is the reusable helper (same pattern as `coordination-app/crates/gcp-secrets`). For secrets whose absence should crash-loop the pod, add a sibling `load_secret` that panics on failure — match the `load_secret` in that crate.
 - **`xai-api-key`** is loaded via `load_optional_secret` at mcp-server startup. If Secret Manager access fails or the secret doesn't exist, mcp-server logs a `warn!` and boots with Layer 2 disabled. Layer 1 + Layer 3 continue to work. `POST /internal/mcp/llm-classify` returns 503.
 - **Legacy gap: CLOSED (2026-04-09).** The `solana-rpc-secret` K8s Secret bridge has been migrated to `config::load_optional_secret(&gcp_project_id, "solana-rpc-url-{network}")`. The `secretRef` has been removed from the deployment manifest. All runtime secrets now come from GCP Secret Manager directly.
 - **What you must NOT add:** any env-var-based API key read (`std::env::var("FOO_API_KEY")` for sensitive values), any new `secretRef` in the deployment manifest, any hardcoded secret in Rust source.

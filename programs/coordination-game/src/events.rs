@@ -147,9 +147,27 @@ pub struct XClaimOpened {
 }
 
 #[event]
+pub struct XClaimSuperseded {
+    pub match_id: [u8; 32],
+    pub step_count: u8,
+    pub claimed_outcome: u8,
+}
+
+#[event]
 pub struct XEquivocationProven {
     pub match_id: [u8; 32],
     pub new_best_outcome: u8,
+}
+
+#[event]
+pub struct XPoolDeposited {
+    pub funder: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct XPoolWithdrawn {
+    pub amount: u64,
 }
 
 #[event]

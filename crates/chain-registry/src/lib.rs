@@ -105,12 +105,22 @@ impl ChainEntry {
     }
 }
 
+/// Named CAIP-2 ids for the registered chains — THE single source for these
+/// strings in Rust. Consumers (game-api leaderboard, mcp-server xchain, …)
+/// import these instead of repeating the literals.
+pub const SOLANA_DEVNET_CAIP2: &str = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+pub const SOLANA_MAINNET_CAIP2: &str = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+pub const BASE_SEPOLIA_CAIP2: &str = "eip155:84532";
+pub const BASE_MAINNET_CAIP2: &str = "eip155:8453";
+pub const ETHEREUM_SEPOLIA_CAIP2: &str = "eip155:11155111";
+pub const ETHEREUM_MAINNET_CAIP2: &str = "eip155:1";
+
 /// Testnet stake parity note: 0.05 SOL and 0.0025 ETH are within the
 /// same rough-USD band; exact parity is intentionally NOT enforced
 /// (rates are agreed per-match in the co-signed schedule).
 const REGISTRY: &[ChainEntry] = &[
     ChainEntry {
-        chain_id: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        chain_id: SOLANA_DEVNET_CAIP2,
         display_name: "Solana Devnet",
         rpc_urls: &["https://api.devnet.solana.com"],
         quorum_m: 1,
@@ -133,7 +143,7 @@ const REGISTRY: &[ChainEntry] = &[
         x402_network: None,
     },
     ChainEntry {
-        chain_id: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        chain_id: SOLANA_MAINNET_CAIP2,
         display_name: "Solana Mainnet",
         rpc_urls: &["https://api.mainnet-beta.solana.com"],
         quorum_m: 1,
@@ -151,7 +161,7 @@ const REGISTRY: &[ChainEntry] = &[
         x402_network: Some("solana"),
     },
     ChainEntry {
-        chain_id: "eip155:84532",
+        chain_id: BASE_SEPOLIA_CAIP2,
         display_name: "Base Sepolia",
         rpc_urls: &[
             "https://sepolia.base.org",
@@ -199,7 +209,7 @@ const REGISTRY: &[ChainEntry] = &[
     // stakeWei/maxTrancheWei. Stake matches Base Sepolia's $5 testnet anchor
     // (== _deploy-evm.yml ethereum_sepolia XCHAIN_STAKE_WEI, in lockstep).
     ChainEntry {
-        chain_id: "eip155:11155111",
+        chain_id: ETHEREUM_SEPOLIA_CAIP2,
         display_name: "Ethereum Sepolia",
         rpc_urls: &[
             "https://ethereum-sepolia-rpc.publicnode.com",
@@ -236,7 +246,7 @@ const REGISTRY: &[ChainEntry] = &[
     // workflow's XCHAIN_STAKE_WEI/XCHAIN_MAX_TRANCHE_WEI for that network in
     // lockstep — the parity guard fails CI on divergence once deployed.
     ChainEntry {
-        chain_id: "eip155:8453",
+        chain_id: BASE_MAINNET_CAIP2,
         display_name: "Base",
         rpc_urls: &[
             "https://mainnet.base.org",
@@ -266,7 +276,7 @@ const REGISTRY: &[ChainEntry] = &[
         x402_network: Some("base"),
     },
     ChainEntry {
-        chain_id: "eip155:1",
+        chain_id: ETHEREUM_MAINNET_CAIP2,
         display_name: "Ethereum",
         rpc_urls: &[
             "https://ethereum-rpc.publicnode.com",
@@ -326,7 +336,7 @@ pub fn all() -> impl Iterator<Item = &'static ChainEntry> {
 /// hardcoding the devnet id. Returns `None` only if the devnet entry is ever
 /// removed.
 pub fn cross_chain_solana() -> Option<&'static ChainEntry> {
-    ChainId::parse("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+    ChainId::parse(SOLANA_DEVNET_CAIP2)
         .ok()
         .and_then(|id| entry(&id))
 }

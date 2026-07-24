@@ -11,7 +11,8 @@ use crate::cert::{
 };
 use crate::errors::CoordinationError;
 use crate::events::{
-    XClaimOpened, XEquivocationProven, XMatchCreated, XMatchRefunded, XMatchSettled, XTrancheLocked,
+    XClaimOpened, XClaimSuperseded, XEquivocationProven, XMatchCreated, XMatchRefunded,
+    XMatchSettled, XPoolDeposited, XPoolWithdrawn, XTrancheLocked,
 };
 use crate::instructions::utils::transfer_lamports;
 use crate::payoff::{resolve_xleg, XLegResolution};
@@ -79,6 +80,10 @@ pub fn xpool_deposit(ctx: Context<XPoolDeposit>, amount: u64) -> Result<()> {
         .free_lamports
         .checked_add(amount)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
+    emit!(XPoolDeposited {
+        funder: ctx.accounts.funder.key(),
+        amount,
+    });
     Ok(())
 }
 
@@ -97,6 +102,7 @@ pub fn xpool_withdraw(ctx: Context<XPoolWithdraw>, amount: u64) -> Result<()> {
         &ctx.accounts.operator.to_account_info(),
         amount,
     )?;
+    emit!(XPoolWithdrawn { amount });
     Ok(())
 }
 
@@ -450,6 +456,11 @@ pub fn supersede_xclaim(
     let m = &mut ctx.accounts.xmatch;
     m.best_step_count = cp.step_count;
     m.best_outcome_kind = cp.derive_claim_outcome();
+    emit!(XClaimSuperseded {
+        match_id: m.match_id,
+        step_count: m.best_step_count,
+        claimed_outcome: m.best_outcome_kind,
+    });
     Ok(())
 }
 

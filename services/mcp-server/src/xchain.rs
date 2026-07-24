@@ -65,7 +65,7 @@ pub fn supported_chains_response() -> Value {
 /// The active EVM testnet chain for wallet registration. Mainnet EVM is
 /// gated (decision.md §6), so a registered `0x` wallet is scoped to Base
 /// Sepolia until that gate clears.
-const EVM_TESTNET_CHAIN: &str = "eip155:84532";
+const EVM_TESTNET_CHAIN: &str = chain_registry::BASE_SEPOLIA_CAIP2;
 
 /// Validate an EVM address and return its CAIP-10 account id on the active
 /// testnet EVM chain. Accepts `0x` + exactly 40 hex chars (case-insensitive;

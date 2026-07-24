@@ -133,7 +133,7 @@ All scoring and payment calculations use integer arithmetic with an explicit sca
 
 ### `init` vs `init_if_needed`
 
-Use `init` exclusively for the shillbot program (prevents PDA account resurrection attacks), with one exception: `AgentState` uses `init_if_needed` (agent pays, no escrow funds, idempotent across first claim). The coordination game uses `init_if_needed` for `PlayerProfile` only (player pays, idempotent). Never use `init_if_needed` for accounts holding escrow funds.
+Use `init` exclusively (prevents PDA account resurrection attacks), with these exceptions: shillbot `AgentState` and `ClientState`, and coordination-game `PlayerProfile` (the signer pays for their own PDA, no escrow funds, idempotent) plus coordination-game `StakeEscrow` (holds the player's own stake; seeds bind to the signing player and `withdraw_stake` closes the account, so redeposit requires re-init — only the player can resurrect their own escrow). Never use `init_if_needed` for an account holding escrow funds unless its seeds bind to the only signer who can pay into it.
 
 ### Observability
 
