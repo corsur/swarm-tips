@@ -538,7 +538,12 @@ async fn track_inflight(
     next.run(req).await
 }
 
-/// Readiness / dependency probe — checks game-api + Solana RPC reachability.
+/// Readiness / dependency probe — gates ONLY on Solana RPC reachability.
+/// game-api is probed for observability but never fails readiness: game-api
+/// scales to zero (KEDA HTTP add-on) and in-cluster DNS bypasses the wake
+/// interceptor, so "connection refused" is a NORMAL state — gating on it takes
+/// all 51 tools offline to guard the ~10 game tools, which surface game-api
+/// errors per-call anyway (2026-07-24 outage: stuck NotReady rollout).
 /// Wired to the readiness probe and `/ready` ONLY, never liveness: a failing
 /// dependency should drain traffic from this pod, never kill the (healthy) process.
 fn build_readiness_handler() -> impl Fn() -> std::pin::Pin<
@@ -582,13 +587,16 @@ fn build_readiness_handler() -> impl Fn() -> std::pin::Pin<
                 .map(|r| r.status().is_success())
                 .unwrap_or(false);
 
-            if game_ok && rpc_ok {
+            if !game_ok {
+                tracing::warn!(
+                    service = "mcp-server",
+                    game_api = %game_url,
+                    "game-api unreachable from readiness probe (expected while scaled to zero)"
+                );
+            }
+
+            if rpc_ok {
                 (axum::http::StatusCode::OK, "ok")
-            } else if !game_ok {
-                (
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    "game-api unreachable",
-                )
             } else {
                 (
                     axum::http::StatusCode::SERVICE_UNAVAILABLE,
