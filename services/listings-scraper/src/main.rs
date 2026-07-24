@@ -1,3 +1,6 @@
+#![deny(warnings)]
+#![deny(clippy::all)]
+
 //! Tiny TLS-impersonating fetch helper. Invoked as a subprocess by
 //! `mcp-server`'s listings pipeline for upstreams that fingerprint-block
 //! plain reqwest (currently `api.moltlaunch.com` behind Cloudflare). Emits a

@@ -10,13 +10,19 @@ This workspace contains all on-chain programs for Swarm Tips: the coordination g
 
 ```
 programs/
-├── coordination-game/       # 1v1 commit-reveal game with tournaments
-└── shillbot/                # Task marketplace with escrow + oracle verification
+├── coordination-game/       # 1v1 commit-reveal game with tournaments (incl. cross-chain xmatch)
+├── shillbot/                # Task marketplace with escrow + oracle verification
+├── extension-registry/      # Bonded vouch edge log (credit web)
+└── extension-credit/        # Permissionless funding layer (devnet-only)
 
 crates/
 ├── shared/                  # Platform-agnostic types (PlatformProof, EngagementMetrics, CompositeScore, ScoringWeights)
+├── chain-core/              # Chain-agnostic seam: cert schema, cosign types (no_std)
+├── chain-registry/          # CAIP-2 registry: per-chain config single source of truth
+├── evm-chain/               # EVM tx building via alloy (unsigned calls)
 ├── game-chain/              # Tx builder helpers: PDA derivation, instruction building, RPC client for coordination game
-└── game-api-client/         # HTTP/WS client for off-chain game-api backend
+├── game-api-client/         # HTTP/WS client for off-chain game-api backend
+└── reputation-indexer/      # Pure assembly layer: settlement edges → reputation records
 
 services/
 ├── mcp-server/              # Unified MCP server exposing tools for AI agents (see its own CLAUDE.md)
