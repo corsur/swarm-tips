@@ -12,10 +12,13 @@ spec:
     - mcp.coordination.game
     - mcp.swarm.tips
   rules:
+    # Route to the KEDA HTTP add-on interceptor (same namespace) so mcp-server
+    # can idle at 0 and wake on the first request. The interceptor matches the
+    # mcp.* hosts to the mcp-server HTTPScaledObject (scaled-object.yaml).
     - matches:
         - path:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: mcp-server
-          port: 80
+        - name: keda-add-ons-http-interceptor-proxy
+          port: 8080

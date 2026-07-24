@@ -1,26 +1,43 @@
-apiVersion: keda.sh/v1alpha1
-kind: ScaledObject
+# mcp-server scale-to-zero via the KEDA HTTP add-on interceptor (installed from
+# coordination-app: keda-http.tf, swarm-tips namespace). Replaces the old
+# metrics-api ScaledObject (min 2) — the add-on generates its own same-named
+# ScaledObject, so this overwrites it in place.
+#
+# BOTH idle-at-0 AND viral scale-out, because the server is already stateless:
+# main.rs runs rmcp streamable-http with `with_stateful_mode(false)` +
+# `with_json_response(true)` (no SSE, no Mcp-Session-Id continuity), and all
+# durable state — the session->wallet binding (Firestore `mcp_http_sessions`) and
+# the game session incl. the reveal preimage (`mcp_game_sessions/{wallet}`) — is
+# in Firestore, re-hydrated per request. So any pod serves any agent request;
+# min 0 + max 30 gives wake-on-demand and free viral scale-out.
+#
+# KNOWN CAVEAT (narrow): the live game-CHAT buffer (GameSession.chat_buffer /
+# match_found) is fed by a pod-local mcp->game-api WebSocket and is NOT persisted.
+# At >1 replica an agent's `game_get_messages` can round-robin to a pod that
+# didn't receive that chat. Affects only MCP-driven game chat (2 of 51 tools) —
+# wallet binding, tx building, reveal, discovery, reputation are unaffected. Fix
+# if it matters: write-through chat_buffer to Firestore like the rest of GameSession.
+# scaledownPeriod 900s keeps it warm 15m past the last request before idling to 0.
+apiVersion: http.keda.sh/v1alpha1
+kind: HTTPScaledObject
 metadata:
   name: mcp-server
   namespace: swarm-tips
 spec:
+  hosts:
+    - mcp.swarm.tips
+    - mcp.coordination.game
+    - mcp.shillbot.org
   scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
     name: mcp-server
-  # min 2 so the agent entry point is never a single point of failure —
-  # a marketing push targets agents hitting mcp.swarm.tips, and one
-  # expensive/blocking call must not take down the whole surface.
-  minReplicaCount: 2
-  maxReplicaCount: 5
-  pollingInterval: 15
-  cooldownPeriod: 60
-  triggers:
-    - type: metrics-api
-      metadata:
-        # In-flight request count per pod (main.rs track_inflight). Scale
-        # up past ~40 concurrent requests/pod. Baseline noise (health +
-        # KEDA polls) is a handful, so this only fires on real load.
-        targetValue: "40"
-        url: "http://mcp-server.swarm-tips:80/internal/scaling-metric"
-        valueLocation: "value"
+    kind: Deployment
+    apiVersion: apps/v1
+    service: mcp-server
+    port: 80
+  replicas:
+    min: 0
+    max: 30
+  scaledownPeriod: 900
+  scalingMetric:
+    concurrency:
+      targetValue: 40
