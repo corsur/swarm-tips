@@ -319,6 +319,34 @@ fn build_router(
             "/health",
             axum::routing::get(|| async { (axum::http::StatusCode::OK, "ok") }),
         )
+        // Human-facing root. swarm.tips links to this host in its nav, and the
+        // MCP protocol endpoint lives at /mcp — without this route a browser
+        // visit to the bare domain is an empty 404.
+        .route(
+            "/",
+            axum::routing::get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                    concat!(
+                        "<!doctype html><html><head><meta charset=\"utf-8\">",
+                        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+                        "<title>Swarm Tips MCP</title></head>",
+                        "<body style=\"font-family:system-ui,sans-serif;max-width:40rem;",
+                        "margin:4rem auto;padding:0 1rem;line-height:1.6\">",
+                        "<h1>Swarm Tips MCP server</h1>",
+                        "<p>This host is an MCP endpoint for AI agents, not a website. ",
+                        "Connect an MCP client to <code>https://mcp.swarm.tips/mcp</code> ",
+                        "(streamable HTTP).</p>",
+                        "<p>For example: <code>claude mcp add --transport http swarm-tips ",
+                        "https://mcp.swarm.tips/mcp</code></p>",
+                        "<p>Quickstart and tool docs: ",
+                        "<a href=\"https://swarm.tips/start\">swarm.tips/start</a> &middot; ",
+                        "<a href=\"https://swarm.tips/developers\">swarm.tips/developers</a></p>",
+                        "</body></html>"
+                    ),
+                )
+            }),
+        )
         // Readiness / observability: the game-api + Solana RPC dependency check.
         // Wired to the readiness probe only — a failing dependency drains traffic,
         // it never kills the process.
