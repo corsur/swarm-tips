@@ -429,11 +429,12 @@ impl OrchestratorProxy {
             .client
             .post(&url)
             .bearer_auth(wallet_pubkey)
-            // Explicit empty body → Content-Length: 0. These orchestrator POSTs
-            // carry no body; without this, reqwest omits Content-Length and Cloud
-            // Run's HTTP frontend rejects the request with 411 Length Required
-            // (GKE's ingress tolerated the missing header; Cloud Run does not).
-            .body(Vec::<u8>::new())
+            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
+            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
+            // both send NO Content-Length), and Cloud Run's HTTP frontend then
+            // rejects with 411 Length Required (GKE's ingress tolerated it). The
+            // explicit header is the only form reqwest actually transmits.
+            .header(reqwest::header::CONTENT_LENGTH, 0)
             .send()
             .await
             .map_err(|e| {
@@ -552,11 +553,12 @@ impl OrchestratorProxy {
             .client
             .post(&url)
             .bearer_auth(wallet_pubkey)
-            // Explicit empty body → Content-Length: 0. These orchestrator POSTs
-            // carry no body; without this, reqwest omits Content-Length and Cloud
-            // Run's HTTP frontend rejects the request with 411 Length Required
-            // (GKE's ingress tolerated the missing header; Cloud Run does not).
-            .body(Vec::<u8>::new())
+            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
+            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
+            // both send NO Content-Length), and Cloud Run's HTTP frontend then
+            // rejects with 411 Length Required (GKE's ingress tolerated it). The
+            // explicit header is the only form reqwest actually transmits.
+            .header(reqwest::header::CONTENT_LENGTH, 0)
             .send()
             .await
             .map_err(|e| {
@@ -597,11 +599,12 @@ impl OrchestratorProxy {
             .client
             .post(&url)
             .bearer_auth(wallet_pubkey)
-            // Explicit empty body → Content-Length: 0. These orchestrator POSTs
-            // carry no body; without this, reqwest omits Content-Length and Cloud
-            // Run's HTTP frontend rejects the request with 411 Length Required
-            // (GKE's ingress tolerated the missing header; Cloud Run does not).
-            .body(Vec::<u8>::new())
+            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
+            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
+            // both send NO Content-Length), and Cloud Run's HTTP frontend then
+            // rejects with 411 Length Required (GKE's ingress tolerated it). The
+            // explicit header is the only form reqwest actually transmits.
+            .header(reqwest::header::CONTENT_LENGTH, 0)
             .send()
             .await
             .map_err(|e| {
@@ -650,11 +653,12 @@ impl OrchestratorProxy {
             .client
             .post(&url)
             .bearer_auth(wallet_pubkey)
-            // Explicit empty body → Content-Length: 0. These orchestrator POSTs
-            // carry no body; without this, reqwest omits Content-Length and Cloud
-            // Run's HTTP frontend rejects the request with 411 Length Required
-            // (GKE's ingress tolerated the missing header; Cloud Run does not).
-            .body(Vec::<u8>::new())
+            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
+            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
+            // both send NO Content-Length), and Cloud Run's HTTP frontend then
+            // rejects with 411 Length Required (GKE's ingress tolerated it). The
+            // explicit header is the only form reqwest actually transmits.
+            .header(reqwest::header::CONTENT_LENGTH, 0)
             .send()
             .await
             .map_err(|e| {
