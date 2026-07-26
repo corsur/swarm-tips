@@ -429,6 +429,11 @@ impl OrchestratorProxy {
             .client
             .post(&url)
             .bearer_auth(wallet_pubkey)
+            // Explicit empty body → Content-Length: 0. These orchestrator POSTs
+            // carry no body; without this, reqwest omits Content-Length and Cloud
+            // Run's HTTP frontend rejects the request with 411 Length Required
+            // (GKE's ingress tolerated the missing header; Cloud Run does not).
+            .body(Vec::<u8>::new())
             .send()
             .await
             .map_err(|e| {
@@ -547,6 +552,11 @@ impl OrchestratorProxy {
             .client
             .post(&url)
             .bearer_auth(wallet_pubkey)
+            // Explicit empty body → Content-Length: 0. These orchestrator POSTs
+            // carry no body; without this, reqwest omits Content-Length and Cloud
+            // Run's HTTP frontend rejects the request with 411 Length Required
+            // (GKE's ingress tolerated the missing header; Cloud Run does not).
+            .body(Vec::<u8>::new())
             .send()
             .await
             .map_err(|e| {
@@ -587,6 +597,11 @@ impl OrchestratorProxy {
             .client
             .post(&url)
             .bearer_auth(wallet_pubkey)
+            // Explicit empty body → Content-Length: 0. These orchestrator POSTs
+            // carry no body; without this, reqwest omits Content-Length and Cloud
+            // Run's HTTP frontend rejects the request with 411 Length Required
+            // (GKE's ingress tolerated the missing header; Cloud Run does not).
+            .body(Vec::<u8>::new())
             .send()
             .await
             .map_err(|e| {
@@ -635,6 +650,11 @@ impl OrchestratorProxy {
             .client
             .post(&url)
             .bearer_auth(wallet_pubkey)
+            // Explicit empty body → Content-Length: 0. These orchestrator POSTs
+            // carry no body; without this, reqwest omits Content-Length and Cloud
+            // Run's HTTP frontend rejects the request with 411 Length Required
+            // (GKE's ingress tolerated the missing header; Cloud Run does not).
+            .body(Vec::<u8>::new())
             .send()
             .await
             .map_err(|e| {
