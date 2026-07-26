@@ -1,7 +1,6 @@
 name: MCP Server & Shared Crates
 
 on:
-  workflow_dispatch: {} # manual trigger (e.g. redeploy after a workflow-only fix)
   push:
     branches: [main]
     paths:
