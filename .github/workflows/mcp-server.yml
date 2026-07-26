@@ -57,23 +57,16 @@ jobs:
             us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:${{ github.sha }}
             us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:latest
 
-      - name: Get GKE credentials
-        if: github.ref == 'refs/heads/main'
-        uses: google-github-actions/get-gke-credentials@v2
-        with:
-          cluster_name: coordination
-          location: us-central1
-
-      - name: Apply k8s manifests
-        if: github.ref == 'refs/heads/main'
-        run: kubectl apply -f infra/k8s/mcp-server -n swarm-tips
-
-      - name: Deploy and verify rollout
+      # Cloud Run deploy (mcp-server migrated off GKE). Only --image changes; the
+      # rest of the service config (env, VPC, scaling) is Terraform-managed in
+      # coordination-app/infra/cloudrun.tf with lifecycle ignore_changes on the
+      # image, so this update-in-place is safe. Mirrors game-api.yml. The old
+      # Get-GKE-credentials + kubectl steps broke when the migration destroyed the
+      # cluster, freezing mcp-server at its first revision.
+      - name: Deploy to Cloud Run
         if: github.ref == 'refs/heads/main'
         run: |
-          kubectl set image deployment/mcp-server \
-            mcp-server="us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:${{ github.sha }}" \
-            -n swarm-tips
-          kubectl rollout status deployment/mcp-server \
-            -n swarm-tips \
-            --timeout=900s
+          gcloud run deploy mcp-server \
+            --image us-central1-docker.pkg.dev/coordination-game-prod/backend/mcp-server:${{ github.sha }} \
+            --region us-central1 \
+            --quiet
