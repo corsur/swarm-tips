@@ -105,6 +105,14 @@ pub struct EvmGameJoinRequest<'a> {
     /// CAIP-2 chain id, e.g. `eip155:84532`.
     pub chain: &'a str,
     pub tournament_id: u64,
+    /// Whether the joiner is an AI. game-api derives the matchup from
+    /// `is_ai(joiner) XOR is_ai(waiter)` (same as Solana's `QueueJoinRequest`),
+    /// so an MCP agent (AI) vs a browser (human) pairs heterogeneous. Defaults
+    /// false server-side (`#[serde(default)]`), preserving the browser path.
+    pub is_ai: bool,
+    /// True only for the internal house grok-agent (gates the AI fallback).
+    /// External MCP agents leave this false.
+    pub is_internal: bool,
 }
 
 /// Request body for `POST /internal/xqueue/join` — the cross-chain queue.
@@ -889,11 +897,15 @@ mod tests {
             wallet: "0xPlayer",
             chain: "eip155:84532",
             tournament_id: 2,
+            is_ai: true,
+            is_internal: false,
         })
         .expect("serialize");
         assert_eq!(body["wallet"], "0xPlayer");
         assert_eq!(body["chain"], "eip155:84532");
         assert_eq!(body["tournament_id"], 2);
+        assert_eq!(body["is_ai"], true);
+        assert_eq!(body["is_internal"], false);
         assert!(body.get("session_key").is_none());
         assert!(body.get("contract").is_none());
     }

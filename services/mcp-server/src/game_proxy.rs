@@ -98,6 +98,12 @@ impl GameApiProxy {
             wallet,
             chain,
             tournament_id,
+            // The MCP surface serves external AI agents, so the same-chain EVM
+            // join is is_ai=true — mirroring the Solana `join_queue_after_stake`
+            // path. game-api derives a heterogeneous matchup when this meets a
+            // human browser (is_ai=false) and homogeneous vs another agent.
+            is_ai: true,
+            is_internal: false,
         };
         self.client
             .evmgame_join(&request)
@@ -348,9 +354,13 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/internal/evmgame/join"))
-            .and(body_partial_json(
-                json!({ "wallet": "0xabc", "chain": "eip155:8453", "tournament_id": 3 }),
-            ))
+            .and(body_partial_json(json!({
+                "wallet": "0xabc",
+                "chain": "eip155:8453",
+                "tournament_id": 3,
+                "is_ai": true,
+                "is_internal": false,
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "waiting" })))
             .expect(1)
             .mount(&server)
