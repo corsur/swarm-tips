@@ -109,8 +109,8 @@ sol! {
     /// transactions for (EVM-vs-EVM play; both stakes escrow here, so there is
     /// no operator float pool — the winner is paid from the pot directly).
     interface CoordinationGame {
-        function createGame(bytes32 gameId, bytes32 matchupCommitment, bytes operatorSig) external payable;
-        function joinGame(bytes32 gameId) external payable;
+        function createGame(bytes32 gameId, bytes32 matchupCommitment, bytes operatorSig, address player) external payable;
+        function joinGame(bytes32 gameId, address player) external payable;
         function commitGuess(bytes32 gameId, bytes32 commitment) external;
         function revealGuess(bytes32 gameId, bytes32 r, bytes32 rMatchup) external;
         function resolveTimeout(bytes32 gameId) external;
@@ -378,18 +378,23 @@ pub fn build_pool_deposit(contract: Address, amount_wei: u128) -> UnsignedEvmCal
 // ---------------------------------------------------------------------------
 
 /// Build an unsigned `createGame` call. `stake_wei` is sent as native ETH;
-/// `operator_sig` is the matchmaker's attestation of `matchup_commitment`.
+/// `operator_sig` is the matchmaker's attestation (bound to `player`). `player`
+/// is the on-chain creator recorded by the contract — the wallet, even when a
+/// session key sends the tx (wallet-as-player); for a direct agent it equals the
+/// sender.
 pub fn build_create_game(
     contract: Address,
     game_id: [u8; 32],
     matchup_commitment: [u8; 32],
     operator_sig: [u8; 65],
     stake_wei: u128,
+    player: Address,
 ) -> UnsignedEvmCall {
     let data = CoordinationGame::createGameCall {
         gameId: game_id.into(),
         matchupCommitment: matchup_commitment.into(),
         operatorSig: operator_sig.to_vec().into(),
+        player,
     }
     .abi_encode();
     call(contract, data, U256::from(stake_wei))
@@ -402,6 +407,7 @@ pub fn build_create_game_parts(
     matchup_commitment: [u8; 32],
     operator_sig: [u8; 65],
     stake_wei: u128,
+    player: [u8; 20],
 ) -> UnsignedEvmCall {
     build_create_game(
         Address::from(contract),
@@ -409,13 +415,21 @@ pub fn build_create_game_parts(
         matchup_commitment,
         operator_sig,
         stake_wei,
+        Address::from(player),
     )
 }
 
-/// Build an unsigned `joinGame` call. The matched `stake_wei` is sent as ETH.
-pub fn build_join_game(contract: Address, game_id: [u8; 32], stake_wei: u128) -> UnsignedEvmCall {
+/// Build an unsigned `joinGame` call. The matched `stake_wei` is sent as ETH;
+/// `player` is the on-chain joiner recorded (the wallet, wallet-as-player).
+pub fn build_join_game(
+    contract: Address,
+    game_id: [u8; 32],
+    stake_wei: u128,
+    player: Address,
+) -> UnsignedEvmCall {
     let data = CoordinationGame::joinGameCall {
         gameId: game_id.into(),
+        player,
     }
     .abi_encode();
     call(contract, data, U256::from(stake_wei))
@@ -426,8 +440,14 @@ pub fn build_join_game_parts(
     contract: [u8; 20],
     game_id: [u8; 32],
     stake_wei: u128,
+    player: [u8; 20],
 ) -> UnsignedEvmCall {
-    build_join_game(Address::from(contract), game_id, stake_wei)
+    build_join_game(
+        Address::from(contract),
+        game_id,
+        stake_wei,
+        Address::from(player),
+    )
 }
 
 /// Build an unsigned `commitGuess` call (non-payable).
@@ -908,14 +928,21 @@ mod tests {
     #[test]
     fn coordination_builders_encode_selectors_values_and_distinct_selectors() {
         let stake = 50_000_000_000_000_000u128;
-        let create = build_create_game(C, [0xAA; 32], [0xBB; 32], [0x07; 65], stake);
+        let create = build_create_game(
+            C,
+            [0xAA; 32],
+            [0xBB; 32],
+            [0x07; 65],
+            stake,
+            Address::from([0x11; 20]),
+        );
         assert_eq!(create.value, U256::from(stake));
         assert_eq!(
             &create.data[..4],
             &CoordinationGame::createGameCall::SELECTOR[..]
         );
 
-        let join = build_join_game(C, [0xAA; 32], stake);
+        let join = build_join_game(C, [0xAA; 32], stake, Address::from([0x22; 20]));
         assert_eq!(join.value, U256::from(stake));
         assert_eq!(
             &join.data[..4],
@@ -1117,12 +1144,20 @@ mod tests {
         let contract = [0x11u8; 20];
         let g = [0xAA; 32];
         assert_eq!(
-            build_create_game_parts(contract, g, [0xBB; 32], [0x07; 65], 7).data,
-            build_create_game(Address::from(contract), g, [0xBB; 32], [0x07; 65], 7).data
+            build_create_game_parts(contract, g, [0xBB; 32], [0x07; 65], 7, [0x11; 20]).data,
+            build_create_game(
+                Address::from(contract),
+                g,
+                [0xBB; 32],
+                [0x07; 65],
+                7,
+                Address::from([0x11; 20])
+            )
+            .data
         );
         assert_eq!(
-            build_join_game_parts(contract, g, 7).data,
-            build_join_game(Address::from(contract), g, 7).data
+            build_join_game_parts(contract, g, 7, [0x22; 20]).data,
+            build_join_game(Address::from(contract), g, 7, Address::from([0x22; 20])).data
         );
         assert_eq!(
             build_commit_guess_parts(contract, g, [0xC1; 32]).data,
