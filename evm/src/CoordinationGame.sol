@@ -3,6 +3,8 @@ pragma solidity ^0.8.24;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {CertLib} from "./CertLib.sol";
 import {PullPayment} from "./base/PullPayment.sol";
 import {AttesterGated} from "./base/AttesterGated.sol";
@@ -67,6 +69,22 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
 
     mapping(bytes32 => Game) public games;
 
+    /// A wallet-authorized ephemeral session key — the EVM port of the Solana
+    /// `SessionAuthority` PDA. The wallet stays the on-chain player and payout
+    /// recipient (stake never leaves its identity, so a lost session key can
+    /// never strand or capture funds); the session key only signs the non-payable
+    /// commit/reveal/timeout steps, so it holds gas dust only.
+    struct SessionAuth {
+        address sessionKey;
+        uint64 expiry;
+    }
+
+    /// player wallet => its active session authorization.
+    mapping(address => SessionAuth) public sessions;
+    /// player wallet => auth nonce; bumped on every authorize/revoke so an old
+    /// authorization signature can never be replayed after it is superseded.
+    mapping(address => uint256) public sessionNonce;
+
     // Pull-payment ledger (M1) — `withdrawable` / `_credit` / `withdraw()`
     // live in the shared PullPayment base.
 
@@ -100,6 +118,8 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     event PrizePoolWithdrawn(address indexed to, uint256 amount);
     event ConfigUpdated();
     event GameCancelled(bytes32 indexed gameId, address indexed player1, uint256 amount);
+    event SessionAuthorized(address indexed player, address indexed sessionKey, uint64 expiry);
+    event SessionRevoked(address indexed player);
 
     error InvalidStatus();
     error BadSignature();
@@ -111,6 +131,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     error DeadlineNotReached();
     error BadOutcome();
     error BadConfig();
+    error BadSession();
 
     constructor(
         address initialOwner,
@@ -252,6 +273,64 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         emit GameStarted(gameId, g.player1, msg.sender);
     }
 
+    // ---------------------------------------------------------------------
+    // Session authorization (wallet-as-player delegation) — the EVM port of the
+    // Solana SessionAuthority. The wallet signs ONE domain-bound authorization
+    // off-chain; the session key (which pays gas) submits it. The wallet remains
+    // the on-chain player and payout recipient, so commit/reveal/timeout can be
+    // driven by the gas-only session key with no stake movement or sweep-back.
+    // ---------------------------------------------------------------------
+
+    /// @notice The digest a wallet signs (EIP-191 personal_sign) to authorize
+    ///         `sessionKey` until `expiry`. Domain-bound to this chain+contract
+    ///         and nonce-bound so it can't be replayed after a later authorize or
+    ///         revoke bumps the nonce.
+    function sessionAuthDigest(address player, address sessionKey, uint64 expiry) public view returns (bytes32) {
+        return keccak256(
+            abi.encode(block.chainid, address(this), "COORD_SESSION", player, sessionKey, expiry, sessionNonce[player])
+        );
+    }
+
+    /// @notice Authorize `sessionKey` to act for the signing wallet in
+    ///         commit/reveal/timeout. The wallet signs `sessionAuthDigest`
+    ///         off-chain; anyone (typically the session key) submits it.
+    function authorizeSession(address player, address sessionKey, uint64 expiry, bytes calldata playerSig) external {
+        if (sessionKey == address(0) || expiry <= block.timestamp) revert BadSession();
+        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(sessionAuthDigest(player, sessionKey, expiry));
+        if (ECDSA.recover(digest, playerSig) != player) revert BadSignature();
+        sessions[player] = SessionAuth(sessionKey, expiry);
+        unchecked {
+            sessionNonce[player]++;
+        }
+        emit SessionAuthorized(player, sessionKey, expiry);
+    }
+
+    /// @notice Revoke the caller's session immediately (and invalidate any
+    ///         pending authorization signatures by bumping the nonce).
+    function revokeSession() external {
+        delete sessions[msg.sender];
+        unchecked {
+            sessionNonce[msg.sender]++;
+        }
+        emit SessionRevoked(msg.sender);
+    }
+
+    /// @dev True iff `actor` may act for `player` — the wallet itself, or its
+    ///      currently-authorized, unexpired session key.
+    function _actsFor(address actor, address player) private view returns (bool) {
+        if (actor == player) return true;
+        SessionAuth storage s = sessions[player];
+        return s.sessionKey == actor && block.timestamp < s.expiry;
+    }
+
+    /// @dev Resolve which player `msg.sender` acts for (directly or via session).
+    ///      Reverts NotParticipant if it acts for neither. Returns isP1.
+    function _actingSeat(Game storage g) private view returns (bool isP1) {
+        if (_actsFor(msg.sender, g.player1)) return true;
+        if (_actsFor(msg.sender, g.player2)) return false;
+        revert NotParticipant();
+    }
+
     /// @notice Commit SHA-256(r) of a hidden guess preimage. First commit moves
     ///         the game to Committing and records the first committer (the
     ///         heterogeneous-tie-break seat); second commit moves it to Revealing.
@@ -259,8 +338,9 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         Game storage g = games[gameId];
         if (g.status != Status.Active && g.status != Status.Committing) revert InvalidStatus();
         if (commitment == bytes32(0)) revert BadCommitment();
-        bool isP1 = msg.sender == g.player1;
-        if (!isP1 && msg.sender != g.player2) revert NotParticipant();
+        // The wallet OR its authorized session key may act; the action is
+        // attributed to the wallet-player (isP1), never to msg.sender.
+        bool isP1 = _actingSeat(g);
 
         if (isP1) {
             if (g.p1Commit != bytes32(0)) revert AlreadyActed();
@@ -287,8 +367,9 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     function revealGuess(bytes32 gameId, bytes32 r, bytes32 rMatchup) external nonReentrant {
         Game storage g = games[gameId];
         if (g.status != Status.Revealing) revert InvalidStatus();
-        bool isP1 = msg.sender == g.player1;
-        if (!isP1 && msg.sender != g.player2) revert NotParticipant();
+        // The wallet OR its authorized session key may reveal; attributed to the
+        // wallet-player, so the payout still lands on the wallet.
+        bool isP1 = _actingSeat(g);
 
         bytes32 commit = isP1 ? g.p1Commit : g.p2Commit;
         if (sha256(abi.encodePacked(r)) != commit) revert CertMismatch();
