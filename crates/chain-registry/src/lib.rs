@@ -189,15 +189,16 @@ const REGISTRY: &[ChainEntry] = &[
         // bounds) at the $5 stake (operatorSigner 0x54a6…9A30; prior tiny-stake
         // 0xd585…6234 orphaned by this redeploy).
         game_contract: Some("0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4"),
-        // Same-chain EVM-vs-EVM CoordinationGame v2, redeployed 2026-07-29 with
-        // contract-level session authorization (the EVM port of Solana's
-        // SessionAuthority: authorizeSession/revokeSession + session-key-driven
-        // commit/reveal, wallet stays player/staker/payee). Same config as the
-        // 2026-07-01 hardened build ($5 stake, operatorSigner 0x54a6…9A30 ==
-        // game-api xchain-operator-signer). Prior 0x042f…514b (no session auth)
-        // orphaned by this redeploy; Base MAINNET stays on the non-session build
-        // 0x778F…9fe9 pending external audit + founder go (mainnet-cutover note).
-        coordination_game_contract: Some("0x50dBabbd065FD5Ace51a83a9b98A89eE92F5733F"),
+        // Same-chain EVM-vs-EVM CoordinationGame v3, redeployed 2026-07-29 with
+        // wallet-as-player staking (Level 2): openSession registers + funds a gas-
+        // only session key in one wallet tx; createGame/joinGame take an `address
+        // player` (the WALLET, recorded as game.player1/2 even when the session key
+        // sends the tx); withdrawFor pushes winnings to the wallet with no popup.
+        // The wallet is now the native on-chain player (no off-chain binding). Same
+        // config ($5 stake, operatorSigner 0x54a6…9A30 == game-api signer). Prior
+        // v2 0x50dB…733F (session-auth only) orphaned by this redeploy; Base MAINNET
+        // stays on 0x778F…9fe9 pending external audit + founder go (cutover note).
+        coordination_game_contract: Some("0x9E344F6FD80f4b2a20329a8C0dD4E16f70Bcd5ED"),
         // ShillbotEscrow deployed 2026-07-07 (S5 live demo): chainTag
         // keccak256("eip155:84532"), attesterSigner is a demo key — rotate to
         // the dedicated shillbot-attester EVM key via setConfig before real use.
@@ -476,7 +477,7 @@ mod tests {
         );
         assert_eq!(
             contract_for(&base, ContractPurpose::CoordinationGame),
-            Some("0x50dBabbd065FD5Ace51a83a9b98A89eE92F5733F")
+            Some("0x9E344F6FD80f4b2a20329a8C0dD4E16f70Bcd5ED")
         );
         // Solana has no same-chain EVM CoordinationGame, but has the cross-chain one.
         let sol = ChainId::parse("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1").unwrap();
