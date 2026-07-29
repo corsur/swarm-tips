@@ -16,8 +16,7 @@
 \newcommand{\V}{\textit{V}}
 
 \title{\textbf{Wide but Shallow}\\[2pt]
-\large Technical-Interview Problems Are Four Ideas in Many Costumes\\[4pt]
-\normalsize\itshape and company-specific preparation is mostly a myth}
+\large Technical-Interview Problems Are Four Ideas in Many Costumes}
 
 \author{Conor Garvey Gelvin\thanks{The author interviewed at three of the firms studied,
 passing all three, and came to these four ideas by noticing them recur while practising---not by
@@ -29,42 +28,43 @@ applying them by design.}\\
 \maketitle
 
 \begin{abstract}
-Interview-prep advice rests on two claims: that different companies test different skills, and that you must
-memorize dozens of separate problem ``patterns.'' We test both against how often each problem appears among
-seven major technology firms' most-asked lists (769 distinct problems), and both mostly fail.
-Those ``patterns'' are really \textbf{four underlying ideas}: a single left-to-right
+Interview preparation is taught as a long catalogue of separate problem ``patterns''---sliding window,
+monotonic stack, prefix sums, and dozens more---each memorized on its own. We show the catalogue is mostly
+costume: those ``patterns'' are really \textbf{four underlying ideas}: a single left-to-right
 pass (a \emph{fold}), divide-and-solve recursion (dynamic programming), spreading information across a graph
 until it settles, and binary search. To put a number on this without hand-waving, we take a
-\emph{pre-registered} random sample of 100 problems and, for each, prove with the Lean proof assistant that a
+\emph{pre-registered} random sample of 100 problems drawn from seven major technology firms' most-asked
+lists (769 distinct problems) and, for each, prove with the Lean proof assistant that a
 standard accepted solution really is one of the four ideas. \textbf{71 of the 100 carry such a proof} (69
 machine-checked here, 2 citing existing formal proofs); the other 29 are a genuine ``tail'' that fits no
 single idea. Every classification was checked against the problem's published editorial. So about
 \textbf{three-quarters of interview problems reduce to four ideas}, each backed by a
 machine-checked proof, and the single pass is the most
 common---many tricks taught as unrelated (prefix sums, the XOR trick, a hash ``seen set,'' reversing a list,
-the sliding window) are the \emph{same} pass, differing only in what running value they carry. Separately,
-the seven firms ask almost the same mix: on a $0$-to-$1$ scale of how differently
-they ask (bias-corrected Cram\'er's \V, where $0$ is identical), they score just $0.091$,
-above the $0.065$ that sampling noise alone would
-produce but far below ``moderate''---six of the seven are statistically indistinguishable, and only Uber
-stands out (it leans on graph problems). We describe which problems are \emph{commonly asked}, not how hard
-they are or whether company-specific drilling pays off. In short: interview problems are \emph{wide on the
-surface but shallow underneath}, and essentially one shared syllabus covers nearly every company. All derived
+the sliding window) are the \emph{same} pass, differing only in what running value they carry. A secondary
+observation: in our pooled lists the seven firms ask almost the same mix (bias-corrected Cram\'er's \V\ of
+$0.091$, above the $0.065$ that sampling noise alone would produce but far below ``moderate''; only Uber
+stands out)---though this similarity may partly be an artifact of how the platform aggregates and truncates
+the lists, rather than evidence about any firm's true private bar. We describe which problems are
+\emph{commonly asked}, not how hard they are or whether company-specific drilling pays off. In short:
+interview problems are \emph{wide on the surface but shallow underneath}. All derived
 data and proofs are released; the raw scrape is withheld per the platform's terms.
 \end{abstract}
 
 \section{Two myths}
 \label{sec:intro}
 
-Two beliefs dominate interview preparation. The first is \emph{company specificity}: that Google, Meta,
-Amazon and their peers test different skills, so you should prepare differently for each. The second is
-\emph{pattern proliferation}: that the field is a long list of loosely related tricks---sliding window,
+Two beliefs dominate interview preparation. The first, and our main target, is \emph{pattern
+proliferation}: that the field is a long list of loosely related tricks---sliding window,
 monotonic stack, union--find, prefix sums, and so on---each learned separately, as popular pattern
-catalogues present them~\cite{prashad}. Both are widely repeated and, as far as we can tell, never tested.
+catalogues present them~\cite{prashad}. The second is \emph{company specificity}: that Google, Meta,
+Amazon and their peers test different skills, so you should prepare differently for each. Both are widely
+repeated and, as far as we can tell, never tested.
 
 We test them, and then ask what underlying \emph{structure} explains the answer. The short version: the
-``dozens of patterns'' you are told to memorize are a handful of ideas in different disguises, and the seven
-companies ask nearly the same things. To keep our labels honest we do not hand-sort the problems and stop
+``dozens of patterns'' you are told to memorize are a handful of ideas in different disguises; and, at
+least in our pooled data, the seven companies ask nearly the same things. To keep our labels honest we do
+not hand-sort the problems and stop
 there---we use a proof assistant to check, problem by problem, that the idea we assign really does solve the
 problem (and, for most of them, that the solution is fully correct).
 
@@ -257,7 +257,7 @@ programming is verified memoized recursion~\cite{afp_dp}, and shortest paths are
 semiring~\cite{afp_dijkstra,afp_kleene,lehmann77}; verified-algorithms textbooks now develop these schemes end
 to end~\cite{fav_book,nipkow_survey}. The four-scheme decomposition itself is therefore not new---it is the
 classical Bird--Meertens repertoire. Our contribution is to connect that structural lens to the
-\emph{empirical} distribution of interview problems (the company-comparison test), and to machine-check the
+\emph{empirical} distribution of interview problems, and to machine-check the
 scheme assignment per problem rather than assert it.
 
 \section{Threats to validity}
@@ -266,7 +266,11 @@ scheme assignment per problem rather than assert it.
 \textbf{One platform, truncated lists.} The frequencies come from a single prep platform ---
 we describe \emph{commonly-asked} problems, not any firm's private bar --- and each firm's
 list is its top-200 per recency window, so the rare tail is truncated and the company
-comparison runs over the heads of the distributions, where the data are densest. \textbf{Borrowed labels.} The surface-family tags are the platform's---single-source and
+comparison runs over the heads of the distributions, where the data are densest. This aggregation also
+caps how different the firms \emph{can} look: pooled, truncated, platform-curated lists may converge even
+if the firms' true private bars differ, so the small between-firm \V\ is best read as a property of the
+commonly-asked pool---possibly a side effect of the aggregation itself---not as strong evidence that the
+firms are interchangeable. \textbf{Borrowed labels.} The surface-family tags are the platform's---single-source and
 un-audited---so the ``wide surface'' count inherits that taxonomy's splits. \textbf{We model the solution, not the
 submission.} As Section~\ref{sec:lean} notes, ``this captures the accepted approach'' is a
 modelling judgement --- backed by the editorial cross-check, not certified by the proofs. \textbf{Which idea is a choice.} The proofs
@@ -287,9 +291,11 @@ that the problems are easy.
 
 Interview problems are wide on the surface but shallow underneath. On a pre-registered random sample,
 71 of 100 problems (69 with a machine-checked proof here, 2 citing existing formal proofs) are one of four ideas
-(the single left-to-right pass is the most common); the rest are a genuine tail. And the seven firms ask
-essentially one shared syllabus. For a candidate, the takeaway is blunt: learn the four ideas deeply rather
-than dozens of patterns shallowly, and prepare for ``technical interviews,'' not for any one company.
+(the single left-to-right pass is the most common); the rest are a genuine tail. Secondarily, in our pooled
+lists the seven firms' mixes are barely distinguishable---though that similarity may owe something to the
+aggregation itself. For a candidate, the takeaway is blunt: learn the four ideas deeply rather
+than dozens of patterns shallowly; and, at least as far as these commonly-asked lists can show, preparing
+for ``technical interviews'' beats preparing for any one company.
 
 \section*{Reproducibility and AI-use disclosure}
 
