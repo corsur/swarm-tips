@@ -31,11 +31,26 @@ abstract contract PullPayment is ReentrancyGuard {
     ///         balance is zeroed before the transfer, so a reverting recipient
     ///         only fails its OWN withdraw.
     function withdraw() external nonReentrant {
-        uint256 amount = withdrawable[msg.sender];
+        _withdrawTo(msg.sender);
+    }
+
+    /// @notice Push `to`'s accrued balance to `to`. Permissionless — anyone (e.g.
+    ///         a player's gas-only session key) may trigger the payout, but funds
+    ///         only ever go to `to`, never the caller. Lets a wallet-as-player win
+    ///         be realized with no wallet popup. Same CEI + nonReentrant safety as
+    ///         {withdraw}: a reverting `to` only fails its own payout, funds stay
+    ///         credited.
+    function withdrawFor(address to) external nonReentrant {
+        _withdrawTo(to);
+    }
+
+    /// @dev Zero-before-transfer payout of `to`'s credited balance to `to`.
+    function _withdrawTo(address to) private {
+        uint256 amount = withdrawable[to];
         if (amount == 0) revert NothingToWithdraw();
-        withdrawable[msg.sender] = 0;
-        emit Withdrawn(msg.sender, amount);
-        (bool ok,) = payable(msg.sender).call{value: amount}("");
+        withdrawable[to] = 0;
+        emit Withdrawn(to, amount);
+        (bool ok,) = payable(to).call{value: amount}("");
         require(ok, "withdraw failed");
     }
 }

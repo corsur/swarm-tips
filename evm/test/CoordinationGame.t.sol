@@ -63,9 +63,9 @@ contract CoordinationGameTest is Test {
         bytes32 mc;
         (rMatchup, mc) = _commit(matchupType, keccak256(abi.encode(gameId, "matchup")));
         vm.prank(p1);
-        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc));
+        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc), p1);
         vm.prank(p2);
-        game.joinGame{value: STAKE}(gameId);
+        game.joinGame{value: STAKE}(gameId, p2);
     }
 
     /// Run a full game to terminal resolution and assert the exact pot split.
@@ -234,7 +234,7 @@ contract CoordinationGameTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xBEEF, digest);
         vm.prank(p1);
         vm.expectRevert(CoordinationGame.BadSignature.selector);
-        game.createGame{value: STAKE}(gameId, mc, abi.encodePacked(r, s, v));
+        game.createGame{value: STAKE}(gameId, mc, abi.encodePacked(r, s, v), p1);
     }
 
     function test_revert_wrongStakeOnCreate() public {
@@ -242,17 +242,17 @@ contract CoordinationGameTest is Test {
         (, bytes32 mc) = _commit(0, keccak256(abi.encode(gameId, "matchup")));
         vm.prank(p1);
         vm.expectRevert(CoordinationGame.BadStake.selector);
-        game.createGame{value: STAKE - 1}(gameId, mc, _opSig(gameId, mc));
+        game.createGame{value: STAKE - 1}(gameId, mc, _opSig(gameId, mc), p1);
     }
 
     function test_revert_selfJoin() public {
         bytes32 gameId = keccak256("self-join");
         (, bytes32 mc) = _commit(0, keccak256(abi.encode(gameId, "matchup")));
         vm.prank(p1);
-        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc));
+        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc), p1);
         vm.prank(p1);
         vm.expectRevert(CoordinationGame.NotParticipant.selector);
-        game.joinGame{value: STAKE}(gameId);
+        game.joinGame{value: STAKE}(gameId, p1);
     }
 
     function test_revert_doubleCommit() public {
@@ -320,7 +320,7 @@ contract CoordinationGameTest is Test {
         game.pause();
         vm.prank(p1);
         vm.expectRevert();
-        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc));
+        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc), p1);
     }
 
     // ----- owner operations ----------------------------------------------
@@ -354,7 +354,7 @@ contract CoordinationGameTest is Test {
         bytes32 gameId = keccak256("h3-strand");
         (, bytes32 mc) = _commit(0, keccak256(abi.encode(gameId, "matchup")));
         vm.prank(p1);
-        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc));
+        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc), p1);
 
         // Too early: still inside the join window.
         vm.expectRevert(CoordinationGame.DeadlineNotReached.selector);
@@ -417,14 +417,14 @@ contract CoordinationGameTest is Test {
         (, bytes32 mc) = _commit(0, keccak256(abi.encode(gameId, "matchup")));
         bytes memory sigForP1 = _opSigFor(gameId, p1, mc);
 
-        // p2 tries to use p1's attestation → digest binds msg.sender, so it fails.
+        // p2 tries to use p1's attestation → digest binds `player`, so it fails.
         vm.prank(p2);
         vm.expectRevert(CoordinationGame.BadSignature.selector);
-        game.createGame{value: STAKE}(gameId, mc, sigForP1);
+        game.createGame{value: STAKE}(gameId, mc, sigForP1, p2);
 
         // p1 (the bound creator) succeeds with the same sig.
         vm.prank(p1);
-        game.createGame{value: STAKE}(gameId, mc, sigForP1);
+        game.createGame{value: STAKE}(gameId, mc, sigForP1, p1);
         assertEq(uint8(_status(gameId)), uint8(CoordinationGame.Status.Pending), "bound creator succeeds");
     }
 
@@ -456,9 +456,9 @@ contract CoordinationGameTest is Test {
         // Hetero match (matchupType=1); evil is p2 and guesses correctly → wins.
         (bytes32 rMatchup, bytes32 mc) = _commit(1, keccak256(abi.encode(gameId, "matchup")));
         vm.prank(p1);
-        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc));
+        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc), p1);
         vm.prank(address(evil));
-        game.joinGame{value: STAKE}(gameId);
+        game.joinGame{value: STAKE}(gameId, address(evil));
 
         (bytes32 r1, bytes32 c1) = _commit(0, keccak256(abi.encode(gameId, "1"))); // p1 wrong
         (bytes32 r2, bytes32 c2) = _commit(1, keccak256(abi.encode(gameId, "2"))); // evil correct

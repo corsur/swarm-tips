@@ -213,7 +213,13 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     /// @notice Create a game by escrowing the exact stake. `operatorSig` is the
     ///         matchmaker's attestation that `matchupCommitment` is legitimate
     ///         (the EVM analog of the Solana matchmaker co-signing create_game).
-    function createGame(bytes32 gameId, bytes32 matchupCommitment, bytes calldata operatorSig)
+    /// @notice Stake and open a game AS `player`. `msg.sender` must act for
+    ///         `player` — either `player` itself (direct: an agent/self-stake) or
+    ///         `player`'s authorized session key (wallet-as-player: the wallet
+    ///         pre-funded the session via {openSession}). The recorded on-chain
+    ///         creator is always `player` (the wallet), never the session signer,
+    ///         so identity, escrow, and payout all bind to the wallet natively.
+    function createGame(bytes32 gameId, bytes32 matchupCommitment, bytes calldata operatorSig, address player)
         external
         payable
         whenNotPaused
@@ -222,14 +228,15 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         if (g.status != Status.None) revert InvalidStatus();
         if (msg.value != stakeWei) revert BadStake();
         if (matchupCommitment == bytes32(0)) revert BadCommitment();
-        // Bind msg.sender into the digest (L2): the operator's attestation is for
-        // THIS creator, so a sig signed for one player can't be replayed by another
-        // to squat the assigned gameId.
-        bytes32 digest = keccak256(abi.encode(block.chainid, address(this), gameId, msg.sender, matchupCommitment));
+        if (!_actsFor(msg.sender, player)) revert BadSession();
+        // Bind `player` (the recorded creator) into the digest (L2): the operator
+        // attests THIS wallet, so a sig signed for one player can't be replayed by
+        // another to squat the assigned gameId.
+        bytes32 digest = keccak256(abi.encode(block.chainid, address(this), gameId, player, matchupCommitment));
         if (!_recoverAndCheck(digest, operatorSig)) revert BadSignature();
 
         g.status = Status.Pending;
-        g.player1 = msg.sender;
+        g.player1 = player;
         g.stakeWei = uint128(msg.value);
         g.matchupCommitment = matchupCommitment;
         g.p1Guess = UNREVEALED;
@@ -240,7 +247,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         // Freeze this game's timeout schedule at the config in force now (M3).
         g.commitWindowSecs = commitTimeoutSecs;
         g.revealWindowSecs = revealTimeoutSecs;
-        emit GameCreated(gameId, msg.sender, g.stakeWei);
+        emit GameCreated(gameId, player, g.stakeWei);
     }
 
     /// @notice Refund the creator of a Pending game that no one ever joined, once
@@ -260,17 +267,20 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         _credit(g.player1, amount);
     }
 
-    /// @notice Join a pending game by matching the stake; the game goes Active.
-    function joinGame(bytes32 gameId) external payable whenNotPaused {
+    /// @notice Join a pending game AS `player` by matching the stake; goes Active.
+    ///         `msg.sender` must act for `player` (direct or via session key). The
+    ///         recorded player2 is `player` (the wallet), not the session signer.
+    function joinGame(bytes32 gameId, address player) external payable whenNotPaused {
         Game storage g = games[gameId];
         if (g.status != Status.Pending) revert InvalidStatus();
-        if (msg.sender == g.player1) revert NotParticipant();
+        if (!_actsFor(msg.sender, player)) revert BadSession();
+        if (player == g.player1) revert NotParticipant();
         if (msg.value != g.stakeWei) revert BadStake();
 
-        g.player2 = msg.sender;
+        g.player2 = player;
         g.status = Status.Active;
         g.activatedAt = uint64(block.timestamp);
-        emit GameStarted(gameId, g.player1, msg.sender);
+        emit GameStarted(gameId, g.player1, player);
     }
 
     // ---------------------------------------------------------------------
@@ -313,6 +323,29 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
             sessionNonce[msg.sender]++;
         }
         emit SessionRevoked(msg.sender);
+    }
+
+    /// @notice Register `sessionKey` as the caller's delegate until `expiry` AND
+    ///         fund it with `msg.value` (gas + a stake buffer) in a single tx —
+    ///         the ONE wallet popup that opens a session. Afterwards the gas-only
+    ///         session key drives createGame/joinGame/commit/reveal on the wallet's
+    ///         behalf with zero further popups, while the wallet stays the on-chain
+    ///         player and payout recipient. This is the wallet-called counterpart
+    ///         to {authorizeSession} (which takes an off-chain sig instead): here
+    ///         `msg.sender` IS the authorizing player, so no signature is needed.
+    ///         CEI + nonReentrant — session state is written before the ETH is
+    ///         forwarded to the session EOA.
+    function openSession(address sessionKey, uint64 expiry) external payable nonReentrant {
+        if (sessionKey == address(0) || expiry <= block.timestamp) revert BadSession();
+        sessions[msg.sender] = SessionAuth(sessionKey, expiry);
+        unchecked {
+            sessionNonce[msg.sender]++;
+        }
+        emit SessionAuthorized(msg.sender, sessionKey, expiry);
+        if (msg.value > 0) {
+            (bool ok,) = payable(sessionKey).call{value: msg.value}("");
+            require(ok, "gas fund failed");
+        }
     }
 
     /// @dev True iff `actor` may act for `player` — the wallet itself, or its

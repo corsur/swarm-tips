@@ -79,9 +79,9 @@ contract CoordinationGameSessionTest is Test {
         bytes32 mc;
         (rMatchup, mc) = _commit(1, keccak256(abi.encode(gameId, "matchup")));
         vm.prank(wallet1);
-        game.createGame{value: STAKE}(gameId, mc, _opSigFor(gameId, wallet1, mc));
+        game.createGame{value: STAKE}(gameId, mc, _opSigFor(gameId, wallet1, mc), wallet1);
         vm.prank(wallet2);
-        game.joinGame{value: STAKE}(gameId);
+        game.joinGame{value: STAKE}(gameId, wallet2);
     }
 
     function _status(bytes32 gameId) internal view returns (CoordinationGame.Status s) {
@@ -276,5 +276,102 @@ contract CoordinationGameSessionTest is Test {
         vm.prank(address(0xDEAD));
         vm.expectRevert(CoordinationGame.NotParticipant.selector);
         game.commitGuess(gameId, c1);
+    }
+
+    // ----- Level 2: openSession + delegated staking (wallet-as-player) ----
+
+    function _players(bytes32 gameId) internal view returns (address p1_, address p2_) {
+        (, p1_, p2_,,,,,,,,,,,,,,) = game.games(gameId);
+    }
+
+    /// openSession registers the delegate AND funds the session key's gas in the
+    /// wallet's single tx — the one popup that opens a session.
+    function test_openSession_registersAndFundsGas() public {
+        uint64 expiry = uint64(block.timestamp + 1 days);
+        uint256 before = sessionKey1.balance;
+        vm.prank(wallet1);
+        game.openSession{value: 0.02 ether}(sessionKey1, expiry);
+
+        (address sk, uint64 exp) = game.sessions(wallet1);
+        assertEq(sk, sessionKey1, "session key registered");
+        assertEq(exp, expiry, "expiry registered");
+        assertEq(sessionKey1.balance, before + 0.02 ether, "gas forwarded to session key");
+        assertEq(game.sessionNonce(wallet1), 1, "nonce bumped");
+    }
+
+    /// The load-bearing Level 2 test: the wallet opens a session (one tx), then
+    /// its gas-only SESSION KEY stakes, plays, and cashes out — yet the ON-CHAIN
+    /// player, escrow, and payout all bind to the WALLET, and withdrawFor pushes
+    /// the win to the wallet with no wallet tx.
+    function test_L2_sessionStakesAsWallet_walletRecordedAndPaid() public {
+        bytes32 gameId = keccak256("l2-delegated-full");
+        uint64 expiry = uint64(block.timestamp + 1 days);
+        address sessionKey2 = vm.addr(0x5E5511);
+
+        // One wallet tx each: register the session key + fund it with stake + gas.
+        vm.prank(wallet1);
+        game.openSession{value: STAKE + 0.01 ether}(sessionKey1, expiry);
+        vm.prank(wallet2);
+        game.openSession{value: STAKE + 0.01 ether}(sessionKey2, expiry);
+
+        // Hetero. The SESSION KEYS send createGame/joinGame AS the wallets; the
+        // stake comes from the session keys' funded balances.
+        (bytes32 rMatchup, bytes32 mc) = _commit(1, keccak256(abi.encode(gameId, "matchup")));
+        vm.prank(sessionKey1);
+        game.createGame{value: STAKE}(gameId, mc, _opSigFor(gameId, wallet1, mc), wallet1);
+        vm.prank(sessionKey2);
+        game.joinGame{value: STAKE}(gameId, wallet2);
+
+        // The recorded on-chain player is the WALLET, never the session key.
+        (address p1addr, address p2addr) = _players(gameId);
+        assertEq(p1addr, wallet1, "player1 == wallet, not session key");
+        assertEq(p2addr, wallet2, "player2 == wallet, not session key");
+
+        // Session keys drive commit + reveal (wallet1 correct in hetero -> wins pot).
+        (bytes32 r1, bytes32 c1) = _commit(1, keccak256(abi.encode(gameId, "1")));
+        (bytes32 r2, bytes32 c2) = _commit(0, keccak256(abi.encode(gameId, "2")));
+        vm.prank(sessionKey1);
+        game.commitGuess(gameId, c1);
+        vm.prank(sessionKey2);
+        game.commitGuess(gameId, c2);
+        vm.prank(sessionKey1);
+        game.revealGuess(gameId, r1, rMatchup);
+        vm.prank(sessionKey2);
+        game.revealGuess(gameId, r2, bytes32(0));
+
+        // Payout credited to the WALLET; the session key gets nothing.
+        assertEq(game.withdrawable(wallet1), 2 * uint256(STAKE), "wallet1 credited the pot");
+        assertEq(game.withdrawable(sessionKey1), 0, "session key credited nothing");
+
+        // withdrawFor pushes the win to the wallet with NO wallet signature.
+        uint256 before = wallet1.balance;
+        vm.prank(sessionKey1);
+        game.withdrawFor(wallet1);
+        assertEq(wallet1.balance, before + 2 * uint256(STAKE), "wallet paid via withdrawFor (no popup)");
+    }
+
+    /// A session key can only stake AS the wallet that authorized it.
+    function test_L2_createGameRejectsUnauthorizedSession() public {
+        bytes32 gameId = keccak256("l2-unauth");
+        (, bytes32 mc) = _commit(1, keccak256(abi.encode(gameId, "matchup")));
+        // sessionKey1 never registered for wallet1; it tries to stake as wallet1.
+        vm.deal(sessionKey1, 1 ether);
+        vm.prank(sessionKey1);
+        vm.expectRevert(CoordinationGame.BadSession.selector);
+        game.createGame{value: STAKE}(gameId, mc, _opSigFor(gameId, wallet1, mc), wallet1);
+    }
+
+    /// An expired session can no longer stake as its wallet.
+    function test_L2_createGameRejectsExpiredSession() public {
+        bytes32 gameId = keccak256("l2-expired");
+        uint64 expiry = uint64(block.timestamp + 1 days);
+        vm.prank(wallet1);
+        game.openSession{value: STAKE + 0.01 ether}(sessionKey1, expiry);
+
+        vm.warp(uint256(expiry) + 1);
+        (, bytes32 mc) = _commit(1, keccak256(abi.encode(gameId, "matchup")));
+        vm.prank(sessionKey1);
+        vm.expectRevert(CoordinationGame.BadSession.selector);
+        game.createGame{value: STAKE}(gameId, mc, _opSigFor(gameId, wallet1, mc), wallet1);
     }
 }
