@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 51 tools live (count them: `grep -c '#[tool(' src/server.rs`): same-chain Solana game (10 incl. `register_wallet`), same-chain EVM game (3: `game_find_evm_match`, `game_evm_match_status`, `game_evm_committed`), cross-chain game (14, all `xchain_*`-prefixed incl. gameplay `xchain_commit_guess`/`xchain_sign_checkpoint`/`xchain_reveal_guess`/`xchain_gameplay_status`), Shillbot marketplace (13, all `shillbot_*`-prefixed), video generation (2), listings/discovery (4: `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities`, `search_mcp_servers`), and agent reputation (5: `agent_profile`, `agent_trust_score`, `query_agent_credit_web_score`, `list_extensions`, `agent_reputation_leaderboard`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 53 tools live (count them: `grep -c '#[tool(' src/server.rs`): same-chain Solana game (10 incl. `register_wallet`), same-chain EVM game (5: `game_find_evm_match`, `game_evm_match_status`, `game_evm_committed`, `game_evm_commit_guess`, `game_evm_reveal_guess`), cross-chain game (14, all `xchain_*`-prefixed incl. gameplay `xchain_commit_guess`/`xchain_sign_checkpoint`/`xchain_reveal_guess`/`xchain_gameplay_status`), Shillbot marketplace (13, all `shillbot_*`-prefixed), video generation (2), listings/discovery (4: `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities`, `search_mcp_servers`), and agent reputation (5: `agent_profile`, `agent_trust_score`, `query_agent_credit_web_score`, `list_extensions`, `agent_reputation_leaderboard`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -157,10 +157,12 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 ### Wallet registration (1 tool, cross-product)
 - `register_wallet` — register your Solana pubkey (base58) OR an EVM `0x` address (non-custodial, no private key). A Solana registration covers every same-chain product (Coordination Game + Shillbot + video); an EVM `0x` address (validated to `0x`+40 hex, stored as its CAIP-10 account on `eip155:84532`) registers for the cross-chain game leg (testnet Base Sepolia) — no Solana session, no balance read (the server holds no EVM RPC client; cross-chain txs are unsigned calls the agent signs/submits locally). The `0x` branch in the handler emits `register_wallet_evm` (the mainnet-gate demand signal that superseded the old `register_wallet_bounce` rejection now that EVM is accepted on testnet). Persisted via `Mcp-Session-Id` → wallet binding in Firestore so a pod restart doesn't strand the agent. Was previously named `game_register_wallet`; renamed 2026-04-08 to reflect cross-product use.
 
-### Same-chain EVM game (3 tools, Base)
+### Same-chain EVM game (5 tools, Base)
 - `game_find_evm_match` — join the same-chain EVM queue (session-key model, one popup parity with Solana).
 - `game_evm_match_status` — poll for the EVM match.
-- `game_evm_committed` — signal the on-chain commit landed so the opponent can proceed.
+- `game_evm_committed` — signal the on-chain commit landed so the opponent can proceed; once both committed, returns `r_matchup` + `matchup_bound` (the reveal-arg signal).
+- `game_evm_commit_guess` — returns an unsigned `commitGuess` call + `preimage_hex` (Solana `game_commit_guess` parity; server generates + persists the commitment, wiring the previously-orphaned `evm-chain` builder).
+- `game_evm_reveal_guess` — returns an unsigned `revealGuess` call once both committed (Solana `game_reveal_guess` parity; recovers the persisted preimage, picks the first/second-revealer `rMatchup` via game-api's `matchup_bound`).
 
 ### Coordination Game (9 tools, non-custodial)
 - `game_get_leaderboard` — tournament rankings (read-only, `tournament_id` defaults to 1)

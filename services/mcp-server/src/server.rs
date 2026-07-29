@@ -230,6 +230,37 @@ pub struct EvmCommittedArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct EvmCommitGuessArgs {
+    /// Your guess: "same" or "different".
+    pub guess: String,
+    /// 0x game id of your same-chain EVM match (from the match payload).
+    pub game_id: String,
+}
+
+/// Resolve the same-chain `CoordinationGame` contract for a CAIP-2 chain from the
+/// registry (the agent never supplies it), as a `0x` string.
+fn resolve_coordination_game_contract(chain: &str) -> Result<String, McpError> {
+    let chain_id = chain_core::ChainId::parse(chain)
+        .map_err(|e| invalid_input(&format!("bad chain {chain}: {e}")))?;
+    chain_registry::entry(&chain_id)
+        .and_then(|e| e.contract_for(chain_registry::ContractPurpose::CoordinationGame))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            invalid_input(&format!(
+                "no CoordinationGame contract registered for {chain}"
+            ))
+        })
+}
+
+/// Decode a `0x`-prefixed hex string into a fixed-size byte array.
+fn decode_0x_fixed<const N: usize>(s: &str, what: &str) -> Result<[u8; N], McpError> {
+    let mut out = [0u8; N];
+    hex::decode_to_slice(s.trim_start_matches("0x"), &mut out)
+        .map_err(|e| invalid_input(&format!("invalid {what}: {e}")))?;
+    Ok(out)
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct XchainBuildCreateMatchArgs {
     /// The `match` payload object from xchain_find_match / xchain_match_status.
     #[serde(rename = "match")]
@@ -1771,6 +1802,146 @@ impl SwarmTipsMcp {
             })?;
 
         Ok(text_result(&resp))
+    }
+
+    #[tool(
+        name = "game_evm_commit_guess",
+        description = "[STATE] Commit your guess on-chain in a same-chain EVM match: 'same' (opponent is your type) or 'different'. Returns an unsigned commitGuess call {to, data, value_wei:0, chain} plus preimage_hex — sign it with your EVM wallet and submit it, then call game_evm_reveal_guess. The server generates and persists the commitment preimage (mirrors the Solana game_commit_guess). Requires a registered EVM wallet; pass your match's game_id. No funds move (stake was locked at createGame/joinGame).",
+        annotations(destructive_hint = true)
+    )]
+    async fn game_evm_commit_guess(
+        &self,
+        Parameters(args): Parameters<EvmCommitGuessArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let guess: u8 = match args.guess.to_lowercase().as_str() {
+            "same" => 0,
+            "different" => 1,
+            _ => return Err(invalid_input("guess must be 'same' or 'different'")),
+        };
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        if !chain.starts_with("eip155:") {
+            return Err(invalid_input(
+                "game_evm_commit_guess is for same-chain EVM play; register an EVM (0x) wallet",
+            ));
+        }
+        let contract = resolve_coordination_game_contract(&chain)?;
+        let contract20 = decode_0x_fixed::<20>(&contract, "contract address")?;
+        let game_id32 = decode_0x_fixed::<32>(&args.game_id, "game_id")?;
+
+        // Generate the commitment locally and build the unsigned call from the
+        // (previously orphaned) evm-chain builder — the EVM analog of the Solana
+        // game_commit_guess. The commitment scheme is the shared sha256(r) used on
+        // both chains.
+        let (preimage, commitment) = game_chain::commit::generate_commit_secret(guess)
+            .map_err(|e| invalid_input(&format!("commit secret: {e}")))?;
+        let call = evm_chain::build_commit_guess_parts(contract20, game_id32, commitment);
+        let (to, data, value) = call.to_hex_parts();
+
+        // Persist the preimage so the reveal step survives a pod restart.
+        self.state
+            .game_sessions
+            .store_evm_preimage(&address, &args.game_id, preimage)
+            .await
+            .map_err(|e| McpError::internal_error(format!("persist preimage failed: {e}"), None))?;
+
+        tracing::info!(event = "game_evm_commit_guess", wallet = %address, chain = %chain, guess, "built unsigned commitGuess");
+        Ok(text_result(&serde_json::json!({
+            "action": "commit_guess",
+            "to": to,
+            "data": data,
+            "value_wei": value,
+            "chain": chain,
+            "preimage_hex": hex::encode(preimage),
+            "instructions": "Sign this as an EIP-1559 transaction with your EVM wallet and submit it (value_wei is 0). Then call game_evm_committed to notify + get r_matchup, and game_evm_reveal_guess when both have committed.",
+        })))
+    }
+
+    #[tool(
+        name = "game_evm_reveal_guess",
+        description = "[STATE] Reveal your guess on-chain in a same-chain EVM match. Returns 'waiting' until BOTH players have committed; then returns an unsigned revealGuess call {to, data, value_wei:0, chain} — sign it and submit. The server recovers your persisted preimage and picks the correct rMatchup arg (the matchup preimage if you reveal first, the zero sentinel if second — read from chain via game-api). Requires a registered EVM wallet; pass your match's game_id. Reveal resolves the game per the payoff matrix.",
+        annotations(destructive_hint = true)
+    )]
+    async fn game_evm_reveal_guess(
+        &self,
+        Parameters(args): Parameters<EvmCommittedArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        if !chain.starts_with("eip155:") {
+            return Err(invalid_input(
+                "game_evm_reveal_guess is for same-chain EVM play; register an EVM (0x) wallet",
+            ));
+        }
+        let preimage = self
+            .state
+            .game_sessions
+            .load_evm_preimage(&address, &args.game_id)
+            .await
+            .map_err(|e| McpError::internal_error(format!("load preimage failed: {e}"), None))?
+            .ok_or_else(|| {
+                invalid_input(
+                    "no stored commit preimage for this game — call game_evm_commit_guess first",
+                )
+            })?;
+
+        // game-api gates r_matchup on an on-chain quorum read and reports whether
+        // the matchup is already bound (someone revealed) — the signal for which
+        // rMatchup arg to pass. mcp-server holds no EVM RPC, so it relies on this.
+        let resp = self
+            .state
+            .game_api
+            .evmgame_committed(&args.game_id, &address)
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("evmgame_committed failed: {e}"), None)
+            })?;
+        if !resp
+            .get("both_committed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return Ok(text_result(&serde_json::json!({ "status": "waiting" })));
+        }
+
+        let contract = resolve_coordination_game_contract(&chain)?;
+        let contract20 = decode_0x_fixed::<20>(&contract, "contract address")?;
+        let game_id32 = decode_0x_fixed::<32>(&args.game_id, "game_id")?;
+
+        // First revealer supplies the matchup preimage; the second passes zero
+        // (else the contract reverts CertMismatch). matchup_bound comes from
+        // game-api's on-chain read.
+        let matchup_bound = resp
+            .get("matchup_bound")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let r_matchup: [u8; 32] = if matchup_bound {
+            [0u8; 32]
+        } else {
+            let hex_str = resp
+                .get("r_matchup")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    McpError::internal_error("both committed but r_matchup missing", None)
+                })?;
+            decode_0x_fixed::<32>(hex_str, "r_matchup")?
+        };
+        let call = evm_chain::build_reveal_guess_parts(contract20, game_id32, preimage, r_matchup);
+        let (to, data, value) = call.to_hex_parts();
+
+        tracing::info!(event = "game_evm_reveal_guess", wallet = %address, chain = %chain, matchup_bound, "built unsigned revealGuess");
+        Ok(text_result(&serde_json::json!({
+            "action": "reveal_guess",
+            "to": to,
+            "data": data,
+            "value_wei": value,
+            "chain": chain,
+            "instructions": "Sign this as an EIP-1559 transaction with your EVM wallet and submit it (value_wei is 0). Then read the on-chain result; call withdraw() to realize any winnings.",
+        })))
     }
 
     #[tool(

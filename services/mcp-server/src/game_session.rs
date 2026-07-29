@@ -109,6 +109,24 @@ pub struct PersistedGameSession {
     pub updated_at: firestore::FirestoreTimestamp,
 }
 
+const MCP_EVM_PREIMAGES_COLLECTION: &str = "mcp_evm_preimages";
+
+/// Firestore document holding a same-chain EVM player's guess preimage between
+/// commit and reveal — the EVM analog of `commit_preimage_hex` on the Solana
+/// session. The EVM game keeps no in-memory session in mcp-server (its tools are
+/// stateless proxies), so the preimage is stored keyed by wallet+game_id and
+/// recovered at reveal time. Without it a reconnecting agent can't reveal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvmPreimageDoc {
+    /// Document id: `{wallet}:{game_id}`.
+    pub id: String,
+    pub wallet: String,
+    pub game_id: String,
+    /// Hex-encoded `[u8; 32]` guess preimage.
+    pub preimage_hex: String,
+    pub updated_at: firestore::FirestoreTimestamp,
+}
+
 /// Per-agent game session data, protected by `Mutex` for concurrent tool calls.
 pub struct GameSession {
     pub wallet: String,
@@ -589,6 +607,57 @@ impl GameSessionManager {
             );
         }
         Ok(())
+    }
+
+    /// Persist a same-chain EVM guess preimage (write-through) so the reveal step
+    /// can recover it after a pod restart. Keyed by wallet+game_id. Fatal on
+    /// failure — like the Solana commit preimage, losing it strands the reveal.
+    pub async fn store_evm_preimage(
+        &self,
+        wallet: &str,
+        game_id: &str,
+        preimage: [u8; 32],
+    ) -> Result<()> {
+        let doc = EvmPreimageDoc {
+            id: format!("{wallet}:{game_id}"),
+            wallet: wallet.to_string(),
+            game_id: game_id.to_string(),
+            preimage_hex: hex::encode(preimage),
+            updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+        };
+        self.db
+            .fluent()
+            .update()
+            .in_col(MCP_EVM_PREIMAGES_COLLECTION)
+            .document_id(&doc.id)
+            .object(&doc)
+            .execute::<EvmPreimageDoc>()
+            .await
+            .map_err(|e| {
+                tracing::error!(wallet = %wallet, game_id, error = %e, "CRITICAL: failed to persist EVM commit preimage");
+                anyhow::anyhow!("failed to persist EVM commit preimage — retry game_evm_commit_guess")
+            })?;
+        Ok(())
+    }
+
+    /// Load a same-chain EVM guess preimage for `wallet`+`game_id`, if stored.
+    pub async fn load_evm_preimage(&self, wallet: &str, game_id: &str) -> Result<Option<[u8; 32]>> {
+        let doc: Option<EvmPreimageDoc> = self
+            .db
+            .fluent()
+            .select()
+            .by_id_in(MCP_EVM_PREIMAGES_COLLECTION)
+            .obj::<EvmPreimageDoc>()
+            .one(format!("{wallet}:{game_id}"))
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to load EVM preimage: {e}"))?;
+        let Some(doc) = doc else { return Ok(None) };
+        let bytes = hex::decode(&doc.preimage_hex)
+            .map_err(|e| anyhow::anyhow!("stored EVM preimage is not hex: {e}"))?;
+        let arr: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("stored EVM preimage is not 32 bytes"))?;
+        Ok(Some(arr))
     }
 
     /// Load a persisted session from Firestore, if one exists.
