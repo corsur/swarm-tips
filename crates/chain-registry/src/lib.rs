@@ -274,9 +274,15 @@ const REGISTRY: &[ChainEntry] = &[
         // Cross-chain CrossChainGame deployed to Base mainnet 2026-07-11 (0.0005
         // ETH stake; owner/operatorSigner = xchain key / xchain-operator-signer).
         game_contract: Some("0xC2DbD950400965b3f4d9A4D6B1af4a0eb65CC365"),
-        // Same-chain CoordinationGame deployed to Base mainnet 2026-07-09 (0.0005
-        // ETH launch stake; owner/operatorSigner = xchain key / xchain-operator-signer).
-        coordination_game_contract: Some("0x778F6FDA3ffd0ecD3708FDa0E6c2940606529fe9"),
+        // Same-chain CoordinationGame v3 (wallet-as-player: openSession +
+        // player-param createGame/joinGame + withdrawFor) deployed to Base
+        // mainnet 2026-07-30 via deploy-evm-mainnet.yml, founder-authorized.
+        // Supersedes v1 0x778F…9fe9 (2026-07-09, session-key-as-player), which
+        // the Level 2 client flow can no longer drive (no openSession); v1
+        // stays live for its own residual state. Config verified on-chain:
+        // owner/treasury 0x9962…770d, operatorSigner 0x54a6…9A30, stake 5e14,
+        // split 5000.
+        coordination_game_contract: Some("0x567e114EB53228aFd9b20d7121668D4ce082a4F8"),
         shillbot_escrow_contract: None,
         x402_network: Some("base"),
     },
@@ -305,10 +311,16 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 5_000_000_000_000_000, // 0.005 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        // Both deployed to Ethereum L1 mainnet 2026-07-11 (0.0025 ETH stake;
-        // owner/operatorSigner = xchain key / xchain-operator-signer).
+        // CrossChainGame deployed to Ethereum L1 mainnet 2026-07-11 (0.0025 ETH
+        // stake; owner/operatorSigner = xchain key / xchain-operator-signer).
         game_contract: Some("0x5E9eb986927bDF70F2f9fE5BccAFF3dEE74949EB"),
-        coordination_game_contract: Some("0xd52adFf967F7efbf2Bbb29252E0aA219bD5305B3"),
+        // Same-chain CoordinationGame v3 (wallet-as-player) deployed to Ethereum
+        // mainnet 2026-07-30 via deploy-evm-mainnet.yml, founder-authorized.
+        // Supersedes v1 0xd52a…05B3 (2026-07-11), which the Level 2 client flow
+        // can no longer drive (no openSession); v1 stays live for its own
+        // residual state. Verified on-chain: owner/treasury 0x9962…770d,
+        // operatorSigner 0x54a6…9A30, stake 2.5e15, split 5000.
+        coordination_game_contract: Some("0x1b75ddB73ebAC8aD7C0B26787B534e7Db0e7917d"),
         shillbot_escrow_contract: None,
         x402_network: None,
     },
