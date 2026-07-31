@@ -912,6 +912,8 @@ mod tests {
 
     #[test]
     fn url_construction_evmgame_endpoints() {
+        // Exercise the REAL url() helper (not a re-implementation of the
+        // concatenation), covering both the bare and ?network= branches.
         let client = GameApiClient::new("https://api.example.com").unwrap();
         for (path, expected) in [
             (
@@ -927,8 +929,16 @@ mod tests {
                 "https://api.example.com/internal/evmgame/committed",
             ),
         ] {
-            assert_eq!(format!("{}{}", client.base_url(), path), expected);
+            assert_eq!(client.url(path), expected);
         }
+
+        let devnet = GameApiClient::new("https://api.example.com")
+            .unwrap()
+            .with_network(Some("devnet".to_string()));
+        assert_eq!(
+            devnet.url("/internal/evmgame/join"),
+            "https://api.example.com/internal/evmgame/join?network=devnet"
+        );
     }
 
     #[test]
