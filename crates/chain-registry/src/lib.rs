@@ -75,8 +75,8 @@ pub struct ChainEntry {
     /// isn't deployed — every Solana entry, and an EVM chain until deployed.
     pub coordination_game_contract: Option<&'static str>,
     /// Shillbot task-escrow: shillbot program ID (solana) or `ShillbotEscrow`
-    /// address (eip155). None until deployed on that chain (the EVM address
-    /// lands in a follow-up commit after the gated testnet deploy).
+    /// address (eip155). None until deployed on that chain (deployed today on
+    /// Solana + Base Sepolia; the mainnet EVM escrows are still scaffolded).
     pub shillbot_escrow_contract: Option<&'static str>,
     /// x402 network descriptor name, when this chain settles payments.
     pub x402_network: Option<&'static str>,
@@ -241,15 +241,15 @@ const REGISTRY: &[ChainEntry] = &[
         shillbot_escrow_contract: None,
         x402_network: None,
     },
-    // ── Mainnet EVM chains (scaffolded, NOT yet live) ────────────────────────
-    // All contract addresses are None until the gated mainnet deploy lands; a
-    // follow-up commit records each deployed address (verified against the
-    // on-chain stakeWei/maxTrancheWei by the evm-ci parity guard). Until then
-    // `is_live(..)` is false and no code path may build a real tx for them.
-    // Stakes below are the $5-anchor CONFIG (re-tuned at the gated deploy to the
-    // then-current ETH price); tranche is 2× stake. They must match the deploy
-    // workflow's XCHAIN_STAKE_WEI/XCHAIN_MAX_TRANCHE_WEI for that network in
-    // lockstep — the parity guard fails CI on divergence once deployed.
+    // ── Mainnet EVM chains (LIVE for the game contracts) ─────────────────────
+    // CrossChainGame deployed 2026-07-11 and CoordinationGame v3 2026-07-30 on
+    // both chains (deploy-evm-mainnet.yml, founder-authorized), so `is_live(..)`
+    // is true for both game purposes; only ShillbotEscrow remains scaffolded
+    // (None). Stakes are per-chain tuned (Base 0.0005 ETH launch stake,
+    // Ethereum 0.0025 ETH ≈ the $4 cross-chain peg); tranche is 2× stake. They
+    // must match the deploy workflow's XCHAIN_STAKE_WEI/XCHAIN_MAX_TRANCHE_WEI
+    // for that network in lockstep — the evm-ci parity guard fails CI on
+    // divergence from the deployed contracts.
     ChainEntry {
         chain_id: BASE_MAINNET_CAIP2,
         display_name: "Base",
@@ -346,12 +346,14 @@ pub fn all() -> impl Iterator<Item = &'static ChainEntry> {
     REGISTRY.iter()
 }
 
-/// The Solana leg of the testnet cross-chain game (devnet) — the partner chain
-/// for the EVM testnet leg (Base Sepolia). Cross-chain is testnet-only until
-/// the mainnet gate (decision.md §6), so callers resolving a base58 Solana
-/// wallet to a CAIP-2 chain use this single source of truth rather than
-/// hardcoding the devnet id. Returns `None` only if the devnet entry is ever
-/// removed.
+/// The Solana leg the MCP cross-chain registration/queue path is pinned to
+/// (devnet), partnering the EVM testnet leg (Base Sepolia) — callers resolving
+/// a raw base58 Solana wallet use this single source of truth rather than
+/// hardcoding the devnet id. Mainnet CrossChainGame contracts ARE deployed and
+/// the game-api matchmaker prices mainnet legs dynamically; only this MCP
+/// wallet→chain default remains testnet-pinned (switching it to select by the
+/// EVM leg's `is_mainnet` is a real-money routing decision, deliberately not
+/// made here). Returns `None` only if the devnet entry is ever removed.
 pub fn cross_chain_solana() -> Option<&'static ChainEntry> {
     ChainId::parse(SOLANA_DEVNET_CAIP2)
         .ok()
