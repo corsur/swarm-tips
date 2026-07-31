@@ -2,6 +2,11 @@ use crate::listings::models::{HealthCheck, RawListing};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use std::time::Instant;
 
+/// Upper bound on shillbot open tasks pulled per fetch. Sized to the
+/// orchestrator's max-per-request cap so the whole open queue surfaces, while
+/// still bounding the loop against an unbounded upstream response.
+const MAX_SHILLBOT_TASKS: usize = 200;
+
 /// Result of fetching from one source: listings + health check data.
 pub struct FetchResult {
     pub source: String,
@@ -178,7 +183,7 @@ pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
                     .map(|s| s == "open")
                     .unwrap_or(false)
             })
-            .take(20)
+            .take(MAX_SHILLBOT_TASKS)
             .filter_map(parse_shillbot_task)
             .collect();
 

@@ -170,17 +170,33 @@ async fn analyze_one(
 /// Fetch weekly npm downloads. Returns None on any error.
 async fn fetch_npm_weekly_downloads(http: &reqwest::Client, pkg: &str) -> Option<u64> {
     let url = format!("https://api.npmjs.org/downloads/point/last-week/{pkg}");
-    let resp = http
+    let resp = match http
         .get(&url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
         .await
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(pkg, error = %e, "layer3 npm downloads lookup failed");
+            return None;
+        }
+    };
     if !resp.status().is_success() {
+        tracing::warn!(
+            pkg,
+            status = resp.status().as_u16(),
+            "layer3 npm downloads lookup returned non-success"
+        );
         return None;
     }
-    let body: NpmDownloads = resp.json().await.ok()?;
-    Some(body.downloads)
+    match resp.json::<NpmDownloads>().await {
+        Ok(body) => Some(body.downloads),
+        Err(e) => {
+            tracing::warn!(pkg, error = %e, "layer3 npm downloads body did not decode");
+            None
+        }
+    }
 }
 
 /// Fetch GitHub repo metadata, return stargazers count.
@@ -200,12 +216,30 @@ async fn fetch_github_stars(
             req = req.bearer_auth(token);
         }
     }
-    let resp = req.send().await.ok()?;
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(owner, repo, error = %e, "layer3 github repo lookup failed");
+            return None;
+        }
+    };
     if !resp.status().is_success() {
+        // 403/429 here is the rate-limit signal that silently zeroes a whole cycle.
+        tracing::warn!(
+            owner,
+            repo,
+            status = resp.status().as_u16(),
+            "layer3 github repo lookup returned non-success"
+        );
         return None;
     }
-    let body: GithubRepo = resp.json().await.ok()?;
-    Some(body.stargazers_count)
+    match resp.json::<GithubRepo>().await {
+        Ok(body) => Some(body.stargazers_count),
+        Err(e) => {
+            tracing::warn!(owner, repo, error = %e, "layer3 github repo body did not decode");
+            None
+        }
+    }
 }
 
 /// Fetch the raw README text. Tries `main` then `master`. Returns None on any
@@ -215,12 +249,21 @@ async fn fetch_github_readme(http: &reqwest::Client, owner: &str, repo: &str) ->
         for filename in ["README.md", "Readme.md", "readme.md", "README"] {
             let url =
                 format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}");
-            let resp = http
+            // A transport error skips this candidate only — it must not abort the
+            // remaining branch/filename probes. Non-success is an expected miss
+            // (most of the 8 URLs 404), so it stays silent.
+            let resp = match http
                 .get(&url)
                 .header(reqwest::header::USER_AGENT, USER_AGENT)
                 .send()
                 .await
-                .ok()?;
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(owner, repo, branch, filename, error = %e, "layer3 readme probe failed");
+                    continue;
+                }
+            };
             if resp.status().is_success() {
                 return resp.text().await.ok();
             }

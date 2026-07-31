@@ -104,8 +104,8 @@ pub fn classify_layer1(raw: &RawServer) -> Layer1Classification {
         }
     }
 
-    // Confidence: any signal at all == confident enough to skip Layer 2.
-    // Tier-1 (earning) signals weigh more — they short-circuit ambiguity.
+    // Confidence: any signal at all — including a currency-only mention — is
+    // treated as confident enough to skip Layer 2. There is no per-tier weighting.
     let confident = !signals.is_empty();
 
     Layer1Classification {

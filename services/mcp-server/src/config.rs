@@ -57,8 +57,26 @@ pub async fn load_optional_secret(project_id: &str, secret_name: &str) -> Option
         .await
     {
         Ok(resp) => {
-            let payload = resp.into_inner().payload?;
-            String::from_utf8(payload.data.ref_sensitive_value().to_vec()).ok()
+            let Some(payload) = resp.into_inner().payload else {
+                tracing::warn!(
+                    service = "mcp-server",
+                    secret = secret_name,
+                    "secret version response carried no payload"
+                );
+                return None;
+            };
+            match String::from_utf8(payload.data.ref_sensitive_value().to_vec()) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    tracing::warn!(
+                        service = "mcp-server",
+                        secret = secret_name,
+                        error = %e,
+                        "secret payload is not valid UTF-8"
+                    );
+                    None
+                }
+            }
         }
         Err(e) => {
             tracing::warn!(

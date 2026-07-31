@@ -1,18 +1,5 @@
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub enum McpServiceError {
-    #[error("authentication failed: {0}")]
-    AuthFailed(String),
-
-    #[error("session not found for wallet {0}")]
-    SessionNotFound(String),
-
-    #[error("session expired for wallet {0}")]
-    SessionExpired(String),
-
-    #[error("rate limit exceeded: {0}")]
-    RateLimited(String),
-
     #[error("orchestrator request failed: {0}")]
     OrchestratorError(String),
 
@@ -27,9 +14,6 @@ pub enum McpServiceError {
 
     #[error("invalid input: {0}")]
     InvalidInput(String),
-
-    #[error("external platform error: {0}")]
-    External(String),
 
     #[error("internal error: {0}")]
     Internal(String),

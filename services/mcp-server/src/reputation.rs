@@ -17,6 +17,7 @@
 //! (comma-separated). Trust originates only at anchors — an empty set is
 //! a 422, never a silent no-op.
 
+use chain_registry::SOLANA_MAINNET_CAIP2;
 use firestore::FirestoreDb;
 use reputation_indexer::{build_reputation, AgentReputation, EigenTrustConfig, TrustEdgeDoc};
 use std::collections::HashSet;
@@ -272,8 +273,6 @@ mod tests {
 // settlement signatures.
 // ---------------------------------------------------------------------------
 
-/// CAIP-2 id for Solana mainnet-beta.
-const SOLANA_MAINNET_CAIP2: &str = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 /// Composite-score scale (shared::MAX_SCORE in the program workspace).
 const MAX_SCORE: u64 = 1_000_000;
 /// Bound on how many signatures one backfill call will walk.

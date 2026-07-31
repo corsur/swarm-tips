@@ -134,7 +134,9 @@ pub async fn get_or_build_search_index(
 }
 
 /// Refresh the discovery index: pull from all sources, merge + classify,
-/// write to Firestore, update cache. Phase 1 only pulls the official registry.
+/// write to Firestore, update cache. All four upstream sources (official
+/// registry, the wong2 and appcypher awesome-mcp-servers lists, best-of-mcp)
+/// are pulled in parallel.
 ///
 /// Returns the count of merged servers and the count of earning candidates.
 pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSummary> {
