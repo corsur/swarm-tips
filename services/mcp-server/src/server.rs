@@ -315,7 +315,10 @@ pub struct GameFindMatchArgs {
 pub struct GameSubmitTxArgs {
     /// Base64-encoded signed Solana transaction.
     pub signed_transaction: String,
-    /// The action this transaction performs: "deposit_stake", "join_game", "commit_guess", "reveal_guess", "create_game".
+    /// The action this transaction performs. Same-chain: "deposit_stake",
+    /// "join_game", "commit_guess", "reveal_guess", "create_game". Cross-chain
+    /// (built by the `xchain_build_*` tools): "create_xmatch", "lock_xtranche",
+    /// "settle_xmatch", "refund_xmatch_timeout", "refund_xmatch_nocert".
     pub action: String,
     /// Solana network. `"mainnet"` (default) or `"devnet"`. Must match the
     /// network used to build the unsigned tx — broadcasting to the wrong
@@ -340,7 +343,7 @@ pub struct GameCommitGuessArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct ListEarningOpportunitiesArgs {
-    /// Filter by source platform (e.g., "shillbot", "bountycaster", "moltlaunch", "botbounty", "0xwork"). Omit for all sources.
+    /// Filter by source platform (e.g., "shillbot", "bountycaster", "botbounty", "0xwork"). Omit for all sources.
     pub source: Option<String>,
     /// Filter by category (e.g., "code", "content", "agent-services"). Omit for all categories.
     pub category: Option<String>,
@@ -1305,7 +1308,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "list_earning_opportunities",
-        description = "[READ] Aggregated list of earning opportunities across the swarm.tips ecosystem. Includes Shillbot tasks (claim via shillbot_claim_task — first-party deep integration with on-chain Solana escrow + Switchboard oracle attestation), plus external bounties from Bountycaster, Moltlaunch, and BotBounty (each entry's `source_url` is a direct off-platform redirect — agents claim through the source platform itself, swarm.tips does not mediate). Each entry includes source, title, description, category, tags, reward amount/token/chain/USD estimate, posted_at, and (for first-party sources only) a `claim_via` field naming the in-MCP tool to call. This is the universal entry point for earning discovery — prefer it over per-source listing tools when they exist.",
+        description = "[READ] Aggregated list of earning opportunities across the swarm.tips ecosystem. Includes Shillbot tasks (claim via shillbot_claim_task — first-party deep integration with on-chain Solana escrow + Switchboard oracle attestation), plus external bounties from Bountycaster, BotBounty, and 0xWork (each entry's `source_url` is a direct off-platform redirect — agents claim through the source platform itself, swarm.tips does not mediate). Each entry includes source, title, description, category, tags, reward amount/token/chain/USD estimate, posted_at, and (for first-party sources only) a `claim_via` field naming the in-MCP tool to call. This is the universal entry point for earning discovery — prefer it over per-source listing tools when they exist.",
         annotations(read_only_hint = true)
     )]
     async fn list_earning_opportunities(
@@ -2233,7 +2236,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_submit_tx",
-        description = "[STATE] Submit a signed Solana transaction for any game step (deposit_stake, join_game, commit_guess, reveal_guess, create_game). The funds movement was determined by the prior tool call that built the unsigned tx — this just broadcasts it.",
+        description = "[STATE] Submit a signed Solana transaction for any game step — same-chain (deposit_stake, join_game, commit_guess, reveal_guess, create_game) or cross-chain (create_xmatch, lock_xtranche, settle_xmatch, refund_xmatch_timeout, refund_xmatch_nocert, built by the xchain_build_* tools). The funds movement was determined by the prior tool call that built the unsigned tx — this just broadcasts it.",
         annotations(destructive_hint = true)
     )]
     async fn game_submit_tx(
@@ -2711,7 +2714,7 @@ The verification timeout is anchored on submitted_at, NOT approved_at — a clie
 
 ## Universal opportunity discovery
 Two MCP tools aggregate earning + spending opportunities across the swarm.tips ecosystem and external platforms. First-party entries include a `claim_via` / `spend_via` field naming the in-MCP tool to call; external entries include a direct `source_url` redirect that the agent acts on off-platform.
-1. list_earning_opportunities — Shillbot tasks, BotBounty / Bountycaster / Moltlaunch bounties (read-only aggregated)
+1. list_earning_opportunities — Shillbot tasks, BotBounty / Bountycaster / 0xWork bounties (read-only aggregated)
 2. list_spending_opportunities — first-party paid services (generate_video) plus future external sources
 
 ## Video Generation (shillbot.org) — 5 USDC per video

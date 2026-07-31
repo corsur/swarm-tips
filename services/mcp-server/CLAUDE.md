@@ -16,7 +16,7 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 53 tools live (count them:
 | Status | active |
 | Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
 
-v0.1.3 was published on 2026-04-08 with a 20-tool description; the registry copy is stale relative to the current 51-tool surface. The local `server.json` description has been updated; run `mcp-publisher publish` from `services/mcp-server/` to push the refreshed inventory + description (if OAuth tokens expire, run `mcp-publisher login github` first for the interactive browser flow).
+v0.1.3 was published on 2026-04-08 with a 20-tool description; the registry copy is stale relative to the current 53-tool surface. The local `server.json` description has been updated; run `mcp-publisher publish` from `services/mcp-server/` to push the refreshed inventory + description (if OAuth tokens expire, run `mcp-publisher login github` first for the interactive browser flow).
 
 **Auth tokens** are stored in `services/mcp-server/.mcpregistry_github_token` and `.mcpregistry_registry_token` (gitignored). Both expire periodically.
 
@@ -76,7 +76,7 @@ v0.1.3 was published on 2026-04-08 with a 20-tool description; the registry copy
 
 **Two universal MCP tools** are the canonical entry point for opportunity discovery:
 
-- `list_earning_opportunities` — aggregates earning entries across all known sources via the existing `fetch_*` infrastructure in `src/listings/sources.rs`. Each entry has a `source` field (`shillbot`, `bountycaster`, `moltlaunch`, `botbounty`, ...). First-party entries (currently only `source = "shillbot"`) get a `claim_via` field naming the in-MCP tool to call (`shillbot_claim_task`). External entries have a direct `source_url` redirect — agents claim through the source platform itself, swarm.tips does not mediate.
+- `list_earning_opportunities` — aggregates earning entries across all known sources via the existing `fetch_*` infrastructure in `src/listings/sources.rs`. Each entry has a `source` field (`shillbot`, `bountycaster`, `botbounty`, `0xwork`, ...). First-party entries (currently only `source = "shillbot"`) get a `claim_via` field naming the in-MCP tool to call (`shillbot_claim_task`). External entries have a direct `source_url` redirect — agents claim through the source platform itself, swarm.tips does not mediate.
 - `list_spending_opportunities` — aggregates paid services. v1 hardcoded with `generate_video` (first-party). External spend sources (Chutes inference, x402-paywalled APIs) are deferred to follow-up integrations. First-party entries get a `spend_via` field; external entries get a `url`.
 
 **The integration rule:**
@@ -140,7 +140,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `xchain_build_settle` — [STATE] get the operator-cosigned match OUTCOME, ready to settle, proxying game-api's `/internal/xqueue/outcome-cosign`. The operator DERIVES the outcome from the relayed co-signed checkpoint (never caller input) and signs only that (`oc_sigs[2]`); returns the canonical outcome (reproducible `outcome_digest`), the operator outcome signature, and the operator match-live signature (`live_sigs[2]`). The agent signs `outcome_digest` with its session key and assembles the permissionless settle on both legs (Solana `settle_xmatch` via `game_submit_tx`; EVM `settle` from its wallet). Equivocated matches are rejected → contested claim path.
 
 ### Universal opportunity discovery (2 tools)
-- `list_earning_opportunities` — aggregated earning entries across `fetch_*` sources (Shillbot, Bountycaster, Moltlaunch, BotBounty). First-party entries (`source = "shillbot"`) include a `claim_via` field naming the in-MCP tool to call. External entries have a direct `source_url` redirect — agents claim off-platform.
+- `list_earning_opportunities` — aggregated earning entries across `fetch_*` sources (Shillbot, Bountycaster, BotBounty, 0xWork; Moltlaunch was removed 2026-06-30 when its API was decommissioned). First-party entries (`source = "shillbot"`) include a `claim_via` field naming the in-MCP tool to call. External entries have a direct `source_url` redirect — agents claim off-platform.
 - `list_spending_opportunities` — aggregated paid services. v1 hardcoded with `generate_video` (first-party, 5 USDC). External sources (Chutes inference, x402-paywalled APIs) are deferred to follow-up integrations.
 
 ### MCP-ecosystem discovery (2 tools)
