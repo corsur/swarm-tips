@@ -13,9 +13,7 @@ pub mod caip;
 pub mod cert_schema;
 #[cfg(feature = "cosign")]
 pub mod cosign;
-pub mod tx;
 pub mod verify_schema;
 pub mod words;
 
 pub use caip::{AccountId, ChainId, Namespace};
-pub use tx::{TxRef, TxStatus};

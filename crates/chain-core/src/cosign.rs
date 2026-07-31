@@ -10,11 +10,16 @@
 use crate::cert_schema::{keccak256, Checkpoint, MatchLiveCert, OutcomeCert};
 use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 
-/// Why a signing key was rejected.
+/// Why signing or co-signature verification failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CosignError {
     BadSecretKey,
     SigningFailed,
+    /// A malformed signature on the verification path — bad recovery-id byte,
+    /// malformed r||s, or a failed public-key recovery. Distinct from
+    /// `SigningFailed` (operator-side) so callers can tell a bad incoming
+    /// player signature from a local signing failure.
+    BadSignature,
     /// A co-signature recovered successfully but to the wrong address — the
     /// signer is not the expected session key.
     SignerMismatch,
@@ -77,8 +82,8 @@ pub fn sign_digest_eth(secret_key: &[u8; 32], digest: &[u8; 32]) -> Result<[u8; 
 /// program's `secp256k1_recover` and the EVM `ecrecover` perform. The
 /// backend uses this to verify players' co-signatures before submitting.
 pub fn recover_address(digest: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 20], CosignError> {
-    let recid = RecoveryId::from_byte(sig[64]).ok_or(CosignError::SigningFailed)?;
-    let signature = Signature::from_slice(&sig[..64]).map_err(|_| CosignError::SigningFailed)?;
+    let recid = RecoveryId::from_byte(sig[64]).ok_or(CosignError::BadSignature)?;
+    let signature = Signature::from_slice(&sig[..64]).map_err(|_| CosignError::BadSignature)?;
     // Reject high-s (malleable) signatures: normalize_s() returns Some only when
     // the input s was in the upper half order. The EVM leg already rejects these
     // (OZ ECDSA); enforcing it here keeps both legs' acceptance sets identical so
@@ -87,7 +92,7 @@ pub fn recover_address(digest: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 20], Co
         return Err(CosignError::MalleableSignature);
     }
     let vk = VerifyingKey::recover_from_prehash(digest, &signature, recid)
-        .map_err(|_| CosignError::SigningFailed)?;
+        .map_err(|_| CosignError::BadSignature)?;
     Ok(verifying_key_address(&vk))
 }
 
