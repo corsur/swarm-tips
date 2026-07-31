@@ -2,7 +2,7 @@
 #![deny(clippy::all)]
 #![deny(clippy::arithmetic_side_effects)]
 
-//! Unsigned EVM transaction builders for the CrossChainGame contract.
+//! Unsigned EVM transaction builders for the CrossChainGame, CoordinationGame, and ShillbotEscrow contracts.
 //!
 //! Mirrors the non-custodial `game-chain` pattern: the backend builds an
 //! unsigned EIP-1559 transaction, the agent/operator signs it client-side,
