@@ -350,7 +350,10 @@ fn build_router(
         // Readiness / observability: the game-api + Solana RPC dependency check.
         // Wired to the readiness probe only — a failing dependency drains traffic,
         // it never kills the process.
-        .route("/ready", axum::routing::get(build_readiness_handler()))
+        .route(
+            "/ready",
+            axum::routing::get(build_readiness_handler(rpc_url_mainnet.clone())),
+        )
         .route(
             "/internal/scaling-metric",
             axum::routing::get({
@@ -546,12 +549,17 @@ async fn track_inflight(
 /// errors per-call anyway (2026-07-24 outage: stuck NotReady rollout).
 /// Wired to the readiness probe and `/ready` ONLY, never liveness: a failing
 /// dependency should drain traffic from this pod, never kill the (healthy) process.
-fn build_readiness_handler() -> impl Fn() -> std::pin::Pin<
+///
+/// `health_rpc_url` is the RESOLVED mainnet RPC the service actually serves with
+/// (Secret Manager, via `load_solana_rpc_url`) — not a re-read of `SOLANA_RPC_URL`,
+/// which would let readiness gate on a different endpoint than the one in use.
+fn build_readiness_handler(
+    health_rpc_url: String,
+) -> impl Fn() -> std::pin::Pin<
     Box<dyn std::future::Future<Output = (axum::http::StatusCode, &'static str)> + Send + 'static>,
 > + Clone
        + Send
        + 'static {
-    let health_rpc_url = load_env_or("SOLANA_RPC_URL", "https://api.devnet.solana.com");
     let health_game_url = load_env_or("GAME_API_URL", "http://game-api:8080");
     let started_at = std::time::Instant::now();
     move || {

@@ -88,6 +88,11 @@ impl GameSessionState {
 
 const MCP_SESSIONS_COLLECTION: &str = "mcp_game_sessions";
 
+/// Headroom over the stake a wallet needs before we let it deposit: rent for the
+/// game PDA plus transaction fees for the deposit/commit/reveal sequence. The
+/// stake itself comes from `game_chain::FIXED_STAKE_LAMPORTS` — never restated.
+const STAKE_FEE_BUFFER_LAMPORTS: u64 = 20_000_000;
+
 /// Firestore document for persisted MCP game session state.
 ///
 /// Stored on every state transition so that pod restarts do not lose
@@ -661,22 +666,22 @@ impl GameSessionManager {
     }
 
     /// Load a persisted session from Firestore, if one exists.
-    async fn load_persisted_session(&self, wallet: &str) -> Option<PersistedGameSession> {
-        match self
-            .db
+    ///
+    /// A read failure PROPAGATES rather than degrading to `None`: registering
+    /// fresh on a transient Firestore error means the next write-through
+    /// overwrites the persisted doc, destroying the stored `commit_preimage`
+    /// this layer exists to protect. `.one()` already distinguishes not-found
+    /// (`Ok(None)`) from transport failure (`Err`), so fresh registration still
+    /// happens for a genuinely absent doc.
+    async fn load_persisted_session(&self, wallet: &str) -> Result<Option<PersistedGameSession>> {
+        self.db
             .fluent()
             .select()
             .by_id_in(MCP_SESSIONS_COLLECTION)
             .obj::<PersistedGameSession>()
             .one(wallet)
             .await
-        {
-            Ok(doc) => doc,
-            Err(e) => {
-                tracing::warn!(wallet = %wallet, error = %e, "failed to load persisted session");
-                None
-            }
-        }
+            .map_err(|e| anyhow::anyhow!("failed to load persisted session for {wallet}: {e}"))
     }
 
     /// Delete the persisted session document.
@@ -732,7 +737,7 @@ impl GameSessionManager {
             .context("failed to check wallet balance")?;
 
         // Check Firestore for an active session from a previous pod lifecycle.
-        if let Some(persisted) = self.load_persisted_session(&wallet).await {
+        if let Some(persisted) = self.load_persisted_session(&wallet).await? {
             if let Some(restored_balance) = self
                 .try_restore_persisted_session(&wallet, persisted, tx_builder, balance)
                 .await
@@ -948,9 +953,11 @@ impl GameSessionManager {
             .get_balance(&tx_builder.pubkey())
             .await
             .context("failed to check balance")?;
+        let min_balance = game_chain::FIXED_STAKE_LAMPORTS + STAKE_FEE_BUFFER_LAMPORTS;
         anyhow::ensure!(
-            balance >= 70_000_000,
-            "insufficient balance: need at least 0.07 SOL to play, have {} SOL",
+            balance >= min_balance,
+            "insufficient balance: need at least {} SOL to play, have {} SOL",
+            min_balance as f64 / 1_000_000_000.0,
             balance as f64 / 1_000_000_000.0
         );
 
@@ -1204,6 +1211,16 @@ impl GameSessionManager {
         // Cleanup of WS sink + cancel token runs after the response is sent
         // by the caller (see callers of submit_signed_game_tx).
         session.lock().await.state = GameSessionState::Resolved;
+        // Write the terminal state through, like every other transition. Without
+        // this the doc stays Committed, so a pod restart resurrects a stale
+        // Committed session for an already-resolved game — and the restore path's
+        // resolved-cleanup branch never fires.
+        {
+            let s = session.lock().await;
+            if let Err(e) = self.persist_session(&s).await {
+                tracing::warn!(wallet = %wallet, error = %e, "failed to persist resolved session");
+            }
+        }
         tracing::info!(wallet = %wallet, "revealed guess on-chain");
 
         // Notify game-api so the backend broadcasts the WS
@@ -1784,7 +1801,7 @@ impl GameSessionManager {
 
         let matchmaker = read_matchmaker_pubkey(&tx_builder).await?;
 
-        let stake: u64 = 50_000_000; // 0.05 SOL — matches FIXED_STAKE_LAMPORTS on-chain
+        let stake: u64 = game_chain::FIXED_STAKE_LAMPORTS;
 
         // Build unsigned create_game transaction.
         let unsigned = tx_builder
