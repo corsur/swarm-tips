@@ -2,9 +2,9 @@
 //! `EnrichedServer` records. Dedupe key: canonical name (case-insensitive),
 //! falling back to repo URL when name is missing.
 //!
-//! Phase 1 only sees the official registry so this layer is mostly a pass-
-//! through, but the structure is in place for Phase 2 when we add best-of-mcp
-//! and PulseMCP.
+//! Four upstream catalogs feed this layer (official registry, wong2 and
+//! appcypher awesome-mcp-servers, best-of-mcp-servers); on duplicate keys the
+//! earlier source wins, which is why the official registry is passed first.
 
 use crate::discovery::classify::classify_layer1;
 use crate::discovery::models::{EnrichedServer, RawServer};
