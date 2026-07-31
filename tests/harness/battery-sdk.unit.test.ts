@@ -91,3 +91,23 @@ describe("sdk/battery verifyRealizedGame", () => {
     );
   });
 });
+
+describe("sdk/battery non-terminal rejection", () => {
+  it("rejects an unrevealed guess sentinel instead of deriving nonsense", () => {
+    const unrevealed: RealizedGame = { ...heteroP1Wins, p2Guess: 255 };
+    assert.throws(() => verifyRealizedGame(unrevealed), /not terminal: p2Guess 255/);
+  });
+
+  it("rejects an unset matchupType sentinel", () => {
+    const unset: RealizedGame = { ...heteroP1Wins, matchupType: 255 };
+    assert.throws(() => verifyRealizedGame(unset), /not terminal: matchupType 255/);
+  });
+
+  it("rejects a pre-commit firstCommitter sentinel", () => {
+    const preCommit: RealizedGame = { ...heteroP1Wins, firstCommitter: 255 };
+    assert.throws(
+      () => verifyRealizedGame(preCommit),
+      /not terminal: firstCommitter 255/,
+    );
+  });
+});

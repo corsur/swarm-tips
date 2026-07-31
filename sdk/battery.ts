@@ -32,8 +32,20 @@ function fail(msg: string): never {
   throw new Error(`battery: ${msg}`);
 }
 
-/** The oracle input a fully-revealed (terminal) realized game represents. */
+/** The oracle input a fully-revealed (terminal) realized game represents.
+ *  Rejects non-terminal games up front: a 255 sentinel in matchupType/guesses
+ *  (unrevealed) or a firstCommitter outside {1,2} means the game has NOT fully
+ *  resolved, and feeding it to the oracle would produce a nonsense verdict
+ *  instead of a clear error. */
 export function realizedTranscript(g: RealizedGame): OracleInput {
+  if (g.matchupType !== 0 && g.matchupType !== 1)
+    fail(`not terminal: matchupType ${g.matchupType} (unset sentinel?)`);
+  if (g.p1Guess !== 0 && g.p1Guess !== 1)
+    fail(`not terminal: p1Guess ${g.p1Guess} (unrevealed sentinel?)`);
+  if (g.p2Guess !== 0 && g.p2Guess !== 1)
+    fail(`not terminal: p2Guess ${g.p2Guess} (unrevealed sentinel?)`);
+  if (g.firstCommitter !== 1 && g.firstCommitter !== 2)
+    fail(`not terminal: firstCommitter ${g.firstCommitter} (expected 1 or 2)`);
   return {
     stepCount: TERMINAL_STEP_COUNT,
     matchupType: g.matchupType,
