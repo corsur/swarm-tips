@@ -74,7 +74,8 @@ pub struct OrchestratorProxy {
     /// path-routing and must target shorts-api explicitly for the `/shorts/*`
     /// endpoints (generate_video, check_video_status). Task/campaign endpoints
     /// still use `base_url`. (The "in-cluster" framing this carried predates
-    /// the 2026-07-25 Cloud Run migration; there is no cluster now.)
+    /// the 2026-07-25 Cloud Run migration — direct sibling-to-sibling calls are
+    /// what both targets do, so this holds either way.)
     shorts_base_url: String,
 }
 
