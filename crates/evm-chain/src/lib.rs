@@ -2,7 +2,9 @@
 #![deny(clippy::all)]
 #![deny(clippy::arithmetic_side_effects)]
 
-//! Unsigned EVM transaction builders for the CrossChainGame, CoordinationGame, and ShillbotEscrow contracts.
+//! Unsigned EVM transaction builders for the CrossChainGame, CoordinationGame,
+//! and ShillbotEscrow contracts. (The crate doc used to name only
+//! CrossChainGame; same-chain play and the Shillbot escrow were added later.)
 //!
 //! Mirrors the non-custodial `game-chain` pattern: the backend builds an
 //! unsigned EIP-1559 transaction, the agent/operator signs it client-side,
@@ -366,6 +368,12 @@ pub fn build_refund_timeout_parts(contract: [u8; 20], match_id: [u8; 32]) -> Uns
 }
 
 /// Build an unsigned `poolDeposit` call (operator-signed); funds the float.
+///
+/// NO in-tree consumer: today the operator funds pools out of band (cast/forge)
+/// at deploy time. Kept deliberately rather than deleted — a fresh
+/// CrossChainGame ships with an EMPTY float pool and every cross-chain settle
+/// reverts (PoolInsufficient) until it is funded, so this is a required
+/// operational step that a service may well need to build a call for.
 pub fn build_pool_deposit(contract: Address, amount_wei: u128) -> UnsignedEvmCall {
     let data = CrossChainGame::poolDepositCall {}.abi_encode();
     call(contract, data, U256::from(amount_wei))
@@ -854,8 +862,10 @@ mod tests {
 
     #[test]
     fn lock_tranche_is_permissionless_and_non_payable() {
-        // New signature: full cert + operator sig (permissionless), not
-        // (matchId, trancheWei) onlyOwner.
+        // Permissionless: takes the full cert + operator signature, and carries
+        // no value. (The "new signature, not (matchId, trancheWei) onlyOwner"
+        // note this carried narrated a migration away from a form the contract
+        // has not had for a long time.)
         let tx = build_lock_tranche(C, sample_cert(), [0x7u8; 65]);
         assert_eq!(tx.value, U256::ZERO);
         assert_eq!(

@@ -75,8 +75,9 @@ pub struct ChainEntry {
     /// isn't deployed — every Solana entry, and an EVM chain until deployed.
     pub coordination_game_contract: Option<&'static str>,
     /// Shillbot task-escrow: shillbot program ID (solana) or `ShillbotEscrow`
-    /// address (eip155). None until deployed on that chain (deployed today on
-    /// Solana + Base Sepolia; the mainnet EVM escrows are still scaffolded).
+    /// address (eip155). None until deployed on that chain. Today the ONLY
+    /// entry with an address is Base Sepolia — the Solana entries and every EVM
+    /// mainnet entry are still None.
     pub shillbot_escrow_contract: Option<&'static str>,
     /// x402 network descriptor name, when this chain settles payments.
     pub x402_network: Option<&'static str>,
@@ -177,7 +178,7 @@ const REGISTRY: &[ChainEntry] = &[
         // — createMatch records exactly stakeWei, so the cert's leg_b.stake must
         // equal it or settle's digest check fails. Set to the SETTLED $5 anchor
         // (0.0032 / 0.0064 ETH) at the audit-fix redeploy; the Solana devnet leg
-        // below is sized to match (~0.068 SOL ≈ $5). Bump both the deploy config
+        // ABOVE (line ~123) is sized to match (~0.068 SOL ≈ $5). Bump both the deploy config
         // (deploy-evm-testnet.yml XCHAIN_STAKE_WEI/XCHAIN_MAX_TRANCHE_WEI) and
         // this entry in lockstep — a registry-only change breaks the live e2e.
         stake_base_units: 3_200_000_000_000_000, // 0.0032 ETH ($5 anchor, == deployed stakeWei)
@@ -401,8 +402,10 @@ mod tests {
         let e = cross_chain_solana().expect("devnet solana registered");
         assert_eq!(e.native_symbol, "SOL");
         assert_eq!(e.display_name, "Solana Devnet");
-        // Must be a real registry entry (not mainnet).
-        assert!(e.x402_network.is_none(), "cross-chain solana leg is devnet");
+        // Assert on the DEDICATED field. This used to test x402_network.is_none(),
+        // which is unrelated to network class — a mainnet entry that simply has
+        // no x402 descriptor would have passed it.
+        assert!(!e.is_mainnet, "cross-chain solana leg must be devnet");
     }
 
     #[test]
