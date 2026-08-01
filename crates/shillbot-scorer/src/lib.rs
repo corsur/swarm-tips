@@ -26,14 +26,11 @@ pub fn score_submission(
     existing_fingerprints: &[String],
     view_snapshots: &[ViewSnapshot],
 ) -> Result<ScoringResult, ScorerError> {
-    assert!(
-        config.scale_factors.views > 0,
-        "views scale must be positive"
-    );
-    assert!(
-        config.scale_factors.likes > 0,
-        "likes scale must be positive"
-    );
+    // ExperimentConfig comes from a Firestore cohort doc — external input, so
+    // a bad scale factor is rejected here rather than panicking the verifier.
+    // Checked BEFORE screening: screening failure short-circuits to score 0,
+    // which would otherwise mask an invalid config as a legitimate zero.
+    normalization::validate_scale_factors(&config.scale_factors)?;
 
     // Weight-range validation happens in compute_composite_score
     // (scoring::validate_weights) against the canonical MIN_WEIGHT/MAX_WEIGHT

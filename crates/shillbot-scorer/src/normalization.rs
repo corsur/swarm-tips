@@ -57,6 +57,27 @@ pub fn normalize_engagement_rate(metrics: &EngagementMetrics) -> Result<u64, Sco
     Ok(clamped)
 }
 
+/// Reject a zero scale factor before it reaches `normalize_metric` as a
+/// divisor. `ExperimentConfig` is deserialized from a Firestore cohort doc, so
+/// this is external input: it must be rejected, not asserted on.
+pub fn validate_scale_factors(scale_factors: &ScaleFactors) -> Result<(), ScorerError> {
+    let all = [
+        ("views", scale_factors.views),
+        ("likes", scale_factors.likes),
+        ("comments", scale_factors.comments),
+    ];
+
+    for (name, v) in &all {
+        if *v == 0 {
+            return Err(ScorerError::InvalidScaleFactor(format!(
+                "{name} scale factor must be non-zero"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Normalize all metrics into fixed-point values in [0, MAX_SCORE].
 pub fn normalize_all(
     metrics: &EngagementMetrics,
@@ -223,5 +244,51 @@ mod tests {
         assert_eq!(norm.comments, 0);
         assert_eq!(norm.engagement_rate, 0);
         assert_eq!(norm.watch_proxy, 0);
+    }
+
+    /// A zero scale factor from a Firestore cohort doc must be REJECTED, not
+    /// panic the verifier — and must be caught before screening, so a failed
+    /// screening cannot mask it as a legitimate zero score.
+    #[test]
+    fn validate_scale_factors_rejects_each_zero() {
+        for (name, sf) in [
+            (
+                "views",
+                ScaleFactors {
+                    views: 0,
+                    likes: 1,
+                    comments: 1,
+                },
+            ),
+            (
+                "likes",
+                ScaleFactors {
+                    views: 1,
+                    likes: 0,
+                    comments: 1,
+                },
+            ),
+            (
+                "comments",
+                ScaleFactors {
+                    views: 1,
+                    likes: 1,
+                    comments: 0,
+                },
+            ),
+        ] {
+            let err = validate_scale_factors(&sf).expect_err("zero must be rejected");
+            assert!(
+                format!("{err}").contains(name),
+                "error should name the zero field {name}, got: {err}"
+            );
+        }
+
+        assert!(validate_scale_factors(&ScaleFactors {
+            views: 1,
+            likes: 1,
+            comments: 1
+        })
+        .is_ok());
     }
 }

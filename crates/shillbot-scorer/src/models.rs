@@ -12,7 +12,8 @@ pub const DEFAULT_COMMENTS_SCALE: u64 = 50;
 pub const MIN_WEIGHT: u64 = 50_000; // 0.05
 pub const MAX_WEIGHT: u64 = 500_000; // 0.50
 
-/// Raw engagement metrics from YouTube Data API.
+/// Raw engagement metrics from the platform's metrics API (YouTube Data
+/// API, X API, ...)..
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngagementMetrics {
     pub views: u64,

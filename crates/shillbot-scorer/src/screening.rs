@@ -174,11 +174,27 @@ fn contains_whole_word(haystack: &str, needle: &str) -> bool {
     let pattern = format!(r"\b{}\b", regex::escape(needle));
     let re = match regex::Regex::new(&pattern) {
         Ok(r) => r,
-        Err(_) => {
+        Err(e) => {
+            tracing::warn!(
+                needle,
+                error = %e,
+                "blocklist word-boundary regex failed to compile; falling back to plain match"
+            );
             // Fallback: if word-boundary regex fails, try plain escaped match
             match regex::Regex::new(&regex::escape(needle)) {
                 Ok(r) => r,
-                Err(_) => return false,
+                Err(e) => {
+                    // FAILS OPEN: returning false means "term not present", so a
+                    // banned term would pass screening. Both patterns are built
+                    // from regex::escape so this should be unreachable — if it
+                    // ever fires it must be loud, not silent.
+                    tracing::error!(
+                        needle,
+                        error = %e,
+                        "blocklist regex could not be compiled at all — term treated as ABSENT (fails open)"
+                    );
+                    return false;
+                }
             }
         }
     };
