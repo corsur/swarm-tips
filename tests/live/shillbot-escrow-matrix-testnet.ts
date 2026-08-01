@@ -56,7 +56,7 @@ import {
   type PublicClient,
 } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { baseSepolia, sepolia } from "viem/chains";
 import {
   deriveTaskOutcome,
   computePayment,
@@ -66,10 +66,42 @@ import {
   MAX_SCORE,
 } from "../../sdk/task-outcome-oracle";
 
-const RPC = process.env.RPC_URL ?? "https://sepolia.base.org";
-const ESCROW = (process.env.ESCROW_ADDR ??
-  "0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c") as Address;
-const CAIP2 = "eip155:84532";
+// Chain-parameterized. CAIP2 used to be hardcoded to eip155:84532 while RPC and
+// ESCROW were already env-driven, so pointing the runner at another chain
+// silently produced a Base-Sepolia run wearing the other chain's label — the
+// matrix reported PASS for a chain it never touched. CHAIN_TAG is derived from
+// CAIP2 and goes into the attestation the contract verifies, so it MUST track
+// the chain actually under test.
+const CHAINS: Record<
+  string,
+  { rpc: string; escrow: Address; viemChain: typeof baseSepolia }
+> = {
+  "eip155:84532": {
+    rpc: "https://sepolia.base.org",
+    escrow: "0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c" as Address,
+    viemChain: baseSepolia,
+  },
+  "eip155:11155111": {
+    rpc: "https://ethereum-sepolia-rpc.publicnode.com",
+    escrow: "0x293AB2b2A7d862d8FbD6EB1E185f984E0a65882F" as Address,
+    viemChain: sepolia,
+  },
+};
+
+const CAIP2 = process.env.SHILLBOT_ESCROW_CHAIN ?? "eip155:84532";
+const CHAIN = CHAINS[CAIP2];
+if (!CHAIN) {
+  console.error(
+    `SHILLBOT_ESCROW_CHAIN=${CAIP2} has no ShillbotEscrow deployment. ` +
+      `Known: ${Object.keys(CHAINS).join(", ")}. Deploy via ` +
+      `deploy-evm-testnet.yml (contract=shillbot) and add it here.`
+  );
+  process.exit(2);
+}
+
+const RPC = process.env.RPC_URL ?? CHAIN.rpc;
+const ESCROW = (process.env.ESCROW_ADDR ?? CHAIN.escrow) as Address;
+const VIEM_CHAIN = CHAIN.viemChain;
 const CHAIN_TAG = keccak256(Buffer.from(CAIP2));
 const ATTEST_MAGIC = keccak256(Buffer.from("SWARM_ATTEST_V1"));
 // keccak256 of policies/lean-attester-policy-v1.json (VerifyLib.LEAN_POLICY_V1_ID).
@@ -79,7 +111,12 @@ const POLICY_ID =
 // Small escrow — value never leaves our controlled keys (it moves between
 // worker/client/treasury/challenger, all ours, as withdrawable credit), so real
 // spend is gas only; the escrow just bounds ETH locked in the contract.
-const ESCROW_WEI = 50_000_000_000_000n; // 5e13 = 0.00005 ETH
+// Floor comes from the contract, not a constant: a fresh deploy uses
+// minEscrowWei = 1e14, while Base Sepolia was lowered to 1000 wei, so the old
+// hardcoded 5e13 reverted BadEscrow() on any chain that kept the default.
+// Resolved at bootstrap to max(preferred, live minEscrowWei).
+const PREFERRED_ESCROW_WEI = 50_000_000_000_000n; // 5e13 = 0.00005 ETH
+let ESCROW_WEI = PREFERRED_ESCROW_WEI;
 const K = TaskOutcomeKind;
 
 class Checker {
@@ -127,6 +164,7 @@ const ABI = parseAbi([
   "function treasury() view returns (address)",
   "function protocolFeeBps() view returns (uint16)",
   "function qualityThreshold() view returns (uint64)",
+  "function minEscrowWei() view returns (uint256)",
   "function challengeBondMultiplier() view returns (uint8)",
   "function bondSlashTreasuryBps() view returns (uint16)",
   "event TaskCreated(uint64 indexed taskId, address indexed client, uint128 escrowWei, uint64 deadline, uint8 verificationKind)",
@@ -302,7 +340,7 @@ async function writeAndWait(
     functionName: functionName as never,
     args: args as never,
     account,
-    chain: baseSepolia,
+    chain: VIEM_CHAIN,
     ...(value !== undefined ? { value } : {}),
   });
   await env.pub.waitForTransactionReceipt({ hash });
@@ -326,7 +364,7 @@ async function createTaskViaEvent(
     functionName: "createTask",
     args: args as never,
     account: client,
-    chain: baseSepolia,
+    chain: VIEM_CHAIN,
     value: ESCROW_WEI,
   });
   const rcpt = await env.pub.waitForTransactionReceipt({ hash });
@@ -625,22 +663,22 @@ async function main(): Promise<void> {
   const challenger = attester; // attester EOA doubles as challenger (distinct from worker/client)
 
   const pub = createPublicClient({
-    chain: baseSepolia,
+    chain: VIEM_CHAIN,
     transport: http(RPC),
   }) as PublicClient;
   const clientW = createWalletClient({
     account: client,
-    chain: baseSepolia,
+    chain: VIEM_CHAIN,
     transport: http(RPC),
   });
   const workerW = createWalletClient({
     account: worker,
-    chain: baseSepolia,
+    chain: VIEM_CHAIN,
     transport: http(RPC),
   });
   const challengerW = createWalletClient({
     account: challenger,
-    chain: baseSepolia,
+    chain: VIEM_CHAIN,
     transport: http(RPC),
   });
 
@@ -654,7 +692,10 @@ async function main(): Promise<void> {
     bondSlashTreasuryBps: Number(await read("bondSlashTreasuryBps")),
   };
 
-  console.log(`escrow contract: ${ESCROW}`);
+  const minEscrow = (await read("minEscrowWei")) as bigint;
+  if (minEscrow > ESCROW_WEI) ESCROW_WEI = minEscrow;
+
+  console.log(`escrow contract: ${ESCROW}  (${CAIP2})`);
   console.log(`client/owner:    ${client.address}`);
   console.log(`worker:          ${worker.address}`);
   console.log(`attester/chall:  ${attester.address}`);

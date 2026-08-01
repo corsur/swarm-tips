@@ -238,8 +238,11 @@ const REGISTRY: &[ChainEntry] = &[
         // stakeWei/maxTrancheWei verified == 3.2e15/6.4e15 (parity guard).
         game_contract: Some("0x94138De32c41Ea8e7b3357679AE20Bc8969E2537"),
         coordination_game_contract: Some("0xB4C9397ed5948e7058b206059caFFF4D52D293e4"),
-        // ShillbotEscrow deferred on this testnet (not needed for game combos).
-        shillbot_escrow_contract: None,
+        // ShillbotEscrow deployed to Ethereum Sepolia 2026-08-01 via
+        // deploy-evm-testnet.yml (contract=shillbot, network=ethereum_sepolia)
+        // so the escrow matrix can run on a SECOND chain instead of re-testing
+        // Base Sepolia under an eth-sepolia label.
+        shillbot_escrow_contract: Some("0x293AB2b2A7d862d8FbD6EB1E185f984E0a65882F"),
         x402_network: None,
     },
     // ── Mainnet EVM chains (LIVE for the game contracts) ─────────────────────
@@ -507,25 +510,33 @@ mod tests {
     }
 
     #[test]
-    fn shillbot_escrow_resolves_on_base_sepolia_only() {
-        // Deployed to Base Sepolia 2026-07-07 (S5 live demo); every other entry
-        // stays None until its own deploy lands. Solana entries never carry an
-        // EVM escrow address (the Solana leg is the shillbot program itself).
+    fn shillbot_escrow_resolves_only_where_deployed() {
+        // Base Sepolia 2026-07-07 (S5 live demo); Ethereum Sepolia 2026-08-01
+        // (deploy-evm-testnet.yml) so the escrow matrix can exercise a SECOND
+        // chain rather than re-running Base Sepolia under an eth-sepolia label.
+        // Every other entry stays None until its own deploy lands. Solana
+        // entries never carry an EVM escrow address (the Solana leg is the
+        // shillbot program itself). Pinning the exact addresses here is what
+        // catches a silent registry edit.
         for e in REGISTRY {
             let chain = ChainId::parse(e.chain_id).expect("valid CAIP-2");
             let resolved = contract_for(&chain, ContractPurpose::ShillbotEscrow);
-            if e.chain_id == "eip155:84532" {
-                assert_eq!(
+            match e.chain_id {
+                "eip155:84532" => assert_eq!(
                     resolved,
                     Some("0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c"),
                     "Base Sepolia must resolve to the deployed ShillbotEscrow"
-                );
-            } else {
-                assert!(
+                ),
+                "eip155:11155111" => assert_eq!(
+                    resolved,
+                    Some("0x293AB2b2A7d862d8FbD6EB1E185f984E0a65882F"),
+                    "Ethereum Sepolia must resolve to the deployed ShillbotEscrow"
+                ),
+                _ => assert!(
                     resolved.is_none(),
                     "{}: shillbot escrow address must stay None until its deploy lands",
                     e.chain_id
-                );
+                ),
             }
         }
     }
