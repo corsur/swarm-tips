@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {ShillbotEscrow} from "../src/ShillbotEscrow.sol";
 import {VerifyLib} from "../src/VerifyLib.sol";
+import {PayoutReference} from "./helpers/PayoutReference.sol";
 
 /// @dev Handler driving randomized task lifecycles (the CrossChainGame
 ///      invariant-harness style): every action guards the contract's own
@@ -243,20 +244,6 @@ contract ShillbotEscrowPaymentFuzz is Test {
         });
     }
 
-    /// Independent mirror of scoring.rs::compute_payment (u128 intermediates
-    /// there, uint256 here — both exact for these ranges).
-    function _reference(uint64 score, uint64 threshold, uint128 escrow, uint16 feeBps)
-        internal
-        pure
-        returns (uint256 payment, uint256 fee)
-    {
-        if (score < threshold) return (0, 0);
-        uint256 range = 1_000_000 - uint256(threshold);
-        uint256 gross = (uint256(escrow) * (uint256(score) - threshold)) / range;
-        fee = (gross * feeBps) / 10_000;
-        payment = gross - fee;
-    }
-
     function testFuzz_kind0Payment_matchesReference(uint64 score, uint64 threshold, uint128 escrow, uint16 feeBps)
         public
     {
@@ -287,7 +274,8 @@ contract ShillbotEscrowPaymentFuzz is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(attesterPk, digest);
         esc.verifyTaskAttested(id, score, abi.encodePacked(r, s, v));
 
-        (uint256 refPayment, uint256 refFee) = _reference(score, threshold, escrow, feeBps);
+        (uint256 refPayment, uint256 refFee,) =
+            PayoutReference.compute(score, threshold, escrow, feeBps);
         t = esc.getTask(id);
         assertEq(t.paymentWei, refPayment, "payment drift vs reference formula");
         assertEq(t.feeWei, refFee, "fee drift vs reference formula");

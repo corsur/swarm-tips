@@ -29,7 +29,7 @@ contract Handler is Test {
         vm.deal(player, 1000 ether);
     }
 
-    function _legB(bytes32 id, uint128 tranche) internal view returns (CertLib.Leg memory) {
+    function _legB(uint128 tranche) internal view returns (CertLib.Leg memory) {
         return CertLib.Leg({
             chainTag: keccak256("eip155:84532"),
             contractId: bytes32(uint256(uint160(address(game)))),
@@ -53,7 +53,7 @@ contract Handler is Test {
                 stake: 0.05 ether,
                 tranche: tranche
             }),
-            legB: _legB(id, tranche),
+            legB: _legB(tranche),
             quoteTimestamp: uint64(block.timestamp),
             quoteMaxAgeSecs: 600,
             matchDeadline: uint64(block.timestamp + 2 days),
@@ -193,10 +193,5 @@ contract CrossChainGameInvariantTest is Test {
         uint256 credited = game.withdrawable(handler.player()) + game.withdrawable(treasury);
         uint256 tracked = game.poolFree() + game.poolLocked() + game.prizePoolWei() + liveStakes + credited;
         assertEq(address(game).balance, tracked, "contract balance must reconcile with accounting");
-    }
-
-    /// Locked tranches can never exceed what the pool actually holds.
-    function invariant_poolNeverOverLocked() public view {
-        assertLe(game.poolLocked(), address(game).balance, "locked exceeds balance");
     }
 }

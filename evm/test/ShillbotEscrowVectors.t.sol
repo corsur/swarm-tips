@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {PayoutReference} from "./helpers/PayoutReference.sol";
 
 /// @notice Cross-impl golden-vector parity for the Shillbot payout matrix.
 ///         Reads the SAME tests/fixtures/task-payout-vectors.json that the TS
@@ -20,21 +21,6 @@ contract ShillbotEscrowVectorsTest is Test {
     string internal constant FIXTURE = "../tests/fixtures/task-payout-vectors.json";
     uint256 internal constant MAX_SCORE = 1_000_000;
     uint256 internal constant BPS_DENOM = 10_000;
-
-    function _ref(uint256 score, uint256 threshold, uint256 escrow, uint256 feeBps)
-        internal
-        pure
-        returns (uint256 payment, uint256 fee, uint256 remainder)
-    {
-        if (score < threshold || threshold >= MAX_SCORE) {
-            return (0, 0, escrow);
-        }
-        uint256 range = MAX_SCORE - threshold;
-        uint256 gross = (escrow * (score - threshold)) / range;
-        fee = (gross * feeBps) / BPS_DENOM;
-        payment = gross - fee;
-        remainder = escrow - payment - fee;
-    }
 
     function test_payoutVectors_matchReferenceDerivation() public view {
         string memory json = vm.readFile(FIXTURE);
@@ -58,7 +44,7 @@ contract ShillbotEscrowVectorsTest is Test {
         uint256 slashBps = vm.parseJsonUint(json, string.concat(sc, ".bondSlashTreasuryBps"));
         uint256 outcome = vm.parseJsonUint(json, string.concat(sc, ".outcome"));
 
-        (uint256 payment, uint256 fee, uint256 remainder) = _ref(score, threshold, escrow, feeBps);
+        (uint256 payment, uint256 fee, uint256 remainder) = PayoutReference.compute(score, threshold, escrow, feeBps);
         assertEq(payment, vm.parseUint(vm.parseJsonString(json, string.concat(base, ".payment"))), "payment");
         assertEq(fee, vm.parseUint(vm.parseJsonString(json, string.concat(base, ".fee"))), "fee");
         assertEq(remainder, vm.parseUint(vm.parseJsonString(json, string.concat(base, ".remainder"))), "remainder");
