@@ -75,6 +75,32 @@ interface TaskListItem {
   payment_amount?: number;
 }
 
+/**
+ * A syntactically valid content_id for the task's platform.
+ *
+ * The orchestrator validates shape per platform at submit time
+ * (shillbot-api `is_valid_content_id`): YouTube (0) is exactly 11
+ * alphanumeric/-/_ chars, X (3) is up to 20 digits, Website (9) must be an
+ * http(s) URL with a host, and everything else accepts any non-empty string.
+ * We claim whichever task is first claimable, so a hardcoded YouTube id is
+ * rejected outright whenever that task happens to be another platform.
+ *
+ * Shape only — verification is async and out of scope for this test, which
+ * asserts the submit broadcast confirms.
+ */
+function sampleContentId(platform: number | undefined): string {
+  switch (platform ?? 0) {
+    case 0:
+      return "dQw4w9WgXcQ";
+    case 3:
+      return "1234567890123456789";
+    case 9:
+      return "https://swarm.tips/e2e-mcp-lifecycle";
+    default:
+      return `e2e-mcp-${platform ?? 0}`;
+  }
+}
+
 async function main(): Promise<void> {
   const agent = loadKeypairOrNull("test.json");
   if (!agent) skip("no test.json — cannot sign non-custodially");
@@ -147,7 +173,7 @@ async function main(): Promise<void> {
 
   await signSubmit(mcp, agent, "submit", "shillbot_submit_work", {
     task_id: task.task_id,
-    content_id: "dQw4w9WgXcQ",
+    content_id: sampleContentId(task.platform),
     network: "devnet",
   });
   check(true, "submit_work broadcast + confirmed");
