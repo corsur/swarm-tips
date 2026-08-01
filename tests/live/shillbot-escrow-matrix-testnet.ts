@@ -45,6 +45,7 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  fallback,
   encodeAbiParameters,
   keccak256,
   parseAbi,
@@ -74,15 +75,30 @@ import {
 // the chain actually under test.
 const CHAINS: Record<
   string,
-  { rpc: string; escrow: Address; viemChain: typeof baseSepolia }
+  {
+    rpcs: string[];
+    rpc: string;
+    escrow: Address;
+    viemChain: typeof baseSepolia;
+  }
 > = {
   "eip155:84532": {
+    rpcs: ["https://sepolia.base.org"],
     rpc: "https://sepolia.base.org",
     escrow: "0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c" as Address,
     viemChain: baseSepolia,
   },
   "eip155:11155111": {
-    rpc: "https://ethereum-sepolia-rpc.publicnode.com",
+    // Measured 2026-08-01 (5 block-number calls each): drpc 5/5 @102ms,
+    // publicnode 5/5 @168ms, 1rpc 5/5 @351ms; rpc.sepolia.org and
+    // blastapi were 0/5. A single public endpoint still drops writes
+    // mid-run ("HTTP request failed" / "gas required"), so fail over.
+    rpcs: [
+      "https://sepolia.drpc.org",
+      "https://ethereum-sepolia-rpc.publicnode.com",
+      "https://1rpc.io/sepolia",
+    ],
+    rpc: "https://sepolia.drpc.org",
     escrow: "0x293AB2b2A7d862d8FbD6EB1E185f984E0a65882F" as Address,
     viemChain: sepolia,
   },
@@ -100,6 +116,11 @@ if (!CHAIN) {
 }
 
 const RPC = process.env.RPC_URL ?? CHAIN.rpc;
+// Fail over across endpoints rather than trusting one public node: a single
+// dropped write mid-battery reads as a cell failure when it is really the RPC.
+const TRANSPORT = process.env.RPC_URL
+  ? fallback([http(process.env.RPC_URL)])
+  : fallback(CHAIN.rpcs.map((u) => http(u)));
 const ESCROW = (process.env.ESCROW_ADDR ?? CHAIN.escrow) as Address;
 const VIEM_CHAIN = CHAIN.viemChain;
 const CHAIN_TAG = keccak256(Buffer.from(CAIP2));
@@ -664,22 +685,22 @@ async function main(): Promise<void> {
 
   const pub = createPublicClient({
     chain: VIEM_CHAIN,
-    transport: http(RPC),
+    transport: TRANSPORT,
   }) as PublicClient;
   const clientW = createWalletClient({
     account: client,
     chain: VIEM_CHAIN,
-    transport: http(RPC),
+    transport: TRANSPORT,
   });
   const workerW = createWalletClient({
     account: worker,
     chain: VIEM_CHAIN,
-    transport: http(RPC),
+    transport: TRANSPORT,
   });
   const challengerW = createWalletClient({
     account: challenger,
     chain: VIEM_CHAIN,
-    transport: http(RPC),
+    transport: TRANSPORT,
   });
 
   const read = async (fn: string) =>
