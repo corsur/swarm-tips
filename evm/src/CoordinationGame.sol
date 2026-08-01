@@ -31,11 +31,13 @@ import {AttesterGated} from "./base/AttesterGated.sol";
 ///           commitment)    │  attested)       │
 ///                          │                  ├─commitGuess(first)──► Committing
 ///                          │                  └─resolveTimeout──► Resolved [both forfeit]
+///   Pending    ─cancelPending──► Cancelled [p1 refunded, no opponent ever joined]
 ///   Committing ─commitGuess(second)─► Revealing
 ///   Committing ─resolveTimeout──► Resolved [committer wins]
 ///   Revealing  ─revealGuess(both)──► Resolved [payoff matrix]
 ///   Revealing  ─resolveTimeout──► Resolved [revealer wins / both forfeit]
 ///   Resolved   ─(terminal)
+///   Cancelled  ─(terminal)
 contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated {
     enum Status {
         None,

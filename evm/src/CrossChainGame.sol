@@ -37,6 +37,11 @@ import {ChainTagged} from "./base/ChainTagged.sol";
 ///              (t > fundDeadline,                   └─refundTimeout──► RefundedTimeout
 ///               never locked)                         (t > matchDeadline + maxClaimWindow + 2·skew,
 ///                                                      nothing settled; tranche → poolFree)
+///
+///   refundTimeout also accepts Claiming: past the deadline it SETTLES the best
+///   claim rather than refunding —  Claiming ─refundTimeout──► ClaimSettled.
+///   The single Locked ──► RefundedTimeout edge above is only half of what that
+///   function does.
 contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, ChainTagged {
     using CertLib for CertLib.MatchLiveCert;
     using CertLib for CertLib.Checkpoint;
