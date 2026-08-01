@@ -45,6 +45,10 @@ pub fn build_create_game(
     matchmaker: &Pubkey,
 ) -> Instruction {
     assert!(tournament_id > 0, "tournament_id must be non-zero");
+    // Mirrors build_create_xmatch's sibling assert. The on-chain handler
+    // rejects any stake != FIXED_STAKE_LAMPORTS anyway, so this only fails
+    // earlier what would fail on-chain.
+    assert!(stake_lamports > 0, "stake_lamports must be non-zero");
     assert!(
         matchup_commitment != [0u8; 32],
         "matchup_commitment must not be all zeros"

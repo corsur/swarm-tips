@@ -370,16 +370,10 @@ async fn read_matchmaker_pubkey(tx_builder: &GameTxBuilder) -> Result<solana_sdk
 /// Read the next-allocated game id from the game_counter PDA. Used by P1 to
 /// know what `game_id` the create_game tx will assign.
 async fn read_next_game_id(tx_builder: &GameTxBuilder) -> Result<u64> {
-    let (counter_pda, _) = game_chain::pda::game_counter_pda();
-    let counter_data = tx_builder
-        .rpc()
-        .get_account_data(&counter_pda)
-        .await
-        .context("failed to read game_counter")?;
-    // Precondition: data must contain at least the 8-byte disc + u64 counter.
-    anyhow::ensure!(counter_data.len() >= 16, "game_counter data too short");
-    let game_id = u64::from_le_bytes(counter_data[8..16].try_into().context("parse count")?);
-    Ok(game_id)
+    // Delegates to game-chain so there is ONE parse of this account. The raw
+    // byte-offset copy that used to live here skipped Anchor's discriminator
+    // check, so a wrong account at that address parsed as a plausible id.
+    tx_builder.read_game_counter().await
 }
 
 /// Pump the Queued → Matched state transition once `match_found` has arrived

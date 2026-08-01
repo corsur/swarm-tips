@@ -7,7 +7,7 @@
 
 use anchor_lang::AccountDeserialize;
 use anyhow::{Context, Result};
-use coordination::state::{Game, GameState, GlobalConfig};
+use coordination::state::{Game, GameCounter, GameState, GlobalConfig};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig, message::Message, pubkey::Pubkey, signature::Signature,
@@ -137,6 +137,26 @@ impl GameTxBuilder {
         self.build_unsigned(&[ix]).await
     }
 
+    /// Read the next game id from the `GameCounter` PDA.
+    ///
+    /// Uses Anchor's `try_deserialize` rather than a raw byte-offset read, so
+    /// the 8-byte discriminator is checked: a wrong account at that address
+    /// errors instead of being parsed as a plausible-looking counter value.
+    /// This matches how `build_reveal_guess` reads `GlobalConfig`.
+    pub async fn read_game_counter(&self) -> Result<u64> {
+        let (counter_pda, _) = pda::game_counter_pda();
+        let data = self
+            .rpc
+            .get_account_data(&counter_pda)
+            .await
+            .context("failed to read game_counter")?;
+
+        let counter = GameCounter::try_deserialize(&mut data.as_ref())
+            .context("failed to deserialize game_counter")?;
+
+        Ok(counter.count)
+    }
+
     /// Build an unsigned `CreateGame` transaction message.
     ///
     /// Returns the message bytes for the player to sign. The matchmaker
@@ -150,16 +170,9 @@ impl GameTxBuilder {
         matchmaker: &Pubkey,
     ) -> Result<UnsignedTx> {
         anyhow::ensure!(tournament_id > 0, "tournament_id must be non-zero");
+        anyhow::ensure!(stake_lamports > 0, "stake_lamports must be non-zero");
 
-        let (counter_pda, _) = pda::game_counter_pda();
-        let counter_data = self
-            .rpc
-            .get_account_data(&counter_pda)
-            .await
-            .context("failed to read game_counter")?;
-        anyhow::ensure!(counter_data.len() >= 16, "game_counter data too short");
-        let game_counter_value =
-            u64::from_le_bytes(counter_data[8..16].try_into().context("parse count")?);
+        let game_counter_value = self.read_game_counter().await?;
 
         let ix = instructions::build_create_game(
             stake_lamports,
@@ -170,8 +183,7 @@ impl GameTxBuilder {
             matchmaker,
         );
 
-        let unsigned = self.build_unsigned(&[ix]).await?;
-        Ok(unsigned)
+        self.build_unsigned(&[ix]).await
     }
 
     /// Build the unsigned `create_xmatch` transaction (the Solana leg of a
@@ -188,8 +200,7 @@ impl GameTxBuilder {
         anyhow::ensure!(args.tournament_id > 0, "tournament_id must be non-zero");
         anyhow::ensure!(args.stake_lamports > 0, "stake_lamports must be non-zero");
         let ix = instructions::build_create_xmatch(match_id, args, &self.player, matchmaker);
-        let unsigned = self.build_unsigned(&[ix]).await?;
-        Ok(unsigned)
+        self.build_unsigned(&[ix]).await
     }
 
     /// Build the unsigned `initialize_xpool` transaction — one-time setup of the
@@ -249,8 +260,7 @@ impl GameTxBuilder {
     /// claim window.
     pub async fn build_refund_xmatch_timeout(&self, match_id: [u8; 32]) -> Result<UnsignedTx> {
         let ix = instructions::build_refund_xmatch_timeout(match_id, &self.player);
-        let unsigned = self.build_unsigned(&[ix]).await?;
-        Ok(unsigned)
+        self.build_unsigned(&[ix]).await
     }
 
     /// Build the unsigned `refund_xmatch_nocert` transaction (Solana leg) —
@@ -258,8 +268,7 @@ impl GameTxBuilder {
     /// certificate signed.
     pub async fn build_refund_xmatch_nocert(&self, match_id: [u8; 32]) -> Result<UnsignedTx> {
         let ix = instructions::build_refund_xmatch_nocert(match_id, &self.player);
-        let unsigned = self.build_unsigned(&[ix]).await?;
-        Ok(unsigned)
+        self.build_unsigned(&[ix]).await
     }
 
     /// Build the unsigned `close_xmatch` transaction (Solana leg) —
@@ -268,8 +277,7 @@ impl GameTxBuilder {
     /// Cranked after settle/refund so per-match rent doesn't leak each game.
     pub async fn build_close_xmatch(&self, match_id: [u8; 32]) -> Result<UnsignedTx> {
         let ix = instructions::build_close_xmatch(match_id, &self.player);
-        let unsigned = self.build_unsigned(&[ix]).await?;
-        Ok(unsigned)
+        self.build_unsigned(&[ix]).await
     }
 
     // -- Submit ----------------------------------------------------------------
