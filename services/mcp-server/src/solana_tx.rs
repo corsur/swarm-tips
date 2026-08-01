@@ -140,4 +140,127 @@ mod tests {
         ));
         assert!(matches!(result, Err(McpServiceError::TransactionError(_))));
     }
+
+    // -----------------------------------------------------------------------
+    // Flow tests over a mock RPC. wait_for_signature_confirmed is a
+    // multi-attempt orchestrator with THREE distinct outcomes (confirmed,
+    // failed-on-chain, timeout) and had no coverage at all; broadcast had only
+    // the invalid-base64 error path. wiremock is already a dev-dependency.
+    //
+    // The loop sleeps a real 1s per non-terminal attempt, so the timeout case
+    // uses max_attempts=1. The confirmed and on-chain-error cases return before
+    // the sleep.
+    // -----------------------------------------------------------------------
+
+    use wiremock::matchers::{body_partial_json, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A valid base64 payload — content is irrelevant, only the decode matters.
+    const SIGNED_B64: &str = "AQIDBA==";
+
+    #[tokio::test]
+    async fn broadcast_returns_the_signature_from_a_successful_rpc_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "sendTransaction" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "result": "sig-123"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let sig = broadcast_signed_b64(&reqwest::Client::new(), &server.uri(), SIGNED_B64)
+            .await
+            .unwrap();
+        assert_eq!(sig, "sig-123");
+    }
+
+    #[tokio::test]
+    async fn broadcast_surfaces_an_rpc_error_payload_instead_of_a_missing_signature() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "error": { "code": -32002, "message": "blockhash not found" }
+            })))
+            .mount(&server)
+            .await;
+
+        let err = broadcast_signed_b64(&reqwest::Client::new(), &server.uri(), SIGNED_B64)
+            .await
+            .expect_err("an error payload must not be read as success");
+        let msg = format!("{err}");
+        assert!(msg.contains("transaction rejected"), "got: {msg}");
+        assert!(msg.contains("blockhash not found"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn wait_returns_ok_once_the_signature_reports_confirmed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [{ "confirmationStatus": "confirmed", "err": null }] }
+            })))
+            .mount(&server)
+            .await;
+
+        wait_for_signature_confirmed(&reqwest::Client::new(), &server.uri(), "sig-1", 3)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_fails_fast_when_the_tx_landed_but_reverted_on_chain() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [{
+                    "confirmationStatus": "confirmed",
+                    "err": { "InstructionError": [0, { "Custom": 6001 }] }
+                }] }
+            })))
+            .mount(&server)
+            .await;
+
+        // A landed-but-failed tx must NOT be reported as confirmed — the caller
+        // would then tell the orchestrator the work succeeded.
+        let err = wait_for_signature_confirmed(&reqwest::Client::new(), &server.uri(), "sig-1", 3)
+            .await
+            .expect_err("an on-chain failure must be an error");
+        assert!(format!("{err}").contains("failed on-chain"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn wait_times_out_when_the_signature_never_becomes_visible() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "result": { "value": [null] }
+            })))
+            .mount(&server)
+            .await;
+
+        let err = wait_for_signature_confirmed(&reqwest::Client::new(), &server.uri(), "sig-1", 1)
+            .await
+            .expect_err("an invisible signature must time out");
+        assert!(
+            format!("{err}").contains("did not reach confirmed"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_rejects_an_empty_signature_without_calling_the_rpc() {
+        let server = MockServer::start().await;
+        // No mock mounted: any request would 404 and fail differently.
+        let err = wait_for_signature_confirmed(&reqwest::Client::new(), &server.uri(), "", 1)
+            .await
+            .expect_err("empty signature must be rejected");
+        assert!(format!("{err}").contains("must not be empty"), "got: {err}");
+    }
 }

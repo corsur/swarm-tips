@@ -14,12 +14,58 @@ pub struct FetchResult {
     pub health: HealthCheck,
 }
 
+/// Time one source's fetch and fold the outcome into a `FetchResult`.
+///
+/// This wrapper — the `Instant`, the Ok/Err match, and the `HealthCheck`
+/// assembly — was duplicated verbatim in all five `fetch_*` functions, so a
+/// change to how health is recorded had to be made five times. Each fetcher now
+/// passes only its own request+parse future.
+///
+/// The per-source warn on failure moves from a static literal to a dynamic
+/// field, which is structurally equivalent in Cloud Logging.
+async fn timed_fetch<F>(source: &str, fut: F) -> FetchResult
+where
+    F: std::future::Future<Output = Result<(Vec<RawListing>, u16), reqwest::Error>>,
+{
+    let start = Instant::now();
+    let result = fut.await;
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok((listings, status)) => {
+            let count = listings.len() as u32;
+            FetchResult {
+                source: source.to_string(),
+                listings,
+                health: HealthCheck {
+                    timestamp: Utc::now(),
+                    status_code: status,
+                    response_ms: elapsed_ms,
+                    listing_count: count,
+                    error: None,
+                },
+            }
+        }
+        Err(e) => {
+            tracing::warn!(source = %source, error = %e, "fetch failed");
+            FetchResult {
+                source: source.to_string(),
+                listings: vec![],
+                health: HealthCheck {
+                    timestamp: Utc::now(),
+                    status_code: 0,
+                    response_ms: elapsed_ms,
+                    listing_count: 0,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+    }
+}
+
 /// Fetch open bounties from BotBounty (Base / ETH).
 pub async fn fetch_botbounty(client: &reqwest::Client) -> FetchResult {
-    let source = "botbounty".to_string();
-    let start = Instant::now();
-
-    let result = async {
+    timed_fetch("botbounty", async {
         let res = client
             .get("https://botbounty-production.up.railway.app/api/agent/bounties")
             .header("Content-Type", "application/json")
@@ -49,41 +95,8 @@ pub async fn fetch_botbounty(client: &reqwest::Client) -> FetchResult {
             .collect();
 
         Ok((listings, status))
-    }
-    .await;
-
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    match result {
-        Ok((listings, status)) => {
-            let count = listings.len() as u32;
-            FetchResult {
-                source,
-                listings,
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: status,
-                    response_ms: elapsed_ms,
-                    listing_count: count,
-                    error: None,
-                },
-            }
-        }
-        Err(e) => {
-            tracing::warn!(source = "botbounty", error = %e, "fetch failed");
-            FetchResult {
-                source,
-                listings: vec![],
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: 0,
-                    response_ms: elapsed_ms,
-                    listing_count: 0,
-                    error: Some(e.to_string()),
-                },
-            }
-        }
-    }
+    })
+    .await
 }
 
 /// Hardcoded ETH price fallback for USD estimation.
@@ -148,10 +161,7 @@ fn parse_botbounty(b: &serde_json::Value) -> Option<RawListing> {
 /// marketplace is the most agent-native one we have. Without this source the
 /// frontend never auto-picked up new Shillbot campaigns.
 pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
-    let source = "shillbot".to_string();
-    let start = Instant::now();
-
-    let result = async {
+    timed_fetch("shillbot", async {
         // Orchestrator's /tasks defaults to ~10 results without ?limit.
         // First-party Shillbot is our highest-trust source — pull everything
         // it's offering. 200 is well above realistic queue depth and matches
@@ -188,41 +198,8 @@ pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
             .collect();
 
         Ok((listings, status))
-    }
-    .await;
-
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    match result {
-        Ok((listings, status)) => {
-            let count = listings.len() as u32;
-            FetchResult {
-                source,
-                listings,
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: status,
-                    response_ms: elapsed_ms,
-                    listing_count: count,
-                    error: None,
-                },
-            }
-        }
-        Err(e) => {
-            tracing::warn!(source = "shillbot", error = %e, "fetch failed");
-            FetchResult {
-                source,
-                listings: vec![],
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: 0,
-                    response_ms: elapsed_ms,
-                    listing_count: 0,
-                    error: Some(e.to_string()),
-                },
-            }
-        }
-    }
+    })
+    .await
 }
 
 /// Map a Shillbot platform enum integer to a human-readable label.
@@ -323,10 +300,7 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
 /// shows up in DefiLlama within days, and we want it queryable here so we
 /// can decide whether to integrate it as a real first-party listings source.
 pub async fn fetch_defillama_ai_agents(client: &reqwest::Client) -> FetchResult {
-    let source = "defillama-ai".to_string();
-    let start = Instant::now();
-
-    let result = async {
+    let result = timed_fetch("defillama-ai", async {
         let res = client
             .get("https://api.llama.fi/protocols")
             .header(
@@ -362,46 +336,19 @@ pub async fn fetch_defillama_ai_agents(client: &reqwest::Client) -> FetchResult 
             .collect();
 
         Ok((listings, status))
-    }
+    })
     .await;
 
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    match result {
-        Ok((listings, status)) => {
-            let count = listings.len() as u32;
-            tracing::info!(
-                source = "defillama-ai",
-                count,
-                "fetched DefiLlama AI agent platforms"
-            );
-            FetchResult {
-                source,
-                listings,
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: status,
-                    response_ms: elapsed_ms,
-                    listing_count: count,
-                    error: None,
-                },
-            }
-        }
-        Err(e) => {
-            tracing::warn!(source = "defillama-ai", error = %e, "fetch failed");
-            FetchResult {
-                source,
-                listings: vec![],
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: 0,
-                    response_ms: elapsed_ms,
-                    listing_count: 0,
-                    error: Some(e.to_string()),
-                },
-            }
-        }
-    }
+    // This source's own count log, kept after the timed_fetch extraction —
+    // DefiLlama entries are platform CANDIDATES rather than bounties, so they
+    // are dropped from the public response by the reward filter and this line
+    // is the only visibility into how many were actually ingested.
+    tracing::info!(
+        source = "defillama-ai",
+        count = result.listings.len(),
+        "fetched DefiLlama AI agent platforms"
+    );
+    result
 }
 
 fn parse_defillama_protocol(p: &serde_json::Value) -> Option<RawListing> {
@@ -485,10 +432,7 @@ fn parse_defillama_protocol(p: &serde_json::Value) -> Option<RawListing> {
 
 /// Fetch open bounties from Bountycaster (Base / USDC, Farcaster-native).
 pub async fn fetch_bountycaster(client: &reqwest::Client) -> FetchResult {
-    let source = "bountycaster".to_string();
-    let start = Instant::now();
-
-    let result = async {
+    timed_fetch("bountycaster", async {
         let res = client
             .get("https://www.bountycaster.xyz/api/v1/bounties/open")
             .send()
@@ -517,41 +461,8 @@ pub async fn fetch_bountycaster(client: &reqwest::Client) -> FetchResult {
             .collect();
 
         Ok((listings, status))
-    }
-    .await;
-
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    match result {
-        Ok((listings, status)) => {
-            let count = listings.len() as u32;
-            FetchResult {
-                source,
-                listings,
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: status,
-                    response_ms: elapsed_ms,
-                    listing_count: count,
-                    error: None,
-                },
-            }
-        }
-        Err(e) => {
-            tracing::warn!(source = "bountycaster", error = %e, "fetch failed");
-            FetchResult {
-                source,
-                listings: vec![],
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: 0,
-                    response_ms: elapsed_ms,
-                    listing_count: 0,
-                    error: Some(e.to_string()),
-                },
-            }
-        }
-    }
+    })
+    .await
 }
 
 fn parse_bountycaster(b: &serde_json::Value) -> Option<RawListing> {
@@ -616,10 +527,7 @@ fn parse_bountycaster(b: &serde_json::Value) -> Option<RawListing> {
 /// that friction before navigating out. External source: agents claim
 /// off-platform via `source_url` (no in-MCP deep integration).
 pub async fn fetch_0xwork(client: &reqwest::Client) -> FetchResult {
-    let source = "0xwork".to_string();
-    let start = Instant::now();
-
-    let result = async {
+    timed_fetch("0xwork", async {
         let res = client.get("https://api.0xwork.org/tasks").send().await?;
 
         let status = res.status().as_u16();
@@ -641,41 +549,8 @@ pub async fn fetch_0xwork(client: &reqwest::Client) -> FetchResult {
         let listings: Vec<RawListing> = tasks.iter().take(20).filter_map(parse_0xwork).collect();
 
         Ok((listings, status))
-    }
-    .await;
-
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    match result {
-        Ok((listings, status)) => {
-            let count = listings.len() as u32;
-            FetchResult {
-                source,
-                listings,
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: status,
-                    response_ms: elapsed_ms,
-                    listing_count: count,
-                    error: None,
-                },
-            }
-        }
-        Err(e) => {
-            tracing::warn!(source = "0xwork", error = %e, "fetch failed");
-            FetchResult {
-                source,
-                listings: vec![],
-                health: HealthCheck {
-                    timestamp: Utc::now(),
-                    status_code: 0,
-                    response_ms: elapsed_ms,
-                    listing_count: 0,
-                    error: Some(e.to_string()),
-                },
-            }
-        }
-    }
+    })
+    .await
 }
 
 /// Parse one 0xWork task object into a `RawListing`. Only `Open` tasks are

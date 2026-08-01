@@ -31,6 +31,40 @@ fn network_query_suffix(network: Option<&str>) -> String {
 }
 
 /// HTTP client for proxying read operations to the orchestrator API.
+/// Reject a non-2xx orchestrator response with the status and body.
+///
+/// This block was copy-pasted verbatim across the task-scoped proxy methods.
+/// The `op` + `task_id` fields are kept as first-class structured fields — NOT
+/// folded into one generic tag — so existing Cloud Logging queries and
+/// log-based metrics that filter on `task_id` keep working.
+///
+/// `unwrap_or_default()` on the body is deliberate, not error swallowing: we
+/// are already on the failure path, the status is preserved, and the body only
+/// enriches the message — an unreadable body degrades to "" rather than masking
+/// the real error with a second one.
+async fn require_success(
+    response: reqwest::Response,
+    op: &str,
+    task_id: &str,
+) -> Result<reqwest::Response, McpServiceError> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    tracing::error!(
+        service = "mcp-server",
+        op = %op,
+        status = %status,
+        task_id = %task_id,
+        body = %body,
+        "orchestrator returned error"
+    );
+    Err(McpServiceError::OrchestratorError(format!(
+        "status {status}: {body}"
+    )))
+}
+
 pub struct OrchestratorProxy {
     client: reqwest::Client,
     base_url: String,
@@ -215,6 +249,21 @@ pub struct ConfirmTaskResponse {
 }
 
 impl OrchestratorProxy {
+    /// POST with a bearer token and no body.
+    ///
+    /// The explicit `Content-Length: 0` is load-bearing: reqwest omits the
+    /// header entirely for an empty body (verified — `.body(Vec::new())` and
+    /// `.body("")` both send NO Content-Length), and Cloud Run's HTTP frontend
+    /// then rejects with 411 Length Required. GKE's ingress tolerated it, which
+    /// is why this only surfaced after the migration. This rationale was
+    /// duplicated verbatim at four call sites; it lives here now.
+    fn bodyless_post(&self, url: &str, wallet_pubkey: &str) -> reqwest::RequestBuilder {
+        self.client
+            .post(url)
+            .bearer_auth(wallet_pubkey)
+            .header(reqwest::header::CONTENT_LENGTH, 0)
+    }
+
     pub fn new(base_url: String, shorts_base_url: String) -> Self {
         assert!(
             !base_url.is_empty(),
@@ -425,16 +474,7 @@ impl OrchestratorProxy {
             "{}/tasks/{task_id}/claim{qs}{sep}sponsor=auto",
             self.base_url
         );
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(wallet_pubkey)
-            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
-            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
-            // both send NO Content-Length), and Cloud Run's HTTP frontend then
-            // rejects with 411 Length Required (GKE's ingress tolerated it). The
-            // explicit header is the only form reqwest actually transmits.
-            .header(reqwest::header::CONTENT_LENGTH, 0)
+        let response = self.bodyless_post(&url, wallet_pubkey)
             .send()
             .await
             .map_err(|e| {
@@ -442,14 +482,7 @@ impl OrchestratorProxy {
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator claim_task returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "claim_task", task_id).await?;
 
         let parsed: TransactionResponse = response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid claim_task response: {e}"))
@@ -510,14 +543,7 @@ impl OrchestratorProxy {
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator submit_task returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "submit_task", task_id).await?;
 
         let parsed: TransactionResponse = response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid submit_task response: {e}"))
@@ -549,16 +575,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/build-verify{qs}", self.base_url);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(wallet_pubkey)
-            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
-            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
-            // both send NO Content-Length), and Cloud Run's HTTP frontend then
-            // rejects with 411 Length Required (GKE's ingress tolerated it). The
-            // explicit header is the only form reqwest actually transmits.
-            .header(reqwest::header::CONTENT_LENGTH, 0)
+        let response = self.bodyless_post(&url, wallet_pubkey)
             .send()
             .await
             .map_err(|e| {
@@ -595,16 +612,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/build-finalize{qs}", self.base_url);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(wallet_pubkey)
-            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
-            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
-            // both send NO Content-Length), and Cloud Run's HTTP frontend then
-            // rejects with 411 Length Required (GKE's ingress tolerated it). The
-            // explicit header is the only form reqwest actually transmits.
-            .header(reqwest::header::CONTENT_LENGTH, 0)
+        let response = self.bodyless_post(&url, wallet_pubkey)
             .send()
             .await
             .map_err(|e| {
@@ -649,16 +657,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/approve{qs}", self.base_url);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(wallet_pubkey)
-            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
-            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
-            // both send NO Content-Length), and Cloud Run's HTTP frontend then
-            // rejects with 411 Length Required (GKE's ingress tolerated it). The
-            // explicit header is the only form reqwest actually transmits.
-            .header(reqwest::header::CONTENT_LENGTH, 0)
+        let response = self.bodyless_post(&url, wallet_pubkey)
             .send()
             .await
             .map_err(|e| {
@@ -666,14 +665,7 @@ impl OrchestratorProxy {
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator approve_task returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "approve_task", task_id).await?;
 
         let parsed: TransactionResponse = response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid approve_task response: {e}"))
@@ -710,14 +702,7 @@ impl OrchestratorProxy {
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
         })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator get_attestation returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "get_attestation", task_id).await?;
 
         response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid attestation response: {e}"))
@@ -857,14 +842,7 @@ impl OrchestratorProxy {
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator confirm_task returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "confirm_task", task_id).await?;
 
         response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid confirm_task response: {e}"))
