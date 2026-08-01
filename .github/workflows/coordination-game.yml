@@ -280,9 +280,16 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
 
   deploy-mainnet:
-    # Manual only — never auto-deploy to mainnet on push (real SOL churn +
-    # unreviewed-change risk). See MAINNET_DEPLOY.md.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'
+    # Auto-upgrades mainnet on every merge to main, plus manual dispatch.
+    # Safe to automate specifically BECAUSE Solana programs are upgradeable:
+    # `solana program deploy` against an existing program ID replaces the
+    # bytecode in place, preserving the program address and every PDA's state.
+    # A merge therefore upgrades; it never orphans accounts or funds.
+    # Gated on `needs: test`, so a red test suite blocks the upgrade.
+    if: >-
+      needs.test.result == 'success' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'))
     environment: mainnet
     needs: test
     runs-on: ubuntu-latest

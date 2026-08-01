@@ -11,10 +11,6 @@ pub fn withdraw_stake(ctx: Context<WithdrawStake>) -> Result<()> {
     let escrow = &ctx.accounts.escrow;
 
     // Checks
-    require!(
-        escrow.player == ctx.accounts.player.key(),
-        CoordinationError::InvalidGameState,
-    );
     require!(!escrow.consumed, CoordinationError::EscrowAlreadyConsumed,);
 
     // Capture values before the account is closed by Anchor

@@ -19,7 +19,7 @@ pub fn initialize_config(ctx: Context<InitializeConfig>, treasury_split_bps: u16
     );
     require!(
         ctx.accounts.treasury.key() != Pubkey::default(),
-        CoordinationError::NotAuthority
+        CoordinationError::InvalidTreasury
     );
 
     // Effects

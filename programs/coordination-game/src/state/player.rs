@@ -38,7 +38,7 @@ impl PlayerProfile {
             .ok_or(CoordinationError::ArithmeticOverflow)?;
         let score = wins_sq
             .checked_div(total_games)
-            .ok_or_else(|| error!(CoordinationError::ArithmeticOverflow))?;
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
         // Postcondition: integer division cannot exceed the dividend
         require!(score <= wins_sq, CoordinationError::ArithmeticOverflow);
         Ok(score)

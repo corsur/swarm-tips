@@ -44,7 +44,7 @@ pub enum ShillbotError {
     #[msg("Challenge bond below minimum required")]
     InsufficientBond,
 
-    #[msg("Expire called on Submitted task before T+14d verification timeout")]
+    #[msg("Expire called on Submitted task before verification timeout reached")]
     VerificationTimeoutNotReached,
 
     #[msg("Session delegate not authorized for this instruction")]
@@ -177,4 +177,9 @@ pub enum ShillbotError {
 
     #[msg("Dispute resolution window still open — authority resolve_challenge only")]
     DisputeWindowStillOpen,
+
+    /// Account is not owned by this program. Previously this guard
+    /// reported InvalidTaskState, which describes an unrelated condition.
+    #[msg("Account is not owned by this program")]
+    InvalidAccountOwner,
 }

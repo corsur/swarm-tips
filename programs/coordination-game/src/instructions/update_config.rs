@@ -27,16 +27,6 @@ pub fn update_config(
         (MIN_TREASURY_SPLIT_BPS..=MAX_TREASURY_SPLIT_BPS).contains(&treasury_split_bps),
         CoordinationError::InvalidTreasurySplitBps
     );
-    // If new_authority is provided (non-default), it must not be the zero key.
-    // This is a tautology by construction (non-default IS non-zero), but we
-    // assert explicitly as defense-in-depth against future refactors.
-    if new_authority != Pubkey::default() {
-        require!(
-            new_authority != Pubkey::default(),
-            CoordinationError::InvalidGameState
-        );
-    }
-
     // Effects
     let config = &mut ctx.accounts.global_config;
     config.treasury_split_bps = treasury_split_bps;

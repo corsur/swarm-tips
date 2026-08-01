@@ -188,8 +188,8 @@ impl CheckpointArg {
         if self.step_count == 3 {
             // Both committed, exactly one revealed: the revealer wins.
             // Both-set or both-unset is inconsistent → both forfeit.
-            let p1_revealed = self.p1_guess != UNREVEALED;
-            let p2_revealed = self.p2_guess != UNREVEALED;
+            let p1_revealed = self.p1_guess != crate::state::GUESS_UNREVEALED;
+            let p2_revealed = self.p2_guess != crate::state::GUESS_UNREVEALED;
             if p1_revealed == p2_revealed {
                 return XKIND_TIMEOUT_BOTH_FORFEIT;
             }
@@ -239,8 +239,7 @@ impl CheckpointArg {
     }
 }
 
-const TERMINAL_STEP_COUNT: u8 = 4;
-const UNREVEALED: u8 = 255;
+pub const TERMINAL_STEP_COUNT: u8 = 4;
 
 /// Outcome certificate, as an instruction argument.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]

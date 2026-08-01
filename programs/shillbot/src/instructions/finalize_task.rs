@@ -40,16 +40,6 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
     // Effects
     let task = &mut ctx.accounts.task;
     task.state = TaskState::Finalized;
-    // Interactions: distribute payment, fee, and remainder.
-    distribute_finalized_payment(
-        &task.to_account_info(),
-        &ctx.accounts.agent.to_account_info(),
-        &ctx.accounts.treasury.to_account_info(),
-        &ctx.accounts.client.to_account_info(),
-        payment_amount,
-        fee_amount,
-        remainder,
-    )?;
     // Update reputation counters only when payment_amount > 0 — preserves
     // pre-#12 behavior. See `state/agent.rs` "Counter semantics".
     if payment_amount > 0 {
@@ -61,6 +51,16 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
             task.composite_score,
         )?;
     }
+    // Interactions: distribute payment, fee, and remainder.
+    distribute_finalized_payment(
+        &task.to_account_info(),
+        &ctx.accounts.agent.to_account_info(),
+        &ctx.accounts.treasury.to_account_info(),
+        &ctx.accounts.client.to_account_info(),
+        payment_amount,
+        fee_amount,
+        remainder,
+    )?;
     emit!(TaskFinalized {
         task_id: task.task_id,
         agent: task.agent,

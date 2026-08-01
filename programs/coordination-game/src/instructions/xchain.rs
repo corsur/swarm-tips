@@ -7,7 +7,7 @@
 
 use crate::cert::{
     recover_eth_address, require_signer, CertLegArg, CheckpointArg, MatchLiveCertArg,
-    MatchLiveCertNoA, OutcomeCertArg,
+    MatchLiveCertNoA, OutcomeCertArg, TERMINAL_STEP_COUNT,
 };
 use crate::errors::CoordinationError;
 use crate::events::{
@@ -21,7 +21,6 @@ use crate::state::{
 };
 use anchor_lang::prelude::*;
 
-const TERMINAL_STEP_COUNT: u8 = 4;
 const XKIND_TIMEOUT_P1_WINS: u8 = 6;
 const XKIND_TIMEOUT_P2_WINS: u8 = 7;
 const XKIND_TIMEOUT_BOTH_FORFEIT: u8 = 8;
@@ -734,7 +733,6 @@ fn verify_match_live(
         .ok_or(CoordinationError::ArithmeticOverflow)?
         >= u128::try_from(m.locked_at).unwrap_or(0);
     require!(quote_ok, CoordinationError::XStaleQuote);
-    let _ = pool;
 
     let digest = cert.digest();
     require_signer(&digest, &sigs[0], &cert.leg_a.session_key)?;

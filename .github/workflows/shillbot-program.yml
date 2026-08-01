@@ -208,7 +208,13 @@ jobs:
           EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
 
   deploy-mainnet:
-    if: github.event_name == 'workflow_dispatch'
+    # Auto-upgrades mainnet on every merge to main, plus manual dispatch.
+    # Solana programs are upgradeable, so a deploy against the existing program
+    # ID swaps bytecode in place and preserves all PDA state — a merge upgrades
+    # rather than orphaning anything. Gated on `needs: test`.
+    if: >-
+      needs.test.result == 'success' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: test
     runs-on: ubuntu-latest
     steps:

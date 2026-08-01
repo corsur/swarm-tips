@@ -121,4 +121,9 @@ pub enum CoordinationError {
     XBadConfig,
     #[msg("Outcome kind is not valid for this settlement path")]
     XBadOutcome,
+
+    /// Treasury must not be the zero pubkey. Previously this rejection
+    /// reused NotAuthority, which describes an unrelated condition.
+    #[msg("Treasury must not be the zero pubkey")]
+    InvalidTreasury,
 }
