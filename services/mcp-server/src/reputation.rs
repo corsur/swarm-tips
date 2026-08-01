@@ -441,6 +441,111 @@ async fn all_signatures(
     out.reverse(); // chronological
     Ok(out)
 }
+/// Per-task state carried across signatures while walking the log history.
+/// `Created` / `Claimed` / `Verified` land before the `Finalized` that mints
+/// the edge, often in a different transaction.
+#[derive(Default)]
+struct JoinState {
+    client_by_task: std::collections::HashMap<u64, String>,
+    agent_by_task: std::collections::HashMap<u64, String>,
+    score_by_task: std::collections::HashMap<u64, u64>,
+}
+
+/// Counters `apply_events` contributes for one signature.
+#[derive(Default, Debug, PartialEq)]
+struct EventDelta {
+    finalized: usize,
+    challenge: usize,
+    skipped_incomplete: usize,
+}
+
+/// Fold one transaction's decoded events into `state`, returning the trust
+/// edges to write and the counter deltas.
+///
+/// Pure: no Firestore, no clock (`settled_at` is computed by the caller). This
+/// was ~65 lines inlined in the middle of a ~150-line `backfill`, so the
+/// join-and-mint rules — which are the whole point of the endpoint — had no
+/// tests; only the log-decoding helpers did.
+fn apply_events(
+    events: Vec<ChainEvent>,
+    sig: &str,
+    settled_at: chrono::DateTime<chrono::Utc>,
+    state: &mut JoinState,
+) -> (Vec<TrustEdgeDoc>, EventDelta) {
+    let mut docs = Vec::new();
+    let mut delta = EventDelta::default();
+
+    for event in events {
+        match event {
+            ChainEvent::Created { task_id, client } => {
+                state.client_by_task.insert(task_id, client);
+            }
+            ChainEvent::Claimed { task_id, agent } => {
+                state.agent_by_task.insert(task_id, agent);
+            }
+            ChainEvent::Verified {
+                task_id,
+                composite_score,
+            } => {
+                state.score_by_task.insert(task_id, composite_score);
+            }
+            ChainEvent::Finalized { task_id, agent } => {
+                // Without the Created event we do not know the client, so there
+                // is no edge to draw — count it rather than inventing one.
+                let Some(client) = state.client_by_task.get(&task_id) else {
+                    delta.skipped_incomplete = delta.skipped_incomplete.saturating_add(1);
+                    continue;
+                };
+                // A finalize with no Verified score is a real settlement that
+                // carries no trust — weight 0, not a skip.
+                let weight = state
+                    .score_by_task
+                    .get(&task_id)
+                    .map(|s| (*s as f64 / MAX_SCORE as f64).clamp(0.0, 1.0))
+                    .unwrap_or(0.0);
+                docs.push(TrustEdgeDoc {
+                    tx_sig: sig.to_string(),
+                    from: client.clone(),
+                    to: agent,
+                    weight,
+                    task_id,
+                    source: "shillbot_finalize".to_string(),
+                    chain: SOLANA_MAINNET_CAIP2.to_string(),
+                    settled_at,
+                });
+                delta.finalized = delta.finalized.saturating_add(1);
+            }
+            ChainEvent::ChallengeResolved {
+                task_id,
+                challenger_won,
+            } => {
+                if !challenger_won {
+                    continue; // agent won — the Finalized path pays out
+                }
+                let (Some(client), Some(agent)) = (
+                    state.client_by_task.get(&task_id),
+                    state.agent_by_task.get(&task_id),
+                ) else {
+                    delta.skipped_incomplete = delta.skipped_incomplete.saturating_add(1);
+                    continue;
+                };
+                docs.push(TrustEdgeDoc {
+                    tx_sig: sig.to_string(),
+                    from: client.clone(),
+                    to: agent.clone(),
+                    weight: 0.0,
+                    task_id,
+                    source: "challenge_resolved".to_string(),
+                    chain: SOLANA_MAINNET_CAIP2.to_string(),
+                    settled_at,
+                });
+                delta.challenge = delta.challenge.saturating_add(1);
+            }
+        }
+    }
+
+    (docs, delta)
+}
 
 /// Backfill trust_edges from the Shillbot program's full event history.
 pub async fn backfill(
@@ -455,9 +560,7 @@ pub async fn backfill(
     let signatures_scanned = sigs.len();
 
     // Per-task join state, built chronologically.
-    let mut client_by_task: std::collections::HashMap<u64, String> = Default::default();
-    let mut agent_by_task: std::collections::HashMap<u64, String> = Default::default();
-    let mut score_by_task: std::collections::HashMap<u64, u64> = Default::default();
+    let mut join = JoinState::default();
 
     let mut finalized_edges = 0usize;
     let mut challenge_edges = 0usize;
@@ -508,72 +611,17 @@ pub async fn backfill(
             })
             .unwrap_or_default();
 
-        for event in events_from_logs(&logs) {
-            let settled_at = block_time
-                .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
-                .unwrap_or_else(chrono::Utc::now);
-            match event {
-                ChainEvent::Created { task_id, client } => {
-                    client_by_task.insert(task_id, client);
-                }
-                ChainEvent::Claimed { task_id, agent } => {
-                    agent_by_task.insert(task_id, agent);
-                }
-                ChainEvent::Verified {
-                    task_id,
-                    composite_score,
-                } => {
-                    score_by_task.insert(task_id, composite_score);
-                }
-                ChainEvent::Finalized { task_id, agent } => {
-                    let Some(client) = client_by_task.get(&task_id) else {
-                        skipped_incomplete = skipped_incomplete.saturating_add(1);
-                        continue;
-                    };
-                    let weight = score_by_task
-                        .get(&task_id)
-                        .map(|s| (*s as f64 / MAX_SCORE as f64).clamp(0.0, 1.0))
-                        .unwrap_or(0.0);
-                    let doc = TrustEdgeDoc {
-                        tx_sig: sig.clone(),
-                        from: client.clone(),
-                        to: agent,
-                        weight,
-                        task_id,
-                        source: "shillbot_finalize".to_string(),
-                        chain: SOLANA_MAINNET_CAIP2.to_string(),
-                        settled_at,
-                    };
-                    finalized_edges = finalized_edges.saturating_add(1);
-                    write_edge(db, &doc, &mut writes, &mut write_errors).await;
-                }
-                ChainEvent::ChallengeResolved {
-                    task_id,
-                    challenger_won,
-                } => {
-                    if !challenger_won {
-                        continue; // agent won — the Finalized path pays out
-                    }
-                    let (Some(client), Some(agent)) =
-                        (client_by_task.get(&task_id), agent_by_task.get(&task_id))
-                    else {
-                        skipped_incomplete = skipped_incomplete.saturating_add(1);
-                        continue;
-                    };
-                    let doc = TrustEdgeDoc {
-                        tx_sig: sig.clone(),
-                        from: client.clone(),
-                        to: agent.clone(),
-                        weight: 0.0,
-                        task_id,
-                        source: "challenge_resolved".to_string(),
-                        chain: SOLANA_MAINNET_CAIP2.to_string(),
-                        settled_at,
-                    };
-                    challenge_edges = challenge_edges.saturating_add(1);
-                    write_edge(db, &doc, &mut writes, &mut write_errors).await;
-                }
-            }
+        let settled_at = block_time
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .unwrap_or_else(chrono::Utc::now);
+        let (docs, delta) = apply_events(events_from_logs(&logs), sig, settled_at, &mut join);
+        skipped_incomplete = skipped_incomplete.saturating_add(delta.skipped_incomplete);
+        finalized_edges = finalized_edges.saturating_add(delta.finalized);
+        challenge_edges = challenge_edges.saturating_add(delta.challenge);
+        // Write order is preserved exactly: doc ids are tx signatures and the
+        // endpoint is idempotent, so replaying a signature is a no-op.
+        for doc in docs {
+            write_edge(db, &doc, &mut writes, &mut write_errors).await;
         }
     }
 
@@ -831,5 +879,188 @@ mod backfill_tests {
     fn all_noise_no_signal_yields_nothing() {
         let logs: Vec<String> = noise_variants().into_iter().map(|(_, n)| n).collect();
         assert!(events_from_logs(&logs).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // apply_events — the join-and-mint rules. These were ~65 lines inlined in
+    // the middle of backfill, so the endpoint's whole reason for existing had
+    // no coverage; only the log-decoding helpers were tested.
+    // -----------------------------------------------------------------------
+
+    fn at() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp")
+    }
+
+    #[test]
+    fn a_full_lifecycle_mints_one_finalize_edge_with_the_scaled_weight() {
+        let mut st = JoinState::default();
+        let (docs, delta) = apply_events(
+            vec![
+                ChainEvent::Created {
+                    task_id: 1,
+                    client: "CLIENT".into(),
+                },
+                ChainEvent::Claimed {
+                    task_id: 1,
+                    agent: "AGENT".into(),
+                },
+                ChainEvent::Verified {
+                    task_id: 1,
+                    composite_score: MAX_SCORE / 4,
+                },
+                ChainEvent::Finalized {
+                    task_id: 1,
+                    agent: "AGENT".into(),
+                },
+            ],
+            "sig-1",
+            at(),
+            &mut st,
+        );
+
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].from, "CLIENT");
+        assert_eq!(docs[0].to, "AGENT");
+        assert!((docs[0].weight - 0.25).abs() < f64::EPSILON);
+        assert_eq!(docs[0].source, "shillbot_finalize");
+        assert_eq!(docs[0].tx_sig, "sig-1");
+        assert_eq!(
+            delta,
+            EventDelta {
+                finalized: 1,
+                challenge: 0,
+                skipped_incomplete: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_score_above_max_is_clamped_rather_than_minting_more_than_full_trust() {
+        let mut st = JoinState::default();
+        st.client_by_task.insert(1, "CLIENT".into());
+        let (docs, _) = apply_events(
+            vec![
+                ChainEvent::Verified {
+                    task_id: 1,
+                    composite_score: MAX_SCORE * 5,
+                },
+                ChainEvent::Finalized {
+                    task_id: 1,
+                    agent: "AGENT".into(),
+                },
+            ],
+            "sig",
+            at(),
+            &mut st,
+        );
+        assert!((docs[0].weight - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_finalize_without_a_score_is_a_real_settlement_carrying_zero_trust() {
+        let mut st = JoinState::default();
+        st.client_by_task.insert(7, "CLIENT".into());
+        let (docs, delta) = apply_events(
+            vec![ChainEvent::Finalized {
+                task_id: 7,
+                agent: "AGENT".into(),
+            }],
+            "sig",
+            at(),
+            &mut st,
+        );
+        // An edge IS drawn — the settlement happened — but it carries no trust.
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].weight, 0.0);
+        assert_eq!(delta.finalized, 1);
+        assert_eq!(delta.skipped_incomplete, 0);
+    }
+
+    #[test]
+    fn a_finalize_with_no_known_client_is_skipped_not_invented() {
+        let mut st = JoinState::default();
+        let (docs, delta) = apply_events(
+            vec![ChainEvent::Finalized {
+                task_id: 9,
+                agent: "AGENT".into(),
+            }],
+            "sig",
+            at(),
+            &mut st,
+        );
+        assert!(docs.is_empty(), "no client means there is no edge to draw");
+        assert_eq!(delta.skipped_incomplete, 1);
+    }
+
+    #[test]
+    fn a_challenge_the_agent_won_mints_nothing() {
+        let mut st = JoinState::default();
+        st.client_by_task.insert(1, "CLIENT".into());
+        st.agent_by_task.insert(1, "AGENT".into());
+        let (docs, delta) = apply_events(
+            vec![ChainEvent::ChallengeResolved {
+                task_id: 1,
+                challenger_won: false,
+            }],
+            "sig",
+            at(),
+            &mut st,
+        );
+        // The agent won, so the Finalized path pays out and draws the edge.
+        assert!(docs.is_empty());
+        assert_eq!(delta, EventDelta::default());
+    }
+
+    #[test]
+    fn a_challenge_the_challenger_won_mints_a_zero_weight_edge() {
+        let mut st = JoinState::default();
+        st.client_by_task.insert(1, "CLIENT".into());
+        st.agent_by_task.insert(1, "AGENT".into());
+        // Even a high score must not leak into a lost challenge.
+        st.score_by_task.insert(1, MAX_SCORE);
+        let (docs, delta) = apply_events(
+            vec![ChainEvent::ChallengeResolved {
+                task_id: 1,
+                challenger_won: true,
+            }],
+            "sig",
+            at(),
+            &mut st,
+        );
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].source, "challenge_resolved");
+        assert_eq!(docs[0].weight, 0.0);
+        assert_eq!(delta.challenge, 1);
+    }
+
+    #[test]
+    fn join_state_carries_across_signatures() {
+        // Created and Finalized normally arrive in DIFFERENT transactions —
+        // that is the entire reason JoinState exists.
+        let mut st = JoinState::default();
+        let (docs, _) = apply_events(
+            vec![ChainEvent::Created {
+                task_id: 3,
+                client: "CLIENT".into(),
+            }],
+            "sig-a",
+            at(),
+            &mut st,
+        );
+        assert!(docs.is_empty());
+
+        let (docs, delta) = apply_events(
+            vec![ChainEvent::Finalized {
+                task_id: 3,
+                agent: "AGENT".into(),
+            }],
+            "sig-b",
+            at(),
+            &mut st,
+        );
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].from, "CLIENT", "client carried over from sig-a");
+        assert_eq!(docs[0].tx_sig, "sig-b", "edge id is the FINALIZE signature");
+        assert_eq!(delta.finalized, 1);
     }
 }
