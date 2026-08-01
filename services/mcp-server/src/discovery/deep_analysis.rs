@@ -122,12 +122,41 @@ pub fn select_top_candidates(servers: Vec<EnrichedServer>, n: usize) -> Vec<Enri
     candidates
 }
 
+/// Upstream hosts the Layer 3 probes hit. Injectable ONLY so the flow tests can
+/// point them at a mock server — production always uses `Bases::default()`, so
+/// the live URLs are unchanged.
+#[derive(Clone)]
+struct Bases {
+    npm: String,
+    github_api: String,
+    github_raw: String,
+}
+
+impl Default for Bases {
+    fn default() -> Self {
+        Self {
+            npm: "https://api.npmjs.org".to_string(),
+            github_api: "https://api.github.com".to_string(),
+            github_raw: "https://raw.githubusercontent.com".to_string(),
+        }
+    }
+}
+
 /// Analyze one server. Best-effort across npm + GitHub — any individual
 /// lookup failure is swallowed and the relevant field is left None.
 async fn analyze_one(
     http: &reqwest::Client,
     server: &EnrichedServer,
     github_token: Option<&str>,
+) -> Layer3Analysis {
+    analyze_one_from(http, server, github_token, &Bases::default()).await
+}
+
+async fn analyze_one_from(
+    http: &reqwest::Client,
+    server: &EnrichedServer,
+    github_token: Option<&str>,
+    bases: &Bases,
 ) -> Layer3Analysis {
     let probed_at = Utc::now();
     let mut analysis = Layer3Analysis {
@@ -146,7 +175,7 @@ async fn analyze_one(
 
     // npm weekly downloads
     if let Some(pkg) = &server.npm_package {
-        if let Some(dl) = fetch_npm_weekly_downloads(http, pkg).await {
+        if let Some(dl) = fetch_npm_weekly_downloads(http, pkg, &bases.npm).await {
             analysis.npm_weekly_downloads = Some(dl);
         }
     }
@@ -154,10 +183,13 @@ async fn analyze_one(
     // GitHub repo metadata + README
     if let Some(repo_url) = &server.github_repo {
         if let Some((owner, repo)) = parse_github_url(repo_url) {
-            if let Some(stars) = fetch_github_stars(http, &owner, &repo, github_token).await {
+            if let Some(stars) =
+                fetch_github_stars(http, &owner, &repo, github_token, &bases.github_api).await
+            {
                 analysis.github_stars = Some(stars);
             }
-            if let Some(readme) = fetch_github_readme(http, &owner, &repo).await {
+            if let Some(readme) = fetch_github_readme(http, &owner, &repo, &bases.github_raw).await
+            {
                 analysis.extracted_addresses = extract_addresses(&readme);
                 analysis.readme_excerpt = Some(readme.chars().take(800).collect());
             }
@@ -168,8 +200,8 @@ async fn analyze_one(
 }
 
 /// Fetch weekly npm downloads. Returns None on any error.
-async fn fetch_npm_weekly_downloads(http: &reqwest::Client, pkg: &str) -> Option<u64> {
-    let url = format!("https://api.npmjs.org/downloads/point/last-week/{pkg}");
+async fn fetch_npm_weekly_downloads(http: &reqwest::Client, pkg: &str, base: &str) -> Option<u64> {
+    let url = format!("{base}/downloads/point/last-week/{pkg}");
     let resp = match http
         .get(&url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
@@ -205,8 +237,9 @@ async fn fetch_github_stars(
     owner: &str,
     repo: &str,
     github_token: Option<&str>,
+    base: &str,
 ) -> Option<u32> {
-    let url = format!("https://api.github.com/repos/{owner}/{repo}");
+    let url = format!("{base}/repos/{owner}/{repo}");
     let mut req = http
         .get(&url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
@@ -244,11 +277,15 @@ async fn fetch_github_stars(
 
 /// Fetch the raw README text. Tries `main` then `master`. Returns None on any
 /// failure (private repo, missing README, network error, etc.).
-async fn fetch_github_readme(http: &reqwest::Client, owner: &str, repo: &str) -> Option<String> {
+async fn fetch_github_readme(
+    http: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    base: &str,
+) -> Option<String> {
     for branch in ["main", "master"] {
         for filename in ["README.md", "Readme.md", "readme.md", "README"] {
-            let url =
-                format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}");
+            let url = format!("{base}/{owner}/{repo}/{branch}/{filename}");
             // A transport error skips this candidate only — it must not abort the
             // remaining branch/filename probes. Non-success is an expected miss
             // (most of the 8 URLs 404), so it stays silent.
@@ -603,5 +640,183 @@ mod tests {
         assert_eq!(top[0].name, "aaa"); // 3 sources, alphabetically first
         assert_eq!(top[1].name, "bbb"); // 3 sources, second alphabetically
         assert_eq!(top[2].name, "ccc"); // 2 sources
+    }
+
+    // -----------------------------------------------------------------------
+    // Flow tests for analyze_one over a mock server. The orchestrator does four
+    // I/O calls (npm, GitHub repo, GitHub README) and had NO coverage — only
+    // the pure helpers (parse_github_url, extract_addresses,
+    // select_top_candidates) were tested, while sibling modules in this crate
+    // already follow the wiremock pattern.
+    // -----------------------------------------------------------------------
+    mod flow {
+        use super::*;
+        use crate::discovery::models::Layer1Classification;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn server_with(npm: Option<&str>, repo: Option<&str>) -> EnrichedServer {
+            EnrichedServer {
+                name: "s".into(),
+                title: None,
+                description: None,
+                endpoint: None,
+                transport: None,
+                npm_package: npm.map(String::from),
+                github_repo: repo.map(String::from),
+                sources: vec!["x".into()],
+                source_count: 1,
+                upstream_quality_score: None,
+                upstream_visitors_estimate: None,
+                classification: Layer1Classification {
+                    category: None,
+                    cash_flow_direction: None,
+                    currencies: vec![],
+                    value_to_swarm: None,
+                    confident: false,
+                    matched_signals: vec![],
+                },
+                layer2_classification: None,
+                layer3_analysis: None,
+                first_seen_at: chrono::Utc::now(),
+                last_seen_at: chrono::Utc::now(),
+            }
+        }
+
+        fn bases(uri: &str) -> Bases {
+            Bases {
+                npm: uri.to_string(),
+                github_api: uri.to_string(),
+                github_raw: uri.to_string(),
+            }
+        }
+
+        #[tokio::test]
+        async fn threads_npm_downloads_stars_and_readme_addresses() {
+            let mock = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/downloads/point/last-week/my-pkg"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "downloads": 4321u64 })),
+                )
+                .mount(&mock)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/repos/o/r"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "stargazers_count": 99 })),
+                )
+                .mount(&mock)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/o/r/main/README.md"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(
+                        "pays to 0x1111111111111111111111111111111111111111 on Base",
+                    ),
+                )
+                .mount(&mock)
+                .await;
+
+            let srv = server_with(Some("my-pkg"), Some("https://github.com/o/r"));
+            let a =
+                analyze_one_from(&reqwest::Client::new(), &srv, None, &bases(&mock.uri())).await;
+
+            assert!(a.probed);
+            assert_eq!(a.npm_weekly_downloads, Some(4321));
+            assert_eq!(a.github_stars, Some(99));
+            assert!(a.readme_excerpt.is_some());
+            assert!(
+                !a.extracted_addresses.is_empty(),
+                "the EVM address in the README must be extracted"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_server_with_neither_npm_nor_github_is_not_probed_at_all() {
+            let mock = MockServer::start().await;
+            // No mocks mounted: any request would 404, so this also proves no
+            // call is made.
+            let a = analyze_one_from(
+                &reqwest::Client::new(),
+                &server_with(None, None),
+                None,
+                &bases(&mock.uri()),
+            )
+            .await;
+
+            assert!(!a.probed, "nothing to probe means probed stays false");
+            assert_eq!(a.npm_weekly_downloads, None);
+            assert_eq!(a.github_stars, None);
+            assert!(a.extracted_addresses.is_empty());
+        }
+
+        #[tokio::test]
+        async fn every_upstream_failing_leaves_fields_none_but_still_counts_as_probed() {
+            let mock = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&mock)
+                .await;
+
+            let srv = server_with(Some("my-pkg"), Some("https://github.com/o/r"));
+            let a =
+                analyze_one_from(&reqwest::Client::new(), &srv, None, &bases(&mock.uri())).await;
+
+            // probed=true is the contract: we DID attempt this server. The
+            // whole pass is best-effort, so one dead upstream must not abort it.
+            assert!(a.probed);
+            assert_eq!(a.npm_weekly_downloads, None);
+            assert_eq!(a.github_stars, None);
+            assert_eq!(a.readme_excerpt, None);
+            assert!(a.extracted_addresses.is_empty());
+        }
+
+        #[tokio::test]
+        async fn the_readme_excerpt_is_capped_at_800_chars() {
+            let mock = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/o/r/main/README.md"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(5_000)))
+                .mount(&mock)
+                .await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&mock)
+                .await;
+
+            let srv = server_with(None, Some("https://github.com/o/r"));
+            let a =
+                analyze_one_from(&reqwest::Client::new(), &srv, None, &bases(&mock.uri())).await;
+
+            assert_eq!(
+                a.readme_excerpt.as_deref().map(str::len),
+                Some(800),
+                "an unbounded README must not be stored whole"
+            );
+        }
+
+        #[tokio::test]
+        async fn falls_back_to_the_master_branch_when_main_is_absent() {
+            let mock = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/o/r/master/README.md"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("from master"))
+                .mount(&mock)
+                .await;
+            // Everything else (including /o/r/main/README.md) 404s.
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&mock)
+                .await;
+
+            let srv = server_with(None, Some("https://github.com/o/r"));
+            let a =
+                analyze_one_from(&reqwest::Client::new(), &srv, None, &bases(&mock.uri())).await;
+
+            assert_eq!(a.readme_excerpt.as_deref(), Some("from master"));
+        }
     }
 }
