@@ -63,9 +63,17 @@ def main() -> int:
         attestation.get("network") if isinstance(attestation, dict) else None
     )
     rpc_url = args.rpc or _DEFAULT_RPC.get(network or "", _DEFAULT_RPC["mainnet"])
-    rpc_fetcher = make_solana_rpc_fetcher(rpc_url)
 
-    verdict = verify_v1(attestation, SHILLBOT_PROTOCOL, rpc_fetcher, rpc_url)
+    # Infra failures (network down, RPC error, malformed response) are neither
+    # "valid" nor "invalid" — exit 2 with a message, mirroring the TS CLI's
+    # top-level handler, instead of a raw traceback that collides with the
+    # exit-1 "invalid" contract.
+    try:
+        rpc_fetcher = make_solana_rpc_fetcher(rpc_url)
+        verdict = verify_v1(attestation, SHILLBOT_PROTOCOL, rpc_fetcher, rpc_url)
+    except Exception as e:  # noqa: BLE001 — boundary: report, don't traceback
+        sys.stderr.write(f"verification aborted: {e}\n")
+        return 2
     sys.stdout.write(json.dumps(verdict, indent=2, default=str) + "\n")
     return 0 if verdict.get("valid") else 1
 
@@ -90,8 +98,14 @@ def make_solana_rpc_fetcher(rpc_url: str):
         }
         resp = requests.post(rpc_url, json=body, timeout=15)
         resp.raise_for_status()
-        result = resp.json().get("result", {})
-        value = result.get("value")
+        payload = resp.json()
+        # A JSON-RPC error arrives as HTTP 200 with an `error` object and no
+        # `result`. Treating that as "account doesn't exist" would silently
+        # flip a verification verdict — raise instead (the CLI reports it as
+        # an aborted verification, exit 2).
+        if "error" in payload or "result" not in payload:
+            raise RuntimeError(f"RPC error from {rpc_url}: {payload.get('error')}")
+        value = payload["result"].get("value")
         if value is None:
             return None
         owner = value.get("owner")

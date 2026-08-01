@@ -30,11 +30,15 @@ use serde::Serialize;
 
 /// Domains that make a server first-party. A fact about where the
 /// endpoint/repo lives — not a curation judgment.
-const FIRST_PARTY_MARKERS: [&str; 4] = [
+const FIRST_PARTY_MARKERS: [&str; 5] = [
     "swarm.tips",
     "coordination.game",
     "shillbot.org",
     "github.com/corsur",
+    // The MCP registry's reverse-DNS server-name form. It used to be ORed in
+    // separately at the is_first_party call site, outside the constant this doc
+    // says is the list — so adding a marker here silently missed it.
+    "io.github.corsur",
 ];
 
 /// Candidate multiplier: how many BM25 hits to pull before filtering and
@@ -260,7 +264,7 @@ fn is_first_party(s: &EnrichedServer) -> bool {
     ];
     fields.iter().any(|f| {
         let f = f.to_lowercase();
-        FIRST_PARTY_MARKERS.iter().any(|m| f.contains(m)) || f.contains("io.github.corsur")
+        FIRST_PARTY_MARKERS.iter().any(|m| f.contains(m))
     })
 }
 

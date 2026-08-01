@@ -11,9 +11,11 @@
 //! tokens (the system prompt), not request count — batching would help cost
 //! but not enough to justify the parsing fragility.
 //!
-//! Cost math: ~$0.0003 per call × 200 servers/cycle = ~$0.06/cycle.
-//! Total Layer 2 sweep over the unconfident remainder (~1500 servers, capped
-//! at 200/cycle) = 8 cycles × $0.06 = ~$0.50. Well under the plan's $5 ceiling.
+//! Cost math (grok-4.5, see MODEL below): ~$0.01 per call × 200 servers/cycle
+//! = ~$2/cycle. A full Layer 2 sweep over the unconfident remainder (~1500
+//! servers, capped at 200/cycle) is 8 cycles ≈ $16. The old grok-3-mini
+//! numbers this paragraph used to quote (~$0.06/cycle, ~$0.50/sweep) no longer
+//! apply — the per-cycle cap is what bounds the budget now.
 
 use crate::discovery::models::{
     CashFlowDirection, Category, EnrichedServer, Layer2Classification, ValueToSwarm,
@@ -141,11 +143,11 @@ pub fn parse_layer2_response(raw: &str, model: &str) -> Result<Layer2Classificat
     })
 }
 
-/// Walk a string and extract the first brace-balanced JSON object. Copied
-/// verbatim from `backend/x-bridge/src/grok_replier.rs::extract_json_object` —
-/// tracks brace depth, ignores braces inside string literals, handles escapes.
-/// We duplicate rather than depend because the two crates are in different
-/// repos and the function is small + stable.
+/// Walk a string and extract the first brace-balanced JSON object: tracks brace
+/// depth, ignores braces inside string literals, handles escapes.
+///
+/// Originally copied from the x-bridge service, which no longer exists — this
+/// is the only copy left, so there is nothing to keep in sync.
 fn extract_json_object(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
     let mut start: Option<usize> = None;

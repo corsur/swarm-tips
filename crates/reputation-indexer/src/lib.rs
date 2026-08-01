@@ -134,8 +134,12 @@ pub fn build_reputation(
     let mut paid: HashMap<&str, u32> = HashMap::new();
     let mut counterparties: HashMap<&str, HashSet<&str>> = HashMap::new();
     for d in &unique {
-        *received.entry(d.to.as_str()).or_default() += 1;
-        *paid.entry(d.from.as_str()).or_default() += 1;
+        // saturating: the rank computed below already uses checked arithmetic,
+        // and a u32 overflow here would silently wrap a settlement count.
+        let r = received.entry(d.to.as_str()).or_default();
+        *r = r.saturating_add(1);
+        let p = paid.entry(d.from.as_str()).or_default();
+        *p = p.saturating_add(1);
         counterparties
             .entry(d.to.as_str())
             .or_default()
@@ -169,10 +173,17 @@ pub fn build_reputation(
         })
         .collect();
 
-    // Postconditions: ranks are 1..=n and scores are rank-ordered.
-    debug_assert!(agents
-        .windows(2)
-        .all(|w| { w[0].eigentrust_score >= w[1].eigentrust_score && w[0].rank < w[1].rank }));
+    // Postcondition: ranks are 1..=n and scores are rank-ordered. This is the
+    // ONLY invariant check in build_reputation, and as a debug_assert! it was
+    // compiled out of the release builds that actually serve reputation — so it
+    // never ran where it mattered. A violated ordering here means the public
+    // leaderboard is wrong, which is worth failing on.
+    assert!(
+        agents
+            .windows(2)
+            .all(|w| w[0].eigentrust_score >= w[1].eigentrust_score && w[0].rank < w[1].rank),
+        "reputation ranks must be strictly increasing as scores decrease"
+    );
 
     Ok(ReputationBuild {
         edge_count: unique.len(),

@@ -8,10 +8,11 @@
 //! categories, three homes". mcp-server was the last outlier on env-var-only
 //! config; this module brings it into compliance.
 //!
-//! The `load_optional_secret` helper below is lifted verbatim from
-//! `coordination-app/backend/x-bridge/src/config.rs::load_optional_secret`
-//! (lines 103-144 at the time of copying). Keep them in sync by hand — if
-//! one needs an error-handling tweak, apply the same change to both.
+//! The `load_optional_secret` helper below originated as a copy of the
+//! x-bridge service's version. x-bridge no longer exists, so there is nothing
+//! left to keep in sync — this is now the only copy in this repo. The
+//! coordination-app workspace has its own `crates/gcp-secrets`; the two are
+//! separate repos and share by contract, not source.
 
 use gcloud_sdk::google::cloud::secretmanager::v1::{
     secret_manager_service_client::SecretManagerServiceClient, AccessSecretVersionRequest,
@@ -27,8 +28,10 @@ use gcloud_sdk::GoogleApi;
 /// classifier but leaves Layer 1 + Layer 3 intact).
 ///
 /// For required secrets whose absence SHOULD crash-loop the pod, add a
-/// `load_secret` helper here that panics on failure — same shape as
-/// `coordination-app/backend/chatwoot-responder/src/config.rs::load_secret`.
+/// `load_secret` helper here that panics on failure. (The chatwoot-responder
+/// service this used to point at no longer exists; `gcp-secrets`'s
+/// `load_secret_string` in the coordination-app workspace is the live example
+/// of that shape.)
 pub async fn load_optional_secret(project_id: &str, secret_name: &str) -> Option<String> {
     let client: GoogleApi<SecretManagerServiceClient<_>> = match GoogleApi::from_function(
         SecretManagerServiceClient::new,
@@ -57,8 +60,26 @@ pub async fn load_optional_secret(project_id: &str, secret_name: &str) -> Option
         .await
     {
         Ok(resp) => {
-            let payload = resp.into_inner().payload?;
-            String::from_utf8(payload.data.ref_sensitive_value().to_vec()).ok()
+            let Some(payload) = resp.into_inner().payload else {
+                tracing::warn!(
+                    service = "mcp-server",
+                    secret = secret_name,
+                    "secret version response carried no payload"
+                );
+                return None;
+            };
+            match String::from_utf8(payload.data.ref_sensitive_value().to_vec()) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    tracing::warn!(
+                        service = "mcp-server",
+                        secret = secret_name,
+                        error = %e,
+                        "secret payload is not valid UTF-8"
+                    );
+                    None
+                }
+            }
         }
         Err(e) => {
             tracing::warn!(

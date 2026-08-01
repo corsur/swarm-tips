@@ -158,12 +158,9 @@ describe("anchorDiscriminator", () => {
     // ever fires, either Anchor changed its discriminator scheme
     // (extremely unlikely) or the test's expected bytes are wrong.
     const disc = anchorDiscriminator("Task");
-    expect(disc.length).toBe(8);
-    // Smoke-check: re-computing yields the same bytes (no nondeterminism).
-    const disc2 = anchorDiscriminator("Task");
-    for (let i = 0; i < 8; i++) {
-      expect(disc[i]).toBe(disc2[i]);
-    }
+    // The literal canonical bytes: sha256("account:Task")[0..8]. A real
+    // regression guard — recomputing-twice only proved determinism.
+    expect(Array.from(disc)).toEqual([79, 34, 229, 55, 88, 90, 55, 84]);
   });
 });
 

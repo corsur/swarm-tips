@@ -35,10 +35,9 @@ use tokio::sync::Mutex;
 /// the durable store, this is just a request-time accelerator.
 pub struct DiscoveryCache {
     pub servers: Vec<EnrichedServer>,
-    /// When the cache was last refreshed. Reserved for cache-staleness checks
-    /// in Phase 2 (e.g. "if older than 24h, kick a refresh in the background").
-    /// Currently unused but populated so the field exists when we need it.
-    #[allow(dead_code)]
+    /// When the cache was last refreshed. Read at mod.rs:101 and surfaced to
+    /// callers for staleness reporting (see search.rs) — the "currently unused"
+    /// note and the dead_code allow it carried were both stale.
     pub last_refreshed_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -134,7 +133,9 @@ pub async fn get_or_build_search_index(
 }
 
 /// Refresh the discovery index: pull from all sources, merge + classify,
-/// write to Firestore, update cache. Phase 1 only pulls the official registry.
+/// write to Firestore, update cache. All four upstream sources (official
+/// registry, the wong2 and appcypher awesome-mcp-servers lists, best-of-mcp)
+/// are pulled in parallel.
 ///
 /// Returns the count of merged servers and the count of earning candidates.
 pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSummary> {
@@ -405,9 +406,10 @@ pub struct Layer2Summary {
 /// at `MAX_SERVERS_PER_CYCLE` to bound budget exposure.
 ///
 /// This is intentionally serial — Grok is the bottleneck (~2s/call), and at
-/// 200 calls/cycle that's ~7 minutes. Caller (HTTP handler) should spawn this
-/// in the background instead of awaiting it inline; the cap keeps the worst
-/// case bounded.
+/// 200 calls/cycle that's ~7 minutes. The HTTP handler AWAITS this inline
+/// (mod.rs:815), so a full pass holds the request open for that long; the
+/// per-cycle cap is what keeps the worst case bounded. The older note claiming
+/// the caller "should spawn this in the background" never matched the code.
 pub async fn run_layer2_pass(state: &Arc<DiscoveryState>) -> Result<Layer2Summary> {
     let started = std::time::Instant::now();
 

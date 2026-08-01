@@ -274,6 +274,19 @@ impl GameTxBuilder {
 
     // -- Submit ----------------------------------------------------------------
 
+    /// Wallet balance for TELEMETRY fields only. A failed read logs the error
+    /// and yields None (rendered as absent), never a fake 0 — a zero balance
+    /// and a failed RPC read are very different diagnostics.
+    async fn balance_for_log(&self, wallet: &solana_sdk::pubkey::Pubkey) -> Option<u64> {
+        match self.rpc.get_balance(wallet).await {
+            Ok(b) => Some(b),
+            Err(e) => {
+                tracing::warn!(wallet = %wallet, error = %e, "balance read for telemetry failed");
+                None
+            }
+        }
+    }
+
     /// Submit a pre-signed transaction to the network.
     ///
     /// The transaction must be fully signed (all required signers) and
@@ -283,7 +296,7 @@ impl GameTxBuilder {
             .context("failed to deserialize signed transaction")?;
 
         let wallet = self.player;
-        let balance_before = self.rpc.get_balance(&wallet).await.unwrap_or(0);
+        let balance_before = self.balance_for_log(&wallet).await;
 
         // Retry transient failures with exponential backoff (1s, 2s, 4s).
         let mut last_err = None;
@@ -301,14 +314,17 @@ impl GameTxBuilder {
 
             match self.rpc.send_and_confirm_transaction(&tx).await {
                 Ok(sig) => {
-                    let balance_after = self.rpc.get_balance(&wallet).await.unwrap_or(0);
-                    let cost_lamports = balance_before.saturating_sub(balance_after);
+                    let balance_after = self.balance_for_log(&wallet).await;
+                    let cost_lamports = match (balance_before, balance_after) {
+                        (Some(b), Some(a)) => Some(b.saturating_sub(a)),
+                        _ => None,
+                    };
                     tracing::info!(
                         wallet = %wallet,
                         %sig,
-                        balance_before,
-                        balance_after,
-                        cost_lamports,
+                        balance_before = ?balance_before,
+                        balance_after = ?balance_after,
+                        cost_lamports = ?cost_lamports,
                         attempt = attempt.saturating_add(1),
                         "signed transaction confirmed"
                     );
@@ -346,10 +362,10 @@ impl GameTxBuilder {
 
                     // Don't retry non-transient errors (program errors, blockhash expired, etc.)
                     if !is_transient {
-                        let balance = self.rpc.get_balance(&wallet).await.unwrap_or(0);
+                        let balance = self.balance_for_log(&wallet).await;
                         tracing::error!(
                             wallet = %wallet,
-                            balance_lamports = balance,
+                            balance_lamports = ?balance,
                             error_kind = error_kind,
                             error = %e,
                             "transaction failed (non-retryable)"
@@ -363,10 +379,10 @@ impl GameTxBuilder {
             }
         }
 
-        let balance = self.rpc.get_balance(&wallet).await.unwrap_or(0);
+        let balance = self.balance_for_log(&wallet).await;
         tracing::error!(
             wallet = %wallet,
-            balance_lamports = balance,
+            balance_lamports = ?balance,
             attempts = 3,
             "transaction failed after all retries"
         );

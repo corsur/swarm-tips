@@ -51,7 +51,13 @@ pub fn compute_web_positions(extensions: &[ExtensionEdge], root: &str) -> HashMa
 
     let result = match compute_eigentrust(&edges, &pre_trusted, &EigenTrustConfig::default()) {
         Ok(r) => r,
-        Err(_) => return HashMap::new(),
+        Err(e) => {
+            // An empty map is also the legitimate "no edges" answer, so a
+            // silent return here made a computation failure indistinguishable
+            // from a genuinely empty credit web.
+            tracing::warn!(root = %root, error = ?e, "EigenTrust computation failed — returning empty web positions");
+            return HashMap::new();
+        }
     };
 
     let mut scores: HashMap<String, f64> = result
@@ -136,7 +142,12 @@ pub async fn agent_web_position(
 ) -> (Option<f64>, u64) {
     let extensions = match crate::solana_reads::read_all_extensions(client, rpc_url).await {
         Ok(e) => e,
-        Err(_) => return (None, 0),
+        Err(e) => {
+            // (None, 0) is also the healthy "agent has no vouches" answer, so a
+            // silent return reported an RPC outage as a legitimate empty result.
+            tracing::warn!(agent = %agent, error = %e, "extension read failed — reporting no web position");
+            return (None, 0);
+        }
     };
     if extensions.is_empty() {
         return (None, 0);

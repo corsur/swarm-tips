@@ -35,25 +35,9 @@ pub fn score_submission(
         "likes scale must be positive"
     );
 
-    // Validate weights are in reasonable range (50_000 = 0.05 to 500_000 = 0.50)
-    let w = &config.weights;
-    for (name, val) in [
-        ("views", w.views),
-        ("likes", w.likes),
-        ("comments", w.comments),
-        ("engagement", w.engagement),
-        ("watch_proxy", w.watch_proxy),
-    ] {
-        assert!(
-            (50_000..=500_000).contains(&val),
-            "{name} weight {val} outside valid range [50000, 500000]"
-        );
-    }
-    assert!(
-        w.bot_penalty <= 500_000,
-        "bot_penalty weight {} exceeds maximum 500000",
-        w.bot_penalty
-    );
+    // Weight-range validation happens in compute_composite_score
+    // (scoring::validate_weights) against the canonical MIN_WEIGHT/MAX_WEIGHT
+    // constants — no duplicated literals here.
 
     let screening_details = screening::run_screening(video, brief, existing_fingerprints);
 

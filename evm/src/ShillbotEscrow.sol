@@ -61,7 +61,9 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         Disputed, // 5
         Resolved, // 6
         Approved, // 7
-        DefaultResolved // 8 (EVM-first liveness state; Solana adds it next)
+        DefaultResolved // 8 (liveness state; Solana has it too — see
+        // programs/shillbot/src/instructions/resolve_challenge_default.rs.
+        // This was EVM-first; the "Solana adds it next" note is stale.)
     }
 
     struct Task {

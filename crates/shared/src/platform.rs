@@ -36,7 +36,9 @@ pub enum PlatformType {
 
 /// How the verifier scores submitted work for a platform.
 ///
-/// Mirrors `shillbot_scorer::models::ScoringMode` but lives in `shared` so
+/// Mirrors `shillbot_scorer::models::ScoringMode` — NOT variant-for-variant:
+/// the engagement variant is `EngagementMetrics` here and `EngagementComposite`
+/// there. Lives in `shared` so
 /// the on-chain program and every off-chain consumer (orchestrator, verifier,
 /// frontend via JSON, e2e tests) can branch on it without depending on
 /// `shillbot-scorer`.
@@ -114,8 +116,9 @@ impl PlatformType {
 
     /// Default mainnet verification delay (seconds from `submitted_at` to
     /// when the verifier scores the task). Devnet overrides this uniformly
-    /// at the orchestrator boundary — see
-    /// `shillbot-orchestrator::models::verification::verification_delay_secs_for_platform_and_network`.
+    /// at the orchestrator boundary. There is no `shillbot-orchestrator` crate;
+    /// the live implementation is
+    /// `shillbot-verifier::verification::verification_delay_secs_for_platform`.
     pub fn default_verification_delay_secs(self) -> u64 {
         match self {
             // Binary platforms: synchronous on-chain or Firestore lookups,
@@ -409,7 +412,9 @@ mod tests {
 
     #[test]
     fn only_gameplay_needs_pre_check() {
-        // Pinning the special case in pipeline.rs:345.
+        // Pins the special case implemented by shillbot-verifier's
+        // run_on_chain_pre_check. (A line-number citation here went stale the
+        // first time that file moved.)
         for p in [
             PlatformType::YouTube,
             PlatformType::Twitter,

@@ -14,4 +14,4 @@ pub mod pda;
 
 /// Re-export coordination program types that callers need.
 pub use coordination::instructions::xchain::CreateXMatchArgs;
-pub use coordination::state::{Game, GameState, GlobalConfig};
+pub use coordination::state::{Game, GameState, GlobalConfig, FIXED_STAKE_LAMPORTS};

@@ -291,6 +291,15 @@ impl WsConnection {
     }
 
     /// Block until the next incoming chat message.
+    ///
+    /// DELIBERATELY UNBOUNDED, unlike the `wait_for_match_found` /
+    /// `wait_for_game_ready` / `wait_for_reveal_data` siblings, which carry
+    /// their own deadlines. A protocol step has a known upper bound; "the
+    /// opponent types something" does not, and the right window differs per
+    /// caller (opener delay vs turn budget vs batch window). Every caller
+    /// therefore wraps this in `tokio::time::timeout` — grok-agent does so at
+    /// all three of its call sites. Do NOT call it bare: without a caller-side
+    /// timeout it loops until the stream errors or closes.
     pub async fn wait_for_chat(&mut self) -> Result<String> {
         loop {
             let msg = self.recv_next().await?;

@@ -31,14 +31,51 @@ fn network_query_suffix(network: Option<&str>) -> String {
 }
 
 /// HTTP client for proxying read operations to the orchestrator API.
+/// Reject a non-2xx orchestrator response with the status and body.
+///
+/// This block was copy-pasted verbatim across the task-scoped proxy methods.
+/// The `op` + `task_id` fields are kept as first-class structured fields — NOT
+/// folded into one generic tag — so existing Cloud Logging queries and
+/// log-based metrics that filter on `task_id` keep working.
+///
+/// `unwrap_or_default()` on the body is deliberate, not error swallowing: we
+/// are already on the failure path, the status is preserved, and the body only
+/// enriches the message — an unreadable body degrades to "" rather than masking
+/// the real error with a second one.
+async fn require_success(
+    response: reqwest::Response,
+    op: &str,
+    task_id: &str,
+) -> Result<reqwest::Response, McpServiceError> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    tracing::error!(
+        service = "mcp-server",
+        op = %op,
+        status = %status,
+        task_id = %task_id,
+        body = %body,
+        "orchestrator returned error"
+    );
+    Err(McpServiceError::OrchestratorError(format!(
+        "status {status}: {body}"
+    )))
+}
+
 pub struct OrchestratorProxy {
     client: reqwest::Client,
     base_url: String,
     /// Base URL for the shorts/video service (shorts-api), which was split out
-    /// of shillbot-api. The mcp-server is in-cluster and calls services
-    /// directly, so it bypasses the edge path-routing and must target shorts-api
-    /// explicitly for the `/shorts/*` endpoints (generate_video,
-    /// check_video_status). Task/campaign endpoints still use `base_url`.
+    /// of shillbot-api. mcp-server calls sibling services directly over their
+    /// own URLs rather than through the edge, so it bypasses the edge
+    /// path-routing and must target shorts-api explicitly for the `/shorts/*`
+    /// endpoints (generate_video, check_video_status). Task/campaign endpoints
+    /// still use `base_url`. (The "in-cluster" framing this carried predates
+    /// the 2026-07-25 Cloud Run migration — direct sibling-to-sibling calls are
+    /// what both targets do, so this holds either way.)
     shorts_base_url: String,
 }
 
@@ -215,6 +252,21 @@ pub struct ConfirmTaskResponse {
 }
 
 impl OrchestratorProxy {
+    /// POST with a bearer token and no body.
+    ///
+    /// The explicit `Content-Length: 0` is load-bearing: reqwest omits the
+    /// header entirely for an empty body (verified — `.body(Vec::new())` and
+    /// `.body("")` both send NO Content-Length), and Cloud Run's HTTP frontend
+    /// then rejects with 411 Length Required. GKE's ingress tolerated it, which
+    /// is why this only surfaced after the migration. This rationale was
+    /// duplicated verbatim at four call sites; it lives here now.
+    fn bodyless_post(&self, url: &str, wallet_pubkey: &str) -> reqwest::RequestBuilder {
+        self.client
+            .post(url)
+            .bearer_auth(wallet_pubkey)
+            .header(reqwest::header::CONTENT_LENGTH, 0)
+    }
+
     pub fn new(base_url: String, shorts_base_url: String) -> Self {
         assert!(
             !base_url.is_empty(),
@@ -235,10 +287,20 @@ impl OrchestratorProxy {
         // triggered. 60s is generous enough for any orchestrator endpoint
         // we currently call without adding meaningful latency to the fast
         // paths (tasks list / claim / earnings — all <500ms).
+        // A builder failure would silently hand back a default Client with NO
+        // timeout, so every orchestrator call could hang forever — the opposite
+        // of what this construction is for. Log it rather than degrade quietly.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                tracing::error!(
+                    service = "mcp-server",
+                    error = %e,
+                    "orchestrator HTTP client build failed — falling back to a client with NO timeout"
+                );
+                reqwest::Client::default()
+            });
 
         Self {
             client,
@@ -265,7 +327,7 @@ impl OrchestratorProxy {
         }
 
         let response = self.client.get(&url).send().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, url = %url, "orchestrator list_tasks request failed");
+            tracing::error!(service = "mcp-server", error = %e, url = %url, "orchestrator list_tasks request failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
         })?;
 
@@ -278,14 +340,14 @@ impl OrchestratorProxy {
             // message — an unreadable body degrades to "" instead of masking
             // the real error with a second one.
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "coordination-mcp-server", status = %status, body = %body, "orchestrator returned error");
+            tracing::error!(service = "mcp-server", status = %status, body = %body, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
             )));
         }
 
         let result: TaskListResponse = response.json().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, "failed to parse orchestrator task list response");
+            tracing::error!(service = "mcp-server", error = %e, "failed to parse orchestrator task list response");
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
@@ -316,21 +378,21 @@ impl OrchestratorProxy {
         let url = format!("{}/tasks/{task_id}{qs}", self.base_url);
 
         let response = self.client.get(&url).send().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, task_id = %task_id, "orchestrator get_task_details failed");
+            tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator get_task_details failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
         })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "coordination-mcp-server", status = %status, task_id = %task_id, "orchestrator returned error");
+            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
             )));
         }
 
         let details: TaskDetails = response.json().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, task_id = %task_id, "failed to parse task details");
+            tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "failed to parse task details");
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
@@ -365,21 +427,21 @@ impl OrchestratorProxy {
             .send()
             .await
             .map_err(|e| {
-                tracing::error!(service = "coordination-mcp-server", error = %e, wallet = %wallet_pubkey, "orchestrator get_earnings failed");
+                tracing::error!(service = "mcp-server", error = %e, wallet = %wallet_pubkey, "orchestrator get_earnings failed");
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "coordination-mcp-server", status = %status, wallet = %wallet_pubkey, "orchestrator returned error");
+            tracing::error!(service = "mcp-server", status = %status, wallet = %wallet_pubkey, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
             )));
         }
 
         let earnings: EarningsResponse = response.json().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, wallet = %wallet_pubkey, "failed to parse earnings response");
+            tracing::error!(service = "mcp-server", error = %e, wallet = %wallet_pubkey, "failed to parse earnings response");
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
@@ -425,16 +487,7 @@ impl OrchestratorProxy {
             "{}/tasks/{task_id}/claim{qs}{sep}sponsor=auto",
             self.base_url
         );
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(wallet_pubkey)
-            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
-            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
-            // both send NO Content-Length), and Cloud Run's HTTP frontend then
-            // rejects with 411 Length Required (GKE's ingress tolerated it). The
-            // explicit header is the only form reqwest actually transmits.
-            .header(reqwest::header::CONTENT_LENGTH, 0)
+        let response = self.bodyless_post(&url, wallet_pubkey)
             .send()
             .await
             .map_err(|e| {
@@ -442,14 +495,7 @@ impl OrchestratorProxy {
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator claim_task returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "claim_task", task_id).await?;
 
         let parsed: TransactionResponse = response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid claim_task response: {e}"))
@@ -510,14 +556,7 @@ impl OrchestratorProxy {
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator submit_task returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "submit_task", task_id).await?;
 
         let parsed: TransactionResponse = response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid submit_task response: {e}"))
@@ -549,16 +588,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/build-verify{qs}", self.base_url);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(wallet_pubkey)
-            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
-            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
-            // both send NO Content-Length), and Cloud Run's HTTP frontend then
-            // rejects with 411 Length Required (GKE's ingress tolerated it). The
-            // explicit header is the only form reqwest actually transmits.
-            .header(reqwest::header::CONTENT_LENGTH, 0)
+        let response = self.bodyless_post(&url, wallet_pubkey)
             .send()
             .await
             .map_err(|e| {
@@ -595,16 +625,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/build-finalize{qs}", self.base_url);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(wallet_pubkey)
-            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
-            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
-            // both send NO Content-Length), and Cloud Run's HTTP frontend then
-            // rejects with 411 Length Required (GKE's ingress tolerated it). The
-            // explicit header is the only form reqwest actually transmits.
-            .header(reqwest::header::CONTENT_LENGTH, 0)
+        let response = self.bodyless_post(&url, wallet_pubkey)
             .send()
             .await
             .map_err(|e| {
@@ -649,16 +670,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/approve{qs}", self.base_url);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(wallet_pubkey)
-            // Content-Length: 0 on these bodyless POSTs. reqwest omits the header
-            // entirely for an empty body (verified: .body(Vec::new()) and .body("")
-            // both send NO Content-Length), and Cloud Run's HTTP frontend then
-            // rejects with 411 Length Required (GKE's ingress tolerated it). The
-            // explicit header is the only form reqwest actually transmits.
-            .header(reqwest::header::CONTENT_LENGTH, 0)
+        let response = self.bodyless_post(&url, wallet_pubkey)
             .send()
             .await
             .map_err(|e| {
@@ -666,14 +678,7 @@ impl OrchestratorProxy {
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator approve_task returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "approve_task", task_id).await?;
 
         let parsed: TransactionResponse = response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid approve_task response: {e}"))
@@ -710,14 +715,7 @@ impl OrchestratorProxy {
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
         })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator get_attestation returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "get_attestation", task_id).await?;
 
         response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid attestation response: {e}"))
@@ -857,14 +855,7 @@ impl OrchestratorProxy {
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator confirm_task returned error");
-            return Err(McpServiceError::OrchestratorError(format!(
-                "status {status}: {body}"
-            )));
-        }
+        let response = require_success(response, "confirm_task", task_id).await?;
 
         response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid confirm_task response: {e}"))
@@ -1051,7 +1042,10 @@ async fn parse_payment_required_response(
     // Postcondition: the returned envelope always carries the payment_required marker.
     Ok(serde_json::json!({
         "status": "payment_required",
-        "instructions": "Pay 5 USDC to the address below, then call generate_video again with your tx_signature (a base64-encoded x402 v2 PaymentPayload).",
+        // No hardcoded amount: the authoritative price arrives dynamically in
+        // payment_details, and restating it here meant a price change silently
+        // left the agent-facing instruction wrong.
+        "instructions": "Pay the amount shown in payment_details to the address below, then call generate_video again with your tx_signature (a base64-encoded x402 v2 PaymentPayload).",
         "payment_details": payment_details,
     }))
 }

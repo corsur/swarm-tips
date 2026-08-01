@@ -40,11 +40,16 @@ import type {
  *   234     8  challenge_deadline (skipped)
  *   242    12  three u32 overrides (skipped)
  *   254    32  verification_hash  (sha256)
- *   286    20  _reserved          (skipped)
+ *   286     1  requires_approval  (skipped; D1 — carved from _reserved)
+ *   287     1  verification_kind  (skipped; 2026-07-07 — carved from _reserved)
+ *   288    18  _reserved          (skipped)
  *   306     1  bump               (skipped)
+ *   307    32  payout_to          (skipped; C2 — appended after bump)
  *
- * Total body = 307 bytes. With the 8-byte discriminator, the full
- * account is 315 bytes (matches `Task::SPACE` in the on-chain crate).
+ * Total body = 339 bytes. With the 8-byte discriminator, the full
+ * account is 347 bytes (matches `Task::SPACE`); pre-C2 accounts are 315
+ * bytes until `migrate_task` reallocs them — the decoder only reads
+ * fields below offset 286, so both sizes decode identically.
  */
 export const decodeShillbotTask: AccountDecoder = (data, accountKind) => {
   if (accountKind !== "Task") {

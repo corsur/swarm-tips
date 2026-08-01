@@ -31,11 +31,13 @@ import {AttesterGated} from "./base/AttesterGated.sol";
 ///           commitment)    │  attested)       │
 ///                          │                  ├─commitGuess(first)──► Committing
 ///                          │                  └─resolveTimeout──► Resolved [both forfeit]
+///   Pending    ─cancelPending──► Cancelled [p1 refunded, no opponent ever joined]
 ///   Committing ─commitGuess(second)─► Revealing
 ///   Committing ─resolveTimeout──► Resolved [committer wins]
 ///   Revealing  ─revealGuess(both)──► Resolved [payoff matrix]
 ///   Revealing  ─resolveTimeout──► Resolved [revealer wins / both forfeit]
 ///   Resolved   ─(terminal)
+///   Cancelled  ─(terminal)
 contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated {
     enum Status {
         None,
@@ -53,7 +55,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         address player2; // joiner
         uint8 p1Guess; // 255 = unrevealed
         uint8 p2Guess; // 255 = unrevealed
-        uint8 firstCommitter; // 1 | 2; 255 = unset
+        uint8 firstCommitter; // 1 | 2; 0 = unset (Solana/CertLib checkpoints use 255)
         uint8 matchupType; // 0 | 1; 255 = unset (revealed by the first revealer)
         uint128 stakeWei;
         bytes32 matchupCommitment;
