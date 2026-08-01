@@ -857,7 +857,13 @@ impl GameApiClient {
             return Ok(response);
         }
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        // A body-read failure used to collapse to "", so the caller saw a bare
+        // status with no explanation and could not tell an empty error body from
+        // an unreadable one.
+        let body = match response.text().await {
+            Ok(b) => b,
+            Err(e) => format!("<error body unreadable: {e}>"),
+        };
         Err(GameApiError::Status { status, body })
     }
 }

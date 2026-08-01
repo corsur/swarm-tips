@@ -62,14 +62,11 @@ pub fn normalize_all(
     metrics: &EngagementMetrics,
     scale_factors: &ScaleFactors,
 ) -> Result<NormalizedMetrics, ScorerError> {
-    assert!(
-        scale_factors.views > 0,
-        "views scale factor must be positive"
-    );
-    assert!(
-        scale_factors.likes > 0,
-        "likes scale factor must be positive"
-    );
+    // No assert!s on the scale factors here. `normalize_metric` already
+    // returns a typed InvalidScaleFactor error for a zero scale, so panicking
+    // first both duplicated that check and disagreed with it — and the pair
+    // only covered views and likes, silently omitting comments, which is used
+    // as a divisor exactly the same way.
 
     let views = normalize_metric(metrics.views, scale_factors.views)?;
     let likes = normalize_metric(metrics.likes, scale_factors.likes)?;

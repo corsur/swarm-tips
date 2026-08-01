@@ -31,25 +31,16 @@ pub fn run_screening(
     let not_duplicate = !existing_fingerprints.contains(&fingerprint);
     let ai_disclosure_present = video.has_ai_disclosure;
 
-    let details = ScreeningDetails {
+    // No "all_passed must agree with individual checks" assertion here:
+    // all_passed() IS that conjunction, so the check restated its own
+    // definition and could never fail.
+    ScreeningDetails {
         nonce_valid,
         blocklist_clean,
         topic_relevant,
         not_duplicate,
         ai_disclosure_present,
-    };
-
-    assert!(
-        !details.all_passed()
-            || (nonce_valid
-                && blocklist_clean
-                && topic_relevant
-                && not_duplicate
-                && ai_disclosure_present),
-        "all_passed must agree with individual checks"
-    );
-
-    details
+    }
 }
 
 impl ScreeningDetails {
