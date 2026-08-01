@@ -274,8 +274,7 @@ contract ShillbotEscrowPaymentFuzz is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(attesterPk, digest);
         esc.verifyTaskAttested(id, score, abi.encodePacked(r, s, v));
 
-        (uint256 refPayment, uint256 refFee,) =
-            PayoutReference.compute(score, threshold, escrow, feeBps);
+        (uint256 refPayment, uint256 refFee,) = PayoutReference.compute(score, threshold, escrow, feeBps);
         t = esc.getTask(id);
         assertEq(t.paymentWei, refPayment, "payment drift vs reference formula");
         assertEq(t.feeWei, refFee, "fee drift vs reference formula");
