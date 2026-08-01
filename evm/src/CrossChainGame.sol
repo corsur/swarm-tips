@@ -33,6 +33,9 @@ import {ChainTagged} from "./base/ChainTagged.sol";
 ///            │                                      │  (2-sig checkpoint)  │ (window expired)
 ///            │                                      │      supersede ◄─────┤ (higher stepCount)
 ///            │                                      │      equivocation ───┤ (proof updates best claim)
+///            │                                      │      refundTimeout ───┤ (t > timeoutOpensAt)
+///            │                                      │                       │  ──► ClaimSettled: realizes the
+///            │                                      │                       │  best claim, identical to settleClaim
 ///            └─refundNoCert──► RefundedNoCert       │
 ///              (t > fundDeadline,                   └─refundTimeout──► RefundedTimeout
 ///               never locked)                         (t > matchDeadline + maxClaimWindow + 2·skew,

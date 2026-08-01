@@ -100,7 +100,6 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     uint32 public commitTimeoutSecs; // Active + Committing stages
     uint32 public revealTimeoutSecs; // Revealing stage
 
-    uint8 private constant UNREVEALED = 255;
     uint8 private constant MATCHUP_UNSET = 255;
     uint16 private constant MIN_SPLIT_BPS = 2000;
     uint16 private constant MAX_SPLIT_BPS = 8000;
@@ -241,8 +240,8 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         g.player1 = player;
         g.stakeWei = uint128(msg.value);
         g.matchupCommitment = matchupCommitment;
-        g.p1Guess = UNREVEALED;
-        g.p2Guess = UNREVEALED;
+        g.p1Guess = CertLib.UNREVEALED;
+        g.p2Guess = CertLib.UNREVEALED;
         g.firstCommitter = 0;
         g.matchupType = MATCHUP_UNSET;
         g.createdAt = uint64(block.timestamp);
@@ -411,10 +410,10 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         uint8 guess = uint8(r[31]) & 1;
 
         if (isP1) {
-            if (g.p1Guess != UNREVEALED) revert AlreadyActed();
+            if (g.p1Guess != CertLib.UNREVEALED) revert AlreadyActed();
             g.p1Guess = guess;
         } else {
-            if (g.p2Guess != UNREVEALED) revert AlreadyActed();
+            if (g.p2Guess != CertLib.UNREVEALED) revert AlreadyActed();
             g.p2Guess = guess;
         }
 
@@ -427,7 +426,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         }
         emit GuessRevealed(gameId, msg.sender);
 
-        if (g.p1Guess != UNREVEALED && g.p2Guess != UNREVEALED) {
+        if (g.p1Guess != CertLib.UNREVEALED && g.p2Guess != CertLib.UNREVEALED) {
             _resolve(gameId, g, CertLib.deriveTerminalOutcome(_checkpoint(g, CertLib.TERMINAL_STEP_COUNT)));
         }
     }
