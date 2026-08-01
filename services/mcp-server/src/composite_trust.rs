@@ -16,7 +16,7 @@
 //! **Partial-data tolerant.** Every input is optional. Missing
 //! signals don't penalize; weights renormalize over the present
 //! signals only. The output `confidence` field reports how many
-//! signals contributed (0..=4) so a caller can decide whether to
+//! signals contributed (0..=6) so a caller can decide whether to
 //! trust the composite or wait for more inputs.
 //!
 //! **Composes with EigenTrust.** EigenTrust (the global settlement
@@ -27,7 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Per-signal weights when ALL five signals are present. Renormalized
+/// Per-signal weights when ALL six signals are present. Renormalized
 /// when any are missing (the absolute values are relative — only their
 /// ratios matter). Tuning rationale:
 ///
@@ -58,7 +58,7 @@ const WEIGHT_GAME: f64 = 0.15;
 const WEIGHT_CURATOR: f64 = 0.15;
 const WEIGHT_CREDIT_WEB: f64 = 0.20;
 
-/// All five input signals to the composite trust formula. Each is
+/// All six input signals to the composite trust formula. Each is
 /// `Option<...>`; missing signals don't contribute and don't
 /// penalize. Populate from:
 /// - `shillbot`: `agent_profile.shillbot.derived` (#29 tool)
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn all_four_signals_yield_canonical_weighted_average() {
+    fn five_signals_yield_canonical_weighted_average() {
         // Construct inputs where every signal contributes 1.0 → output
         // should be exactly 1.0 regardless of the weight constants.
         let result = compute_trust(&TrustInputs {
@@ -504,7 +504,7 @@ mod tests {
         });
         assert_eq!(result.confidence, 5);
         assert!(approx_eq(result.score, 1.0));
-        // Weights sum to 1.0 across all five signals.
+        // Renormalized weights sum to 1.0 across the signals present.
         let weight_sum: f64 = result.breakdown.iter().map(|c| c.weight).sum();
         assert!(approx_eq(weight_sum, 1.0));
     }

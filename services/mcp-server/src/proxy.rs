@@ -69,10 +69,12 @@ pub struct OrchestratorProxy {
     client: reqwest::Client,
     base_url: String,
     /// Base URL for the shorts/video service (shorts-api), which was split out
-    /// of shillbot-api. The mcp-server is in-cluster and calls services
-    /// directly, so it bypasses the edge path-routing and must target shorts-api
-    /// explicitly for the `/shorts/*` endpoints (generate_video,
-    /// check_video_status). Task/campaign endpoints still use `base_url`.
+    /// of shillbot-api. mcp-server calls sibling services directly over their
+    /// own URLs rather than through the edge, so it bypasses the edge
+    /// path-routing and must target shorts-api explicitly for the `/shorts/*`
+    /// endpoints (generate_video, check_video_status). Task/campaign endpoints
+    /// still use `base_url`. (The "in-cluster" framing this carried predates
+    /// the 2026-07-25 Cloud Run migration; there is no cluster now.)
     shorts_base_url: String,
 }
 
@@ -284,10 +286,20 @@ impl OrchestratorProxy {
         // triggered. 60s is generous enough for any orchestrator endpoint
         // we currently call without adding meaningful latency to the fast
         // paths (tasks list / claim / earnings — all <500ms).
+        // A builder failure would silently hand back a default Client with NO
+        // timeout, so every orchestrator call could hang forever — the opposite
+        // of what this construction is for. Log it rather than degrade quietly.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                tracing::error!(
+                    service = "mcp-server",
+                    error = %e,
+                    "orchestrator HTTP client build failed — falling back to a client with NO timeout"
+                );
+                reqwest::Client::default()
+            });
 
         Self {
             client,
@@ -314,7 +326,7 @@ impl OrchestratorProxy {
         }
 
         let response = self.client.get(&url).send().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, url = %url, "orchestrator list_tasks request failed");
+            tracing::error!(service = "mcp-server", error = %e, url = %url, "orchestrator list_tasks request failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
         })?;
 
@@ -327,14 +339,14 @@ impl OrchestratorProxy {
             // message — an unreadable body degrades to "" instead of masking
             // the real error with a second one.
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "coordination-mcp-server", status = %status, body = %body, "orchestrator returned error");
+            tracing::error!(service = "mcp-server", status = %status, body = %body, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
             )));
         }
 
         let result: TaskListResponse = response.json().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, "failed to parse orchestrator task list response");
+            tracing::error!(service = "mcp-server", error = %e, "failed to parse orchestrator task list response");
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
@@ -365,21 +377,21 @@ impl OrchestratorProxy {
         let url = format!("{}/tasks/{task_id}{qs}", self.base_url);
 
         let response = self.client.get(&url).send().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, task_id = %task_id, "orchestrator get_task_details failed");
+            tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator get_task_details failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
         })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "coordination-mcp-server", status = %status, task_id = %task_id, "orchestrator returned error");
+            tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
             )));
         }
 
         let details: TaskDetails = response.json().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, task_id = %task_id, "failed to parse task details");
+            tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "failed to parse task details");
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
@@ -414,21 +426,21 @@ impl OrchestratorProxy {
             .send()
             .await
             .map_err(|e| {
-                tracing::error!(service = "coordination-mcp-server", error = %e, wallet = %wallet_pubkey, "orchestrator get_earnings failed");
+                tracing::error!(service = "mcp-server", error = %e, wallet = %wallet_pubkey, "orchestrator get_earnings failed");
                 McpServiceError::OrchestratorError(format!("request failed: {e}"))
             })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(service = "coordination-mcp-server", status = %status, wallet = %wallet_pubkey, "orchestrator returned error");
+            tracing::error!(service = "mcp-server", status = %status, wallet = %wallet_pubkey, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
             )));
         }
 
         let earnings: EarningsResponse = response.json().await.map_err(|e| {
-            tracing::error!(service = "coordination-mcp-server", error = %e, wallet = %wallet_pubkey, "failed to parse earnings response");
+            tracing::error!(service = "mcp-server", error = %e, wallet = %wallet_pubkey, "failed to parse earnings response");
             McpServiceError::OrchestratorError(format!("invalid response: {e}"))
         })?;
 
@@ -1029,7 +1041,10 @@ async fn parse_payment_required_response(
     // Postcondition: the returned envelope always carries the payment_required marker.
     Ok(serde_json::json!({
         "status": "payment_required",
-        "instructions": "Pay 5 USDC to the address below, then call generate_video again with your tx_signature (a base64-encoded x402 v2 PaymentPayload).",
+        // No hardcoded amount: the authoritative price arrives dynamically in
+        // payment_details, and restating it here meant a price change silently
+        // left the agent-facing instruction wrong.
+        "instructions": "Pay the amount shown in payment_details to the address below, then call generate_video again with your tx_signature (a base64-encoded x402 v2 PaymentPayload).",
         "payment_details": payment_details,
     }))
 }

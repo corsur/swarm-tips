@@ -2,9 +2,9 @@ use crate::listings::models::{HealthCheck, RawListing};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use std::time::Instant;
 
-/// Upper bound on shillbot open tasks pulled per fetch. Sized to the
-/// orchestrator's max-per-request cap so the whole open queue surfaces, while
-/// still bounding the loop against an unbounded upstream response.
+/// Upper bound on shillbot open tasks pulled per fetch. Set above the
+/// orchestrator's own 100 max-per-request cap so the whole open queue surfaces,
+/// while still bounding the loop against an unbounded upstream response.
 const MAX_SHILLBOT_TASKS: usize = 200;
 
 /// Result of fetching from one source: listings + health check data.
@@ -99,7 +99,11 @@ pub async fn fetch_botbounty(client: &reqwest::Client) -> FetchResult {
     .await
 }
 
-/// Hardcoded ETH price fallback for USD estimation.
+/// Hardcoded ETH price fallback for USD estimation. Same staleness policy as
+/// SOL_PRICE_USD below: the listings card rounds to whole dollars, so a stale
+/// constant is tolerable until ETH moves >50% from this figure. It is currently
+/// well BELOW market, which understates every ETH-denominated reward — refresh
+/// it when the gap gets embarrassing.
 const ETH_PRICE_USD: f64 = 2000.0;
 
 /// Hardcoded SOL price fallback for USD estimation. Used by sources that
@@ -164,8 +168,10 @@ pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
     timed_fetch("shillbot", async {
         // Orchestrator's /tasks defaults to ~10 results without ?limit.
         // First-party Shillbot is our highest-trust source — pull everything
-        // it's offering. 200 is well above realistic queue depth and matches
-        // the orchestrator's max-per-request cap. Surfaced 2026-05-11 when
+        // it's offering. 200 is well above realistic queue depth; the
+        // orchestrator clamps to its own 100 max-per-request cap, so this asks
+        // for more than it can return and takes whatever comes back. Surfaced
+        // 2026-05-11 when
         // 9 of 15 mainnet tasks were silently truncated from swarm.tips.
         let res = client
             .get("https://api.shillbot.org/tasks?limit=200")
