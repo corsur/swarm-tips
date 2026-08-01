@@ -76,16 +76,18 @@ pub struct WsConnection {
     stream: WsStream,
 }
 
-/// Build a WebSocket URL from an HTTP base URL and JWT token.
+/// Build the per-request WebSocket URL from an HTTP base URL and JWT.
 ///
 /// Converts `http://` to `ws://` and `https://` to `wss://`, strips trailing
-/// slashes, and appends `/ws?token={jwt}`.
-/// Build the per-request WebSocket URL. Appends `&network=<n>` when
-/// `network` is `Some(non-empty)`. Required for the devnet-routed
-/// flow — game-api uses the URL's `network` param to bind the
-/// connection to the correct per-network queue. Without it, all
-/// WebSocket connections land on the mainnet queue regardless of
-/// where the caller's HTTP queue join went.
+/// slashes, and appends `/ws?token={jwt}`. Then:
+///
+/// - `&network=<n>` when `network` is `Some(non-empty)`. Required for the
+///   devnet-routed flow — game-api uses this param to bind the connection to
+///   the correct per-network queue. Without it, every WebSocket connection
+///   lands on the mainnet queue regardless of where the caller's HTTP queue
+///   join went.
+/// - `&session=<s>` when `session` is `Some(non-empty)`, binding the
+///   connection to an existing match session.
 fn build_ws_url(base_url: &str, jwt: &str, network: Option<&str>, session: Option<&str>) -> String {
     let ws_url = base_url
         .replacen("http://", "ws://", 1)

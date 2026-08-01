@@ -48,7 +48,7 @@ pub struct QueueJoinRequest<'a> {
     pub is_ai: bool,
     pub agent_version: &'a str,
     /// True for the built-in grok-agent. External agents set false.
-    #[serde(default)]
+    /// game-api defaults this to false server-side when absent.
     pub is_internal: bool,
 }
 
@@ -81,17 +81,6 @@ pub struct LeaderboardResponse {
 pub struct CosignResponse {
     /// Base64-encoded matchmaker ed25519 signature.
     pub signature: String,
-}
-
-/// Response from `GET /games/status/{game_id}`.
-#[derive(Debug, Deserialize)]
-pub struct GameStatusResponse {
-    pub game_id: u64,
-    pub state: String,
-    pub player_one: String,
-    pub player_two: Option<String>,
-    pub created_at: String,
-    pub resolved_at: Option<String>,
 }
 
 /// Request body for `POST /internal/evmgame/join` — the same-chain EVM queue.
