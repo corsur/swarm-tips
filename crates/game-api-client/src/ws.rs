@@ -303,8 +303,19 @@ impl WsConnection {
     /// all three of its call sites. Do NOT call it bare: without a caller-side
     /// timeout it loops until the stream errors or closes.
     pub async fn wait_for_chat(&mut self) -> Result<String> {
+        // Bounded like every sibling wait_for_*. This was the only one looping
+        // with no deadline: if the opponent never speaks, the caller blocked
+        // until the stream itself ended, which on a healthy idle socket is
+        // never. 10m matches wait_for_match_found and is far longer than any
+        // real inter-message gap in a game.
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(600);
+
         loop {
-            let msg = self.recv_next().await?;
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            anyhow::ensure!(!remaining.is_zero(), "timed out waiting for chat after 10m");
+            let msg = tokio::time::timeout(remaining, self.recv_next())
+                .await
+                .context("timeout waiting for chat")??;
             if let ServerMessage::Chat { text } = msg {
                 return Ok(text);
             }

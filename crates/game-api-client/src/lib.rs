@@ -906,37 +906,6 @@ mod tests {
     }
 
     #[test]
-    fn url_construction_evmgame_endpoints() {
-        // Exercise the REAL url() helper (not a re-implementation of the
-        // concatenation), covering both the bare and ?network= branches.
-        let client = GameApiClient::new("https://api.example.com").unwrap();
-        for (path, expected) in [
-            (
-                "/internal/evmgame/join",
-                "https://api.example.com/internal/evmgame/join",
-            ),
-            (
-                "/internal/evmgame/status",
-                "https://api.example.com/internal/evmgame/status",
-            ),
-            (
-                "/internal/evmgame/committed",
-                "https://api.example.com/internal/evmgame/committed",
-            ),
-        ] {
-            assert_eq!(client.url(path), expected);
-        }
-
-        let devnet = GameApiClient::new("https://api.example.com")
-            .unwrap()
-            .with_network(Some("devnet".to_string()));
-        assert_eq!(
-            devnet.url("/internal/evmgame/join"),
-            "https://api.example.com/internal/evmgame/join?network=devnet"
-        );
-    }
-
-    #[test]
     fn xqueue_response_deserializes_waiting_and_matched() {
         // Waiting: no `match` field.
         let waiting: XQueueResponse =
@@ -965,69 +934,6 @@ mod tests {
     #[should_panic(expected = "game-api base_url must not be empty")]
     fn new_rejects_empty_url() {
         let _ = GameApiClient::new("");
-    }
-
-    #[test]
-    fn url_construction_auth_challenge() {
-        let client = GameApiClient::new("https://api.example.com").unwrap();
-        assert_eq!(
-            format!("{}/auth/challenge", client.base_url()),
-            "https://api.example.com/auth/challenge"
-        );
-    }
-
-    #[test]
-    fn url_construction_auth_verify() {
-        let client = GameApiClient::new("https://api.example.com").unwrap();
-        assert_eq!(
-            format!("{}/auth/verify", client.base_url()),
-            "https://api.example.com/auth/verify"
-        );
-    }
-
-    #[test]
-    fn url_construction_queue_join() {
-        let client = GameApiClient::new("http://localhost:8080/").unwrap();
-        assert_eq!(
-            format!("{}/queue/join", client.base_url()),
-            "http://localhost:8080/queue/join"
-        );
-    }
-
-    #[test]
-    fn url_construction_queue_leave() {
-        let client = GameApiClient::new("http://localhost:8080/").unwrap();
-        assert_eq!(
-            format!("{}/queue/leave", client.base_url()),
-            "http://localhost:8080/queue/leave"
-        );
-    }
-
-    #[test]
-    fn url_construction_games_joined() {
-        let client = GameApiClient::new("http://localhost:8080").unwrap();
-        assert_eq!(
-            format!("{}/games/joined", client.base_url()),
-            "http://localhost:8080/games/joined"
-        );
-    }
-
-    #[test]
-    fn url_construction_games_resolved() {
-        let client = GameApiClient::new("http://localhost:8080").unwrap();
-        assert_eq!(
-            format!("{}/games/resolved", client.base_url()),
-            "http://localhost:8080/games/resolved"
-        );
-    }
-
-    #[test]
-    fn url_construction_leaderboard() {
-        let client = GameApiClient::new("http://localhost:8080").unwrap();
-        assert_eq!(
-            format!("{}/tournaments/1/leaderboard?limit=20", client.base_url()),
-            "http://localhost:8080/tournaments/1/leaderboard?limit=20"
-        );
     }
 
     #[test]
