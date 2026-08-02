@@ -17,10 +17,10 @@ The `Extension` PDA exists **only while the obligation is active**. Both termina
                        submit_extension
    (no account) ───────────────────────────▶  ACTIVE
    bond: extender ──▶ PDA                        │
-                                                 │  attest_return_substance
+                                                 │  withdraw_extension
                                                  ├───────────────────────────▶ closed
                                                  │     bond + rent ──▶ extender   (fulfilled)
-                                                 │     emit ReturnSubstanceAttested
+                                                 │     emit ExtensionWithdrawn
                                                  │
                                                  │  default_extension (authority-gated)
                                                  └───────────────────────────▶ closed
@@ -48,13 +48,15 @@ The `Extension` PDA exists **only while the obligation is active**. Both termina
 
 - `initialize(authority, treasury)` — one-time registry config (`GlobalState`).
 - `submit_extension(extension_type, bond_lamports)` — validate → record → move bond into the PDA.
-- `attest_return_substance()` — extender attests fulfillment; `close = extender` returns bond + rent.
+- `withdraw_extension()` — extender withdraws; `close = extender` returns bond + rent.
+  (Replaced `attest_return_substance`, which emitted a "recipient attested" claim the
+  program could not actually verify.)
 - `default_extension()` — authority slashes the bond to treasury (`transfer_lamports`), then `close = extender` returns the rent.
 
 ## Testing requirements
 
 - Unit: `Extension::SPACE` (106) guard.
-- Anchor lifecycle (localnet, in CI): submit → attest (bond returned), submit → default (bond slashed to treasury, rent to extender), plus every error path (wrong type, bond too low, self-extension, non-authority default, wrong treasury/recipient/extender). **Each path asserts lamport conservation** (Σin == Σout). This is the CI-gated money-safety check.
+- Anchor lifecycle (localnet, in CI): submit → withdraw (bond returned), submit → default (bond slashed to treasury, rent to extender), plus every error path (wrong type, bond too low, self-extension, non-authority default, wrong treasury/recipient/extender). **Each path asserts lamport conservation** (Σin == Σout). This is the CI-gated money-safety check.
 
 ## Known limitations / deferred
 
