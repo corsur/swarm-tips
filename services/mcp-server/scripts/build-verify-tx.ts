@@ -9,13 +9,16 @@
  *   npx tsx build-verify-tx.ts \
  *     --task-id <id> --payer <pubkey> --score <u64> --hash <hex> \
  *     --task-pda <pubkey> --feed <pubkey> --global-state <pubkey> \
- *     --rpc <url>
+ *     --rpc <url> [--network <mainnet|devnet>]
+ *
+ * --network selects the Switchboard queue; it defaults to mainnet. It was read
+ * by the arg parser but missing from this block.
  *
  * Uses Queue.fetchSignaturesConsensus directly (not PullFeed.fetchUpdateIx)
  * because fetchUpdateIx has a bug where it drops variableOverrides before
  * the gateway call. We replicate the instruction building from the SDK.
  */
-import { PullFeed, Queue, State, Oracle } from "@switchboard-xyz/on-demand";
+import { PullFeed, Queue, State } from "@switchboard-xyz/on-demand";
 // @ts-ignore — not re-exported from the main index
 import { Secp256k1InstructionUtils } from "@switchboard-xyz/on-demand/dist/esm/instruction-utils/secp256k1-instruction-utils.js";
 import {
@@ -33,10 +36,13 @@ import { BN } from "@coral-xyz/anchor";
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
   "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 );
+// Local ATA derivation so the script needs no @solana/spl-token dependency.
+// The upstream helper takes an allowOwnerOffCurve flag; this one does not,
+// because the body never branched on it — carrying the parameter implied a
+// behaviour the function did not have.
 function getAssociatedTokenAddressSync(
   mint: PublicKey,
-  owner: PublicKey,
-  allowOwnerOffCurve: boolean = false
+  owner: PublicKey
 ): PublicKey {
   return PublicKey.findProgramAddressSync(
     [owner.toBuffer(), SPL_TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
@@ -222,11 +228,8 @@ async function main() {
   };
 
   const programState = State.keyFromSeed(program as any);
-  const rewardVault = getAssociatedTokenAddressSync(
-    SOL_NATIVE_MINT,
-    queuePubkey,
-    true
-  );
+  // (the removed third arg was allowOwnerOffCurve, which the helper ignored)
+  const rewardVault = getAssociatedTokenAddressSync(SOL_NATIVE_MINT, queuePubkey);
 
   const oraclePubkeys = response.oracle_responses.map(
     (r: any) => new PublicKey(Buffer.from(r.oracle_pubkey, "hex"))

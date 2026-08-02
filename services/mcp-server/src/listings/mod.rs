@@ -538,9 +538,6 @@ fn keep_failed_source_listings(
         if !existing_doc.filtered {
             result_listings.push(existing_doc.clone());
         }
-        // doc_id is informational here; the function reads its discriminator
-        // through existing_doc fields.
-        let _ = doc_id;
     }
 }
 
