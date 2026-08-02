@@ -14,7 +14,7 @@ pub fn create_tournament(
         end_time > start_time,
         CoordinationError::InvalidTournamentTimes
     );
-    require!(end_time > now, CoordinationError::TournamentNotEnded);
+    require!(end_time > now, CoordinationError::TournamentEndsInPast);
 
     let t = &mut ctx.accounts.tournament;
     t.tournament_id = tournament_id;

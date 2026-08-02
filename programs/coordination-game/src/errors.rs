@@ -126,4 +126,13 @@ pub enum CoordinationError {
     /// reused NotAuthority, which describes an unrelated condition.
     #[msg("Treasury must not be the zero pubkey")]
     InvalidTreasury,
+    /// A tournament being CREATED must end in the future. Previously this
+    /// rejection reused `TournamentNotEnded`, which describes the opposite
+    /// situation — an already-created tournament whose end time has not yet
+    /// passed — so the on-chain error told an operator the tournament had not
+    /// ended when the real problem was that it would end in the past.
+    /// Appended at the END: Anchor error discriminants are positional, so a new
+    /// variant must never be inserted above an existing one.
+    #[msg("Tournament end_time must be in the future")]
+    TournamentEndsInPast,
 }
