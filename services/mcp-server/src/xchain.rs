@@ -115,6 +115,15 @@ fn decode_0x<const N: usize>(s: &str) -> Result<[u8; N], String> {
     let bytes = hex::decode(hexs).map_err(|e| format!("bad hex: {e}"))?;
     // A cert word is 32 bytes (addresses left-padded); take the low N bytes.
     let start = bytes.len().checked_sub(N).ok_or("hex too short")?;
+    // The discarded high bytes MUST be zero. Truncating them silently meant a
+    // 32-byte word carrying junk (or a deliberately crafted value) decoded to a
+    // DIFFERENT address than the one supplied, with no error — the caller then
+    // built a cross-chain call against an address the payload never named.
+    if bytes[..start].iter().any(|b| *b != 0) {
+        return Err(format!(
+            "hex value does not fit in {N} bytes: high bytes are non-zero"
+        ));
+    }
     bytes[start..]
         .try_into()
         .map_err(|_| "wrong length".to_string())
@@ -146,7 +155,17 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
         .get("match_deadline")
         .and_then(Value::as_u64)
         .ok_or("missing match_deadline")?;
-    let a_is_p1 = payload.get("a_is_p1").and_then(Value::as_u64).unwrap_or(1);
+    // REJECT a missing/malformed a_is_p1 rather than defaulting. This byte
+    // decides which SEAT the EVM player takes, and unwrap_or(1) silently chose
+    // "leg A is P1" => the EVM player is P2. A payload that lost the field
+    // therefore built a createMatch for the WRONG seat, which the contract
+    // accepts (it only enforces the complement) and which then mismatches the
+    // Solana leg at settle. The sibling build_lock_tranche_call already uses
+    // the required `u64_at("a_is_p1")?` form; this path now matches it.
+    let a_is_p1 = payload
+        .get("a_is_p1")
+        .and_then(Value::as_u64)
+        .ok_or("payload missing or malformed a_is_p1")?;
     let player_is_p1 = a_is_p1 == 0;
     let fund_deadline = match_deadline.saturating_sub(FUND_WINDOW_BEFORE_DEADLINE);
     // Operator authorization for createMatch (M4): game-api signs the exact
@@ -329,10 +348,9 @@ mod tests {
         // too long
     }
 
-    #[test]
-    fn build_evm_create_match_call_from_relay_payload() {
-        // A relay payload shaped like xchain::cert_relay_payload (leg_b = EVM).
-        let payload = json!({
+    /// A relay payload shaped like xchain::cert_relay_payload (leg_b = EVM).
+    fn sample_create_match_payload() -> Value {
+        json!({
             "match_id": format!("0x{}", "aa".repeat(32)),
             "match_deadline": 1_765_007_200u64,
             "a_is_p1": 0, // leg A (Solana) is NOT P1 => EVM player IS P1
@@ -344,7 +362,12 @@ mod tests {
                 "stake_base_units": "10000000000000",
             },
             "create_match_operator_sig": format!("0x{}", "33".repeat(65)),
-        });
+        })
+    }
+
+    #[test]
+    fn build_evm_create_match_call_from_relay_payload() {
+        let payload = sample_create_match_payload();
         let call = build_evm_create_match_call(&payload).expect("valid payload");
         // value is the stake; to is the unpadded 20-byte contract.
         assert_eq!(call["value_wei"], "10000000000000");
@@ -512,5 +535,35 @@ mod tests {
                 .starts_with("0x"),
             "Base Sepolia must expose its deployed contract address"
         );
+    }
+
+    #[test]
+    fn decode_0x_rejects_nonzero_high_bytes() {
+        // A left-padded address is fine...
+        let padded = format!("0x{}{}", "0".repeat(24), "11".repeat(20));
+        assert!(decode_0x::<20>(&padded).is_ok());
+        // ...but junk in the discarded high bytes must NOT be truncated away:
+        // that silently yields a different address than the payload named.
+        let dirty = format!("0x{}{}{}", "0".repeat(22), "ff", "11".repeat(20));
+        let err = decode_0x::<20>(&dirty).unwrap_err();
+        assert!(err.contains("high bytes are non-zero"), "{err}");
+    }
+
+    #[test]
+    fn decode_0x_still_rejects_short_and_malformed_input() {
+        assert!(decode_0x::<20>("0x1234").is_err());
+        assert!(decode_0x::<20>("nope").is_err());
+        assert!(decode_0x::<20>("0xzz").is_err());
+    }
+
+    #[test]
+    fn create_match_rejects_a_missing_a_is_p1_instead_of_guessing_the_seat() {
+        // a_is_p1 decides the EVM player's SEAT. Defaulting it silently built a
+        // createMatch for the wrong seat, which the contract accepts and which
+        // only diverges from the Solana leg at settle.
+        let mut payload = sample_create_match_payload();
+        payload.as_object_mut().unwrap().remove("a_is_p1");
+        let err = build_evm_create_match_call(&payload).unwrap_err();
+        assert!(err.contains("a_is_p1"), "{err}");
     }
 }

@@ -1785,13 +1785,24 @@ impl GameSessionManager {
         let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
         let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
 
-        // Log balance before create_game for debugging.
-        let balance = tx_builder
-            .rpc()
-            .get_balance(&tx_builder.pubkey())
-            .await
-            .unwrap_or(0);
-        tracing::info!(wallet = %wallet, balance_lamports = balance, network = ?network, "creating game as P1");
+        // Log balance before create_game for debugging. Distinguish "RPC failed"
+        // from "wallet is empty": unwrap_or(0) reported a failed read as a ZERO
+        // balance, which reads in Cloud Logging exactly like an unfunded wallet
+        // and sends the reader chasing a funding problem that does not exist.
+        match tx_builder.rpc().get_balance(&tx_builder.pubkey()).await {
+            Ok(balance) => tracing::info!(
+                wallet = %wallet,
+                balance_lamports = balance,
+                network = ?network,
+                "creating game as P1"
+            ),
+            Err(e) => tracing::warn!(
+                wallet = %wallet,
+                error = %e,
+                network = ?network,
+                "creating game as P1 (balance read FAILED — balance unknown, not zero)"
+            ),
+        }
 
         let matchmaker = read_matchmaker_pubkey(&tx_builder).await?;
 

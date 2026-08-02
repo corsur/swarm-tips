@@ -72,9 +72,20 @@ impl ListingsState {
         // Build a dedicated scrape client with browser-like default headers.
         // The caller's rpc_client (generic reqwest with shorter timeouts) is
         // accepted for API compatibility but not used — we want one client
-        // tuned for this workload. Falls back to a bare default client if
-        // the builder fails (unlikely).
-        let http_client = build_scrape_client().unwrap_or_default();
+        // tuned for this workload. A bare default client is NOT equivalent: it
+        // has none of the stealth headers or the browser fingerprint these
+        // sources are matched against, so it gets blocked and the failure looks
+        // like "the source went quiet" rather than "our client degraded".
+        // unwrap_or_default() hid that entirely, so log it loudly.
+        let http_client = build_scrape_client().unwrap_or_else(|e| {
+            tracing::error!(
+                service = "mcp-server",
+                error = %e,
+                "scrape client builder FAILED — falling back to a bare client with no \
+                 stealth headers or fingerprint; fetches will likely be blocked"
+            );
+            reqwest::Client::default()
+        });
         Self {
             db,
             http_client,
