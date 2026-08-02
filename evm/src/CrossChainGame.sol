@@ -138,6 +138,11 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     event Refunded(bytes32 indexed matchId, Status kind, uint256 toPlayer);
     event PoolDeposited(address indexed from, uint256 amount);
     event PoolWithdrawn(uint256 amount);
+    /// @notice Owner moved accrued prize-pool ETH out of the contract.
+    /// Mirrors CoordinationGame's event: every value-moving owner call must
+    /// leave an on-chain record, or an indexer sees the balance drop with no
+    /// attributable cause.
+    event PrizePoolWithdrawn(address indexed to, uint256 amount);
     event ConfigUpdated();
 
     error InvalidStatus();
@@ -600,6 +605,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         if (amount > prizePoolWei) revert PoolInsufficient();
         prizePoolWei -= amount;
         _pay(to, amount);
+        emit PrizePoolWithdrawn(to, amount);
     }
 
     function setConfig(
