@@ -120,4 +120,13 @@ def make_solana_rpc_fetcher(rpc_url: str):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Match the TS sibling's top-level handler. Without this, an exception
+    # escaping main() (an RPC transport failure, an unreadable file) printed a
+    # Python traceback and exited 1, which is the same code a legitimate
+    # "attestation did not verify" uses — a caller could not tell a failed
+    # verification from a crashed verifier.
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001 - top-level guard, re-reported below
+        print(f"unexpected error: {exc}", file=sys.stderr)
+        sys.exit(2)

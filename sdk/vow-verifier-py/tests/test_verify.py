@@ -195,7 +195,6 @@ from datetime import datetime, timezone
 import base58
 
 from vow_verifier import ProtocolHandler, verify_v1
-from vow_verifier.types import DecodedAccount
 
 
 _HAPPY_TASK_ID = 42
@@ -221,7 +220,6 @@ def _build_happy_account_bytes(state_byte: int = 3) -> bytes:
     pass 7 to test a state-invalid scenario.
 
     Layout per ``decoders/shillbot.py``."""
-    from vow_verifier.discriminator import anchor_discriminator
 
     body = bytearray(307)
     struct.pack_into("<Q", body, 0, _HAPPY_TASK_ID)
