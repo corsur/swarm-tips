@@ -332,6 +332,31 @@ const REGISTRY: &[ChainEntry] = &[
 
 /// Look up a chain's configuration. None = chain not supported; callers
 /// at system boundaries reject rather than guess.
+/// Candidate read RPCs for `entry`: the optional premium endpoint from env
+/// `EVM_RPC_URL_<CAIP2>` (e.g. `EVM_RPC_URL_EIP155_84532`) first, then the
+/// registry's public endpoints as fallback.
+///
+/// The premium URL is a SECRET, so it lives in Secret Manager and reaches the
+/// process as an env var — never in this crate, which is public. This function
+/// only reads the variable; it never holds a key.
+///
+/// Every service that reads an EVM chain should go through here. Taking
+/// `entry.rpc_urls.first()` directly silently pins the caller to the public
+/// endpoints even when a premium URL is configured, which costs both
+/// reliability under load and getLogs range (the official Base endpoints cap
+/// at 2,000 blocks).
+pub fn read_rpc_urls(entry: &ChainEntry) -> Vec<String> {
+    let env_key = format!(
+        "EVM_RPC_URL_{}",
+        entry.chain_id.replace([':', '-'], "_").to_ascii_uppercase()
+    );
+    std::env::var(&env_key)
+        .ok()
+        .into_iter()
+        .chain(entry.rpc_urls.iter().map(|s| (*s).to_string()))
+        .collect()
+}
+
 pub fn entry(chain: &ChainId) -> Option<&'static ChainEntry> {
     REGISTRY.iter().find(|e| e.chain_id == chain.as_str())
 }
@@ -376,6 +401,26 @@ pub fn entries_for(namespace: Namespace) -> impl Iterator<Item = &'static ChainE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_rpc_urls_prefers_the_premium_env_endpoint() {
+        let base = ChainId::parse("eip155:84532").unwrap();
+        let e = entry(&base).unwrap();
+        // Unset: registry public list, unchanged and in order.
+        std::env::remove_var("EVM_RPC_URL_EIP155_84532");
+        let plain = read_rpc_urls(e);
+        assert_eq!(plain.len(), e.rpc_urls.len());
+        assert_eq!(plain[0], e.rpc_urls[0]);
+
+        // Set: premium first, public list retained as fallback (never dropped —
+        // a premium outage must still fail over).
+        std::env::set_var("EVM_RPC_URL_EIP155_84532", "https://premium.example/v2/k");
+        let with_env = read_rpc_urls(e);
+        assert_eq!(with_env[0], "https://premium.example/v2/k");
+        assert_eq!(with_env.len(), e.rpc_urls.len() + 1);
+        assert_eq!(with_env[1], e.rpc_urls[0]);
+        std::env::remove_var("EVM_RPC_URL_EIP155_84532");
+    }
 
     #[test]
     fn every_registry_entry_has_a_valid_caip2_id() {
