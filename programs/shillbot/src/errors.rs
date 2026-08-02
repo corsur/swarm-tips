@@ -23,7 +23,11 @@ pub enum ShillbotError {
     #[msg("Submission too close to deadline")]
     SubmitMarginInsufficient,
 
-    #[msg("Agent has 5 or more active claims")]
+    // Do NOT restate the cap here. The bound is GlobalState.max_concurrent_claims,
+    // which is authority-tunable via update_params; this message used to hardcode
+    // "5" while the live value was 50, so anyone reading the error concluded the
+    // agent held 5 claims and mis-sized the recovery.
+    #[msg("Agent is at GlobalState.max_concurrent_claims active claims")]
     MaxConcurrentClaimsExceeded,
 
     #[msg("Switchboard account ownership or feed PDA mismatch")]
