@@ -49,53 +49,6 @@ fn parse_url_from<I: Iterator<Item = String>>(mut args: I) -> Result<String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_url_from;
-
-    fn args(v: &[&str]) -> std::vec::IntoIter<String> {
-        v.iter()
-            .map(|s| (*s).to_string())
-            .collect::<Vec<_>>()
-            .into_iter()
-    }
-
-    #[test]
-    fn accepts_url_flag_with_value() {
-        let got = parse_url_from(args(&["--url", "https://example.com/a?b=1"])).unwrap();
-        assert_eq!(got, "https://example.com/a?b=1");
-    }
-
-    #[test]
-    fn rejects_url_flag_without_value() {
-        let err = parse_url_from(args(&["--url"])).unwrap_err().to_string();
-        assert!(err.contains("requires a value"), "{err}");
-    }
-
-    #[test]
-    fn rejects_unknown_flag_rather_than_ignoring_it() {
-        // Reject at the boundary: a typo'd flag must fail loudly, not fall
-        // through to "missing --url" or silently scrape nothing.
-        let err = parse_url_from(args(&["--ur", "https://example.com"]))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("unrecognized arg: --ur"), "{err}");
-    }
-
-    #[test]
-    fn rejects_empty_args() {
-        let err = parse_url_from(args(&[])).unwrap_err().to_string();
-        assert!(err.contains("missing required --url"), "{err}");
-    }
-
-    #[test]
-    fn extra_args_after_the_value_are_ignored() {
-        // Documents current behaviour: only the first --url pair is read.
-        let got = parse_url_from(args(&["--url", "https://a.test", "--junk"])).unwrap();
-        assert_eq!(got, "https://a.test");
-    }
-}
-
 fn build_client() -> Result<Client> {
     // Header bundle matches what a real Chrome-on-macOS sends, layered on
     // top of the JA3/HTTP2 fingerprint the impersonate() call provides.
@@ -145,4 +98,51 @@ async fn main() -> Result<()> {
         serde_json::to_string(&out).context("serialize output")?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_url_from;
+
+    fn args(v: &[&str]) -> std::vec::IntoIter<String> {
+        v.iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn accepts_url_flag_with_value() {
+        let got = parse_url_from(args(&["--url", "https://example.com/a?b=1"])).unwrap();
+        assert_eq!(got, "https://example.com/a?b=1");
+    }
+
+    #[test]
+    fn rejects_url_flag_without_value() {
+        let err = parse_url_from(args(&["--url"])).unwrap_err().to_string();
+        assert!(err.contains("requires a value"), "{err}");
+    }
+
+    #[test]
+    fn rejects_unknown_flag_rather_than_ignoring_it() {
+        // Reject at the boundary: a typo'd flag must fail loudly, not fall
+        // through to "missing --url" or silently scrape nothing.
+        let err = parse_url_from(args(&["--ur", "https://example.com"]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unrecognized arg: --ur"), "{err}");
+    }
+
+    #[test]
+    fn rejects_empty_args() {
+        let err = parse_url_from(args(&[])).unwrap_err().to_string();
+        assert!(err.contains("missing required --url"), "{err}");
+    }
+
+    #[test]
+    fn extra_args_after_the_value_are_ignored() {
+        // Documents current behaviour: only the first --url pair is read.
+        let got = parse_url_from(args(&["--url", "https://a.test", "--junk"])).unwrap();
+        assert_eq!(got, "https://a.test");
+    }
 }
