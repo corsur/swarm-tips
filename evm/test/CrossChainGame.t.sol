@@ -8,8 +8,10 @@ import {PullPayment} from "../src/base/PullPayment.sol";
 
 /// @notice Behavioral suite for the EVM leg: state machine, the panel's
 ///         eight flagged gaps (double-claim, inert cert, stale quote,
-///         equivocation, refund-vs-skew timing, tranche clamp), payoff
-///         conservation (fuzzed), and pool accounting (invariant).
+///         equivocation, refund-vs-skew timing, tranche clamp), and payoff
+///         conservation (fuzzed). Pool accounting lives in the sibling
+///         CrossChainGameInvariant.t.sol — this file declares no invariant_*
+///         test, so claiming one here sent the reader looking for it.
 contract CrossChainGameTest is Test {
     CrossChainGame internal game;
 
