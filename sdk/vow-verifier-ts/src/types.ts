@@ -4,7 +4,7 @@
  * decimal strings on the wire (per v1 §3 to avoid JS
  * Number.MAX_SAFE_INTEGER truncation).
  */
-export interface AasV1Attestation {
+export interface VowV1Attestation {
   version: "vow/v1";
   network: "mainnet" | "devnet";
   program_id: string;
@@ -40,6 +40,13 @@ export type FailureReason =
   | `field_mismatch:${string}`
   | "score_above_max"
   | "state_invalid";
+
+/**
+ * @deprecated Renamed to {@link VowV1Attestation} when the standard became VOW
+ * (Verifiable On-chain Work) on 2026-07-10. The wire format is `vow/v1`; this
+ * alias only keeps existing importers compiling and will be removed.
+ */
+export type AasV1Attestation = VowV1Attestation;
 
 export type Verdict =
   | {

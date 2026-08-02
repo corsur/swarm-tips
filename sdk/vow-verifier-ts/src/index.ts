@@ -1,4 +1,6 @@
 export type {
+  VowV1Attestation,
+  // Deprecated alias — see types.ts.
   AasV1Attestation,
   AccountDecoder,
   DecodedAccount,

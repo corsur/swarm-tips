@@ -104,7 +104,18 @@ export async function verifyV1OnChain(
   }
 
   // Step 5 — field equality. Decoder strips the 8-byte discriminator.
-  const decoded = protocol.decode(data.slice(8), a.account_kind);
+  // The decoders THROW on a short/malformed body (shillbot rejects < 286 bytes,
+  // extension likewise). Letting that escape turned "this account does not
+  // verify" into an exception the caller had to catch, so a truncated or
+  // wrong-kind account crashed the verifier instead of returning a verdict.
+  // A body we cannot decode IS a schema failure — report it as one.
+  let decoded: ReturnType<ProtocolHandler["decode"]>;
+  try {
+    decoded = protocol.decode(data.slice(8), a.account_kind);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return `schema_invalid:${msg}`;
+  }
 
   if (decoded.task_id.toString() !== a.task_id) {
     return "field_mismatch:task_id";
