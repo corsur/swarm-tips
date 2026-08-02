@@ -211,8 +211,8 @@ mod tests {
     // --- ScoringWeights tests ---
 
     fn valid_weights() -> ScoringWeights {
-        // 6 equal weights: 1666 * 4 + 1667 * 2 = 6664 + 3334 = 9998...
-        // Let's use a valid distribution: 1667, 1667, 1667, 1667, 1666, 1666 = 10000
+        // 1667 * 4 + 1666 * 2 = 6668 + 3332 = 10000 exactly. Six weights cannot
+        // be equal and still sum to 10000, hence the 4/2 split.
         ScoringWeights {
             weights: [1667, 1667, 1667, 1667, 1666, 1666],
             penalty_weight: 1000,
@@ -294,9 +294,9 @@ mod tests {
             weights: [MAX_WEIGHT_BPS; METRIC_COUNT],
             penalty_weight: 0,
         };
-        // First check: each weight is within bounds (passes)
-        // Sum check: 30000 != 10000 — but wait, sum overflows u16!
-        // 5000 * 6 = 30000 > u16::MAX (65535) — no overflow, 30000 fits in u16
+        // Each weight is individually within bounds, so validate() must reject
+        // on the SUM: 5000 * 6 = 30000 != 10000. (30000 fits in u16 — there is
+        // no overflow here, only a bad distribution.)
         assert_eq!(weights.validate(), Err("weights do not sum to 10000"));
     }
 
