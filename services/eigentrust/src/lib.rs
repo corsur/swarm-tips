@@ -93,7 +93,8 @@ pub struct TrustEdge {
 pub struct EigenTrustConfig {
     /// α — pre-trust blend factor. 0 ≤ α ≤ 1. Typical: 0.1.
     pub alpha: f64,
-    /// Maximum number of iterations before giving up. Typical: 100.
+    /// Maximum number of iterations before giving up. This crate's Default is
+    /// 500 (the doc used to say 100, which no config in the tree actually uses).
     pub max_iterations: usize,
     /// L₁ tolerance for convergence: the run stops when the change
     /// in trust vector between two successive iterations has L₁
