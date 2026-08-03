@@ -68,14 +68,7 @@ contract SetStakeScript is Script {
         console2.log("treasurySplitBps(kept)", treasurySplitBps);
 
         vm.startBroadcast();
-        game.setConfig(
-            operatorSigner,
-            treasury,
-            treasurySplitBps,
-            newStake,
-            commitTimeout,
-            revealTimeout
-        );
+        game.setConfig(operatorSigner, treasury, treasurySplitBps, newStake, commitTimeout, revealTimeout);
         vm.stopBroadcast();
 
         // A broadcast that "succeeded" is not proof the value moved.
