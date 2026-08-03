@@ -41,11 +41,13 @@ concurrency:
 
 jobs:
   reconcile:
-    # On workflow_run, only proceed when the deploy actually succeeded —
-    # reconciling against a failed deploy would target the OLD program.
+    # `push` was added as a trigger but never to this condition, so every
+    # registry change SKIPPED the job silently — a workflow that looks wired
+    # and does nothing. workflow_run is no longer a trigger (the deploy job
+    # reconciles inline), so only push and dispatch remain.
     if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: ${{ (github.event.inputs.cluster == 'mainnet') && 'mainnet' || 'testnet' }}
     steps:
