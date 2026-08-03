@@ -1,0 +1,80 @@
+name: Reconcile Solana Stake
+
+# The Solana half of stake infrastructure-as-code, mirroring Reconcile EVM Stake.
+#
+# `crates/chain-registry` declares the desired stake; this converges the chain to
+# it. Two idempotent steps:
+#   1. migrate_global_config — grows the singleton GlobalConfig 107 -> 115 bytes
+#      so it can carry stake_lamports. Skipped once already migrated.
+#   2. set_stake_lamports — writes the registry's value. Skipped when it matches.
+#
+# WHY THIS EXISTS: the Solana stake used to be a compile-time constant, so
+# re-pegging meant shipping a program while every EVM chain re-pegged with a
+# transaction. Solana consequently sat at 0.05 SOL ($3.64) against a $5 EVM
+# anchor — the cheap change got made, the expensive one did not. Making both
+# sides equally cheap is the actual fix; the tests only detect the divergence.
+#
+# ORDERING: runs after "Coordination Game" succeeds, because the instructions it
+# calls only exist once the upgraded program is deployed. Running it before that
+# is a no-op that reports the migration as still needed.
+on:
+  workflow_run:
+    workflows: ["Coordination Game"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      cluster:
+        description: 'Cluster to reconcile'
+        required: true
+        type: choice
+        options: [devnet, mainnet]
+        default: devnet
+
+concurrency:
+  group: reconcile-solana-stake
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    # On workflow_run, only proceed when the deploy actually succeeded —
+    # reconciling against a failed deploy would target the OLD program.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: ${{ (github.event.inputs.cluster == 'mainnet') && 'mainnet' || 'testnet' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install deps
+        run: npm ci || npm install
+
+      - name: Write the authority keypair
+        env:
+          KEYPAIR: ${{ secrets.SOLANA_DEPLOY_KEYPAIR }}
+        run: |
+          set -euo pipefail
+          [ -n "$KEYPAIR" ] || { echo "::error::SOLANA_DEPLOY_KEYPAIR is not set"; exit 1; }
+          mkdir -p ~/.config/solana
+          printf '%s' "$KEYPAIR" > ~/.config/solana/id.json
+          chmod 600 ~/.config/solana/id.json
+
+      - name: Reconcile
+        env:
+          # The IDL is committed under target/idl; the script reads it there.
+          ANCHOR_WALLET: /home/runner/.config/solana/id.json
+          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_DEVNET }}
+        run: |
+          set -euo pipefail
+          CLUSTER="${{ github.event.inputs.cluster }}"
+          [ -n "$CLUSTER" ] || CLUSTER=devnet
+          npx tsx scripts/reconcile-solana-stake.ts --cluster "$CLUSTER" --apply
+
+      - name: Report
+        if: always()
+        run: echo "### Reconciled Solana stake on ${{ github.event.inputs.cluster || 'devnet' }}" >> "$GITHUB_STEP_SUMMARY"

@@ -169,9 +169,9 @@ const REGISTRY: &[ChainEntry] = &[
         is_mainnet: true,
         native_symbol: "SOL",
         native_decimals: 9,
-        stake_base_units: 50_000_000,
-        stake_usd_cents: 364, // $3.64
-        peg_native_usd_cents: 7286,
+        stake_base_units: 68_600_000, // 0.0686 SOL ($5 anchor, == EVM legs)
+        stake_usd_cents: 500,         // $5.00
+        peg_native_usd_cents: 7289,
         max_tranche_base_units: 100_000_000,
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
