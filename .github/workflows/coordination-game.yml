@@ -223,7 +223,7 @@ jobs:
           # before building. Re-adding them is what caused every failure on this
           # step — npm against a pnpm tree, then a second pnpm/action-setup with
           # no version. Just use what the job already has.
-          pnpm exec tsx scripts/reconcile-solana-stake.ts --cluster devnet --apply
+          pnpm dlx tsx scripts/reconcile-solana-stake.ts --cluster devnet --apply
 
       - name: Initialize / upgrade on-chain IDL (best effort)
         # Off-chain consumers use the SDK's bundled IDL, not the on-chain
@@ -363,7 +363,7 @@ jobs:
           # before building. Re-adding them is what caused every failure on this
           # step — npm against a pnpm tree, then a second pnpm/action-setup with
           # no version. Just use what the job already has.
-          pnpm exec tsx scripts/reconcile-solana-stake.ts --cluster mainnet --apply
+          pnpm dlx tsx scripts/reconcile-solana-stake.ts --cluster mainnet --apply
 
 
       - name: Verify upgrade authority (mainnet)

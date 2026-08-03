@@ -114,7 +114,7 @@ jobs:
           else
             export SOLANA_RPC_URL="${DEVNET_RPC:-https://api.devnet.solana.com}"
           fi
-          pnpm exec tsx scripts/reconcile-solana-stake.ts --cluster "$CLUSTER" --apply
+          pnpm dlx tsx scripts/reconcile-solana-stake.ts --cluster "$CLUSTER" --apply
 
       - name: Report
         if: always()
