@@ -1,7 +1,7 @@
 use crate::errors::CoordinationError;
 use crate::events::StakeDeposited;
 use crate::instructions::session_utils::validate_session_authority;
-use crate::state::{GlobalConfig, SessionAuthority, StakeEscrow, Tournament};
+use crate::state::{SessionAuthority, StakeEscrow, Tournament};
 use anchor_lang::prelude::*;
 
 /// Session-delegated variant of `deposit_stake`. The session key signs the
@@ -9,7 +9,8 @@ use anchor_lang::prelude::*;
 /// lamports fund the stake transfer (the player pre-funded the session PDA
 /// at creation time).
 pub fn deposit_stake_session(ctx: Context<DepositStakeSession>) -> Result<()> {
-    let stake = ctx.accounts.global_config.stake_lamports;
+    let stake =
+        crate::instructions::deposit_stake::live_stake(ctx.remaining_accounts, ctx.program_id)?;
     validate_session_authority(
         &ctx.accounts.session_authority,
         &ctx.accounts.player.key(),
@@ -97,9 +98,6 @@ fn init_escrow_fields(
 
 #[derive(Accounts)]
 pub struct DepositStakeSession<'info> {
-    /// Source of the live stake — see DepositStake.
-    #[account(seeds = [b"global_config"], bump = global_config.bump)]
-    pub global_config: Account<'info, GlobalConfig>,
     #[account(
         init_if_needed,
         payer = session_signer,
