@@ -60,11 +60,20 @@ function registryStake(cluster: string): bigint {
 }
 
 async function main(): Promise<void> {
+  // `??` only falls back on undefined, so an UNSET GitHub secret — which
+  // expands to the empty string, not undefined — produced
+  // "Endpoint URL must start with http:" instead of using the default.
+  // Treat blank as absent.
+  const envRpc = (process.env["SOLANA_RPC_URL"] ?? "").trim();
   const rpc =
-    process.env["SOLANA_RPC_URL"] ??
-    (cluster.startsWith("main")
+    envRpc !== ""
+      ? envRpc
+      : cluster.startsWith("main")
       ? "https://api.mainnet-beta.solana.com"
-      : "https://api.devnet.solana.com");
+      : "https://api.devnet.solana.com";
+  if (!/^https?:/.test(rpc)) {
+    throw new Error(`SOLANA_RPC_URL is not a URL: ${JSON.stringify(rpc)}`);
+  }
   const connection = new Connection(rpc, "confirmed");
 
   const authority = Keypair.fromSecretKey(
