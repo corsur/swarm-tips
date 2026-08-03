@@ -81,11 +81,19 @@ jobs:
       - name: Reconcile
         env:
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
-          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_DEVNET }}
+          DEVNET_RPC: ${{ secrets.SOLANA_RPC_URL_DEVNET }}
+          MAINNET_RPC: ${{ secrets.SOLANA_RPC_URL_MAINNET }}
         run: |
           set -euo pipefail
           CLUSTER="${{ github.event.inputs.cluster }}"
           [ -n "$CLUSTER" ] || CLUSTER=devnet
+          # Per-cluster endpoint. Exporting the DEVNET url unconditionally made a
+          # mainnet run read devnet state and "reconcile" against the wrong chain.
+          if [ "$CLUSTER" = "mainnet" ]; then
+            export SOLANA_RPC_URL="${MAINNET_RPC:-https://api.mainnet-beta.solana.com}"
+          else
+            export SOLANA_RPC_URL="${DEVNET_RPC:-https://api.devnet.solana.com}"
+          fi
           npx tsx scripts/reconcile-solana-stake.ts --cluster "$CLUSTER" --apply
 
       - name: Report
