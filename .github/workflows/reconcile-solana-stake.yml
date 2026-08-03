@@ -51,9 +51,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'pnpm' 
 
       # The IDL is a build artifact under target/ and is GITIGNORED, so it does
       # not exist on a fresh checkout. The reconcile script loads it to build
@@ -84,7 +86,7 @@ jobs:
           test -s ../../target/idl/coordination_game.json
 
       - name: Install deps
-        run: npm install --legacy-peer-deps
+        run: pnpm install --frozen-lockfile
 
       - name: Write the authority keypair
         env:
@@ -112,7 +114,7 @@ jobs:
           else
             export SOLANA_RPC_URL="${DEVNET_RPC:-https://api.devnet.solana.com}"
           fi
-          npx tsx scripts/reconcile-solana-stake.ts --cluster "$CLUSTER" --apply
+          pnpm exec tsx scripts/reconcile-solana-stake.ts --cluster "$CLUSTER" --apply
 
       - name: Report
         if: always()

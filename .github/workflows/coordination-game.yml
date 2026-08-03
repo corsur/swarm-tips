@@ -212,17 +212,23 @@ jobs:
 
       # Same reason as the mainnet job: a struct change is not live until its
       # migration has run, and separating them is what broke mainnet. Idempotent.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'pnpm'
       - name: Migrate + reconcile GlobalConfig
         env:
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
           SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_DEVNET }}
         run: |
           set -euo pipefail
-          npm install --legacy-peer-deps
-          npx tsx scripts/reconcile-solana-stake.ts --cluster devnet --apply
+          # pnpm, matching the rest of this repo (pnpm-lock.yaml). `npm install`
+          # here failed with "Cannot read properties of null (reading 'matches')"
+          # against a pnpm-managed tree — a second package manager in a job that
+          # already sets one up.
+          pnpm install --frozen-lockfile
+          pnpm exec tsx scripts/reconcile-solana-stake.ts --cluster devnet --apply
 
       - name: Initialize / upgrade on-chain IDL (best effort)
         # Off-chain consumers use the SDK's bundled IDL, not the on-chain
@@ -351,17 +357,23 @@ jobs:
       # anchor, keypair, and the IDL that `anchor build` just emitted). The
       # script is idempotent: it skips the migration when already applied and
       # skips the stake write when it already matches the registry.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'pnpm'
       - name: Migrate + reconcile GlobalConfig
         env:
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
           SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_MAINNET }}
         run: |
           set -euo pipefail
-          npm install --legacy-peer-deps
-          npx tsx scripts/reconcile-solana-stake.ts --cluster mainnet --apply
+          # pnpm, matching the rest of this repo (pnpm-lock.yaml). `npm install`
+          # here failed with "Cannot read properties of null (reading 'matches')"
+          # against a pnpm-managed tree — a second package manager in a job that
+          # already sets one up.
+          pnpm install --frozen-lockfile
+          pnpm exec tsx scripts/reconcile-solana-stake.ts --cluster mainnet --apply
 
 
       - name: Verify upgrade authority (mainnet)
