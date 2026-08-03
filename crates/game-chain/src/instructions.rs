@@ -46,7 +46,7 @@ pub fn build_create_game(
 ) -> Instruction {
     assert!(tournament_id > 0, "tournament_id must be non-zero");
     // Mirrors build_create_xmatch's sibling assert. The on-chain handler
-    // rejects any stake != FIXED_STAKE_LAMPORTS anyway, so this only fails
+    // rejects any stake != GlobalConfig.stake_lamports anyway, so this only fails
     // earlier what would fail on-chain.
     assert!(stake_lamports > 0, "stake_lamports must be non-zero");
     assert!(
@@ -438,10 +438,17 @@ pub fn build_deposit_stake(tournament_id: u64, payer: &Pubkey) -> Instruction {
 
     let (tournament_pda, _) = pda::tournament_pda(tournament_id);
     let (escrow_pda, _) = pda::escrow_pda(tournament_id, payer);
+    // GlobalConfig now carries the live stake, so deposit_stake reads it and the
+    // account is REQUIRED. It is first in the handler's Accounts struct, so it
+    // must be first here — Anchor matches account metas positionally, and a
+    // wrong order fails with a confusing constraint error rather than
+    // "you forgot an account".
+    let (global_config_pda, _) = pda::global_config_pda();
 
     Instruction {
         program_id: PROGRAM_ID,
         accounts: vec![
+            AccountMeta::new_readonly(global_config_pda, false),
             AccountMeta::new(escrow_pda, false),
             AccountMeta::new_readonly(tournament_pda, false),
             AccountMeta::new(*payer, true),
@@ -555,15 +562,27 @@ mod tests {
         let kp = Keypair::new();
         let ix = build_deposit_stake(1, &kp.pubkey());
         assert_eq!(ix.program_id, PROGRAM_ID);
-        // Precondition: 4 accounts (escrow, tournament, payer, system).
-        assert_eq!(ix.accounts.len(), 4, "deposit_stake must have 4 accounts");
+        // Precondition: 5 accounts — global_config FIRST (it carries the live
+        // stake), then escrow, tournament, payer, system.
+        assert_eq!(ix.accounts.len(), 5, "deposit_stake must have 5 accounts");
+        assert_eq!(
+            ix.accounts[0].pubkey,
+            pda::global_config_pda().0,
+            "global_config must be first — Anchor matches metas positionally, so a \
+             wrong order surfaces as a confusing constraint error"
+        );
+        assert!(
+            !ix.accounts[0].is_writable,
+            "global_config is read-only here"
+        );
     }
 
     #[test]
     fn build_deposit_stake_payer_is_signer() {
         let kp = Keypair::new();
         let ix = build_deposit_stake(1, &kp.pubkey());
-        let payer_meta = &ix.accounts[2];
+        // Index 3 now: global_config was prepended.
+        let payer_meta = &ix.accounts[3];
         assert!(payer_meta.is_signer, "payer must be a signer");
         assert!(payer_meta.is_writable, "payer must be writable");
     }

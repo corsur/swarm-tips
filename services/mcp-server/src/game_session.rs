@@ -90,7 +90,7 @@ const MCP_SESSIONS_COLLECTION: &str = "mcp_game_sessions";
 
 /// Headroom over the stake a wallet needs before we let it deposit: rent for the
 /// game PDA plus transaction fees for the deposit/commit/reveal sequence. The
-/// stake itself comes from `game_chain::FIXED_STAKE_LAMPORTS` — never restated.
+/// stake itself comes from `game_chain::DEFAULT_STAKE_LAMPORTS` — never restated.
 const STAKE_FEE_BUFFER_LAMPORTS: u64 = 20_000_000;
 
 /// Firestore document for persisted MCP game session state.
@@ -947,7 +947,7 @@ impl GameSessionManager {
             .get_balance(&tx_builder.pubkey())
             .await
             .context("failed to check balance")?;
-        let min_balance = game_chain::FIXED_STAKE_LAMPORTS + STAKE_FEE_BUFFER_LAMPORTS;
+        let min_balance = game_chain::DEFAULT_STAKE_LAMPORTS + STAKE_FEE_BUFFER_LAMPORTS;
         anyhow::ensure!(
             balance >= min_balance,
             "insufficient balance: need at least {} SOL to play, have {} SOL",
@@ -1806,7 +1806,7 @@ impl GameSessionManager {
 
         let matchmaker = read_matchmaker_pubkey(&tx_builder).await?;
 
-        let stake: u64 = game_chain::FIXED_STAKE_LAMPORTS;
+        let stake: u64 = game_chain::DEFAULT_STAKE_LAMPORTS;
 
         // Build unsigned create_game transaction.
         let unsigned = tx_builder
