@@ -69,7 +69,15 @@ jobs:
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
       - name: Generate the IDL
         working-directory: programs/coordination-game
-        run: anchor idl build -o ../../target/idl/coordination_game.json
+        run: |
+          set -euo pipefail
+          # anchor writes the file but will NOT create the directory; on a fresh
+          # checkout target/idl does not exist and it fails with a bare
+          # "No such file or directory". It worked locally only because the dir
+          # was left over from an earlier build.
+          mkdir -p ../../target/idl
+          anchor idl build -o ../../target/idl/coordination_game.json
+          test -s ../../target/idl/coordination_game.json
 
       - name: Install deps
         run: npm ci || npm install
