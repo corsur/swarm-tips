@@ -56,6 +56,11 @@ jobs:
       # its instruction calls, so without this the workflow fails on a missing
       # file — not on anything to do with the chain.
       - uses: dtolnay/rust-toolchain@stable
+      - name: System deps for anchor-cli
+        # anchor-cli links against libudev; without it the cargo install fails
+        # with "Package 'libudev' ... not found". Same line as coordination-game.yml.
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
       - name: Install Anchor
         # Pinned to the version the program's Cargo.toml resolves (0.32.1), the
         # same line coordination-game.yml uses. `avm install latest` failed:
