@@ -87,29 +87,22 @@ jobs:
               echo "XCHAIN_MAX_TRANCHE_WEI=6400000000000000" >> "$GITHUB_ENV"          # 0.0064 ETH
               echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=64000000000000000" >> "$GITHUB_ENV"   # 0.064 ETH (~10 matches/day)
               ;;
-            ethereum_sepolia)
-              echo "CAIP2=eip155:11155111" >> "$GITHUB_ENV"
-              echo "IS_MAINNET=false" >> "$GITHUB_ENV"
-              echo "XCHAIN_STAKE_WEI=3200000000000000" >> "$GITHUB_ENV"                # 0.0032 ETH (same testnet anchor as Base Sepolia)
-              echo "XCHAIN_MAX_TRANCHE_WEI=6400000000000000" >> "$GITHUB_ENV"          # 0.0064 ETH (2× stake)
-              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=64000000000000000" >> "$GITHUB_ENV"   # 0.064 ETH (~10 matches/day)
-              ;;
             base)
               echo "CAIP2=eip155:8453" >> "$GITHUB_ENV"
               echo "IS_MAINNET=true" >> "$GITHUB_ENV"
-              echo "XCHAIN_STAKE_WEI=500000000000000" >> "$GITHUB_ENV"                 # 0.0005 ETH (low launch stake)
-              echo "XCHAIN_MAX_TRANCHE_WEI=1000000000000000" >> "$GITHUB_ENV"          # 0.001 ETH (2× stake)
-              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=10000000000000000" >> "$GITHUB_ENV"   # 0.01 ETH (~10 matches/day)
+              echo "XCHAIN_STAKE_WEI=2700000000000000" >> "$GITHUB_ENV"                 # 0.0005 ETH (low launch stake)
+              echo "XCHAIN_MAX_TRANCHE_WEI=5400000000000000" >> "$GITHUB_ENV"          # 0.001 ETH (2× stake)
+              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=54000000000000000" >> "$GITHUB_ENV"   # 0.01 ETH (~10 matches/day)
               ;;
             ethereum)
               echo "CAIP2=eip155:1" >> "$GITHUB_ENV"
               echo "IS_MAINNET=true" >> "$GITHUB_ENV"
-              echo "XCHAIN_STAKE_WEI=2500000000000000" >> "$GITHUB_ENV"                 # 0.0025 ETH (~$4 anchor == 0.05 SOL)
-              echo "XCHAIN_MAX_TRANCHE_WEI=5000000000000000" >> "$GITHUB_ENV"           # 0.005 ETH (2× stake)
-              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=50000000000000000" >> "$GITHUB_ENV"    # 0.05 ETH (~10 matches/day)
+              echo "XCHAIN_STAKE_WEI=2700000000000000" >> "$GITHUB_ENV"                 # 0.0025 ETH (~$4 anchor == 0.05 SOL)
+              echo "XCHAIN_MAX_TRANCHE_WEI=5400000000000000" >> "$GITHUB_ENV"           # 0.005 ETH (2× stake)
+              echo "XCHAIN_DAILY_TRANCHE_CAP_WEI=54000000000000000" >> "$GITHUB_ENV"    # 0.05 ETH (~10 matches/day)
               ;;
             *)
-              echo "::error::unknown network '${{ inputs.network }}' (expected base_sepolia | ethereum_sepolia | base | ethereum)"
+              echo "::error::unknown network '${{ inputs.network }}' (expected base_sepolia | base | ethereum)"
               exit 1
               ;;
           esac

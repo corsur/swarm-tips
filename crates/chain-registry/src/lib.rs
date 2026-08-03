@@ -236,48 +236,6 @@ const REGISTRY: &[ChainEntry] = &[
     // stakeWei/maxTrancheWei. Stake matches Base Sepolia's $5 testnet anchor
     // (== _deploy-evm.yml ethereum_sepolia XCHAIN_STAKE_WEI, in lockstep).
     ChainEntry {
-        chain_id: ETHEREUM_SEPOLIA_CAIP2,
-        display_name: "Ethereum Sepolia",
-        rpc_urls: &[
-            "https://ethereum-sepolia-rpc.publicnode.com",
-            "https://eth-sepolia.public.blastapi.io",
-            "https://sepolia.drpc.org",
-        ],
-        quorum_m: 2,
-        finality: Finality::EvmFinalizedTag,
-        is_mainnet: false,
-        native_symbol: "ETH",
-        native_decimals: 18,
-        stake_base_units: 3_200_000_000_000_000, // 0.0032 ETH ($5 anchor, == deploy stakeWei)
-        stake_usd_cents: 500,                    // $5.00
-        peg_native_usd_cents: 156250,
-        max_tranche_base_units: 6_400_000_000_000_000, // 0.0064 ETH (2× stake)
-        claim_window_secs: 3_600,
-        skew_margin_secs: 900,
-        // Deployed to Ethereum Sepolia 2026-07-13 via deploy-evm-testnet.yml
-        // (network=ethereum_sepolia; EVM_TESTNET_DEPLOYER; operatorSigner
-        // 0x54a6…9A30 == game-api xchain-operator-signer, so game-api's
-        // v=27/28-normalized attestations verify on-chain). On-chain
-        // stakeWei/maxTrancheWei verified == 3.2e15/6.4e15 (parity guard).
-        game_contract: Some("0x94138De32c41Ea8e7b3357679AE20Bc8969E2537"),
-        coordination_game_contract: Some("0xB4C9397ed5948e7058b206059caFFF4D52D293e4"),
-        // ShillbotEscrow deployed to Ethereum Sepolia 2026-08-01 via
-        // deploy-evm-testnet.yml (contract=shillbot, network=ethereum_sepolia)
-        // so the escrow matrix can run on a SECOND chain instead of re-testing
-        // Base Sepolia under an eth-sepolia label.
-        shillbot_escrow_contract: Some("0x293AB2b2A7d862d8FbD6EB1E185f984E0a65882F"),
-        x402_network: None,
-    },
-    // ── Mainnet EVM chains (LIVE for the game contracts) ─────────────────────
-    // CrossChainGame deployed 2026-07-11 and CoordinationGame v3 2026-07-30 on
-    // both chains (deploy-evm-mainnet.yml, founder-authorized), so `is_live(..)`
-    // is true for both game purposes; only ShillbotEscrow remains scaffolded
-    // (None). Stakes are per-chain tuned (Base 0.0005 ETH launch stake,
-    // Ethereum 0.0025 ETH ≈ the $4 cross-chain peg); tranche is 2× stake. They
-    // must match the deploy workflow's XCHAIN_STAKE_WEI/XCHAIN_MAX_TRANCHE_WEI
-    // for that network in lockstep — the evm-ci parity guard fails CI on
-    // divergence from the deployed contracts.
-    ChainEntry {
         chain_id: BASE_MAINNET_CAIP2,
         display_name: "Base",
         rpc_urls: &[
@@ -294,10 +252,10 @@ const REGISTRY: &[ChainEntry] = &[
         // Base-mainnet run (~20 games). Base L2 gas is cents, so even a tiny stake
         // is economically sane here (gas ≪ stake). Bump post-launch as desired;
         // keep in lockstep with the deploy workflow's base XCHAIN_STAKE_WEI.
-        stake_base_units: 500_000_000_000_000, // 0.0005 ETH
-        stake_usd_cents: 150,                  // $1.50
-        peg_native_usd_cents: 300000,
-        max_tranche_base_units: 1_000_000_000_000_000, // 0.001 ETH (2× stake)
+        stake_base_units: 2_700_000_000_000_000, // 0.0027 ETH ($5 anchor, == deployed stakeWei)
+        stake_usd_cents: 500,                    // $5.00
+        peg_native_usd_cents: 185808,
+        max_tranche_base_units: 5_400_000_000_000_000, // 0.0054 ETH (2x stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         // Cross-chain CrossChainGame deployed to Base mainnet 2026-07-11 (0.0005
@@ -336,10 +294,10 @@ const REGISTRY: &[ChainEntry] = &[
         // (re)deploy; keep it in lockstep with `_deploy-evm.yml` ethereum stake.
         // Note: L1 gas can rival the stake during congestion — acceptable per
         // founder (uniform pricing preferred over gas-minimized L1 stakes).
-        stake_base_units: 2_500_000_000_000_000, // 0.0025 ETH
-        stake_usd_cents: 400,                    // $4.00
-        peg_native_usd_cents: 160000,
-        max_tranche_base_units: 5_000_000_000_000_000, // 0.005 ETH (2× stake)
+        stake_base_units: 2_700_000_000_000_000, // 0.0027 ETH ($5 anchor, == deployed stakeWei)
+        stake_usd_cents: 500,                    // $5.00
+        peg_native_usd_cents: 185808,
+        max_tranche_base_units: 5_400_000_000_000_000, // 0.0054 ETH (2x stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         // CrossChainGame deployed to Ethereum L1 mainnet 2026-07-11 (0.0025 ETH
@@ -506,7 +464,7 @@ mod tests {
         assert_eq!(solana_count, 2);
         // Base Sepolia + Ethereum Sepolia + Base mainnet + Ethereum mainnet.
         let evm_count = entries_for(Namespace::Eip155).count();
-        assert_eq!(evm_count, 4);
+        assert_eq!(evm_count, 3); // Base Sepolia + Base + Ethereum (Ethereum Sepolia removed)
 
         // eip155:1 is now Ethereum mainnet (registered); use an unregistered id.
         let unknown = ChainId::parse("eip155:999999").unwrap();
@@ -716,15 +674,15 @@ mod tests {
         // not mean a 5x different price. This is deliberately a loose band —
         // it is a smell detector, not a peg.
         //
-        // KNOWN DEVIATION: Base mainnet is a deliberate low launch stake
-        // ($1.50 target) while Solana and Ethereum sit near $4. It is excluded
-        // BY NAME so the exclusion is a visible decision with an owner, not a
-        // silent hole. Delete this exclusion when Base is re-pegged.
-        const KNOWN_LOW_LAUNCH_TIER: &[&str] = &[BASE_MAINNET_CAIP2];
-
+        // NO EXCLUSIONS. Base mainnet used to be excluded by name as a
+        // deliberate $1.50 launch tier while the others sat near $4-5; the
+        // re-peg to a single $5 EVM anchor removed the deviation, so the
+        // exclusion (and the test that pinned it) are gone. Every mainnet chain
+        // is now checked.
+        //
         let mut usd: Vec<(&str, f64)> = Vec::new();
         for e in REGISTRY {
-            if !e.is_mainnet || KNOWN_LOW_LAUNCH_TIER.contains(&e.chain_id) {
+            if !e.is_mainnet {
                 continue;
             }
             usd.push((e.chain_id, e.stake_usd_cents as f64));
@@ -737,23 +695,6 @@ mod tests {
             "mainnet same-chain stakes diverge {:.1}x: {:?}",
             hi / lo,
             usd,
-        );
-    }
-
-    #[test]
-    fn base_mainnet_low_launch_tier_is_deliberate_and_pinned() {
-        // Pin the exception itself. If someone edits Base mainnet's stake, this
-        // fails and forces them to state the new intent rather than silently
-        // widening the 5x spread that started this.
-        let e = entry(&ChainId::parse(BASE_MAINNET_CAIP2).unwrap()).unwrap();
-        assert_eq!(
-            e.stake_usd_cents, 150,
-            "Base mainnet is the $1.50 launch tier"
-        );
-        assert_eq!(
-            e.stake_base_units, 500_000_000_000_000,
-            "must stay in lockstep with the deployed stakeWei and \
-             _deploy-evm.yml's base XCHAIN_STAKE_WEI",
         );
     }
 
