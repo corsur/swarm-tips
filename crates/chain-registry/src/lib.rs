@@ -61,6 +61,21 @@ pub struct ChainEntry {
     /// Per-match stake in native base units (lamports / wei), tuned to
     /// rough USD parity across chains (config, not oracle).
     pub stake_base_units: u128,
+    /// The USD value `stake_base_units` was pegged to, in cents, and the native
+    /// price (also cents) it was converted at.
+    ///
+    /// These exist because the intent used to live only in a code comment, and
+    /// nothing checked it. Three EVM anchors ended up pegged at three different
+    /// ETH prices — $1,562 (Base Sepolia), $3,000 (Base mainnet), $1,600
+    /// (Ethereum mainnet) — so the same product costs 5x more on one mainnet
+    /// than another, and no test noticed. `stake_pegs_are_internally_consistent`
+    /// now checks the literal against these two numbers, so a stake can no
+    /// longer be edited without restating what it is supposed to be worth.
+    pub stake_usd_cents: u32,
+    /// Native-token price in USD cents used when the stake above was pegged.
+    /// NOT a live rate — the honest record of what we assumed, so drift is
+    /// measurable instead of invisible.
+    pub peg_native_usd_cents: u32,
     /// Float-pool per-match tranche clamp (panel requirement A3).
     pub max_tranche_base_units: u128,
     /// Contested-claim window. Claims close at match_deadline + this;
@@ -135,6 +150,8 @@ const REGISTRY: &[ChainEntry] = &[
         // an arg (no fixed on-chain stake), and 0.068 ≤ the live xpool's 0.1-SOL
         // max_tranche, so no Solana redeploy or pool reconfig is needed.
         stake_base_units: 68_000_000, // ~0.068 SOL ($5 parity with the EVM leg)
+        stake_usd_cents: 500,         // $5.00
+        peg_native_usd_cents: 7353,
         max_tranche_base_units: 100_000_000, // 0.1 SOL (unchanged; == live xpool max_tranche)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
@@ -153,6 +170,8 @@ const REGISTRY: &[ChainEntry] = &[
         native_symbol: "SOL",
         native_decimals: 9,
         stake_base_units: 50_000_000,
+        stake_usd_cents: 364, // $3.64
+        peg_native_usd_cents: 7286,
         max_tranche_base_units: 100_000_000,
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
@@ -182,6 +201,8 @@ const REGISTRY: &[ChainEntry] = &[
         // (deploy-evm-testnet.yml XCHAIN_STAKE_WEI/XCHAIN_MAX_TRANCHE_WEI) and
         // this entry in lockstep — a registry-only change breaks the live e2e.
         stake_base_units: 3_200_000_000_000_000, // 0.0032 ETH ($5 anchor, == deployed stakeWei)
+        stake_usd_cents: 500,                    // $5.00
+        peg_native_usd_cents: 156250,
         max_tranche_base_units: 6_400_000_000_000_000, // 0.0064 ETH (== deployed maxTrancheWei)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
@@ -228,6 +249,8 @@ const REGISTRY: &[ChainEntry] = &[
         native_symbol: "ETH",
         native_decimals: 18,
         stake_base_units: 3_200_000_000_000_000, // 0.0032 ETH ($5 anchor, == deploy stakeWei)
+        stake_usd_cents: 500,                    // $5.00
+        peg_native_usd_cents: 156250,
         max_tranche_base_units: 6_400_000_000_000_000, // 0.0064 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
@@ -272,6 +295,8 @@ const REGISTRY: &[ChainEntry] = &[
         // is economically sane here (gas ≪ stake). Bump post-launch as desired;
         // keep in lockstep with the deploy workflow's base XCHAIN_STAKE_WEI.
         stake_base_units: 500_000_000_000_000, // 0.0005 ETH
+        stake_usd_cents: 150,                  // $1.50
+        peg_native_usd_cents: 300000,
         max_tranche_base_units: 1_000_000_000_000_000, // 0.001 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
@@ -312,6 +337,8 @@ const REGISTRY: &[ChainEntry] = &[
         // Note: L1 gas can rival the stake during congestion — acceptable per
         // founder (uniform pricing preferred over gas-minimized L1 stakes).
         stake_base_units: 2_500_000_000_000_000, // 0.0025 ETH
+        stake_usd_cents: 400,                    // $4.00
+        peg_native_usd_cents: 160000,
         max_tranche_base_units: 5_000_000_000_000_000, // 0.005 ETH (2× stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
@@ -584,6 +611,100 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// Convert a stake to USD cents at its recorded peg price.
+    fn pegged_usd_cents(e: &ChainEntry) -> f64 {
+        let native = e.stake_base_units as f64 / 10f64.powi(e.native_decimals as i32);
+        native * e.peg_native_usd_cents as f64
+    }
+
+    #[test]
+    fn stake_pegs_are_internally_consistent() {
+        // Each stake literal must actually equal what it CLAIMS to be worth at
+        // the price it was pegged at. Before this, intent lived in a prose
+        // comment and nothing compared it to the number beside it.
+        for e in REGISTRY {
+            let got = pegged_usd_cents(e);
+            let want = e.stake_usd_cents as f64;
+            let drift = (got - want).abs() / want;
+            assert!(
+                drift < 0.02,
+                "{}: stake {} base units at peg price {}c = ${:.2}, but declares ${:.2}",
+                e.chain_id,
+                e.stake_base_units,
+                e.peg_native_usd_cents,
+                got / 100.0,
+                want / 100.0,
+            );
+        }
+    }
+
+    #[test]
+    fn same_chain_mainnet_stakes_do_not_diverge_wildly() {
+        // THE INVARIANT THAT WAS MISSING. Same product, different chain, should
+        // not mean a 5x different price. This is deliberately a loose band —
+        // it is a smell detector, not a peg.
+        //
+        // KNOWN DEVIATION: Base mainnet is a deliberate low launch stake
+        // ($1.50 target) while Solana and Ethereum sit near $4. It is excluded
+        // BY NAME so the exclusion is a visible decision with an owner, not a
+        // silent hole. Delete this exclusion when Base is re-pegged.
+        const KNOWN_LOW_LAUNCH_TIER: &[&str] = &[BASE_MAINNET_CAIP2];
+
+        let mut usd: Vec<(&str, f64)> = Vec::new();
+        for e in REGISTRY {
+            if !e.is_mainnet || KNOWN_LOW_LAUNCH_TIER.contains(&e.chain_id) {
+                continue;
+            }
+            usd.push((e.chain_id, e.stake_usd_cents as f64));
+        }
+        assert!(usd.len() >= 2, "need >=2 comparable mainnet chains");
+        let lo = usd.iter().map(|(_, v)| *v).fold(f64::MAX, f64::min);
+        let hi = usd.iter().map(|(_, v)| *v).fold(0.0, f64::max);
+        assert!(
+            hi / lo <= 1.5,
+            "mainnet same-chain stakes diverge {:.1}x: {:?}",
+            hi / lo,
+            usd,
+        );
+    }
+
+    #[test]
+    fn base_mainnet_low_launch_tier_is_deliberate_and_pinned() {
+        // Pin the exception itself. If someone edits Base mainnet's stake, this
+        // fails and forces them to state the new intent rather than silently
+        // widening the 5x spread that started this.
+        let e = entry(&ChainId::parse(BASE_MAINNET_CAIP2).unwrap()).unwrap();
+        assert_eq!(
+            e.stake_usd_cents, 150,
+            "Base mainnet is the $1.50 launch tier"
+        );
+        assert_eq!(
+            e.stake_base_units, 500_000_000_000_000,
+            "must stay in lockstep with the deployed stakeWei and \
+             _deploy-evm.yml's base XCHAIN_STAKE_WEI",
+        );
+    }
+
+    #[test]
+    fn testnet_stakes_share_one_anchor() {
+        // Testnet stakes are nominal, but they should at least agree with each
+        // other — a testnet that silently costs 5x more distorts capital
+        // planning for the e2e sweeps.
+        let usd: Vec<(&str, u32)> = REGISTRY
+            .iter()
+            .filter(|e| !e.is_mainnet)
+            .map(|e| (e.chain_id, e.stake_usd_cents))
+            .collect();
+        let lo = usd.iter().map(|(_, v)| *v).min().unwrap() as f64;
+        let hi = usd.iter().map(|(_, v)| *v).max().unwrap() as f64;
+        assert!(
+            hi / lo <= 1.5,
+            "testnet stakes diverge {:.1}x: {:?}",
+            hi / lo,
+            usd
+        );
     }
 
     #[test]
