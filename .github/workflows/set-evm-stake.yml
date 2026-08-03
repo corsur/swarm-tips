@@ -1,0 +1,100 @@
+name: Set EVM Stake
+
+# Re-peg a deployed CoordinationGame's `stakeWei` through CI.
+#
+# Why this exists: there was NO path to change a stake except an ad-hoc owner
+# transaction from someone's laptop, which is both a manual production change
+# (forbidden by the standards) and exactly how three EVM anchors ended up pegged
+# at three different ETH prices — $1,562 / $3,000 / $1,600 — with the same
+# product costing 5x more on one chain than another.
+#
+# The value comes from crates/chain-registry, never from a typed input, so this
+# workflow cannot introduce a NEW divergence: it can only make the chain agree
+# with the registry. Run it after landing a registry re-peg; evm-ci's
+# registry-deployed-parity job then goes green.
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: 'Chain to re-peg'
+        required: true
+        type: choice
+        options:
+          - base_sepolia
+          - base
+          - ethereum
+        default: base_sepolia
+      confirm:
+        description: 'Type SET-STAKE to confirm'
+        required: true
+        type: string
+
+jobs:
+  set-stake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify confirmation phrase
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "SET-STAKE" ]; then
+            echo "::error::confirmation phrase mismatch — type exactly SET-STAKE"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Resolve chain, contract and stake FROM THE REGISTRY
+        id: cfg
+        run: |
+          set -euo pipefail
+          case "${{ github.event.inputs.network }}" in
+            base_sepolia) CAIP2="eip155:84532"; RPC="https://sepolia.base.org" ;;
+            base)         CAIP2="eip155:8453";  RPC="https://base-rpc.publicnode.com" ;;
+            ethereum)     CAIP2="eip155:1";     RPC="https://ethereum-rpc.publicnode.com" ;;
+            *) echo "::error::unknown network"; exit 1 ;;
+          esac
+          # Parse the registry rather than accepting a typed number. A hand-typed
+          # stake is precisely the input that produced the divergence.
+          SRC=crates/chain-registry/src/lib.rs
+          CONST=$(grep -oE "pub const [A-Z0-9_]+_CAIP2: &str = \"$CAIP2\"" "$SRC" | grep -oE "[A-Z0-9_]+_CAIP2" | head -1)
+          [ -n "$CONST" ] || { echo "::error::no registry entry for $CAIP2"; exit 1; }
+          BLOCK=$(awk "/chain_id: $CONST,/,/^    },/" "$SRC")
+          # NB: extract AFTER the colon. `grep -oE "[0-9_]+"` also matches the
+          # underscores inside the identifier "stake_base_units", so head -1
+          # returned "_" and the value came out empty.
+          STAKE=$(echo "$BLOCK" | grep -oE "stake_base_units: [0-9_]+" | head -1 | sed 's/.*: //' | tr -d _)
+          GAME=$(echo "$BLOCK" | grep -oE 'coordination_game_contract: Some\("0x[0-9a-fA-F]+"\)' | grep -oE "0x[0-9a-fA-F]+" | head -1)
+          [ -n "$STAKE" ] && [ -n "$GAME" ] || { echo "::error::registry missing stake or contract for $CAIP2"; exit 1; }
+          echo "caip2=$CAIP2"   >> "$GITHUB_OUTPUT"
+          echo "rpc=${{ secrets.EVM_MAINNET_RPC_URL }}" >> "$GITHUB_OUTPUT"
+          echo "rpc_fallback=$RPC" >> "$GITHUB_OUTPUT"
+          echo "stake=$STAKE"   >> "$GITHUB_OUTPUT"
+          echo "game=$GAME"     >> "$GITHUB_OUTPUT"
+          echo "Registry says $CAIP2 stake=$STAKE contract=$GAME"
+
+      - name: Run SetStake
+        working-directory: evm
+        env:
+          COORDINATION_GAME: ${{ steps.cfg.outputs.game }}
+          NEW_STAKE_WEI: ${{ steps.cfg.outputs.stake }}
+          OWNER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+        run: |
+          set -euo pipefail
+          RPC="${{ steps.cfg.outputs.rpc }}"
+          [ -n "$RPC" ] || RPC="${{ steps.cfg.outputs.rpc_fallback }}"
+          forge script script/SetStake.s.sol \
+            --rpc-url "$RPC" --private-key "$OWNER_PK" --broadcast -vvv
+
+      - name: Verify the chain now matches the registry
+        working-directory: evm
+        run: |
+          set -euo pipefail
+          RPC="${{ steps.cfg.outputs.rpc }}"
+          [ -n "$RPC" ] || RPC="${{ steps.cfg.outputs.rpc_fallback }}"
+          ONCHAIN=$(cast call "${{ steps.cfg.outputs.game }}" "stakeWei()(uint256)" --rpc-url "$RPC")
+          echo "on-chain stakeWei=$ONCHAIN registry=${{ steps.cfg.outputs.stake }}"
+          # A broadcast that "succeeded" is not proof the value moved.
+          [ "$ONCHAIN" = "${{ steps.cfg.outputs.stake }}" ] || {
+            echo "::error::stakeWei did not take effect"; exit 1; }
