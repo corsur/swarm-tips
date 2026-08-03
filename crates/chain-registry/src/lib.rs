@@ -149,9 +149,24 @@ const REGISTRY: &[ChainEntry] = &[
         // uses the on-chain FIXED_STAKE constant); create_xmatch takes stake as
         // an arg (no fixed on-chain stake), and 0.068 ≤ the live xpool's 0.1-SOL
         // max_tranche, so no Solana redeploy or pool reconfig is needed.
-        stake_base_units: 68_000_000, // ~0.068 SOL ($5 parity with the EVM leg)
-        stake_usd_cents: 500,         // $5.00
-        peg_native_usd_cents: 7353,
+        // PINNED TO DEFAULT_STAKE_LAMPORTS (0.05 SOL), NOT the $5 anchor.
+        //
+        // create_game requires `escrow.amount == global_config.stake_lamports`,
+        // but neither deployed client passes the optional global_config account
+        // on deposit_stake — the frontend uses .accounts() only, and
+        // coordination-app pins game-chain at def85b47, which predates the
+        // append. So both deposit at DEFAULT_STAKE_LAMPORTS. Configuring
+        // anything else here makes every Solana devnet game fail StakeMismatch
+        // (0x1776) at creation: clients can deposit and can never play.
+        //
+        // The optional-account design removed the need to coordinate a client
+        // release for the ACCOUNT change; it does not remove it for a VALUE
+        // change. Raising this to the $5 anchor requires the frontend to send
+        // remainingAccounts and coordination-app to bump the game-chain pin.
+        // Until then this stays equal to the compile-time default.
+        stake_base_units: 50_000_000, // 0.05 SOL == DEFAULT_STAKE_LAMPORTS
+        stake_usd_cents: 364,         // $3.64
+        peg_native_usd_cents: 7286,
         max_tranche_base_units: 100_000_000, // 0.1 SOL (unchanged; == live xpool max_tranche)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
