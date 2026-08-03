@@ -210,6 +210,20 @@ jobs:
             --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi \
             target/deploy/shillbot.so
 
+      # Same reason as the mainnet job: a struct change is not live until its
+      # migration has run, and separating them is what broke mainnet. Idempotent.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Migrate + reconcile GlobalConfig
+        env:
+          ANCHOR_WALLET: /home/runner/.config/solana/id.json
+          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_DEVNET }}
+        run: |
+          set -euo pipefail
+          npm install --legacy-peer-deps
+          npx tsx scripts/reconcile-solana-stake.ts --cluster devnet --apply
+
       - name: Initialize / upgrade on-chain IDL (best effort)
         # Off-chain consumers use the SDK's bundled IDL, not the on-chain
         # copy, so the program runs correctly even if these calls fail.
