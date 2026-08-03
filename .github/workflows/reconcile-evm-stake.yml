@@ -66,11 +66,11 @@ jobs:
             environment: testnet
           - network: base
             caip2: 'eip155:8453'
-            rpc: https://base-rpc.publicnode.com
+            rpc: https://mainnet.base.org
             environment: mainnet
           - network: ethereum
             caip2: 'eip155:1'
-            rpc: https://ethereum-rpc.publicnode.com
+            rpc: https://eth.drpc.org
             environment: mainnet
     runs-on: ubuntu-latest
     environment: ${{ matrix.environment }}
