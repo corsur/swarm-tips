@@ -41,6 +41,7 @@
  */
 import { readFileSync } from "fs";
 import { createHash } from "crypto";
+import { classifySendFailure, planRetry } from "./evm-send-retry";
 import {
   createPublicClient,
   createWalletClient,
@@ -347,6 +348,55 @@ interface Env {
   txlog: Record<string, Hex>;
 }
 
+/** Max send attempts per call. Bounded per the "loops need a fixed bound" rule. */
+const MAX_SEND_ATTEMPTS = 4;
+
+/**
+ * Send one contract call, retrying transport failures with a fresh `pending`
+ * nonce. viem auto-fills the nonce from `latest`, which lags the mempool, so
+ * consecutive sends from one account collide with "Nonce provided for the
+ * transaction is lower than the current nonce of the account" — that killed
+ * cells mid-run. A revert is never retried (see classifySendFailure).
+ */
+async function sendWithRetry(
+  env: Env,
+  wallet: WalletClient,
+  account: PrivateKeyAccount,
+  send: (nonce?: number) => Promise<Hex>
+): Promise<Hex> {
+  let nonce: number | undefined;
+  for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt++) {
+    try {
+      return await send(nonce);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const step = planRetry(
+        attempt,
+        MAX_SEND_ATTEMPTS,
+        classifySendFailure(msg)
+      );
+      if (!step.retry) throw e;
+      if (step.refreshNonce) {
+        // `pending`, not `latest`: the whole point is to see our own in-flight tx.
+        nonce = await env.pub.getTransactionCount({
+          address: account.address,
+          blockTag: "pending",
+        });
+      }
+      console.warn(
+        `    send attempt ${attempt}/${MAX_SEND_ATTEMPTS} failed (${classifySendFailure(
+          msg
+        )}), ` +
+          `retrying in ${step.backoffMs}ms${
+            step.refreshNonce ? ` with nonce ${nonce}` : ""
+          }: ${msg.slice(0, 120)}`
+      );
+      await new Promise((r) => setTimeout(r, step.backoffMs));
+    }
+  }
+  throw new Error("unreachable: retry loop exhausted without returning");
+}
+
 async function writeAndWait(
   env: Env,
   wallet: WalletClient,
@@ -355,15 +405,18 @@ async function writeAndWait(
   args: unknown[],
   value?: bigint
 ): Promise<Hex> {
-  const hash = await wallet.writeContract({
-    address: ESCROW,
-    abi: ABI,
-    functionName: functionName as never,
-    args: args as never,
-    account,
-    chain: VIEM_CHAIN,
-    ...(value !== undefined ? { value } : {}),
-  });
+  const hash = await sendWithRetry(env, wallet, account, (nonce) =>
+    wallet.writeContract({
+      address: ESCROW,
+      abi: ABI,
+      functionName: functionName as never,
+      args: args as never,
+      account,
+      chain: VIEM_CHAIN,
+      ...(nonce !== undefined ? { nonce } : {}),
+      ...(value !== undefined ? { value } : {}),
+    })
+  );
   await env.pub.waitForTransactionReceipt({ hash });
   return hash;
 }
@@ -379,15 +432,18 @@ async function createTaskViaEvent(
   client: PrivateKeyAccount,
   args: unknown[]
 ): Promise<bigint> {
-  const hash = await env.clientW.writeContract({
-    address: ESCROW,
-    abi: ABI,
-    functionName: "createTask",
-    args: args as never,
-    account: client,
-    chain: VIEM_CHAIN,
-    value: ESCROW_WEI,
-  });
+  const hash = await sendWithRetry(env, env.clientW, client, (nonce) =>
+    env.clientW.writeContract({
+      address: ESCROW,
+      abi: ABI,
+      functionName: "createTask",
+      args: args as never,
+      account: client,
+      chain: VIEM_CHAIN,
+      ...(nonce !== undefined ? { nonce } : {}),
+      value: ESCROW_WEI,
+    })
+  );
   const rcpt = await env.pub.waitForTransactionReceipt({ hash });
   env.txlog[`${cellName}/create`] = hash;
   const created = parseEventLogs({

@@ -229,7 +229,10 @@ async function main() {
 
   const programState = State.keyFromSeed(program as any);
   // (the removed third arg was allowOwnerOffCurve, which the helper ignored)
-  const rewardVault = getAssociatedTokenAddressSync(SOL_NATIVE_MINT, queuePubkey);
+  const rewardVault = getAssociatedTokenAddressSync(
+    SOL_NATIVE_MINT,
+    queuePubkey
+  );
 
   const oraclePubkeys = response.oracle_responses.map(
     (r: any) => new PublicKey(Buffer.from(r.oracle_pubkey, "hex"))
