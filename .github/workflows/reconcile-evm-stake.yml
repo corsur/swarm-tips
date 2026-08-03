@@ -87,6 +87,10 @@ jobs:
 
       - uses: actions/checkout@v4
         if: steps.gate.outputs.run == 'true'
+        with:
+          # OpenZeppelin is vendored as a submodule; without this `forge script`
+          # cannot resolve @openzeppelin/... and fails to compile.
+          submodules: recursive
 
       - name: Install Foundry
         if: steps.gate.outputs.run == 'true'
@@ -129,7 +133,10 @@ jobs:
           # state and "reconcile" against it.
           RPC="${{ matrix.rpc }}"
           echo "rpc=$RPC" >> "$GITHUB_OUTPUT"
-          ONCHAIN=$(cast call "${{ steps.want.outputs.game }}" "stakeWei()(uint256)" --rpc-url "$RPC")
+          # `cast call` prints `3200000000000000 [3.2e15]`; the scientific-notation
+          # suffix is part of stdout. Comparing the raw string ALWAYS reported
+          # drift, so this workflow would have re-applied on every run.
+          ONCHAIN=$(cast call "${{ steps.want.outputs.game }}" "stakeWei()(uint256)" --rpc-url "$RPC" | awk '{print $1}')
           echo "onchain=$ONCHAIN" >> "$GITHUB_OUTPUT"
           if [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ]; then
             echo "::notice::${{ matrix.caip2 }} already at ${ONCHAIN} — no change"
@@ -156,7 +163,7 @@ jobs:
         run: |
           set -euo pipefail
           ONCHAIN=$(cast call "${{ steps.want.outputs.game }}" "stakeWei()(uint256)" \
-                    --rpc-url "${{ steps.diff.outputs.rpc }}")
+                    --rpc-url "${{ steps.diff.outputs.rpc }}" | awk '{print $1}')
           echo "${{ matrix.caip2 }}: on-chain=$ONCHAIN desired=${{ steps.want.outputs.stake }}"
           [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ] || {
             echo "::error::${{ matrix.caip2 }} stakeWei did not take effect"; exit 1; }
