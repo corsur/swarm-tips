@@ -613,6 +613,76 @@ mod tests {
         }
     }
 
+    /// Parse `XCHAIN_STAKE_WEI` / `XCHAIN_MAX_TRANCHE_WEI` per CAIP-2 out of the
+    /// deploy workflow. Reads the YAML as text on purpose — the point is to
+    /// compare against what CI will ACTUALLY export, not a re-encoding of it.
+    fn workflow_stakes() -> Vec<(String, u128, u128)> {
+        let yaml = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.github/workflows/_deploy-evm.yml"
+        ))
+        .expect("_deploy-evm.yml must be readable from the crate dir");
+        let mut out = Vec::new();
+        let (mut caip2, mut stake) = (None::<String>, None::<u128>);
+        for line in yaml.lines() {
+            let l = line.trim();
+            let grab = |key: &str| -> Option<String> {
+                let i = l.find(key)?;
+                let rest = &l[i + key.len()..];
+                Some(rest.split(&['"', ' ', '\''][..]).next()?.to_string())
+            };
+            if let Some(v) = grab("CAIP2=") {
+                caip2 = Some(v);
+            } else if let Some(v) = grab("XCHAIN_STAKE_WEI=") {
+                stake = v.parse().ok();
+            } else if let Some(v) = grab("XCHAIN_MAX_TRANCHE_WEI=") {
+                if let (Some(c), Some(s), Ok(tr)) = (caip2.clone(), stake, v.parse::<u128>()) {
+                    out.push((c, s, tr));
+                    caip2 = None;
+                    stake = None;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn deploy_workflow_stakes_match_the_registry() {
+        // THE SINGLE-SOURCE-OF-TRUTH RULE, ENFORCED. The registry comment asks
+        // to "keep in lockstep with the deploy workflow's XCHAIN_STAKE_WEI" —
+        // that was a wish with nothing behind it, and the same value lives in
+        // 15+ places across four languages plus the chain. A wrong literal here
+        // deploys a contract whose stakeWei disagrees with what game-api will
+        // ask players for, and every createGame reverts BadStake.
+        let wf = workflow_stakes();
+        assert!(!wf.is_empty(), "parsed no stakes out of _deploy-evm.yml");
+        let mut checked = 0;
+        for (caip2, stake, tranche) in wf {
+            let Ok(id) = ChainId::parse(&caip2) else {
+                continue;
+            };
+            let Some(e) = entry(&id) else {
+                // A chain in the workflow but not the registry is itself drift.
+                panic!("_deploy-evm.yml deploys to {caip2}, which the registry does not know");
+            };
+            assert_eq!(
+                stake, e.stake_base_units,
+                "{caip2}: workflow deploys stakeWei={stake} but registry says {}",
+                e.stake_base_units,
+            );
+            assert_eq!(
+                tranche, e.max_tranche_base_units,
+                "{caip2}: workflow maxTranche={tranche} but registry says {}",
+                e.max_tranche_base_units,
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 2,
+            "expected to check >=2 chains, checked {checked}"
+        );
+    }
+
     /// Convert a stake to USD cents at its recorded peg price.
     fn pegged_usd_cents(e: &ChainEntry) -> f64 {
         let native = e.stake_base_units as f64 / 10f64.powi(e.native_decimals as i32);
