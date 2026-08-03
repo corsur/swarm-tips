@@ -6,7 +6,8 @@ The stake exists in four places that must agree, or the chain is unplayable:
 |---|---|---|
 | `crates/chain-registry/src/lib.rs` | `stake_base_units` | this repo |
 | `.github/workflows/_deploy-evm.yml` | `XCHAIN_STAKE_WEI` | this repo |
-| the deployed contract | `stakeWei` | **`setConfig`, on-chain** |
+| the deployed **CoordinationGame** | `stakeWei` | `Reconcile EVM Stake` (auto) |
+| the deployed **CrossChainGame** | `stakeWei` + `maxTrancheWei` | `Reconcile EVM Stake` (auto) |
 | `coordination-app` frontend + e2e | display + harness copies | the other repo |
 
 Two of those are enforced automatically:
@@ -67,8 +68,16 @@ Two constraints, and only one of them binds:
   `QUOTE_MAX_AGE_SECS` 600) and `FX_BAND_BPS` 1500. Lengthening matches would
   reopen it; changing the price would not.
 
+> **Two contracts per chain.** One registry `stake_base_units` governs BOTH the
+> same-chain `CoordinationGame` and the cross-chain `CrossChainGame`. The first
+> re-peg moved only the former; CI's `registry-deployed-parity` reads the LATTER
+> and stayed correctly red. A cross-chain match records exactly `stakeWei` in its
+> certificate, so a mismatched CrossChainGame does not mis-price — it makes the
+> settle digest check fail on live matches.
+
 **APPLIED 2026-08-03.** Base and Ethereum mainnet re-pegged from 0.0005 / 0.0025
-to 0.0027 ETH by the `Reconcile EVM Stake` workflow, verified on-chain. The
+to 0.0027 ETH by the `Reconcile EVM Stake` workflow — BOTH contracts on both
+chains, six in total, verified on-chain. The
 manual procedure above is now only for reference — editing the registry and
 merging is the whole operation.
 
