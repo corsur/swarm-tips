@@ -170,8 +170,15 @@ jobs:
         if: steps.gate.outputs.run == 'true' && steps.diff.outputs.apply == 'true'
         run: |
           set -euo pipefail
-          ONCHAIN=$(cast call "${{ steps.want.outputs.game }}" "stakeWei()(uint256)" \
-                    --rpc-url "${{ steps.diff.outputs.rpc }}" | awk '{print $1}')
+          # Retry: the read can race the broadcast. The Base run applied
+          # correctly and then reported FAILURE on a verify that ran before the
+          # node served the new value — a status disagreeing with the chain, the
+          # exact failure mode this workflow exists to prevent.
+          for i in 1 2 3 4 5 6; do
+            ONCHAIN=$(cast call "${{ steps.want.outputs.game }}" "stakeWei()(uint256)" --rpc-url "${{ steps.diff.outputs.rpc }}" | awk '{print $1}')
+            [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ] && break
+            echo "attempt $i: on-chain=$ONCHAIN, waiting"; sleep 10
+          done
           echo "${{ matrix.caip2 }}: on-chain=$ONCHAIN desired=${{ steps.want.outputs.stake }}"
           [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ] || {
             echo "::error::${{ matrix.caip2 }} stakeWei did not take effect"; exit 1; }
@@ -211,8 +218,15 @@ jobs:
         if: steps.gate.outputs.run == 'true' && steps.xdiff.outputs.apply == 'true'
         run: |
           set -euo pipefail
-          ONCHAIN=$(cast call "${{ steps.want.outputs.xgame }}" "stakeWei()(uint256)" \
-                    --rpc-url "${{ steps.diff.outputs.rpc }}" | awk '{print $1}')
+          # Retry: the read can race the broadcast. The Base run applied
+          # correctly and then reported FAILURE on a verify that ran before the
+          # node served the new value — a status disagreeing with the chain, the
+          # exact failure mode this workflow exists to prevent.
+          for i in 1 2 3 4 5 6; do
+            ONCHAIN=$(cast call "${{ steps.want.outputs.xgame }}" "stakeWei()(uint256)" --rpc-url "${{ steps.diff.outputs.rpc }}" | awk '{print $1}')
+            [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ] && break
+            echo "attempt $i: on-chain=$ONCHAIN, waiting"; sleep 10
+          done
           [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ] || {
             echo "::error::${{ matrix.caip2 }} CrossChainGame stakeWei did not take effect"; exit 1; }
           echo "### Reconciled ${{ matrix.caip2 }} CrossChainGame → $ONCHAIN wei" >> "$GITHUB_STEP_SUMMARY"
