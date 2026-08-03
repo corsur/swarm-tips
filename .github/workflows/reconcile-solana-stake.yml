@@ -51,6 +51,20 @@ jobs:
         with:
           node-version: 20
 
+      # The IDL is a build artifact under target/ and is GITIGNORED, so it does
+      # not exist on a fresh checkout. The reconcile script loads it to build
+      # its instruction calls, so without this the workflow fails on a missing
+      # file — not on anything to do with the chain.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Anchor
+        run: |
+          set -euo pipefail
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+          avm install latest && avm use latest
+      - name: Generate the IDL
+        working-directory: programs/coordination-game
+        run: anchor idl build -o ../../target/idl/coordination_game.json
+
       - name: Install deps
         run: npm ci || npm install
 
@@ -66,7 +80,6 @@ jobs:
 
       - name: Reconcile
         env:
-          # The IDL is committed under target/idl; the script reads it there.
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
           SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_DEVNET }}
         run: |
