@@ -352,6 +352,16 @@ jobs:
       # anchor, keypair, and the IDL that `anchor build` just emitted). The
       # script is idempotent: it skips the migration when already applied and
       # skips the stake write when it already matches the registry.
+      # deploy-mainnet, unlike deploy-devnet and test, does NOT set up pnpm
+      # earlier in the job — so this step needs it. (Removing my duplicated
+      # setup was right for devnet and wrong here; the two jobs are not
+      # symmetric, and I treated them as if they were.)
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Migrate + reconcile GlobalConfig
         env:
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
