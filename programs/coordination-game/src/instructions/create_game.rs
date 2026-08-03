@@ -3,7 +3,7 @@ use crate::events::GameCreated;
 use crate::instructions::utils::{init_game, transfer_lamports, validate_tournament_cutoff};
 use crate::state::{
     Game, GameCounter, GameState, GlobalConfig, PlayerProfile, StakeEscrow, Tournament,
-    FIXED_STAKE_LAMPORTS, MATCHUP_TYPE_UNSET,
+    MATCHUP_TYPE_UNSET,
 };
 use anchor_lang::prelude::*;
 
@@ -36,6 +36,7 @@ pub fn create_game(
         &player_key,
         tournament_id,
         now,
+        ctx.accounts.global_config.stake_lamports,
     )?;
     // Effects
     let game_id = commit_creation_state(
@@ -80,9 +81,13 @@ pub(crate) fn validate_create_inputs(
     player_key: &Pubkey,
     tournament_id: u64,
     now: i64,
+    expected_stake: u64,
 ) -> Result<()> {
+    // The live configured stake, not a compile-time constant — re-pegging must
+    // not require a program upgrade (that asymmetry is why Solana drifted to
+    // $3.64 against a $5 EVM anchor).
     require!(
-        stake_lamports == FIXED_STAKE_LAMPORTS,
+        stake_lamports == expected_stake,
         CoordinationError::StakeMismatch
     );
     require!(
@@ -99,7 +104,7 @@ pub(crate) fn validate_create_inputs(
     );
     validate_tournament_cutoff(now, tournament.end_time)?;
     require!(
-        escrow.validate_for_game(player_key, tournament_id),
+        escrow.validate_for_game(player_key, tournament_id, expected_stake),
         CoordinationError::EscrowInvalid,
     );
     Ok(())

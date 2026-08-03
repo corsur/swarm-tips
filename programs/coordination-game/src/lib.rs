@@ -46,6 +46,18 @@ pub mod coordination_game {
         )
     }
 
+    /// One-shot realloc of the singleton GlobalConfig to carry `stake_lamports`.
+    /// Run once per network; idempotent thereafter.
+    pub fn migrate_global_config(ctx: Context<MigrateGlobalConfig>) -> Result<()> {
+        instructions::migrate_global_config(ctx)
+    }
+
+    /// Re-peg the per-game stake without a program upgrade — the Solana
+    /// counterpart of the EVM contract's `setConfig`.
+    pub fn set_stake_lamports(ctx: Context<SetStakeLamports>, new_stake: u64) -> Result<()> {
+        instructions::set_stake_lamports(ctx, new_stake)
+    }
+
     pub fn create_tournament(
         ctx: Context<CreateTournament>,
         tournament_id: u64,

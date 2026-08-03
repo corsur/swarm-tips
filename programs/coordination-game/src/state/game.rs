@@ -2,7 +2,16 @@ use anchor_lang::prelude::*;
 
 pub const COMMIT_TIMEOUT_SLOTS: u64 = 7_200;
 pub const REVEAL_TIMEOUT_SLOTS: u64 = 14_400;
-pub const FIXED_STAKE_LAMPORTS: u64 = 50_000_000; // 0.05 SOL
+/// Seed value for `GlobalConfig.stake_lamports` at migration, and the stake
+/// used by any path that predates the configurable stake. NOT the enforced
+/// value any more — `create_game` and `deposit_stake` read the live config.
+pub const DEFAULT_STAKE_LAMPORTS: u64 = 50_000_000; // 0.05 SOL
+
+/// Bounds on a configurable stake, mirroring the EVM contract's
+/// MIN_STAKE_WEI / MAX_STAKE_WEI. A stake outside these is rejected at the
+/// boundary rather than trusted because an authority signed for it.
+pub const MIN_STAKE_LAMPORTS: u64 = 1_000_000; // 0.001 SOL
+pub const MAX_STAKE_LAMPORTS: u64 = 100_000_000_000; // 100 SOL
 
 /// Seconds after `Game.created_at` before an un-joined `Pending` game can be
 /// refunded via `refund_pending`. Timestamp-based (a Pending game has no

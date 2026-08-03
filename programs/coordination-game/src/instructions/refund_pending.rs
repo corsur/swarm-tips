@@ -147,7 +147,7 @@ mod tests {
         // Conservation: a Pending game holds exactly P1's one stake (P2 never
         // deposited), so the refund equals stake_lamports and treasury/tournament
         // get nothing. This documents the invariant the handler relies on.
-        let stake = crate::state::FIXED_STAKE_LAMPORTS;
+        let stake = crate::state::DEFAULT_STAKE_LAMPORTS;
         let refund = stake; // handler: `let refund = game.stake_lamports;`
         assert_eq!(refund, stake);
     }

@@ -35,6 +35,7 @@ pub fn create_game_session(
         &player_key,
         tournament_id,
         now,
+        ctx.accounts.global_config.stake_lamports,
     )?;
     // Effects
     let game_id = commit_creation_state(

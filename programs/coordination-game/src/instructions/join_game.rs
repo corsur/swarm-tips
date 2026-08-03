@@ -71,7 +71,7 @@ pub(crate) fn validate_join_inputs(
         CoordinationError::CannotJoinOwnGame,
     );
     require!(
-        escrow.validate_for_game(player_key, tournament.tournament_id),
+        escrow.validate_for_game(player_key, tournament.tournament_id, game.stake_lamports),
         CoordinationError::EscrowInvalid,
     );
     Ok(())

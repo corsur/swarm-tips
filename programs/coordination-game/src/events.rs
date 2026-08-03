@@ -175,3 +175,12 @@ pub struct XMatchRefunded {
     pub match_id: [u8; 32],
     pub to_player: u64,
 }
+
+/// Emitted when the authority re-pegs the per-game stake. Carries both values
+/// so an indexer can reconstruct the peg history without diffing account state.
+#[event]
+pub struct StakeConfigured {
+    pub previous_lamports: u64,
+    pub new_lamports: u64,
+    pub authority: Pubkey,
+}

@@ -1,7 +1,5 @@
 use anchor_lang::prelude::*;
 
-use super::FIXED_STAKE_LAMPORTS;
-
 /// Per-player escrow that holds staked lamports while the player is in the
 /// matchmaking queue. Created by `deposit_stake`, consumed by `create_game`
 /// or `join_game`, refunded by `withdraw_stake`.
@@ -28,10 +26,19 @@ impl StakeEscrow {
         + 1; // bump
 
     /// Validate that the escrow is ready to be consumed by a game instruction.
-    pub fn validate_for_game(&self, player: &Pubkey, tournament_id: u64) -> bool {
+    ///
+    /// `expected_stake` is the LIVE stake from `GlobalConfig`, not a constant:
+    /// an escrow funded at a superseded stake must not be consumable, or one
+    /// player could enter a game having staked less than the other.
+    pub fn validate_for_game(
+        &self,
+        player: &Pubkey,
+        tournament_id: u64,
+        expected_stake: u64,
+    ) -> bool {
         self.player == *player
             && self.tournament_id == tournament_id
-            && self.amount == FIXED_STAKE_LAMPORTS
+            && self.amount == expected_stake
             && !self.consumed
     }
 }
@@ -44,7 +51,7 @@ mod tests {
         StakeEscrow {
             player,
             tournament_id,
-            amount: FIXED_STAKE_LAMPORTS,
+            amount: crate::state::DEFAULT_STAKE_LAMPORTS,
             consumed,
             bump: 255,
         }
@@ -54,14 +61,14 @@ mod tests {
     fn validate_for_game_accepts_valid_escrow() {
         let pk = Pubkey::new_unique();
         let escrow = make_escrow(pk, 1, false);
-        assert!(escrow.validate_for_game(&pk, 1));
+        assert!(escrow.validate_for_game(&pk, 1, crate::state::DEFAULT_STAKE_LAMPORTS));
     }
 
     #[test]
     fn validate_for_game_rejects_consumed_escrow() {
         let pk = Pubkey::new_unique();
         let escrow = make_escrow(pk, 1, true);
-        assert!(!escrow.validate_for_game(&pk, 1));
+        assert!(!escrow.validate_for_game(&pk, 1, crate::state::DEFAULT_STAKE_LAMPORTS));
     }
 
     #[test]
@@ -69,14 +76,14 @@ mod tests {
         let pk = Pubkey::new_unique();
         let other = Pubkey::new_unique();
         let escrow = make_escrow(pk, 1, false);
-        assert!(!escrow.validate_for_game(&other, 1));
+        assert!(!escrow.validate_for_game(&other, 1, crate::state::DEFAULT_STAKE_LAMPORTS));
     }
 
     #[test]
     fn validate_for_game_rejects_wrong_tournament() {
         let pk = Pubkey::new_unique();
         let escrow = make_escrow(pk, 1, false);
-        assert!(!escrow.validate_for_game(&pk, 2));
+        assert!(!escrow.validate_for_game(&pk, 2, crate::state::DEFAULT_STAKE_LAMPORTS));
     }
 
     #[test]
@@ -84,6 +91,6 @@ mod tests {
         let pk = Pubkey::new_unique();
         let mut escrow = make_escrow(pk, 1, false);
         escrow.amount = 0;
-        assert!(!escrow.validate_for_game(&pk, 1));
+        assert!(!escrow.validate_for_game(&pk, 1, crate::state::DEFAULT_STAKE_LAMPORTS));
     }
 }

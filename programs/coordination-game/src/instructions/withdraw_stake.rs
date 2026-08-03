@@ -53,7 +53,7 @@ pub struct WithdrawStake<'info> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::FIXED_STAKE_LAMPORTS;
+    use crate::state::DEFAULT_STAKE_LAMPORTS;
 
     #[test]
     fn consumed_escrow_is_rejected_by_validate() {
@@ -61,11 +61,11 @@ mod tests {
         let escrow = StakeEscrow {
             player: pk,
             tournament_id: 1,
-            amount: FIXED_STAKE_LAMPORTS,
+            amount: DEFAULT_STAKE_LAMPORTS,
             consumed: true,
             bump: 255,
         };
-        assert!(!escrow.validate_for_game(&pk, 1));
+        assert!(!escrow.validate_for_game(&pk, 1, DEFAULT_STAKE_LAMPORTS));
     }
 
     #[test]
@@ -74,10 +74,10 @@ mod tests {
         let escrow = StakeEscrow {
             player: pk,
             tournament_id: 1,
-            amount: FIXED_STAKE_LAMPORTS,
+            amount: DEFAULT_STAKE_LAMPORTS,
             consumed: false,
             bump: 255,
         };
-        assert!(escrow.validate_for_game(&pk, 1));
+        assert!(escrow.validate_for_game(&pk, 1, DEFAULT_STAKE_LAMPORTS));
     }
 }

@@ -1,6 +1,6 @@
 use crate::errors::CoordinationError;
 use crate::events::StakeDeposited;
-use crate::state::{StakeEscrow, Tournament, FIXED_STAKE_LAMPORTS};
+use crate::state::{GlobalConfig, StakeEscrow, Tournament};
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
@@ -12,6 +12,9 @@ use anchor_lang::system_program;
 /// without playing, they call `withdraw_stake` to reclaim their deposit.
 pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
+    // The live configured stake. Reading it here (rather than a constant) is
+    // what lets a re-peg be an instruction instead of a program upgrade.
+    let stake = ctx.accounts.global_config.stake_lamports;
     require!(
         ctx.accounts.tournament.is_active(now),
         CoordinationError::OutsideTournamentWindow,
@@ -27,7 +30,7 @@ pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
             escrow.player == ctx.accounts.player.key(),
             CoordinationError::InvalidGameState,
         );
-        if escrow.amount == FIXED_STAKE_LAMPORTS {
+        if escrow.amount == stake {
             msg!("deposit_stake: escrow already active, no-op");
             return Ok(());
         }
@@ -37,7 +40,7 @@ pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
     }
     escrow.player = ctx.accounts.player.key();
     escrow.tournament_id = ctx.accounts.tournament.tournament_id;
-    escrow.amount = FIXED_STAKE_LAMPORTS;
+    escrow.amount = stake;
     escrow.consumed = false;
     escrow.bump = ctx.bumps.escrow;
 
@@ -46,10 +49,7 @@ pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
         escrow.player == ctx.accounts.player.key(),
         CoordinationError::InvalidGameState,
     );
-    require!(
-        escrow.amount == FIXED_STAKE_LAMPORTS,
-        CoordinationError::StakeMismatch,
-    );
+    require!(escrow.amount == stake, CoordinationError::StakeMismatch,);
 
     // Transfer stake from player to escrow PDA
     system_program::transfer(
@@ -60,19 +60,24 @@ pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
                 to: ctx.accounts.escrow.to_account_info(),
             },
         ),
-        FIXED_STAKE_LAMPORTS,
+        stake,
     )?;
 
     emit!(StakeDeposited {
         player: ctx.accounts.player.key(),
         tournament_id: ctx.accounts.tournament.tournament_id,
-        amount: FIXED_STAKE_LAMPORTS,
+        amount: stake,
     });
     Ok(())
 }
 
 #[derive(Accounts)]
 pub struct DepositStake<'info> {
+    /// Source of the live stake. REQUIRED (not optional): an escrow funded at a
+    /// superseded amount must never validate for a game, or one player could
+    /// enter having staked less than the other.
+    #[account(seeds = [b"global_config"], bump = global_config.bump)]
+    pub global_config: Account<'info, GlobalConfig>,
     #[account(
         init_if_needed,
         payer = player,
