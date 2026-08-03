@@ -24,7 +24,13 @@ import {
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
-import { AnchorProvider, Program, Wallet, type Idl } from "@coral-xyz/anchor";
+import {
+  AnchorProvider,
+  BN,
+  Program,
+  Wallet,
+  type Idl,
+} from "@coral-xyz/anchor";
 import { readFileSync } from "fs";
 import { homedir } from "os";
 
@@ -190,7 +196,10 @@ async function main(): Promise<void> {
       };
     }
   ).methods
-    .setStakeLamports(want)
+    // Anchor serializes u64 args via BN; passing a JS bigint fails with
+    // "src.toArrayLike is not a function" AFTER the migration has already
+    // landed, which is the worst place to stop.
+    .setStakeLamports(new BN(want.toString()))
     .accounts({ globalConfig, authority: authority.publicKey })
     .rpc();
   const verify = await connection.getAccountInfo(globalConfig);
