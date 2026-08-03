@@ -67,6 +67,11 @@ Two constraints, and only one of them binds:
   `QUOTE_MAX_AGE_SECS` 600) and `FX_BAND_BPS` 1500. Lengthening matches would
   reopen it; changing the price would not.
 
+**APPLIED 2026-08-03.** Base and Ethereum mainnet re-pegged from 0.0005 / 0.0025
+to 0.0027 ETH by the `Reconcile EVM Stake` workflow, verified on-chain. The
+manual procedure above is now only for reference — editing the registry and
+merging is the whole operation.
+
 Current anchor: **$5.00**, one shared value across all EVM chains. Base and
 Ethereum are both ETH-denominated, so a single `stakeWei` keeps them equal in
 USD forever with no oracle — which is what went wrong before, when three chains
