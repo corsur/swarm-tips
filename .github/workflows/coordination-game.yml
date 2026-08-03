@@ -327,6 +327,28 @@ jobs:
 
       - name: Deploy coordination game to mainnet
         run: anchor deploy -p coordination_game --provider.cluster mainnet
+      # A struct change is not live until its migration has run. Doing this in a
+      # SEPARATE workflow is what broke mainnet on 2026-08-03: the deploy fired
+      # on merge, the migration had no trigger, and the new program sat against
+      # a 107-byte GlobalConfig failing AccountDidNotDeserialize on every
+      # instruction that touches it — create_game included.
+      #
+      # Reuses this job's already-proven toolchain (rust, libudev, solana,
+      # anchor, keypair, and the IDL that `anchor build` just emitted). The
+      # script is idempotent: it skips the migration when already applied and
+      # skips the stake write when it already matches the registry.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Migrate + reconcile GlobalConfig
+        env:
+          ANCHOR_WALLET: /home/runner/.config/solana/id.json
+          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_MAINNET }}
+        run: |
+          set -euo pipefail
+          npm install --legacy-peer-deps
+          npx tsx scripts/reconcile-solana-stake.ts --cluster mainnet --apply
+
 
       - name: Verify upgrade authority (mainnet)
         run: |

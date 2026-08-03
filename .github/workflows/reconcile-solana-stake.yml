@@ -17,11 +17,15 @@ name: Reconcile Solana Stake
 # ORDERING: runs after "Coordination Game" succeeds, because the instructions it
 # calls only exist once the upgraded program is deployed. Running it before that
 # is a no-op that reports the migration as still needed.
+# NOTE: the deploy path handles itself. coordination-game.yml runs this same
+# script immediately after `anchor deploy`, so a program upgrade and its
+# migration are ONE job and cannot be separated. This workflow covers the other
+# case: a registry-only re-peg with no program change.
 on:
-  workflow_run:
-    workflows: ["Coordination Game"]
-    types: [completed]
+  push:
     branches: [main]
+    paths:
+      - 'crates/chain-registry/src/lib.rs'
   workflow_dispatch:
     inputs:
       cluster:
