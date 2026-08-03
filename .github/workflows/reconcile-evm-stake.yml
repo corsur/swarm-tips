@@ -114,6 +114,14 @@ jobs:
           STAKE=$(echo "$BLOCK" | grep -oE "stake_base_units: [0-9_]+" | head -1 | sed 's/.*: //' | tr -d _)
           GAME=$(echo "$BLOCK" | grep -oE 'coordination_game_contract: Some\("0x[0-9a-fA-F]+"\)' \
                  | grep -oE "0x[0-9a-fA-F]+" | head -1)
+          # The SAME registry stake governs the cross-chain contract too. Missing
+          # this is why the first re-peg left CrossChainGame at the old value and
+          # evm-ci stayed red.
+          XGAME=$(echo "$BLOCK" | grep -oE 'game_contract: Some\("0x[0-9a-fA-F]+"\)' \
+                  | grep -oE "0x[0-9a-fA-F]+" | head -1)
+          TRANCHE=$(echo "$BLOCK" | grep -oE "max_tranche_base_units: [0-9_]+" | head -1 | sed 's/.*: //' | tr -d _)
+          echo "xgame=${XGAME:-}"     >> "$GITHUB_OUTPUT"
+          echo "tranche=${TRANCHE:-}" >> "$GITHUB_OUTPUT"
           if [ -z "$GAME" ]; then
             echo "::notice::${{ matrix.caip2 }} has no deployed CoordinationGame — skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
@@ -168,3 +176,43 @@ jobs:
           [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ] || {
             echo "::error::${{ matrix.caip2 }} stakeWei did not take effect"; exit 1; }
           echo "### Reconciled ${{ matrix.caip2 }} → $ONCHAIN wei" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compare the CROSS-CHAIN contract
+        id: xdiff
+        if: steps.gate.outputs.run == 'true' && steps.want.outputs.skip == 'false' && steps.want.outputs.xgame != ''
+        run: |
+          set -euo pipefail
+          RPC="${{ steps.diff.outputs.rpc }}"
+          ONCHAIN=$(cast call "${{ steps.want.outputs.xgame }}" "stakeWei()(uint256)" --rpc-url "$RPC" | awk '{print $1}')
+          if [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ]; then
+            echo "::notice::${{ matrix.caip2 }} CrossChainGame already at ${ONCHAIN}"
+            echo "apply=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${{ matrix.caip2 }} CrossChainGame drift: on-chain=${ONCHAIN} desired=${{ steps.want.outputs.stake }}"
+            echo "apply=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply to the cross-chain contract
+        if: steps.gate.outputs.run == 'true' && steps.xdiff.outputs.apply == 'true'
+        working-directory: evm
+        env:
+          XCHAIN_GAME: ${{ steps.want.outputs.xgame }}
+          NEW_STAKE_WEI: ${{ steps.want.outputs.stake }}
+          NEW_MAX_TRANCHE_WEI: ${{ steps.want.outputs.tranche }}
+          OWNER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+        run: |
+          set -euo pipefail
+          # Daily cap follows the existing 10x-tranche convention in _deploy-evm.yml.
+          export NEW_DAILY_TRANCHE_CAP_WEI=$(( NEW_MAX_TRANCHE_WEI * 10 ))
+          forge script script/SetXChainStake.s.sol \
+            --rpc-url "${{ steps.diff.outputs.rpc }}" --private-key "$OWNER_PK" --broadcast -vvv
+
+      - name: Verify the cross-chain contract matches
+        if: steps.gate.outputs.run == 'true' && steps.xdiff.outputs.apply == 'true'
+        run: |
+          set -euo pipefail
+          ONCHAIN=$(cast call "${{ steps.want.outputs.xgame }}" "stakeWei()(uint256)" \
+                    --rpc-url "${{ steps.diff.outputs.rpc }}" | awk '{print $1}')
+          [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ] || {
+            echo "::error::${{ matrix.caip2 }} CrossChainGame stakeWei did not take effect"; exit 1; }
+          echo "### Reconciled ${{ matrix.caip2 }} CrossChainGame → $ONCHAIN wei" >> "$GITHUB_STEP_SUMMARY"
