@@ -57,10 +57,11 @@ jobs:
       # file — not on anything to do with the chain.
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Anchor
-        run: |
-          set -euo pipefail
-          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
-          avm install latest && avm use latest
+        # Pinned to the version the program's Cargo.toml resolves (0.32.1), the
+        # same line coordination-game.yml uses. `avm install latest` failed:
+        # anchor refuses to build an IDL with a CLI that does not match the
+        # anchor-lang dep.
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
       - name: Generate the IDL
         working-directory: programs/coordination-game
         run: anchor idl build -o ../../target/idl/coordination_game.json
