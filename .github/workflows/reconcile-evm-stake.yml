@@ -1,0 +1,163 @@
+name: Reconcile EVM Stake
+
+# Infrastructure-as-code for the per-game stake.
+#
+# `crates/chain-registry` declares the DESIRED stake for every EVM chain. This
+# workflow makes the deployed contracts match it. Editing the registry and
+# merging is the whole operation — there is no second manual step, and no
+# laptop transaction.
+#
+# That matters because the alternative is what produced the defect this fixes:
+# with re-pegging available only as an ad-hoc owner transaction, three EVM
+# anchors ended up pegged at three different ETH prices ($1,562 / $3,000 /
+# $1,600) and the same product cost 5x more on one chain than another for weeks.
+# A change that is expensive to apply gets applied inconsistently.
+#
+# PROPERTIES
+#   * Declarative — the stake is READ from the registry, never typed. This
+#     workflow cannot introduce a new divergence, only close one.
+#   * Idempotent — each chain is skipped when it already matches, so running on
+#     every push is a no-op until the registry actually changes. (SetStake also
+#     reverts on a no-op change, so a race cannot double-apply.)
+#   * Verified — a `cast call` after the broadcast asserts the value moved. A
+#     transaction reporting success is not proof.
+#   * Bounded — the contract enforces MIN/MAX_STAKE_WEI, so a bad registry edit
+#     is rejected on-chain rather than silently applied.
+#
+# Mainnet chains run under the repo's EXISTING `mainnet` environment — the same
+# one coordination-game.yml and extension-registry-program.yml already gate on,
+# rather than a new one this workflow invents (an invented name is auto-created
+# with NO protection, which would silently bypass whatever gate you set).
+#
+# That environment currently has no protection rules, so this IS fully automatic
+# today: merging a registry stake change re-pegs mainnet. Adding required
+# reviewers to `mainnet` in repo settings turns it into an approval gate for
+# this workflow and the two program deploys at once.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/chain-registry/src/lib.rs'
+      - '.github/workflows/reconcile-evm-stake.yml'
+      - 'evm/script/SetStake.s.sol'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Limit to one chain (blank = all)'
+        required: false
+        type: choice
+        options: ['', base_sepolia, base, ethereum]
+        default: ''
+
+concurrency:
+  # Never let two reconciles race on the same contract.
+  group: reconcile-evm-stake
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - network: base_sepolia
+            caip2: 'eip155:84532'
+            rpc: https://sepolia.base.org
+            environment: testnet
+          - network: base
+            caip2: 'eip155:8453'
+            rpc: https://base-rpc.publicnode.com
+            environment: mainnet
+          - network: ethereum
+            caip2: 'eip155:1'
+            rpc: https://ethereum-rpc.publicnode.com
+            environment: mainnet
+    runs-on: ubuntu-latest
+    environment: ${{ matrix.environment }}
+    steps:
+      - name: Skip chains not selected by a manual dispatch
+        id: gate
+        run: |
+          ONLY="${{ github.event.inputs.only }}"
+          if [ -n "$ONLY" ] && [ "$ONLY" != "${{ matrix.network }}" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+
+      - name: Install Foundry
+        if: steps.gate.outputs.run == 'true'
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Read the DESIRED stake from the registry
+        id: want
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          SRC=crates/chain-registry/src/lib.rs
+          CONST=$(grep -oE "pub const [A-Z0-9_]+_CAIP2: &str = \"${{ matrix.caip2 }}\"" "$SRC" \
+                  | grep -oE "[A-Z0-9_]+_CAIP2" | head -1)
+          if [ -z "$CONST" ]; then
+            echo "::notice::${{ matrix.caip2 }} is not in the registry — nothing to reconcile"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          BLOCK=$(awk "/chain_id: $CONST,/,/^    },/" "$SRC")
+          # Extract AFTER the colon: `[0-9_]+` also matches the underscores in
+          # the identifier `stake_base_units`, which yields an empty value.
+          STAKE=$(echo "$BLOCK" | grep -oE "stake_base_units: [0-9_]+" | head -1 | sed 's/.*: //' | tr -d _)
+          GAME=$(echo "$BLOCK" | grep -oE 'coordination_game_contract: Some\("0x[0-9a-fA-F]+"\)' \
+                 | grep -oE "0x[0-9a-fA-F]+" | head -1)
+          if [ -z "$GAME" ]; then
+            echo "::notice::${{ matrix.caip2 }} has no deployed CoordinationGame — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          [ -n "$STAKE" ] || { echo "::error::could not read stake for ${{ matrix.caip2 }}"; exit 1; }
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "stake=$STAKE" >> "$GITHUB_OUTPUT"
+          echo "game=$GAME"   >> "$GITHUB_OUTPUT"
+
+      - name: Compare with the deployed contract
+        id: diff
+        if: steps.gate.outputs.run == 'true' && steps.want.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          # Per-chain endpoint. A single secret cannot serve three chains: using
+          # EVM_MAINNET_RPC_URL for base_sepolia would read the wrong chain's
+          # state and "reconcile" against it.
+          RPC="${{ matrix.rpc }}"
+          echo "rpc=$RPC" >> "$GITHUB_OUTPUT"
+          ONCHAIN=$(cast call "${{ steps.want.outputs.game }}" "stakeWei()(uint256)" --rpc-url "$RPC")
+          echo "onchain=$ONCHAIN" >> "$GITHUB_OUTPUT"
+          if [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ]; then
+            echo "::notice::${{ matrix.caip2 }} already at ${ONCHAIN} — no change"
+            echo "apply=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${{ matrix.caip2 }} drift: on-chain=${ONCHAIN} desired=${{ steps.want.outputs.stake }}"
+            echo "apply=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply
+        if: steps.gate.outputs.run == 'true' && steps.diff.outputs.apply == 'true'
+        working-directory: evm
+        env:
+          COORDINATION_GAME: ${{ steps.want.outputs.game }}
+          NEW_STAKE_WEI: ${{ steps.want.outputs.stake }}
+          OWNER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+        run: |
+          set -euo pipefail
+          forge script script/SetStake.s.sol \
+            --rpc-url "${{ steps.diff.outputs.rpc }}" --private-key "$OWNER_PK" --broadcast -vvv
+
+      - name: Verify the chain now matches
+        if: steps.gate.outputs.run == 'true' && steps.diff.outputs.apply == 'true'
+        run: |
+          set -euo pipefail
+          ONCHAIN=$(cast call "${{ steps.want.outputs.game }}" "stakeWei()(uint256)" \
+                    --rpc-url "${{ steps.diff.outputs.rpc }}")
+          echo "${{ matrix.caip2 }}: on-chain=$ONCHAIN desired=${{ steps.want.outputs.stake }}"
+          [ "$ONCHAIN" = "${{ steps.want.outputs.stake }}" ] || {
+            echo "::error::${{ matrix.caip2 }} stakeWei did not take effect"; exit 1; }
+          echo "### Reconciled ${{ matrix.caip2 }} → $ONCHAIN wei" >> "$GITHUB_STEP_SUMMARY"
