@@ -87,6 +87,74 @@ mod tests {
     }
 
     #[test]
+    fn match_parity_is_enforced_against_the_games_recorded_stake() {
+        // THE INVARIANT THAT LETS THE STAKE FLOAT.
+        //
+        // `create_game` validates the creator's escrow against the live config
+        // and RECORDS that amount on the Game PDA (`init_game`'s
+        // `stake_lamports`). `join_game` then validates the joiner's escrow
+        // against `game.stake_lamports` — the CREATOR's amount, not a config
+        // value. So the two players in a match always stake exactly the same,
+        // and that holds no matter what the config says at join time.
+        //
+        // This is worth pinning because it is the property that makes a
+        // per-match quoted stake SAFE rather than a way to let two players ante
+        // different amounts. Removing it would not fail any existing test — the
+        // stake is currently a single constant, so every escrow agrees by
+        // accident and the check looks redundant right up until it isn't.
+        let creator = Pubkey::new_unique();
+        let joiner = Pubkey::new_unique();
+        let game_stake = 68_430_000; // whatever the creator anted
+
+        let creator_escrow = StakeEscrow {
+            player: creator,
+            tournament_id: 1,
+            amount: game_stake,
+            consumed: false,
+            bump: 254,
+        };
+        assert!(creator_escrow.validate_for_game(&creator, 1, game_stake));
+
+        // A joiner funded at the OLD stake cannot join a game anted at the new
+        // one, even though its escrow is perfectly valid on its own terms.
+        let stale_joiner = StakeEscrow {
+            player: joiner,
+            tournament_id: 1,
+            amount: 50_000_000,
+            consumed: false,
+            bump: 254,
+        };
+        assert!(
+            !stale_joiner.validate_for_game(&joiner, 1, game_stake),
+            "a joiner staking less than the creator must be rejected"
+        );
+
+        // And the reverse: over-staking is rejected too, so the joiner cannot
+        // buy a larger claim on the pot than the creator put up.
+        let rich_joiner = StakeEscrow {
+            player: joiner,
+            tournament_id: 1,
+            amount: game_stake + 1,
+            consumed: false,
+            bump: 254,
+        };
+        assert!(
+            !rich_joiner.validate_for_game(&joiner, 1, game_stake),
+            "a joiner staking more than the creator must be rejected"
+        );
+
+        // Matching exactly is the only way in.
+        let matched = StakeEscrow {
+            player: joiner,
+            tournament_id: 1,
+            amount: game_stake,
+            consumed: false,
+            bump: 254,
+        };
+        assert!(matched.validate_for_game(&joiner, 1, game_stake));
+    }
+
+    #[test]
     fn validate_for_game_rejects_wrong_amount() {
         let pk = Pubkey::new_unique();
         let mut escrow = make_escrow(pk, 1, false);
