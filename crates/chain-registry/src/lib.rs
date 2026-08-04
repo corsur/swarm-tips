@@ -40,33 +40,91 @@ pub enum ContractPurpose {
     ShillbotEscrow,
 }
 
-/// THE canonical per-match stake, in USD cents. One price for the product,
-/// across every chain and both the same-chain and cross-chain paths.
+// ===========================================================================
+// WHAT THE GAME COSTS — the unit of account is ETH, not USD.
+// ===========================================================================
+//
+// A match costs STAKE_ANCHOR_WEI. Every other surface converts to it.
+//
+//   STAKE_ANCHOR_WEI  (0.0027 ETH)
+//          │
+//          ├─ EVM same-chain  CoordinationGame.stakeWei   ── holds it LITERALLY
+//          ├─ EVM cross-chain CrossChainGame.stakeWei      ── holds it LITERALLY
+//          │      (both: `msg.value != stakeWei` reverts — CANNOT float)
+//          │
+//          └─ Solana ── × live SOL/ETH ratio ──┬─ same-chain  GlobalConfig
+//                                              └─ cross-chain create_xmatch arg
+//
+// WHY ETH AND NOT USD. Of the four surfaces above, exactly ONE can carry a
+// per-match stake (`create_xmatch` takes `stake_lamports`); the other three are
+// pinned to a contract or program config. So one side is necessarily static and
+// the other necessarily floats, and the static side is EVM. ETH is therefore the
+// anchor by CONSTRAINT, not preference.
+//
+// The conversion needs only the SOL/ETH RATIO. USD cancels, so a common-mode
+// error in the price feed cannot skew the peg.
+//
+// COROLLARY, so nobody "fixes" it later: if ETH doubles in dollars, the game
+// costs twice as many dollars. That is what denominating in ETH means. It is
+// not drift and there is nothing to correct.
+//
+// TWO INVARIANTS, deliberately separate — conflating them is how an absolute-USD
+// anchor got shipped and reverted on 2026-08-04:
+//
+//   MATCH PARITY   the two players in ONE match stake the same amount.
+//                  Enforced on-chain. Must NEVER depend on config freshness,
+//                  because a stale config would then block settlement.
+//   ANCHOR PARITY  every surface is worth STAKE_ANCHOR_WEI. Exact for EVM (they
+//                  hold it literally), a live conversion for Solana. Drift here
+//                  is a PRICING concern and must never block a match.
+//
+// This constant prices NOTHING at runtime. Cross-chain derives the Solana leg
+// from the EVM leg (game-api `dynamic_sol_stake`) so a match's two legs are equal
+// by construction. What lives here is the target each config is pegged to.
+//
+// BEFORE COMPARING ANYTHING IN THIS REGISTRY, FILTER BY NETWORK CLASS. Use
+// `mainnet()` / `testnet()`, never bare `all()`. Testnet stakes are nominal and
+// USD-untuned; comparing Base Sepolia's 0.0032 ETH against a mainnet entry is
+// meaningless, and doing exactly that produced a "Base is mispriced at $5.98"
+// claim that was asserted twice before anyone checked which network it was on.
+pub const STAKE_ANCHOR_WEI: u128 = 2_700_000_000_000_000;
+
+/// How a surface's stake is FIXED — i.e. whether it can carry a per-match amount.
 ///
-/// WHY THIS EXISTS. Each chain used to carry its own `stake_usd_cents` and
-/// nothing tied them together beyond a loose "do not diverge more than 1.5x"
-/// smell test — which compares two RECORDED INTENTS, so it cannot see that a
-/// chain's live value has drifted away from what it says it is worth. Measured
-/// against live rates 2026-08-04: Solana $3.69, Base $5.05, Ethereum $5.05 —
-/// the same product costing 1.37x more on the EVM chains than on Solana, with
-/// the divergence test green because both sides of its comparison are constants.
+/// This was tribal knowledge spread across three files, and not knowing it is
+/// what produced an absolute-USD anchor that had to be reverted: only ONE of the
+/// four game surfaces can float, so the other three necessarily define the price
+/// and the floating one necessarily follows.
 ///
-/// Base and Ethereum mainnet already agree (identical 0.0027 ETH at an identical
-/// peg). Solana mainnet is the sole outlier, at $3.64 against a $5.00 anchor.
-///
-/// CORRECTION, recorded because it was asserted twice before being checked: an
-/// earlier version of this comment cited "Base $5.98". That is BASE SEPOLIA's
-/// 0.0032 ETH — a TESTNET, whose stakes are nominal by design and which the FX
-/// band skips. Comparing it to a mainnet entry is meaningless. Filter on
-/// `is_mainnet` before comparing anything in this registry.
-///
-/// This anchor does NOT price anything at runtime. Cross-chain pricing derives
-/// the Solana leg from the EVM leg so the two legs of one match are equal BY
-/// CONSTRUCTION (see game-api `dynamic_sol_stake`) — an absolute anchor there
-/// was tried and reverted, because it blocks settlement whenever a config drifts
-/// past the FX band. What lives here is the TARGET each chain's config should be
-/// re-pegged toward, and the test that names the chains which have not been.
-pub const STAKE_ANCHOR_USD_CENTS: u32 = 500;
+/// It is a property of (namespace, purpose) rather than of a chain, because one
+/// Solana entry hosts both a fixed same-chain surface and a floating cross-chain
+/// one. See `ChainEntry::stake_binding`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StakeBinding {
+    /// EVM contracts. `msg.value != stakeWei` reverts, so the amount is whatever
+    /// the deployed config says and cannot vary per match. Changing it is an
+    /// owner `setConfig`, converged from this registry by `Reconcile EVM Stake`.
+    ContractConfig,
+    /// Solana same-chain. `deposit_stake` takes no amount — it reads
+    /// `GlobalConfig.stake_lamports` via `live_stake()`. Also cannot vary per
+    /// match, converged by `Reconcile Solana Stake`.
+    ProgramConfig,
+    /// Solana cross-chain. `create_xmatch(stake_lamports)` takes the amount as a
+    /// matchmaker-supplied argument. THE ONLY SURFACE THAT CAN FLOAT, which is
+    /// why the Solana leg is the one priced against the anchor.
+    PerMatchQuoted,
+}
+
+impl StakeBinding {
+    /// Can this surface carry a stake decided per match?
+    ///
+    /// Guards the mistake directly: anything that computes a floating stake must
+    /// check this first, rather than assuming a leg it can price is a leg the
+    /// chain will accept.
+    pub fn can_float(self) -> bool {
+        matches!(self, StakeBinding::PerMatchQuoted)
+    }
+}
 
 /// One chain's complete configuration.
 #[derive(Debug, Clone)]
@@ -410,11 +468,52 @@ pub fn contract_for(chain: &ChainId, purpose: ContractPurpose) -> Option<&'stati
     entry(chain).and_then(|e| e.contract_for(purpose))
 }
 
+impl ChainEntry {
+    /// How this chain fixes the stake for a given contract purpose.
+    ///
+    /// `None` for `ShillbotEscrow` — that is a per-task escrow, not a game stake,
+    /// and has no anchor relationship at all.
+    pub fn stake_binding(&self, purpose: ContractPurpose) -> Option<StakeBinding> {
+        let ns = ChainId::parse(self.chain_id).ok()?.namespace();
+        match (ns, purpose) {
+            (Namespace::Eip155, ContractPurpose::CoordinationGame)
+            | (Namespace::Eip155, ContractPurpose::CrossChainGame) => {
+                Some(StakeBinding::ContractConfig)
+            }
+            (Namespace::Solana, ContractPurpose::CoordinationGame) => {
+                Some(StakeBinding::ProgramConfig)
+            }
+            (Namespace::Solana, ContractPurpose::CrossChainGame) => {
+                Some(StakeBinding::PerMatchQuoted)
+            }
+            (_, ContractPurpose::ShillbotEscrow) => None,
+        }
+    }
+}
+
 /// Every registered chain, in registry order. Callers that need cross-chain
 /// discovery (e.g. the MCP `xchain_supported_chains` tool) iterate this rather
 /// than hardcoding the chain set.
 pub fn all() -> impl Iterator<Item = &'static ChainEntry> {
     REGISTRY.iter()
+}
+
+/// Real-money chains only.
+///
+/// PREFER THIS OVER `all()` FOR ANY PRICE COMPARISON. Testnet stakes are nominal
+/// and USD-untuned by design, so comparing one against a mainnet entry is
+/// meaningless — and doing exactly that produced a "Base mainnet is mispriced at
+/// $5.98" claim that was asserted twice before anyone noticed the figure came
+/// from Base *Sepolia*. Making the correct iteration the easy one is the fix;
+/// a comment saying "remember to filter" is not.
+pub fn mainnet() -> impl Iterator<Item = &'static ChainEntry> {
+    REGISTRY.iter().filter(|e| e.is_mainnet)
+}
+
+/// Testnet chains only. Their stakes are NOMINAL — sized for cheap e2e sweeps,
+/// not pegged to the anchor — and the cross-chain FX band skips them entirely.
+pub fn testnet() -> impl Iterator<Item = &'static ChainEntry> {
+    REGISTRY.iter().filter(|e| !e.is_mainnet)
 }
 
 /// The Solana leg the MCP cross-chain registration/queue path is pinned to
@@ -727,89 +826,143 @@ mod tests {
         }
     }
 
-    /// Mainnet chains whose ON-CHAIN config has not yet been re-pegged to
-    /// STAKE_ANCHOR_USD_CENTS, with the value they currently record.
-    ///
-    /// Each entry is a PENDING owner `setConfig`, not a permanent exemption. The
-    /// registry constant must equal what the deployed program enforces — editing
-    /// it alone is what made Solana mainnet unplayable on 2026-08-03 — so the
-    /// re-peg is an on-chain action and this list is how it stays visible until
-    /// it happens. Delete an entry when its chain is re-pegged; the test then
-    /// enforces the anchor for it.
-    const OFF_ANCHOR_PENDING_SETCONFIG: &[(&str, u32)] = &[(SOLANA_MAINNET_CAIP2, 364)];
+    #[test]
+    fn exactly_one_game_surface_can_float() {
+        // THE ASYMMETRY, asserted rather than described. It is the reason ETH is
+        // the anchor: three of the four game surfaces are pinned to a contract or
+        // program config, so the fourth is the only one that can follow. Not
+        // knowing this is what produced an absolute-USD anchor that had to be
+        // reverted.
+        let mut floating = Vec::new();
+        let mut fixed = 0;
+        for e in all() {
+            for purpose in [
+                ContractPurpose::CoordinationGame,
+                ContractPurpose::CrossChainGame,
+            ] {
+                match e.stake_binding(purpose) {
+                    Some(b) if b.can_float() => floating.push((e.chain_id, purpose)),
+                    Some(_) => fixed += 1,
+                    None => {}
+                }
+            }
+        }
+        assert!(
+            fixed > 0,
+            "no fixed surfaces found — the enumeration is broken"
+        );
+        // Every floating surface must be a Solana cross-chain leg, and nothing else.
+        for (chain_id, purpose) in &floating {
+            assert_eq!(*purpose, ContractPurpose::CrossChainGame);
+            assert_eq!(
+                ChainId::parse(chain_id).unwrap().namespace(),
+                Namespace::Solana,
+                "{chain_id}: only a Solana cross-chain leg may float"
+            );
+        }
+        assert!(
+            !floating.is_empty(),
+            "expected at least one floating surface"
+        );
+    }
 
     #[test]
-    fn mainnet_stakes_match_the_canonical_anchor() {
-        // One price for the product. The previous test only asserted the chains
-        // did not diverge from EACH OTHER by more than 1.5x, which permits every
-        // chain drifting together away from what the product is supposed to
-        // cost, and permits a 1.49x spread indefinitely.
-        for e in REGISTRY.iter().filter(|e| e.is_mainnet) {
-            if let Some((_, pending)) = OFF_ANCHOR_PENDING_SETCONFIG
-                .iter()
-                .find(|(id, _)| *id == e.chain_id)
-            {
-                assert_eq!(
-                    e.stake_usd_cents, *pending,
-                    "{}: listed as pending a setConfig at {} cents but records {} — \
-                     update or remove the OFF_ANCHOR_PENDING_SETCONFIG entry",
-                    e.chain_id, pending, e.stake_usd_cents
-                );
+    fn evm_surfaces_never_float_and_shillbot_has_no_binding() {
+        let base = entry(&ChainId::parse("eip155:8453").unwrap()).unwrap();
+        assert_eq!(
+            base.stake_binding(ContractPurpose::CoordinationGame),
+            Some(StakeBinding::ContractConfig)
+        );
+        assert_eq!(
+            base.stake_binding(ContractPurpose::CrossChainGame),
+            Some(StakeBinding::ContractConfig)
+        );
+        assert!(!base
+            .stake_binding(ContractPurpose::CrossChainGame)
+            .unwrap()
+            .can_float());
+        // A per-task escrow is not a game stake and has no anchor relationship.
+        assert_eq!(base.stake_binding(ContractPurpose::ShillbotEscrow), None);
+
+        let sol = entry(&ChainId::parse(SOLANA_MAINNET_CAIP2).unwrap()).unwrap();
+        assert_eq!(
+            sol.stake_binding(ContractPurpose::CoordinationGame),
+            Some(StakeBinding::ProgramConfig),
+            "same-chain Solana reads GlobalConfig; deposit_stake takes no amount"
+        );
+        assert!(sol
+            .stake_binding(ContractPurpose::CrossChainGame)
+            .unwrap()
+            .can_float());
+    }
+
+    #[test]
+    fn evm_mainnet_chains_hold_the_anchor_literally() {
+        // EVM cannot float (`msg.value != stakeWei` reverts), so every EVM
+        // mainnet chain must hold STAKE_ANCHOR_WEI exactly. This is the whole of
+        // anchor parity on the EVM side — there is no conversion and no
+        // tolerance, and two EVM chains disagreeing would be a plain config
+        // error rather than any kind of drift.
+        let mut checked = 0;
+        for e in mainnet() {
+            if ChainId::parse(e.chain_id).map(|c| c.namespace()) != Ok(Namespace::Eip155) {
                 continue;
             }
             assert_eq!(
-                e.stake_usd_cents, STAKE_ANCHOR_USD_CENTS,
-                "{}: stake pegged at {} cents, anchor is {} — re-peg it or add it \
-                 to OFF_ANCHOR_PENDING_SETCONFIG with a reason",
-                e.chain_id, e.stake_usd_cents, STAKE_ANCHOR_USD_CENTS
+                e.stake_base_units, STAKE_ANCHOR_WEI,
+                "{}: holds {} wei, anchor is {} — EVM cannot float, so it must \
+                 hold the anchor literally",
+                e.chain_id, e.stake_base_units, STAKE_ANCHOR_WEI
             );
+            checked += 1;
         }
-    }
-
-    #[test]
-    fn the_pending_list_names_real_chains_and_stays_short() {
-        // A stale entry would silently exempt a chain that was already re-pegged.
-        for (id, _) in OFF_ANCHOR_PENDING_SETCONFIG {
-            assert!(
-                REGISTRY.iter().any(|e| e.chain_id == *id && e.is_mainnet),
-                "{id}: pending-setConfig entry names no mainnet chain"
-            );
-        }
+        // A conformance test that checked nothing would pass silently.
         assert!(
-            OFF_ANCHOR_PENDING_SETCONFIG.len() <= 2,
-            "too many chains off-anchor: {:?}",
-            OFF_ANCHOR_PENDING_SETCONFIG
+            checked >= 2,
+            "expected >=2 EVM mainnet chains, checked {checked}"
         );
     }
 
     #[test]
-    fn same_chain_mainnet_stakes_do_not_diverge_wildly() {
-        // THE INVARIANT THAT WAS MISSING. Same product, different chain, should
-        // not mean a 5x different price. This is deliberately a loose band —
-        // it is a smell detector, not a peg.
+    fn solana_is_off_anchor_until_it_tracks_the_ratio() {
+        // Solana same-chain is pinned to a hardcoded 0.05 SOL that bears no
+        // relation to STAKE_ANCHOR_WEI. It cannot be asserted equal (different
+        // coin) and cannot be asserted converted (no live rate in a unit test —
+        // CLAUDE.md forbids network calls here). So this records the gap
+        // explicitly rather than leaving it to be rediscovered.
         //
-        // NO EXCLUSIONS. Base mainnet used to be excluded by name as a
-        // deliberate $1.50 launch tier while the others sat near $4-5; the
-        // re-peg to a single $5 EVM anchor removed the deviation, so the
-        // exclusion (and the test that pinned it) are gone. Every mainnet chain
-        // is now checked.
-        //
-        let mut usd: Vec<(&str, f64)> = Vec::new();
-        for e in REGISTRY {
-            if !e.is_mainnet {
-                continue;
-            }
-            usd.push((e.chain_id, e.stake_usd_cents as f64));
-        }
-        assert!(usd.len() >= 2, "need >=2 comparable mainnet chains");
-        let lo = usd.iter().map(|(_, v)| *v).fold(f64::MAX, f64::min);
-        let hi = usd.iter().map(|(_, v)| *v).fold(0.0, f64::max);
-        assert!(
-            hi / lo <= 1.5,
-            "mainnet same-chain stakes diverge {:.1}x: {:?}",
-            hi / lo,
-            usd,
+        // The live conversion is checked by tests/e2e/scripts/check-stake-parity.mjs,
+        // which is allowed to fetch a rate. Closing the gap for good is the
+        // per-match quote (deposit_stake taking stake_lamports).
+        let sol = entry(&ChainId::parse(SOLANA_MAINNET_CAIP2).unwrap()).unwrap();
+        assert_eq!(
+            sol.stake_base_units, 50_000_000,
+            "Solana mainnet moved off its documented 0.05 SOL — if this was an \
+             intentional re-peg toward the anchor, update this test and say what \
+             SOL/ETH ratio it was pegged at"
         );
+    }
+
+    #[test]
+    fn network_class_accessors_partition_the_registry() {
+        // The guard against the error that produced a "Base is mispriced at
+        // $5.98" claim: that figure was BASE SEPOLIA's, a testnet, compared
+        // against mainnet entries. These accessors exist so a price comparison
+        // cannot casually span the boundary, and this asserts they are an exact
+        // partition rather than two overlapping filters.
+        let m = mainnet().count();
+        let t = testnet().count();
+        assert_eq!(
+            m + t,
+            all().count(),
+            "mainnet/testnet must partition the registry"
+        );
+        assert!(
+            m >= 2 && t >= 2,
+            "expected both classes populated: {m} mainnet, {t} testnet"
+        );
+        assert!(mainnet().all(|e| e.is_mainnet));
+        assert!(testnet().all(|e| !e.is_mainnet));
     }
 
     #[test]
@@ -817,11 +970,7 @@ mod tests {
         // Testnet stakes are nominal, but they should at least agree with each
         // other — a testnet that silently costs 5x more distorts capital
         // planning for the e2e sweeps.
-        let usd: Vec<(&str, u32)> = REGISTRY
-            .iter()
-            .filter(|e| !e.is_mainnet)
-            .map(|e| (e.chain_id, e.stake_usd_cents))
-            .collect();
+        let usd: Vec<(&str, u32)> = testnet().map(|e| (e.chain_id, e.stake_usd_cents)).collect();
         let lo = usd.iter().map(|(_, v)| *v).min().unwrap() as f64;
         let hi = usd.iter().map(|(_, v)| *v).max().unwrap() as f64;
         assert!(
