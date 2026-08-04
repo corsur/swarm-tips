@@ -40,6 +40,27 @@ pub enum ContractPurpose {
     ShillbotEscrow,
 }
 
+/// THE canonical per-match stake, in USD cents. One price for the product,
+/// across every chain and both the same-chain and cross-chain paths.
+///
+/// WHY THIS EXISTS. Each chain used to carry its own `stake_usd_cents` and
+/// nothing tied them together beyond a loose "do not diverge more than 1.5x"
+/// smell test — which compares two RECORDED INTENTS, so it cannot see that a
+/// chain's live value has drifted away from what it says it is worth. Measured
+/// 2026-08-04: Solana $3.69, Ethereum $5.05, Base $5.98. Same product, 1.62x
+/// apart, with the test green.
+///
+/// Worse, the cross-chain Solana leg was priced off the EVM leg's CURRENT native
+/// value, so Base's drift propagated straight into what a Solana player paid —
+/// the player's price depended on which chain their opponent happened to be on.
+/// A player should know one price going in.
+///
+/// A chain whose on-chain config drifts away from this anchor is MISPRICED, and
+/// the FX band (±15%) will refuse to sign rather than settle unequal legs. That
+/// is the correct failure: re-peg the chain with an owner `setConfig`, do not
+/// widen the band.
+pub const STAKE_ANCHOR_USD_CENTS: u32 = 500;
+
 /// One chain's complete configuration.
 #[derive(Debug, Clone)]
 pub struct ChainEntry {
@@ -697,6 +718,61 @@ mod tests {
                 want / 100.0,
             );
         }
+    }
+
+    /// Mainnet chains whose ON-CHAIN config has not yet been re-pegged to
+    /// STAKE_ANCHOR_USD_CENTS, with the value they currently record.
+    ///
+    /// Each entry is a PENDING owner `setConfig`, not a permanent exemption. The
+    /// registry constant must equal what the deployed program enforces — editing
+    /// it alone is what made Solana mainnet unplayable on 2026-08-03 — so the
+    /// re-peg is an on-chain action and this list is how it stays visible until
+    /// it happens. Delete an entry when its chain is re-pegged; the test then
+    /// enforces the anchor for it.
+    const OFF_ANCHOR_PENDING_SETCONFIG: &[(&str, u32)] = &[(SOLANA_MAINNET_CAIP2, 364)];
+
+    #[test]
+    fn mainnet_stakes_match_the_canonical_anchor() {
+        // One price for the product. The previous test only asserted the chains
+        // did not diverge from EACH OTHER by more than 1.5x, which permits every
+        // chain drifting together away from what the product is supposed to
+        // cost, and permits a 1.49x spread indefinitely.
+        for e in REGISTRY.iter().filter(|e| e.is_mainnet) {
+            if let Some((_, pending)) = OFF_ANCHOR_PENDING_SETCONFIG
+                .iter()
+                .find(|(id, _)| *id == e.chain_id)
+            {
+                assert_eq!(
+                    e.stake_usd_cents, *pending,
+                    "{}: listed as pending a setConfig at {} cents but records {} — \
+                     update or remove the OFF_ANCHOR_PENDING_SETCONFIG entry",
+                    e.chain_id, pending, e.stake_usd_cents
+                );
+                continue;
+            }
+            assert_eq!(
+                e.stake_usd_cents, STAKE_ANCHOR_USD_CENTS,
+                "{}: stake pegged at {} cents, anchor is {} — re-peg it or add it \
+                 to OFF_ANCHOR_PENDING_SETCONFIG with a reason",
+                e.chain_id, e.stake_usd_cents, STAKE_ANCHOR_USD_CENTS
+            );
+        }
+    }
+
+    #[test]
+    fn the_pending_list_names_real_chains_and_stays_short() {
+        // A stale entry would silently exempt a chain that was already re-pegged.
+        for (id, _) in OFF_ANCHOR_PENDING_SETCONFIG {
+            assert!(
+                REGISTRY.iter().any(|e| e.chain_id == *id && e.is_mainnet),
+                "{id}: pending-setConfig entry names no mainnet chain"
+            );
+        }
+        assert!(
+            OFF_ANCHOR_PENDING_SETCONFIG.len() <= 2,
+            "too many chains off-anchor: {:?}",
+            OFF_ANCHOR_PENDING_SETCONFIG
+        );
     }
 
     #[test]
