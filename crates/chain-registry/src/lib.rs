@@ -184,8 +184,22 @@ const REGISTRY: &[ChainEntry] = &[
         is_mainnet: true,
         native_symbol: "SOL",
         native_decimals: 9,
-        stake_base_units: 68_600_000, // 0.0686 SOL ($5 anchor, == EVM legs)
-        stake_usd_cents: 500,         // $5.00
+        // PINNED TO DEFAULT_STAKE_LAMPORTS for the same reason as devnet above:
+        // no deployed client passes the optional global_config account, so both
+        // deposit 0.05 SOL regardless of what is configured here. Mainnet was
+        // left at the $5 anchor when devnet was pinned back — a per-entity fix
+        // to a cross-entity defect — which made the mainnet game UNPLAYABLE:
+        // deposit_stake takes the 0.05, then create_game rejects it with
+        // StakeMismatch (0x1776). Recoverable (withdraw_stake only requires
+        // amount > 0, so nothing is stranded) but a live outage.
+        //
+        // This is knowingly $3.64 against a $5 EVM anchor. Playable-and-cheap
+        // beats correctly-priced-and-broken; the divergence is the SECOND
+        // problem, and closing it needs the client work named above, not
+        // another edit here. `check-stake-parity.mjs` now compares the client
+        // constants and will fail if anyone raises this first.
+        stake_base_units: 50_000_000, // 0.05 SOL == DEFAULT_STAKE_LAMPORTS
+        stake_usd_cents: 364,         // $3.64
         peg_native_usd_cents: 7289,
         max_tranche_base_units: 100_000_000,
         claim_window_secs: 3_600,
@@ -600,8 +614,10 @@ mod tests {
         for line in yaml.lines() {
             let l = line.trim();
             let grab = |key: &str| -> Option<String> {
-                let i = l.find(key)?;
-                let rest = &l[i + key.len()..];
+                // `i + key.len()` trips clippy::arithmetic_side_effects, which
+                // this crate denies. split_once does the same job with no
+                // arithmetic and no chance of a mid-char slice panic.
+                let (_, rest) = l.split_once(key)?;
                 Some(rest.split(&['"', ' ', '\''][..]).next()?.to_string())
             };
             if let Some(v) = grab("CAIP2=") {

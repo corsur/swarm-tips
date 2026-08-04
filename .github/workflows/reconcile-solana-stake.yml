@@ -49,7 +49,22 @@ jobs:
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    environment: ${{ (github.event.inputs.cluster == 'mainnet') && 'mainnet' || 'testnet' }}
+    # A registry edit is a statement about EVERY cluster it declares, so a push
+    # must converge all of them. It used to reconcile only devnet: `push` leaves
+    # `inputs.cluster` empty and the run step defaulted to devnet. That is how
+    # Solana mainnet was left at the $5 anchor after devnet was pinned back to
+    # 0.05 SOL, which made the mainnet game unplayable (deposit at the client's
+    # 0.05, then create_game rejects it with StakeMismatch). The same shape as
+    # the `if:` gate that silently skipped every run: a job that looks wired to
+    # the registry and only half-acts on it.
+    strategy:
+      # Serial: two clusters signed by the same authority key, and a shared
+      # nonce makes concurrent sends flaky for no gain at this size.
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        cluster: ${{ fromJSON(github.event_name == 'push' && '["devnet","mainnet"]' || format('["{0}"]', github.event.inputs.cluster)) }}
+    environment: ${{ (matrix.cluster == 'mainnet') && 'mainnet' || 'testnet' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -107,8 +122,11 @@ jobs:
           MAINNET_RPC: ${{ secrets.SOLANA_RPC_URL_MAINNET }}
         run: |
           set -euo pipefail
-          CLUSTER="${{ github.event.inputs.cluster }}"
-          [ -n "$CLUSTER" ] || CLUSTER=devnet
+          CLUSTER="${{ matrix.cluster }}"
+          # No silent default. An empty cluster here would reconcile SOMETHING
+          # against the wrong chain rather than stopping, and the matrix always
+          # supplies one.
+          [ -n "$CLUSTER" ] || { echo "::error::matrix.cluster is empty"; exit 1; }
           # Per-cluster endpoint. Exporting the DEVNET url unconditionally made a
           # mainnet run read devnet state and "reconcile" against the wrong chain.
           if [ "$CLUSTER" = "mainnet" ]; then
@@ -120,4 +138,4 @@ jobs:
 
       - name: Report
         if: always()
-        run: echo "### Reconciled Solana stake on ${{ github.event.inputs.cluster || 'devnet' }}" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "### Reconciled Solana stake on ${{ matrix.cluster }}" >> "$GITHUB_STEP_SUMMARY"
