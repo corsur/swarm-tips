@@ -127,6 +127,27 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           [ -n "$STAKE" ] || { echo "::error::could not read stake for ${{ matrix.caip2 }}"; exit 1; }
+          # DISTINGUISH "not deployed" FROM "the regex broke".
+          #
+          # `xgame` gates the whole cross-chain reconcile step with `!= ''`, so an
+          # extraction that silently yields empty makes CrossChainGame stop being
+          # reconciled while the job still reports success — a green run that lies.
+          # That already bit once: a re-peg left CrossChainGame at the old value
+          # and evm-ci stayed red with no failing job to point at.
+          #
+          # The registry block itself says which case we are in: if the field is
+          # PRESENT in the source but the capture came back empty, the pattern is
+          # broken, not the deployment.
+          [ -n "$BLOCK" ] || { echo "::error::registry block for $CONST is empty — the awk range stopped matching (indentation or entry format changed)"; exit 1; }
+          # ANCHORED: an unanchored `game_contract:` also matches
+          # `coordination_game_contract:`, so a chain with only a same-chain
+          # deployment would demand a cross-chain address it does not have.
+          if echo "$BLOCK" | grep -qE '^ *game_contract: Some\('; then
+            [ -n "$XGAME" ] || { echo "::error::${{ matrix.caip2 }} declares a CrossChainGame but the address capture is empty — fix the pattern, do NOT let the cross-chain step skip"; exit 1; }
+          fi
+          if echo "$BLOCK" | grep -qE '^ *max_tranche_base_units:'; then
+            [ -n "$TRANCHE" ] || { echo "::error::${{ matrix.caip2 }} declares max_tranche_base_units but the capture is empty"; exit 1; }
+          fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "stake=$STAKE" >> "$GITHUB_OUTPUT"
           echo "game=$GAME"   >> "$GITHUB_OUTPUT"
