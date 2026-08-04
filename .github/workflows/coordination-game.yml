@@ -150,8 +150,6 @@ jobs:
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
@@ -382,8 +380,6 @@ jobs:
       # setup was right for devnet and wrong here; the two jobs are not
       # symmetric, and I treated them as if they were.)
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 20
