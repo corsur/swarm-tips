@@ -292,6 +292,33 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
 
+      # Publishing was never the broken half. The frontend's lockfile pinned
+      # 0.1.1 — the FIRST publish, 2026-04-02 — and nothing moved it, so four
+      # months of program changes never reached the app: 22 instructions shipped
+      # against the program's 39. It caused no outage, which is exactly why it
+      # went unnoticed; the cost was a silently impossible feature. The IDL's
+      # `depositStake` has no `global_config` account, so the client cannot pass
+      # one, so the Solana stake cannot be raised to the $5 anchor. That was
+      # diagnosed for most of a day as a program-side constraint. It was a stale
+      # npm package.
+      #
+      # This closes the loop: coordination-app's sdk-bump.yml moves the frontend
+      # onto the version just published, gates it on tsc + vitest, and pushes,
+      # which triggers the frontend deploy.
+      - name: Propagate the SDK to coordination-app
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
+        run: |
+          set -euo pipefail
+          # Loud on failure, deliberately. A published-but-unpropagated SDK is
+          # the precise state that hid for four months, so it must not be a
+          # notice the reader scrolls past — the deploy above has already
+          # succeeded, and this red means "shipped, but the app has not moved".
+          gh api "repos/corsur/coordination-app/dispatches" \
+            -f event_type=sdk-published \
+            -f "client_payload[version]=0.1.${{ github.run_number }}" \
+            || { echo "::error::SDK 0.1.${{ github.run_number }} published but the coordination-app dispatch FAILED — the frontend is now behind the deployed program. Check that GH_PAT_PACKAGES still carries repo scope for corsur/coordination-app, then re-run sdk-bump.yml manually with that version."; exit 1; }
+
   deploy-mainnet:
     # Auto-upgrades mainnet on every merge to main, plus manual dispatch.
     # Safe to automate specifically BECAUSE Solana programs are upgradeable:
