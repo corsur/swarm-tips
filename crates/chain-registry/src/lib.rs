@@ -47,18 +47,25 @@ pub enum ContractPurpose {
 /// nothing tied them together beyond a loose "do not diverge more than 1.5x"
 /// smell test — which compares two RECORDED INTENTS, so it cannot see that a
 /// chain's live value has drifted away from what it says it is worth. Measured
-/// 2026-08-04: Solana $3.69, Ethereum $5.05, Base $5.98. Same product, 1.62x
-/// apart, with the test green.
+/// against live rates 2026-08-04: Solana $3.69, Base $5.05, Ethereum $5.05 —
+/// the same product costing 1.37x more on the EVM chains than on Solana, with
+/// the divergence test green because both sides of its comparison are constants.
 ///
-/// Worse, the cross-chain Solana leg was priced off the EVM leg's CURRENT native
-/// value, so Base's drift propagated straight into what a Solana player paid —
-/// the player's price depended on which chain their opponent happened to be on.
-/// A player should know one price going in.
+/// Base and Ethereum mainnet already agree (identical 0.0027 ETH at an identical
+/// peg). Solana mainnet is the sole outlier, at $3.64 against a $5.00 anchor.
 ///
-/// A chain whose on-chain config drifts away from this anchor is MISPRICED, and
-/// the FX band (±15%) will refuse to sign rather than settle unequal legs. That
-/// is the correct failure: re-peg the chain with an owner `setConfig`, do not
-/// widen the band.
+/// CORRECTION, recorded because it was asserted twice before being checked: an
+/// earlier version of this comment cited "Base $5.98". That is BASE SEPOLIA's
+/// 0.0032 ETH — a TESTNET, whose stakes are nominal by design and which the FX
+/// band skips. Comparing it to a mainnet entry is meaningless. Filter on
+/// `is_mainnet` before comparing anything in this registry.
+///
+/// This anchor does NOT price anything at runtime. Cross-chain pricing derives
+/// the Solana leg from the EVM leg so the two legs of one match are equal BY
+/// CONSTRUCTION (see game-api `dynamic_sol_stake`) — an absolute anchor there
+/// was tried and reverted, because it blocks settlement whenever a config drifts
+/// past the FX band. What lives here is the TARGET each chain's config should be
+/// re-pegged toward, and the test that names the chains which have not been.
 pub const STAKE_ANCHOR_USD_CENTS: u32 = 500;
 
 /// One chain's complete configuration.
