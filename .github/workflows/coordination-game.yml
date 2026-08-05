@@ -393,20 +393,32 @@ jobs:
           SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_MAINNET }}
         run: |
           set -euo pipefail
-          # `pnpm exec`, NOT `pnpm dlx`: dlx resolves in an isolated cache dir,
-          # so the script's own imports never see this repo's node_modules.
+          # `pnpm dlx`, matching deploy-devnet: tsx is NOT a dependency of this
+          # repo, so dlx is what supplies the binary. The script's own imports
+          # then resolve from the node_modules that the install step above
+          # creates — dlx only isolates the TOOL, not the CWD's module lookup.
           #
           # This step failed on SIX consecutive commits (dcfa8c5..561ed86) with
-          # `Cannot find module '@solana/web3.js'`, because the comment that used
-          # to sit here asserted the job had already run `pnpm install
-          # --frozen-lockfile` — and it never did. The comment directly above the
-          # pnpm setup block said the opposite and was the correct one. Two
-          # adjacent comments contradicted each other and the false one won.
+          # `Cannot find module '@solana/web3.js'`. The cause was the MISSING
+          # INSTALL, not dlx: the comment that used to sit here asserted the job
+          # had already run `pnpm install --frozen-lockfile`, and it never did.
+          # The comment above the pnpm setup block said the opposite and was the
+          # correct one — two adjacent comments contradicted each other and the
+          # false one won.
+          #
+          # Switching dlx -> exec looked like the tidier fix and was wrong: it
+          # removed the only thing providing tsx, turning the failure into
+          # `Command "tsx" not found`. Install + dlx is the combination that
+          # works, and it is verified end to end against mainnet read-only:
+          #   registry wants stake_lamports = 68482585
+          #   on-chain stake_lamports = 68482585
+          #   PASS: chain already matches the registry
+          # so the --apply below is a no-op today.
           #
           # Every one of those six runs still deployed to mainnet successfully at
           # the previous step and then skipped "Verify upgrade authority", so the
           # breakage was invisible unless you opened the job.
-          pnpm exec tsx scripts/reconcile-solana-stake.ts --cluster mainnet --apply
+          pnpm dlx tsx scripts/reconcile-solana-stake.ts --cluster mainnet --apply
 
 
       - name: Verify upgrade authority (mainnet)
