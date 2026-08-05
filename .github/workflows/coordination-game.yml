@@ -383,18 +383,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'pnpm'
+      # The dependency install this job was missing. Mirrors `test` and
+      # `deploy-devnet`; the root deps are public, so no NODE_AUTH_TOKEN.
+      - run: pnpm install --frozen-lockfile
       - name: Migrate + reconcile GlobalConfig
         env:
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
           SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_MAINNET }}
         run: |
           set -euo pipefail
-          # No toolchain setup here on purpose: this job already ran
-          # pnpm/action-setup, setup-node and `pnpm install --frozen-lockfile`
-          # before building. Re-adding them is what caused every failure on this
-          # step — npm against a pnpm tree, then a second pnpm/action-setup with
-          # no version. Just use what the job already has.
-          pnpm dlx tsx scripts/reconcile-solana-stake.ts --cluster mainnet --apply
+          # `pnpm exec`, NOT `pnpm dlx`: dlx resolves in an isolated cache dir,
+          # so the script's own imports never see this repo's node_modules.
+          #
+          # This step failed on SIX consecutive commits (dcfa8c5..561ed86) with
+          # `Cannot find module '@solana/web3.js'`, because the comment that used
+          # to sit here asserted the job had already run `pnpm install
+          # --frozen-lockfile` — and it never did. The comment directly above the
+          # pnpm setup block said the opposite and was the correct one. Two
+          # adjacent comments contradicted each other and the false one won.
+          #
+          # Every one of those six runs still deployed to mainnet successfully at
+          # the previous step and then skipped "Verify upgrade authority", so the
+          # breakage was invisible unless you opened the job.
+          pnpm exec tsx scripts/reconcile-solana-stake.ts --cluster mainnet --apply
 
 
       - name: Verify upgrade authority (mainnet)
