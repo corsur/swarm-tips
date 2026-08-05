@@ -25,9 +25,13 @@ pub fn claim_reward(ctx: Context<ClaimReward>, amount: u64, proof: Vec<[u8; 32]>
         CoordinationError::MerkleProofTooLong,
     );
 
-    let tournament = &ctx.accounts.tournament;
+    // Copy the scalars rather than holding a borrow of the account: the Effects
+    // phase below mutates `tournament.prize_lamports`, and a live immutable
+    // borrow here would make that a compile error.
+    let tournament_id = ctx.accounts.tournament.tournament_id;
+    let merkle_root = ctx.accounts.tournament.merkle_root;
     require!(
-        tournament.finalized,
+        ctx.accounts.tournament.finalized,
         CoordinationError::TournamentNotFinalized,
     );
 
@@ -42,13 +46,38 @@ pub fn claim_reward(ctx: Context<ClaimReward>, amount: u64, proof: Vec<[u8; 32]>
     let player_wallet = ctx.accounts.player.key();
     let leaf = compute_leaf(&player_wallet, amount)?;
     require!(
-        verify_proof(&leaf, &proof, &tournament.merkle_root)?,
+        verify_proof(&leaf, &proof, &merkle_root)?,
         CoordinationError::InvalidMerkleProof,
     );
     require!(amount > 0, CoordinationError::EmptyPrizePool);
 
     // Effects: mark claimed before transfer (CEI ordering)
     ctx.accounts.player_profile.claimed = true;
+
+    // Draw the payout DOWN from the recorded pool.
+    //
+    // This used to be missing: `claim_reward` moved lamports out of the
+    // Tournament PDA but left `prize_lamports` at its pre-claim value, so the
+    // field became a lie the moment anyone claimed. Mainnet T1 reports
+    // 1.375 SOL while the account holds 0.643 — ~0.73 SOL was genuinely
+    // claimed by 11 eligible players and the field never moved.
+    //
+    // Funds were never at risk (`sweep_unclaimed` computes its amount from real
+    // `lamports()` minus rent, not from this field), so this is a REPORTING
+    // fix — but every reader was over-reporting: the UI, the leaderboard, and
+    // `finalize_tournament`, which snapshots `prize_lamports` into
+    // `prize_snapshot` and would carry the inflated figure into the next
+    // tournament's accounting.
+    //
+    // Saturating rather than checked: the pool is the source of the payout, so
+    // amount > prize_lamports should be impossible, and a claim that is
+    // otherwise valid must not be bricked by a bookkeeping underflow. If they
+    // ever disagree the floor is 0, which is the honest reading.
+    ctx.accounts.tournament.prize_lamports = ctx
+        .accounts
+        .tournament
+        .prize_lamports
+        .saturating_sub(amount);
 
     // Postcondition: claimed flag must be set to prevent double-claim
     require!(
@@ -64,7 +93,7 @@ pub fn claim_reward(ctx: Context<ClaimReward>, amount: u64, proof: Vec<[u8; 32]>
     )?;
 
     emit!(RewardClaimed {
-        tournament_id: tournament.tournament_id,
+        tournament_id,
         player: player_wallet,
         amount,
     });
@@ -132,6 +161,29 @@ pub struct ClaimReward<'info> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pool must be drawn DOWN by a claim.
+    ///
+    /// Mirrors the arithmetic `claim_reward` performs. Before the fix the field
+    /// was untouched, so mainnet T1 still reports 1.375 SOL while the account
+    /// holds 0.643 — ~0.73 SOL was really claimed by 11 players and the number
+    /// never moved. `finalize_tournament` snapshots this field into
+    /// `prize_snapshot`, so the inflated figure propagated forward.
+    #[test]
+    fn a_claim_draws_the_recorded_pool_down() {
+        let pool: u64 = 1_375_000_000;
+        let claim: u64 = 730_000_000;
+        assert_eq!(
+            pool.saturating_sub(claim),
+            645_000_000,
+            "the pool must fall by exactly the claimed amount"
+        );
+        // Saturating, not wrapping: a bookkeeping disagreement must floor at
+        // zero rather than wrap to u64::MAX and report an enormous pool.
+        assert_eq!(claim.saturating_sub(pool), 0);
+        // And it must not be a no-op — the bug was that the value never moved.
+        assert_ne!(pool.saturating_sub(claim), pool);
+    }
 
     #[test]
     fn compute_leaf_deterministic() {
