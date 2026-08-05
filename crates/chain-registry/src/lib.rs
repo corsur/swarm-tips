@@ -516,6 +516,36 @@ pub fn testnet() -> impl Iterator<Item = &'static ChainEntry> {
     REGISTRY.iter().filter(|e| !e.is_mainnet)
 }
 
+/// The Coordination Game tournament currently accepting play, per cluster.
+///
+/// SINGLE SOURCE. Four consumers must agree with this value and each other:
+/// this constant, `coordination-app/infra/cloudrun.tf` (the backend
+/// matchmaker's TOURNAMENT_ID), the frontend's `constants.ts` default, and
+/// `tests/e2e/harness/network.ts`. A partial move pairs players across two
+/// tournaments; `check-tournament-id-parity.mjs` asserts they match.
+///
+/// Why this exists: on-chain `Tournament.end_time` is IMMUTABLE — there is no
+/// extend instruction — so a rollover creates a NEW tournament and every client
+/// must be re-pointed. mcp-server used to hardcode `unwrap_or(1)`, and T1 ended
+/// 2026-05-01, so any agent taking the documented default got a transaction
+/// that failed on-chain with `OutsideTournamentWindow` (6014).
+///
+/// T2 was created with the tournament script's old 90-day default and expired
+/// 2026-08-06. T3 runs to 2027-08-05.
+pub const ACTIVE_TOURNAMENT_MAINNET: u64 = 3;
+/// Devnet's long-window tournament (T1001's 30-day window expired 2026-06-07).
+pub const ACTIVE_TOURNAMENT_DEVNET: u64 = 1003;
+
+/// Same shape as `game_constants::stake_lamports(is_mainnet)` — cluster in,
+/// value out, so a caller cannot silently pick the wrong cluster's tournament.
+pub const fn active_tournament_id(is_mainnet: bool) -> u64 {
+    if is_mainnet {
+        ACTIVE_TOURNAMENT_MAINNET
+    } else {
+        ACTIVE_TOURNAMENT_DEVNET
+    }
+}
+
 /// The Solana leg the MCP cross-chain registration/queue path is pinned to
 /// (devnet), partnering the EVM testnet leg (Base Sepolia) — callers resolving
 /// a raw base58 Solana wallet use this single source of truth rather than

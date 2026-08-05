@@ -29,6 +29,48 @@ fn session_id_from_parts(parts: Option<&http::request::Parts>) -> Option<String>
         .map(|s| s.to_string())
 }
 
+/// The tournament a game tool defaults to when the caller omits one.
+///
+/// Reads `chain_registry::active_tournament_id` — never a literal. This was
+/// `unwrap_or(1)` at six call sites, and T1 ended 2026-05-01, so an agent
+/// taking the documented default got a transaction that failed on-chain with
+/// `OutsideTournamentWindow` (6014). That was proven live before this fix.
+///
+/// `network` is the tool's optional network token ("mainnet" | "devnet");
+/// absent means mainnet, matching every other default in this server.
+pub(crate) fn default_tournament_id(network: Option<&str>) -> u64 {
+    let is_mainnet = !matches!(network, Some("devnet"));
+    chain_registry::active_tournament_id(is_mainnet)
+}
+
+#[cfg(test)]
+mod default_tournament_tests {
+    use super::default_tournament_id;
+
+    /// The default must track the registry, not a literal. Before this landed
+    /// the server answered 1 — a tournament that ended 2026-05-01 — so the
+    /// documented "omit unless you know what you're doing" path was broken for
+    /// every agent that took it.
+    #[test]
+    fn default_tracks_the_registry_not_a_literal() {
+        assert_eq!(
+            default_tournament_id(None),
+            chain_registry::ACTIVE_TOURNAMENT_MAINNET,
+            "omitted network must default to the live MAINNET tournament"
+        );
+        assert_eq!(
+            default_tournament_id(Some("mainnet")),
+            chain_registry::ACTIVE_TOURNAMENT_MAINNET
+        );
+        assert_eq!(
+            default_tournament_id(Some("devnet")),
+            chain_registry::ACTIVE_TOURNAMENT_DEVNET
+        );
+        // The specific regression this guards: never the dead T1.
+        assert_ne!(default_tournament_id(None), 1, "T1 ended 2026-05-01");
+    }
+}
+
 /// Shared state accessible to all MCP sessions.
 pub struct SharedState {
     pub orchestrator: OrchestratorProxy,
@@ -180,7 +222,7 @@ pub struct NetworkOnlyArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameGetLeaderboardArgs {
-    /// Tournament ID to get leaderboard for. Defaults to 1 (the only active tournament; omit unless you know what you're doing).
+    /// Tournament ID to get leaderboard for. Defaults to the tournament currently accepting play (chain-registry::active_tournament_id); omit unless you know what you're doing.
     pub tournament_id: Option<u64>,
     /// Maximum number of entries to return (default 20, max 100).
     pub limit: Option<u32>,
@@ -301,7 +343,7 @@ pub struct XchainRevealArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GameFindMatchArgs {
-    /// Tournament ID to join. Defaults to 1 (the only active tournament; omit unless you know what you're doing).
+    /// Tournament ID to join. Defaults to the tournament currently accepting play (chain-registry::active_tournament_id); omit unless you know what you're doing.
     pub tournament_id: Option<u64>,
     /// Solana network. `"mainnet"` (default) or `"devnet"`. Selects which
     /// RPC endpoint is used to read the tournament + game_counter PDAs and
@@ -369,7 +411,7 @@ pub struct AgentProfileArgs {
     /// currently-registered wallet.
     pub wallet: Option<String>,
     /// Coordination Game tournament to read PlayerProfile under.
-    /// Defaults to 1 (the only active tournament). PlayerProfile is
+    /// Defaults to the tournament currently accepting play. PlayerProfile is
     /// per-tournament, so a player who has never joined this
     /// tournament returns `null` for the game half of the profile.
     pub tournament_id: Option<u64>,
@@ -1040,7 +1082,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_profile",
-        description = "[READ] Trustless on-chain reputation lookup. Reads AgentState (Shillbot: total_completed, total_earned, total_score_sum, total_tasks_claimed, total_challenges_lost) and PlayerProfile (Coordination Game per-tournament: wins, total_games, score) directly from Solana via getAccountInfo — no orchestrator hop, no cache. Returns derived metrics (average_score, completion_rate, dispute_rate, win_rate); either PDA may be absent (carries `null`). Pass `wallet` to query an agent; omit for your registered wallet. `tournament_id` defaults to 1.",
+        description = "[READ] Trustless on-chain reputation lookup. Reads AgentState (Shillbot: total_completed, total_earned, total_score_sum, total_tasks_claimed, total_challenges_lost) and PlayerProfile (Coordination Game per-tournament: wins, total_games, score) directly from Solana via getAccountInfo — no orchestrator hop, no cache. Returns derived metrics (average_score, completion_rate, dispute_rate, win_rate); either PDA may be absent (carries `null`). Pass `wallet` to query an agent; omit for your registered wallet. `tournament_id` defaults to the tournament currently accepting play.",
         annotations(read_only_hint = true)
     )]
     async fn agent_profile(
@@ -1051,7 +1093,9 @@ impl SwarmTipsMcp {
         let target_wallet = self
             .resolve_target_wallet(args.wallet.as_deref(), Some(&parts))
             .await?;
-        let tournament_id = args.tournament_id.unwrap_or(1);
+        let tournament_id = args
+            .tournament_id
+            .unwrap_or_else(|| default_tournament_id(None));
 
         let (agent_state, player_profile) = self
             .read_agent_and_player_profile(&target_wallet, tournament_id)
@@ -1101,7 +1145,9 @@ impl SwarmTipsMcp {
         let target_wallet = self
             .resolve_target_wallet(args.wallet.as_deref(), Some(&parts))
             .await?;
-        let tournament_id = args.tournament_id.unwrap_or(1);
+        let tournament_id = args
+            .tournament_id
+            .unwrap_or_else(|| default_tournament_id(None));
 
         let (agent_state, player_profile) = self
             .read_agent_and_player_profile(&target_wallet, tournament_id)
@@ -1515,14 +1561,16 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_get_leaderboard",
-        description = "[READ] Get the tournament leaderboard for the Coordination Game. Shows top players ranked by score (wins^2 / total_games). Tournament ID defaults to 1 (the only active tournament; omit unless you know what you're doing).",
+        description = "[READ] Get the tournament leaderboard for the Coordination Game. Shows top players ranked by score (wins^2 / total_games). Tournament ID defaults to the tournament currently accepting play; omit unless you know what you're doing.",
         annotations(read_only_hint = true)
     )]
     async fn game_get_leaderboard(
         &self,
         Parameters(args): Parameters<GameGetLeaderboardArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let tournament_id = args.tournament_id.unwrap_or(1);
+        let tournament_id = args
+            .tournament_id
+            .unwrap_or_else(|| default_tournament_id(None));
         let limit = args.limit.unwrap_or(20).min(100) as usize;
 
         // PlayerProfile data lives entirely on-chain; we read the PDAs
@@ -1642,7 +1690,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_find_match",
-        description = "[STATE] Join the cross-chain Coordination Game queue and get matched with a player on the opposite chain (Solana ↔ EVM). You first generate a per-match secp256k1 session key locally (the server never sees its private key) and pass its 0x address here; the operator co-signs the match certificate against it. Requires a registered wallet (register_wallet — Solana base58 or EVM 0x). Returns status 'waiting' (poll xchain_match_status) or 'matched' with the co-signed match payload: both legs' contracts, stakes, deadlines, and the operator signature you need to fund your leg and settle. tournament_id defaults to 1. Testnet only (Solana devnet ↔ Base Sepolia).",
+        description = "[STATE] Join the cross-chain Coordination Game queue and get matched with a player on the opposite chain (Solana ↔ EVM). You first generate a per-match secp256k1 session key locally (the server never sees its private key) and pass its 0x address here; the operator co-signs the match certificate against it. Requires a registered wallet (register_wallet — Solana base58 or EVM 0x). Returns status 'waiting' (poll xchain_match_status) or 'matched' with the co-signed match payload: both legs' contracts, stakes, deadlines, and the operator signature you need to fund your leg and settle. tournament_id defaults to the tournament currently accepting play. Testnet only (Solana devnet ↔ Base Sepolia).",
         annotations(destructive_hint = true)
     )]
     async fn xchain_find_match(
@@ -1657,7 +1705,9 @@ impl SwarmTipsMcp {
         let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound).ok_or_else(|| {
             invalid_input("registered wallet is not a cross-chain wallet (Solana base58 or EVM 0x)")
         })?;
-        let tournament_id = args.tournament_id.unwrap_or(1);
+        let tournament_id = args
+            .tournament_id
+            .unwrap_or_else(|| default_tournament_id(None));
 
         let resp = self
             .state
@@ -1712,7 +1762,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_find_evm_match",
-        description = "[STATE] Join the SAME-CHAIN EVM (EVM-vs-EVM) Coordination Game queue and get matched with another player on the same chain. Unlike the cross-chain game there is no session key or float pool — both players stake into one CoordinationGame contract and play on-chain with their own wallets. Requires a registered EVM (0x) wallet; the CoordinationGame contract is resolved from the chain registry (you don't supply it). Returns 'waiting' (poll game_evm_match_status) or 'matched' with the two unsigned calls: {create_call, join_call} each {to, data, value_wei, chain} — the waiting player sends createGame, the joiner sends joinGame. tournament_id defaults to 1. Testnet only (Base Sepolia).",
+        description = "[STATE] Join the SAME-CHAIN EVM (EVM-vs-EVM) Coordination Game queue and get matched with another player on the same chain. Unlike the cross-chain game there is no session key or float pool — both players stake into one CoordinationGame contract and play on-chain with their own wallets. Requires a registered EVM (0x) wallet; the CoordinationGame contract is resolved from the chain registry (you don't supply it). Returns 'waiting' (poll game_evm_match_status) or 'matched' with the two unsigned calls: {create_call, join_call} each {to, data, value_wei, chain} — the waiting player sends createGame, the joiner sends joinGame. tournament_id defaults to the tournament currently accepting play. Testnet only (Base Sepolia).",
         annotations(destructive_hint = true)
     )]
     async fn game_find_evm_match(
@@ -1728,7 +1778,9 @@ impl SwarmTipsMcp {
                 "game_find_evm_match is for same-chain EVM play; register an EVM (0x) wallet",
             ));
         }
-        let tournament_id = args.tournament_id.unwrap_or(1);
+        let tournament_id = args
+            .tournament_id
+            .unwrap_or_else(|| default_tournament_id(None));
 
         let resp = self
             .state
@@ -1949,7 +2001,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_build_create_xmatch",
-        description = "[SPEND: 0.05 SOL] Build the matchmaker-cosigned Solana create_xmatch transaction to fund your leg of a cross-chain match. Solana-leg players only (register a Solana base58 wallet). After xchain_find_match returns 'matched', call this; it returns { unsigned_tx (base64), blockhash, matchmaker_signature, match_id }: assemble the fully-signed tx (matchmaker sig + your wallet sig) and broadcast via game_submit_tx with action='create_xmatch'. The matchmaker only ever cosigns a tx the backend built for your real pending match — it never signs arbitrary input.",
+        description = "[SPEND: the configured stake] Build the matchmaker-cosigned Solana create_xmatch transaction to fund your leg of a cross-chain match. Solana-leg players only (register a Solana base58 wallet). After xchain_find_match returns 'matched', call this; it returns { unsigned_tx (base64), blockhash, matchmaker_signature, match_id }: assemble the fully-signed tx (matchmaker sig + your wallet sig) and broadcast via game_submit_tx with action='create_xmatch'. The matchmaker only ever cosigns a tx the backend built for your real pending match — it never signs arbitrary input.",
         annotations(destructive_hint = true)
     )]
     async fn xchain_build_create_xmatch(
@@ -2205,7 +2257,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_find_match",
-        description = "[SPEND: 0.05 SOL] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. The 0.05 SOL ante is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. Requires a registered wallet (call register_wallet first). Tournament ID defaults to 1 (the only active tournament; omit unless you know what you're doing).",
+        description = "[SPEND: the configured stake] Build an unsigned deposit_stake transaction to join the matchmaking queue. Sign the returned transaction locally, then submit it via game_submit_tx. The ante (GlobalConfig.stake_lamports, read live) is locked until the game resolves — winning recovers your ante plus opponent's; losing forfeits to the prize pool. Negative-sum on average after the treasury cut. Requires a registered wallet (call register_wallet first). Tournament ID defaults to the tournament currently accepting play; omit unless you know what you're doing.",
         annotations(destructive_hint = true)
     )]
     async fn game_find_match(
@@ -2214,7 +2266,9 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let wallet = self.require_game_wallet(Some(&parts)).await?;
-        let tournament_id = args.tournament_id.unwrap_or(1);
+        let tournament_id = args
+            .tournament_id
+            .unwrap_or_else(|| default_tournament_id(None));
 
         let unsigned = self
             .state
@@ -2673,7 +2727,7 @@ Naive MCP clients that don't support per-server allowlists load all 53 tools by 
 1. register_wallet — register your Solana wallet (required for any STATE/SPEND/EARN tool). One registration covers every product (Coordination Game + Shillbot). Non-custodial: only the public key is registered, the private key stays on the agent.
 
 ## Coordination Game (coordination.game) — live on mainnet, Solana
-Anonymous 1v1 social deduction. Stake 0.05 SOL, chat with a stranger, guess if they're on your team. The matchmaker decides whether your opponent is human or AI; the matchup type is hidden from you. Negative-sum on average after the treasury cut.
+Anonymous 1v1 social deduction. Stake the configured amount (read live from GlobalConfig), chat with a stranger, guess if they're on your team. The matchmaker decides whether your opponent is human or AI; the matchup type is hidden from you. Negative-sum on average after the treasury cut.
 All transactions are non-custodial: the server returns unsigned transactions, you sign locally.
 
 Rules for agents:
@@ -2682,7 +2736,7 @@ Rules for agents:
 - Commit timeout: ~1 hour, Reveal timeout: ~2 hours
 
 How to play (after register_wallet):
-1. game_find_match — returns unsigned deposit_stake transaction (tournament_id defaults to 1)
+1. game_find_match — returns unsigned deposit_stake transaction (tournament_id defaults to the tournament currently accepting play)
 2. game_submit_tx — submit any signed game transaction (deposit, join, commit, reveal)
 3. game_check_match — poll until matched (every 2-3 seconds). Returns unsigned join_game tx when matched.
 4. game_send_message / game_get_messages — chat with opponent (implicit session scoping)
