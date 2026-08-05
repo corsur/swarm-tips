@@ -216,3 +216,163 @@ pub struct CreateGame<'info> {
     pub player: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tournament(now: i64) -> Tournament {
+        Tournament {
+            tournament_id: 1,
+            authority: Pubkey::new_unique(),
+            start_time: now,
+            end_time: now.saturating_add(86_400),
+            prize_lamports: 0,
+            game_count: 0,
+            finalized: false,
+            prize_snapshot: 0,
+            merkle_root: [0u8; 32],
+            bump: 254,
+        }
+    }
+
+    fn escrow_at(player: Pubkey, amount: u64) -> StakeEscrow {
+        StakeEscrow {
+            player,
+            tournament_id: 1,
+            amount,
+            consumed: false,
+            bump: 254,
+        }
+    }
+
+    /// THE ORDERING CONSTRAINT FOR A FLOATING STAKE.
+    ///
+    /// The stake-coherence plan's Phase 3 has two on-chain parts: give
+    /// `deposit_stake` an amount parameter, and replace `create_game`'s
+    /// equality-against-config with a bounds check. They are NOT independent,
+    /// and the dependency runs the opposite way to the obvious reading:
+    ///
+    ///   deposit_stake -> escrow.amount = live_stake() = config.stake_lamports
+    ///   create_game   -> require!(stake_lamports == expected_stake)   <-- config
+    ///                 -> escrow.validate_for_game(.., expected_stake) <-- config
+    ///
+    /// Both of `create_game`'s gates compare against the CONFIG value, so an
+    /// escrow funded at any other amount is rejected twice over. Adding the
+    /// amount parameter to `deposit_stake` on its own therefore changes no
+    /// behaviour whatsoever — it would be an instruction-signature change to a
+    /// live-money mainnet program that buys exactly nothing.
+    ///
+    /// This test exists so that ordering is enforced rather than merely
+    /// documented. It pins the gate that a floating stake must go through, so
+    /// whoever implements the bounds check has to come here and state the new
+    /// rule deliberately, instead of discovering on devnet that quoted stakes
+    /// silently fail to pair.
+    #[test]
+    fn a_quoted_stake_cannot_enter_a_game_while_create_game_compares_against_config() {
+        let now = 1_700_000_000;
+        let t = tournament(now);
+        let player = Pubkey::new_unique();
+        let matchmaker = Pubkey::new_unique();
+        let commitment = [7u8; 32];
+        let configured = crate::state::DEFAULT_STAKE_LAMPORTS;
+
+        // Baseline: at the configured amount, everything else about this call
+        // is valid — so any failure below is attributable to the amount alone.
+        assert!(validate_create_inputs(
+            configured,
+            commitment,
+            matchmaker,
+            matchmaker,
+            &t,
+            &escrow_at(player, configured),
+            &player,
+            1,
+            now,
+            configured,
+        )
+        .is_ok());
+
+        // A per-match quote above the config: rejected, even though the player
+        // genuinely funded that much and both players would quote identically.
+        let quoted_high = configured.saturating_add(18_482_585);
+        assert!(
+            validate_create_inputs(
+                quoted_high,
+                commitment,
+                matchmaker,
+                matchmaker,
+                &t,
+                &escrow_at(player, quoted_high),
+                &player,
+                1,
+                now,
+                configured,
+            )
+            .is_err(),
+            "a quoted stake above the configured one must be rejected until bounds replace equality"
+        );
+
+        // And below, so this is a fixed-point rule and not a ceiling.
+        let quoted_low = configured.saturating_sub(1);
+        assert!(
+            validate_create_inputs(
+                quoted_low,
+                commitment,
+                matchmaker,
+                matchmaker,
+                &t,
+                &escrow_at(player, quoted_low),
+                &player,
+                1,
+                now,
+                configured,
+            )
+            .is_err(),
+            "a quoted stake below the configured one must be rejected too"
+        );
+
+        // The escrow gate is INDEPENDENT of the argument gate: even when the
+        // argument matches config, an escrow funded at a quoted amount fails.
+        // This is the half that a `deposit_stake(amount)` change would hit
+        // first, and the reason that change cannot land alone.
+        assert!(
+            validate_create_inputs(
+                configured,
+                commitment,
+                matchmaker,
+                matchmaker,
+                &t,
+                &escrow_at(player, quoted_high),
+                &player,
+                1,
+                now,
+                configured,
+            )
+            .is_err(),
+            "an escrow funded at a quoted amount must be rejected by validate_for_game"
+        );
+
+        // And the mirror image, which pins the ARGUMENT gate on its own: escrow
+        // at the configured amount, argument quoted. Without this case the test
+        // passes with `stake_lamports == expected_stake` deleted entirely — the
+        // escrow gate alone catches every other combination here, so the two
+        // gates have to be separated to be individually protected.
+        assert!(
+            validate_create_inputs(
+                quoted_high,
+                commitment,
+                matchmaker,
+                matchmaker,
+                &t,
+                &escrow_at(player, configured),
+                &player,
+                1,
+                now,
+                configured,
+            )
+            .is_err(),
+            "a quoted stake argument must be rejected by the config-equality gate"
+        );
+    }
+}
