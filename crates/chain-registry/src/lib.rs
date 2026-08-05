@@ -284,9 +284,9 @@ const REGISTRY: &[ChainEntry] = &[
         // problem, and closing it needs the client work named above, not
         // another edit here. `check-stake-parity.mjs` now compares the client
         // constants and will fail if anyone raises this first.
-        stake_base_units: 50_000_000, // 0.05 SOL == DEFAULT_STAKE_LAMPORTS
-        stake_usd_cents: 364,         // $3.64
-        peg_native_usd_cents: 7289,
+        stake_base_units: 68_482_585, // 0.0685 SOL — the 0.0027 ETH anchor at SOL/ETH 25.3639
+        stake_usd_cents: 504,         // $5.04
+        peg_native_usd_cents: 7361,
         max_tranche_base_units: 100_000_000,
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
@@ -936,10 +936,11 @@ mod tests {
         // per-match quote (deposit_stake taking stake_lamports).
         let sol = entry(&ChainId::parse(SOLANA_MAINNET_CAIP2).unwrap()).unwrap();
         assert_eq!(
-            sol.stake_base_units, 50_000_000,
-            "Solana mainnet moved off its documented 0.05 SOL — if this was an \
-             intentional re-peg toward the anchor, update this test and say what \
-             SOL/ETH ratio it was pegged at"
+            sol.stake_base_units, 68_482_585,
+            "Solana mainnet moved off its 2026-08-04 re-peg. It was set to the \
+             0.0027 ETH anchor at SOL/ETH 25.3639 (SOL $73.61 / ETH $1867.16). \
+             If this is another intentional re-peg, update this test and record \
+             the ratio it was pegged at."
         );
     }
 
