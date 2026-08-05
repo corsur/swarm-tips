@@ -1,7 +1,11 @@
 use crate::errors::CoordinationError;
 use anchor_lang::prelude::*;
 
-pub const MIN_GAMES_FOR_PAYOUT: u64 = 5;
+// RE-EXPORTED, NOT REDECLARED — see `chain_core::game`. The eligibility gate
+// and the score formula are tournament RULES, not Solana storage concerns, so
+// they belong in the shared core alongside the payoff matrix. The EVM side has
+// never had them; when v4 adds a season it mirrors this same definition.
+pub use chain_core::game::MIN_GAMES_FOR_PAYOUT;
 
 #[account]
 pub struct PlayerProfile {
@@ -31,17 +35,14 @@ impl PlayerProfile {
     /// are not competitive for the prize pool. This is by design.
     ///
     /// Requires total_games > 0.
+    /// `wins² / games`. DELEGATES to `chain_core::game::compute_score` — the
+    /// formula lives in the shared core so the Solana program, the EVM v4
+    /// contract, and the off-chain finalizer cannot compute a leaderboard three
+    /// different ways. This wrapper only maps the core's dependency-free error
+    /// onto Anchor's.
     pub fn compute_score(wins: u64, total_games: u64) -> Result<u64> {
-        require!(total_games > 0, CoordinationError::ArithmeticOverflow);
-        let wins_sq = wins
-            .checked_mul(wins)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-        let score = wins_sq
-            .checked_div(total_games)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-        // Postcondition: integer division cannot exceed the dividend
-        require!(score <= wins_sq, CoordinationError::ArithmeticOverflow);
-        Ok(score)
+        chain_core::game::compute_score(wins, total_games)
+            .map_err(|_| error!(CoordinationError::ArithmeticOverflow))
     }
 
     /// Initializes a freshly created profile. Called from create_game and join_game

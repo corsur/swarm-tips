@@ -191,15 +191,20 @@ pub fn resolve_game(
 // wire format defined in crates/chain-core cert_schema — never reorder.
 // ---------------------------------------------------------------------------
 
-pub const XKIND_HOMOG_BOTH_CORRECT: u8 = 0;
-pub const XKIND_HOMOG_P1_CORRECT: u8 = 1;
-pub const XKIND_HOMOG_P2_CORRECT: u8 = 2;
-pub const XKIND_BOTH_WRONG: u8 = 3;
-pub const XKIND_HETERO_P1_WINS: u8 = 4;
-pub const XKIND_HETERO_P2_WINS: u8 = 5;
-pub const XKIND_TIMEOUT_P1_WINS: u8 = 6;
-pub const XKIND_TIMEOUT_P2_WINS: u8 = 7;
-pub const XKIND_TIMEOUT_BOTH_FORFEIT: u8 = 8;
+// RE-EXPORTED, NOT REDECLARED. These nine values used to be written out here
+// AND again in evm/src/CertLib.sol:33-40, with nothing enforcing agreement.
+// `chain_core::game` is now the single definition; Solidity mirrors it and
+// tests/fixtures/game-vectors.json holds both sides to it exhaustively.
+//
+// The `XKIND_` prefix is kept so existing call sites read unchanged; the
+// values come from the shared core and cannot drift from it.
+pub use chain_core::game::{
+    BOTH_WRONG as XKIND_BOTH_WRONG, HETERO_P1_WINS as XKIND_HETERO_P1_WINS,
+    HETERO_P2_WINS as XKIND_HETERO_P2_WINS, HOMOG_BOTH_CORRECT as XKIND_HOMOG_BOTH_CORRECT,
+    HOMOG_P1_CORRECT as XKIND_HOMOG_P1_CORRECT, HOMOG_P2_CORRECT as XKIND_HOMOG_P2_CORRECT,
+    TIMEOUT_BOTH_FORFEIT as XKIND_TIMEOUT_BOTH_FORFEIT, TIMEOUT_P1_WINS as XKIND_TIMEOUT_P1_WINS,
+    TIMEOUT_P2_WINS as XKIND_TIMEOUT_P2_WINS,
+};
 
 /// The local player's result on this leg.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -674,5 +679,60 @@ mod tests {
             resolve_xleg(0, true, 1, 1, 8001).is_err(),
             "split above max"
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_core_equivalence {
+    use super::*;
+    use chain_core::game;
+
+    /// The program's `resolve_game` and the shared core's `amounts_for_kind`
+    /// must produce IDENTICAL splits for every reachable input.
+    ///
+    /// This is the bridge that makes deleting the local matrix safe. The
+    /// constants and the score formula already moved to `chain_core::game`, but
+    /// the matrix itself still lives in both places, so until this test exists
+    /// "they agree" is an inspection claim — exactly the state that let the
+    /// Solana and Solidity implementations drift apart unnoticed.
+    ///
+    /// Enumerates the whole reachable domain rather than sampling: both matchup
+    /// types x both guesses x both first-committer values x several stakes,
+    /// including odd stakes where integer division could leak a lamport.
+    #[test]
+    fn resolve_game_matches_the_shared_core_for_every_input() {
+        const SAME: u8 = crate::state::GUESS_SAME_TEAM;
+        const DIFF: u8 = 1;
+
+        for stake in [1u64, 2, 3, 7, 50_000_000, 68_482_585] {
+            for (m, p1, p2, first, expected_kind) in [
+                // Homogeneous (matchup 0): correct guess is SAME.
+                (0u8, SAME, SAME, 1u8, game::HOMOG_BOTH_CORRECT),
+                (0, SAME, DIFF, 1, game::HOMOG_P1_CORRECT),
+                (0, DIFF, SAME, 1, game::HOMOG_P2_CORRECT),
+                (0, DIFF, DIFF, 1, game::BOTH_WRONG),
+                // Heterogeneous (matchup 1): correct guess is DIFFERENT.
+                (1, DIFF, SAME, 1, game::HETERO_P1_WINS),
+                (1, SAME, DIFF, 1, game::HETERO_P2_WINS),
+                (1, SAME, SAME, 1, game::BOTH_WRONG),
+                // Both correct in a hetero match: the FIRST COMMITTER takes the
+                // pot. first_committer is 1 or 2, never 0.
+                (1, DIFF, DIFF, 1, game::HETERO_P1_WINS),
+                (1, DIFF, DIFF, 2, game::HETERO_P2_WINS),
+            ] {
+                let local = resolve_game(m, p1, p2, stake, first).unwrap_or_else(|e| {
+                    panic!("resolve_game({m},{p1},{p2},{stake},{first}): {e:?}")
+                });
+                let core = game::amounts_for_kind(expected_kind, stake)
+                    .unwrap_or_else(|e| panic!("core kind {expected_kind} stake {stake}: {e:?}"));
+
+                assert_eq!(
+                    (local.p1_return, local.p2_return, local.tournament_gain),
+                    (core.p1, core.p2, core.gain),
+                    "DIVERGENCE at matchup={m} p1={p1} p2={p2} first={first} stake={stake} \
+                     (expected kind {expected_kind})"
+                );
+            }
+        }
     }
 }
