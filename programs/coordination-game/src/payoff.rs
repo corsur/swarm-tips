@@ -18,158 +18,44 @@ pub struct Resolution {
 ///
 /// Invariant: p1_return + p2_return + tournament_gain == 2 * stake_lamports
 pub fn resolve_homogenous(p1_guess: u8, p2_guess: u8, stake_lamports: u64) -> Result<Resolution> {
-    // Invariant: stake_lamports must be nonzero
-    require!(stake_lamports > 0, CoordinationError::ArithmeticOverflow);
-
-    let two_stakes = stake_lamports
-        .checked_mul(2)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-
-    let p1_correct = p1_guess == crate::state::GUESS_SAME_TEAM;
-    let p2_correct = p2_guess == crate::state::GUESS_SAME_TEAM;
-
-    let resolution = if p1_correct && p2_correct {
-        // Both correct: full refund
-        Resolution {
-            p1_return: stake_lamports,
-            p2_return: stake_lamports,
-            tournament_gain: 0,
-        }
-    } else if p1_correct && !p2_correct {
-        // P1 correct, P2 wrong: P1 gets half stake back
-        let half_stake = stake_lamports
-            .checked_div(2)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-        let pool_gain = two_stakes
-            .checked_sub(half_stake)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-        Resolution {
-            p1_return: half_stake,
-            p2_return: 0,
-            tournament_gain: pool_gain,
-        }
-    } else if !p1_correct && p2_correct {
-        // P2 correct, P1 wrong: P2 gets half stake back
-        let half_stake = stake_lamports
-            .checked_div(2)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-        let pool_gain = two_stakes
-            .checked_sub(half_stake)
-            .ok_or(CoordinationError::ArithmeticOverflow)?;
-        Resolution {
-            p1_return: 0,
-            p2_return: half_stake,
-            tournament_gain: pool_gain,
-        }
-    } else {
-        // Both wrong: full forfeiture
-        Resolution {
-            p1_return: 0,
-            p2_return: 0,
-            tournament_gain: two_stakes,
-        }
-    };
-
-    // Postcondition: lamport conservation
-    let total = resolution
-        .p1_return
-        .checked_add(resolution.p2_return)
-        .and_then(|v| v.checked_add(resolution.tournament_gain))
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    require!(total == two_stakes, CoordinationError::ArithmeticOverflow);
-
-    Ok(resolution)
+    resolve_game(
+        chain_core::game::MATCHUP_HOMOGENEOUS,
+        p1_guess,
+        p2_guess,
+        stake_lamports,
+        1, // unused for homogeneous; any valid committer id
+    )
 }
 
-/// Computes payoffs for a different-team (heterogeneous) matchup.
-///
-/// Correct guess = GUESS_DIFF_TEAM (1), since the players are on different teams.
-///
-/// Winner determination:
-///   - Both wrong: full forfeiture to tournament (prevents "always guess Same" collusion)
-///   - If exactly one player is wrong: the correct player wins the full pot
-///   - If both correct: first committer wins the full pot
-///
-/// Payoffs:
-///   Winner return: 2 × stake  (full pot)
-///   Loser return: 0
-///   Tournament gain: 0 (when there's a winner) or 2S (both wrong)
-///
-/// Invariant: p1_return + p2_return + tournament_gain == 2 * stake_lamports
+/// Heterogeneous matchup. `first_committer` (1 or 2, never 0) breaks the tie
+/// when BOTH players guess correctly — only one can take the pot.
 pub fn resolve_heterogeneous(
     p1_guess: u8,
     p2_guess: u8,
     stake_lamports: u64,
     first_committer: u8,
 ) -> Result<Resolution> {
-    // Invariant: stake_lamports must be nonzero
-    require!(stake_lamports > 0, CoordinationError::ArithmeticOverflow);
-    // Invariant: first_committer must be 1 (p1) or 2 (p2)
-    require!(
-        first_committer == 1 || first_committer == 2,
-        CoordinationError::InvalidGameState
-    );
-
-    let two_stakes = stake_lamports
-        .checked_mul(2)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-
-    let p1_correct = p1_guess == crate::state::GUESS_DIFF_TEAM;
-    let p2_correct = p2_guess == crate::state::GUESS_DIFF_TEAM;
-
-    // Both wrong: full forfeiture to tournament
-    if !p1_correct && !p2_correct {
-        let resolution = Resolution {
-            p1_return: 0,
-            p2_return: 0,
-            tournament_gain: two_stakes,
-        };
-        // Postcondition: 0 + 0 + 2S == 2S
-        require!(
-            resolution.tournament_gain == two_stakes,
-            CoordinationError::ArithmeticOverflow
-        );
-        return Ok(resolution);
-    }
-
-    // Winner takes full pot (2S); loser gets nothing; tournament gains nothing.
-    // If exactly one wrong: correct player wins regardless of commit order.
-    // If both correct: first committer wins.
-    let p1_wins = if p1_correct == p2_correct {
-        first_committer == 1
-    } else {
-        p1_correct
-    };
-
-    let resolution = if p1_wins {
-        Resolution {
-            p1_return: two_stakes,
-            p2_return: 0,
-            tournament_gain: 0,
-        }
-    } else {
-        Resolution {
-            p1_return: 0,
-            p2_return: two_stakes,
-            tournament_gain: 0,
-        }
-    };
-
-    // Assert invariant: winner_return + 0 + 0 == 2S
-    let total = resolution
-        .p1_return
-        .checked_add(resolution.p2_return)
-        .and_then(|v| v.checked_add(resolution.tournament_gain))
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    require!(total == two_stakes, CoordinationError::ArithmeticOverflow);
-
-    Ok(resolution)
+    resolve_game(
+        chain_core::game::MATCHUP_HETEROGENEOUS,
+        p1_guess,
+        p2_guess,
+        stake_lamports,
+        first_committer,
+    )
 }
 
-/// Routes to the appropriate payoff function based on matchup_type.
+/// Resolve a finished game into its lamport split.
 ///
-/// matchup_type == 0: same-team (homogenous)
-/// matchup_type == 1: different-team (heterogeneous)
+/// DELEGATES ENTIRELY to `chain_core::game` — this function used to contain the
+/// payoff matrix, which was also written out in
+/// `evm/src/CoordinationGame.sol::_amounts` with nothing enforcing agreement.
+/// The matrix now has ONE definition; this is the Anchor-facing adapter that
+/// maps the core's dependency-free `GameError` onto `CoordinationError`.
+///
+/// Deleting the local copy was made safe by the equivalence test in
+/// `shared_core_equivalence` below, which enumerated the whole reachable domain
+/// against the core BEFORE this delegation and is tamper-verified. It stays as
+/// the regression guard.
 pub fn resolve_game(
     matchup_type: u8,
     p1_guess: u8,
@@ -177,11 +63,23 @@ pub fn resolve_game(
     stake_lamports: u64,
     first_committer: u8,
 ) -> Result<Resolution> {
-    match matchup_type {
-        0 => resolve_homogenous(p1_guess, p2_guess, stake_lamports),
-        1 => resolve_heterogeneous(p1_guess, p2_guess, stake_lamports, first_committer),
-        _ => Err(error!(CoordinationError::InvalidGameState)),
-    }
+    use chain_core::game::{self, GameError};
+
+    let map = |e: GameError| match e {
+        GameError::ZeroStake | GameError::Overflow | GameError::ZeroGames => {
+            error!(CoordinationError::ArithmeticOverflow)
+        }
+        GameError::UnknownOutcome => error!(CoordinationError::InvalidGameState),
+    };
+
+    let kind = game::derive_kind(matchup_type, p1_guess, p2_guess, first_committer).map_err(map)?;
+    let payout = game::amounts_for_kind(kind, stake_lamports).map_err(map)?;
+
+    Ok(Resolution {
+        p1_return: payout.p1,
+        p2_return: payout.p2,
+        tournament_gain: payout.gain,
+    })
 }
 
 // ---------------------------------------------------------------------------

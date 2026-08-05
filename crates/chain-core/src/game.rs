@@ -78,6 +78,64 @@ pub const ALL_OUTCOME_KINDS: [u8; 9] = [
     TIMEOUT_BOTH_FORFEIT,
 ];
 
+/// A guess of "we are on the same team".
+pub const GUESS_SAME_TEAM: u8 = 0;
+/// A guess of "we are on different teams".
+pub const GUESS_DIFF_TEAM: u8 = 1;
+/// Both players are the same type — the correct guess is [`GUESS_SAME_TEAM`].
+pub const MATCHUP_HOMOGENEOUS: u8 = 0;
+/// The players are different types — the correct guess is [`GUESS_DIFF_TEAM`].
+pub const MATCHUP_HETEROGENEOUS: u8 = 1;
+
+/// Which outcome kind a finished game produced.
+///
+/// `first_committer` is 1 (P1) or 2 (P2) — never 0. The pre-commit sentinel is
+/// 255, and a 0 here means the caller passed uninitialised state, so it is
+/// rejected rather than silently treated as P1.
+///
+/// It only matters in ONE case: a heterogeneous match where both players
+/// guessed correctly. Both cannot take the pot, so the tiebreak is whoever
+/// committed first.
+pub fn derive_kind(
+    matchup: u8,
+    p1_guess: u8,
+    p2_guess: u8,
+    first_committer: u8,
+) -> Result<u8, GameError> {
+    match matchup {
+        MATCHUP_HOMOGENEOUS => {
+            let p1_ok = p1_guess == GUESS_SAME_TEAM;
+            let p2_ok = p2_guess == GUESS_SAME_TEAM;
+            Ok(match (p1_ok, p2_ok) {
+                (true, true) => HOMOG_BOTH_CORRECT,
+                (true, false) => HOMOG_P1_CORRECT,
+                (false, true) => HOMOG_P2_CORRECT,
+                (false, false) => BOTH_WRONG,
+            })
+        }
+        MATCHUP_HETEROGENEOUS => {
+            if first_committer != 1 && first_committer != 2 {
+                return Err(GameError::UnknownOutcome);
+            }
+            let p1_ok = p1_guess == GUESS_DIFF_TEAM;
+            let p2_ok = p2_guess == GUESS_DIFF_TEAM;
+            Ok(match (p1_ok, p2_ok) {
+                (true, true) => {
+                    if first_committer == 1 {
+                        HETERO_P1_WINS
+                    } else {
+                        HETERO_P2_WINS
+                    }
+                }
+                (true, false) => HETERO_P1_WINS,
+                (false, true) => HETERO_P2_WINS,
+                (false, false) => BOTH_WRONG,
+            })
+        }
+        _ => Err(GameError::UnknownOutcome),
+    }
+}
+
 /// How one resolved game splits its pot.
 ///
 /// `p1 + p2 + gain == 2 * stake` always — see [`assert_conservation`].
