@@ -90,7 +90,8 @@ const MCP_SESSIONS_COLLECTION: &str = "mcp_game_sessions";
 
 /// Headroom over the stake a wallet needs before we let it deposit: rent for the
 /// game PDA plus transaction fees for the deposit/commit/reveal sequence. The
-/// stake itself comes from `game_chain::DEFAULT_STAKE_LAMPORTS` — never restated.
+/// stake itself is read LIVE from GlobalConfig (client::stake_lamports) — never
+/// a compile-time constant, which is what broke mainnet on the 2026-08 re-peg.
 const STAKE_FEE_BUFFER_LAMPORTS: u64 = 20_000_000;
 
 /// Firestore document for persisted MCP game session state.
@@ -947,7 +948,13 @@ impl GameSessionManager {
             .get_balance(&tx_builder.pubkey())
             .await
             .context("failed to check balance")?;
-        let min_balance = game_chain::DEFAULT_STAKE_LAMPORTS + STAKE_FEE_BUFFER_LAMPORTS;
+        // Live stake from GlobalConfig on THIS cluster — not a compile-time
+        // constant. mainnet is 68,482,585 and devnet 50,000,000, so a constant
+        // here gated mainnet players on the wrong balance.
+        let stake = tx_builder.stake_lamports().await?;
+        let min_balance = stake
+            .checked_add(STAKE_FEE_BUFFER_LAMPORTS)
+            .context("stake + fee buffer overflowed")?;
         anyhow::ensure!(
             balance >= min_balance,
             "insufficient balance: need at least {} SOL to play, have {} SOL",
@@ -1806,11 +1813,10 @@ impl GameSessionManager {
 
         let matchmaker = read_matchmaker_pubkey(&tx_builder).await?;
 
-        let stake: u64 = game_chain::DEFAULT_STAKE_LAMPORTS;
-
-        // Build unsigned create_game transaction.
+        // No stake argument: build_create_game reads GlobalConfig itself, so
+        // this call site cannot disagree with the chain. See its doc comment.
         let unsigned = tx_builder
-            .build_create_game(tournament_id, stake, matchup_commitment, &matchmaker)
+            .build_create_game(tournament_id, matchup_commitment, &matchmaker)
             .await?;
 
         // Get matchmaker cosignature from game-api. Same network as the

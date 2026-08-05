@@ -157,21 +157,53 @@ impl GameTxBuilder {
         Ok(counter.count)
     }
 
+    /// The LIVE stake, read from `GlobalConfig` on the cluster this client is
+    /// pointed at.
+    ///
+    /// This is the single source of truth for what a game costs. It is not
+    /// `DEFAULT_STAKE_LAMPORTS` — that constant is only the value
+    /// `initialize_config` writes at genesis, and mainnet has since been
+    /// re-pegged to 68,482,585 while devnet stayed at 50,000,000. Reading the
+    /// account is also what makes a re-peg an instruction rather than a
+    /// redeploy of every client.
+    pub async fn stake_lamports(&self) -> Result<u64> {
+        let (global_config_pda, _) = pda::global_config_pda();
+        let data = self
+            .rpc
+            .get_account_data(&global_config_pda)
+            .await
+            .context("failed to read GlobalConfig")?;
+        let global_config = GlobalConfig::try_deserialize(&mut data.as_ref())
+            .context("failed to deserialize GlobalConfig")?;
+        anyhow::ensure!(
+            global_config.stake_lamports > 0,
+            "GlobalConfig.stake_lamports is zero"
+        );
+        Ok(global_config.stake_lamports)
+    }
+
     /// Build an unsigned `CreateGame` transaction message.
     ///
     /// Returns the message bytes for the player to sign. The matchmaker
     /// co-signature must be obtained separately (via game-api `/games/cosign`).
     /// The caller assembles the final transaction with both signatures.
+    ///
+    /// TAKES NO STAKE ARGUMENT ON PURPOSE. It used to, and the caller
+    /// (mcp-server) passed `DEFAULT_STAKE_LAMPORTS` — so when mainnet was
+    /// re-pegged to 68,482,585 the program's
+    /// `require!(stake_lamports == expected_stake)` rejected every game and
+    /// mainnet went down from 2026-07-30. A parameter the caller can get wrong
+    /// IS a second source of truth; removing it makes the wrong call
+    /// unwriteable rather than merely discouraged.
     pub async fn build_create_game(
         &self,
         tournament_id: u64,
-        stake_lamports: u64,
         matchup_commitment: [u8; 32],
         matchmaker: &Pubkey,
     ) -> Result<UnsignedTx> {
         anyhow::ensure!(tournament_id > 0, "tournament_id must be non-zero");
-        anyhow::ensure!(stake_lamports > 0, "stake_lamports must be non-zero");
 
+        let stake_lamports = self.stake_lamports().await?;
         let game_counter_value = self.read_game_counter().await?;
 
         let ix = instructions::build_create_game(
