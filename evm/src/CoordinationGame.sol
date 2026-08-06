@@ -497,7 +497,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     /// @dev The canonical payoff matrix as pot amounts — the EVM mirror of
     ///      payoff.rs::resolve_game, keyed by CertLib's outcome kind so it can
     ///      never disagree with the derivation.
-    function _amounts(uint8 kind, uint256 stake) private pure returns (uint256 toP1, uint256 toP2, uint256 gain) {
+    function _amounts(uint8 kind, uint256 stake) internal pure returns (uint256 toP1, uint256 toP2, uint256 gain) {
         uint256 two = stake * 2;
         if (kind == CertLib.HOMOG_BOTH_CORRECT) return (stake, stake, 0);
         if (kind == CertLib.HOMOG_P1_CORRECT) return (stake / 2, 0, two - stake / 2);
