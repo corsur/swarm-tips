@@ -1,5 +1,6 @@
 {
   "comment": "Coordination Game payoff matrix. chain_core::game::amounts_for_kind is the source; CoordinationGame.sol::_amounts must agree. Amounts are decimal STRINGS because EVM stakes exceed u64 in wei terms. p1Won/p2Won come from outcome_to_wins and are DELIBERATELY not derivable from the amounts.",
+  "merkle": { "note": "leaf = keccak(0x00|addr|uint256); node = keccak(0x01|min|max). NOT OpenZeppelin's format, which omits the 0x01.", "addrA": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "amountA": "1000000000000000000", "leafA": "0xc3cf0d938aaf3e9bae513de12982280e197b6b07c083e26b61e5f1349939476d", "addrB": "0xb0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0", "amountB": "2000000000000000000", "leafB": "0xf87acc3b2c3311f4b096e9f18aef0eb4ed6951576fd4d19aa783003aa4a974b8", "root": "0xb4d40f742b93fe5fc4196dae03d036c0d7df223de347f3985e6d2034642913bf" },
   "count": 63,
   "vectors": [
     { "kind": 0, "stake": "1", "p1": "1", "p2": "1", "gain": "0", "p1Won": true, "p2Won": true },

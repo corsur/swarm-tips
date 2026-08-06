@@ -20,6 +20,8 @@
 //! To regenerate after an intentional rule change:
 //!   cargo test -p chain-core --test game_payout_vectors -- --ignored regenerate
 
+#![cfg(feature = "keccak")]
+
 #[allow(dead_code)]
 mod common;
 
@@ -40,6 +42,34 @@ const STAKES: [u64; 7] = [
     2_700_000_000_000_000, // EVM stakeWei, both mainnets
 ];
 
+/// Solana's leaf/node format, from `claim_reward.rs`:
+///   leaf     = keccak256(0x00 ‖ wallet ‖ amount_le)
+///   internal = keccak256(0x01 ‖ min ‖ max)
+///
+/// EVM uses a 20-byte address instead of a 32-byte pubkey, so the leaf PREIMAGE
+/// differs by address width — but the domain-separation bytes and the sorted
+/// -children rule are the shared part, and those are what a library would get
+/// wrong. OpenZeppelin's MerkleProof omits the 0x01 byte entirely, which would
+/// have made EVM reject every Solana-format proof.
+fn evm_leaf(addr: [u8; 20], amount_wei: u128) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(1 + 20 + 32);
+    buf.push(0x00);
+    buf.extend_from_slice(&addr);
+    let mut amt = [0u8; 32];
+    amt[16..].copy_from_slice(&amount_wei.to_be_bytes()); // uint256 big-endian
+    buf.extend_from_slice(&amt);
+    chain_core::cert_schema::keccak256(&buf)
+}
+
+fn node(a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let mut buf = Vec::with_capacity(65);
+    buf.push(0x01);
+    buf.extend_from_slice(&lo);
+    buf.extend_from_slice(&hi);
+    chain_core::cert_schema::keccak256(&buf)
+}
+
 fn render() -> String {
     let mut rows = Vec::new();
     for &stake in STAKES.iter() {
@@ -54,8 +84,18 @@ fn render() -> String {
             ));
         }
     }
+    let a: [u8; 20] = [0xA1; 20];
+    let b: [u8; 20] = [0xB0; 20];
+    let la = evm_leaf(a, 1_000_000_000_000_000_000);
+    let lb = evm_leaf(b, 2_000_000_000_000_000_000);
+    let root = node(la, lb);
+    let merkle = format!(
+        "  \"merkle\": {{ \"note\": \"leaf = keccak(0x00|addr|uint256); node = keccak(0x01|min|max). NOT OpenZeppelin's format, which omits the 0x01.\", \"addrA\": \"{}\", \"amountA\": \"1000000000000000000\", \"leafA\": \"{}\", \"addrB\": \"{}\", \"amountB\": \"2000000000000000000\", \"leafB\": \"{}\", \"root\": \"{}\" }},\n",
+        common::hex(&a), common::hex(&la), common::hex(&b), common::hex(&lb), common::hex(&root)
+    );
     format!(
-        "{{\n  \"comment\": \"Coordination Game payoff matrix. chain_core::game::amounts_for_kind is the source; CoordinationGame.sol::_amounts must agree. Amounts are decimal STRINGS because EVM stakes exceed u64 in wei terms. p1Won/p2Won come from outcome_to_wins and are DELIBERATELY not derivable from the amounts.\",\n  \"count\": {},\n  \"vectors\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"comment\": \"Coordination Game payoff matrix. chain_core::game::amounts_for_kind is the source; CoordinationGame.sol::_amounts must agree. Amounts are decimal STRINGS because EVM stakes exceed u64 in wei terms. p1Won/p2Won come from outcome_to_wins and are DELIBERATELY not derivable from the amounts.\",\n{}  \"count\": {},\n  \"vectors\": [\n{}\n  ]\n}}\n",
+        merkle,
         rows.len(),
         rows.join(",\n")
     )
