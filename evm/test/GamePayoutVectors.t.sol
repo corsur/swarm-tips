@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {CoordinationGame} from "../src/CoordinationGame.sol";
+import {CoordinationGameV4} from "../src/CoordinationGameV4.sol";
 
 /// Exposes the REAL `_amounts` rather than reimplementing it.
 ///
@@ -16,6 +17,14 @@ contract PayoutProbe is CoordinationGame {
 
     function amounts(uint8 kind, uint256 stake) external pure returns (uint256, uint256, uint256) {
         return _amounts(kind, stake);
+    }
+}
+
+/// Exposes v4's win mapping, which is the OTHER half of the shared core and
+/// cannot be inferred from the amounts.
+contract WinsProbe is CoordinationGameV4 {
+    function wins(uint8 kind) external pure returns (bool, bool) {
+        return _winsFor(kind);
     }
 }
 
@@ -35,6 +44,25 @@ contract GamePayoutVectorsTest is Test {
 
     function setUp() public {
         probe = new PayoutProbe(address(0xA11CE), address(0xB0B), address(0xCAFE));
+    }
+
+    /// `outcome_to_wins` parity. This is separate from the amounts on purpose:
+    /// HOMOG_BOTH_CORRECT returns each player their own stake (zero net gain)
+    /// and still awards BOTH a win, so a Solidity mirror that derived wins from
+    /// the payout would be wrong in exactly that case and right everywhere else.
+    function test_winMapping_matchesChainCoreVectors() public {
+        WinsProbe wp = new WinsProbe();
+        string memory json = vm.readFile(FIXTURE);
+        uint256 count = vm.parseJsonUint(json, ".count");
+        for (uint256 i = 0; i < count; i++) {
+            string memory b = string.concat(".vectors[", vm.toString(i), "]");
+            uint8 kind = uint8(vm.parseJsonUint(json, string.concat(b, ".kind")));
+            bool wantP1 = vm.parseJsonBool(json, string.concat(b, ".p1Won"));
+            bool wantP2 = vm.parseJsonBool(json, string.concat(b, ".p2Won"));
+            (bool gotP1, bool gotP2) = wp.wins(kind);
+            assertEq(gotP1, wantP1, string.concat("p1Won diverges at vector ", vm.toString(i)));
+            assertEq(gotP2, wantP2, string.concat("p2Won diverges at vector ", vm.toString(i)));
+        }
     }
 
     function test_payoutMatrix_matchesChainCoreVectors() public view {
