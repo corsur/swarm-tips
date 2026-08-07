@@ -175,6 +175,10 @@ pub struct ChainEntry {
     /// Same-chain EVM-vs-EVM `CoordinationGame` address (eip155). None where it
     /// isn't deployed — every Solana entry, and an EVM chain until deployed.
     pub coordination_game_contract: Option<&'static str>,
+    /// CoordinationGameV4 PROXY address (UUPS). v4 adds seasons + a merkle
+    /// prize claim; v3 stays in `coordination_game_contract` until each chain
+    /// is cut over, so both are addressable during the migration.
+    pub coordination_game_v4_proxy: Option<&'static str>,
     /// Shillbot task-escrow: shillbot program ID (solana) or `ShillbotEscrow`
     /// address (eip155). None until deployed on that chain. Today the ONLY
     /// entry with an address is Base Sepolia — the Solana entries and every EVM
@@ -257,7 +261,8 @@ const REGISTRY: &[ChainEntry] = &[
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
         game_contract: Some("2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"),
-        coordination_game_contract: None, // same-chain EVM game has no Solana deployment
+        coordination_game_contract: None,
+        coordination_game_v4_proxy: None, // same-chain EVM game has no Solana deployment
         shillbot_escrow_contract: None,   // not yet deployed on this chain
         x402_network: None,
     },
@@ -292,6 +297,7 @@ const REGISTRY: &[ChainEntry] = &[
         skew_margin_secs: 900,
         game_contract: Some("2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"),
         coordination_game_contract: None,
+        coordination_game_v4_proxy: None,
         shillbot_escrow_contract: None, // not yet deployed on this chain
         x402_network: Some("solana"),
     },
@@ -336,6 +342,7 @@ const REGISTRY: &[ChainEntry] = &[
         // v2 0x50dB…733F (session-auth only) orphaned by this redeploy; Base MAINNET
         // stays on 0x778F…9fe9 pending external audit + founder go (cutover note).
         coordination_game_contract: Some("0x9E344F6FD80f4b2a20329a8C0dD4E16f70Bcd5ED"),
+        coordination_game_v4_proxy: Some("0x4FBBceb96D2814b5d4ac26089Eb7E43471533253"),
         // ShillbotEscrow deployed 2026-07-07 (S5 live demo): chainTag
         // keccak256("eip155:84532"), attesterSigner is a demo key — rotate to
         // the dedicated shillbot-attester EVM key via setConfig before real use.
@@ -385,6 +392,7 @@ const REGISTRY: &[ChainEntry] = &[
         // owner/treasury 0x9962…770d, operatorSigner 0x54a6…9A30, stake 5e14,
         // split 5000.
         coordination_game_contract: Some("0x567e114EB53228aFd9b20d7121668D4ce082a4F8"),
+        coordination_game_v4_proxy: None, // mainnet cutover pending
         shillbot_escrow_contract: None,
         x402_network: Some("base"),
     },
@@ -425,6 +433,7 @@ const REGISTRY: &[ChainEntry] = &[
         // residual state. Verified on-chain: owner/treasury 0x9962…770d,
         // operatorSigner 0x54a6…9A30, stake 2.5e15, split 5000.
         coordination_game_contract: Some("0x1b75ddB73ebAC8aD7C0B26787B534e7Db0e7917d"),
+        coordination_game_v4_proxy: None, // mainnet cutover pending
         shillbot_escrow_contract: None,
         x402_network: None,
     },

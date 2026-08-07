@@ -10,3 +10,4 @@ sdk/*.js
 services/mcp-server/.mcpregistry_*
 logs/
 tests/live/.worker-e2e-client.json
+scripts/season-*-proofs.json
