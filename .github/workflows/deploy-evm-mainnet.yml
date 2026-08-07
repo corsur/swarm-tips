@@ -20,6 +20,7 @@ on:
         type: choice
         options:
           - coordination
+          - coordinationv4
           - crosschain
           - shillbot
         default: crosschain
