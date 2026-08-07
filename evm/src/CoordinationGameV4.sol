@@ -598,6 +598,11 @@ contract CoordinationGameV4 is
     /// @notice Claim a season prize. PERMISSIONLESS, like Solana's
     ///         `claim_reward` - the whole point is that the pot is not the
     ///         owner's to hand out.
+    /// @dev DELIBERATELY NOT `whenNotPaused`. Pausing stops NEW games from
+    ///      being created or joined; it must never be able to withhold money a
+    ///      player has already earned. A pausable claim would make the pot the
+    ///      owner's to release after all, which is the exact property v4 exists
+    ///      to remove.
     function claimPrize(uint256 seasonId, uint256 amount, bytes32[] calldata proof) external nonReentrant {
         uint256 owed = _claim(seasonId, msg.sender, amount, proof);
         _credit(msg.sender, owed); // pull payment: a reverting claimant cannot brick anyone else
@@ -613,11 +618,6 @@ contract CoordinationGameV4 is
     function _treasuryCut(uint256 amount) private view returns (uint256 cut, uint256 remainder) {
         cut = amount * treasurySplitBps / BPS_DENOM;
         remainder = amount - cut;
-    }
-
-    function _pay(address to, uint256 amount) private {
-        (bool ok,) = payable(to).call{value: amount}("");
-        require(ok, "transfer failed");
     }
 
     // Pull-payment credit + withdraw() live in the shared PullPayment base.

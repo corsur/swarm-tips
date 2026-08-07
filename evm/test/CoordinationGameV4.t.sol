@@ -105,6 +105,27 @@ contract CoordinationGameV4Test is Test {
         game.finalizeSeason(1, bytes32(uint256(1)), 1 wei);
     }
 
+    /// Pausing must stop NEW games, never withhold money already earned.
+    /// A pausable claim would make the pot the owner's to release after all.
+    function test_pauseCannotWithholdAnEarnedClaim() public {
+        vm.prank(owner);
+        game.pause();
+
+        // New games are blocked...
+        vm.expectRevert();
+        game.joinGame(bytes32(uint256(1)), mallory);
+
+        // ...but the claim path still executes and fails on its OWN guard
+        // (nothing to claim), not on the pause.
+        vm.warp(block.timestamp + 366 days);
+        vm.prank(owner);
+        game.finalizeSeason(1, bytes32(uint256(1)), 0);
+        bytes32[] memory proof = new bytes32[](0);
+        vm.prank(mallory);
+        vm.expectRevert(SeasonPot.NothingToClaim.selector);
+        game.claimPrize(1, 0, proof);
+    }
+
     // ----- season guards ---------------------------------------------------
 
     function test_onlyOwnerCanStartOrFinalizeSeasons() public {
