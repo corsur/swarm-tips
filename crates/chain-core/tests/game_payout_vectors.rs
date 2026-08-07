@@ -89,12 +89,36 @@ fn render() -> String {
     let la = evm_leaf(a, 1_000_000_000_000_000_000);
     let lb = evm_leaf(b, 2_000_000_000_000_000_000);
     let root = node(la, lb);
+    // Constants both chains must agree on. These were "mirrored" by a code
+    // comment only, which is the same agrees-by-inspection state that let the
+    // OZ merkle format diverge unnoticed.
+    let consts = format!(
+        "  \"constants\": {{ \"minGamesForPayout\": {}, \"scoreCases\": [{}] }},\n",
+        game::MIN_GAMES_FOR_PAYOUT,
+        [
+            (5u64, 5u64),
+            (3, 10),
+            (10, 20),
+            (9, 10),
+            (2, 2),
+            (0, 7),
+            (1, 1)
+        ]
+        .iter()
+        .map(|(w, g)| format!(
+            "{{ \"wins\": {w}, \"games\": {g}, \"score\": {} }}",
+            game::compute_score(*w, *g).unwrap()
+        ))
+        .collect::<Vec<_>>()
+        .join(", ")
+    );
     let merkle = format!(
         "  \"merkle\": {{ \"note\": \"leaf = keccak(0x00|addr|uint256); node = keccak(0x01|min|max). NOT OpenZeppelin's format, which omits the 0x01.\", \"addrA\": \"{}\", \"amountA\": \"1000000000000000000\", \"leafA\": \"{}\", \"addrB\": \"{}\", \"amountB\": \"2000000000000000000\", \"leafB\": \"{}\", \"root\": \"{}\" }},\n",
         common::hex(&a), common::hex(&la), common::hex(&b), common::hex(&lb), common::hex(&root)
     );
     format!(
-        "{{\n  \"comment\": \"Coordination Game payoff matrix. chain_core::game::amounts_for_kind is the source; CoordinationGame.sol::_amounts must agree. Amounts are decimal STRINGS because EVM stakes exceed u64 in wei terms. p1Won/p2Won come from outcome_to_wins and are DELIBERATELY not derivable from the amounts.\",\n{}  \"count\": {},\n  \"vectors\": [\n{}\n  ]\n}}\n",
+        "{{\n{}  \"comment\": \"Coordination Game payoff matrix. chain_core::game::amounts_for_kind is the source; CoordinationGame.sol::_amounts must agree. Amounts are decimal STRINGS because EVM stakes exceed u64 in wei terms. p1Won/p2Won come from outcome_to_wins and are DELIBERATELY not derivable from the amounts.\",\n{}  \"count\": {},\n  \"vectors\": [\n{}\n  ]\n}}\n",
+        consts,
         merkle,
         rows.len(),
         rows.join(",\n")

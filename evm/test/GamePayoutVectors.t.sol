@@ -46,6 +46,17 @@ contract GamePayoutVectorsTest is Test {
         probe = new PayoutProbe(address(0xA11CE), address(0xB0B), address(0xCAFE));
     }
 
+    /// The eligibility gate must be the SAME number on both chains. It was
+    /// pinned by a code comment only ("Mirrors chain_core::game::
+    /// MIN_GAMES_FOR_PAYOUT") — the same agrees-by-inspection state that let
+    /// the OZ merkle format diverge unnoticed.
+    function test_minGamesGate_matchesChainCore() public {
+        WinsProbe wp = new WinsProbe();
+        string memory json = vm.readFile(FIXTURE);
+        uint256 want = vm.parseJsonUint(json, ".constants.minGamesForPayout");
+        assertEq(uint256(wp.MIN_GAMES_FOR_PAYOUT()), want, "eligibility gate diverges");
+    }
+
     /// `outcome_to_wins` parity. This is separate from the amounts on purpose:
     /// HOMOG_BOTH_CORRECT returns each player their own stake (zero net gain)
     /// and still awards BOTH a win, so a Solidity mirror that derived wins from
