@@ -42,6 +42,7 @@
 import { readFileSync } from "fs";
 import { createHash } from "crypto";
 import { classifySendFailure, planRetry } from "./evm-send-retry";
+import { resolveRpcEndpoints } from "./rpc-endpoints";
 import {
   createPublicClient,
   createWalletClient,
@@ -116,12 +117,13 @@ if (!CHAIN) {
   process.exit(2);
 }
 
-const RPC = process.env.RPC_URL ?? CHAIN.rpc;
 // Fail over across endpoints rather than trusting one public node: a single
 // dropped write mid-battery reads as a cell failure when it is really the RPC.
-const TRANSPORT = process.env.RPC_URL
-  ? fallback([http(process.env.RPC_URL)])
-  : fallback(CHAIN.rpcs.map((u) => http(u)));
+// An RPC_URL override goes FIRST but does not replace the list — see
+// rpc-endpoints.ts for why both halves of that matter.
+const RPC_ENDPOINTS = resolveRpcEndpoints(process.env.RPC_URL, CHAIN.rpcs);
+const RPC = RPC_ENDPOINTS[0];
+const TRANSPORT = fallback(RPC_ENDPOINTS.map((u) => http(u)));
 const ESCROW = (process.env.ESCROW_ADDR ?? CHAIN.escrow) as Address;
 const VIEM_CHAIN = CHAIN.viemChain;
 const CHAIN_TAG = keccak256(Buffer.from(CAIP2));
