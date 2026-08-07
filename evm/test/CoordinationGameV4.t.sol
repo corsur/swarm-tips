@@ -23,7 +23,7 @@ contract CoordinationGameV4Test is Test {
     function setUp() public {
         CoordinationGameV4 impl = new CoordinationGameV4();
         bytes memory init = abi.encodeCall(
-            CoordinationGameV4.initialize, (owner, operator, treasury, 5000, 0.0027 ether, 3600, 7200, 1)
+            CoordinationGameV4.initialize, (owner, operator, treasury, 5000, 0.0027 ether, 3600, 7200, 1, 365 days)
         );
         game = CoordinationGameV4(payable(address(new ERC1967Proxy(address(impl), init))));
     }
@@ -40,14 +40,14 @@ contract CoordinationGameV4Test is Test {
 
     function test_initializeCannotBeRerun() public {
         vm.expectRevert();
-        game.initialize(mallory, operator, treasury, 5000, 0.0027 ether, 3600, 7200, 2);
+        game.initialize(mallory, operator, treasury, 5000, 0.0027 ether, 3600, 7200, 2, 365 days);
     }
 
     /// An uninitialized implementation is a classic UUPS takeover route.
     function test_implementationItselfIsLocked() public {
         CoordinationGameV4 impl = new CoordinationGameV4();
         vm.expectRevert();
-        impl.initialize(mallory, operator, treasury, 5000, 0.0027 ether, 3600, 7200, 1);
+        impl.initialize(mallory, operator, treasury, 5000, 0.0027 ether, 3600, 7200, 1, 365 days);
     }
 
     /// The single most dangerous function on the contract: it can replace all
@@ -62,7 +62,7 @@ contract CoordinationGameV4Test is Test {
     function test_upgradePreservesState() public {
         // Dirty some state first, across BOTH the game and the season base.
         vm.prank(owner);
-        game.startSeason(2);
+        game.startSeason(2, 365 days);
         assertEq(game.currentSeasonId(), 2);
 
         address v5 = address(new V5Probe());
@@ -131,7 +131,7 @@ contract CoordinationGameV4Test is Test {
     function test_onlyOwnerCanStartOrFinalizeSeasons() public {
         vm.prank(mallory);
         vm.expectRevert();
-        game.startSeason(9);
+        game.startSeason(9, 365 days);
 
         vm.prank(mallory);
         vm.expectRevert();

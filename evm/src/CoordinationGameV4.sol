@@ -180,7 +180,8 @@ contract CoordinationGameV4 is
         uint128 stakeWei_,
         uint32 commitTimeoutSecs_,
         uint32 revealTimeoutSecs_,
-        uint256 firstSeasonId
+        uint256 firstSeasonId,
+        uint64 firstSeasonDurationSecs
     ) external initializer {
         _validateConfig(
             initialOwner,
@@ -198,7 +199,7 @@ contract CoordinationGameV4 is
         stakeWei = stakeWei_;
         commitTimeoutSecs = commitTimeoutSecs_;
         revealTimeoutSecs = revealTimeoutSecs_;
-        _startSeason(firstSeasonId);
+        _startSeason(firstSeasonId, firstSeasonDurationSecs);
     }
 
     /// @dev Only the owner may upgrade. The single most dangerous function on
@@ -584,8 +585,8 @@ contract CoordinationGameV4 is
     /// @notice Open the next season. Callable while the current one is still
     ///         running: the rollover hazard is having no NEXT season ready,
     ///         which is exactly what took Solana mainnet down on 2026-08-06.
-    function startSeason(uint256 seasonId) external onlyOwner {
-        _startSeason(seasonId);
+    function startSeason(uint256 seasonId, uint64 durationSecs) external onlyOwner {
+        _startSeason(seasonId, durationSecs);
     }
 
     /// @notice Publish a season's merkle root once it has EXPIRED.

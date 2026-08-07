@@ -8,7 +8,11 @@ import {SeasonPot} from "../src/SeasonPot.sol";
 /// directly rather than through the whole game contract.
 contract PotHarness is SeasonPot {
     function startSeason(uint256 id) external {
-        _startSeason(id);
+        _startSeason(id, DEFAULT_SEASON_DURATION_SECS);
+    }
+
+    function startSeasonFor(uint256 id, uint64 secs) external {
+        _startSeason(id, secs);
     }
 
     function finalizeSeason(uint256 id, bytes32 root, uint256 total) external {
@@ -65,9 +69,26 @@ contract SeasonPotTest is Test {
     function test_seasonRunsOneYear_andCannotBeStartedTwice() public {
         pot.startSeason(1);
         (uint64 start, uint64 end,,,,,) = pot.seasons(1);
-        assertEq(end - start, 365 days, "a season is a year");
+        assertEq(end - start, 365 days, "the production default is a year");
         vm.expectRevert(SeasonPot.SeasonExists.selector);
         pot.startSeason(1);
+    }
+
+    /// A season window is a PARAMETER, not a constant. Hardcoding a year made
+    /// the contract untestable on a real chain: a live testnet cannot
+    /// fast-forward, so expire -> finalize -> claim could only ever be
+    /// exercised inside a forge vm.warp. Solana's create_tournament has always
+    /// taken its window as arguments; this restores that.
+    function test_seasonDurationIsAParameterWithBounds() public {
+        pot.startSeasonFor(7, 10 minutes);
+        (uint64 s, uint64 e,,,,,) = pot.seasons(7);
+        assertEq(e - s, 10 minutes, "a short season is legal (testnet)");
+
+        vm.expectRevert(SeasonPot.BadSeasonDuration.selector);
+        pot.startSeasonFor(8, 1 minutes); // below MIN
+
+        vm.expectRevert(SeasonPot.BadSeasonDuration.selector);
+        pot.startSeasonFor(9, 6 * 365 days); // above MAX
     }
 
     /// The rollover hazard is having no NEXT season, not the expiry itself.

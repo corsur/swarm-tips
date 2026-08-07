@@ -61,10 +61,21 @@ abstract contract SeasonPot {
     /// Mirrors Solana's `UNCLAIMED_GRACE_SECS`.
     uint64 public constant UNCLAIMED_GRACE_SECS = 90 days;
 
-    /// A season's default length. One year: the 90-day default is what expired
-    /// mainnet tournament 2 on 2026-08-06 and took the Solana game down for 31
-    /// hours, because `endTime` cannot be extended.
-    uint64 public constant SEASON_DURATION_SECS = 365 days;
+    /// The length a production season SHOULD use. One year: the 90-day default
+    /// is what expired mainnet tournament 2 on 2026-08-06 and took the Solana
+    /// game down for 31 hours, because `endTime` cannot be extended.
+    uint64 public constant DEFAULT_SEASON_DURATION_SECS = 365 days;
+
+    /// Bounds on a season window. The duration is a PARAMETER, not a constant,
+    /// mirroring Solana's `create_tournament(tournament_id, start_time,
+    /// end_time)` which has always taken its window as arguments.
+    ///
+    /// Hardcoding a year made the contract untestable on a real chain: a live
+    /// testnet cannot fast-forward, so `play -> expire -> finalize -> claim`
+    /// could not be exercised anywhere except a forge `vm.warp`. A short season
+    /// on testnet and a year on mainnet is the whole point.
+    uint64 public constant MIN_SEASON_DURATION_SECS = 5 minutes;
+    uint64 public constant MAX_SEASON_DURATION_SECS = 5 * 365 days;
 
     mapping(uint256 => Season) public seasons;
     mapping(uint256 => mapping(address => PlayerRecord)) public records;
@@ -94,6 +105,7 @@ abstract contract SeasonPot {
     error BadProof();
     error NothingToClaim();
     error GraceNotElapsed();
+    error BadSeasonDuration();
 
     // -----------------------------------------------------------------------
     // Season lifecycle
@@ -103,12 +115,15 @@ abstract contract SeasonPot {
     ///      rollover hazard is not the expiry itself — it is having no NEXT
     ///      season ready when the current one ends, which is precisely what
     ///      broke mainnet on 2026-08-06.
-    function _startSeason(uint256 seasonId) internal {
+    function _startSeason(uint256 seasonId, uint64 durationSecs) internal {
         if (seasons[seasonId].startTime != 0) revert SeasonExists();
+        if (durationSecs < MIN_SEASON_DURATION_SECS || durationSecs > MAX_SEASON_DURATION_SECS) {
+            revert BadSeasonDuration();
+        }
         // forge-lint: disable-next-line(unsafe-typecast)
         // uint64 seconds overflows in year ~584 billion.
         uint64 nowTs = uint64(block.timestamp);
-        uint64 end = nowTs + SEASON_DURATION_SECS;
+        uint64 end = nowTs + durationSecs;
         seasons[seasonId] = Season({
             startTime: nowTs, endTime: end, finalized: false, root: 0, accruedWei: 0, prizeWei: 0, remainingWei: 0
         });
