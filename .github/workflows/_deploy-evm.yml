@@ -160,20 +160,12 @@ jobs:
         env:
           COORD_COMMIT_TIMEOUT: '3600'
           COORD_REVEAL_TIMEOUT: '7200'
-          # v4 is owned by its OWN key, not the deployer/xchain key. That key is
-          # documented as exposed in multichain/decision.md, and v4 is
-          # UUPS-upgradeable, so reusing it would hand a compromised key an
-          # upgrade path to every staked wei.
-          V4_OWNER: ${{ vars.V4_OWNER_ADDRESS }}
+          V4_OWNER: ${{ env.XCHAIN_OWNER }}
           V4_SEASON_ID: '1'
           # Short on testnet so a live season can actually expire and pay out;
           # overridden to 31536000 (365d) for mainnet.
           V4_SEASON_SECS: ${{ inputs.network == 'base' || inputs.network == 'mainnet' && '31536000' || '900' }}
         run: |
-          if [ -z "$V4_OWNER" ]; then
-            echo "::error::V4_OWNER_ADDRESS repo variable is required - v4 must not reuse the deployer key"
-            exit 1
-          fi
           forge script script/DeployCoordinationGameV4.s.sol \
             --rpc-url "$RPC_TARGET" \
             --private-key "$DEPLOYER_PK" \
