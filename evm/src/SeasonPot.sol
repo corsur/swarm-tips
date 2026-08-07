@@ -32,7 +32,10 @@ abstract contract SeasonPot {
         bool finalized;
         /// Merkle root over keccak256(0x00 ‖ address ‖ uint256 amount) leaves.
         bytes32 root;
-        /// Total promised at finalize; can never exceed the unowed balance.
+        /// Forfeits accrued to THIS season while it was open. A season can
+        /// only ever promise what it actually took in.
+        uint256 accruedWei;
+        /// Total promised at finalize; can never exceed `accruedWei`.
         uint256 prizeWei;
         /// Falls as players claim. Solana's equivalent field does NOT decrement
         /// — mainnet T1 still reports 1.375 SOL while holding 0.643 — and that
@@ -106,8 +109,9 @@ abstract contract SeasonPot {
         // uint64 seconds overflows in year ~584 billion.
         uint64 nowTs = uint64(block.timestamp);
         uint64 end = nowTs + SEASON_DURATION_SECS;
-        seasons[seasonId] =
-            Season({startTime: nowTs, endTime: end, finalized: false, root: 0, prizeWei: 0, remainingWei: 0});
+        seasons[seasonId] = Season({
+            startTime: nowTs, endTime: end, finalized: false, root: 0, accruedWei: 0, prizeWei: 0, remainingWei: 0
+        });
         currentSeasonId = seasonId;
         emit SeasonStarted(seasonId, nowTs, end);
     }
@@ -116,7 +120,15 @@ abstract contract SeasonPot {
     ///      `finalize_tournament`'s `now > end_time`. `totalWei` is checked
     ///      against what is actually unowed, so a season can never promise more
     ///      than the contract holds.
-    function _finalizeSeason(uint256 seasonId, bytes32 root, uint256 totalWei, uint256 alreadyOwed) internal {
+    /// @dev Credit a resolved game's tournament share to the OPEN season.
+    ///      This replaces v3's single `prizePoolWei`, which was owner-drainable
+    ///      and had no claim path at all.
+    function _accrue(uint256 amount) internal {
+        if (amount == 0) return;
+        seasons[currentSeasonId].accruedWei += amount;
+    }
+
+    function _finalizeSeason(uint256 seasonId, bytes32 root, uint256 totalWei) internal {
         Season storage s = seasons[seasonId];
         if (s.startTime == 0) revert SeasonMissing();
         if (s.finalized) revert SeasonAlreadyFinalized();
@@ -125,7 +137,10 @@ abstract contract SeasonPot {
         // cannot change whether a season has ended. Mirrors Solana's
         // `finalize_tournament` requiring `now > end_time`.
         if (block.timestamp <= s.endTime) revert SeasonStillOpen();
-        if (totalWei + alreadyOwed > address(this).balance) revert PromiseExceedsBalance();
+        // A season may only promise what IT accrued. Bounding on the contract
+        // balance instead would let one season promise another's money, or
+        // money already owed to unclaimed players elsewhere.
+        if (totalWei > s.accruedWei) revert PromiseExceedsBalance();
 
         s.finalized = true;
         s.root = root;

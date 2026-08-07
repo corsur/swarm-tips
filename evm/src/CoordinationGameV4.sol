@@ -119,7 +119,6 @@ contract CoordinationGameV4 is
 
     /// Accumulates homogeneous-outcome forfeits — the local analog of
     /// Tournament.prize_lamports; the owner sweeps it to the tournament pot.
-    uint256 public prizePoolWei;
 
     address public treasury;
     uint16 public treasurySplitBps; // [2000, 8000], mirrors GlobalConfig bounds
@@ -143,7 +142,6 @@ contract CoordinationGameV4 is
     event GuessCommitted(bytes32 indexed gameId, address indexed player);
     event GuessRevealed(bytes32 indexed gameId, address indexed player);
     event GameResolved(bytes32 indexed gameId, uint8 outcomeKind, uint256 toP1, uint256 toP2, uint256 toTreasury);
-    event PrizePoolWithdrawn(address indexed to, uint256 amount);
     event ConfigUpdated();
     event GameCancelled(bytes32 indexed gameId, address indexed player1, uint256 amount);
     event SessionAuthorized(address indexed player, address indexed sessionKey, uint64 expiry);
@@ -165,11 +163,8 @@ contract CoordinationGameV4 is
     ///      never be initialized directly: an uninitialized implementation is
     ///      one of the classic UUPS takeover routes.
     /// @dev `Ownable(msg.sender)` writes to the IMPLEMENTATION's storage, not
-    ///      the proxy's, and the implementation is locked by
-    ///      `_disableInitializers()` immediately after. The proxy's real owner
-    ///      is set by `initialize` via `_transferOwnership`. Only the
-    ///      non-upgradeable OZ set is vendored, so the base constructor must be
-    ///      satisfied somehow; this is the standard way.
+    ///      the proxy's, and the implementation is locked immediately after.
+    ///      The proxy's real owner is set by `initialize`.
     constructor() Ownable(msg.sender) {
         _disableInitializers();
     }
@@ -534,7 +529,10 @@ contract CoordinationGameV4 is
 
         // Effects.
         g.status = Status.Resolved;
-        prizePoolWei += toPrize;
+        // v3 put this in a single owner-drainable `prizePoolWei` with NO claim
+        // path -- the exact defect v4 exists to fix. Forfeits now accrue to the
+        // OPEN SEASON and are claimable by the players who earned them.
+        _accrue(toPrize);
 
         // Interactions — credit, never push (M1): a reverting player or treasury
         // must not block the game from resolving.
@@ -591,10 +589,10 @@ contract CoordinationGameV4 is
     }
 
     /// @notice Publish a season's merkle root once it has EXPIRED.
-    ///         `alreadyOwed` is the sum still claimable on other seasons, so a
-    ///         season can never promise money another season already owes.
-    function finalizeSeason(uint256 seasonId, bytes32 root, uint256 totalWei, uint256 alreadyOwed) external onlyOwner {
-        _finalizeSeason(seasonId, root, totalWei, alreadyOwed);
+    ///         A season may only promise what IT accrued, so it can never
+    ///         promise another season's money.
+    function finalizeSeason(uint256 seasonId, bytes32 root, uint256 totalWei) external onlyOwner {
+        _finalizeSeason(seasonId, root, totalWei);
     }
 
     /// @notice Claim a season prize. PERMISSIONLESS, like Solana's
@@ -628,13 +626,9 @@ contract CoordinationGameV4 is
     // Owner operations
     // ---------------------------------------------------------------------
 
-    function withdrawPrizePool(address to, uint256 amount) external onlyOwner nonReentrant {
-        if (to == address(0)) revert BadConfig();
-        if (amount > prizePoolWei) revert BadStake();
-        prizePoolWei -= amount;
-        _pay(to, amount);
-        emit PrizePoolWithdrawn(to, amount);
-    }
+    // withdrawPrizePool is DELETED. It let the owner drain every forfeit while
+    // players had no claim path at all. Its replacement is sweepUnclaimed,
+    // which can only take what nobody claimed and only after the grace window.
 
     function pause() external onlyOwner {
         _pause();

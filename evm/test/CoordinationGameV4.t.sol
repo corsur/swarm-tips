@@ -34,7 +34,7 @@ contract CoordinationGameV4Test is Test {
         assertEq(game.owner(), owner, "owner lives in PROXY storage");
         assertEq(game.stakeWei(), 0.0027 ether);
         assertEq(game.currentSeasonId(), 1, "season 1 opened at init");
-        (uint64 start, uint64 end,,,,) = game.seasons(1);
+        (uint64 start, uint64 end,,,,,) = game.seasons(1);
         assertEq(end - start, 365 days);
     }
 
@@ -73,8 +73,36 @@ contract CoordinationGameV4Test is Test {
         assertEq(game.currentSeasonId(), 2, "season survived the upgrade");
         assertEq(game.owner(), owner, "owner survived");
         assertEq(game.stakeWei(), 0.0027 ether, "config survived");
-        (uint64 s2start,,,,,) = game.seasons(2);
+        (uint64 s2start,,,,,,) = game.seasons(2);
         assertGt(s2start, 0, "season 2 record survived");
+    }
+
+    // ----- one pot, not two ------------------------------------------------
+
+    /// THE REGRESSION THIS GUARDS.
+    ///
+    /// v4 was first scaffolded by copying v3, which brought along
+    /// `prizePoolWei` + `withdrawPrizePool` — an owner-drainable pot with no
+    /// claim path. With SeasonPot added, the contract briefly had TWO pots:
+    /// forfeits flowed into the old one, so `claimPrize` had nothing to pay,
+    /// and `finalizeSeason` bounded its promise on `address(this).balance`
+    /// without subtracting the owner-drainable balance — so a season could
+    /// promise money the owner then withdrew.
+    ///
+    /// There must be exactly one pot, and forfeits must land in it.
+    function test_forfeitsAccrueToTheSeason_andThereIsNoOwnerDrain() public {
+        // The old escape hatch must not exist on the ABI at all.
+        (bool ok,) = address(game).call(abi.encodeWithSignature("withdrawPrizePool(address,uint256)", owner, 1));
+        assertFalse(ok, "withdrawPrizePool must be gone");
+
+        (bool ok2,) = address(game).call(abi.encodeWithSignature("prizePoolWei()"));
+        assertFalse(ok2, "the second pot must be gone");
+
+        // And a season cannot promise money it never took in.
+        vm.warp(block.timestamp + 366 days);
+        vm.prank(owner);
+        vm.expectRevert(SeasonPot.PromiseExceedsBalance.selector);
+        game.finalizeSeason(1, bytes32(uint256(1)), 1 wei);
     }
 
     // ----- season guards ---------------------------------------------------
@@ -86,14 +114,14 @@ contract CoordinationGameV4Test is Test {
 
         vm.prank(mallory);
         vm.expectRevert();
-        game.finalizeSeason(1, bytes32(0), 0, 0);
+        game.finalizeSeason(1, bytes32(0), 0);
     }
 
     /// A season must EXPIRE before it can pay out.
     function test_finalizeRevertsWhileSeasonIsLive() public {
         vm.prank(owner);
         vm.expectRevert(SeasonPot.SeasonStillOpen.selector);
-        game.finalizeSeason(1, bytes32(uint256(1)), 0, 0);
+        game.finalizeSeason(1, bytes32(uint256(1)), 0);
     }
 
     /// Claiming is permissionless by design: the pot is not the owner's to
@@ -101,7 +129,7 @@ contract CoordinationGameV4Test is Test {
     function test_claimIsPermissionlessButStillGated() public {
         vm.warp(block.timestamp + 366 days);
         vm.prank(owner);
-        game.finalizeSeason(1, bytes32(uint256(1)), 0, 0);
+        game.finalizeSeason(1, bytes32(uint256(1)), 0);
 
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(mallory);

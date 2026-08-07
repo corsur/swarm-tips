@@ -11,8 +11,12 @@ contract PotHarness is SeasonPot {
         _startSeason(id);
     }
 
-    function finalizeSeason(uint256 id, bytes32 root, uint256 total, uint256 owed) external {
-        _finalizeSeason(id, root, total, owed);
+    function finalizeSeason(uint256 id, bytes32 root, uint256 total) external {
+        _finalizeSeason(id, root, total);
+    }
+
+    function accrue(uint256 amount) external {
+        _accrue(amount);
     }
 
     function recordResult(address p1, address p2, bool w1, bool w2) external {
@@ -60,7 +64,7 @@ contract SeasonPotTest is Test {
 
     function test_seasonRunsOneYear_andCannotBeStartedTwice() public {
         pot.startSeason(1);
-        (uint64 start, uint64 end,,,,) = pot.seasons(1);
+        (uint64 start, uint64 end,,,,,) = pot.seasons(1);
         assertEq(end - start, 365 days, "a season is a year");
         vm.expectRevert(SeasonPot.SeasonExists.selector);
         pot.startSeason(1);
@@ -78,15 +82,21 @@ contract SeasonPotTest is Test {
     function test_finalizeRevertsBeforeTheSeasonEnds() public {
         pot.startSeason(1);
         vm.expectRevert(SeasonPot.SeasonStillOpen.selector);
-        pot.finalizeSeason(1, bytes32(uint256(1)), 1 ether, 0);
+        pot.finalizeSeason(1, bytes32(uint256(1)), 1 ether);
     }
 
-    function test_finalizeCannotPromiseMoreThanIsUnowed() public {
+    /// A season may only promise what IT accrued. Bounding on the contract
+    /// BALANCE instead would let one season promise another season's money, or
+    /// money still owed to unclaimed players elsewhere.
+    function test_finalizeCannotPromiseMoreThanTheSeasonAccrued() public {
         pot.startSeason(1);
+        pot.accrue(1 ether);
         vm.warp(block.timestamp + 366 days);
-        // 10 ETH balance, 9.5 already owed elsewhere -> 1 ETH promise is too much.
+        // The contract holds 10 ETH, but THIS season only took in 1.
         vm.expectRevert(SeasonPot.PromiseExceedsBalance.selector);
-        pot.finalizeSeason(1, bytes32(uint256(1)), 1 ether, 9.5 ether);
+        pot.finalizeSeason(1, bytes32(uint256(1)), 2 ether);
+        // Exactly what it accrued is fine.
+        pot.finalizeSeason(1, bytes32(uint256(1)), 1 ether);
     }
 
     // ----- player record ---------------------------------------------------
@@ -124,7 +134,8 @@ contract SeasonPotTest is Test {
         bytes32 leafA = pot.leafFor(alice, amtA);
         bytes32 leafB = pot.leafFor(bob, 2 ether);
         vm.warp(block.timestamp + 366 days);
-        pot.finalizeSeason(1, _tree(leafA, leafB), 3 ether, 0);
+        pot.accrue(3 ether);
+        pot.finalizeSeason(1, _tree(leafA, leafB), 3 ether);
         proofA = new bytes32[](1);
         proofA[0] = leafB;
     }
@@ -137,7 +148,7 @@ contract SeasonPotTest is Test {
         pot.claim(1, amt, proof);
 
         assertEq(alice.balance - before, amt, "paid exactly the entitlement");
-        (,,,, uint256 prize, uint256 remaining) = pot.seasons(1);
+        (,,,,, uint256 prize, uint256 remaining) = pot.seasons(1);
         assertEq(prize, 3 ether, "promise is unchanged");
         assertEq(remaining, 2 ether, "remaining FELL by the claim");
 
@@ -171,7 +182,8 @@ contract SeasonPotTest is Test {
         _play(carol, 4); // one short of MIN_GAMES_FOR_PAYOUT
         bytes32 leaf = pot.leafFor(carol, 1 ether);
         vm.warp(block.timestamp + 366 days);
-        pot.finalizeSeason(1, _tree(leaf, leaf), 1 ether, 0);
+        pot.accrue(1 ether);
+        pot.finalizeSeason(1, _tree(leaf, leaf), 1 ether);
 
         bytes32[] memory proof = new bytes32[](1);
         proof[0] = leaf;
