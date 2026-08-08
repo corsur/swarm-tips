@@ -436,15 +436,53 @@ impl GameTxBuilder {
 
     // -- Read-only operations --------------------------------------------------
 
-    /// Read and deserialize a game account by game ID.
+    /// Read and deserialize a game account by game ID, at the builder's default
+    /// `confirmed` commitment.
     pub async fn read_game(&self, game_id: u64) -> Result<Option<Game>> {
+        self.read_game_at(game_id, CommitmentConfig::confirmed())
+            .await
+    }
+
+    /// Read a game at the FRESHEST available state.
+    ///
+    /// Use this only where reading one slot stale makes the caller build a
+    /// transaction the program will reject.
+    ///
+    /// The reveal path is exactly that case. `reveal_guess` lets only the FIRST
+    /// revealer pass `r_matchup`; the second must pass `None` or the program
+    /// returns `RMatchupMismatch` (6032). The server decides which it is by
+    /// reading `game.matchup_type`. Under `confirmed`, an opponent's reveal that
+    /// is already PROCESSED but not yet CONFIRMED is invisible, so the server
+    /// still believes it is first, attaches `r_matchup`, and the transaction is
+    /// rejected on arrival. Observed live: all four homogeneous cells — where
+    /// both reveals land near-simultaneously — burned 17-18 minutes in a retry
+    /// loop, while heterogeneous cells (staggered reveals) passed in 2.3.
+    ///
+    /// `processed` can be rolled back, which is why this is NOT the default.
+    /// Here that risk is the safe direction: a rolled-back read makes us omit
+    /// `r_matchup` when we were in fact first, and the program answers with a
+    /// clean `InvalidGameState` that the caller retries — versus the stale
+    /// direction, which fails on every retry until confirmation catches up.
+    pub async fn read_game_freshest(&self, game_id: u64) -> Result<Option<Game>> {
+        self.read_game_at(game_id, CommitmentConfig::processed())
+            .await
+    }
+
+    async fn read_game_at(
+        &self,
+        game_id: u64,
+        commitment: CommitmentConfig,
+    ) -> Result<Option<Game>> {
         let (pda, _) = pda::game_pda(game_id);
-        match self.rpc.get_account(&pda).await {
-            Ok(account) => {
-                let game = Game::try_deserialize(&mut account.data.as_ref())
-                    .context("failed to deserialize Game")?;
-                Ok(Some(game))
-            }
+        match self.rpc.get_account_with_commitment(&pda, commitment).await {
+            Ok(response) => match response.value {
+                Some(account) => {
+                    let game = Game::try_deserialize(&mut account.data.as_ref())
+                        .context("failed to deserialize Game")?;
+                    Ok(Some(game))
+                }
+                None => Ok(None),
+            },
             Err(e) => {
                 let msg = format!("{e}");
                 if msg.contains("AccountNotFound") || msg.contains("could not find account") {

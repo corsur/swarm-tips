@@ -1642,8 +1642,16 @@ impl GameSessionManager {
         let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
 
         // Read the game to get player pubkeys and verify state.
+        //
+        // FRESHEST read, not the default `confirmed`. The r_matchup branch below
+        // is decided by `game.matchup_type`, and under `confirmed` an opponent's
+        // reveal that is already processed is invisible for a slot or two — long
+        // enough for us to believe we are the first revealer, attach r_matchup,
+        // and be rejected with RMatchupMismatch (6032) on arrival. Because the
+        // retry re-reads at the same stale commitment, it fails again; live this
+        // cost 17-18 minutes per homogeneous cell.
         let game = tx_builder
-            .read_game(game_id)
+            .read_game_freshest(game_id)
             .await?
             .context("game account not found")?;
 
@@ -2063,6 +2071,41 @@ mod tests {
         assert_eq!(
             pick_reveal_matchup_arg(MATCHUP_TYPE_UNSET, r_matchup),
             Some(r_matchup),
+        );
+    }
+
+    /// The 2026-05-09 fix above made the DECISION correct. It did not make the
+    /// INPUT fresh, and the same failure came back in a different costume.
+    ///
+    /// `pick_reveal_matchup_arg` is only as good as the `matchup_type` handed
+    /// to it. Reading the game at the default `confirmed` commitment hides an
+    /// opponent's reveal that is already processed, so the server concludes it
+    /// is the first revealer, attaches r_matchup, and the program rejects with
+    /// RMatchupMismatch — on every retry, because each retry re-reads at the
+    /// same stale commitment. Live cost: 17-18 minutes per homogeneous cell
+    /// (both reveals near-simultaneous) versus 2.3 minutes for heterogeneous
+    /// ones, where the reveals are naturally staggered.
+    ///
+    /// This is a SOURCE-level guard, and deliberately so: the defect is a
+    /// commitment level passed to an RPC, which no pure test can observe. It is
+    /// weaker than a behavioural test — it proves the call site, not the
+    /// outcome — but it fails if someone restores the stale read, which is the
+    /// regression that actually happened.
+    #[test]
+    fn reveal_tx_reads_the_game_at_the_freshest_commitment() {
+        let src = include_str!("game_session.rs");
+        let build_fn = src
+            .split("async fn build_reveal_tx")
+            .nth(1)
+            .expect("build_reveal_tx must exist");
+        // Bound the window to this function so an unrelated read elsewhere
+        // cannot satisfy the assertion.
+        let body = &build_fn[..build_fn.len().min(4000)];
+        assert!(
+            body.contains("read_game_freshest("),
+            "the reveal path must read at the freshest commitment; a `confirmed` \
+             read makes the second revealer attach r_matchup and be rejected \
+             with RMatchupMismatch on every retry"
         );
     }
 
