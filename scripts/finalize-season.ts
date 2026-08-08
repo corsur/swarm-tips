@@ -115,6 +115,85 @@ async function readSolanaRecords(tournamentId: bigint): Promise<{ records: Playe
   );
 }
 
+/**
+ * Publish the root on-chain. A root is IMMUTABLE once published — finalizeSeason
+ * reverts if the season is already finalized — so this runs only after the
+ * artifact above has been written and can be inspected.
+ *
+ * `totalWei` is the sum actually distributed, never the pot: the split truncates
+ * and a season must not promise more than it holds. The contract enforces the
+ * same bound (`totalWei > accruedWei` reverts), so a mismatch here fails loudly
+ * rather than stranding a claimant.
+ */
+async function submitEvmFinalize(
+  rpc: string,
+  contract: string,
+  season: bigint,
+  root: string,
+  totalWei: bigint,
+): Promise<void> {
+  const { createWalletClient, createPublicClient, http } = await import("viem");
+  const { privateKeyToAccount } = await import("viem/accounts");
+  const { baseSepolia } = await import("viem/chains");
+
+  const raw = process.env.OWNER_KEY;
+  if (!raw) throw new Error("OWNER_KEY is required to sign finalizeSeason");
+  const owner = privateKeyToAccount(
+    (raw.trim().startsWith("0x") ? raw.trim() : `0x${raw.trim()}`) as `0x${string}`,
+  );
+
+  const abi = [
+    {
+      type: "function", name: "finalizeSeason", stateMutability: "nonpayable",
+      inputs: [
+        { name: "seasonId", type: "uint256" },
+        { name: "root", type: "bytes32" },
+        { name: "totalWei", type: "uint256" },
+      ],
+      outputs: [],
+    },
+    {
+      type: "function", name: "seasons", stateMutability: "view",
+      inputs: [{ name: "seasonId", type: "uint256" }],
+      outputs: [
+        { name: "startTime", type: "uint64" }, { name: "endTime", type: "uint64" },
+        { name: "finalized", type: "bool" }, { name: "root", type: "bytes32" },
+        { name: "accruedWei", type: "uint256" }, { name: "prizeWei", type: "uint256" },
+        { name: "remainingWei", type: "uint256" },
+      ],
+    },
+  ] as const;
+
+  const pub = createPublicClient({ chain: baseSepolia, transport: http(rpc) });
+  const wallet = createWalletClient({ account: owner, chain: baseSepolia, transport: http(rpc) });
+
+  console.log(`submitting finalizeSeason(${season}, ${root}, ${totalWei}) as ${owner.address}`);
+  const hash = await wallet.writeContract({
+    address: contract as `0x${string}`, abi, functionName: "finalizeSeason",
+    args: [season, root as `0x${string}`, totalWei],
+  });
+  const rcpt = await pub.waitForTransactionReceipt({ hash });
+  if (rcpt.status !== "success") throw new Error(`finalizeSeason reverted (${hash})`);
+
+  // Read the CHAIN back: a receipt says the tx executed, not that the root the
+  // claimants will prove against is the one we just computed.
+  //
+  // RETRIED, because a receipt does not mean the node serving this read has the
+  // block: the first attempt here returned a ZERO root for a season that was in
+  // fact finalized, which would have reported a false failure on a good publish.
+  for (let i = 0; ; i++) {
+    const s = (await pub.readContract({
+      address: contract as `0x${string}`, abi, functionName: "seasons", args: [season],
+    })) as readonly unknown[];
+    if (String(s[3]).toLowerCase() === root.toLowerCase()) {
+      console.log(`  finalized: root on-chain matches, prizeWei ${String(s[5])}`);
+      return;
+    }
+    if (i >= 20) throw new Error(`on-chain root ${String(s[3])} != computed ${root}`);
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
 async function main() {
   const { chain, season, dryRun } = parseArgs();
 
@@ -172,7 +251,18 @@ async function main() {
     console.log("\n--dry-run: nothing sent. A published root is IMMUTABLE, so review the artifact first.");
     return;
   }
-  throw new Error("on-chain finalize submission is not wired yet - re-run with --dry-run");
+  if (isSolana) {
+    throw new Error(
+      "Solana finalize submission is not wired here; finalize-tournament.ts still owns that path",
+    );
+  }
+  await submitEvmFinalize(
+    flag("rpc") ?? "https://sepolia.base.org",
+    flag("contract")!,
+    season,
+    result.root,
+    result.totalDistributed,
+  );
 }
 
 main().catch((e) => {
