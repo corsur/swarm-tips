@@ -171,6 +171,20 @@ jobs:
             --private-key "$DEPLOYER_PK" \
             --broadcast
 
+      # Upgrade an EXISTING v4 proxy: new implementation, same storage. Kept
+      # separate from 'coordinationv4' because that path deploys a NEW proxy and
+      # orphans every season, player record and unclaimed balance on the old one.
+      - name: Upgrade CoordinationGameV4 (implementation only)
+        if: inputs.contract == 'coordinationv4-upgrade'
+        env:
+          V4_PROXY: ${{ vars.V4_PROXY_BASE_SEPOLIA }}
+        run: |
+          test -n "$V4_PROXY" || { echo "V4_PROXY_BASE_SEPOLIA repo variable is unset"; exit 1; }
+          forge script script/UpgradeCoordinationGameV4.s.sol \
+            --rpc-url "$RPC_TARGET" \
+            --private-key "$DEPLOYER_PK" \
+            --broadcast
+
       - name: Deploy ShillbotEscrow
         if: inputs.contract == 'shillbot'
         env:
