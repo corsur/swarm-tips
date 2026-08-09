@@ -171,7 +171,10 @@ jobs:
           # network=base the first operand is truthy and || returns IT, so the
           # value became the string "true" and vm.envUint could not parse it.
           # Ethereum mainnet happened to work; Base mainnet did not.
-          V4_SEASON_SECS: ${{ (inputs.network == 'base' || inputs.network == 'mainnet') && '31536000' || '900' }}
+          # The mainnet workflow's network options are 'base' and 'ethereum'.
+          # 'mainnet' is NOT one of them, so testing for it never matched and
+          # Ethereum mainnet silently took the 900s testnet window.
+          V4_SEASON_SECS: ${{ (inputs.network == 'base' || inputs.network == 'ethereum' || inputs.network == 'mainnet') && '31536000' || '900' }}
         run: |
           forge script script/DeployCoordinationGameV4.s.sol \
             --rpc-url "$RPC_TARGET" \
