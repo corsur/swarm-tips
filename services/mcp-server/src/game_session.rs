@@ -1758,8 +1758,15 @@ impl GameSessionManager {
 
         let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
         let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
+        // FRESHEST, like the reveal and broadcast paths. An agent calls this
+        // immediately after its own reveal to learn the outcome, and at
+        // `confirmed` the account can read as absent for a slot or two — which
+        // surfaces as the flat lie "game account not found" for a game that
+        // demonstrably exists. Live: the cross-surface metamorphic cell failed
+        // exactly this way and passed on retry, so the only thing separating a
+        // clean run from a red one was timing.
         let game = tx_builder
-            .read_game(game_id)
+            .read_game_freshest(game_id)
             .await?
             .context("game account not found")?;
 
@@ -2144,6 +2151,30 @@ mod tests {
             "after_reveal_guess must read at the freshest commitment; it reads back \
              our own reveal, and a `confirmed` read makes a resolution we caused \
              look like an opponent who has not revealed, so it is never broadcast"
+        );
+    }
+
+    /// Every read that can race an agent's own transaction must use the
+    /// freshest commitment, not just the reveal path.
+    ///
+    /// get_result is called right after a reveal to learn the outcome. At
+    /// `confirmed` the account can read as absent for a slot or two, and the
+    /// caller is told "game account not found" — a flat falsehood about a game
+    /// that exists, and one that reads like data loss rather than lag. The
+    /// cross-surface metamorphic cell failed exactly this way and passed on
+    /// retry, which is the signature of a timing bug being papered over.
+    #[test]
+    fn get_result_reads_the_game_at_the_freshest_commitment() {
+        let src = include_str!("game_session.rs");
+        let f = src
+            .split("pub async fn get_result")
+            .nth(1)
+            .expect("get_result must exist");
+        let body = &f[..f.len().min(2000)];
+        assert!(
+            body.contains("read_game_freshest("),
+            "get_result must read at the freshest commitment; a `confirmed` read \
+             reports a just-resolved game as not found"
         );
     }
 
