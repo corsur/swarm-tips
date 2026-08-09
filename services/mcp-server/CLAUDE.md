@@ -11,12 +11,18 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 53 tools live (count them:
 | Field | Value |
 |-------|-------|
 | Name | `io.github.corsur/swarm-tips` |
-| Published version | **0.1.3** (2026-04-08) |
-| Local `server.json` version | **0.1.3** |
+| Published version | **0.3.0** |
+| Local `server.json` version | **0.3.0** |
 | Status | active |
 | Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
 
-v0.1.3 was published on 2026-04-08 with a 20-tool description; the registry copy is stale relative to the current 53-tool surface. The local `server.json` description has been updated; run `mcp-publisher publish` from `services/mcp-server/` to push the refreshed inventory + description (if OAuth tokens expire, run `mcp-publisher login github` first for the interactive browser flow).
+The registry is at v0.3.0. Its description said "51 tools" while `src/server.rs`
+declares 53 — run `grep -c '#[tool(' src/server.rs` for the authoritative number,
+never trust a prose count. `server.json`'s description is corrected to 53; its
+`version` is deliberately NOT bumped, because that field only matters at
+`mcp-publisher publish` time and the live server never reads it. Publish from
+`services/mcp-server/` when the tool INVENTORY itself changes (if OAuth tokens
+expire, run `mcp-publisher login github` first).
 
 **Auth tokens** are stored in `services/mcp-server/.mcpregistry_github_token` and `.mcpregistry_registry_token` (gitignored). Both expire periodically.
 
@@ -122,7 +128,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (51 active)
+## Tools (53 active)
 
 ### Cross-chain game (14 tools)
 - `xchain_build_create_match` — [SPEND] build the unsigned EVM `createMatch` tx (via `crates/evm-chain`) from a matched relay payload so the EVM-leg player can fund their leg. Parses the payload's `leg_b` (contract/session-key/stake) + `leg_a` session key as counterparty, derives `playerIsP1 = (a_is_p1 == 0)` and a `fund_deadline` before `match_deadline`; returns `{to, data, value_wei, chain, fund/match deadlines}` for client-side signing. `build_evm_create_match_call` in `src/xchain.rs`.
