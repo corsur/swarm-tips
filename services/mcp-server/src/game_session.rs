@@ -1265,8 +1265,18 @@ impl GameSessionManager {
         let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet)
             .context("after_reveal_guess: invalid wallet")?;
         let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
+        // FRESHEST, because this reads back OUR OWN write. We land a reveal and
+        // immediately ask whether the game resolved; at `confirmed` our own
+        // transaction can still be invisible for a slot or two. The early return
+        // below then cannot tell "the opponent has not revealed yet" (a real
+        // not-yet) apart from "our reveal has not surfaced yet" (a stale read),
+        // and treats both as nothing-to-do — so when our reveal was the one that
+        // resolved the game, the resolution is never broadcast to game-api. The
+        // session stays unresolved, the opponent's poller learns nothing, and
+        // the outcome is missing from collected data. A receipt proves the
+        // transaction was included, not that the next read sees it.
         let game = tx_builder
-            .read_game(game_id)
+            .read_game_freshest(game_id)
             .await?
             .context("after_reveal_guess: game account not found")?;
         if game.state != game_chain::GameState::Resolved {
@@ -2106,6 +2116,34 @@ mod tests {
             "the reveal path must read at the freshest commitment; a `confirmed` \
              read makes the second revealer attach r_matchup and be rejected \
              with RMatchupMismatch on every retry"
+        );
+    }
+
+    /// The resolution-broadcast path reads back OUR OWN write, so it has the
+    /// same commitment requirement as the reveal path — for a different reason.
+    ///
+    /// `after_reveal_guess` runs right after our reveal lands and returns early
+    /// unless the game reads as Resolved. At `confirmed`, our own transaction
+    /// can still be invisible, and the early return silently swallows the case
+    /// where OUR reveal was the one that resolved the game: game-api never
+    /// hears about it, the session stays unresolved, and the outcome is missing
+    /// from collected data. Nothing errors, which is what makes it survive.
+    ///
+    /// Source-level for the same reason as the reveal guard: a commitment level
+    /// handed to an RPC is not observable from a pure test.
+    #[test]
+    fn resolution_broadcast_reads_the_game_at_the_freshest_commitment() {
+        let src = include_str!("game_session.rs");
+        let f = src
+            .split("async fn after_reveal_guess")
+            .nth(1)
+            .expect("after_reveal_guess must exist");
+        let body = &f[..f.len().min(4000)];
+        assert!(
+            body.contains("read_game_freshest("),
+            "after_reveal_guess must read at the freshest commitment; it reads back \
+             our own reveal, and a `confirmed` read makes a resolution we caused \
+             look like an opponent who has not revealed, so it is never broadcast"
         );
     }
 
