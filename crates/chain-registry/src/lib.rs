@@ -392,7 +392,11 @@ const REGISTRY: &[ChainEntry] = &[
         // owner/treasury 0x9962…770d, operatorSigner 0x54a6…9A30, stake 5e14,
         // split 5000.
         coordination_game_contract: Some("0x567e114EB53228aFd9b20d7121668D4ce082a4F8"),
-        coordination_game_v4_proxy: None, // mainnet cutover pending
+        // v4 (UUPS proxy). Deployed and verified live: owner 0x996213ed..9770d,
+        // stakeWei 0.0027, unpaused, season 1 open for 365 days. v3 above is
+        // retained for residual state — it held 0 ETH at cutover, so no escrowed
+        // stake or in-flight game was stranded by re-pointing.
+        coordination_game_v4_proxy: Some("0xd585baE48901513202dAEb7d4feE4Af508a96234"),
         shillbot_escrow_contract: None,
         x402_network: Some("base"),
     },
@@ -433,7 +437,10 @@ const REGISTRY: &[ChainEntry] = &[
         // residual state. Verified on-chain: owner/treasury 0x9962…770d,
         // operatorSigner 0x54a6…9A30, stake 2.5e15, split 5000.
         coordination_game_contract: Some("0x1b75ddB73ebAC8aD7C0B26787B534e7Db0e7917d"),
-        coordination_game_v4_proxy: None, // mainnet cutover pending
+        // v4 (UUPS proxy). Season 1 deployed with a 900s window by the
+        // V4_SEASON_SECS precedence bug (692bde6); corrected on-chain with
+        // startSeason(2, 31536000), so the LIVE season here is 2, not 1.
+        coordination_game_v4_proxy: Some("0x265818b054E8413Bab870e0Ce0D8aB68400CF0F9"),
         shillbot_escrow_contract: None,
         x402_network: None,
     },
@@ -732,6 +739,42 @@ mod tests {
         let unknown = ChainId::parse("eip155:999999").unwrap();
         assert!(contract_for(&unknown, ContractPurpose::CoordinationGame).is_none());
         assert!(contract_for(&unknown, ContractPurpose::ShillbotEscrow).is_none());
+    }
+
+    /// Pin the v4 proxy per chain, and pin that it is DISTINCT from v3.
+    ///
+    /// v4 is a separate proxy holding its own seasons, player records and
+    /// unclaimed balances. Pointing a client at v3 while calling it v4 (or
+    /// vice-versa) reads an empty season and pays nobody, with no error — the
+    /// call succeeds against the wrong contract. Exact-address pinning is what
+    /// catches a silent edit; the inequality assert is what catches the
+    /// copy-paste that quietly reuses the v3 address.
+    #[test]
+    fn v4_proxy_is_pinned_and_distinct_from_v3() {
+        let mut seen = 0;
+        for e in REGISTRY {
+            let Some(v4) = e.coordination_game_v4_proxy else {
+                continue;
+            };
+            seen += 1;
+            let expected = match e.chain_id {
+                "eip155:84532" => "0x4FBBceb96D2814b5d4ac26089Eb7E43471533253",
+                "eip155:8453" => "0xd585baE48901513202dAEb7d4feE4Af508a96234",
+                "eip155:1" => "0x265818b054E8413Bab870e0Ce0D8aB68400CF0F9",
+                other => panic!("unexpected chain carries a v4 proxy: {other}"),
+            };
+            assert_eq!(v4, expected, "v4 proxy changed for {}", e.chain_id);
+            if let Some(v3) = e.coordination_game_contract {
+                assert_ne!(
+                    v4.to_lowercase(),
+                    v3.to_lowercase(),
+                    "{}: v4 proxy must not be the v3 address — a client pointed at the \
+                     wrong contract reads an empty season and pays nobody, silently",
+                    e.chain_id
+                );
+            }
+        }
+        assert_eq!(seen, 3, "expected v4 on Base Sepolia, Base and Ethereum");
     }
 
     #[test]
