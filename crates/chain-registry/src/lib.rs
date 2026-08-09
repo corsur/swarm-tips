@@ -176,8 +176,9 @@ pub struct ChainEntry {
     /// isn't deployed — every Solana entry, and an EVM chain until deployed.
     pub coordination_game_contract: Option<&'static str>,
     /// CoordinationGameV4 PROXY address (UUPS). v4 adds seasons + a merkle
-    /// prize claim; v3 stays in `coordination_game_contract` until each chain
-    /// is cut over, so both are addressable during the migration.
+    /// prize claim. Where this is set it is what `contract_for` returns and
+    /// therefore what every service plays on; `coordination_game_contract`
+    /// keeps the superseded v3 address so historical games stay indexable.
     pub coordination_game_v4_proxy: Option<&'static str>,
     /// Shillbot task-escrow: shillbot program ID (solana) or `ShillbotEscrow`
     /// address (eip155). None until deployed on that chain. Today the ONLY
@@ -195,7 +196,23 @@ impl ChainEntry {
     pub fn contract_for(&self, purpose: ContractPurpose) -> Option<&'static str> {
         match purpose {
             ContractPurpose::CrossChainGame => self.game_contract,
-            ContractPurpose::CoordinationGame => self.coordination_game_contract,
+            // THE v3 -> v4 CUTOVER, in one place. Every consumer of the
+            // same-chain game resolves its address through here (game-api's
+            // `coordination_game_contract()`, mcp-server's
+            // `resolve_coordination_game_contract()`), so preferring the v4
+            // proxy switches all of them together and cannot leave one service
+            // talking to v3 while another talks to v4 — a split that would put
+            // two players in the same logical match on different contracts.
+            //
+            // Falls back to v3 where no v4 proxy is deployed, so a chain that
+            // has not been cut over keeps working unchanged.
+            //
+            // NOT a cutover for INDEXING: reading only v4 would drop every
+            // game recorded against v3. `leaderboard_io::index_chain_since_cursor`
+            // deliberately reads the address fields directly and scans BOTH.
+            ContractPurpose::CoordinationGame => self
+                .coordination_game_v4_proxy
+                .or(self.coordination_game_contract),
             ContractPurpose::ShillbotEscrow => self.shillbot_escrow_contract,
         }
     }
@@ -727,9 +744,11 @@ mod tests {
             contract_for(&base, ContractPurpose::CrossChainGame),
             Some("0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4")
         );
+        // Post-cutover this resolves to the v4 PROXY, not the v3 address that
+        // is still stored in `coordination_game_contract` for indexing.
         assert_eq!(
             contract_for(&base, ContractPurpose::CoordinationGame),
-            Some("0x9E344F6FD80f4b2a20329a8C0dD4E16f70Bcd5ED")
+            Some("0x4FBBceb96D2814b5d4ac26089Eb7E43471533253")
         );
         // Solana has no same-chain EVM CoordinationGame, but has the cross-chain one.
         let sol = ChainId::parse("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1").unwrap();
@@ -775,6 +794,54 @@ mod tests {
             }
         }
         assert_eq!(seen, 3, "expected v4 on Base Sepolia, Base and Ethereum");
+    }
+
+    /// The v3 -> v4 cutover itself: resolution must hand back the v4 proxy on
+    /// every chain that has one, and must NOT silently fall back to v3 there.
+    ///
+    /// This is the assert that makes the switchover real. The registry carried
+    /// both addresses for a while with nothing reading v4, so the migration
+    /// looked done while every service still played on v3. A test on the FIELD
+    /// cannot catch that — only a test on what `contract_for` returns can.
+    #[test]
+    fn coordination_game_resolves_to_v4_where_deployed() {
+        let mut cut_over = 0;
+        for e in REGISTRY {
+            let resolved = e.contract_for(ContractPurpose::CoordinationGame);
+            match e.coordination_game_v4_proxy {
+                Some(v4) => {
+                    cut_over += 1;
+                    assert_eq!(
+                        resolved,
+                        Some(v4),
+                        "{}: resolution must return the v4 proxy, not v3 — otherwise the \
+                         registry says migrated while every service still plays on v3",
+                        e.chain_id
+                    );
+                }
+                // No v4 deployed: keep serving v3 rather than resolving to None,
+                // which would take the same-chain game offline on that chain.
+                None => assert_eq!(resolved, e.coordination_game_contract, "{}", e.chain_id),
+            }
+        }
+        assert_eq!(cut_over, 3, "expected 3 chains cut over to v4");
+    }
+
+    /// v3 must remain REACHABLE after the cutover. Resolution moves to v4, but
+    /// the v3 address stays in the registry because the leaderboard indexer
+    /// scans both — dropping it would erase every game played before the cut.
+    #[test]
+    fn v3_address_survives_the_cutover_for_indexing() {
+        for e in REGISTRY {
+            if e.coordination_game_v4_proxy.is_some() && e.chain_id != "eip155:84532" {
+                assert!(
+                    e.coordination_game_contract.is_some(),
+                    "{}: v3 address was removed — leaderboard history for every game \
+                     played on v3 becomes unindexable",
+                    e.chain_id
+                );
+            }
+        }
     }
 
     #[test]
