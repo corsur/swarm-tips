@@ -60,20 +60,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `rpc` is the PUBLIC fallback; `secret` names the premium endpoint in
+          # Secret Manager and wins when it resolves. Same precedence the
+          # services use via chain_registry::read_rpc_urls, so CI and runtime
+          # read the chain through the same endpoint. The public endpoints are
+          # rate-limited: eth.drpc.org answers `stakeWei()` with HTTP 408
+          # ("upgrade to paid plan"), which failed this job as if the stake had
+          # drifted, when nothing on-chain had changed at all.
           - network: base_sepolia
             caip2: 'eip155:84532'
             rpc: https://sepolia.base.org
+            secret: base-sepolia-rpc-url
             environment: testnet
           - network: base
             caip2: 'eip155:8453'
             rpc: https://mainnet.base.org
+            secret: base-mainnet-rpc-url
             environment: mainnet
           - network: ethereum
             caip2: 'eip155:1'
             rpc: https://eth.drpc.org
+            secret: eth-mainnet-rpc-url
             environment: mainnet
     runs-on: ubuntu-latest
     environment: ${{ matrix.environment }}
+    permissions:
+      contents: read
+      id-token: write # Workload Identity, for reading the premium RPC secret
     steps:
       - name: Skip chains not selected by a manual dispatch
         id: gate
@@ -95,6 +108,25 @@ jobs:
       - name: Install Foundry
         if: steps.gate.outputs.run == 'true'
         uses: foundry-rs/foundry-toolchain@v1
+
+      # Read the premium RPC from Secret Manager rather than duplicating the URL
+      # into a GitHub Secret. The same value already lives in Secret Manager for
+      # the services; a second copy here would be a second source of truth that
+      # drifts on rotation -- the exact failure mode the K8s-Secret bridge ban
+      # exists to prevent. `continue-on-error` keeps a GCP outage from failing a
+      # reconcile that the public fallback can still complete.
+      - name: Authenticate to GCP
+        id: gcp
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        if: steps.gate.outputs.run == 'true' && steps.gcp.outcome == 'success'
+        continue-on-error: true
 
       - name: Read the DESIRED stake from the registry
         id: want
@@ -160,7 +192,21 @@ jobs:
           # Per-chain endpoint. A single secret cannot serve three chains: using
           # EVM_MAINNET_RPC_URL for base_sepolia would read the wrong chain's
           # state and "reconcile" against it.
+          # Premium endpoint first, public fallback second — the same precedence
+          # chain_registry::read_rpc_urls applies at runtime. MASK it before it
+          # can reach a log: the premium URL carries the provider key in its
+          # path, and this value flows into a step output and later notices.
           RPC="${{ matrix.rpc }}"
+          if PREMIUM=$(gcloud secrets versions access latest \
+                --secret="${{ matrix.secret }}" 2>/dev/null) && [ -n "$PREMIUM" ]; then
+            echo "::add-mask::$PREMIUM"
+            RPC="$PREMIUM"
+            echo "::notice::${{ matrix.caip2 }} using the premium endpoint"
+          else
+            echo "::warning::${{ matrix.secret }} unavailable — falling back to the \
+          rate-limited public endpoint, which can fail this job with an HTTP 408 that \
+          looks like stake drift"
+          fi
           echo "rpc=$RPC" >> "$GITHUB_OUTPUT"
           # `cast call` prints `3200000000000000 [3.2e15]`; the scientific-notation
           # suffix is part of stdout. Comparing the raw string ALWAYS reported
