@@ -187,9 +187,24 @@ jobs:
       - name: Upgrade CoordinationGameV4 (implementation only)
         if: inputs.contract == 'coordinationv4-upgrade'
         env:
-          V4_PROXY: ${{ vars.V4_PROXY_BASE_SEPOLIA }}
+          # Per-network proxy. This used to be hardwired to
+          # V4_PROXY_BASE_SEPOLIA, so selecting `base` or `ethereum` would have
+          # pointed the upgrade at the TESTNET proxy address on a MAINNET rpc —
+          # either reverting (no contract there) or, worse, hitting an unrelated
+          # contract. The upgrade must be per-network because the proxy is.
+          V4_PROXY_BASE_SEPOLIA: ${{ vars.V4_PROXY_BASE_SEPOLIA }}
+          V4_PROXY_BASE: ${{ vars.V4_PROXY_BASE }}
+          V4_PROXY_ETHEREUM: ${{ vars.V4_PROXY_ETHEREUM }}
         run: |
-          test -n "$V4_PROXY" || { echo "V4_PROXY_BASE_SEPOLIA repo variable is unset"; exit 1; }
+          case "${{ inputs.network }}" in
+            base_sepolia) V4_PROXY="$V4_PROXY_BASE_SEPOLIA"; VAR=V4_PROXY_BASE_SEPOLIA ;;
+            base)         V4_PROXY="$V4_PROXY_BASE";         VAR=V4_PROXY_BASE ;;
+            ethereum)     V4_PROXY="$V4_PROXY_ETHEREUM";     VAR=V4_PROXY_ETHEREUM ;;
+            *) echo "::error::no V4 proxy variable mapped for network '${{ inputs.network }}'"; exit 1 ;;
+          esac
+          export V4_PROXY
+          test -n "$V4_PROXY" || { echo "$VAR repo variable is unset"; exit 1; }
+          echo "upgrading proxy $V4_PROXY on ${{ inputs.network }}"
           forge script script/UpgradeCoordinationGameV4.s.sol \
             --rpc-url "$RPC_TARGET" \
             --private-key "$DEPLOYER_PK" \

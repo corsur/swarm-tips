@@ -21,6 +21,7 @@ on:
         options:
           - coordination
           - coordinationv4
+          - coordinationv4-upgrade
           - crosschain
           - shillbot
         default: crosschain
