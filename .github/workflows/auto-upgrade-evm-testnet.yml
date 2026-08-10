@@ -1,0 +1,85 @@
+name: Auto-upgrade EVM Testnet
+
+# Ship a CoordinationGameV4 logic change to Base Sepolia automatically, so the
+# testnet contract is never behind main.
+#
+# WHY THIS IS SAFE HERE AND NOT FOR A FRESH DEPLOY. `_deploy-evm.yml` is
+# manual-only because deploying a NEW contract mints a new address, orphans the
+# prior state, and forces every consumer (chain-registry, game-api, mcp-server,
+# the frontend, the e2e harness) to be re-pointed. An UPGRADE is the opposite:
+# `upgradeToAndCall` keeps the SAME ERC1967 proxy address, touches no storage,
+# and re-points nothing. There is nothing left for a human to decide, and a
+# human deciding it is precisely how the harness spent a run reading v3 while
+# the app played v4.
+#
+# MAINNET IS STILL MANUAL. deploy-evm-mainnet.yml is untouched — that contract
+# holds real funds, and this workflow passes no mainnet secret.
+#
+# GATED ON TESTS. It triggers on the EVM Contracts run COMPLETING SUCCESSFULLY,
+# not on the push, so a red forge suite can never reach the chain. Chaining on
+# `workflow_run` rather than duplicating the test steps keeps one definition of
+# "the contracts are good".
+
+on:
+  workflow_run:
+    workflows: ['EVM Contracts']
+    types: [completed]
+    branches: [main]
+  # Manual escape hatch: re-run the upgrade without pushing a contract change
+  # (e.g. after rotating the proxy variable, or to recover a failed broadcast).
+  workflow_dispatch:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    # `workflow_run` fires on failure and cancellation too. Without this, a red
+    # forge suite would still broadcast an upgrade.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Check out the commit the EVM Contracts run actually tested. A
+          # `workflow_run` job defaults to the branch head, which is a DIFFERENT
+          # commit whenever anything landed in between — the diff below would
+          # then describe the wrong pair, and this workflow exists to stop a
+          # human reading one version while the chain runs another.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # Need the parent commit to diff against; a shallow clone has no base.
+          fetch-depth: 2
+
+      - name: Did the upgradeable contract's own sources change?
+        id: diff
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "manual dispatch — upgrading regardless of the diff"
+            exit 0
+          fi
+          # EVM Contracts also runs for chain-registry, policy and fixture
+          # changes, none of which alter deployed bytecode. Broadcasting an
+          # upgrade for those spends gas to install identical logic and adds a
+          # pointless proxy event, so scope to what actually compiles into V4.
+          if git diff --name-only HEAD^ HEAD \
+             | grep -Eq '^evm/(src/CoordinationGameV4\.sol|src/base/|src/CertLib\.sol|src/SeasonPot\.sol|script/UpgradeCoordinationGameV4\.s\.sol)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "no CoordinationGameV4 source change — skipping upgrade"
+          fi
+
+  upgrade:
+    needs: guard
+    if: needs.guard.outputs.changed == 'true'
+    uses: ./.github/workflows/_deploy-evm.yml
+    with:
+      contract: coordinationv4-upgrade
+      network: base_sepolia
+    secrets:
+      EVM_TESTNET_DEPLOYER: ${{ secrets.EVM_TESTNET_DEPLOYER }}
+      # Mainnet secrets deliberately NOT passed — this entry point is
+      # testnet-only, same rule as deploy-evm-testnet.yml.

@@ -13,6 +13,9 @@ on:
       - 'tests/helpers/outcome-oracle.ts'
       - 'sdk/outcome-oracle.ts'
       - 'sdk/battery.ts'
+      - 'tests/lean-artifacts.guard.mjs'
+      - 'tests/fixtures/lean/**'
+      - 'research/lean-bounties/**'
       - '.github/workflows/harness-unit.yml'
   pull_request:
     paths:
@@ -20,6 +23,9 @@ on:
       - 'tests/helpers/outcome-oracle.ts'
       - 'sdk/outcome-oracle.ts'
       - 'sdk/battery.ts'
+      - 'tests/lean-artifacts.guard.mjs'
+      - 'tests/fixtures/lean/**'
+      - 'research/lean-bounties/**'
       - '.github/workflows/harness-unit.yml'
 
 jobs:
@@ -37,3 +43,10 @@ jobs:
         run: npx prettier "tests/harness/**/*.ts" "sdk/outcome-oracle.ts" "sdk/task-outcome-oracle.ts" "sdk/battery.ts" --check
       - name: Run harness unit tests (no validator)
         run: npx ts-mocha -p ./tsconfig.json --exit "tests/harness/*.unit.test.ts"
+
+      # A bounty artifact that redeclares the campaign statement fails
+      # elaboration, scores 0 and refunds the client while the task still
+      # reaches `finalized` — invisible everywhere except the payment. Both
+      # committed artifacts had exactly this defect at the same time.
+      - name: Lean bounty artifacts contain the theorem only
+        run: node tests/lean-artifacts.guard.mjs
