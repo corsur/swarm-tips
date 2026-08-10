@@ -175,10 +175,19 @@ pub struct ChainEntry {
     /// Same-chain EVM-vs-EVM `CoordinationGame` address (eip155). None where it
     /// isn't deployed — every Solana entry, and an EVM chain until deployed.
     pub coordination_game_contract: Option<&'static str>,
-    /// CoordinationGameV4 PROXY address (UUPS). v4 adds seasons + a merkle
-    /// prize claim. Where this is set it is what `contract_for` returns and
-    /// therefore what every service plays on; `coordination_game_contract`
-    /// keeps the superseded v3 address so historical games stay indexable.
+    /// CoordinationGameV4 PROXY address (UUPS). Where this is set it is what
+    /// `contract_for` returns and therefore what every service plays on;
+    /// `coordination_game_contract` keeps the superseded v3 address so
+    /// historical games stay indexable.
+    ///
+    /// The NAME says v4; the LOGIC behind the proxy has moved on twice since,
+    /// and the address deliberately has not — that is the point of a UUPS
+    /// proxy. v4 added seasons + a merkle prize claim; v5 added the escrow
+    /// ledger (`deposit`, dual-mode `_takeStake`); v6 added
+    /// `openSessionAndDeposit` so a browser can escrow its stake without a
+    /// second wallet popup. The field is not renamed per upgrade precisely
+    /// because consumers key off the address, and renaming it would imply a
+    /// re-point that never happens.
     pub coordination_game_v4_proxy: Option<&'static str>,
     /// Shillbot task-escrow: shillbot program ID (solana) or `ShillbotEscrow`
     /// address (eip155). None until deployed on that chain. Today the ONLY
@@ -409,8 +418,10 @@ const REGISTRY: &[ChainEntry] = &[
         // owner/treasury 0x9962…770d, operatorSigner 0x54a6…9A30, stake 5e14,
         // split 5000.
         coordination_game_contract: Some("0x567e114EB53228aFd9b20d7121668D4ce082a4F8"),
-        // v4 (UUPS proxy). Deployed and verified live: owner 0x996213ed..9770d,
-        // stakeWei 0.0027, unpaused, season 1 open for 365 days. v3 above is
+        // UUPS proxy, currently running v6 logic (escrow + openSessionAndDeposit),
+        // upgraded in place via deploy-evm-mainnet.yml. Deployed and verified
+        // live: owner 0x996213ed..9770d, stakeWei 0.0027, unpaused, season 1
+        // open for 365 days. v3 above is
         // retained for residual state — it held 0 ETH at cutover, so no escrowed
         // stake or in-flight game was stranded by re-pointing.
         coordination_game_v4_proxy: Some("0xd585baE48901513202dAEb7d4feE4Af508a96234"),
@@ -454,7 +465,8 @@ const REGISTRY: &[ChainEntry] = &[
         // residual state. Verified on-chain: owner/treasury 0x9962…770d,
         // operatorSigner 0x54a6…9A30, stake 2.5e15, split 5000.
         coordination_game_contract: Some("0x1b75ddB73ebAC8aD7C0B26787B534e7Db0e7917d"),
-        // v4 (UUPS proxy). Season 1 deployed with a 900s window by the
+        // UUPS proxy, currently running v6 logic (escrow +
+        // openSessionAndDeposit). Season 1 deployed with a 900s window by the
         // V4_SEASON_SECS precedence bug (692bde6); corrected on-chain with
         // startSeason(2, 31536000), so the LIVE season here is 2, not 1.
         coordination_game_v4_proxy: Some("0x265818b054E8413Bab870e0Ce0D8aB68400CF0F9"),
