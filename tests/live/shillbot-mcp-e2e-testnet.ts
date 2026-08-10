@@ -195,7 +195,10 @@ async function main(): Promise<void> {
       console.log(
         "  · verify/finalize gated on async verifier scoring (T+delay) — claim+submit proven live"
       );
-      console.log(`\nPASS — ${failures} failed check(s)`);
+      // SKIP, not PASS. This path exits having proven claim+submit only; it
+      // never reaches a payout, so calling it PASS reports settlement coverage
+      // the run does not have.
+      console.log(`\nSKIP — verify/finalize not reached; ${failures} failed check(s)`);
       process.exit(failures === 0 ? 0 : 1);
     }
     throw e;
@@ -228,9 +231,21 @@ async function main(): Promise<void> {
       BigInt(details.payment_amount) === expected.payment,
       `payment == oracle computePayment for score ${details.composite_score}`
     );
+    // The equality above is satisfied by 0 == computePayment(0, ...): a
+    // REJECTED task scores 0, refunds the client, and matches the oracle
+    // perfectly. Without this line the whole block passes on a non-payout.
+    check(
+      BigInt(details.payment_amount) > 0n,
+      `payment_amount > 0 (got ${details.payment_amount}, score ${details.composite_score})`
+    );
   } else {
-    console.log(
-      "  · oracle cross-check skipped (score not exposed by details)"
+    // Not a skip. If the details response stops exposing the score, this test
+    // silently stops checking settlement while still reporting PASS — the
+    // failure mode is indistinguishable from success, so fail loudly instead.
+    check(
+      false,
+      "get_task_details must expose composite_score/escrow_lamports/payment_amount " +
+        "— without them nothing here verifies the payout"
     );
   }
 
@@ -242,8 +257,9 @@ async function main(): Promise<void> {
   check(true, "finalize_task broadcast + confirmed");
   const earnAfter = await earnings(mcp, wallet);
   check(
-    earnAfter >= earnBefore,
-    `check_earnings non-decreasing (${earnBefore} → ${earnAfter})`
+    earnAfter > earnBefore,
+    `check_earnings INCREASED (${earnBefore} → ${earnAfter}) — ` +
+      `non-decreasing was satisfied by being paid nothing at all`
   );
 
   console.log(
