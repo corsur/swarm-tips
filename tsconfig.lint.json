@@ -1,0 +1,24 @@
+{
+  // TYPECHECK-ONLY config for `pnpm run lint`. It exists so the lint gate can
+  // resolve dependencies the way modern packages ship them WITHOUT changing how
+  // anything actually runs.
+  //
+  // The base tsconfig uses `module: commonjs`, which implies node10 resolution.
+  // node10 predates package `exports` maps, so `import ... from "ox/Bytes"`
+  // (viem's own imports) resolves to ox's raw .ts SOURCE instead of its shipped
+  // .d.ts. skipLibCheck only suppresses .d.ts errors, so 24 errors from inside
+  // node_modules/ox failed the gate — none of them ours, none actionable here.
+  //
+  // `bundler` resolution honours `exports` and picks ox's declarations, which
+  // removes all 24. It is confined to this file on purpose: switching the BASE
+  // config to node16/nodenext also fixes it, but changes module semantics for
+  // ts-mocha and ts-node at runtime, and the @noble/hashes ESM-vs-CJS interop
+  // that surfaced under that combination has bitten this repo before. A lint
+  // gate is not worth a runtime regression.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true
+  }
+}

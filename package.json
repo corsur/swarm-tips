@@ -2,7 +2,7 @@
   "license": "ISC",
   "scripts": {
     "lint:fix": "prettier \"**/*.ts\" -w",
-    "lint": "prettier \"**/*.ts\" --check && tsc --noEmit",
+    "lint": "prettier \"**/*.ts\" --check && tsc --noEmit -p tsconfig.lint.json",
     "ts-node": "ts-node"
   },
   "dependencies": {
