@@ -183,6 +183,95 @@ contract CoordinationGameV4EscrowTest is Test {
         game.createGame{value: STAKE + 1}(gameId, mc, _opSig(gameId, mc, alice), alice);
     }
 
+    // ----- openSessionAndDeposit: one popup, escrowed stake ----------------
+
+    uint64 internal constant SESSION_TTL = 1 days;
+    address internal sessionKey = address(0x5E55);
+
+    function _expiry() internal view returns (uint64) {
+        return uint64(block.timestamp) + SESSION_TTL;
+    }
+
+    /// The property the whole v6 change exists for: after opening a session the
+    /// session EOA holds ONLY gas, and the stake is in the player's ledger.
+    function test_openSessionAndDepositSplitsGasFromStake() public {
+        uint256 gas = 0.0003 ether;
+
+        vm.prank(alice);
+        game.openSessionAndDeposit{value: gas + STAKE}(sessionKey, _expiry(), gas);
+
+        assertEq(sessionKey.balance, gas, "session EOA must hold ONLY the gas buffer");
+        assertEq(game.withdrawable(alice), STAKE, "the stake is escrowed, not in the session key");
+    }
+
+    /// And that stake must be immediately usable, with msg.value == 0.
+    function test_theDepositedStakeIsSpendableByTheSessionKey() public {
+        uint256 gas = 0.0003 ether;
+        bytes32 gameId = keccak256("g-v6");
+        bytes32 mc = _commitment(gameId);
+
+        vm.prank(alice);
+        game.openSessionAndDeposit{value: gas + STAKE}(sessionKey, _expiry(), gas);
+
+        // The SESSION KEY acts for alice and sends no value; the stake comes
+        // from alice's ledger. This is the whole browser flow in one call.
+        vm.prank(sessionKey);
+        game.createGame(gameId, mc, _opSig(gameId, mc, alice), alice);
+
+        assertEq(game.withdrawable(alice), 0, "the escrowed stake funded the game");
+        (, address p1,, uint128 stakeRecorded) = _game(gameId);
+        assertEq(p1, alice, "the WALLET is the player, not the session key");
+        assertEq(uint256(stakeRecorded), STAKE);
+    }
+
+    function test_gasAmountAboveValueReverts() public {
+        vm.prank(alice);
+        vm.expectRevert(CoordinationGameV4.BadStake.selector);
+        game.openSessionAndDeposit{value: 1 ether}(sessionKey, _expiry(), 1 ether + 1);
+    }
+
+    /// Gas-only is legal: it is exactly `openSession`, reached through the new
+    /// entry point. Nothing is credited, so a later stake must still revert.
+    function test_gasOnlyCreditsNothing() public {
+        uint256 gas = 0.0003 ether;
+        bytes32 gameId = keccak256("g-v6-nostake");
+        bytes32 mc = _commitment(gameId);
+
+        vm.prank(alice);
+        game.openSessionAndDeposit{value: gas}(sessionKey, _expiry(), gas);
+
+        assertEq(game.withdrawable(alice), 0);
+        vm.prank(sessionKey);
+        vm.expectRevert(CoordinationGameV4.BadStake.selector);
+        game.createGame(gameId, mc, _opSig(gameId, mc, alice), alice);
+    }
+
+    /// The session authorization itself must be identical to openSession's —
+    /// this is the half that is factored out and shared.
+    function test_theSessionOpenedThisWayCanActForThePlayer() public {
+        vm.prank(alice);
+        game.openSessionAndDeposit{value: STAKE}(sessionKey, _expiry(), 0);
+
+        (address key, uint64 exp) = game.sessions(alice);
+        assertEq(key, sessionKey, "session key registered");
+        assertGt(exp, block.timestamp, "session unexpired");
+        assertEq(sessionKey.balance, 0, "gasAmount 0 forwards nothing");
+        assertEq(game.withdrawable(alice), STAKE, "all of msg.value was escrowed");
+    }
+
+    /// A rejected session key must not swallow the player's stake: the credit is
+    /// written before the forward, so the whole call reverts and nothing moves.
+    function test_aRevertingSessionKeyStrandsNothing() public {
+        RejectsEther hostile = new RejectsEther();
+        vm.prank(alice);
+        vm.expectRevert(bytes("gas fund failed"));
+        game.openSessionAndDeposit{value: 0.0003 ether + STAKE}(address(hostile), _expiry(), 0.0003 ether);
+
+        assertEq(game.withdrawable(alice), 0, "no partial credit survived the revert");
+        (address key,) = game.sessions(alice);
+        assertEq(key, address(0), "no session was registered");
+    }
+
     // ----- the inline path must survive the upgrade ------------------------
 
     /// DUAL-MODE is the point: this is a live contract, so a client that still
@@ -249,5 +338,13 @@ contract CoordinationGameV4EscrowTest is Test {
         returns (CoordinationGameV4.Status status, address p1, address p2, uint128 stakeWei)
     {
         (status, p1, p2,,,,, stakeWei,,,,,,,,,) = game.games(gameId);
+    }
+}
+
+/// A session key that refuses ETH — proves the gas forward is the only failure
+/// path and that it takes the whole transaction with it.
+contract RejectsEther {
+    receive() external payable {
+        revert("no");
     }
 }

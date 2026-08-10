@@ -395,16 +395,59 @@ contract CoordinationGameV4 is
     ///         stake. Sending the stake here still works — createGame/joinGame are
     ///         dual-mode — but it forfeits the recoverability.
     function openSession(address sessionKey, uint64 expiry) external payable nonReentrant {
+        _registerSession(sessionKey, expiry);
+        _fundSession(sessionKey, msg.value);
+    }
+
+    /// @notice Open a session AND escrow the stake in ONE transaction: forwards
+    ///         `gasAmount` to the session EOA and credits the remainder to the
+    ///         caller's {withdrawable} balance, which {createGame}/{joinGame}
+    ///         then debit with `msg.value == 0`.
+    ///
+    /// @dev    WHY THIS EXISTS. {deposit} credits `msg.sender` and `_takeStake`
+    ///         debits `withdrawable[player]` — the WALLET — so an escrowed stake
+    ///         cannot be sent by the session key. Without this the escrow flow
+    ///         would cost a second wallet popup on every first game, where the
+    ///         whole game costs exactly one today. Combining them keeps that
+    ///         property AND gets the stake out of the ephemeral key.
+    ///
+    ///         CEI + nonReentrant: session state and the credit are both written
+    ///         before any ETH leaves. The credit is deliberately made BEFORE the
+    ///         forward, so a hostile session key that reverts cannot strand a
+    ///         player mid-way with their stake neither in the key nor the ledger.
+    function openSessionAndDeposit(address sessionKey, uint64 expiry, uint256 gasAmount) external payable nonReentrant {
+        // Checks
+        if (gasAmount > msg.value) revert BadStake();
+
+        // Effects
+        _registerSession(sessionKey, expiry);
+        uint256 staked = msg.value - gasAmount; // checked above
+        if (staked > 0) {
+            _credit(msg.sender, staked);
+            emit Deposited(msg.sender, staked);
+        }
+
+        // Interactions
+        _fundSession(sessionKey, gasAmount);
+    }
+
+    /// @dev Record `sessionKey` as `msg.sender`'s delegate. Shared by both entry
+    ///      points so the authorization, nonce bump and event have ONE definition.
+    function _registerSession(address sessionKey, uint64 expiry) private {
         if (sessionKey == address(0) || expiry <= block.timestamp) revert BadSession();
         sessions[msg.sender] = SessionAuth(sessionKey, expiry);
         unchecked {
             sessionNonce[msg.sender]++;
         }
         emit SessionAuthorized(msg.sender, sessionKey, expiry);
-        if (msg.value > 0) {
-            (bool ok,) = payable(sessionKey).call{value: msg.value}("");
-            require(ok, "gas fund failed");
-        }
+    }
+
+    /// @dev Forward gas to the session EOA. No-op at zero so a session may be
+    ///      opened without funding (or re-opened when the key is already funded).
+    function _fundSession(address sessionKey, uint256 amount) private {
+        if (amount == 0) return;
+        (bool ok,) = payable(sessionKey).call{value: amount}("");
+        require(ok, "gas fund failed");
     }
 
     // ---------------------------------------------------------------------
