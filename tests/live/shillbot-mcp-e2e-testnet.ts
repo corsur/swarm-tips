@@ -198,7 +198,9 @@ async function main(): Promise<void> {
       // SKIP, not PASS. This path exits having proven claim+submit only; it
       // never reaches a payout, so calling it PASS reports settlement coverage
       // the run does not have.
-      console.log(`\nSKIP — verify/finalize not reached; ${failures} failed check(s)`);
+      console.log(
+        `\nSKIP — verify/finalize not reached; ${failures} failed check(s)`
+      );
       process.exit(failures === 0 ? 0 : 1);
     }
     throw e;

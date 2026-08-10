@@ -53,7 +53,13 @@ export interface SeasonResult {
   zeroScored: string[];
 }
 
-const FIXTURE = join(__dirname, "..", "tests", "fixtures", "game-payout-vectors.json");
+const FIXTURE = join(
+  __dirname,
+  "..",
+  "tests",
+  "fixtures",
+  "game-payout-vectors.json"
+);
 
 function hex(b: Uint8Array): string {
   return "0x" + Buffer.from(b).toString("hex");
@@ -66,16 +72,29 @@ export function computeScore(wins: bigint, games: bigint): bigint {
 }
 
 /** leaf = keccak256(0x00 ‖ account ‖ amount). */
-export function leafFor(account: string, amount: bigint, accountBytes: (a: string) => Uint8Array): Uint8Array {
+export function leafFor(
+  account: string,
+  amount: bigint,
+  accountBytes: (a: string) => Uint8Array
+): Uint8Array {
   const amt = Buffer.alloc(32);
   Buffer.from(amount.toString(16).padStart(64, "0"), "hex").copy(amt);
-  return keccak_256(Buffer.concat([Buffer.from([0x00]), Buffer.from(accountBytes(account)), amt]));
+  return keccak_256(
+    Buffer.concat([
+      Buffer.from([0x00]),
+      Buffer.from(accountBytes(account)),
+      amt,
+    ])
+  );
 }
 
 /** internal = keccak256(0x01 ‖ min ‖ max) — sorted, so proofs are order-free. */
 export function hashNode(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const [lo, hi] = Buffer.compare(Buffer.from(a), Buffer.from(b)) <= 0 ? [a, b] : [b, a];
-  return keccak_256(Buffer.concat([Buffer.from([0x01]), Buffer.from(lo), Buffer.from(hi)]));
+  const [lo, hi] =
+    Buffer.compare(Buffer.from(a), Buffer.from(b)) <= 0 ? [a, b] : [b, a];
+  return keccak_256(
+    Buffer.concat([Buffer.from([0x01]), Buffer.from(lo), Buffer.from(hi)])
+  );
 }
 
 /**
@@ -93,17 +112,25 @@ export function assertVectorParity(): { minGames: bigint } {
 
   const la = leafFor(m.addrA, BigInt(m.amountA), addrBytes);
   const lb = leafFor(m.addrB, BigInt(m.amountB), addrBytes);
-  if (hex(la) !== m.leafA) throw new Error(`leaf format drift: ${hex(la)} != ${m.leafA}`);
-  if (hex(lb) !== m.leafB) throw new Error(`leaf format drift: ${hex(lb)} != ${m.leafB}`);
+  if (hex(la) !== m.leafA)
+    throw new Error(`leaf format drift: ${hex(la)} != ${m.leafA}`);
+  if (hex(lb) !== m.leafB)
+    throw new Error(`leaf format drift: ${hex(lb)} != ${m.leafB}`);
   const root = hashNode(la, lb);
   if (hex(root) !== m.root) {
-    throw new Error(`node format drift: ${hex(root)} != ${m.root} — check the 0x01 domain byte`);
+    throw new Error(
+      `node format drift: ${hex(root)} != ${
+        m.root
+      } — check the 0x01 domain byte`
+    );
   }
 
   for (const c of fx.constants.scoreCases) {
     const got = computeScore(BigInt(c.wins), BigInt(c.games));
     if (got !== BigInt(c.score)) {
-      throw new Error(`score drift: ${c.wins}/${c.games} gave ${got}, fixture says ${c.score}`);
+      throw new Error(
+        `score drift: ${c.wins}/${c.games} gave ${got}, fixture says ${c.score}`
+      );
     }
   }
   return { minGames: BigInt(fx.constants.minGamesForPayout) };
@@ -120,7 +147,7 @@ export function assertVectorParity(): { minGames: bigint } {
 export function buildSeason(
   records: PlayerRecord[],
   potTotal: bigint,
-  accountBytes: (a: string) => Uint8Array,
+  accountBytes: (a: string) => Uint8Array
 ): SeasonResult {
   const { minGames } = assertVectorParity();
 
@@ -130,13 +157,20 @@ export function buildSeason(
 
   const totalScore = eligible.reduce((s, e) => s + e.score, 0n);
   if (totalScore === 0n) {
-    return { root: hex(new Uint8Array(32)), totalDistributed: 0n, entitlements: [], zeroScored: eligible.map((e) => e.account) };
+    return {
+      root: hex(new Uint8Array(32)),
+      totalDistributed: 0n,
+      entitlements: [],
+      zeroScored: eligible.map((e) => e.account),
+    };
   }
 
   // A zero-scored player gets NO leaf. `claim` would reject them anyway, and a
   // zero-amount leaf is indistinguishable from an absent one to a verifier.
   const scored = eligible.filter((e) => e.score > 0n);
-  const zeroScored = eligible.filter((e) => e.score === 0n).map((e) => e.account);
+  const zeroScored = eligible
+    .filter((e) => e.score === 0n)
+    .map((e) => e.account);
 
   const entries = scored.map((e) => ({
     account: e.account,

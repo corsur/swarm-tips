@@ -19,7 +19,11 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildSeason, assertVectorParity, type PlayerRecord } from "./season-core";
+import {
+  buildSeason,
+  assertVectorParity,
+  type PlayerRecord,
+} from "./season-core";
 
 interface Args {
   chain: string;
@@ -34,9 +38,13 @@ function parseArgs(): Args {
     return i === -1 ? undefined : a[i + 1];
   };
   const chain = get("chain");
-  if (!chain) throw new Error("--chain is required (solana | base_sepolia | base | ethereum)");
+  if (!chain)
+    throw new Error(
+      "--chain is required (solana | base_sepolia | base | ethereum)"
+    );
   const season = get("season") ?? get("tournament");
-  if (!season) throw new Error("--season (or --tournament for Solana) is required");
+  if (!season)
+    throw new Error("--season (or --tournament for Solana) is required");
   return { chain, season: BigInt(season), dryRun: a.includes("--dry-run") };
 }
 
@@ -56,23 +64,31 @@ async function readEvmRecords(
   rpc: string,
   contract: string,
   season: bigint,
-  players: string[],
+  players: string[]
 ): Promise<{ records: PlayerRecord[]; pot: bigint }> {
   if (players.length === 0) {
     throw new Error(
       "--players is required for an EVM season: pass the comma-separated addresses to " +
         "score. A partial set produces a tree that silently omits claimants, so this " +
-        "script will not guess it.",
+        "script will not guess it."
     );
   }
   const call = async (data: string) => {
     const r = await fetch(rpc, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: contract, data }, "latest"] }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_call",
+        params: [{ to: contract, data }, "latest"],
+      }),
     });
     const j: any = await r.json();
-    if (j.error) throw new Error(`eth_call failed: ${JSON.stringify(j.error).slice(0, 140)}`);
+    if (j.error)
+      throw new Error(
+        `eth_call failed: ${JSON.stringify(j.error).slice(0, 140)}`
+      );
     return j.result as string;
   };
   const pad = (h: string) => h.replace(/^0x/, "").padStart(64, "0");
@@ -93,7 +109,9 @@ async function readEvmRecords(
   // The pot is what THIS season accrued, not the contract balance - a season
   // must never promise another season's money.
   // seasons(uint256) -> (start,end,finalized,root,accrued,prize,remaining)
-  const seasonOut = await call(keccakSelector("seasons(uint256)") + pad(season.toString(16)));
+  const seasonOut = await call(
+    keccakSelector("seasons(uint256)") + pad(season.toString(16))
+  );
   const sb = seasonOut.replace(/^0x/, "");
   const pot = BigInt("0x" + sb.slice(4 * 64, 5 * 64));
 
@@ -103,15 +121,22 @@ async function readEvmRecords(
 /** 4-byte selector for a Solidity signature. */
 function keccakSelector(sig: string): string {
   const { keccak_256 } = require("@noble/hashes/sha3.js");
-  return "0x" + Buffer.from(keccak_256(Buffer.from(sig, "utf8"))).toString("hex").slice(0, 8);
+  return (
+    "0x" +
+    Buffer.from(keccak_256(Buffer.from(sig, "utf8")))
+      .toString("hex")
+      .slice(0, 8)
+  );
 }
 
 /** Solana: every PlayerProfile PDA for the tournament. */
-async function readSolanaRecords(tournamentId: bigint): Promise<{ records: PlayerRecord[]; pot: bigint }> {
+async function readSolanaRecords(
+  tournamentId: bigint
+): Promise<{ records: PlayerRecord[]; pot: bigint }> {
   throw new Error(
     `Solana record reading is not wired for tournament ${tournamentId}. ` +
       `scripts/finalize-tournament.ts still owns this path; port its ` +
-      `playerProfile.all() memcmp read here rather than duplicating the rules.`,
+      `playerProfile.all() memcmp read here rather than duplicating the rules.`
   );
 }
 
@@ -130,7 +155,7 @@ async function submitEvmFinalize(
   contract: string,
   season: bigint,
   root: string,
-  totalWei: bigint,
+  totalWei: bigint
 ): Promise<void> {
   const { createWalletClient, createPublicClient, http } = await import("viem");
   const { privateKeyToAccount } = await import("viem/accounts");
@@ -139,12 +164,16 @@ async function submitEvmFinalize(
   const raw = process.env.OWNER_KEY;
   if (!raw) throw new Error("OWNER_KEY is required to sign finalizeSeason");
   const owner = privateKeyToAccount(
-    (raw.trim().startsWith("0x") ? raw.trim() : `0x${raw.trim()}`) as `0x${string}`,
+    (raw.trim().startsWith("0x")
+      ? raw.trim()
+      : `0x${raw.trim()}`) as `0x${string}`
   );
 
   const abi = [
     {
-      type: "function", name: "finalizeSeason", stateMutability: "nonpayable",
+      type: "function",
+      name: "finalizeSeason",
+      stateMutability: "nonpayable",
       inputs: [
         { name: "seasonId", type: "uint256" },
         { name: "root", type: "bytes32" },
@@ -153,27 +182,41 @@ async function submitEvmFinalize(
       outputs: [],
     },
     {
-      type: "function", name: "seasons", stateMutability: "view",
+      type: "function",
+      name: "seasons",
+      stateMutability: "view",
       inputs: [{ name: "seasonId", type: "uint256" }],
       outputs: [
-        { name: "startTime", type: "uint64" }, { name: "endTime", type: "uint64" },
-        { name: "finalized", type: "bool" }, { name: "root", type: "bytes32" },
-        { name: "accruedWei", type: "uint256" }, { name: "prizeWei", type: "uint256" },
+        { name: "startTime", type: "uint64" },
+        { name: "endTime", type: "uint64" },
+        { name: "finalized", type: "bool" },
+        { name: "root", type: "bytes32" },
+        { name: "accruedWei", type: "uint256" },
+        { name: "prizeWei", type: "uint256" },
         { name: "remainingWei", type: "uint256" },
       ],
     },
   ] as const;
 
   const pub = createPublicClient({ chain: baseSepolia, transport: http(rpc) });
-  const wallet = createWalletClient({ account: owner, chain: baseSepolia, transport: http(rpc) });
+  const wallet = createWalletClient({
+    account: owner,
+    chain: baseSepolia,
+    transport: http(rpc),
+  });
 
-  console.log(`submitting finalizeSeason(${season}, ${root}, ${totalWei}) as ${owner.address}`);
+  console.log(
+    `submitting finalizeSeason(${season}, ${root}, ${totalWei}) as ${owner.address}`
+  );
   const hash = await wallet.writeContract({
-    address: contract as `0x${string}`, abi, functionName: "finalizeSeason",
+    address: contract as `0x${string}`,
+    abi,
+    functionName: "finalizeSeason",
     args: [season, root as `0x${string}`, totalWei],
   });
   const rcpt = await pub.waitForTransactionReceipt({ hash });
-  if (rcpt.status !== "success") throw new Error(`finalizeSeason reverted (${hash})`);
+  if (rcpt.status !== "success")
+    throw new Error(`finalizeSeason reverted (${hash})`);
 
   // Read the CHAIN back: a receipt says the tx executed, not that the root the
   // claimants will prove against is the one we just computed.
@@ -183,13 +226,19 @@ async function submitEvmFinalize(
   // fact finalized, which would have reported a false failure on a good publish.
   for (let i = 0; ; i++) {
     const s = (await pub.readContract({
-      address: contract as `0x${string}`, abi, functionName: "seasons", args: [season],
+      address: contract as `0x${string}`,
+      abi,
+      functionName: "seasons",
+      args: [season],
     })) as readonly unknown[];
     if (String(s[3]).toLowerCase() === root.toLowerCase()) {
-      console.log(`  finalized: root on-chain matches, prizeWei ${String(s[5])}`);
+      console.log(
+        `  finalized: root on-chain matches, prizeWei ${String(s[5])}`
+      );
       return;
     }
-    if (i >= 20) throw new Error(`on-chain root ${String(s[3])} != computed ${root}`);
+    if (i >= 20)
+      throw new Error(`on-chain root ${String(s[3])} != computed ${root}`);
     await new Promise((r) => setTimeout(r, 3000));
   }
 }
@@ -203,14 +252,23 @@ async function main() {
 
   const isSolana = chain === "solana" || chain === "devnet";
   const a = process.argv.slice(2);
-  const flag = (k: string) => { const i = a.indexOf(`--${k}`); return i === -1 ? undefined : a[i + 1]; };
+  const flag = (k: string) => {
+    const i = a.indexOf(`--${k}`);
+    return i === -1 ? undefined : a[i + 1];
+  };
   const { records, pot } = isSolana
     ? await readSolanaRecords(season)
     : await readEvmRecords(
         flag("rpc") ?? "https://sepolia.base.org",
-        flag("contract") ?? (() => { throw new Error("--contract is required for an EVM season"); })(),
+        flag("contract") ??
+          (() => {
+            throw new Error("--contract is required for an EVM season");
+          })(),
         season,
-        (flag("players") ?? "").split(",").map((x) => x.trim()).filter(Boolean),
+        (flag("players") ?? "")
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean)
       );
 
   const accountBytes = isSolana
@@ -239,21 +297,25 @@ async function main() {
         })),
       },
       null,
-      2,
-    ) + "\n",
+      2
+    ) + "\n"
   );
   console.log(`wrote ${artifact}`);
   console.log(`  root        ${result.root}`);
   console.log(`  distributed ${result.totalDistributed} of ${pot}`);
-  console.log(`  claimants   ${result.entitlements.length} (${result.zeroScored.length} eligible but zero-scored)`);
+  console.log(
+    `  claimants   ${result.entitlements.length} (${result.zeroScored.length} eligible but zero-scored)`
+  );
 
   if (dryRun) {
-    console.log("\n--dry-run: nothing sent. A published root is IMMUTABLE, so review the artifact first.");
+    console.log(
+      "\n--dry-run: nothing sent. A published root is IMMUTABLE, so review the artifact first."
+    );
     return;
   }
   if (isSolana) {
     throw new Error(
-      "Solana finalize submission is not wired here; finalize-tournament.ts still owns that path",
+      "Solana finalize submission is not wired here; finalize-tournament.ts still owns that path"
     );
   }
   await submitEvmFinalize(
@@ -261,7 +323,7 @@ async function main() {
     flag("contract")!,
     season,
     result.root,
-    result.totalDistributed,
+    result.totalDistributed
   );
 }
 
