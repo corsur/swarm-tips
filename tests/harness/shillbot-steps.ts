@@ -32,6 +32,7 @@ import {
   TransitionGraph,
   assertLegalTransition,
 } from "./assertions";
+import type { TaskPayout } from "../../sdk/task-outcome-oracle";
 
 // Switchboard On-Demand program id (owner of feed accounts) and the fixed dummy
 // feed pubkey the program's `initialize` records — shared with shillbot-bankrun.ts.
@@ -539,3 +540,71 @@ export function taskView(ctx: ShillbotCtx, task: PublicKey): StateView {
 }
 
 export const _fundLamports = 100 * LAMPORTS_PER_SOL;
+
+// ---------------------------------------------------------------------------
+// Payout assertion — the shared "was the agent actually PAID?" check.
+//
+// WHY THIS IS SHARED AND WHY IT EXISTS. A task whose work was REJECTED scores
+// 0, refunds the client, and STILL reaches Finalized. So `assertClosedTransition
+// (ctx, task, before, "Finalized")` — what finalizeTask asserts on its own — is
+// satisfied identically by a paid task and an unpaid one. Every cell that wanted
+// more than that inlined its own balance-delta check, and the ones that didn't
+// silently accepted rejections as success.
+//
+// The reader is INJECTED rather than taken from ShillbotCtx because the balance
+// source differs per runtime: bankrun reads through its BanksClient, devnet
+// through a web3 Connection. That seam is the only reason this could not simply
+// live behind `ctx`.
+// ---------------------------------------------------------------------------
+
+/** Reads a lamport balance for the runtime under test. */
+export type BalanceReader = (pk: PublicKey) => Promise<bigint>;
+
+/** Who the terminal action is expected to move lamports to. */
+export interface PayoutParties {
+  agent: PublicKey;
+  /** Only for challenge-resolution cells; omit for the plain finalize path. */
+  challenger?: PublicKey;
+}
+
+/**
+ * Run `action` and assert the lamports it moved match the oracle.
+ *
+ * The agent delta is EXACT: the agent neither signs the terminal transaction
+ * nor receives the closed account's rent, so nothing else perturbs its balance.
+ * The challenger is a floor (`>=`) because it may also be the payer.
+ *
+ * Lifted verbatim in behaviour from scripts/e2e/matrix-devnet.ts, where it was
+ * module-private and therefore unavailable to the five other cells that needed
+ * exactly this.
+ */
+export async function assertTerminalPayout(
+  readBalance: BalanceReader,
+  parties: PayoutParties,
+  expected: Pick<TaskPayout, "agentLamports" | "challengerLamports">,
+  label: string,
+  check: (ok: boolean, msg: string) => void,
+  action: () => Promise<void>
+): Promise<void> {
+  const agentBefore = await readBalance(parties.agent);
+  const challengerBefore = parties.challenger
+    ? await readBalance(parties.challenger)
+    : 0n;
+
+  await action();
+
+  const agentDelta = (await readBalance(parties.agent)) - agentBefore;
+  check(
+    agentDelta === expected.agentLamports,
+    `${label}: agent delta ${agentDelta} == oracle ${expected.agentLamports}`
+  );
+
+  if (expected.challengerLamports > 0n && parties.challenger) {
+    const challengerDelta =
+      (await readBalance(parties.challenger)) - challengerBefore;
+    check(
+      challengerDelta >= expected.challengerLamports,
+      `${label}: challenger delta ${challengerDelta} >= bond ${expected.challengerLamports}`
+    );
+  }
+}

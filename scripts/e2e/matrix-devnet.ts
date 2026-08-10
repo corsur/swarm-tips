@@ -39,6 +39,7 @@ import {
   resolveChallenge,
   finalizeTask,
   expireTask,
+  assertTerminalPayout,
   LEAN_PROOF_PLATFORM,
 } from "../../tests/harness/shillbot-steps";
 import {
@@ -237,37 +238,28 @@ async function runCell(
   );
 }
 
-/** Measure agent/treasury/challenger deltas across the terminal action and
- *  assert them against the oracle: agent + treasury EXACT (neither signs the
- *  terminal tx nor receives close rent), challenger ≥ its bond return. */
+/** Measure agent/challenger deltas across the terminal action and assert them
+ *  against the oracle. The body now lives in tests/harness/shillbot-steps.ts as
+ *  `assertTerminalPayout` — it was module-private here while five other cells
+ *  needed exactly this and each inlined a weaker version (or none). This wrapper
+ *  keeps the local call sites unchanged. */
 async function assertTerminal(
   h: DevnetHarness,
-  ctx: ShillbotCtx,
+  _ctx: ShillbotCtx,
   chk: Checker,
   cell: Cell,
   expected: TaskPayout,
   challenger: Keypair,
   action: () => Promise<void>
 ): Promise<void> {
-  const agentBefore = await bal(h, h.agent.publicKey);
-  const challengerBefore = await bal(h, challenger.publicKey);
-
-  await action();
-
-  const agentDelta = (await bal(h, h.agent.publicKey)) - agentBefore;
-  const challengerDelta =
-    (await bal(h, challenger.publicKey)) - challengerBefore;
-
-  chk.check(
-    agentDelta === expected.agentLamports,
-    `${cell.name}: agent delta ${agentDelta} == oracle ${expected.agentLamports}`
+  await assertTerminalPayout(
+    (pk) => bal(h, pk),
+    { agent: h.agent.publicKey, challenger: challenger.publicKey },
+    expected,
+    cell.name,
+    (ok, msg) => chk.check(ok, msg),
+    action
   );
-  if (expected.challengerLamports > 0n) {
-    chk.check(
-      challengerDelta >= expected.challengerLamports,
-      `${cell.name}: challenger delta ${challengerDelta} >= bond ${expected.challengerLamports}`
-    );
-  }
 }
 
 async function bal(h: DevnetHarness, pk: PublicKey): Promise<bigint> {
