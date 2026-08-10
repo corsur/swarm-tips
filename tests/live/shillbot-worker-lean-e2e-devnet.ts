@@ -218,7 +218,17 @@ async function main(): Promise<void> {
   }
   console.log(`proof artifact OK:\n---\n${proof.trim()}\n---`);
 
-  // 5) Opportunistic: attestation + finalize.
+  // 5) Attestation + finalize. Reaching a terminal state is NOT the pass
+  //    condition — the payment is.
+  //
+  //    This block used to `break` on verified/finalized and then print PASS
+  //    unconditionally, whatever the terminal state or the amount. That makes a
+  //    REJECTED proof indistinguishable from an accepted one: the attester
+  //    scores `if outcome.passed { MAX_SCORE } else { 0 }`, a 0 refunds the
+  //    client, and the task still reaches `finalized` — so the script exited 0
+  //    printing PASS over a proof that never compiled. The statement here is
+  //    provable by the worker's first ladder tactic, so a zero payment is a
+  //    real regression, never an expected outcome.
   const verifyDeadline = Date.now() + 8 * 60 * 1000;
   while (Date.now() < verifyDeadline) {
     task = await api("GET", `/tasks/${taskId}?network=devnet`, clientPk);
@@ -231,10 +241,29 @@ async function main(): Promise<void> {
     await sleep(15_000);
   }
 
+  const finalState = String(task.state ?? "?");
+  if (!["verified", "finalized"].includes(finalState)) {
+    throw new Error(
+      `FAIL: task never reached verified/finalized within 8m (state=${finalState}) — ` +
+        `the worker submitted, but the attestation pipeline did not land a verdict`
+    );
+  }
+
+  const score = Number(task.composite_score ?? 0);
+  const payment = Number(task.payment_amount ?? 0);
+  if (!(score > 0) || !(payment > 0)) {
+    throw new Error(
+      `FAIL: proof was REJECTED — score=${score} payment=${payment} (state=${finalState}). ` +
+        `The lifecycle completing is not success; a rejected proof scores 0 and ` +
+        `refunds the client while still reaching ${finalState}.`
+    );
+  }
+
   console.log(
     `\nPASS — autonomous worker CONSTRUCTED a Lean proof for an external ` +
-      `client's task: claimed + proved + submitted by ${WORKER_WALLET} with ` +
-      `zero harness action after create. Final observed state: ${task.state}.`
+      `client's task and WAS PAID: claimed + proved + submitted by ${WORKER_WALLET} ` +
+      `with zero harness action after create. state=${finalState} score=${score} ` +
+      `payment=${payment} lamports.`
   );
 }
 
