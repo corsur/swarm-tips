@@ -213,6 +213,11 @@ async function submitEvmFinalize(
     abi,
     functionName: "finalizeSeason",
     args: [season, root as `0x${string}`, totalWei],
+    // Explicit even though the client already carries it: viem only infers the
+    // chain away when the account generic is narrowed, and `owner` here is a
+    // plain Account, so the parameter type still demands it.
+    chain: baseSepolia,
+    account: owner,
   });
   const rcpt = await pub.waitForTransactionReceipt({ hash });
   if (rcpt.status !== "success")
@@ -230,6 +235,13 @@ async function submitEvmFinalize(
       abi,
       functionName: "seasons",
       args: [season],
+      // viem 2.52 builds ReadContractParameters as
+      //   Pick<CallParameters, 'account' | 'authorizationList' | ...>
+      // and Pick preserves requiredness, so `authorizationList` is demanded even
+      // on a plain `view` call. Passing it explicitly undefined satisfies the
+      // type and is a no-op at runtime (viem forwards it to `call`, which
+      // ignores an absent list). Remove when viem makes the field optional.
+      authorizationList: undefined,
     })) as readonly unknown[];
     if (String(s[3]).toLowerCase() === root.toLowerCase()) {
       console.log(
