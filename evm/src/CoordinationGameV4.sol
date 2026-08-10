@@ -147,6 +147,8 @@ contract CoordinationGameV4 is
     event SessionAuthorized(address indexed player, address indexed sessionKey, uint64 expiry);
     event SessionRevoked(address indexed player);
 
+    event Deposited(address indexed player, uint256 amount);
+
     error InvalidStatus();
     error BadSignature();
     error BadStake();
@@ -273,9 +275,9 @@ contract CoordinationGameV4 is
     {
         Game storage g = games[gameId];
         if (g.status != Status.None) revert InvalidStatus();
-        if (msg.value != stakeWei) revert BadStake();
         if (matchupCommitment == bytes32(0)) revert BadCommitment();
         if (!_actsFor(msg.sender, player)) revert BadSession();
+        _takeStake(player, stakeWei);
         // Bind `player` (the recorded creator) into the digest (L2): the operator
         // attests THIS wallet, so a sig signed for one player can't be replayed by
         // another to squat the assigned gameId.
@@ -284,7 +286,7 @@ contract CoordinationGameV4 is
 
         g.status = Status.Pending;
         g.player1 = player;
-        g.stakeWei = uint128(msg.value);
+        g.stakeWei = uint128(stakeWei);
         g.matchupCommitment = matchupCommitment;
         g.p1Guess = CertLib.UNREVEALED;
         g.p2Guess = CertLib.UNREVEALED;
@@ -322,7 +324,7 @@ contract CoordinationGameV4 is
         if (g.status != Status.Pending) revert InvalidStatus();
         if (!_actsFor(msg.sender, player)) revert BadSession();
         if (player == g.player1) revert NotParticipant();
-        if (msg.value != g.stakeWei) revert BadStake();
+        _takeStake(player, g.stakeWei);
 
         g.player2 = player;
         g.status = Status.Active;
@@ -393,6 +395,51 @@ contract CoordinationGameV4 is
             (bool ok,) = payable(sessionKey).call{value: msg.value}("");
             require(ok, "gas fund failed");
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Escrow parity with Solana (v5)
+    //
+    // Before this, the stake rested in the SESSION KEY between openSession and
+    // createGame. Solana never did that: `deposit_stake` moves the stake into a
+    // program-owned `StakeEscrow` PDA, and `withdraw_stake` returns it to the
+    // player. The difference is recoverability, not convenience — ETH sitting
+    // in a lost or expired session key is gone, whereas the PDA is always
+    // reclaimable by the player's own signature.
+    //
+    // `withdrawable` IS the escrow. Reusing the existing PullPayment ledger
+    // rather than adding a mapping is what keeps this a logic-only upgrade:
+    // no storage slot moves, so CoordinationGameV4Layout.t.sol stays green and
+    // a live contract holding real funds is upgraded without touching state.
+    // It also means winnings and staged stake share one balance, so a second
+    // game costs no new deposit.
+    // ---------------------------------------------------------------------
+
+    /// @notice Pre-fund your escrow balance. The same ledger settlement credits,
+    ///         so a player may also just leave winnings in place and re-stake.
+    function deposit() external payable {
+        if (msg.value == 0) revert BadStake();
+        _credit(msg.sender, msg.value);
+        emit Deposited(msg.sender, msg.value);
+    }
+
+    /// @dev Take `amount` of stake for `player`, from `msg.value` or from the
+    ///      escrow balance. DUAL-MODE deliberately: this is a live contract, and
+    ///      a client that still sends the stake inline must keep working across
+    ///      the upgrade, which also lets the frontend migrate on its own clock.
+    ///
+    ///      A partial `msg.value` is REJECTED rather than topped up from the
+    ///      balance. Mixing the two sources would make the amount actually taken
+    ///      depend on a balance the caller may not have checked — reject at the
+    ///      boundary instead of guessing.
+    function _takeStake(address player, uint256 amount) private {
+        if (msg.value == amount) return;
+        if (msg.value != 0) revert BadStake();
+        uint256 bal = withdrawable[player];
+        if (bal < amount) revert BadStake();
+        // Storage-only debit; no external call, so no reentrancy surface and no
+        // CEI ordering concern. Checked arithmetic — `bal >= amount` above.
+        withdrawable[player] = bal - amount;
     }
 
     /// @dev True iff `actor` may act for `player` — the wallet itself, or its
