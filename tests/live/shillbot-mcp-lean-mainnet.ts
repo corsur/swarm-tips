@@ -1,8 +1,16 @@
 /**
  * MAINNET LeanProof e2e via mcp.swarm.tips (non-custodial): register → claim →
- * submit a real proof. Agent = worker wallet (NOT the attester/client, clears
- * both on-chain guards). verify+finalize run server-side (attestation-pipeline).
+ * submit a real proof → WAIT FOR SETTLEMENT AND ASSERT THE AGENT WAS PAID.
+ * Agent = worker wallet (NOT the attester/client, clears both on-chain guards).
+ * verify+finalize run server-side (attestation-pipeline).
  *   AGENT_KEYPAIR=… TASK_ID=… PROOF_URL=… npx tsx tests/live/shillbot-mcp-lean-mainnet.ts
+ *
+ * This is the ONLY mainnet LeanProof path — the attester cells are devnet — so
+ * it is worth keeping, but it previously ended at "submit_work broadcast" and
+ * printed "Poll task state / agent balance". It asserted NOTHING. A proof the
+ * runner rejects scores 0, refunds the client, and still reaches `finalized`;
+ * this script exited 0 either way, on mainnet, having spent real SOL on the
+ * claim. The settlement wait below is the whole point of the file.
  */
 import { Keypair, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { readFileSync } from "fs";
@@ -10,10 +18,24 @@ import { McpClient } from "./mcp-client";
 
 const MCP_URL = process.env.MCP_URL ?? "https://mcp.swarm.tips";
 const NETWORK = "mainnet";
-const TASK_ID = process.env.TASK_ID!;
-const PROOF_URL = process.env.PROOF_URL!;
+/** Required env, rejected at the boundary. Non-null assertions turned an unset
+ *  var into the string "undefined" reaching the MCP server, or a
+ *  readFileSync(undefined) stack — both after connecting, neither naming the
+ *  actual mistake. */
+function required(name: string): string {
+  const v = process.env[name];
+  if (!v)
+    throw new Error(
+      `${name} is required. Usage: AGENT_KEYPAIR=<path> TASK_ID=<id> ` +
+        `PROOF_URL=<https url> npx tsx tests/live/shillbot-mcp-lean-mainnet.ts`
+    );
+  return v;
+}
+
+const TASK_ID = required("TASK_ID");
+const PROOF_URL = required("PROOF_URL");
 const agent = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(readFileSync(process.env.AGENT_KEYPAIR!, "utf8")))
+  Uint8Array.from(JSON.parse(readFileSync(required("AGENT_KEYPAIR"), "utf8")))
 );
 const wallet = agent.publicKey.toBase58();
 
@@ -80,9 +102,62 @@ async function main(): Promise<void> {
     network: NETWORK,
   });
   console.log("✓ submit_work broadcast + confirmed (proof submitted)");
+
+  // The attestation pipeline runs server-side (attest → challenge → finalize).
+  // Wait for it and assert the SETTLEMENT, not the submission.
+  console.log("waiting for settlement (attest → challenge → finalize)…");
+  const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+  let last = "";
+  let settled: LeanTaskDetails = {};
+  while (Date.now() < deadline) {
+    settled = (await mcp.call("shillbot_get_task_details", {
+      task_id: TASK_ID,
+      network: NETWORK,
+    })) as LeanTaskDetails;
+    const state = String(settled.state ?? "?");
+    if (state !== last) {
+      console.log(`  state → ${state}`);
+      last = state;
+    }
+    if (state === "finalized" || state === "expired") break;
+    await new Promise((r) => setTimeout(r, 20_000));
+  }
+
+  const state = String(settled.state ?? "?");
+  if (state !== "finalized") {
+    throw new Error(
+      `task did not finalize within ${
+        SETTLE_TIMEOUT_MS / 60_000
+      }m (state=${state}) — ` +
+        `the proof was submitted but the attestation pipeline never settled it`
+    );
+  }
+
+  const score = Number(settled.composite_score ?? 0);
+  const payment = Number(settled.payment_amount ?? 0);
+  if (!(score > 0) || !(payment > 0)) {
+    throw new Error(
+      `proof REJECTED: score=${score} payment=${payment}. The task still reached ` +
+        `\`finalized\` and the client was refunded — reaching a terminal state is ` +
+        `never evidence of payment. Check the artifact contains the THEOREM ONLY ` +
+        `(the runner prepends the campaign statement).`
+    );
+  }
+
   console.log(
-    "→ attestation-pipeline now runs server-side (attest → challenge → finalize). Poll task state / agent balance."
+    `PASS — mainnet LeanProof settled and PAID: state=${state} score=${score} ` +
+      `payment=${payment} lamports to ${wallet}`
   );
+}
+
+/** Server-side attest + 1h challenge window + finalize. Generous: a cold
+ *  lean-runner plus a mathlib elaboration is minutes on its own. */
+const SETTLE_TIMEOUT_MS = 90 * 60 * 1000;
+
+interface LeanTaskDetails {
+  state?: string;
+  composite_score?: number | null;
+  payment_amount?: number | null;
 }
 
 main().catch((e) => {
