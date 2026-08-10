@@ -375,15 +375,25 @@ contract CoordinationGameV4 is
     }
 
     /// @notice Register `sessionKey` as the caller's delegate until `expiry` AND
-    ///         fund it with `msg.value` (gas + a stake buffer) in a single tx —
-    ///         the ONE wallet popup that opens a session. Afterwards the gas-only
-    ///         session key drives createGame/joinGame/commit/reveal on the wallet's
-    ///         behalf with zero further popups, while the wallet stays the on-chain
-    ///         player and payout recipient. This is the wallet-called counterpart
-    ///         to {authorizeSession} (which takes an off-chain sig instead): here
+    ///         fund it with `msg.value` in a single tx — the ONE wallet popup that
+    ///         opens a session. Afterwards the gas-only session key drives
+    ///         createGame/joinGame/commit/reveal on the wallet's behalf with zero
+    ///         further popups, while the wallet stays the on-chain player and
+    ///         payout recipient. This is the wallet-called counterpart to
+    ///         {authorizeSession} (which takes an off-chain sig instead): here
     ///         `msg.sender` IS the authorizing player, so no signature is needed.
     ///         CEI + nonReentrant — session state is written before the ETH is
     ///         forwarded to the session EOA.
+    ///
+    /// @dev    SEND GAS ONLY. This doc previously read "gas + a stake buffer",
+    ///         which described the pre-escrow model: the stake rode along to the
+    ///         session EOA and sat there until createGame spent it, so a lost or
+    ///         expired session key took it with it, unrecoverably. That is the
+    ///         exact custody gap {deposit} closed — stake the escrow balance
+    ///         instead and leave only gas here, matching Solana, where the session
+    ///         key holds gas and `StakeEscrow` (a program-owned PDA) holds the
+    ///         stake. Sending the stake here still works — createGame/joinGame are
+    ///         dual-mode — but it forfeits the recoverability.
     function openSession(address sessionKey, uint64 expiry) external payable nonReentrant {
         if (sessionKey == address(0) || expiry <= block.timestamp) revert BadSession();
         sessions[msg.sender] = SessionAuth(sessionKey, expiry);
