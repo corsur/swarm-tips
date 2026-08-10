@@ -10,7 +10,7 @@
  *
  * NOT CI (real gas + a live grok spawn). Run:
  *   GAME_API=https://api.coordination.game CHAIN=eip155:8453 \
- *   RPC_URL=https://base-rpc.publicnode.com TOURNAMENT_ID=2 \
+ *   RPC_URL=https://base-rpc.publicnode.com TOURNAMENT_ID=3 \
  *   A_KEYFILE=~/.foundry/keystores/evmgame-player-a.key \
  *   npx ts-mocha -p tsconfig.json tests/live/evmgame-grok-mainnet.ts --timeout 300000
  */
@@ -32,7 +32,10 @@ import { assert } from "chai";
 
 const GAME_API = process.env.GAME_API ?? "https://api.coordination.game";
 const RPC = process.env.RPC_URL ?? "https://base-rpc.publicnode.com";
-const TOURNAMENT = Number(process.env.TOURNAMENT_ID ?? 2);
+// T3 (ends 2027-08-05). T2 expired 2026-08-06 and on-chain end_time is
+// immutable, so rollover replaces the id rather than extending it — a default of
+// 2 silently joined a DEAD tournament. Mirrors tests/e2e/harness/network.ts.
+const TOURNAMENT = Number(process.env.TOURNAMENT_ID ?? 3);
 const CHAIN = process.env.CHAIN ?? "eip155:8453";
 const VIEM_CHAIN = CHAIN === "eip155:8453" ? base : baseSepolia;
 const GROK_EVM = "0xf70D421719cd3843415Ed57C6F7AB6F671089D15".toLowerCase();

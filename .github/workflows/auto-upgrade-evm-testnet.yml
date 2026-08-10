@@ -12,8 +12,11 @@ name: Auto-upgrade EVM Testnet
 # human deciding it is precisely how the harness spent a run reading v3 while
 # the app played v4.
 #
-# MAINNET IS STILL MANUAL. deploy-evm-mainnet.yml is untouched — that contract
-# holds real funds, and this workflow passes no mainnet secret.
+# MAINNET IS STILL MANUAL, and deliberately so: this workflow passes no mainnet
+# secret, so nothing here can reach a contract holding real funds. Mainnet
+# upgrades go through deploy-evm-mainnet.yml, which now offers
+# `coordinationv4-upgrade` and resolves V4_PROXY_BASE / V4_PROXY_ETHEREUM per
+# network — a human still has to dispatch it and type DEPLOY-MAINNET.
 #
 # GATED ON TESTS. It triggers on the EVM Contracts run COMPLETING SUCCESSFULLY,
 # not on the push, so a red forge suite can never reach the chain. Chaining on
