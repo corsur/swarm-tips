@@ -507,6 +507,39 @@ async fn persist_ws_transition(db: &FirestoreDb, session: &GameSession, event: &
     }
 }
 
+/// Adopt a match signal that another instance recorded, into this instance's
+/// in-memory session. Returns true if a signal was adopted.
+///
+/// Restoring from Firestore only happens at `register_wallet`. An instance that
+/// restored the session BEFORE the match landed therefore holds a copy with
+/// `match_found: None` forever, and every subsequent `check_match` on that
+/// instance answers `queued` from stale memory no matter what the WS listener
+/// on the owning instance has since persisted. Write-through alone does not
+/// close that hole — the reader has to reconcile too.
+///
+/// Only adopts when BOTH `session_id` and `role` are present, so an unmatched
+/// session is never advanced.
+fn adopt_persisted_match(s: &mut GameSession, persisted: &PersistedGameSession) -> bool {
+    let (Some(session_id), Some(role)) = (persisted.session_id.clone(), persisted.role) else {
+        return false;
+    };
+    if s.match_found.is_some() {
+        return false;
+    }
+    s.session_id = Some(session_id.clone());
+    s.role = Some(role);
+    if s.matchup_commitment.is_none() {
+        s.matchup_commitment = persisted.matchup_commitment.clone();
+    }
+    s.game_ready = s.game_ready.or(persisted.game_ready);
+    s.match_found = Some(MatchFoundMsg {
+        session_id,
+        role,
+        matchup_commitment: persisted.matchup_commitment.clone(),
+    });
+    true
+}
+
 /// Reconstruct an in-memory `GameSession` from a persisted Firestore document.
 /// Used by `try_restore_persisted_session` to keep the (large) struct
 /// initializer out of the orchestration path.
@@ -1484,9 +1517,35 @@ impl GameSessionManager {
             return Ok(match_status_in_game(s.game_id, s.role));
         }
 
-        // Still waiting for match.
+        // Still waiting for match — but this instance's copy may simply be
+        // stale. The WS listener that owns the socket lives on ONE instance and
+        // writes the match through to Firestore; a poll load-balanced here
+        // (sessionAffinity is false, maxScale 30) must reconcile before it can
+        // honestly say "queued", or the agent stalls until the match is
+        // abandoned.
         if s.match_found.is_none() {
-            return Ok(match_status_queued());
+            match self.load_persisted_session(&s.wallet).await {
+                Ok(Some(persisted)) if adopt_persisted_match(&mut s, &persisted) => {
+                    tracing::info!(
+                        wallet = %s.wallet,
+                        session_id = ?s.session_id,
+                        role = ?s.role,
+                        "check_match: adopted match recorded by another instance"
+                    );
+                }
+                Ok(_) => return Ok(match_status_queued()),
+                Err(e) => {
+                    // Don't fail the poll — the agent should keep polling — but
+                    // never swallow it: if this read is broken, cross-instance
+                    // polls silently regress to the stall.
+                    tracing::error!(
+                        wallet = %s.wallet,
+                        error = %e,
+                        "check_match: failed to reconcile session from Firestore"
+                    );
+                    return Ok(match_status_queued());
+                }
+            }
         }
 
         // Match found but not yet processed — advance Queued → Matched.
@@ -2406,6 +2465,109 @@ mod tests {
         assert_eq!(mf.session_id, "d058141e");
         assert_eq!(mf.role, 0);
         assert_eq!(mf.matchup_commitment.as_deref(), Some("deadbeef"));
+    }
+
+    /// The reader-side half of the cross-instance fix. Write-through alone is
+    /// not enough: an instance that restored the session BEFORE the match landed
+    /// holds `match_found: None` in memory forever, and `check_match` reads that
+    /// map rather than Firestore. Live evidence that this half was missing — the
+    /// e2e passed only on RETRY, attempt 1 still dying with
+    /// "no match within the window (90s): last status=queued".
+    #[test]
+    fn stale_instance_adopts_a_match_recorded_elsewhere() {
+        let mut s = build_restored_session(
+            "CKsZ7Z",
+            &PersistedGameSession {
+                wallet: "CKsZ7Z".to_string(),
+                jwt: "jwt".to_string(),
+                state: "queued".to_string(),
+                game_id: None,
+                tournament_id: Some(1003),
+                session_id: None,
+                role: None,
+                matchup_commitment: None,
+                commit_preimage_hex: None,
+                game_ready: None,
+                reveal_data: None,
+                updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+            },
+            GameSessionState::Queued,
+        );
+        assert!(
+            s.match_found.is_none(),
+            "precondition: stale, pre-match copy"
+        );
+
+        // Meanwhile the owning instance's WS listener persisted the match.
+        let persisted_by_other_instance = PersistedGameSession {
+            wallet: "CKsZ7Z".to_string(),
+            jwt: "jwt".to_string(),
+            state: "matched".to_string(),
+            game_id: None,
+            tournament_id: Some(1003),
+            session_id: Some("d058141e".to_string()),
+            role: Some(0),
+            matchup_commitment: Some("deadbeef".to_string()),
+            commit_preimage_hex: None,
+            game_ready: None,
+            reveal_data: None,
+            updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+        };
+
+        assert!(
+            adopt_persisted_match(&mut s, &persisted_by_other_instance),
+            "a stale instance must adopt the match instead of answering queued"
+        );
+        assert_eq!(s.role, Some(0));
+        assert_eq!(s.session_id.as_deref(), Some("d058141e"));
+        assert_eq!(s.match_found.expect("adopted").session_id, "d058141e");
+    }
+
+    /// Adoption must not fabricate a match, and must not clobber a live one.
+    #[test]
+    fn adopt_is_a_no_op_without_a_recorded_match_or_when_already_matched() {
+        let base = PersistedGameSession {
+            wallet: "CKsZ7Z".to_string(),
+            jwt: "jwt".to_string(),
+            state: "queued".to_string(),
+            game_id: None,
+            tournament_id: Some(1003),
+            session_id: None,
+            role: None,
+            matchup_commitment: None,
+            commit_preimage_hex: None,
+            game_ready: None,
+            reveal_data: None,
+            updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+        };
+
+        // Nothing recorded upstream -> no adoption.
+        let mut s = build_restored_session("CKsZ7Z", &base, GameSessionState::Queued);
+        assert!(!adopt_persisted_match(&mut s, &base));
+        assert!(s.match_found.is_none());
+
+        // Already matched in memory -> the WS-delivered copy wins.
+        let matched = PersistedGameSession {
+            session_id: Some("stale-doc".to_string()),
+            role: Some(1),
+            ..base.clone()
+        };
+        let mut live = build_restored_session(
+            "CKsZ7Z",
+            &PersistedGameSession {
+                session_id: Some("live-ws".to_string()),
+                role: Some(0),
+                ..base.clone()
+            },
+            GameSessionState::Matched,
+        );
+        assert!(live.match_found.is_some(), "precondition: already matched");
+        assert!(!adopt_persisted_match(&mut live, &matched));
+        assert_eq!(
+            live.match_found.expect("kept").session_id,
+            "live-ws",
+            "must not clobber the live WS-delivered match"
+        );
     }
 
     /// The inverse: a genuinely un-matched session must NOT be rehydrated into
