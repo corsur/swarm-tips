@@ -526,6 +526,12 @@ fn adopt_persisted_match(s: &mut GameSession, persisted: &PersistedGameSession) 
     if s.match_found.is_some() {
         return false;
     }
+    // Only a doc still sitting in `Matched` describes a pending match. Anything
+    // further along was already consumed, and adopting it strands this session
+    // on a finished game.
+    if !GameSessionState::from_str(&persisted.state).is_some_and(match_is_pending) {
+        return false;
+    }
     s.session_id = Some(session_id.clone());
     s.role = Some(role);
     if s.matchup_commitment.is_none() {
@@ -538,6 +544,19 @@ fn adopt_persisted_match(s: &mut GameSession, persisted: &PersistedGameSession) 
         matchup_commitment: persisted.matchup_commitment.clone(),
     });
     true
+}
+
+/// Whether a persisted session's match is still PENDING (safe to adopt) or was
+/// already CONSUMED by a game that has since moved on.
+///
+/// The WS listener sets `match_found` while the session is still `Queued` —
+/// `advance_queued_to_matched` only runs later, inside `check_match` — so the
+/// doc written on `ws: match_found` is `queued`, not `matched`. Both are
+/// pending. `InGame`/`Committed`/`Resolved` are not: each records a match this
+/// session already acted on, and re-adopting one makes the agent create a game
+/// against a session that has ended.
+fn match_is_pending(state: GameSessionState) -> bool {
+    matches!(state, GameSessionState::Queued | GameSessionState::Matched)
 }
 
 /// Whether a `queued`-looking session was reconciled into a live match.
@@ -620,8 +639,14 @@ fn build_restored_session(
     //
     // Requires BOTH session_id and role — a session that never matched has
     // neither, and inventing a match for it would advance an unpaired player.
+    // ONLY `Matched` — a match found but not yet acted on. Every later state
+    // (InGame/Committed/Resolved) records a match this session already
+    // CONSUMED, and re-adopting one makes the agent "create game as P1" against
+    // a session that has ended: it created game 732 three seconds after
+    // queueing, 34s before the real match_found arrived, then failed
+    // commit_guess with 0x1770 because that game had no opponent.
     let match_found = match (persisted.session_id.clone(), persisted.role) {
-        (Some(session_id), Some(role)) => Some(MatchFoundMsg {
+        (Some(session_id), Some(role)) if match_is_pending(state) => Some(MatchFoundMsg {
             session_id,
             role,
             matchup_commitment: persisted.matchup_commitment.clone(),
@@ -2631,6 +2656,64 @@ mod tests {
             matchup_commitment: Some("deadbeef".to_string()),
             ..unmatched_doc()
         }
+    }
+
+    /// REGRESSION GUARD. Rehydrating `match_found` from any doc that merely has
+    /// a session_id + role adopts a match that was already CONSUMED by a
+    /// previous game, and the agent then "creates game as P1" against a session
+    /// that has ended.
+    ///
+    /// Observed live: restore reported game 731 from the prior run, the agent
+    /// joined the queue at :14 and created game 732 at :17 — three seconds
+    /// later, before any match existed — and the REAL `ws: match_found` only
+    /// arrived at :53, 34s after the game had been created. commit_guess then
+    /// hit 0x1770 because the game it created had no opponent.
+    ///
+    /// Only `Matched` means "a match is pending and unprocessed". InGame,
+    /// Committed and Resolved all mean the match was already acted on.
+    #[test]
+    fn restore_does_not_rehydrate_a_match_already_consumed_by_a_previous_game() {
+        // Resolved is excluded here only because `build_restored_session`
+        // debug_asserts its caller already filtered those out; the adopt path
+        // below still rejects a resolved doc.
+        for consumed in [GameSessionState::InGame, GameSessionState::Committed] {
+            let persisted = PersistedGameSession {
+                state: consumed.as_str().to_string(),
+                game_id: Some(731),
+                ..matched_doc()
+            };
+            let s = build_restored_session("CKsZ7Z", &persisted, consumed);
+            assert!(
+                s.match_found.is_none(),
+                "state {:?} means the match was already consumed — rehydrating it \
+                 makes the agent create a game against a finished session",
+                consumed
+            );
+        }
+
+        // The one state that SHOULD rehydrate: a match found but not yet acted on.
+        let s = build_restored_session("CKsZ7Z", &matched_doc(), GameSessionState::Matched);
+        assert!(
+            s.match_found.is_some(),
+            "Matched is exactly the pending-and-unprocessed case the cross-instance fix needs"
+        );
+    }
+
+    /// Same guard on the reader-side path.
+    #[test]
+    fn adopt_refuses_a_persisted_match_that_was_already_consumed() {
+        let mut s = stale_queued_session();
+        let consumed = PersistedGameSession {
+            state: "in_game".to_string(),
+            game_id: Some(731),
+            ..matched_doc()
+        };
+        assert_eq!(
+            reconcile_queued_session(&mut s, Ok(Some(consumed))),
+            ReconcileOutcome::StillQueued,
+            "an in_game doc is a finished match; adopting it strands the agent on a dead session"
+        );
+        assert!(s.match_found.is_none());
     }
 
     /// HAPPY PATH: the owning instance persisted the match; this instance
