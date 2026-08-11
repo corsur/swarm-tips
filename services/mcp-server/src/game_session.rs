@@ -540,6 +540,54 @@ fn adopt_persisted_match(s: &mut GameSession, persisted: &PersistedGameSession) 
     true
 }
 
+/// Whether a `queued`-looking session was reconciled into a live match.
+#[derive(Debug, PartialEq, Eq)]
+enum ReconcileOutcome {
+    /// Nothing upstream to adopt (or the read failed) — answer `queued`.
+    StillQueued,
+    /// A match another instance recorded was adopted; the poll may proceed.
+    Adopted,
+}
+
+/// Decide whether a session with no in-memory match should adopt one that
+/// another instance persisted, given the result of the Firestore read.
+///
+/// Split out from `check_match` so the whole decision — including both failure
+/// modes — is unit-testable without a Firestore handle. The `firestore` crate
+/// speaks gRPC, so the workspace's wiremock (HTTP) cannot stand in for it;
+/// taking the load *result* as a parameter is what makes the seam mockable at
+/// all, per the repo's "flow tests with mocked I/O ... happy-path and
+/// error-path" standard.
+///
+/// A read failure must NOT fail the poll — the agent should keep polling — but
+/// it is never swallowed: if this read is broken, cross-instance polls silently
+/// regress to the stall this whole path exists to prevent.
+fn reconcile_queued_session(
+    s: &mut GameSession,
+    loaded: Result<Option<PersistedGameSession>>,
+) -> ReconcileOutcome {
+    match loaded {
+        Ok(Some(persisted)) if adopt_persisted_match(s, &persisted) => {
+            tracing::info!(
+                wallet = %s.wallet,
+                session_id = ?s.session_id,
+                role = ?s.role,
+                "check_match: adopted match recorded by another instance"
+            );
+            ReconcileOutcome::Adopted
+        }
+        Ok(_) => ReconcileOutcome::StillQueued,
+        Err(e) => {
+            tracing::error!(
+                wallet = %s.wallet,
+                error = %e,
+                "check_match: failed to reconcile session from Firestore"
+            );
+            ReconcileOutcome::StillQueued
+        }
+    }
+}
+
 /// Reconstruct an in-memory `GameSession` from a persisted Firestore document.
 /// Used by `try_restore_persisted_session` to keep the (large) struct
 /// initializer out of the orchestration path.
@@ -1524,27 +1572,9 @@ impl GameSessionManager {
         // honestly say "queued", or the agent stalls until the match is
         // abandoned.
         if s.match_found.is_none() {
-            match self.load_persisted_session(&s.wallet).await {
-                Ok(Some(persisted)) if adopt_persisted_match(&mut s, &persisted) => {
-                    tracing::info!(
-                        wallet = %s.wallet,
-                        session_id = ?s.session_id,
-                        role = ?s.role,
-                        "check_match: adopted match recorded by another instance"
-                    );
-                }
-                Ok(_) => return Ok(match_status_queued()),
-                Err(e) => {
-                    // Don't fail the poll — the agent should keep polling — but
-                    // never swallow it: if this read is broken, cross-instance
-                    // polls silently regress to the stall.
-                    tracing::error!(
-                        wallet = %s.wallet,
-                        error = %e,
-                        "check_match: failed to reconcile session from Firestore"
-                    );
-                    return Ok(match_status_queued());
-                }
+            let loaded = self.load_persisted_session(&s.wallet).await;
+            if reconcile_queued_session(&mut s, loaded) == ReconcileOutcome::StillQueued {
+                return Ok(match_status_queued());
             }
         }
 
@@ -2568,6 +2598,114 @@ mod tests {
             "live-ws",
             "must not clobber the live WS-delivered match"
         );
+    }
+
+    /// Helper: a stale, pre-match in-memory session (the state an instance is
+    /// left in when it restored before the match landed).
+    fn stale_queued_session() -> GameSession {
+        build_restored_session("CKsZ7Z", &unmatched_doc(), GameSessionState::Queued)
+    }
+
+    fn unmatched_doc() -> PersistedGameSession {
+        PersistedGameSession {
+            wallet: "CKsZ7Z".to_string(),
+            jwt: "jwt".to_string(),
+            state: "queued".to_string(),
+            game_id: None,
+            tournament_id: Some(1003),
+            session_id: None,
+            role: None,
+            matchup_commitment: None,
+            commit_preimage_hex: None,
+            game_ready: None,
+            reveal_data: None,
+            updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+        }
+    }
+
+    fn matched_doc() -> PersistedGameSession {
+        PersistedGameSession {
+            state: "matched".to_string(),
+            session_id: Some("d058141e".to_string()),
+            role: Some(0),
+            matchup_commitment: Some("deadbeef".to_string()),
+            ..unmatched_doc()
+        }
+    }
+
+    /// HAPPY PATH: the owning instance persisted the match; this instance
+    /// adopts it instead of answering `queued`.
+    #[test]
+    fn reconcile_adopts_a_match_persisted_by_the_owning_instance() {
+        let mut s = stale_queued_session();
+        let outcome = reconcile_queued_session(&mut s, Ok(Some(matched_doc())));
+        assert_eq!(outcome, ReconcileOutcome::Adopted);
+        assert_eq!(s.role, Some(0));
+        assert_eq!(s.match_found.expect("adopted").session_id, "d058141e");
+    }
+
+    /// ERROR PATH 1 — the Firestore read FAILS. The poll must not error out
+    /// (the agent keeps polling), but it must report queued rather than
+    /// pretending a match exists.
+    #[test]
+    fn reconcile_reports_queued_when_the_firestore_read_fails() {
+        let mut s = stale_queued_session();
+        let outcome =
+            reconcile_queued_session(&mut s, Err(anyhow::anyhow!("firestore unavailable")));
+        assert_eq!(outcome, ReconcileOutcome::StillQueued);
+        assert!(
+            s.match_found.is_none(),
+            "a failed read must never fabricate a match"
+        );
+    }
+
+    /// ERROR PATH 2 — the document is absent, or present but records no match.
+    /// Both mean genuinely still queued.
+    #[test]
+    fn reconcile_reports_queued_when_nothing_upstream_recorded_a_match() {
+        let mut s = stale_queued_session();
+        assert_eq!(
+            reconcile_queued_session(&mut s, Ok(None)),
+            ReconcileOutcome::StillQueued
+        );
+        assert!(s.match_found.is_none());
+
+        let mut s2 = stale_queued_session();
+        assert_eq!(
+            reconcile_queued_session(&mut s2, Ok(Some(unmatched_doc()))),
+            ReconcileOutcome::StillQueued
+        );
+        assert!(s2.match_found.is_none());
+    }
+
+    /// The producer/reader CONTRACT. The WS write-through and this reader are
+    /// two halves of one fix: whatever `build_persisted_doc` stores when the WS
+    /// listener sees `match_found` must be exactly what the reader needs to
+    /// adopt. If a future change drops session_id or role from the doc, the
+    /// stall returns silently — this test fails instead.
+    #[test]
+    fn persisted_ws_transition_carries_everything_the_reader_needs_to_adopt() {
+        // The state the WS handler leaves the session in on `ws: match_found`.
+        let mut owner = stale_queued_session();
+        owner.session_id = Some("d058141e".to_string());
+        owner.role = Some(0);
+        owner.matchup_commitment = Some("deadbeef".to_string());
+        owner.match_found = Some(MatchFoundMsg {
+            session_id: "d058141e".to_string(),
+            role: 0,
+            matchup_commitment: Some("deadbeef".to_string()),
+        });
+
+        let doc = build_persisted_doc(&owner);
+
+        // A different instance reads that doc and must be able to adopt.
+        let mut other = stale_queued_session();
+        assert_eq!(
+            reconcile_queued_session(&mut other, Ok(Some(doc))),
+            ReconcileOutcome::Adopted,
+            "the doc written on ws:match_found must be sufficient for another instance to advance"
+        );
+        assert_eq!(other.match_found.expect("adopted").role, 0);
     }
 
     /// The inverse: a genuinely un-matched session must NOT be rehydrated into
