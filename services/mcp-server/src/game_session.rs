@@ -453,6 +453,60 @@ fn match_status_queued() -> MatchStatus {
     status
 }
 
+/// Build the Firestore document for a session. Shared by the manager's
+/// `persist_session` and the WS listener's write-through so the two paths can
+/// never drift into storing different shapes.
+fn build_persisted_doc(session: &GameSession) -> PersistedGameSession {
+    PersistedGameSession {
+        wallet: session.wallet.clone(),
+        jwt: session.jwt.clone(),
+        state: session.state.as_str().to_string(),
+        game_id: session.game_id,
+        tournament_id: session.tournament_id,
+        session_id: session.session_id.clone(),
+        role: session.role,
+        matchup_commitment: session.matchup_commitment.clone(),
+        commit_preimage_hex: session.commit_preimage.map(hex::encode),
+        game_ready: session.game_ready,
+        reveal_data: session.reveal_data.clone(),
+        updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+    }
+}
+
+/// Write a WS-delivered state transition straight through to Firestore.
+///
+/// The WS listener is the ONLY producer of `match_found` / `game_ready`, and it
+/// runs on whichever Cloud Run instance happened to open the socket. Without
+/// this write-through the signal stays in that one instance's memory, so the
+/// agent's next `game_check_match` — which load-balances freely, since the
+/// service runs `sessionAffinity: false` at `maxScale: 30` — restores a session
+/// that never learned it was matched and answers `queued` until the match is
+/// abandoned.
+///
+/// Best-effort by design: a failed write must not kill the socket, since the
+/// in-memory copy is still correct for polls that do land here. But it is
+/// never swallowed — a persistent failure means cross-instance polls will
+/// silently regress to the stall this exists to prevent.
+async fn persist_ws_transition(db: &FirestoreDb, session: &GameSession, event: &str) {
+    let doc = build_persisted_doc(session);
+    if let Err(e) = db
+        .fluent()
+        .update()
+        .in_col(MCP_SESSIONS_COLLECTION)
+        .document_id(&session.wallet)
+        .object(&doc)
+        .execute::<PersistedGameSession>()
+        .await
+    {
+        tracing::error!(
+            wallet = %session.wallet,
+            event,
+            error = %e,
+            "failed to persist WS transition — a poll on another instance will report queued"
+        );
+    }
+}
+
 /// Reconstruct an in-memory `GameSession` from a persisted Firestore document.
 /// Used by `try_restore_persisted_session` to keep the (large) struct
 /// initializer out of the orchestration path.
@@ -475,6 +529,24 @@ fn build_restored_session(
         state != GameSessionState::Resolved,
         "Resolved sessions must not be restored"
     );
+    // Rebuild the match signal from the persisted fields. `match_found` is
+    // otherwise only ever set by the in-process WS listener, so a session
+    // restored on a different Cloud Run instance (sessionAffinity is false and
+    // maxScale is 30, so polls DO land elsewhere) would report `queued`
+    // forever: `check_match` returns queued on exactly `match_found.is_none()`,
+    // the agent is never handed a create_game tx, and game-api abandons the
+    // paired session with "game not created within timeout".
+    //
+    // Requires BOTH session_id and role — a session that never matched has
+    // neither, and inventing a match for it would advance an unpaired player.
+    let match_found = match (persisted.session_id.clone(), persisted.role) {
+        (Some(session_id), Some(role)) => Some(MatchFoundMsg {
+            session_id,
+            role,
+            matchup_commitment: persisted.matchup_commitment.clone(),
+        }),
+        _ => None,
+    };
     GameSession {
         wallet: wallet.to_string(),
         jwt: persisted.jwt.clone(),
@@ -484,7 +556,7 @@ fn build_restored_session(
         session_id: persisted.session_id.clone(),
         role: persisted.role,
         chat_buffer: Vec::new(),
-        match_found: None,
+        match_found,
         matchup_commitment: persisted.matchup_commitment.clone(),
         commit_preimage: preimage,
         game_ready: persisted.game_ready,
@@ -565,20 +637,7 @@ impl GameSessionManager {
     /// For other states, Firestore failures are logged but non-fatal.
     async fn persist_session(&self, session: &GameSession) -> Result<()> {
         let has_preimage = session.commit_preimage.is_some();
-        let doc = PersistedGameSession {
-            wallet: session.wallet.clone(),
-            jwt: session.jwt.clone(),
-            state: session.state.as_str().to_string(),
-            game_id: session.game_id,
-            tournament_id: session.tournament_id,
-            session_id: session.session_id.clone(),
-            role: session.role,
-            matchup_commitment: session.matchup_commitment.clone(),
-            commit_preimage_hex: session.commit_preimage.map(hex::encode),
-            game_ready: session.game_ready,
-            reveal_data: session.reveal_data.clone(),
-            updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
-        };
+        let doc = build_persisted_doc(session);
         if let Err(e) = self
             .db
             .fluent()
@@ -843,6 +902,7 @@ impl GameSessionManager {
                 let api_url = self.game_api_url.clone();
                 let cancel_token = CancellationToken::new();
                 let token_clone = cancel_token.clone();
+                let db_clone = self.db.clone();
                 tokio::spawn(async move {
                     ws_listener_with_reconnect(
                         session_clone,
@@ -850,6 +910,7 @@ impl GameSessionManager {
                         sink_clone,
                         api_url,
                         token_clone,
+                        db_clone,
                     )
                     .await;
                 });
@@ -1146,9 +1207,17 @@ impl GameSessionManager {
         let api_url = self.game_api_url.clone();
         let cancel_token = CancellationToken::new();
         let token_clone = cancel_token.clone();
+        let db_clone = self.db.clone();
         tokio::spawn(async move {
-            ws_listener_with_reconnect(session_clone, stream, sink_clone, api_url, token_clone)
-                .await;
+            ws_listener_with_reconnect(
+                session_clone,
+                stream,
+                sink_clone,
+                api_url,
+                token_clone,
+                db_clone,
+            )
+            .await;
         });
 
         self.ws_sinks
@@ -1890,6 +1959,7 @@ async fn ws_listener_with_reconnect(
     sink: Arc<Mutex<WsSink>>,
     game_api_url: String,
     cancel: CancellationToken,
+    db: Arc<FirestoreDb>,
 ) {
     let wallet = session.lock().await.wallet.clone();
     tracing::info!(wallet = %wallet, "ws_listener started");
@@ -1903,7 +1973,7 @@ async fn ws_listener_with_reconnect(
         }
 
         // Run the read loop until disconnect.
-        run_ws_read_loop(&session, &mut stream, &sink, &wallet).await;
+        run_ws_read_loop(&session, &mut stream, &sink, &wallet, &db).await;
 
         if cancel.is_cancelled() {
             tracing::info!(wallet = %wallet, "ws_listener cancelled after disconnect");
@@ -1964,6 +2034,7 @@ async fn run_ws_read_loop(
     stream: &mut game_api_client::ws::WsStream,
     sink: &Arc<Mutex<WsSink>>,
     wallet: &str,
+    db: &FirestoreDb,
 ) {
     use futures_util::StreamExt;
     use game_api_client::ws::WsMessage;
@@ -1993,15 +2064,19 @@ async fn run_ws_read_loop(
                     } => {
                         tracing::info!(wallet = %wallet, %session_id, role, has_commitment = matchup_commitment.is_some(), "ws: match_found");
                         s.matchup_commitment = matchup_commitment.clone();
+                        s.session_id = Some(session_id.clone());
+                        s.role = Some(role);
                         s.match_found = Some(MatchFoundMsg {
                             session_id,
                             role,
                             matchup_commitment,
                         });
+                        persist_ws_transition(db, &s, "match_found").await;
                     }
                     ServerMessage::GameReady { game_id } => {
                         tracing::info!(wallet = %wallet, game_id, "ws: game_ready");
                         s.game_ready = Some(game_id);
+                        persist_ws_transition(db, &s, "game_ready").await;
                     }
                     ServerMessage::RevealData { r_matchup } => {
                         tracing::info!(wallet = %wallet, "ws: reveal_data");
@@ -2287,6 +2362,77 @@ mod tests {
         // In register_wallet, resolved sessions are cleaned up, not restored.
         // This test verifies the state parsing works correctly.
         assert_eq!(state.unwrap(), GameSessionState::Resolved);
+    }
+
+    /// A session restored on a DIFFERENT instance must still know a match was
+    /// found, or it can never advance past `queued`.
+    ///
+    /// mcp-server runs on Cloud Run with `sessionAffinity: false` and
+    /// `maxScale: 30`, so consecutive `game_check_match` polls from one agent
+    /// routinely land on different instances. `match_found` is only ever set by
+    /// the in-process WS listener (`ws: match_found`), so an instance that
+    /// restored the session from Firestore used to rebuild it with
+    /// `match_found: None` — and `check_match` returns `queued` on exactly that
+    /// condition. The agent then polled `queued` for the full 90s window, was
+    /// never handed a create_game tx, and game-api abandoned the paired session
+    /// with "game not created within timeout". Observed live twice in a row:
+    /// player_one CKsZ7Z… (role 0) paired with the grok pool wallet, both
+    /// sessions abandoned, `0 submit failure(s)` because no tx was ever issued.
+    ///
+    /// The three fields `MatchFoundMsg` needs are already persisted, so the
+    /// restore can reconstruct it rather than dropping the signal.
+    #[test]
+    fn restore_rehydrates_match_found_so_another_instance_can_advance() {
+        let persisted = PersistedGameSession {
+            wallet: "CKsZ7Z".to_string(),
+            jwt: "jwt".to_string(),
+            state: "matched".to_string(),
+            game_id: None,
+            tournament_id: Some(1003),
+            session_id: Some("d058141e".to_string()),
+            role: Some(0),
+            matchup_commitment: Some("deadbeef".to_string()),
+            commit_preimage_hex: None,
+            game_ready: None,
+            reveal_data: None,
+            updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+        };
+
+        let s = build_restored_session("CKsZ7Z", &persisted, GameSessionState::Matched);
+
+        let mf = s
+            .match_found
+            .expect("a restored matched session must carry match_found, else check_match returns queued forever");
+        assert_eq!(mf.session_id, "d058141e");
+        assert_eq!(mf.role, 0);
+        assert_eq!(mf.matchup_commitment.as_deref(), Some("deadbeef"));
+    }
+
+    /// The inverse: a genuinely un-matched session must NOT be rehydrated into
+    /// a bogus match, or `check_match` would try to advance a player who was
+    /// never paired.
+    #[test]
+    fn restore_leaves_match_found_empty_when_no_match_was_recorded() {
+        let persisted = PersistedGameSession {
+            wallet: "CKsZ7Z".to_string(),
+            jwt: "jwt".to_string(),
+            state: "queued".to_string(),
+            game_id: None,
+            tournament_id: Some(1003),
+            session_id: None,
+            role: None,
+            matchup_commitment: None,
+            commit_preimage_hex: None,
+            game_ready: None,
+            reveal_data: None,
+            updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
+        };
+
+        let s = build_restored_session("CKsZ7Z", &persisted, GameSessionState::Queued);
+        assert!(
+            s.match_found.is_none(),
+            "no session_id/role persisted means no match was ever found"
+        );
     }
 
     #[test]
