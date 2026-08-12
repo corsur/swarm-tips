@@ -265,21 +265,30 @@ const REGISTRY: &[ChainEntry] = &[
         // uses the on-chain FIXED_STAKE constant); create_xmatch takes stake as
         // an arg (no fixed on-chain stake), and 0.068 ≤ the live xpool's 0.1-SOL
         // max_tranche, so no Solana redeploy or pool reconfig is needed.
-        // PINNED TO DEFAULT_STAKE_LAMPORTS (0.05 SOL), NOT the $5 anchor.
+        // Held at DEFAULT_STAKE_LAMPORTS (0.05 SOL) because testnet stakes are
+        // nominal, NOT because the clients can't read a configured value.
         //
+        // THE CLIENT BLOCKER IS RESOLVED (verified 2026-08-12). This comment
+        // used to say "neither deployed client passes the optional
+        // global_config account on deposit_stake", and that is no longer true —
+        // both pass it and both pin it with a test:
+        //   frontend  lib/anchor.ts  .remainingAccounts(liveStakeRemainingAccounts())
+        //             + lib/__tests__/live-stake-account.test.ts
+        //   agent     game-chain instructions.rs::build_deposit_stake appends
+        //             global_config_pda + "deposit_stake must have 5 accounts"
+        // Mainnet below is consequently already OFF the default and playable at
+        // the anchor, which the stale wording flatly contradicted.
+        //
+        // Leaving the false blocker in place was not free: it reads as a
+        // standing justification to re-pin a chain to the compile-time constant,
+        // which is what produced the $3.64-vs-$5 divergence in the first place.
+        //
+        // A VALUE change here still needs care for a different reason:
         // create_game requires `escrow.amount == global_config.stake_lamports`,
-        // but neither deployed client passes the optional global_config account
-        // on deposit_stake — the frontend uses .accounts() only, and
-        // coordination-app pins game-chain at def85b47, which predates the
-        // append. So both deposit at DEFAULT_STAKE_LAMPORTS. Configuring
-        // anything else here makes every Solana devnet game fail StakeMismatch
-        // (0x1776) at creation: clients can deposit and can never play.
-        //
-        // The optional-account design removed the need to coordinate a client
-        // release for the ACCOUNT change; it does not remove it for a VALUE
-        // change. Raising this to the $5 anchor requires the frontend to send
-        // remainingAccounts and coordination-app to bump the game-chain pin.
-        // Until then this stays equal to the compile-time default.
+        // so a re-peg landing between a player's deposit_stake and their
+        // create_game fails StakeMismatch (0x1776). Recoverable (withdraw_stake
+        // only needs amount > 0) but a live outage, so re-peg when the queue is
+        // idle rather than mid-match.
         stake_base_units: 50_000_000, // 0.05 SOL == DEFAULT_STAKE_LAMPORTS
         stake_usd_cents: 364,         // $3.64
         peg_native_usd_cents: 7286,
@@ -301,20 +310,26 @@ const REGISTRY: &[ChainEntry] = &[
         is_mainnet: true,
         native_symbol: "SOL",
         native_decimals: 9,
-        // PINNED TO DEFAULT_STAKE_LAMPORTS for the same reason as devnet above:
-        // no deployed client passes the optional global_config account, so both
-        // deposit 0.05 SOL regardless of what is configured here. Mainnet was
-        // left at the $5 anchor when devnet was pinned back — a per-entity fix
-        // to a cross-entity defect — which made the mainnet game UNPLAYABLE:
-        // deposit_stake takes the 0.05, then create_game rejects it with
-        // StakeMismatch (0x1776). Recoverable (withdraw_stake only requires
-        // amount > 0, so nothing is stranded) but a live outage.
+        // ON THE ANCHOR, and the clients can read it (verified live 2026-08-12:
+        // GlobalConfig Ck42Q1pr… len=115 stake_lamports=68_482_585, matching
+        // this literal). The previous comment here described the OPPOSITE state
+        // — "no deployed client passes the optional global_config account, so
+        // both deposit 0.05 SOL regardless of what is configured here" — which
+        // stopped being true once both clients started sending it, and was
+        // self-contradictory besides, since this value is not 0.05.
         //
-        // This is knowingly $3.64 against a $5 EVM anchor. Playable-and-cheap
-        // beats correctly-priced-and-broken; the divergence is the SECOND
-        // problem, and closing it needs the client work named above, not
-        // another edit here. `check-stake-parity.mjs` now compares the client
-        // constants and will fail if anyone raises this first.
+        // The episode it describes was real: mainnet was left at the anchor
+        // while devnet was pinned back, so deposit_stake took 0.05 and
+        // create_game rejected it with StakeMismatch (0x1776) — a live outage.
+        // That is why a VALUE change wants an idle queue (see devnet above); it
+        // is no longer a reason to distrust the configured stake.
+        //
+        // DRIFT AGAINST THE ANCHOR IS EXPECTED AND IS NOT A BUG. This literal is
+        // 0.0027 ETH converted at the SOL/ETH ratio ON THE PEG DATE. The ratio
+        // moves; the config does not. Measured 2026-08-12: SOL $76.53 / ETH
+        // $1884.50 puts the anchor at 66_489_860 lamports, so this sits +300 bps
+        // (~$0.15) above it. Re-peg on a BAND, not on every tick — each re-peg
+        // is a mainnet transaction that can strand an in-flight deposit.
         stake_base_units: 68_482_585, // 0.0685 SOL — the 0.0027 ETH anchor at SOL/ETH 25.3639
         stake_usd_cents: 504,         // $5.04
         peg_native_usd_cents: 7361,
@@ -1086,13 +1101,18 @@ mod tests {
 
     #[test]
     fn solana_is_off_anchor_until_it_tracks_the_ratio() {
-        // Solana same-chain is pinned to a hardcoded 0.05 SOL that bears no
-        // relation to STAKE_ANCHOR_WEI. It cannot be asserted equal (different
-        // coin) and cannot be asserted converted (no live rate in a unit test —
-        // CLAUDE.md forbids network calls here). So this records the gap
-        // explicitly rather than leaving it to be rediscovered.
+        // Solana mainnet IS on the anchor — 0.0027 ETH converted at the peg
+        // date's SOL/ETH ratio. (This comment used to say it was "pinned to a
+        // hardcoded 0.05 SOL that bears no relation to STAKE_ANCHOR_WEI", which
+        // contradicted the literal the same test asserts.)
         //
-        // The live conversion is checked by tests/e2e/scripts/check-stake-parity.mjs,
+        // What it cannot do is TRACK the ratio: the config is static and the
+        // ratio moves, so the peg is exact only on the day it is set. It can't
+        // be asserted equal (different coin) or converted (CLAUDE.md forbids
+        // network calls in a unit test), so this pins the literal — a re-peg
+        // must be deliberate and must restate the ratio it was priced at.
+        //
+        // Live conversion is checked by tests/e2e/scripts/check-stake-parity.mjs,
         // which is allowed to fetch a rate. Closing the gap for good is the
         // per-match quote (deposit_stake taking stake_lamports).
         let sol = entry(&ChainId::parse(SOLANA_MAINNET_CAIP2).unwrap()).unwrap();
