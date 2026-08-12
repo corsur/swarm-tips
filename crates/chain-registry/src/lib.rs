@@ -134,7 +134,27 @@ pub struct ChainEntry {
     pub display_name: &'static str,
     /// Independent RPC endpoints for M-of-N quorum reads. Disagreement
     /// at the pinned finality level → refuse to sign match-live.
+    ///
+    /// PUBLIC endpoints. They rate-limit under load — see `premium_rpc_secret`.
     pub rpc_urls: &'static [&'static str],
+    /// GCP Secret Manager secret holding a PREMIUM read endpoint for this chain,
+    /// or `None` where the concept does not apply (Solana reads its RPC from
+    /// `solana-rpc-url-{network}` instead).
+    ///
+    /// `read_rpc_urls` puts this endpoint FIRST and `rpc_urls` after it, so a
+    /// service that loads it gets the premium provider with the public list as
+    /// fallback. Lives here, beside the endpoints it takes precedence over,
+    /// because it is per-chain config — it previously sat in a 4-entry table
+    /// inside game-api's `main.rs`, where no other service could reach it, and
+    /// that is exactly how it went wrong: grok-agent and shillbot-verifier both
+    /// called `read_rpc_urls` without ever loading the secrets, so on
+    /// 2026-08-12 grok paired a Base-mainnet game, was throttled off the public
+    /// `mainnet.base.org` (`-32016 over rate limit`) before it could stake, and
+    /// stranded a human who had already staked.
+    ///
+    /// These URLs carry a non-domain-restricted API key: server-side only,
+    /// never a `VITE_*` build var or browser bundle.
+    pub premium_rpc_secret: Option<&'static str>,
     /// Minimum agreeing providers for a quorum read.
     pub quorum_m: usize,
     pub finality: Finality,
@@ -255,6 +275,7 @@ const REGISTRY: &[ChainEntry] = &[
         chain_id: SOLANA_DEVNET_CAIP2,
         display_name: "Solana Devnet",
         rpc_urls: &["https://api.devnet.solana.com"],
+        premium_rpc_secret: None,
         quorum_m: 1,
         finality: Finality::SolanaFinalized,
         is_mainnet: false,
@@ -305,6 +326,7 @@ const REGISTRY: &[ChainEntry] = &[
         chain_id: SOLANA_MAINNET_CAIP2,
         display_name: "Solana Mainnet",
         rpc_urls: &["https://api.mainnet-beta.solana.com"],
+        premium_rpc_secret: None,
         quorum_m: 1,
         finality: Finality::SolanaFinalized,
         is_mainnet: true,
@@ -350,6 +372,7 @@ const REGISTRY: &[ChainEntry] = &[
             "https://base-sepolia-rpc.publicnode.com",
             "https://base-sepolia.drpc.org",
         ],
+        premium_rpc_secret: Some("base-sepolia-rpc-url"),
         quorum_m: 2,
         finality: Finality::EvmFinalizedTag,
         is_mainnet: false,
@@ -406,6 +429,7 @@ const REGISTRY: &[ChainEntry] = &[
             "https://base-rpc.publicnode.com",
             "https://base.drpc.org",
         ],
+        premium_rpc_secret: Some("base-mainnet-rpc-url"),
         quorum_m: 2,
         finality: Finality::EvmFinalizedTag,
         is_mainnet: true,
@@ -451,6 +475,7 @@ const REGISTRY: &[ChainEntry] = &[
             "https://eth.drpc.org",
             "https://cloudflare-eth.com",
         ],
+        premium_rpc_secret: Some("eth-mainnet-rpc-url"),
         quorum_m: 2,
         finality: Finality::EvmFinalizedTag,
         is_mainnet: true,
@@ -1070,6 +1095,40 @@ mod tests {
             .stake_binding(ContractPurpose::CrossChainGame)
             .unwrap()
             .can_float());
+    }
+
+    /// Every EVM chain must name a premium read endpoint; Solana must not.
+    ///
+    /// This used to be `chains_with_premium_rpc_are_complete` over in game-api,
+    /// comparing this registry against a 4-entry table in that service's
+    /// `main.rs`. Two things followed from the table living there: it could
+    /// drift from the registry (hence the test), and no other service could
+    /// reach it — grok-agent and shillbot-verifier consumed `read_rpc_urls`
+    /// without it and silently ran on the public endpoints, until grok was
+    /// throttled off `mainnet.base.org` mid-game on 2026-08-12.
+    ///
+    /// With the secret named on the entry there is no second list to drift, so
+    /// this now guards the only thing left: that a newly added chain does not
+    /// forget the field. Naming the SECRET is safe — values live in Secret
+    /// Manager and never in this repo.
+    #[test]
+    fn every_evm_chain_names_a_premium_rpc_secret() {
+        for e in all() {
+            let is_evm = e.chain_id.starts_with("eip155:");
+            match (is_evm, e.premium_rpc_secret) {
+                (true, None) => panic!(
+                    "{} has no premium_rpc_secret: read_rpc_urls will hand every service \
+                     the PUBLIC endpoints, which rate-limit under load",
+                    e.chain_id
+                ),
+                (false, Some(s)) => panic!(
+                    "{} is not an EVM chain but names premium RPC secret `{s}` — Solana \
+                     reads its endpoint from solana-rpc-url-{{network}} instead",
+                    e.chain_id
+                ),
+                _ => {}
+            }
+        }
     }
 
     #[test]
