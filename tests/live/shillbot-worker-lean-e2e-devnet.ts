@@ -23,6 +23,7 @@
  *     npx tsx tests/live/shillbot-worker-lean-e2e-devnet.ts
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import { leanVerdict } from "../harness/lean-verdict";
 import { homedir } from "os";
 import {
   Connection,
@@ -229,20 +230,28 @@ async function main(): Promise<void> {
   //    printing PASS over a proof that never compiled. The statement here is
   //    provable by the worker's first ladder tactic, so a zero payment is a
   //    real regression, never an expected outcome.
+  // The mirror updates `state` BEFORE it backfills composite_score /
+  // payment_amount: on 2026-08-14 the attester ACCEPTED this cell's proof
+  // (score=1000000 on-chain) while a single read here saw
+  // {state: verified, score: 0} and called it rejected. A rejected proof and
+  // a lagging mirror are indistinguishable on one read, so poll until the
+  // verdict SETTLES (leanVerdict "accepted") or the deadline expires — an
+  // actually-rejected proof stays unsettled forever and still fails below.
   const verifyDeadline = Date.now() + 8 * 60 * 1000;
-  while (Date.now() < verifyDeadline) {
+  let verdict = leanVerdict(task as never);
+  while (Date.now() < verifyDeadline && verdict !== "accepted") {
     task = await api("GET", `/tasks/${taskId}?network=devnet`, clientPk);
     const s = String(task.state ?? "?");
     if (s !== last) {
       console.log(`  state -> ${s}`);
       last = s;
     }
-    if (["verified", "finalized"].includes(s)) break;
-    await sleep(15_000);
+    verdict = leanVerdict(task as never);
+    if (verdict !== "accepted") await sleep(15_000);
   }
 
   const finalState = String(task.state ?? "?");
-  if (!["verified", "finalized"].includes(finalState)) {
+  if (verdict === "pending") {
     throw new Error(
       `FAIL: task never reached verified/finalized within 8m (state=${finalState}) — ` +
         `the worker submitted, but the attestation pipeline did not land a verdict`
@@ -251,11 +260,12 @@ async function main(): Promise<void> {
 
   const score = Number(task.composite_score ?? 0);
   const payment = Number(task.payment_amount ?? 0);
-  if (!(score > 0) || !(payment > 0)) {
+  if (verdict !== "accepted") {
     throw new Error(
-      `FAIL: proof was REJECTED — score=${score} payment=${payment} (state=${finalState}). ` +
-        `The lifecycle completing is not success; a rejected proof scores 0 and ` +
-        `refunds the client while still reaching ${finalState}.`
+      `FAIL: proof was REJECTED (or settlement never mirrored within the window) — ` +
+        `score=${score} payment=${payment} (state=${finalState}). The lifecycle ` +
+        `completing is not success; a rejected proof scores 0 and refunds the ` +
+        `client while still reaching ${finalState}.`
     );
   }
 
