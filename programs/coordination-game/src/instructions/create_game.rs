@@ -13,6 +13,19 @@ use anchor_lang::prelude::*;
 /// from forging their own commitment and knowing the matchup type). The player
 /// pays all gas. The matchmaker never pays.
 ///
+/// NOTE ON WHERE THAT PROPERTY ACTUALLY LIVES: this program only checks THAT the
+/// matchmaker signed (`matchmaker: Signer` + the `expected_matchmaker` equality
+/// below). It cannot check WHAT was attested to, because it has no record of the
+/// session's commitment. The forgery guard therefore lives entirely in game-api's
+/// `/games/cosign`, which compares the create_game `matchup_commitment` argument
+/// against the paired session's before it signs.
+///
+/// This distinction is not academic: until 2026-08-14 that comparison did not
+/// exist, so a matched player could have a self-chosen commitment co-signed,
+/// learn `matchup_type` before committing, and leave their opponent unable to
+/// reveal (`CommitmentMismatch`) before taking the pot via `resolve_timeout`.
+/// If the cosign check is ever weakened, this docstring becomes false again.
+///
 /// The matchup_commitment is SHA-256(R_matchup) where R_matchup[31] & 1 encodes
 /// the matchup type (0 = same team, 1 = different teams). The actual matchup_type
 /// is revealed during the first guess reveal, after both players have committed
