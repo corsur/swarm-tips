@@ -309,7 +309,11 @@ export async function claimTask(
     })
     .signers([agent])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
+  assertLegalTransition(
+    TASK_GRAPH,
+    before,
+    await statusAfter(ctx, task, before)
+  );
 }
 
 /** submit_work (agent signs): Claimed → Submitted. */
@@ -329,7 +333,11 @@ export async function submitWork(
     })
     .signers([agent])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
+  assertLegalTransition(
+    TASK_GRAPH,
+    before,
+    await statusAfter(ctx, task, before)
+  );
 }
 
 /** approve_task (client signs): Submitted → Approved. */
@@ -344,7 +352,11 @@ export async function approveTask(
     .accountsPartial({ task, client: client.publicKey })
     .signers([client])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
+  assertLegalTransition(
+    TASK_GRAPH,
+    before,
+    await statusAfter(ctx, task, before)
+  );
 }
 
 /** verify_task (kind 0, Switchboard): Approved/Submitted → Verified.
@@ -370,7 +382,11 @@ export async function verifyTaskOracle(
       switchboardFeed: DUMMY_SWITCHBOARD_FEED,
     })
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
+  assertLegalTransition(
+    TASK_GRAPH,
+    before,
+    await statusAfter(ctx, task, before)
+  );
 }
 
 /** verify_task_attested (kind 1, attester signs): Submitted/Approved → Verified.
@@ -394,7 +410,11 @@ export async function verifyTaskAttested(
     })
     .signers([attester])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
+  assertLegalTransition(
+    TASK_GRAPH,
+    before,
+    await statusAfter(ctx, task, before)
+  );
 }
 
 /** challenge_task (challenger signs): Verified → Disputed. Returns the challenge PDA. */
@@ -420,7 +440,11 @@ export async function challengeTask(
     })
     .signers([challenger])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
+  assertLegalTransition(
+    TASK_GRAPH,
+    before,
+    await statusAfter(ctx, task, before)
+  );
   return challenge;
 }
 
