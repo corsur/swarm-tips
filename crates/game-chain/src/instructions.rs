@@ -433,6 +433,25 @@ pub fn build_refund_pending(game_id: u64, player_one: &Pubkey, caller: &Pubkey) 
 ///
 /// Deposits the fixed stake into the per-player escrow PDA for the
 /// given tournament.
+/// SPL Memo v2 — the program the game-api auth nonce rides on.
+///
+/// game-api matches the memo on THIS program id (see `verify_tx_carries_nonce`);
+/// putting the same bytes in any other instruction does not authenticate.
+pub const MEMO_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+
+/// An SPL-Memo instruction carrying `memo` as UTF-8, with no accounts.
+///
+/// Mirrors the browser client (frontend `hooks/matchmaking-tx.ts`), which
+/// attaches the same memo to its session-funding transaction.
+pub fn build_memo(memo: &str) -> Instruction {
+    Instruction {
+        program_id: MEMO_PROGRAM_ID,
+        accounts: vec![],
+        data: memo.as_bytes().to_vec(),
+    }
+}
+
 pub fn build_deposit_stake(tournament_id: u64, payer: &Pubkey) -> Instruction {
     assert!(tournament_id > 0, "tournament_id must be non-zero");
 
@@ -1025,5 +1044,35 @@ mod tests {
         );
         assert_eq!(ix.accounts[7].pubkey, cranker.pubkey());
         assert!(!ix.accounts[8].is_writable, "system_program readonly");
+    }
+
+    // The auth binding: game-api's /auth/session matches the nonce on the SPL
+    // Memo program specifically. If this instruction stops being a Memo-program
+    // instruction whose data is the raw UTF-8 nonce, every MCP agent silently
+    // fails to authenticate — which is exactly what happened when the nonce
+    // requirement shipped without this.
+    #[test]
+    fn memo_ix_is_on_the_memo_program_with_raw_utf8_data() {
+        let ix = build_memo("abc-123");
+        assert_eq!(
+            ix.program_id.to_string(),
+            "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+            "must be SPL Memo — game-api matches on the program id"
+        );
+        assert!(ix.accounts.is_empty(), "memo takes no accounts");
+        assert_eq!(
+            ix.data,
+            b"abc-123".to_vec(),
+            "data is the raw nonce, not encoded"
+        );
+    }
+
+    #[test]
+    fn memo_data_round_trips_as_the_exact_nonce_string() {
+        // game-api does String::from_utf8(data) == nonce, so any framing,
+        // length prefix or truncation breaks authentication.
+        let nonce = "7f3a9c1e-4b2d-4e8f-9a1c-2d3e4f5a6b7c";
+        let ix = build_memo(nonce);
+        assert_eq!(String::from_utf8(ix.data).unwrap(), nonce);
     }
 }

@@ -156,6 +156,11 @@ pub struct GameSession {
     /// queue join, cosign, and game-state notifications all hit the same
     /// cluster the deposit was broadcast on.
     pub network: Option<String>,
+    /// Nonce issued by `/auth/challenge` and embedded as an SPL-Memo in the
+    /// deposit_stake tx we just handed the agent. `/auth/session` requires the
+    /// pair (signature, nonce) to match, so it must survive from tx-build to
+    /// post-broadcast auth.
+    pub auth_nonce: Option<String>,
 }
 
 /// Status returned by `check_match`.
@@ -671,6 +676,7 @@ fn build_restored_session(
         // (find_match) will set it. Mainnet-default is correct for
         // restored sessions in production where most traffic is mainnet.
         network: None,
+        auth_nonce: None,
     }
 }
 
@@ -1052,6 +1058,7 @@ impl GameSessionManager {
             game_ready: None,
             reveal_data: None,
             network: None,
+            auth_nonce: None,
         }));
 
         self.sessions
@@ -1129,7 +1136,20 @@ impl GameSessionManager {
             balance as f64 / 1_000_000_000.0
         );
 
-        let unsigned = tx_builder.build_deposit_stake(tournament_id).await?;
+        // Bind this transaction to the auth request that will cite it.
+        // /auth/session requires a server-issued nonce carried as an SPL-Memo:
+        // without it the endpoint accepted ANY transaction where the wallet was
+        // fee payer, and Solana signatures are public. The nonce must be
+        // requested BEFORE the tx is built, because it has to be inside it.
+        let api_client =
+            GameApiClient::new(&self.game_api_url)?.with_network(network.map(str::to_string));
+        let nonce = api_client.request_challenge(wallet).await?.nonce;
+        let unsigned = tx_builder
+            .build_deposit_stake_with_memo(tournament_id, &nonce)
+            .await?;
+        if let Some(session) = self.sessions.read().await.get(wallet) {
+            session.lock().await.auth_nonce = Some(nonce);
+        }
 
         // Store tournament_id in session for later queue join.
         if let Some(session) = self.sessions.read().await.get(wallet) {
@@ -1264,9 +1284,19 @@ impl GameSessionManager {
             session.lock().await.jwt.clear();
         }
 
+        // The nonce that is inside the transaction we are authenticating with.
+        // Taken (not copied) — it is single-use server-side, so keeping it would
+        // only invite a replay that game-api would reject anyway.
+        let nonce = session
+            .lock()
+            .await
+            .auth_nonce
+            .take()
+            .context("no auth nonce for this stake — build the tx via build_find_match_tx")?;
+
         let api_client =
             GameApiClient::new(&self.game_api_url)?.with_network(network.map(str::to_string));
-        let auth_resp = api_client.session_auth(wallet, sig_str).await?;
+        let auth_resp = api_client.session_auth(wallet, sig_str, &nonce).await?;
         let jwt = auth_resp.token.clone();
         self.spawn_ws_listener(wallet, &jwt, session, network)
             .await?;

@@ -259,15 +259,23 @@ impl GameApiClient {
     /// wallet signed it. Returns a JWT. This is the non-custodial auth path:
     /// the agent signs a transaction locally (e.g., deposit_stake), and the
     /// tx signature doubles as proof of wallet ownership.
+    ///
+    /// `nonce` MUST be a nonce just issued by `challenge()`, and the
+    /// transaction MUST carry it as an SPL-Memo. game-api rejects the pair
+    /// otherwise: without that binding the endpoint accepted any transaction
+    /// where the claimed wallet was fee payer, and Solana signatures are
+    /// public, so a victim's transaction read off Solscan minted a JWT as them.
     pub async fn session_auth(
         &self,
         wallet: &str,
         tx_signature: &str,
+        nonce: &str,
     ) -> Result<AuthTokenResponse, GameApiError> {
         #[derive(Serialize)]
         struct Body<'a> {
             wallet: &'a str,
             tx_signature: &'a str,
+            nonce: &'a str,
         }
 
         let url = self.url("/auth/session");
@@ -277,6 +285,7 @@ impl GameApiClient {
             .json(&Body {
                 wallet,
                 tx_signature,
+                nonce,
             })
             .send()
             .await?;

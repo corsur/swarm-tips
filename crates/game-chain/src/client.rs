@@ -79,6 +79,32 @@ impl GameTxBuilder {
         self.build_unsigned(&[ix]).await
     }
 
+    /// Build an unsigned `DepositStake` that also carries `memo` as an
+    /// SPL-Memo instruction.
+    ///
+    /// The memo is how game-api's `/auth/session` binds a transaction to the
+    /// auth request that cites it. That endpoint used to accept ANY transaction
+    /// where the claimed wallet was fee payer — and Solana signatures are
+    /// public, so reading a victim's transaction off Solscan was enough to mint
+    /// a JWT as them. A server-issued nonce riding on the Memo program closes
+    /// that, because a victim's transaction cannot contain a nonce issued to
+    /// the attacker.
+    ///
+    /// It must be the Memo program specifically: game-api matches on the
+    /// program id, so smuggling the value through another instruction's data
+    /// does not authenticate.
+    pub async fn build_deposit_stake_with_memo(
+        &self,
+        tournament_id: u64,
+        memo: &str,
+    ) -> Result<UnsignedTx> {
+        anyhow::ensure!(tournament_id > 0, "tournament_id must be non-zero");
+        anyhow::ensure!(!memo.is_empty(), "memo must be non-empty");
+        let ix = instructions::build_deposit_stake(tournament_id, &self.player);
+        self.build_unsigned(&[ix, instructions::build_memo(memo)])
+            .await
+    }
+
     /// Build an unsigned `JoinGame` transaction.
     pub async fn build_join_game(&self, game_id: u64, tournament_id: u64) -> Result<UnsignedTx> {
         anyhow::ensure!(game_id > 0, "game_id must be non-zero");
