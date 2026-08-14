@@ -32,6 +32,7 @@ import {
   TransitionGraph,
   assertLegalTransition,
 } from "./assertions";
+import { readWhenAdvanced, readWhenVisible } from "./retry-read";
 import type { TaskPayout } from "../../sdk/task-outcome-oracle";
 
 // Switchboard On-Demand program id (owner of feed accounts) and the fixed dummy
@@ -182,12 +183,33 @@ export async function setupShillbot(
 // --- Step helpers ----------------------------------------------------------
 
 async function fetchTask(ctx: ShillbotCtx, task: PublicKey) {
-  return ctx.rt.program.account.task.fetch(task);
+  // readWhenVisible: on devnet a fetch right after a confirmed create can hit
+  // an RPC node that has not applied the tx yet ("Account does not exist" for
+  // a PDA that provably exists). Bankrun resolves on the first attempt.
+  return readWhenVisible(() => ctx.rt.program.account.task.fetch(task));
 }
 
 async function statusOf(ctx: ShillbotCtx, task: PublicKey): Promise<string> {
   const t = await fetchTask(ctx, task);
   return taskStatusLabel(t.state as Record<string, unknown>);
+}
+
+/** Post-write status read: retry past nodes still serving the pre-tx state
+ *  (the "illegal transition Claimed -> Claimed" class from the 2026-08-13
+ *  devnet matrix run). Returns the last read either way — a genuine stall
+ *  still fails loudly in the caller's assertLegalTransition. */
+async function statusAfter(
+  ctx: ShillbotCtx,
+  task: PublicKey,
+  before: string
+): Promise<string> {
+  return readWhenAdvanced(
+    () =>
+      ctx.rt.program.account.task
+        .fetch(task)
+        .then((t) => taskStatusLabel(t.state as Record<string, unknown>)),
+    before
+  );
 }
 
 async function assertClosedTransition(
@@ -197,7 +219,14 @@ async function assertClosedTransition(
   terminal: "Finalized" | "Resolved" | "Expired"
 ): Promise<void> {
   assertLegalTransition(TASK_GRAPH, before, terminal);
-  const acct = await ctx.rt.getBalance(task);
+  // Same staleness class as statusAfter: the close is confirmed but a lagging
+  // node can still report the pre-close lamports. Poll to zero, bounded.
+  const ATTEMPTS = 12;
+  let acct = await ctx.rt.getBalance(task);
+  for (let i = 1; i < ATTEMPTS && acct !== 0n; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    acct = await ctx.rt.getBalance(task);
+  }
   if (acct !== 0n) {
     throw new Error(`${terminal}: task account expected closed, still funded`);
   }
@@ -280,7 +309,7 @@ export async function claimTask(
     })
     .signers([agent])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusOf(ctx, task));
+  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
 }
 
 /** submit_work (agent signs): Claimed → Submitted. */
@@ -300,7 +329,7 @@ export async function submitWork(
     })
     .signers([agent])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusOf(ctx, task));
+  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
 }
 
 /** approve_task (client signs): Submitted → Approved. */
@@ -315,7 +344,7 @@ export async function approveTask(
     .accountsPartial({ task, client: client.publicKey })
     .signers([client])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusOf(ctx, task));
+  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
 }
 
 /** verify_task (kind 0, Switchboard): Approved/Submitted → Verified.
@@ -341,7 +370,7 @@ export async function verifyTaskOracle(
       switchboardFeed: DUMMY_SWITCHBOARD_FEED,
     })
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusOf(ctx, task));
+  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
 }
 
 /** verify_task_attested (kind 1, attester signs): Submitted/Approved → Verified.
@@ -365,7 +394,7 @@ export async function verifyTaskAttested(
     })
     .signers([attester])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusOf(ctx, task));
+  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
 }
 
 /** challenge_task (challenger signs): Verified → Disputed. Returns the challenge PDA. */
@@ -391,7 +420,7 @@ export async function challengeTask(
     })
     .signers([challenger])
     .rpc();
-  assertLegalTransition(TASK_GRAPH, before, await statusOf(ctx, task));
+  assertLegalTransition(TASK_GRAPH, before, await statusAfter(ctx, task, before));
   return challenge;
 }
 
