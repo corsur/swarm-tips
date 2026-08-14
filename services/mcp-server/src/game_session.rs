@@ -975,6 +975,47 @@ impl GameSessionManager {
             return None;
         }
 
+        // A session can be persisted at Matched/Committed/InGame for a game that
+        // has since RESOLVED and been closed on-chain (rent reclaimed) — e.g. the
+        // agent walked away mid-match, or a run aborted after matching. Without
+        // this check register_wallet restores that zombie every time and
+        // game_check_match reports needs_signature forever, so the wallet can
+        // NEVER start a new game. If the referenced game account is gone, the
+        // game is definitively over: clean up and register fresh.
+        if let Some(game_id) = persisted.game_id {
+            let (game_key, _) = game_chain::pda::game_pda(game_id);
+            // Distinguish "account does not exist" (definitively closed) from an
+            // RPC error (transient). Only a confirmed None clears the session — a
+            // network blip must not delete a live game's session.
+            match tx_builder
+                .rpc()
+                .get_account_with_commitment(&game_key, tx_builder.rpc().commitment())
+                .await
+            {
+                Ok(resp) if resp.value.is_none() => {
+                    tracing::info!(
+                        wallet = %wallet,
+                        game_id,
+                        state = persisted.state,
+                        "persisted session points at a closed game — clearing zombie session"
+                    );
+                    self.delete_persisted_session(wallet).await;
+                    return None;
+                }
+                Ok(_) => {} // game still exists — genuinely resumable, restore below
+                Err(e) => {
+                    // Transient RPC failure — do NOT delete. Restore and let the
+                    // agent retry; a real zombie will be cleared next register.
+                    tracing::warn!(
+                        wallet = %wallet,
+                        game_id,
+                        error = %e,
+                        "could not verify game liveness on restore — restoring session, will re-check next time"
+                    );
+                }
+            }
+        }
+
         tracing::info!(
             wallet = %wallet,
             state = persisted.state,
