@@ -83,6 +83,20 @@ pub struct CosignResponse {
     pub signature: String,
 }
 
+/// Request body for `POST /games/cosign`. Wire-shape mirror of game-api's
+/// `CosignRequest` (backend/game-api/src/games.rs) — the forgery guard there
+/// rejects any body it cannot deserialize, so a missing field here is a live
+/// 422 for every MCP agent creating a game.
+#[derive(Debug, Serialize)]
+struct CosignRequestBody<'a> {
+    /// The matchmaking session this create_game belongs to — game-api compares
+    /// the tx's matchup_commitment against this session's, so the matchmaker
+    /// signature attests to the commitment, not just its own participation.
+    session_id: &'a str,
+    /// Base64-encoded serialized transaction message bytes.
+    message: &'a str,
+}
+
 /// Request body for `POST /internal/evmgame/join` — the same-chain EVM queue.
 /// No session key (same-chain gameplay is on-chain with the player's own wallet)
 /// and no contract: game-api resolves the CoordinationGame address from the
@@ -735,19 +749,16 @@ impl GameApiClient {
     pub async fn request_cosign(
         &self,
         token: &str,
+        session_id: &str,
         message_b64: &str,
     ) -> Result<CosignResponse, GameApiError> {
-        #[derive(Serialize)]
-        struct Body<'a> {
-            message: &'a str,
-        }
-
         let url = self.url("/games/cosign");
         let resp = self
             .inner
             .post(&url)
             .bearer_auth(token)
-            .json(&Body {
+            .json(&CosignRequestBody {
+                session_id,
                 message: message_b64,
             })
             .send()
@@ -890,6 +901,20 @@ mod tests {
     fn new_preserves_url_without_trailing_slash() {
         let client = GameApiClient::new("https://api.example.com").unwrap();
         assert_eq!(client.base_url(), "https://api.example.com");
+    }
+
+    #[test]
+    fn cosign_request_carries_session_id_and_message() {
+        // game-api's CosignRequest (the cosign forgery guard) requires BOTH
+        // fields; a body without session_id is a 422 for every MCP agent
+        // creating a game ("missing field `session_id`", live 2026-08-14).
+        let body = serde_json::to_value(CosignRequestBody {
+            session_id: "sess-123",
+            message: "bWVzc2FnZQ==",
+        })
+        .unwrap();
+        assert_eq!(body["session_id"], "sess-123");
+        assert_eq!(body["message"], "bWVzc2FnZQ==");
     }
 
     #[test]

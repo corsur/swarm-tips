@@ -2017,16 +2017,23 @@ impl GameSessionManager {
         // cluster-default — using it here would put a mainnet blockhash
         // into a tx that the agent then submits to devnet → "Blockhash
         // not found". Surfaced 2026-05-09 by the human-vs-agent E2E.
-        let network = self
-            .sessions
-            .read()
-            .await
-            .get(wallet)
-            .ok_or_else(|| anyhow::anyhow!("no session for wallet"))?
-            .lock()
-            .await
-            .network
-            .clone();
+        //
+        // session_id rides along for the cosign call below: game-api's forgery
+        // guard compares the tx's matchup_commitment against THIS session's,
+        // and rejects a body without it (422 "missing field `session_id`").
+        let (network, session_id) = {
+            let sessions = self.sessions.read().await;
+            let s = sessions
+                .get(wallet)
+                .ok_or_else(|| anyhow::anyhow!("no session for wallet"))?
+                .lock()
+                .await;
+            let sid = s
+                .session_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("session has no session_id — not matched yet"))?;
+            (s.network.clone(), sid)
+        };
         let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
         let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
 
@@ -2063,7 +2070,7 @@ impl GameSessionManager {
         let msg_b64 = base64::engine::general_purpose::STANDARD.encode(&unsigned.message);
         let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network.clone());
         let cosign_resp = api_client
-            .request_cosign(jwt, &msg_b64)
+            .request_cosign(jwt, &session_id, &msg_b64)
             .await
             .map_err(|e| anyhow::anyhow!("cosign request failed: {e}"))?;
 
