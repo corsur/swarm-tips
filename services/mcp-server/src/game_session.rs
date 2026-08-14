@@ -576,6 +576,23 @@ fn adopt_persisted_match(s: &mut GameSession, persisted: &PersistedGameSession) 
 /// pending. `InGame`/`Committed`/`Resolved` are not: each records a match this
 /// session already acted on, and re-adopting one makes the agent create a game
 /// against a session that has ended.
+/// Which of the probed games `(game_id, player_one, tournament_id)` is the one
+/// THIS wallet just created in THIS tournament? Pure so the prediction-race
+/// correction (see after_create_game) is unit-testable: prefers the predicted
+/// id when it matches, otherwise the first matching id after it.
+fn resolve_created_game_id(
+    predicted: u64,
+    probes: &[(u64, solana_sdk::pubkey::Pubkey, u64)],
+    player_one: &solana_sdk::pubkey::Pubkey,
+    tournament_id: u64,
+) -> Option<u64> {
+    probes
+        .iter()
+        .filter(|(id, p1, t)| *id >= predicted && p1 == player_one && *t == tournament_id)
+        .map(|(id, _, _)| *id)
+        .min()
+}
+
 fn match_is_pending(state: GameSessionState) -> bool {
     matches!(state, GameSessionState::Queued | GameSessionState::Matched)
 }
@@ -1522,17 +1539,41 @@ impl GameSessionManager {
         wallet: &str,
         session: &Arc<Mutex<GameSession>>,
     ) -> Result<()> {
-        let (jwt, session_id, game_id) = {
+        let (jwt, session_id, predicted_game_id, tournament_id, network) = {
+            let s = session.lock().await;
+            (
+                s.jwt.clone(),
+                s.session_id.clone().unwrap_or_default(),
+                s.game_id.unwrap_or(0),
+                s.tournament_id.unwrap_or(0),
+                s.network.clone(),
+            )
+        };
+
+        // Referential integrity before anything downstream consumes the id:
+        // game_id was PREDICTED (read_next_game_id) before the tx landed, and
+        // a concurrent create can take it. Live 2026-08-14 a T1003 game stole
+        // the e2e's predicted id — game-api then told P2 to join a game whose
+        // tournament differed from its own, join_game died on ConstraintSeeds,
+        // and P1's commit hit InvalidGameState. Verify the landed game is OURS
+        // (player_one + tournament) and scan a bounded window forward if not.
+        let game_id = self
+            .verify_created_game_id(wallet, predicted_game_id, tournament_id, network.as_deref())
+            .await?;
+        {
             let mut s = session.lock().await;
             s.state = GameSessionState::InGame;
-            let gid = s.game_id.unwrap_or(0);
-            (s.jwt.clone(), s.session_id.clone().unwrap_or_default(), gid)
-        };
-        {
-            let s = session.lock().await;
+            if s.game_id != Some(game_id) {
+                tracing::warn!(
+                    wallet = %wallet,
+                    predicted_game_id,
+                    actual_game_id = game_id,
+                    "create_game id prediction raced — corrected from on-chain state"
+                );
+                s.game_id = Some(game_id);
+            }
             self.persist_session(&s).await?;
         }
-        let network = session.lock().await.network.clone();
         if !session_id.is_empty() {
             let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
             api_client
@@ -1541,6 +1582,37 @@ impl GameSessionManager {
         }
         tracing::info!(wallet = %wallet, game_id, "P1 created game on-chain");
         Ok(())
+    }
+
+    /// Read games at `predicted..predicted + GAME_ID_SCAN_WINDOW` and return
+    /// the id of the one whose `player_one` and `tournament_id` are ours.
+    /// Errors if none matches — proceeding with a wrong id only defers the
+    /// failure to P2's join with a much worse error.
+    async fn verify_created_game_id(
+        &self,
+        wallet: &str,
+        predicted: u64,
+        tournament_id: u64,
+        network: Option<&str>,
+    ) -> Result<u64> {
+        const GAME_ID_SCAN_WINDOW: u64 = 8;
+        let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
+        let tx_builder = self.tx_builder_for_network(pubkey, network);
+        let mut probes: Vec<(u64, solana_sdk::pubkey::Pubkey, u64)> = Vec::new();
+        for id in predicted..predicted.saturating_add(GAME_ID_SCAN_WINDOW) {
+            // read_game_freshest: the create tx just confirmed; a `confirmed`
+            // read one slot stale would miss it and force a scan miss.
+            if let Some(game) = tx_builder.read_game_freshest(id).await? {
+                probes.push((id, game.player_one, game.tournament_id));
+            }
+        }
+        resolve_created_game_id(predicted, &probes, &pubkey, tournament_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "created game not found in ids {predicted}..{} for wallet {wallet} \
+                 tournament {tournament_id} — create landed but is not attributable",
+                predicted.saturating_add(GAME_ID_SCAN_WINDOW)
+            )
+        })
     }
 
     /// Internal: join the matchmaking queue after stake deposit.
@@ -2263,6 +2335,53 @@ async fn run_ws_read_loop(
 
 #[cfg(test)]
 mod tests {
+    // P1's game_id is PREDICTED (read_next_game_id) before create_game lands.
+    // A concurrent create can take that id: live 2026-08-14, a T1003 game stole
+    // the e2e's predicted id, so game-api told P2 to join a game whose
+    // tournament (1003) differed from its own (1099) — join_game failed with
+    // ConstraintSeeds on `tournament`, and P1's later commit_guess hit
+    // InvalidGameState on a forever-unjoined game. resolve_created_game_id is
+    // the post-land referential-integrity check: OUR game is the one whose
+    // player_one and tournament match, at or after the predicted id.
+    mod resolve_created_game_id {
+        use super::super::resolve_created_game_id;
+        use solana_sdk::pubkey::Pubkey;
+
+        #[test]
+        fn keeps_the_predicted_id_when_it_is_ours() {
+            let me = Pubkey::new_unique();
+            let probes = vec![(42u64, me, 1099u64)];
+            assert_eq!(resolve_created_game_id(42, &probes, &me, 1099), Some(42));
+        }
+
+        #[test]
+        fn corrects_forward_when_a_concurrent_create_stole_the_id() {
+            // The exact live shape: predicted id belongs to someone else's
+            // game in another tournament; ours landed one later.
+            let me = Pubkey::new_unique();
+            let thief = Pubkey::new_unique();
+            let probes = vec![(42u64, thief, 1003u64), (43u64, me, 1099u64)];
+            assert_eq!(resolve_created_game_id(42, &probes, &me, 1099), Some(43));
+        }
+
+        #[test]
+        fn none_when_our_game_is_nowhere_in_the_window() {
+            let me = Pubkey::new_unique();
+            let thief = Pubkey::new_unique();
+            let probes = vec![(42u64, thief, 1003u64)];
+            assert_eq!(resolve_created_game_id(42, &probes, &me, 1099), None);
+        }
+
+        #[test]
+        fn same_wallet_wrong_tournament_is_not_ours() {
+            // Same wallet playing two tournaments concurrently must not
+            // cross-adopt games.
+            let me = Pubkey::new_unique();
+            let probes = vec![(42u64, me, 1003u64), (44u64, me, 1099u64)];
+            assert_eq!(resolve_created_game_id(42, &probes, &me, 1099), Some(44));
+        }
+    }
+
     // The agent auth path now hangs entirely on reading the nonce back out of
     // the transaction. It replaced an in-memory GameSession field that was lost
     // whenever a session rehydrated from Firestore on another instance, which
