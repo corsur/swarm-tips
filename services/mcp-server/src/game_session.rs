@@ -156,11 +156,6 @@ pub struct GameSession {
     /// queue join, cosign, and game-state notifications all hit the same
     /// cluster the deposit was broadcast on.
     pub network: Option<String>,
-    /// Nonce issued by `/auth/challenge` and embedded as an SPL-Memo in the
-    /// deposit_stake tx we just handed the agent. `/auth/session` requires the
-    /// pair (signature, nonce) to match, so it must survive from tx-build to
-    /// post-broadcast auth.
-    pub auth_nonce: Option<String>,
 }
 
 /// Status returned by `check_match`.
@@ -237,6 +232,27 @@ fn decode_signed_tx(signed_tx_b64: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(signed_tx_b64)
         .context("invalid base64 signed transaction")
+}
+
+/// The SPL-Memo nonce carried by a signed transaction, if any.
+///
+/// game-api's `/auth/session` requires the nonce that is INSIDE the transaction
+/// being authenticated with. Reading it back out of the tx we are about to
+/// broadcast is deliberately STATELESS: the nonce was previously stashed on the
+/// in-memory GameSession, which is lost whenever a session is rehydrated from
+/// Firestore on another instance — so a two-agent run spread across instances
+/// failed with "no auth nonce for this stake" while single-agent runs passed.
+/// The transaction is the one place the nonce is guaranteed to be.
+fn memo_nonce_from_signed_tx(signed_bytes: &[u8]) -> Option<String> {
+    let tx: solana_sdk::transaction::Transaction = bincode::deserialize(signed_bytes).ok()?;
+    let keys = &tx.message.account_keys;
+    tx.message.instructions.iter().find_map(|ix| {
+        let program = keys.get(ix.program_id_index as usize)?;
+        if *program != game_chain::instructions::MEMO_PROGRAM_ID {
+            return None;
+        }
+        String::from_utf8(ix.data.clone()).ok()
+    })
 }
 
 /// Whether `action` is a cross-chain (Solana↔EVM) Solana-leg tx submitted via
@@ -676,7 +692,6 @@ fn build_restored_session(
         // (find_match) will set it. Mainnet-default is correct for
         // restored sessions in production where most traffic is mainnet.
         network: None,
-        auth_nonce: None,
     }
 }
 
@@ -1058,7 +1073,6 @@ impl GameSessionManager {
             game_ready: None,
             reveal_data: None,
             network: None,
-            auth_nonce: None,
         }));
 
         self.sessions
@@ -1147,9 +1161,6 @@ impl GameSessionManager {
         let unsigned = tx_builder
             .build_deposit_stake_with_memo(tournament_id, &nonce)
             .await?;
-        if let Some(session) = self.sessions.read().await.get(wallet) {
-            session.lock().await.auth_nonce = Some(nonce);
-        }
 
         // Store tournament_id in session for later queue join.
         if let Some(session) = self.sessions.read().await.get(wallet) {
@@ -1188,7 +1199,10 @@ impl GameSessionManager {
 
         match action {
             "deposit_stake" => {
-                self.after_deposit_stake(wallet, &sig_str, &session, network)
+                let nonce = memo_nonce_from_signed_tx(&signed_bytes).context(
+                    "deposit_stake tx carries no SPL-Memo nonce — build it via build_find_match_tx",
+                )?;
+                self.after_deposit_stake(wallet, &sig_str, &session, network, &nonce)
                     .await?
             }
             "join_game" => self.after_join_game(wallet, &session).await?,
@@ -1275,6 +1289,7 @@ impl GameSessionManager {
         sig_str: &str,
         session: &Arc<Mutex<GameSession>>,
         network: Option<&str>,
+        nonce: &str,
     ) -> Result<()> {
         if !session.lock().await.jwt.is_empty() {
             if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
@@ -1284,19 +1299,9 @@ impl GameSessionManager {
             session.lock().await.jwt.clear();
         }
 
-        // The nonce that is inside the transaction we are authenticating with.
-        // Taken (not copied) — it is single-use server-side, so keeping it would
-        // only invite a replay that game-api would reject anyway.
-        let nonce = session
-            .lock()
-            .await
-            .auth_nonce
-            .take()
-            .context("no auth nonce for this stake — build the tx via build_find_match_tx")?;
-
         let api_client =
             GameApiClient::new(&self.game_api_url)?.with_network(network.map(str::to_string));
-        let auth_resp = api_client.session_auth(wallet, sig_str, &nonce).await?;
+        let auth_resp = api_client.session_auth(wallet, sig_str, nonce).await?;
         let jwt = auth_resp.token.clone();
         self.spawn_ws_listener(wallet, &jwt, session, network)
             .await?;
@@ -2258,6 +2263,57 @@ async fn run_ws_read_loop(
 
 #[cfg(test)]
 mod tests {
+    // The agent auth path now hangs entirely on reading the nonce back out of
+    // the transaction. It replaced an in-memory GameSession field that was lost
+    // whenever a session rehydrated from Firestore on another instance, which
+    // is why two-agent runs failed with "no auth nonce for this stake" while
+    // single-agent runs passed.
+    #[test]
+    fn memo_nonce_round_trips_out_of_a_signed_tx() {
+        use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
+        let payer = Keypair::new();
+        let nonce = "7f3a9c1e-4b2d-4e8f-9a1c-2d3e4f5a6b7c";
+        let ixs = vec![
+            solana_sdk::system_instruction::transfer(&payer.pubkey(), &payer.pubkey(), 1),
+            game_chain::instructions::build_memo(nonce),
+        ];
+        let tx = Transaction::new_signed_with_payer(
+            &ixs,
+            Some(&payer.pubkey()),
+            &[&payer],
+            solana_sdk::hash::Hash::default(),
+        );
+        let bytes = bincode::serialize(&tx).unwrap();
+        assert_eq!(memo_nonce_from_signed_tx(&bytes).as_deref(), Some(nonce));
+    }
+
+    #[test]
+    fn a_tx_without_a_memo_yields_no_nonce() {
+        // Must be None, not a spurious match on another instruction's data —
+        // game-api matches on the Memo PROGRAM ID, so anything else would
+        // authenticate nothing and should fail loudly at submit instead.
+        use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
+        let payer = Keypair::new();
+        let tx = Transaction::new_signed_with_payer(
+            &[solana_sdk::system_instruction::transfer(
+                &payer.pubkey(),
+                &payer.pubkey(),
+                1,
+            )],
+            Some(&payer.pubkey()),
+            &[&payer],
+            solana_sdk::hash::Hash::default(),
+        );
+        let bytes = bincode::serialize(&tx).unwrap();
+        assert_eq!(memo_nonce_from_signed_tx(&bytes), None);
+    }
+
+    #[test]
+    fn garbage_bytes_yield_no_nonce_rather_than_panicking() {
+        assert_eq!(memo_nonce_from_signed_tx(&[0xff, 0x00, 0x13]), None);
+        assert_eq!(memo_nonce_from_signed_tx(&[]), None);
+    }
+
     use super::*;
 
     #[test]
