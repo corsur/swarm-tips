@@ -135,7 +135,14 @@ async function main(): Promise<void> {
 
   const score = Number(settled.composite_score ?? 0);
   const payment = Number(settled.payment_amount ?? 0);
-  if (!(score > 0) || !(payment > 0)) {
+  // The PAYMENT is the pass condition. The orchestrator mirror never
+  // backfills composite_score for attested-path tasks (verified live
+  // 2026-08-14 on BOTH networks: paid tasks finalize with score=null/0 while
+  // payment_amount carries the real payout — the mainnet spot-check paid
+  // 1_800_000 lamports, balance-verified, yet the old score>0 gate FAILed it).
+  // A rejected proof pays 0, so payment>0 is the discriminator; score stays
+  // in the message as a diagnostic.
+  if (!(payment > 0)) {
     throw new Error(
       `proof REJECTED: score=${score} payment=${payment}. The task still reached ` +
         `\`finalized\` and the client was refunded — reaching a terminal state is ` +
