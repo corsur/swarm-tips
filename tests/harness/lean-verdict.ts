@@ -21,7 +21,10 @@ const TERMINAL = new Set(["verified", "finalized"]);
 
 export function leanVerdict(task: LeanTaskRead): LeanVerdict {
   if (!TERMINAL.has(String(task.state ?? ""))) return "pending";
-  const score = Number(task.composite_score ?? 0);
+  // The PAYMENT is the pass condition — the cell exists to prove a
+  // constructed proof gets PAID. composite_score is diagnostic only: the
+  // mirror never backfills it for attested-path tasks (observed live
+  // 2026-08-14: state=finalized, payment=18_000_000, composite_score=null).
   const payment = Number(task.payment_amount ?? 0);
-  return score > 0 && payment > 0 ? "accepted" : "unsettled";
+  return payment > 0 ? "accepted" : "unsettled";
 }

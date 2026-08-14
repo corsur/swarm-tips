@@ -10,7 +10,7 @@ import { assert } from "chai";
 import { leanVerdict } from "./lean-verdict";
 
 describe("harness/lean-verdict", () => {
-  it("accepted: terminal state with positive score and payment", () => {
+  it("accepted: terminal state with positive payment", () => {
     assert.equal(
       leanVerdict({
         state: "verified",
@@ -25,6 +25,26 @@ describe("harness/lean-verdict", () => {
         composite_score: 1_000_000,
         payment_amount: 1_800_000,
       }),
+      "accepted"
+    );
+  });
+
+  it("accepted: payment present even when the mirror never backfills a score", () => {
+    // Live 2026-08-14 (final sweep): the worker's proof was ACCEPTED and paid
+    // 18_000_000 lamports (state=finalized), but the orchestrator mirror
+    // never populates composite_score for attested-path tasks — it stayed
+    // null even after finalization. The payment is the pass condition (the
+    // cell's own doctrine); requiring a mirrored score fails a PAID run.
+    assert.equal(
+      leanVerdict({
+        state: "finalized",
+        composite_score: 0,
+        payment_amount: 18_000_000,
+      }),
+      "accepted"
+    );
+    assert.equal(
+      leanVerdict({ state: "finalized", payment_amount: 18_000_000 }),
       "accepted"
     );
   });
@@ -44,7 +64,7 @@ describe("harness/lean-verdict", () => {
     assert.equal(leanVerdict({ state: "verified" }), "unsettled");
   });
 
-  it("unsettled: score present but payment not yet backfilled (partial mirror)", () => {
+  it("unsettled: score present but payment not yet backfilled — payment is the truth", () => {
     assert.equal(
       leanVerdict({
         state: "verified",
