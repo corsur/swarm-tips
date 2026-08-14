@@ -76,12 +76,24 @@ impl GameApiProxy {
     }
 
     /// Poll for a cross-chain match by chain-native wallet.
+    /// DEPRECATED — leaks the public wallet; prefer `xqueue_status_by_handle`.
     pub async fn xqueue_status(
         &self,
         wallet: &str,
     ) -> Result<game_api_client::XQueueResponse, McpServiceError> {
         self.client
             .xqueue_status(wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Poll for a cross-chain match by the secret handle minted at `/join`.
+    pub async fn xqueue_status_by_handle(
+        &self,
+        handle: &str,
+    ) -> Result<game_api_client::XQueueResponse, McpServiceError> {
+        self.client
+            .xqueue_status_by_handle(handle)
             .await
             .map_err(map_game_api_error)
     }
@@ -347,6 +359,29 @@ mod tests {
         let resp = proxy(&server).xqueue_status("So1Wallet").await.expect("ok");
         assert_eq!(resp.status, "waiting");
         assert!(resp.match_payload.is_none());
+    }
+
+    #[tokio::test]
+    async fn xqueue_status_by_handle_sends_handle_not_wallet() {
+        // The anonymity fix: polling must go out as ?handle=, and the public
+        // wallet must NOT appear in the query string.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/internal/xqueue/status"))
+            .and(query_param("handle", "sekret-uuid"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "status": "matched", "match": { "match_id": "0x1" } })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server)
+            .xqueue_status_by_handle("sekret-uuid")
+            .await
+            .expect("ok");
+        assert_eq!(resp.status, "matched");
     }
 
     #[tokio::test]

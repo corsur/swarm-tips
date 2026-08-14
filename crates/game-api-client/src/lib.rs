@@ -138,6 +138,11 @@ pub struct XQueueResponse {
     pub status: String,
     #[serde(default, rename = "match")]
     pub match_payload: Option<serde_json::Value>,
+    /// Secret handle minted at `/join`. Poll status by this instead of the
+    /// public wallet, so a stranger can't read a victim's match by their
+    /// address. `#[serde(default)]` for pre-rollout servers.
+    #[serde(default)]
+    pub poll_handle: Option<String>,
 }
 
 /// Response from `/internal/xqueue/build-sol-fund`: the matchmaker-cosigned
@@ -379,12 +384,37 @@ impl GameApiClient {
 
     /// `GET /internal/xqueue/status?wallet=…` — poll for a cross-chain match
     /// by chain-native wallet (the player who was already waiting).
+    ///
+    /// DEPRECATED: keys by the PUBLIC wallet, which anyone can poll. Prefer
+    /// `xqueue_status_by_handle` with the handle minted at `/join`. Kept during
+    /// rollout until every caller polls by handle.
     pub async fn xqueue_status(&self, wallet: &str) -> Result<XQueueResponse, GameApiError> {
         let url = format!("{}/internal/xqueue/status", self.base_url);
         let resp = self
             .inner
             .get(&url)
             .query(&[("wallet", wallet)])
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `GET /internal/xqueue/status?handle=…` — poll for a cross-chain match by
+    /// the secret handle minted at `/join`. The public wallet never rides in the
+    /// query string, so a stranger cannot poll a victim's match by their address.
+    pub async fn xqueue_status_by_handle(
+        &self,
+        handle: &str,
+    ) -> Result<XQueueResponse, GameApiError> {
+        let url = format!("{}/internal/xqueue/status", self.base_url);
+        let resp = self
+            .inner
+            .get(&url)
+            .query(&[("handle", handle)])
             .send()
             .await?;
         Self::check_status(resp)

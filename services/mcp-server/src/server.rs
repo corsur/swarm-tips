@@ -259,6 +259,15 @@ pub struct XchainFindMatchArgs {
     pub tournament_id: Option<u64>,
 }
 
+#[derive(Debug, Default, serde::Deserialize, JsonSchema)]
+pub struct XchainMatchStatusArgs {
+    /// The `poll_handle` returned by xchain_find_match. Pass it so you poll by
+    /// an unguessable secret rather than your public wallet. Optional during
+    /// rollout: omitting it falls back to a (deprecated) wallet lookup.
+    #[serde(default)]
+    pub poll_handle: Option<String>,
+}
+
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct EvmFindMatchArgs {
     /// Tournament ID to join. Defaults to 1.
@@ -1728,29 +1737,37 @@ impl SwarmTipsMcp {
             "match": resp.match_payload,
             "chain": chain,
             "wallet": address,
-            "next": "If 'waiting', poll xchain_match_status. If 'matched', use the returned match payload to fund your leg (build + sign the createMatch / create_xmatch tx) and later sign the outcome certificate with your session key.",
+            // Secret handle: pass it to xchain_match_status so you poll by an
+            // unguessable capability, not your public wallet (which anyone could
+            // poll to read your match).
+            "poll_handle": resp.poll_handle,
+            "next": "If 'waiting', poll xchain_match_status with poll_handle. If 'matched', use the returned match payload to fund your leg (build + sign the createMatch / create_xmatch tx) and later sign the outcome certificate with your session key.",
         })))
     }
 
     #[tool(
         name = "xchain_match_status",
-        description = "[READ] Poll for your cross-chain match. Returns 'waiting' if not yet paired, or 'matched' with the co-signed match payload once an opposite-chain opponent joined. Call after xchain_find_match returned 'waiting'. Requires a registered wallet.",
+        description = "[READ] Poll for your cross-chain match. Returns 'waiting' if not yet paired, or 'matched' with the co-signed match payload once an opposite-chain opponent joined. Call after xchain_find_match returned 'waiting'. Pass the poll_handle it returned so you poll by an unguessable secret rather than your public wallet. Requires a registered wallet.",
         annotations(read_only_hint = true)
     )]
     async fn xchain_match_status(
         &self,
+        Parameters(args): Parameters<XchainMatchStatusArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
         let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
 
-        let resp = self
-            .state
-            .game_api
-            .xqueue_status(&address)
-            .await
-            .map_err(|e| McpError::internal_error(format!("xqueue_status failed: {e}"), None))?;
+        // Prefer the secret handle so the public wallet never rides in the query
+        // string; fall back to the deprecated wallet lookup during rollout.
+        let resp = match args.poll_handle.as_deref() {
+            Some(handle) if !handle.is_empty() => {
+                self.state.game_api.xqueue_status_by_handle(handle).await
+            }
+            _ => self.state.game_api.xqueue_status(&address).await,
+        }
+        .map_err(|e| McpError::internal_error(format!("xqueue_status failed: {e}"), None))?;
 
         Ok(text_result(&serde_json::json!({
             "status": resp.status,
