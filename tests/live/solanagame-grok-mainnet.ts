@@ -60,12 +60,16 @@ const KEYFILE = (process.env.A_KEYFILE ?? "~/.config/solana/id.json").replace(
 // 90-day window) — the value the game frontend defaults to on mainnet
 // (frontend constants.ts `TOURNAMENT_ID`). Devnet uses 1003.
 const TOURNAMENT_ID = Number(process.env.TOURNAMENT_ID ?? 2);
-// 0.05 SOL — FIXED_STAKE_LAMPORTS in the coordination-game program.
-const STAKE_LAMPORTS = 50_000_000;
+// The stake is DYNAMIC now (GlobalConfig.stake_lamports, USD-pegged via the
+// live repricing) — 0.05 SOL hardcoded got "cosign: rejected — stake is not
+// the configured stake: asked 50000000, expected 68482585" (live 2026-08-15).
+// Read it from GlobalConfig at startup; this is only a floor for the balance
+// precheck until the live value is fetched.
+let STAKE_LAMPORTS = 50_000_000;
 const HUMAN_GUESS: 0 | 1 = 1; // "different" — the safe default guess
 
 const TID = new BN(TOURNAMENT_ID);
-const STAKE = new BN(STAKE_LAMPORTS);
+let STAKE = new BN(STAKE_LAMPORTS);
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -461,6 +465,15 @@ async function main() {
 
   // 1) deposit_stake — funds the per-tournament escrow the game will consume.
   //    Tolerate a leftover escrow from a prior aborted run.
+  // Live stake from GlobalConfig — single source of truth for deposit,
+  // create_game, and the balance floor.
+  const gc: any = await program.account.globalConfig.fetch(globalConfigPda());
+  STAKE_LAMPORTS = Number(gc.stakeLamports);
+  STAKE = new BN(STAKE_LAMPORTS);
+  console.log(
+    `[ok] live stake ${(STAKE_LAMPORTS / 1e9).toFixed(6)} SOL (GlobalConfig)`
+  );
+
   const authNonce = await authChallenge(wallet);
   let depositSig: string;
   try {
@@ -472,6 +485,12 @@ async function main() {
         player: human.publicKey,
         systemProgram: SystemProgram.programId,
       })
+      // Trailing global_config: deposit_stake reads the LIVE stake from this
+      // optional remaining account; without it the on-chain default is used
+      // and the deposit amount mismatches the configured stake.
+      .remainingAccounts([
+        { pubkey: globalConfigPda(), isSigner: false, isWritable: false },
+      ])
       .postInstructions([memoIx(authNonce)])
       .rpc();
     console.log(`[ok] deposit_stake: ${depositSig}`);
