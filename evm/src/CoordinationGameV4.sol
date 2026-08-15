@@ -319,11 +319,21 @@ contract CoordinationGameV4 is
     /// @notice Join a pending game AS `player` by matching the stake; goes Active.
     ///         `msg.sender` must act for `player` (direct or via session key). The
     ///         recorded player2 is `player` (the wallet), not the session signer.
-    function joinGame(bytes32 gameId, address player) external payable whenNotPaused {
+    function joinGame(bytes32 gameId, address player, bytes calldata operatorSig)
+        external
+        payable
+        whenNotPaused
+    {
         Game storage g = games[gameId];
         if (g.status != Status.Pending) revert InvalidStatus();
         if (!_actsFor(msg.sender, player)) revert BadSession();
         if (player == g.player1) revert NotParticipant();
+        // Bind `player` (the joiner) into an operator-signed digest, mirroring
+        // createGame's L2 binding and the Solana matchmaker cosign: the operator
+        // attests THIS wallet is the paired opponent, so joinGame is no longer a
+        // permissionless open slot a stranger could front-run while Pending.
+        bytes32 digest = keccak256(abi.encode(block.chainid, address(this), gameId, player));
+        if (!_recoverAndCheck(digest, operatorSig)) revert BadSignature();
         _takeStake(player, g.stakeWei);
 
         g.player2 = player;

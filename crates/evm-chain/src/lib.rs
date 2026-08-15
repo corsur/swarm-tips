@@ -112,7 +112,7 @@ sol! {
     /// no operator float pool — the winner is paid from the pot directly).
     interface CoordinationGame {
         function createGame(bytes32 gameId, bytes32 matchupCommitment, bytes operatorSig, address player) external payable;
-        function joinGame(bytes32 gameId, address player) external payable;
+        function joinGame(bytes32 gameId, address player, bytes operatorSig) external payable;
         function commitGuess(bytes32 gameId, bytes32 commitment) external;
         function revealGuess(bytes32 gameId, bytes32 r, bytes32 rMatchup) external;
         function resolveTimeout(bytes32 gameId) external;
@@ -432,12 +432,14 @@ pub fn build_create_game_parts(
 pub fn build_join_game(
     contract: Address,
     game_id: [u8; 32],
+    operator_sig: [u8; 65],
     stake_wei: u128,
     player: Address,
 ) -> UnsignedEvmCall {
     let data = CoordinationGame::joinGameCall {
         gameId: game_id.into(),
         player,
+        operatorSig: operator_sig.to_vec().into(),
     }
     .abi_encode();
     call(contract, data, U256::from(stake_wei))
@@ -447,12 +449,14 @@ pub fn build_join_game(
 pub fn build_join_game_parts(
     contract: [u8; 20],
     game_id: [u8; 32],
+    operator_sig: [u8; 65],
     stake_wei: u128,
     player: [u8; 20],
 ) -> UnsignedEvmCall {
     build_join_game(
         Address::from(contract),
         game_id,
+        operator_sig,
         stake_wei,
         Address::from(player),
     )
@@ -952,7 +956,7 @@ mod tests {
             &CoordinationGame::createGameCall::SELECTOR[..]
         );
 
-        let join = build_join_game(C, [0xAA; 32], stake, Address::from([0x22; 20]));
+        let join = build_join_game(C, [0xAA; 32], [0x33; 65], stake, Address::from([0x22; 20]));
         assert_eq!(join.value, U256::from(stake));
         assert_eq!(
             &join.data[..4],
@@ -1166,8 +1170,15 @@ mod tests {
             .data
         );
         assert_eq!(
-            build_join_game_parts(contract, g, 7, [0x22; 20]).data,
-            build_join_game(Address::from(contract), g, 7, Address::from([0x22; 20])).data
+            build_join_game_parts(contract, g, [0x33; 65], 7, [0x22; 20]).data,
+            build_join_game(
+                Address::from(contract),
+                g,
+                [0x33; 65],
+                7,
+                Address::from([0x22; 20])
+            )
+            .data
         );
         assert_eq!(
             build_commit_guess_parts(contract, g, [0xC1; 32]).data,

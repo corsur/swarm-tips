@@ -113,7 +113,7 @@ contract CoordinationGameV4Test is Test {
 
         // New games are blocked...
         vm.expectRevert();
-        game.joinGame(bytes32(uint256(1)), mallory);
+        game.joinGame(bytes32(uint256(1)), mallory, "");
 
         // ...but the claim path still executes and fails on its OWN guard
         // (nothing to claim), not on the pause.

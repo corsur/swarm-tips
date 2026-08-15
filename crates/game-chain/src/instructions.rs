@@ -482,7 +482,16 @@ pub fn build_deposit_stake(tournament_id: u64, payer: &Pubkey) -> Instruction {
 ///
 /// Joins an existing game as Player 2. The game must already have been
 /// created by the matchmaker.
-pub fn build_join_game(game_id: u64, tournament_id: u64, player: &Pubkey) -> Instruction {
+/// `matchmaker` co-signs the join (like create_game), so join_game is no longer
+/// a permissionless open slot a stranger could front-run. It is a required Signer
+/// but pays no gas; the caller obtains its signature from game-api's
+/// /games/cosign-join. `matchmaker` must equal GlobalConfig.matchmaker.
+pub fn build_join_game(
+    game_id: u64,
+    tournament_id: u64,
+    player: &Pubkey,
+    matchmaker: &Pubkey,
+) -> Instruction {
     assert!(game_id > 0, "game_id must be non-zero");
     assert!(tournament_id > 0, "tournament_id must be non-zero");
 
@@ -490,6 +499,7 @@ pub fn build_join_game(game_id: u64, tournament_id: u64, player: &Pubkey) -> Ins
     let (tournament_pda, _) = pda::tournament_pda(tournament_id);
     let (profile_pda, _) = pda::player_profile_pda(tournament_id, player);
     let (escrow_pda, _) = pda::escrow_pda(tournament_id, player);
+    let (global_config_pda, _) = pda::global_config_pda();
 
     Instruction {
         program_id: PROGRAM_ID,
@@ -498,6 +508,8 @@ pub fn build_join_game(game_id: u64, tournament_id: u64, player: &Pubkey) -> Ins
             AccountMeta::new(profile_pda, false),
             AccountMeta::new(escrow_pda, false),
             AccountMeta::new_readonly(tournament_pda, false),
+            AccountMeta::new_readonly(global_config_pda, false),
+            AccountMeta::new_readonly(*matchmaker, true),
             AccountMeta::new(*player, true),
             AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
         ],
@@ -617,17 +629,29 @@ mod tests {
     #[test]
     fn build_join_game_has_correct_accounts() {
         let kp = Keypair::new();
-        let ix = build_join_game(1, 1, &kp.pubkey());
+        let mm = Keypair::new();
+        let ix = build_join_game(1, 1, &kp.pubkey(), &mm.pubkey());
         assert_eq!(ix.program_id, PROGRAM_ID);
-        // 6 accounts: game, profile, escrow, tournament, player, system.
-        assert_eq!(ix.accounts.len(), 6, "join_game must have 6 accounts");
+        // 8 accounts: game, profile, escrow, tournament, global_config,
+        // matchmaker, player, system.
+        assert_eq!(ix.accounts.len(), 8, "join_game must have 8 accounts");
+        // The matchmaker is a required signer (co-signs the join), but not the
+        // fee payer / writable — it never pays gas.
+        let matchmaker_meta = &ix.accounts[5];
+        assert_eq!(matchmaker_meta.pubkey, mm.pubkey());
+        assert!(matchmaker_meta.is_signer, "matchmaker must be a signer");
+        assert!(
+            !matchmaker_meta.is_writable,
+            "matchmaker must not be writable"
+        );
     }
 
     #[test]
     #[should_panic(expected = "game_id must be non-zero")]
     fn build_join_game_rejects_zero_game_id() {
         let kp = Keypair::new();
-        let _ = build_join_game(0, 1, &kp.pubkey());
+        let mm = Keypair::new();
+        let _ = build_join_game(0, 1, &kp.pubkey(), &mm.pubkey());
     }
 
     #[test]

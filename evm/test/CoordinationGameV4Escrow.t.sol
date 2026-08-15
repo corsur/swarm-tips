@@ -51,6 +51,12 @@ contract CoordinationGameV4EscrowTest is Test {
         return abi.encodePacked(r, s, v);
     }
 
+    function _joinSig(bytes32 gameId, address joiner) internal view returns (bytes memory) {
+        bytes32 digest = keccak256(abi.encode(block.chainid, address(game), gameId, joiner));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(operatorPk, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
     function _commitment(bytes32 gameId) internal pure returns (bytes32) {
         return keccak256(abi.encode(gameId, "matchup"));
     }
@@ -128,10 +134,29 @@ contract CoordinationGameV4EscrowTest is Test {
         vm.prank(bob);
         game.deposit{value: STAKE}();
         vm.prank(bob);
-        game.joinGame(gameId, bob);
+        game.joinGame(gameId, bob, _joinSig(gameId, bob));
 
         assertEq(game.withdrawable(bob), 0, "joiner's balance funded the stake");
         assertEq(address(game).balance, 2 * STAKE, "both stakes are held by the contract");
+    }
+
+    /// The regression this operator-signed join exists for: a funded STRANGER who
+    /// front-runs the intended opponent cannot join, because they cannot produce
+    /// the operator's signature — the backend only co-signs a join for the real
+    /// paired P2. Mallory signs with her OWN key and is rejected BadSignature.
+    function test_joinRejectsANonOperatorSignature() public {
+        bytes32 gameId = keccak256("g-interloper");
+        bytes32 mc = _commitment(gameId);
+        vm.prank(alice);
+        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc, alice), alice);
+
+        uint256 malloryPk = 0xBADBAD;
+        bytes32 digest = keccak256(abi.encode(block.chainid, address(game), gameId, mallory));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(malloryPk, digest);
+
+        vm.prank(mallory);
+        vm.expectRevert(CoordinationGameV4.BadSignature.selector);
+        game.joinGame{value: STAKE}(gameId, mallory, abi.encodePacked(r, s, v));
     }
 
     function test_stakingWithTooSmallABalanceReverts() public {
@@ -285,7 +310,7 @@ contract CoordinationGameV4EscrowTest is Test {
         game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc, alice), alice);
 
         vm.prank(bob);
-        game.joinGame{value: STAKE}(gameId, bob);
+        game.joinGame{value: STAKE}(gameId, bob, _joinSig(gameId, bob));
 
         (CoordinationGameV4.Status status,,,) = _game(gameId);
         assertEq(uint8(status), uint8(CoordinationGameV4.Status.Active), "inline path still reaches Active");

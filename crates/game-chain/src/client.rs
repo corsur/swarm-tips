@@ -105,11 +105,26 @@ impl GameTxBuilder {
             .await
     }
 
-    /// Build an unsigned `JoinGame` transaction.
+    /// Build an unsigned `JoinGame` transaction. Reads `GlobalConfig` for the
+    /// matchmaker, which join_game now requires as a co-signer; the caller obtains
+    /// that signature from game-api's /games/cosign-join before submitting.
     pub async fn build_join_game(&self, game_id: u64, tournament_id: u64) -> Result<UnsignedTx> {
         anyhow::ensure!(game_id > 0, "game_id must be non-zero");
         anyhow::ensure!(tournament_id > 0, "tournament_id must be non-zero");
-        let ix = instructions::build_join_game(game_id, tournament_id, &self.player);
+        let (global_config_pda, _) = pda::global_config_pda();
+        let global_config_account = self
+            .rpc
+            .get_account(&global_config_pda)
+            .await
+            .context("failed to fetch GlobalConfig account")?;
+        let global_config = GlobalConfig::try_deserialize(&mut global_config_account.data.as_ref())
+            .context("failed to deserialize GlobalConfig")?;
+        let ix = instructions::build_join_game(
+            game_id,
+            tournament_id,
+            &self.player,
+            &global_config.matchmaker,
+        );
         self.build_unsigned(&[ix]).await
     }
 

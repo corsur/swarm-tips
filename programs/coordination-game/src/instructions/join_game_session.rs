@@ -4,7 +4,7 @@ use crate::instructions::join_game::{
 };
 use crate::instructions::session_utils::validate_session_authority;
 use crate::instructions::utils::transfer_lamports;
-use crate::state::{Game, PlayerProfile, SessionAuthority, StakeEscrow, Tournament};
+use crate::state::{Game, GlobalConfig, PlayerProfile, SessionAuthority, StakeEscrow, Tournament};
 use anchor_lang::prelude::*;
 
 /// Session-delegated variant of `join_game`. Session key signs instead of
@@ -26,6 +26,8 @@ pub fn join_game_session(ctx: Context<JoinGameSession>) -> Result<()> {
         &ctx.accounts.tournament,
         &ctx.accounts.escrow,
         &player_key,
+        ctx.accounts.matchmaker.key(),
+        ctx.accounts.global_config.matchmaker,
         now,
     )?;
     init_player_profile_if_new(
@@ -95,6 +97,14 @@ pub struct JoinGameSession<'info> {
         bump = tournament.bump,
     )]
     pub tournament: Account<'info, Tournament>,
+    #[account(
+        seeds = [b"global_config"],
+        bump = global_config.bump,
+    )]
+    pub global_config: Account<'info, GlobalConfig>,
+    /// Matchmaker co-signs to attest this is the paired opponent. Verified
+    /// against GlobalConfig.matchmaker. Does not pay gas.
+    pub matchmaker: Signer<'info>,
     /// CHECK: The player wallet. Not a signer — the session key signs instead.
     /// Verified against session_authority.player in the handler.
     pub player: UncheckedAccount<'info>,
