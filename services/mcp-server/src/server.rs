@@ -2043,6 +2043,7 @@ impl SwarmTipsMcp {
     )]
     async fn xchain_build_create_xmatch(
         &self,
+        Parameters(args): Parameters<XchainGameplayArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
@@ -2057,7 +2058,7 @@ impl SwarmTipsMcp {
         let resp = self
             .state
             .game_api
-            .xqueue_build_sol_fund(&address)
+            .xqueue_build_sol_fund(&address, args.poll_handle.as_deref())
             .await
             .map_err(|e| McpError::internal_error(format!("build_sol_fund failed: {e}"), None))?;
 
@@ -2078,6 +2079,7 @@ impl SwarmTipsMcp {
     )]
     async fn xchain_build_settle(
         &self,
+        Parameters(args): Parameters<XchainGameplayArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
@@ -2087,7 +2089,7 @@ impl SwarmTipsMcp {
         let outcome = self
             .state
             .game_api
-            .xqueue_outcome_cosign(&address)
+            .xqueue_outcome_cosign(&address, args.poll_handle.as_deref())
             .await
             .map_err(|e| McpError::internal_error(format!("outcome_cosign failed: {e}"), None))?;
 
@@ -2261,6 +2263,7 @@ impl SwarmTipsMcp {
     )]
     async fn xchain_build_lock_xmatch(
         &self,
+        Parameters(args): Parameters<XchainGameplayArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
@@ -2274,7 +2277,7 @@ impl SwarmTipsMcp {
         let resp = self
             .state
             .game_api
-            .xqueue_build_sol_lock(&address)
+            .xqueue_build_sol_lock(&address, args.poll_handle.as_deref())
             .await
             .map_err(|e| McpError::internal_error(format!("build_sol_lock failed: {e}"), None))?;
         Ok(text_result(&serde_json::json!({

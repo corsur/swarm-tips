@@ -491,13 +491,21 @@ impl GameApiClient {
     pub async fn xqueue_build_sol_fund(
         &self,
         wallet: &str,
+        handle: Option<&str>,
     ) -> Result<XSolFundResponse, GameApiError> {
         #[derive(Serialize)]
         struct Body<'a> {
             wallet: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            handle: Option<&'a str>,
         }
         let url = format!("{}/internal/xqueue/build-sol-fund", self.base_url);
-        let resp = self.inner.post(&url).json(&Body { wallet }).send().await?;
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body { wallet, handle })
+            .send()
+            .await?;
         Self::check_status(resp)
             .await?
             .json()
@@ -512,13 +520,21 @@ impl GameApiClient {
     pub async fn xqueue_build_sol_lock(
         &self,
         wallet: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, GameApiError> {
         #[derive(Serialize)]
         struct Body<'a> {
             wallet: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            handle: Option<&'a str>,
         }
         let url = format!("{}/internal/xqueue/build-sol-lock", self.base_url);
-        let resp = self.inner.post(&url).json(&Body { wallet }).send().await?;
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body { wallet, handle })
+            .send()
+            .await?;
         Self::check_status(resp)
             .await?
             .json()
@@ -567,13 +583,21 @@ impl GameApiClient {
     pub async fn xqueue_outcome_cosign(
         &self,
         wallet: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, GameApiError> {
         #[derive(Serialize)]
         struct Body<'a> {
             wallet: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            handle: Option<&'a str>,
         }
         let url = format!("{}/internal/xqueue/outcome-cosign", self.base_url);
-        let resp = self.inner.post(&url).json(&Body { wallet }).send().await?;
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body { wallet, handle })
+            .send()
+            .await?;
         Self::check_status(resp)
             .await?
             .json()

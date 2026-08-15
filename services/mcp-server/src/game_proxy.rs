@@ -151,9 +151,10 @@ impl GameApiProxy {
     pub async fn xqueue_build_sol_fund(
         &self,
         wallet: &str,
+        handle: Option<&str>,
     ) -> Result<game_api_client::XSolFundResponse, McpServiceError> {
         self.client
-            .xqueue_build_sol_fund(wallet)
+            .xqueue_build_sol_fund(wallet, handle)
             .await
             .map_err(map_game_api_error)
     }
@@ -164,9 +165,10 @@ impl GameApiProxy {
     pub async fn xqueue_build_sol_lock(
         &self,
         wallet: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, McpServiceError> {
         self.client
-            .xqueue_build_sol_lock(wallet)
+            .xqueue_build_sol_lock(wallet, handle)
             .await
             .map_err(map_game_api_error)
     }
@@ -177,9 +179,10 @@ impl GameApiProxy {
     pub async fn xqueue_outcome_cosign(
         &self,
         wallet: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, McpServiceError> {
         self.client
-            .xqueue_outcome_cosign(wallet)
+            .xqueue_outcome_cosign(wallet, handle)
             .await
             .map_err(map_game_api_error)
     }
@@ -464,7 +467,7 @@ mod tests {
             .await;
 
         let resp = proxy(&server)
-            .xqueue_build_sol_fund("So1Wallet")
+            .xqueue_build_sol_fund("So1Wallet", None)
             .await
             .expect("ok");
         assert_eq!(resp.unsigned_tx, "dHg=");
@@ -489,9 +492,9 @@ mod tests {
         }
 
         let p = proxy(&server);
-        let lock = p.xqueue_build_sol_lock("w").await.expect("ok");
+        let lock = p.xqueue_build_sol_lock("w", None).await.expect("ok");
         assert_eq!(lock["endpoint"], "/internal/xqueue/build-sol-lock");
-        let cosign = p.xqueue_outcome_cosign("w").await.expect("ok");
+        let cosign = p.xqueue_outcome_cosign("w", None).await.expect("ok");
         assert_eq!(cosign["endpoint"], "/internal/xqueue/outcome-cosign");
         let gameplay = p.xqueue_gameplay("w", None).await.expect("ok");
         assert_eq!(gameplay["endpoint"], "/internal/xqueue/gameplay");
