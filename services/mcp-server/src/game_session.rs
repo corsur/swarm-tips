@@ -563,6 +563,9 @@ fn adopt_persisted_match(s: &mut GameSession, persisted: &PersistedGameSession) 
         session_id,
         role,
         matchup_commitment: persisted.matchup_commitment.clone(),
+        // Same-session restore: the persisted match was adopted (and guarded)
+        // when it arrived; the wire tournament is not persisted separately.
+        tournament_id: persisted.tournament_id,
     });
     true
 }
@@ -591,6 +594,17 @@ fn resolve_created_game_id(
         .filter(|(id, p1, t)| *id >= predicted && p1 == player_one && *t == tournament_id)
         .map(|(id, _, _)| *id)
         .min()
+}
+
+/// Does an incoming match belong to a DIFFERENT tournament than the session's?
+/// Fail-closed guard for match adoption: with one game session per wallet, a
+/// second driver sharing the wallet can queue in another tournament, and its
+/// pairing arrives over this session's WS. Adopting it creates a
+/// cross-tournament game whose P2 can only fail (tournament ConstraintSeeds —
+/// observed 2026-08-14, ~16 join retries before the match timed out). `None`
+/// on either side means "cannot judge" — never block on missing information.
+fn foreign_tournament(session_tournament: Option<u64>, msg_tournament: Option<u64>) -> bool {
+    matches!((session_tournament, msg_tournament), (Some(s), Some(m)) if s != m)
 }
 
 fn match_is_pending(state: GameSessionState) -> bool {
@@ -688,6 +702,7 @@ fn build_restored_session(
             session_id,
             role,
             matchup_commitment: persisted.matchup_commitment.clone(),
+            tournament_id: persisted.tournament_id,
         }),
         _ => None,
     };
@@ -2330,17 +2345,35 @@ async fn run_ws_read_loop(
                         session_id,
                         role,
                         matchup_commitment,
+                        tournament_id,
                     } => {
-                        tracing::info!(wallet = %wallet, %session_id, role, has_commitment = matchup_commitment.is_some(), "ws: match_found");
-                        s.matchup_commitment = matchup_commitment.clone();
-                        s.session_id = Some(session_id.clone());
-                        s.role = Some(role);
-                        s.match_found = Some(MatchFoundMsg {
-                            session_id,
-                            role,
-                            matchup_commitment,
-                        });
-                        persist_ws_transition(db, &s, "match_found").await;
+                        if foreign_tournament(s.tournament_id, tournament_id) {
+                            // A second driver sharing this wallet queued in a
+                            // different tournament; adopting its pairing here
+                            // would create a cross-tournament game whose P2
+                            // can only fail. Reject loudly — the match times
+                            // out server-side and both flows stay coherent.
+                            tracing::error!(
+                                wallet = %wallet,
+                                %session_id,
+                                session_tournament = ?s.tournament_id,
+                                match_tournament = ?tournament_id,
+                                "ws: match_found for a DIFFERENT tournament — not adopting \
+                                 (concurrent driver sharing this wallet?)"
+                            );
+                        } else {
+                            tracing::info!(wallet = %wallet, %session_id, role, has_commitment = matchup_commitment.is_some(), "ws: match_found");
+                            s.matchup_commitment = matchup_commitment.clone();
+                            s.session_id = Some(session_id.clone());
+                            s.role = Some(role);
+                            s.match_found = Some(MatchFoundMsg {
+                                session_id,
+                                role,
+                                matchup_commitment,
+                                tournament_id,
+                            });
+                            persist_ws_transition(db, &s, "match_found").await;
+                        }
                     }
                     ServerMessage::GameReady { game_id } => {
                         tracing::info!(wallet = %wallet, game_id, "ws: game_ready");
@@ -2384,6 +2417,37 @@ mod tests {
     // InvalidGameState on a forever-unjoined game. resolve_created_game_id is
     // the post-land referential-integrity check: OUR game is the one whose
     // player_one and tournament match, at or after the predicted id.
+    mod foreign_tournament {
+        use super::super::foreign_tournament;
+
+        // Cross-session contention, 2026-08-14: a second e2e driver sharing
+        // this wallet queued in T1099; its pairing arrived over the shared
+        // per-wallet WS while THIS flow was mid-T1003. Adopting it created a
+        // cross-tournament game whose P2 looped on ConstraintSeeds. A match
+        // for a different tournament than the session's must never be adopted.
+        #[test]
+        fn rejects_a_match_from_a_different_tournament() {
+            assert!(foreign_tournament(Some(1003), Some(1099)));
+        }
+
+        #[test]
+        fn accepts_a_match_for_the_sessions_own_tournament() {
+            assert!(!foreign_tournament(Some(1003), Some(1003)));
+        }
+
+        #[test]
+        fn accepts_when_the_server_predates_the_field() {
+            // Pre-rollout game-api omits tournament_id — cannot fail closed on
+            // information that does not exist.
+            assert!(!foreign_tournament(Some(1003), None));
+        }
+
+        #[test]
+        fn accepts_when_the_session_has_not_bound_a_tournament_yet() {
+            assert!(!foreign_tournament(None, Some(1099)));
+        }
+    }
+
     mod resolve_created_game_id {
         use super::super::resolve_created_game_id;
         use solana_sdk::pubkey::Pubkey;
@@ -3030,6 +3094,7 @@ mod tests {
             session_id: "d058141e".to_string(),
             role: 0,
             matchup_commitment: Some("deadbeef".to_string()),
+            tournament_id: Some(1),
         });
 
         let doc = build_persisted_doc(&owner);

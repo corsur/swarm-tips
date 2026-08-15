@@ -39,6 +39,8 @@ pub struct MatchFoundMsg {
     pub role: u8,
     /// SHA-256 matchup commitment (hex). Present for role=0 (Player 1) only.
     pub matchup_commitment: Option<String>,
+    /// Tournament the pairing belongs to (`None` from pre-rollout servers).
+    pub tournament_id: Option<u64>,
 }
 
 pub struct RevealDataMsg {
@@ -54,6 +56,10 @@ pub enum ServerMessage {
         session_id: String,
         role: u8,
         matchup_commitment: Option<String>,
+        /// The tournament the pairing belongs to. `None` from pre-rollout
+        /// servers. Adopters fail closed on a mismatch with their own
+        /// in-flight tournament (cross-session contention, 2026-08-14).
+        tournament_id: Option<u64>,
     },
     GameReady {
         game_id: u64,
@@ -115,6 +121,8 @@ pub fn parse_server_message(text: &str) -> ServerMessage {
             session_id: String,
             role: u8,
             matchup_commitment: Option<String>,
+            #[serde(default)]
+            tournament_id: Option<u64>,
         },
         GameReady {
             game_id: u64,
@@ -134,10 +142,12 @@ pub fn parse_server_message(text: &str) -> ServerMessage {
             session_id,
             role,
             matchup_commitment,
+            tournament_id,
         }) => ServerMessage::MatchFound {
             session_id,
             role,
             matchup_commitment,
+            tournament_id,
         },
         Ok(RawMsg::GameReady { game_id }) => ServerMessage::GameReady { game_id },
         Ok(RawMsg::RevealData { r_matchup }) => ServerMessage::RevealData { r_matchup },
@@ -234,6 +244,7 @@ impl WsConnection {
                 session_id,
                 role,
                 matchup_commitment,
+                tournament_id,
             } = msg
             {
                 anyhow::ensure!(!session_id.is_empty(), "match_found session_id is empty");
@@ -241,6 +252,7 @@ impl WsConnection {
                     session_id,
                     role,
                     matchup_commitment,
+                    tournament_id,
                 });
             }
         }
@@ -444,10 +456,31 @@ mod tests {
                 session_id,
                 role,
                 matchup_commitment,
+                tournament_id,
             } => {
                 assert_eq!(session_id, "abc123");
                 assert_eq!(role, 1);
                 assert!(matchup_commitment.is_none());
+                // Pre-rollout servers omit the field — must parse as None,
+                // never fail the whole message.
+                assert!(tournament_id.is_none());
+            }
+            other => panic!("expected MatchFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_match_found_with_tournament() {
+        // Cross-session contention (2026-08-14): a T1099 pairing was adopted
+        // by a client flow whose in-flight session was T1003, and P2 looped on
+        // tournament ConstraintSeeds. match_found now NAMES its tournament so
+        // adopters can fail closed on mismatch.
+        let msg = parse_server_message(
+            r#"{"type":"match_found","session_id":"abc123","role":1,"tournament_id":1099}"#,
+        );
+        match msg {
+            ServerMessage::MatchFound { tournament_id, .. } => {
+                assert_eq!(tournament_id, Some(1099));
             }
             other => panic!("expected MatchFound, got {other:?}"),
         }
@@ -463,6 +496,7 @@ mod tests {
                 session_id,
                 role,
                 matchup_commitment,
+                ..
             } => {
                 assert_eq!(session_id, "abc123");
                 assert_eq!(role, 0);
