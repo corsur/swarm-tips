@@ -265,7 +265,11 @@ async function sessionAuth(
     } catch (e) {
       lastErr = e; // tx may not be RPC-visible yet — retry
     }
-    await sleep(3000);
+    // 7s, NOT 3s: /auth/session is rate-limited to 10 requests per rolling
+    // 60s per IP, so a 3s cadence (12 tries in ~36s) tripped the limiter on
+    // its own retries and turned a transient tx-visibility lag into a hard
+    // 429 failure (live 2026-08-15). ~8.6 req/min stays under the cap.
+    await sleep(7000);
   }
   throw new Error(`session auth failed: ${String(lastErr)}`);
 }
