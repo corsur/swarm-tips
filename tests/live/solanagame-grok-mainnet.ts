@@ -309,6 +309,7 @@ async function createGameCosigned(
   human: Keypair,
   matchmaker: PublicKey,
   token: string,
+  sessionId: string,
   matchupCommitment: number[],
   gameId: BN
 ): Promise<void> {
@@ -339,9 +340,12 @@ async function createGameCosigned(
   ];
 
   const messageB64 = Buffer.from(tx.serializeMessage()).toString("base64");
+  // session_id is REQUIRED: the cosign forgery guard compares the tx's
+  // matchup_commitment against THIS session's (422 "missing field
+  // `session_id`" otherwise — same contract the MCP client fixed 2026-08-14).
   const { signature: mmSigB64 } = await api<{ signature: string }>(
     "/games/cosign",
-    { body: { message: messageB64 }, token }
+    { body: { session_id: sessionId, message: messageB64 }, token }
   );
   tx.signatures[1] = {
     publicKey: matchmaker,
@@ -553,6 +557,7 @@ async function main() {
       human,
       cfg.matchmaker,
       token,
+      sessionId,
       matchupCommitment,
       gameId
     );
