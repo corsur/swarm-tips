@@ -603,11 +603,15 @@ pub fn testnet() -> impl Iterator<Item = &'static ChainEntry> {
 
 /// The Coordination Game tournament currently accepting play, per cluster.
 ///
-/// SINGLE SOURCE. Four consumers must agree with this value and each other:
-/// this constant, `coordination-app/infra/cloudrun.tf` (the backend
-/// matchmaker's TOURNAMENT_ID), the frontend's `constants.ts` default, and
-/// `tests/e2e/harness/network.ts`. A partial move pairs players across two
-/// tournaments; `check-tournament-id-parity.mjs` asserts they match.
+/// SINGLE SOURCE — consumers DERIVE from here rather than holding literals.
+/// Rust consumers (mcp-server, grok-agent) call `active_tournament_id()`
+/// directly. TypeScript consumers (the game frontend's `constants.ts`, the e2e
+/// harness's `network.ts`) read `chain-config.generated.json`, which
+/// `export-chain-config` emits from this constant — a rollover is an edit here
+/// plus a regenerate. The one residual literal is the devnet leaderboard
+/// workflow arg in `coordination-app/infra/workflows.tf` (Terraform can't read
+/// the JSON); `check-tournament-id-parity.mjs` pins it and the generated
+/// artifact to this value. A partial move pairs players across two tournaments.
 ///
 /// Why this exists: on-chain `Tournament.end_time` is IMMUTABLE — there is no
 /// extend instruction — so a rollover creates a NEW tournament and every client
@@ -619,6 +623,9 @@ pub fn testnet() -> impl Iterator<Item = &'static ChainEntry> {
 /// 2026-08-06. T3 runs to 2027-08-05.
 pub const ACTIVE_TOURNAMENT_MAINNET: u64 = 3;
 /// Devnet's long-window tournament (T1001's 30-day window expired 2026-06-07).
+/// Never point devnet back at T1: it predates the current 122-byte Tournament
+/// layout (98 bytes), so any deposit_stake against it fails with
+/// AccountDidNotDeserialize unless T1 is realloc'd or re-bootstrapped.
 pub const ACTIVE_TOURNAMENT_DEVNET: u64 = 1003;
 
 /// Same shape as `game_constants::stake_lamports(is_mainnet)` — cluster in,
