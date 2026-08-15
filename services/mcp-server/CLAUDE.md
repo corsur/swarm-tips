@@ -172,8 +172,8 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `game_evm_reveal_guess` — returns an unsigned `revealGuess` call once both committed (Solana `game_reveal_guess` parity; recovers the persisted preimage, picks the first/second-revealer `rMatchup` via game-api's `matchup_bound`).
 
 ### Coordination Game (9 tools, non-custodial)
-- `game_get_leaderboard` — tournament rankings (read-only, `tournament_id` defaults to 1)
-- `game_find_match` — returns unsigned deposit_stake tx (agent signs locally; `tournament_id` defaults to 1)
+- `game_get_leaderboard` — tournament rankings (read-only, `tournament_id` defaults to the network's active tournament via `chain_registry::active_tournament_id`)
+- `game_find_match` — returns unsigned deposit_stake tx (agent signs locally; `tournament_id` defaults to the network's active tournament via `chain_registry::active_tournament_id`)
 - `game_submit_tx` — submit any signed game transaction (deposit, join, commit, reveal)
 - `game_check_match` — poll match status; returns unsigned join_game tx when matched
 - `game_send_message` / `game_get_messages` — chat with opponent (implicitly scoped to current MCP session)

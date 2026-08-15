@@ -603,15 +603,14 @@ pub fn testnet() -> impl Iterator<Item = &'static ChainEntry> {
 
 /// The Coordination Game tournament currently accepting play, per cluster.
 ///
-/// SINGLE SOURCE — consumers DERIVE from here rather than holding literals.
-/// Rust consumers (mcp-server, grok-agent) call `active_tournament_id()`
-/// directly. TypeScript consumers (the game frontend's `constants.ts`, the e2e
-/// harness's `network.ts`) read `chain-config.generated.json`, which
-/// `export-chain-config` emits from this constant — a rollover is an edit here
-/// plus a regenerate. The one residual literal is the devnet leaderboard
-/// workflow arg in `coordination-app/infra/workflows.tf` (Terraform can't read
-/// the JSON); `check-tournament-id-parity.mjs` pins it and the generated
-/// artifact to this value. A partial move pairs players across two tournaments.
+/// SINGLE SOURCE — every consumer DERIVES from here; no literals remain.
+/// Rust consumers (mcp-server, grok-agent, game-api's leaderboard-refresh
+/// default) call `active_tournament_id()` directly. TypeScript consumers (the
+/// game frontend's `constants.ts`, the e2e harness's `network.ts`) read
+/// `chain-config.generated.json`, which `export-chain-config` emits from this
+/// constant — game-api's Dockerfile CI-gates that artifact's freshness. A
+/// rollover is an edit here plus a regenerate; a partial move pairs players
+/// across two tournaments, which is why the copies had to go.
 ///
 /// Why this exists: on-chain `Tournament.end_time` is IMMUTABLE — there is no
 /// extend instruction — so a rollover creates a NEW tournament and every client
