@@ -34,6 +34,7 @@ import {
   Keypair,
   PublicKey,
   Transaction,
+  TransactionInstruction,
   SystemProgram,
 } from "@solana/web3.js";
 import { assert } from "chai";
@@ -116,6 +117,27 @@ const playerProfilePda = (id: BN, w: PublicKey) =>
   pda([Buffer.from("player"), le8(id), w.toBuffer()]);
 const globalConfigPda = () => pda([Buffer.from("global_config")]);
 const gameCounterPda = () => pda([Buffer.from("game_counter")]);
+
+// /auth/session now binds the JWT to a server-issued nonce that must ride in
+// the authenticated transaction as an SPL-Memo (the fix for the
+// public-tx-signature impersonation hole). Old two-field bodies get 422
+// "missing field `nonce`" — live 2026-08-15.
+const MEMO_PROGRAM = new PublicKey(
+  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+);
+const memoIx = (nonce: string) =>
+  new TransactionInstruction({
+    programId: MEMO_PROGRAM,
+    keys: [],
+    data: Buffer.from(nonce, "utf8"),
+  });
+async function authChallenge(wallet: string): Promise<string> {
+  const r = await api<{ nonce: string }>("/auth/challenge", {
+    body: { wallet },
+  });
+  if (!r.nonce) throw new Error("/auth/challenge returned no nonce");
+  return r.nonce;
+}
 
 // The name of the active GameState enum variant, e.g. "pending" | "active" |
 // "committing" | "revealing" | "resolved". Anchor decodes the enum as a
@@ -253,13 +275,14 @@ async function pollRMatchup(
 
 async function sessionAuth(
   wallet: string,
-  txSignature: string
+  txSignature: string,
+  nonce: string
 ): Promise<string> {
   let lastErr: unknown;
   for (let i = 0; i < 12; i++) {
     try {
       const r = await api<{ token: string }>("/auth/session", {
-        body: { wallet, tx_signature: txSignature },
+        body: { wallet, tx_signature: txSignature, nonce },
       });
       if (r.token) return r.token;
     } catch (e) {
@@ -434,6 +457,7 @@ async function main() {
 
   // 1) deposit_stake — funds the per-tournament escrow the game will consume.
   //    Tolerate a leftover escrow from a prior aborted run.
+  const authNonce = await authChallenge(wallet);
   let depositSig: string;
   try {
     depositSig = await program.methods
@@ -444,6 +468,7 @@ async function main() {
         player: human.publicKey,
         systemProgram: SystemProgram.programId,
       })
+      .postInstructions([memoIx(authNonce)])
       .rpc();
     console.log(`[ok] deposit_stake: ${depositSig}`);
   } catch (e) {
@@ -469,13 +494,14 @@ async function main() {
         fromPubkey: human.publicKey,
         toPubkey: human.publicKey,
         lamports: 0,
-      })
+      }),
+      memoIx(authNonce)
     );
     t.sign(human);
     depositSig = await connection.sendRawTransaction(t.serialize());
     await connection.confirmTransaction(depositSig, "confirmed");
   }
-  const token = await sessionAuth(wallet, depositSig);
+  const token = await sessionAuth(wallet, depositSig, authNonce);
   console.log("[ok] authenticated (session auth)");
 
   // 3) Connect the matchmaking WebSocket (required before /queue/join, else 428).
