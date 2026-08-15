@@ -213,33 +213,56 @@ struct RebuildRequest {
 /// POST /internal/reputation/rebuild → RebuildSummary.
 /// Body (optional): `{"anchors": ["wallet1", "wallet2"]}` — falls back to
 /// the REPUTATION_ANCHORS env var.
-pub fn rebuild_handler(db: Arc<FirestoreDb>) -> axum::routing::MethodRouter {
+///
+/// Gated on the shared `shillbot-api-key` Bearer (the settlement-finalize path in
+/// shillbot-api sends it). Fail-closed: with no configured key the route rejects
+/// everything, so it can never be a public unauthenticated recompute trigger.
+pub fn rebuild_handler(
+    db: Arc<FirestoreDb>,
+    expected_key: Option<String>,
+) -> axum::routing::MethodRouter {
     use axum::response::IntoResponse;
-    axum::routing::post(move |body: Option<axum::Json<RebuildRequest>>| {
-        let db = Arc::clone(&db);
-        async move {
-            let anchors = resolve_anchors(body.and_then(|b| b.0.anchors));
-            if anchors.is_empty() {
-                return (
+    axum::routing::post(
+        move |headers: axum::http::HeaderMap, body: Option<axum::Json<RebuildRequest>>| {
+            let db = Arc::clone(&db);
+            let expected_key = expected_key.clone();
+            async move {
+                let provided = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|h| h.strip_prefix("Bearer "));
+                let authorized = matches!((expected_key.as_deref(), provided), (Some(exp), Some(got)) if got == exp);
+                if !authorized {
+                    tracing::warn!("reputation rebuild rejected: missing or invalid internal key");
+                    return (
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        "{\"error\": \"unauthorized\"}".to_string(),
+                    )
+                        .into_response();
+                }
+                let anchors = resolve_anchors(body.and_then(|b| b.0.anchors));
+                if anchors.is_empty() {
+                    return (
                     axum::http::StatusCode::UNPROCESSABLE_ENTITY,
                     "{\"error\": \"no anchors: pass {\\\"anchors\\\": [...]} or set REPUTATION_ANCHORS\"}"
                         .to_string(),
                 )
                     .into_response();
-            }
-            match rebuild(&db, &anchors).await {
-                Ok(summary) => axum::Json(summary).into_response(),
-                Err(e) => {
-                    tracing::error!(error = %e, "reputation rebuild failed");
-                    (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("{{\"error\": \"{e}\"}}"),
-                    )
-                        .into_response()
+                }
+                match rebuild(&db, &anchors).await {
+                    Ok(summary) => axum::Json(summary).into_response(),
+                    Err(e) => {
+                        tracing::error!(error = %e, "reputation rebuild failed");
+                        (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("{{\"error\": \"{e}\"}}"),
+                        )
+                            .into_response()
+                    }
                 }
             }
-        }
-    })
+        },
+    )
 }
 
 #[cfg(test)]

@@ -126,11 +126,18 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let reputation_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
+    // Shared internal key: /internal/reputation/rebuild is a service-to-service
+    // webhook from shillbot-api's settlement-finalize path. Gate it on the same
+    // shillbot-api-key the caller sends so it isn't a public unauthenticated
+    // EigenTrust-recompute trigger. None → the route rejects all callers.
+    let internal_api_key =
+        config::load_optional_secret(&cfg.gcp_project_id, "shillbot-api-key").await;
     let router = build_router(
         listings_state,
         traffic_stats_state,
         discovery_state,
         reputation_db,
+        internal_api_key,
         rpc_url_mainnet,
         rpc_url_devnet,
         service,
@@ -291,11 +298,15 @@ async fn load_per_network_rpcs(cfg: &StartupConfig) -> (String, String) {
     (mainnet, devnet)
 }
 
+// Router assembly wires many independent states/handles in one place; grouping
+// them into a struct would just move the argument list, not shrink it.
+#[allow(clippy::too_many_arguments)]
 fn build_router(
     listings_state: Arc<ListingsState>,
     traffic_stats_state: Arc<traffic_stats::TrafficStatsState>,
     discovery_state: Option<Arc<DiscoveryState>>,
     reputation_db: Arc<firestore::FirestoreDb>,
+    internal_api_key: Option<String>,
     rpc_url_mainnet: String,
     rpc_url_devnet: String,
     mcp_service: StreamableHttpService<SwarmTipsMcp, LocalSessionManager>,
@@ -396,7 +407,7 @@ fn build_router(
         )
         .route(
             "/internal/reputation/rebuild",
-            reputation::rebuild_handler(reputation_db.clone()),
+            reputation::rebuild_handler(reputation_db.clone(), internal_api_key.clone()),
         )
         .route(
             "/internal/reputation/backfill",
