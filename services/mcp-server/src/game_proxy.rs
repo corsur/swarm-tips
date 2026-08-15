@@ -202,9 +202,10 @@ impl GameApiProxy {
         &self,
         wallet: &str,
         commit: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, McpServiceError> {
         self.client
-            .xqueue_commit(wallet, commit)
+            .xqueue_commit(wallet, commit, handle)
             .await
             .map_err(map_game_api_error)
     }
@@ -215,9 +216,10 @@ impl GameApiProxy {
         wallet: &str,
         step: u8,
         signature: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, McpServiceError> {
         self.client
-            .xqueue_sign(wallet, step, signature)
+            .xqueue_sign(wallet, step, signature, handle)
             .await
             .map_err(map_game_api_error)
     }
@@ -227,9 +229,10 @@ impl GameApiProxy {
         &self,
         wallet: &str,
         preimage: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, McpServiceError> {
         self.client
-            .xqueue_reveal(wallet, preimage)
+            .xqueue_reveal(wallet, preimage, handle)
             .await
             .map_err(map_game_api_error)
     }
@@ -238,9 +241,10 @@ impl GameApiProxy {
     pub async fn xqueue_gameplay(
         &self,
         wallet: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, McpServiceError> {
         self.client
-            .xqueue_gameplay(wallet)
+            .xqueue_gameplay(wallet, handle)
             .await
             .map_err(map_game_api_error)
     }
@@ -489,7 +493,7 @@ mod tests {
         assert_eq!(lock["endpoint"], "/internal/xqueue/build-sol-lock");
         let cosign = p.xqueue_outcome_cosign("w").await.expect("ok");
         assert_eq!(cosign["endpoint"], "/internal/xqueue/outcome-cosign");
-        let gameplay = p.xqueue_gameplay("w").await.expect("ok");
+        let gameplay = p.xqueue_gameplay("w", None).await.expect("ok");
         assert_eq!(gameplay["endpoint"], "/internal/xqueue/gameplay");
     }
 
@@ -547,15 +551,15 @@ mod tests {
 
         let p = proxy(&server);
         assert_eq!(
-            p.xqueue_commit("w", "0xc").await.expect("ok")["status"],
+            p.xqueue_commit("w", "0xc", None).await.expect("ok")["status"],
             "ok"
         );
         assert_eq!(
-            p.xqueue_sign("w", 4, "0xs").await.expect("ok")["relayed"],
+            p.xqueue_sign("w", 4, "0xs", None).await.expect("ok")["relayed"],
             true
         );
         assert_eq!(
-            p.xqueue_reveal("w", "0xp").await.expect("ok")["revealed"],
+            p.xqueue_reveal("w", "0xp", None).await.expect("ok")["revealed"],
             true
         );
     }

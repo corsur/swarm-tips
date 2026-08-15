@@ -587,17 +587,24 @@ impl GameApiClient {
         &self,
         wallet: &str,
         commit: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, GameApiError> {
         #[derive(Serialize)]
         struct Body<'a> {
             wallet: &'a str,
             commit: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            handle: Option<&'a str>,
         }
         let url = format!("{}/internal/xqueue/commit", self.base_url);
         let resp = self
             .inner
             .post(&url)
-            .json(&Body { wallet, commit })
+            .json(&Body {
+                wallet,
+                commit,
+                handle,
+            })
             .send()
             .await?;
         Self::check_status(resp)
@@ -615,12 +622,15 @@ impl GameApiClient {
         wallet: &str,
         step: u8,
         signature: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, GameApiError> {
         #[derive(Serialize)]
         struct Body<'a> {
             wallet: &'a str,
             step: u8,
             signature: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            handle: Option<&'a str>,
         }
         let url = format!("{}/internal/xqueue/sign", self.base_url);
         let resp = self
@@ -630,6 +640,7 @@ impl GameApiClient {
                 wallet,
                 step,
                 signature,
+                handle,
             })
             .send()
             .await?;
@@ -645,17 +656,24 @@ impl GameApiClient {
         &self,
         wallet: &str,
         preimage: &str,
+        handle: Option<&str>,
     ) -> Result<serde_json::Value, GameApiError> {
         #[derive(Serialize)]
         struct Body<'a> {
             wallet: &'a str,
             preimage: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            handle: Option<&'a str>,
         }
         let url = format!("{}/internal/xqueue/reveal", self.base_url);
         let resp = self
             .inner
             .post(&url)
-            .json(&Body { wallet, preimage })
+            .json(&Body {
+                wallet,
+                preimage,
+                handle,
+            })
             .send()
             .await?;
         Self::check_status(resp)
@@ -667,14 +685,18 @@ impl GameApiClient {
 
     /// `GET /internal/xqueue/gameplay` — the player's "what to sign next" view:
     /// canonical step-2 / terminal checkpoints and the released `r_matchup`.
-    pub async fn xqueue_gameplay(&self, wallet: &str) -> Result<serde_json::Value, GameApiError> {
+    pub async fn xqueue_gameplay(
+        &self,
+        wallet: &str,
+        handle: Option<&str>,
+    ) -> Result<serde_json::Value, GameApiError> {
         let url = format!("{}/internal/xqueue/gameplay", self.base_url);
-        let resp = self
-            .inner
-            .get(&url)
-            .query(&[("wallet", wallet)])
-            .send()
-            .await?;
+        // Prefer the secret handle; the public wallet is the deprecated leak path.
+        let q = match handle {
+            Some(h) => [("handle", h)],
+            None => [("wallet", wallet)],
+        };
+        let resp = self.inner.get(&url).query(&q).send().await?;
         Self::check_status(resp)
             .await?
             .json()

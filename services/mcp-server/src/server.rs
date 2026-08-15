@@ -333,6 +333,10 @@ pub struct XchainCommitArgs {
     /// whose last bit encodes your guess (0 = same-team, 1 = diff-team), keep it
     /// secret, and submit its SHA-256 here.
     pub commit: String,
+    /// The poll_handle returned by xchain_find_match. Pass it so the server acts
+    /// by an unguessable secret, not your public wallet. Optional during rollout.
+    #[serde(default)]
+    pub poll_handle: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -342,12 +346,28 @@ pub struct XchainSignArgs {
     /// `0x` 65-byte session-key signature over the canonical checkpoint digest
     /// returned by xchain_gameplay_status.
     pub signature: String,
+    /// The poll_handle returned by xchain_find_match. Pass it so the server acts
+    /// by an unguessable secret, not your public wallet. Optional during rollout.
+    #[serde(default)]
+    pub poll_handle: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize, JsonSchema)]
+pub struct XchainGameplayArgs {
+    /// The poll_handle returned by xchain_find_match. Pass it so the server acts
+    /// by an unguessable secret, not your public wallet. Optional during rollout.
+    #[serde(default)]
+    pub poll_handle: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct XchainRevealArgs {
     /// `0x` 32-byte guess preimage that opens your commit.
     pub preimage: String,
+    /// The poll_handle returned by xchain_find_match. Pass it so the server acts
+    /// by an unguessable secret, not your public wallet. Optional during rollout.
+    #[serde(default)]
+    pub poll_handle: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
@@ -2093,7 +2113,7 @@ impl SwarmTipsMcp {
         let resp = self
             .state
             .game_api
-            .xqueue_commit(&address, &args.commit)
+            .xqueue_commit(&address, &args.commit, args.poll_handle.as_deref())
             .await
             .map_err(|e| McpError::internal_error(format!("commit failed: {e}"), None))?;
         Ok(text_result(&resp))
@@ -2105,6 +2125,7 @@ impl SwarmTipsMcp {
     )]
     async fn xchain_gameplay_status(
         &self,
+        Parameters(args): Parameters<XchainGameplayArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
@@ -2113,7 +2134,7 @@ impl SwarmTipsMcp {
         let resp = self
             .state
             .game_api
-            .xqueue_gameplay(&address)
+            .xqueue_gameplay(&address, args.poll_handle.as_deref())
             .await
             .map_err(|e| McpError::internal_error(format!("gameplay status failed: {e}"), None))?;
         Ok(text_result(&resp))
@@ -2135,7 +2156,12 @@ impl SwarmTipsMcp {
         let resp = self
             .state
             .game_api
-            .xqueue_sign(&address, args.step, &args.signature)
+            .xqueue_sign(
+                &address,
+                args.step,
+                &args.signature,
+                args.poll_handle.as_deref(),
+            )
             .await
             .map_err(|e| McpError::internal_error(format!("sign failed: {e}"), None))?;
         Ok(text_result(&resp))
@@ -2157,7 +2183,7 @@ impl SwarmTipsMcp {
         let resp = self
             .state
             .game_api
-            .xqueue_reveal(&address, &args.preimage)
+            .xqueue_reveal(&address, &args.preimage, args.poll_handle.as_deref())
             .await
             .map_err(|e| McpError::internal_error(format!("reveal failed: {e}"), None))?;
         Ok(text_result(&resp))
