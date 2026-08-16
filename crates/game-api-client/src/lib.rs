@@ -845,6 +845,34 @@ impl GameApiClient {
         Ok(body)
     }
 
+    /// `POST /games/cosign-join` — get the matchmaker co-signature for a
+    /// join_game tx. join_game now requires the matchmaker as a co-signer, and
+    /// game-api signs only when the caller is the session's real player_two, so a
+    /// stranger cannot get this and their join reverts NotMatchmaker. Same wire
+    /// shape as request_cosign; returns the matchmaker ed25519 signature (base64).
+    pub async fn request_cosign_join(
+        &self,
+        token: &str,
+        session_id: &str,
+        message_b64: &str,
+    ) -> Result<CosignResponse, GameApiError> {
+        let url = self.url("/games/cosign-join");
+        let resp = self
+            .inner
+            .post(&url)
+            .bearer_auth(token)
+            .json(&CosignRequestBody {
+                session_id,
+                message: message_b64,
+            })
+            .send()
+            .await?;
+
+        let resp = Self::check_status(resp).await?;
+        let body: CosignResponse = resp.json().await?;
+        Ok(body)
+    }
+
     /// `POST /games/resolved` — notify the backend that a game was resolved.
     ///
     /// Optional `agent_guess_reasoning` and `agent_guess_source` fields allow
