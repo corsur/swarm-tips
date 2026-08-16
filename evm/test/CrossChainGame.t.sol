@@ -5,6 +5,14 @@ import {Test} from "forge-std/Test.sol";
 import {CrossChainGame} from "../src/CrossChainGame.sol";
 import {CertLib} from "../src/CertLib.sol";
 import {PullPayment} from "../src/base/PullPayment.sol";
+import {ERC1967Proxy} from "../lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
+/// Trivial next-version implementation for the UUPS upgrade test.
+contract CrossChainGameV2Probe is CrossChainGame {
+    function versionTag() external pure returns (string memory) {
+        return "v2";
+    }
+}
 
 /// @notice Behavioral suite for the EVM leg: state machine, the panel's
 ///         eight flagged gaps (double-claim, inert cert, stale quote,
@@ -14,6 +22,7 @@ import {PullPayment} from "../src/base/PullPayment.sol";
 ///         test, so claiming one here sent the reader looking for it.
 contract CrossChainGameTest is Test {
     CrossChainGame internal game;
+    CrossChainGame internal impl;
 
     bytes32 internal constant CHAIN_TAG = keccak256("eip155:84532");
     uint128 internal constant STAKE = 0.0025 ether;
@@ -48,10 +57,8 @@ contract CrossChainGameTest is Test {
         localSession = vm.addr(localSessionPk);
         counterSession = vm.addr(counterSessionPk);
 
-        vm.prank(owner);
-        game = new CrossChainGame(
-            CHAIN_TAG, owner, operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, SKEW
-        );
+        impl = new CrossChainGame();
+        game = _proxy(owner, operatorSigner, treasury);
 
         vm.deal(owner, 100 ether);
         vm.deal(player, 10 ether);
@@ -60,6 +67,17 @@ contract CrossChainGameTest is Test {
     }
 
     // --- helpers ---------------------------------------------------------
+
+    /// Deploy a proxy over the shared implementation with the given config.
+    /// A SINGLE external create, so `vm.expectRevert` on a bad-config call sees
+    /// only the reverting initializer (the impl is deployed once in setUp).
+    function _proxy(address owner_, address operator_, address treasury_) internal returns (CrossChainGame) {
+        bytes memory init = abi.encodeCall(
+            CrossChainGame.initialize,
+            (CHAIN_TAG, owner_, operator_, treasury_, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, SKEW)
+        );
+        return CrossChainGame(payable(address(new ERC1967Proxy(address(impl), init))));
+    }
 
     function _fund(bytes32 matchId, bool playerIsP1) internal {
         uint64 fundDeadline = uint64(block.timestamp + 1 days);
@@ -896,19 +914,46 @@ contract CrossChainGameTest is Test {
     }
 
     /// Finding #4: key separation enforced — the certificate signer can never be
-    /// the owner/upgrade authority or the treasury.
-    function test_constructor_rejectsOperatorEqualsOwner() public {
+    /// the owner/upgrade authority or the treasury. Enforced at initialize now.
+    function test_initialize_rejectsOperatorEqualsOwner() public {
         vm.expectRevert(CrossChainGame.BadConfig.selector);
-        new CrossChainGame(
-            CHAIN_TAG, owner, owner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, SKEW
-        );
+        _proxy(owner, owner, treasury);
     }
 
-    function test_constructor_rejectsOperatorEqualsTreasury() public {
+    function test_initialize_rejectsOperatorEqualsTreasury() public {
         vm.expectRevert(CrossChainGame.BadConfig.selector);
-        new CrossChainGame(
-            CHAIN_TAG, owner, treasury, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, CLAIM_WINDOW, SKEW
-        );
+        _proxy(owner, treasury, treasury);
+    }
+
+    /// UUPS: only the owner may upgrade, and the upgrade preserves ALL state —
+    /// the float pool, config, chain tag, ownership, and any live match escrow.
+    function test_upgradePreservesStateAndIsOwnerOnly() public {
+        // Dirty state: an open, locked match sits in escrow across the upgrade.
+        bytes32 id = keccak256("upgrade-live-match");
+        _fund(id, true);
+        _lock(id, STAKE);
+        uint256 poolFreeBefore = game.poolFree();
+        uint256 poolLockedBefore = game.poolLocked();
+
+        address v2 = address(new CrossChainGameV2Probe());
+
+        // A non-owner cannot upgrade.
+        vm.prank(player);
+        vm.expectRevert();
+        game.upgradeToAndCall(v2, "");
+
+        // The owner can.
+        vm.prank(owner);
+        game.upgradeToAndCall(v2, "");
+
+        assertEq(CrossChainGameV2Probe(payable(address(game))).versionTag(), "v2", "logic swapped");
+        assertEq(game.owner(), owner, "owner survived");
+        assertEq(game.chainTag(), CHAIN_TAG, "chain tag survived");
+        assertEq(game.stakeWei(), STAKE, "config survived");
+        assertEq(game.poolFree(), poolFreeBefore, "float pool survived");
+        assertEq(game.poolLocked(), poolLockedBefore, "locked tranche survived");
+        (CrossChainGame.Status status,,,,,,,,,,,,,,,,) = game.matches(id);
+        assertEq(uint8(status), uint8(CrossChainGame.Status.Locked), "the live match survived the upgrade");
     }
 
     function test_setConfig_rejectsOperatorEqualsOwner() public {

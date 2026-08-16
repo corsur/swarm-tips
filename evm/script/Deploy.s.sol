@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
 import {CrossChainGame} from "../src/CrossChainGame.sol";
+import {ERC1967Proxy} from "../lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @notice Deploys CrossChainGame to the configured network. Parameters
 ///         come from env vars so the same script serves Base Sepolia
@@ -39,18 +40,26 @@ contract DeployScript is Script {
         uint32 skewMargin = uint32(vm.envUint("XCHAIN_SKEW_MARGIN"));
 
         vm.startBroadcast();
-        game = new CrossChainGame(
-            chainTag,
-            owner,
-            operatorSigner,
-            treasury,
-            treasuryBps,
-            stakeWei,
-            maxTrancheWei,
-            dailyTrancheCapWei,
-            claimWindow,
-            skewMargin
+        // UUPS: deploy the implementation, then an ERC1967 proxy that delegatecalls
+        // initialize. The proxy address is what the registry + backends record; the
+        // implementation is upgradeable in place thereafter (mirrors CoordinationGameV4).
+        CrossChainGame impl = new CrossChainGame();
+        bytes memory init = abi.encodeCall(
+            CrossChainGame.initialize,
+            (
+                chainTag,
+                owner,
+                operatorSigner,
+                treasury,
+                treasuryBps,
+                stakeWei,
+                maxTrancheWei,
+                dailyTrancheCapWei,
+                claimWindow,
+                skewMargin
+            )
         );
+        game = CrossChainGame(payable(address(new ERC1967Proxy(address(impl), init))));
         vm.stopBroadcast();
 
         console2.log("CrossChainGame deployed at:", address(game));

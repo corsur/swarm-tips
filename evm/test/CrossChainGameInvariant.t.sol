@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {CrossChainGame} from "../src/CrossChainGame.sol";
 import {CertLib} from "../src/CertLib.sol";
+import {ERC1967Proxy} from "../lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @dev Handler driving randomized lifecycles. Every action keeps a
 ///      running tally of stake ETH that has entered the contract and is
@@ -147,19 +148,23 @@ contract CrossChainGameInvariantTest is Test {
 
     function setUp() public {
         vm.warp(1_765_000_000);
-        vm.prank(owner);
-        game = new CrossChainGame(
-            keccak256("eip155:84532"),
-            owner,
-            vm.addr(0xA11CE),
-            treasury,
-            5000,
-            0.0025 ether,
-            0.005 ether,
-            100 ether, // M6 daily tranche cap: above the 50-ether pool, so never binds here
-            3600,
-            900
+        CrossChainGame impl = new CrossChainGame();
+        bytes memory init = abi.encodeCall(
+            CrossChainGame.initialize,
+            (
+                keccak256("eip155:84532"),
+                owner,
+                vm.addr(0xA11CE),
+                treasury,
+                5000,
+                0.0025 ether,
+                0.005 ether,
+                100 ether, // M6 daily tranche cap: above the 50-ether pool, so never binds here
+                3600,
+                900
+            )
         );
+        game = CrossChainGame(payable(address(new ERC1967Proxy(address(impl), init))));
         vm.deal(owner, 100 ether);
         vm.prank(owner);
         game.poolDeposit{value: 50 ether}();

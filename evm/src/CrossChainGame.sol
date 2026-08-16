@@ -7,7 +7,9 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {CertLib} from "./CertLib.sol";
 import {PullPayment} from "./base/PullPayment.sol";
 import {AttesterGated} from "./base/AttesterGated.sol";
-import {ChainTagged} from "./base/ChainTagged.sol";
+import {ChainTaggedUpgradeable} from "./base/ChainTaggedUpgradeable.sol";
+import {Initializable} from "../lib/openzeppelin-contracts/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "../lib/openzeppelin-contracts/contracts/proxy/utils/UUPSUpgradeable.sol";
 
 /// @title CrossChainGame — EVM leg of cross-chain coordination-game matches
 /// @notice One contract holds both the per-match native-ETH stake escrows and
@@ -45,7 +47,15 @@ import {ChainTagged} from "./base/ChainTagged.sol";
 ///   claim rather than refunding —  Claiming ─refundTimeout──► ClaimSettled.
 ///   The single Locked ──► RefundedTimeout edge above is only half of what that
 ///   function does.
-contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, ChainTagged {
+contract CrossChainGame is
+    Initializable,
+    UUPSUpgradeable,
+    Ownable2Step,
+    PullPayment,
+    Pausable,
+    AttesterGated,
+    ChainTaggedUpgradeable
+{
     using CertLib for CertLib.MatchLiveCert;
     using CertLib for CertLib.Checkpoint;
     using CertLib for CertLib.OutcomeCert;
@@ -157,8 +167,17 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     error BadConfig();
     error DailyTrancheCapExceeded();
 
-    constructor(
-        bytes32 chainTag,
+    /// @dev Locks the implementation so it can never be initialized directly —
+    ///      only through a proxy. Mirrors CoordinationGameV4.
+    constructor() Ownable(msg.sender) {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the proxy. Replaces the pre-UUPS constructor; the
+    ///         chain tag is now STORAGE (set here) rather than an immutable, so
+    ///         one implementation can back per-chain proxies.
+    function initialize(
+        bytes32 chainTag_,
         address initialOwner,
         address operatorSigner_,
         address treasury_,
@@ -168,7 +187,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         uint128 dailyTrancheCapWei_,
         uint32 maxClaimWindowSecs_,
         uint32 skewMarginSecs_
-    ) Ownable(initialOwner) ChainTagged(chainTag) {
+    ) external initializer {
         _validateConfig(
             initialOwner,
             operatorSigner_,
@@ -180,6 +199,8 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
             maxClaimWindowSecs_,
             skewMarginSecs_
         );
+        _transferOwnership(initialOwner);
+        _setChainTag(chainTag_);
         _setAuthorizedSigner(operatorSigner_);
         treasury = treasury_;
         treasurySplitBps = treasurySplitBps_;
@@ -189,6 +210,11 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         maxClaimWindowSecs = maxClaimWindowSecs_;
         skewMarginSecs = skewMarginSecs_;
     }
+
+    /// @dev Only the owner may upgrade — the single most dangerous function on
+    ///      the contract: it can replace all logic and so reach the float pool
+    ///      and every escrowed stake.
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     /// @notice Dedicated secp256k1 certificate signer — NOT the owner EOA and
     ///         not the Solana upgrade authority (key-separation requirement).
@@ -301,7 +327,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         // Bind the cert to the funded match — identical to _verifyMatchLive
         // EXCEPT leg.tranche and m.lockedAt, which THIS call is what sets.
         if (
-            leg.chainTag != CHAIN_TAG || leg.contractId != _contractIdWord()
+            leg.chainTag != chainTag || leg.contractId != _contractIdWord()
                 || leg.player != bytes32(uint256(uint160(m.player))) || leg.sessionKey != m.sessionKey
                 || cert.legA.sessionKey != m.counterSessionKey || leg.stake != m.stakeWei
                 || cert.matchDeadline != m.matchDeadline || (cert.aIsP1 == 1) == m.playerIsP1
@@ -663,7 +689,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     {
         CertLib.Leg calldata leg = cert.legB; // leg B is ALWAYS the EVM leg
         if (
-            leg.chainTag != CHAIN_TAG || leg.contractId != _contractIdWord()
+            leg.chainTag != chainTag || leg.contractId != _contractIdWord()
                 || leg.player != bytes32(uint256(uint160(m.player))) || leg.sessionKey != m.sessionKey
                 || cert.legA.sessionKey != m.counterSessionKey || leg.stake != m.stakeWei || leg.tranche != m.trancheWei
                 || cert.matchDeadline != m.matchDeadline || (cert.aIsP1 == 1) == m.playerIsP1
