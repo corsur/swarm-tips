@@ -391,11 +391,10 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 6_400_000_000_000_000, // 0.0064 ETH (== deployed maxTrancheWei)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        // CrossChainGame redeployed 2026-07-01 with the audit-fix hardening
-        // (M1 pull-payment, M2/M4 snapshots + createMatch operator-sig, L1 config
-        // bounds) at the $5 stake (operatorSigner 0x54a6…9A30; prior tiny-stake
-        // 0xd585…6234 orphaned by this redeploy).
-        game_contract: Some("0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4"),
+        // CrossChainGame redeployed 2026-08-16 as a UUPS PROXY (was immutable) so
+        // the push-at-settle auto-payout (_settle) and future fixes upgrade in
+        // place; prior immutable 0xd38b1f…8feb4 orphaned, its float migrated here.
+        game_contract: Some("0x7Cc7667f4B71c8eb1D4d3fADE088BFD8d01290AB"),
         // Same-chain EVM-vs-EVM CoordinationGame v3, redeployed 2026-07-29 with
         // wallet-as-player staking (Level 2): openSession registers + funds a gas-
         // only session key in one wallet tx; createGame/joinGame take an `address
@@ -445,9 +444,10 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 5_400_000_000_000_000, // 0.0054 ETH (2x stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        // Cross-chain CrossChainGame deployed to Base mainnet 2026-07-11 (0.0005
-        // ETH stake; owner/operatorSigner = xchain key / xchain-operator-signer).
-        game_contract: Some("0xC2DbD950400965b3f4d9A4D6B1af4a0eb65CC365"),
+        // CrossChainGame redeployed 2026-08-16 as a UUPS PROXY (was immutable) for
+        // the push-at-settle auto-payout; prior immutable 0xC2DbD9…CC365 orphaned,
+        // its 0.00325 ETH float migrated here (poolWithdraw -> poolDeposit).
+        game_contract: Some("0x44aC6Eb44692Bcf724d7975B91B299E2c553Ca12"),
         // Same-chain CoordinationGame v3 (wallet-as-player: openSession +
         // player-param createGame/joinGame + withdrawFor) deployed to Base
         // mainnet 2026-07-30 via deploy-evm-mainnet.yml, founder-authorized.
@@ -495,9 +495,10 @@ const REGISTRY: &[ChainEntry] = &[
         max_tranche_base_units: 5_400_000_000_000_000, // 0.0054 ETH (2x stake)
         claim_window_secs: 3_600,
         skew_margin_secs: 900,
-        // CrossChainGame deployed to Ethereum L1 mainnet 2026-07-11 (0.0025 ETH
-        // stake; owner/operatorSigner = xchain key / xchain-operator-signer).
-        game_contract: Some("0x5E9eb986927bDF70F2f9fE5BccAFF3dEE74949EB"),
+        // CrossChainGame redeployed 2026-08-16 as a UUPS PROXY (was immutable) for
+        // the push-at-settle auto-payout; prior immutable 0x5E9eb9…4949EB orphaned,
+        // its 0.013 ETH float migrated here (poolWithdraw -> poolDeposit).
+        game_contract: Some("0xb84638E5d03AE68c5dC58408e05C001918A23fe9"),
         // Same-chain CoordinationGame v3 (wallet-as-player) deployed to Ethereum
         // mainnet 2026-07-30 via deploy-evm-mainnet.yml, founder-authorized.
         // Supersedes v1 0xd52a…05B3 (2026-07-11), which the Level 2 client flow
@@ -800,7 +801,7 @@ mod tests {
         // Base Sepolia hosts BOTH the cross-chain and same-chain contracts.
         assert_eq!(
             contract_for(&base, ContractPurpose::CrossChainGame),
-            Some("0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4")
+            Some("0x7Cc7667f4B71c8eb1D4d3fADE088BFD8d01290AB")
         );
         // Post-cutover this resolves to the v4 PROXY, not the v3 address that
         // is still stored in `coordination_game_contract` for indexing.
