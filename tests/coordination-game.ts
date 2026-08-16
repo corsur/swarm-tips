@@ -173,6 +173,8 @@ describe("coordination-game", () => {
         playerProfile: profilePda,
         escrow,
         tournament: tournamentPdaKey,
+        globalConfig: globalConfigPda,
+        matchmaker: matchmaker.publicKey,
         player: player.publicKey,
         systemProgram: SystemProgram.programId,
       })
@@ -362,6 +364,8 @@ describe("coordination-game", () => {
         playerProfile: p2ProfilePda,
         escrow,
         tournament: tournamentPda,
+        globalConfig: globalConfigPda,
+        matchmaker: matchmaker.publicKey,
         player: player2.publicKey,
         systemProgram: SystemProgram.programId,
       })
@@ -629,6 +633,8 @@ describe("coordination-game", () => {
           playerProfile: soloProfilePda,
           escrow: soloEscrow,
           tournament: tournamentPda,
+          globalConfig: globalConfigPda,
+          matchmaker: matchmaker.publicKey,
           player: player1.publicKey,
           systemProgram: SystemProgram.programId,
         })
@@ -640,6 +646,57 @@ describe("coordination-game", () => {
       // no-rejection path cannot satisfy this catch's substring assert.
       if (e?.name === "AssertionError") throw e;
       assert.include(e.toString(), "CannotJoinOwnGame");
+    }
+  });
+
+  it("rejects a join whose co-signer is not the matchmaker (interloper front-run)", async () => {
+    // P1 opens a game the matchmaker paired for a specific opponent. A stranger
+    // who is a legit staked player still cannot claim the P2 slot, because they
+    // cannot produce the matchmaker's co-signature — the exact front-run the
+    // matchmaker-cosigned join closes.
+    const [victimGamePda] = await createGameOnChain(
+      tournamentPda,
+      GUESS_SAME_TEAM,
+      player1
+    );
+
+    const interloper = Keypair.generate();
+    const sig = await provider.connection.requestAirdrop(
+      interloper.publicKey,
+      2 * LAMPORTS_PER_SOL
+    );
+    await provider.connection.confirmTransaction(sig);
+    await depositStake(TOURNAMENT_ID, tournamentPda, interloper);
+
+    const [interloperProfile] = PublicKey.findProgramAddressSync(
+      [Buffer.from("player"), tournamentIdBuf(), interloper.publicKey.toBuffer()],
+      program.programId
+    );
+    const [interloperEscrow] = escrowPda(TOURNAMENT_ID, interloper.publicKey);
+
+    // A random key stands in for the "matchmaker" — it is not the configured
+    // GlobalConfig.matchmaker, so validate_join_inputs must reject it.
+    const bogusMatchmaker = Keypair.generate();
+
+    try {
+      await program.methods
+        .joinGame()
+        .accountsPartial({
+          game: victimGamePda,
+          playerProfile: interloperProfile,
+          escrow: interloperEscrow,
+          tournament: tournamentPda,
+          globalConfig: globalConfigPda,
+          matchmaker: bogusMatchmaker.publicKey,
+          player: interloper.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([interloper, bogusMatchmaker])
+        .rpc();
+      assert.fail("Expected NotMatchmaker error");
+    } catch (e: any) {
+      if (e?.name === "AssertionError") throw e;
+      assert.include(e.toString(), "NotMatchmaker");
     }
   });
 
@@ -1592,6 +1649,8 @@ describe("coordination-game", () => {
           playerProfile: profilePda,
           escrow,
           tournament: sessionTournamentPda,
+          globalConfig: globalConfigPda,
+          matchmaker: matchmaker.publicKey,
           player: player2.publicKey,
           sessionAuthority: p2SessionAuthorityPda,
           sessionSigner: p2SessionKey.publicKey,

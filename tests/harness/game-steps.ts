@@ -219,6 +219,8 @@ export async function startMatch(
       playerProfile: p2Profile,
       escrow: escrowPda(rt, args.tournamentId, args.p2.publicKey),
       tournament: args.tournamentPda,
+      globalConfig: ctx.globalConfigPda,
+      matchmaker: rt.payer,
       player: args.p2.publicKey,
       systemProgram: SystemProgram.programId,
     })
