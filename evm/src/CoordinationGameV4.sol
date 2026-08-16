@@ -319,11 +319,7 @@ contract CoordinationGameV4 is
     /// @notice Join a pending game AS `player` by matching the stake; goes Active.
     ///         `msg.sender` must act for `player` (direct or via session key). The
     ///         recorded player2 is `player` (the wallet), not the session signer.
-    function joinGame(bytes32 gameId, address player, bytes calldata operatorSig)
-        external
-        payable
-        whenNotPaused
-    {
+    function joinGame(bytes32 gameId, address player, bytes calldata operatorSig) external payable whenNotPaused {
         Game storage g = games[gameId];
         if (g.status != Status.Pending) revert InvalidStatus();
         if (!_actsFor(msg.sender, player)) revert BadSession();
