@@ -641,11 +641,16 @@ contract CoordinationGameV4 is
         // OPEN SEASON and are claimable by the players who earned them.
         _accrue(toPrize);
 
-        // Interactions — credit, never push (M1): a reverting player or treasury
-        // must not block the game from resolving.
+        // Interactions. Players are PUSH-PREFERRED via {_settle}: an EOA
+        // wallet-as-player is paid inside this resolving tx (matching Solana's
+        // push-at-resolve), so a winner who has left the page still gets paid
+        // with no later {withdrawFor}; a reverting/gas-heavy recipient falls back
+        // to the ledger, so it can never block resolution (M1 preserved). The
+        // treasury stays on {_credit}: its share accrues deliberately and is
+        // swept by the DAO, not delivered per game.
         if (toTreasury > 0) _credit(treasury, toTreasury);
-        if (toP1 > 0) _credit(g.player1, toP1);
-        if (toP2 > 0) _credit(g.player2, toP2);
+        if (toP1 > 0) _settle(g.player1, toP1);
+        if (toP2 > 0) _settle(g.player2, toP2);
         // Per-season record. p1Won/p2Won come from the SHARED core's
         // outcome_to_wins and are NOT derivable from the amounts above:
         // HOMOG_BOTH_CORRECT returns each player their own stake (zero net

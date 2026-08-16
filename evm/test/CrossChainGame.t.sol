@@ -252,23 +252,22 @@ contract CrossChainGameTest is Test {
         assertEq(uint256(_status(id)), uint256(CrossChainGame.Status.Settled));
     }
 
-    /// M1: the credited win is realized via withdraw() — pulls exactly once,
-    /// zeroes the balance, and a second pull reverts. (Brick-resistance against a
-    /// reverting recipient is structural — settle never calls the payee — and is
-    /// proven end-to-end in CoordinationGameTest.test_M1_resolveSurvivesRevertingWinner.)
-    function test_M1_winnerWithdrawsCredit() public {
+    /// Push-preferred payout: a winning EOA is paid INSIDE the settle tx (matching
+    /// the Solana xmatch leg, which pushes lamports at settle), so no separate
+    /// withdraw is needed and the pull ledger is left empty. Brick-resistance for a
+    /// reverting recipient is the fallback, proven in
+    /// test_settleFallsBackToLedgerForRevertingWinner.
+    function test_winnerIsPaidAtSettle_pushPreferred() public {
         bytes32 id = keccak256("m1-withdraw");
         uint128 tranche = STAKE;
         _fund(id, true);
         _lock(id, tranche);
+
+        uint256 before = player.balance;
         _settle(id, true, tranche, CertLib.HETERO_P1_WINS);
 
-        assertEq(game.withdrawable(player), uint256(STAKE) + tranche, "win credited");
-        uint256 before = player.balance;
-        vm.prank(player);
-        game.withdraw();
-        assertEq(player.balance, before + STAKE + tranche, "withdraw pays out exactly once");
-        assertEq(game.withdrawable(player), 0, "balance zeroed");
+        assertEq(player.balance, before + STAKE + tranche, "winner paid at settle, no withdraw needed");
+        assertEq(game.withdrawable(player), 0, "nothing left in the pull ledger");
 
         vm.prank(player);
         vm.expectRevert(PullPayment.NothingToWithdraw.selector);
@@ -819,15 +818,17 @@ contract CrossChainGameTest is Test {
         oc.stepCount = CertLib.TERMINAL_STEP_COUNT;
         game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
 
-        // Pull-payment (M1): settle moves NO ether out — the payout is credited
-        // internally. Conservation: the contract still holds everything, now
-        // partitioned into pool + prize + the player/treasury credits.
-        assertEq(address(game).balance, contractBefore, "settle moves no ether out");
+        // Push-preferred (M1): settle now PUSHES an EOA player's payout out of the
+        // contract immediately (`player` is an EOA, so it is pushed, not credited;
+        // a reverting recipient would fall back to the ledger instead). Whatever
+        // was pushed left BOTH the held ETH and the ledger, so the tracked-balance
+        // reconciliation still holds exactly across held + pushed.
+        assertLe(address(game).balance, contractBefore, "settle never GAINS ether");
         assertEq(
             address(game).balance,
             game.poolFree() + game.poolLocked() + game.prizePoolWei() + game.withdrawable(player)
                 + game.withdrawable(treasury),
-            "tracked balances reconcile"
+            "tracked balances reconcile (held ETH == pool + prize + credits; a pushed payout already left)"
         );
     }
 

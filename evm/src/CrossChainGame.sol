@@ -549,7 +549,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         m.status = Status.RefundedNoCert;
         uint256 amount = m.stakeWei;
         emit Refunded(matchId, Status.RefundedNoCert, amount);
-        _credit(m.player, amount);
+        _settle(m.player, amount);
     }
 
     /// @notice Backstop after the claim window plus 2×skewMargin (snapshotted at
@@ -577,7 +577,7 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         _releaseTranche(m);
         uint256 amount = m.stakeWei;
         emit Refunded(matchId, Status.RefundedTimeout, amount);
-        _credit(m.player, amount);
+        _settle(m.player, amount);
     }
 
     // ---------------------------------------------------------------------
@@ -771,10 +771,15 @@ contract CrossChainGame is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         poolFree += trancheReleased + toPoolReimburse;
         prizePoolWei += toPrize;
 
-        // Interactions last — credit, never push (M1): a reverting treasury or
-        // player must not block settlement or strand the released tranche.
+        // Interactions last. The player is PUSH-PREFERRED via {_settle}: an EOA
+        // wallet is paid inside this settling tx (matching the Solana xmatch leg,
+        // which pushes lamports at settle), so a cross-chain winner who has left
+        // the page still gets paid with no later {withdrawFor}. A reverting or
+        // gas-heavy recipient falls back to the ledger, so it can never block
+        // settlement or strand the released tranche (M1 preserved). Treasury
+        // accrues via {_credit} and is swept by the DAO.
         if (toTreasury > 0) _credit(treasury, toTreasury);
-        if (toPlayer > 0) _credit(m.player, toPlayer);
+        if (toPlayer > 0) _settle(m.player, toPlayer);
     }
 
     enum Result {

@@ -27,6 +27,38 @@ abstract contract PullPayment is ReentrancyGuard {
         withdrawable[to] += amount;
     }
 
+    /// @dev Gas forwarded to a push attempt. Comfortably covers a native-ETH
+    ///      transfer to an EOA, INCLUDING the cold-account (2600) + new-account
+    ///      (25000) worst case, while bounding what a hostile contract recipient
+    ///      can burn on the resolving caller before the push fails and falls
+    ///      back to the ledger.
+    uint256 private constant _PUSH_GAS = 50_000;
+
+    /// @dev Push-preferred payout: deliver `amount` to `to` IMMEDIATELY when the
+    ///      push succeeds, falling back to the {withdrawable} ledger only if it
+    ///      fails. The common case — an EOA wallet-as-player — is paid inside the
+    ///      resolving transaction with no second step, matching Solana's
+    ///      push-at-resolve; a recipient that reverts, or a gas-heavy contract
+    ///      wallet, simply falls back to a pull, preserving the M1 guarantee that
+    ///      a hostile recipient can NEVER block the calling state transition.
+    ///
+    ///      SAFETY: does an external call, so it MUST be invoked only in the
+    ///      Interactions phase (after all Effects) of a `nonReentrant` external
+    ///      entry point. The `_PUSH_GAS` cap is far below what any reentrant call
+    ///      back into this contract would need, and `nonReentrant` would revert
+    ///      such a call anyway — a reentry attempt just makes the push fail and
+    ///      credits the ledger. Emits {Withdrawn} on a successful push so an
+    ///      auto-payout is observable exactly like a manual {withdraw}.
+    function _settle(address to, uint256 amount) internal {
+        if (amount == 0) return;
+        (bool ok,) = payable(to).call{value: amount, gas: _PUSH_GAS}("");
+        if (ok) {
+            emit Withdrawn(to, amount);
+        } else {
+            _credit(to, amount);
+        }
+    }
+
     /// @notice Withdraw the caller's accrued balance. CEI + nonReentrant: the
     ///         balance is zeroed before the transfer, so a reverting recipient
     ///         only fails its OWN withdraw.
