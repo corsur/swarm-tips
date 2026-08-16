@@ -1796,7 +1796,7 @@ impl GameSessionManager {
             if s.state == GameSessionState::Matched {
                 drop(s);
                 return self
-                    .check_match_player_two(wallet, tournament_id, game_id, &session)
+                    .check_match_player_two(wallet, tournament_id, game_id, &jwt, &session)
                     .await;
             }
         }
@@ -1846,24 +1846,45 @@ impl GameSessionManager {
         wallet: &str,
         tournament_id: u64,
         game_id: u64,
+        jwt: &str,
         session: &Arc<Mutex<GameSession>>,
     ) -> Result<MatchStatus> {
         debug_assert!(!wallet.is_empty(), "wallet must be non-empty");
         debug_assert!(game_id > 0, "game_id must be a real on-chain id");
         // Same network-routing fix as build_create_game_tx: build the
         // join_game tx with the session's network so its blockhash matches
-        // the cluster the agent will broadcast to.
-        let network = session.lock().await.network.clone();
+        // the cluster the agent will broadcast to. session_id rides along for
+        // the cosign-join call — game-api signs only when the caller is this
+        // session's player_two.
+        let (network, session_id) = {
+            let s = session.lock().await;
+            let sid = s
+                .session_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("session has no session_id — not matched yet"))?;
+            (s.network.clone(), sid)
+        };
         let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
         let tx_builder = self.tx_builder_for_network(pubkey, network.as_deref());
         let unsigned = tx_builder.build_join_game(game_id, tournament_id).await?;
+
+        // join_game now requires the matchmaker as a co-signer; fetch the
+        // co-signature so the agent can assemble it alongside its own sig. A
+        // stranger can't get this (game-api checks player_two), so the open-P2
+        // slot is closed for the MCP path too.
+        let msg_b64 = base64::engine::general_purpose::STANDARD.encode(&unsigned.message);
+        let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network.clone());
+        let cosign_resp = api_client
+            .request_cosign_join(jwt, &session_id, &msg_b64)
+            .await
+            .context("failed to get matchmaker cosign for join")?;
 
         // Store game_id but don't transition to InGame yet —
         // that happens after the agent submits the signed tx.
         let mut s = session.lock().await;
         s.game_id = Some(game_id);
 
-        tracing::info!(wallet = %wallet, game_id, "P2 join_game tx built (needs signing)");
+        tracing::info!(wallet = %wallet, game_id, "P2 join_game tx built + cosigned (needs signing)");
 
         Ok(MatchStatus {
             status: "needs_signature".to_string(),
@@ -1871,7 +1892,7 @@ impl GameSessionManager {
             role: Some(1),
             unsigned_tx: Some(unsigned.transaction_b64),
             action: Some("join_game".to_string()),
-            matchmaker_signature: None,
+            matchmaker_signature: Some(cosign_resp.signature),
             blockhash: Some(unsigned.blockhash),
         })
     }
