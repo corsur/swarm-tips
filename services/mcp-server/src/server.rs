@@ -227,11 +227,19 @@ pub struct SubmitWorkArgs {
 pub struct ShillbotSubmitTxArgs {
     /// The task identifier the signed tx applies to.
     pub task_id: String,
-    /// `"claim"` for a signed `claim_task` tx, `"submit"` for `submit_work`.
+    /// `"create"` for a `shillbot_create_campaign` funding tx, `"claim"` for
+    /// `claim_task`, `"submit"` for `submit_work`, `"approve"`, `"verify"`,
+    /// `"finalize"`.
     pub action: String,
-    /// Base64-encoded signed Solana transaction returned by `claim_task` /
-    /// `submit_work` and signed locally by the agent's wallet.
+    /// Base64-encoded signed Solana transaction returned by the matching build
+    /// tool and signed locally by the wallet.
     pub signed_transaction: String,
+    /// On-chain Task PDA (base58). REQUIRED for `action="create"` — the
+    /// orchestrator does not yet know the task's on-chain address at create-
+    /// confirmation time, so it must be passed back from `shillbot_create_campaign`'s
+    /// `task_pda`. Ignored for the other actions (the task already carries it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_pda: Option<String>,
     /// Solana network. `"mainnet"` (default) or `"devnet"`. Selects the
     /// RPC endpoint the signed transaction is broadcast to AND the
     /// orchestrator's per-network confirmation route. Mismatched network
@@ -1053,6 +1061,7 @@ impl SwarmTipsMcp {
                 &wallet_pubkey,
                 &tx_signature,
                 action,
+                args.task_pda.as_deref(),
                 network,
             )
             .await

@@ -957,6 +957,7 @@ impl OrchestratorProxy {
         wallet_pubkey: &str,
         tx_signature: &str,
         action: ConfirmAction,
+        task_pda: Option<&str>,
         network: Option<&str>,
     ) -> Result<ConfirmTaskResponse, McpServiceError> {
         if task_id.is_empty() {
@@ -977,10 +978,15 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/confirm{qs}", self.base_url);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "tx_signature": tx_signature,
             "action": action,
         });
+        // create confirmation needs the task_pda: the orchestrator has no on-chain
+        // address for the task yet (this IS the tx that created it on-chain).
+        if let Some(pda) = task_pda {
+            body["task_pda"] = serde_json::json!(pda);
+        }
         let response = self
             .client
             .post(&url)
@@ -1378,7 +1384,7 @@ mod tests {
     /// fishing through a single combined assertion.
     mod network_flow_tests {
         use super::*;
-        use wiremock::matchers::{header, method, path, query_param};
+        use wiremock::matchers::{body_partial_json, header, method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         /// Minimal `TaskSummary`-shaped JSON the proxy can deserialize.
@@ -1704,6 +1710,41 @@ mod tests {
                     "wallet1",
                     "sig",
                     ConfirmAction::Claim,
+                    None,
+                    Some("devnet"),
+                )
+                .await
+                .expect("ok");
+        }
+
+        #[tokio::test]
+        async fn confirm_task_create_forwards_task_pda() {
+            // The create confirmation MUST include task_pda in the body — the
+            // orchestrator has no on-chain address for the task yet.
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/confirm"))
+                .and(body_partial_json(serde_json::json!({
+                    "action": "create",
+                    "task_pda": "PDA123",
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "task_id": "c:t",
+                    "action": "create",
+                    "message": "ok",
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            proxy
+                .confirm_task(
+                    "c:t",
+                    "wallet1",
+                    "sig",
+                    ConfirmAction::Create,
+                    Some("PDA123"),
                     Some("devnet"),
                 )
                 .await
