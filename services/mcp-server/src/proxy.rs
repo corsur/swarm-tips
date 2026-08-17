@@ -235,12 +235,30 @@ pub struct VerificationDataResponse {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmAction {
+    /// Client signed the `create_task` funding tx (campaign create+fund via MCP).
+    Create,
     Claim,
     Submit,
     /// Client signed `approve_task` on-chain.
     Approve,
     Verify,
     Finalize,
+}
+
+/// Parameters for [`OrchestratorProxy::create_campaign`], bundled into a struct so
+/// the call stays under clippy's argument limit and each field is named at the
+/// call site (a bare 8-arg call is easy to mis-order).
+pub struct CreateCampaignParams<'a> {
+    pub wallet_pubkey: &'a str,
+    pub brief: serde_json::Value,
+    pub budget_lamports: u64,
+    pub platform: u8,
+    pub requires_approval: bool,
+    /// LeanProof (platform 10) only.
+    pub statement_lean: Option<&'a str>,
+    /// LeanProof only: policy version (1 self-contained / 2 mathlib).
+    pub lean_policy: Option<u32>,
+    pub network: Option<&'a str>,
 }
 
 /// Mirrors `shillbot-api::models::task::ConfirmTaskResponse`.
@@ -460,6 +478,126 @@ impl OrchestratorProxy {
     /// for `wallet_pubkey`. The orchestrator looks up the task PDA, derives the
     /// client wallet from on-chain state, and returns a base64-encoded unsigned
     /// transaction the agent must sign locally.
+    /// Create a Shillbot campaign (client side). Proxies `POST /campaigns` — a
+    /// Firestore record only; no on-chain tx yet (funding is the next step).
+    /// Returns the new `campaign_id`. The MCP client-create path this enables is
+    /// the parity counterpart to the agent-side claim/submit tools.
+    pub async fn create_campaign(
+        &self,
+        params: CreateCampaignParams<'_>,
+    ) -> Result<String, McpServiceError> {
+        let CreateCampaignParams {
+            wallet_pubkey,
+            brief,
+            budget_lamports,
+            platform,
+            requires_approval,
+            statement_lean,
+            lean_policy,
+            network,
+        } = params;
+        if wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "wallet_pubkey must not be empty".to_string(),
+            ));
+        }
+        let qs = network_query_suffix(network);
+        let url = format!("{}/campaigns{qs}", self.base_url);
+        let mut body = serde_json::json!({
+            "brief": brief,
+            "budget_lamports": budget_lamports,
+            "platform": platform,
+            "requires_approval": requires_approval,
+        });
+        if let Some(s) = statement_lean {
+            body["statement_lean"] = serde_json::json!(s);
+        }
+        if let Some(p) = lean_policy {
+            body["lean_policy"] = serde_json::json!(p);
+        }
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(wallet_pubkey)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, "orchestrator create_campaign failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+        let response = require_success(response, "create_campaign", "").await?;
+        let parsed: serde_json::Value = response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid create_campaign response: {e}"))
+        })?;
+        parsed
+            .get("campaign_id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| {
+                McpServiceError::OrchestratorError(
+                    "create_campaign response missing campaign_id".to_string(),
+                )
+            })
+    }
+
+    /// Fund one task of a campaign. Proxies `POST /campaigns/:id/fund?sponsor=auto`,
+    /// which builds the unsigned `create_task` tx. The client signs it locally and
+    /// broadcasts via `shillbot_submit_tx` with `action="create"`; the escrow moves
+    /// from the client's own account (non-custodial). Returns the unsigned tx +
+    /// task_id + task_pda.
+    pub async fn fund_campaign(
+        &self,
+        campaign_id: &str,
+        wallet_pubkey: &str,
+        amount_lamports: u64,
+        network: Option<&str>,
+    ) -> Result<TransactionResponse, McpServiceError> {
+        if campaign_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "campaign_id must not be empty".to_string(),
+            ));
+        }
+        if wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "wallet_pubkey must not be empty".to_string(),
+            ));
+        }
+        if amount_lamports == 0 {
+            return Err(McpServiceError::InvalidInput(
+                "amount_lamports must be positive".to_string(),
+            ));
+        }
+        let qs = network_query_suffix(network);
+        let sep = if qs.is_empty() { "?" } else { "&" };
+        let url = format!(
+            "{}/campaigns/{campaign_id}/fund{qs}{sep}sponsor=auto",
+            self.base_url
+        );
+        let body = serde_json::json!({ "amount_lamports": amount_lamports });
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(wallet_pubkey)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, campaign_id = %campaign_id, "orchestrator fund_campaign failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+        let response = require_success(response, "fund_campaign", campaign_id).await?;
+        let parsed: TransactionResponse = response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid fund_campaign response: {e}"))
+        })?;
+        if parsed.transaction.is_none() {
+            return Err(McpServiceError::OrchestratorError(
+                "fund_campaign response missing transaction field".to_string(),
+            ));
+        }
+        Ok(parsed)
+    }
+
     pub async fn claim_task(
         &self,
         task_id: &str,
@@ -1366,6 +1504,77 @@ mod tests {
                 .await
                 .expect("ok");
             assert_eq!(resp.task_id, "c:t");
+        }
+
+        #[tokio::test]
+        async fn create_campaign_posts_brief_and_returns_id() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/campaigns"))
+                .and(query_param("network", "devnet"))
+                .and(header("authorization", "Bearer wallet1"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "campaign_id": "camp1" })),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let brief = serde_json::json!({
+                "topic": "t", "brand_voice": "v", "cta": "c", "utm_link": "u"
+            });
+            let id = proxy
+                .create_campaign(CreateCampaignParams {
+                    wallet_pubkey: "wallet1",
+                    brief,
+                    budget_lamports: 20_000_000,
+                    platform: 5,
+                    requires_approval: false,
+                    statement_lean: None,
+                    lean_policy: None,
+                    network: Some("devnet"),
+                })
+                .await
+                .expect("ok");
+            assert_eq!(id, "camp1");
+        }
+
+        #[tokio::test]
+        async fn fund_campaign_builds_create_tx_with_sponsor_auto() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/campaigns/camp1/fund"))
+                .and(query_param("network", "devnet"))
+                .and(query_param("sponsor", "auto"))
+                .and(header("authorization", "Bearer wallet1"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(minimal_tx_json("camp1:task1")),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let resp = proxy
+                .fund_campaign("camp1", "wallet1", 20_000_000, Some("devnet"))
+                .await
+                .expect("ok");
+            assert_eq!(resp.task_id, "camp1:task1");
+            assert!(resp.transaction.is_some());
+        }
+
+        #[tokio::test]
+        async fn fund_campaign_rejects_zero_amount_without_calling() {
+            // amount 0 must be rejected at the boundary — no HTTP call made.
+            let server = MockServer::start().await;
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let err = proxy
+                .fund_campaign("camp1", "wallet1", 0, Some("devnet"))
+                .await
+                .expect_err("zero amount must be rejected");
+            assert!(matches!(err, McpServiceError::InvalidInput(_)));
         }
 
         #[tokio::test]

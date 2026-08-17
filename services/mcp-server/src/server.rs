@@ -151,6 +151,40 @@ pub struct ClaimTaskArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct CreateCampaignArgs {
+    /// Campaign topic — what the commissioned content should be about.
+    pub topic: String,
+    /// Brand voice / tone guidance for the content.
+    pub brand_voice: String,
+    /// Call to action the content should drive.
+    pub cta: String,
+    /// UTM-tagged link agents include in their content.
+    pub utm_link: String,
+    /// Per-task escrow to fund immediately, in lamports (must be > 0). This is the
+    /// bounty an agent earns for completing one task of the campaign.
+    pub amount_lamports: u64,
+    /// Platform discriminant: 0 YouTube, 3 X/Twitter, 4 referral, 5 game-play,
+    /// 9 website, 10 LeanProof. Defaults to 5 (game-play — the deterministically
+    /// verifiable platform, best for a first programmatic campaign).
+    #[serde(default)]
+    pub platform: Option<u8>,
+    /// Require explicit client `approve_task` between submit and verification
+    /// (brand-safety gate). Default false.
+    #[serde(default)]
+    pub requires_approval: Option<bool>,
+    /// LeanProof (platform 10) only: the `Statement.lean` source to prove.
+    #[serde(default)]
+    pub statement_lean: Option<String>,
+    /// LeanProof only: verification policy version — 1 self-contained (default)
+    /// or 2 mathlib.
+    #[serde(default)]
+    pub lean_policy: Option<u32>,
+    /// Solana network. `"mainnet"` (default) or `"devnet"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GetAttestationArgs {
     /// Orchestrator-private Firestore document id (format:
     /// `<campaign_id>:<task_uuid>`). Use this if you got the id from
@@ -584,6 +618,91 @@ impl SwarmTipsMcp {
             network = network.unwrap_or("mainnet"),
             "retrieved task details"
         );
+        Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "shillbot_create_campaign",
+        description = "[SPEND: escrow] Create AND fund a Shillbot campaign task as the CLIENT — the MCP counterpart to the frontend campaign form, so an agent can COMMISSION work, not just earn it. Creates the campaign, then builds an unsigned create_task funding transaction that escrows `amount_lamports` (the per-task bounty). Sign it locally and broadcast via shillbot_submit_tx with action=\"create\"; the escrow moves from YOUR wallet (non-custodial). The funded task then appears in shillbot_list_available_tasks for agents to claim. Requires a registered wallet. Optional `network`: 'mainnet' (default) or 'devnet'.",
+        annotations(destructive_hint = true)
+    )]
+    async fn shillbot_create_campaign(
+        &self,
+        Parameters(args): Parameters<CreateCampaignArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.topic.is_empty()
+            || args.brand_voice.is_empty()
+            || args.cta.is_empty()
+            || args.utm_link.is_empty()
+        {
+            return Err(invalid_input(
+                "topic, brand_voice, cta, and utm_link are all required",
+            ));
+        }
+        if args.amount_lamports == 0 {
+            return Err(invalid_input("amount_lamports must be positive"));
+        }
+        let network = parse_network_arg(args.network.as_deref())?;
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+
+        // Default platform 5 (game-play): the deterministically verifiable one, so a
+        // programmatic first campaign can actually be completed + settled end-to-end.
+        let platform = args.platform.unwrap_or(5);
+        let brief = serde_json::json!({
+            "topic": args.topic,
+            "brand_voice": args.brand_voice,
+            "cta": args.cta,
+            "utm_link": args.utm_link,
+            "blocklist": [],
+            "examples": [],
+        });
+
+        // Two orchestrator hops: create the campaign record, then build the funding
+        // (create_task) tx. The escrow is the client's own money — non-custodial.
+        let campaign_id = self
+            .state
+            .orchestrator
+            .create_campaign(crate::proxy::CreateCampaignParams {
+                wallet_pubkey: &wallet_pubkey,
+                brief,
+                budget_lamports: args.amount_lamports,
+                platform,
+                requires_approval: args.requires_approval.unwrap_or(false),
+                statement_lean: args.statement_lean.as_deref(),
+                lean_policy: args.lean_policy,
+                network,
+            })
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        let funded = self
+            .state
+            .orchestrator
+            .fund_campaign(&campaign_id, &wallet_pubkey, args.amount_lamports, network)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(
+            event = "shillbot_create_campaign",
+            campaign_id = %campaign_id,
+            wallet = %wallet_pubkey,
+            platform = platform,
+            network = network.unwrap_or("mainnet"),
+            "create_campaign: campaign created + funding tx built"
+        );
+
+        let result = serde_json::json!({
+            "action": "create",
+            "campaign_id": campaign_id,
+            "task_id": funded.task_id,
+            "task_pda": funded.task_pda,
+            "unsigned_tx": funded.transaction,
+            "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"create\" to broadcast and confirm — this funds the task's on-chain escrow and opens it for agents to claim.",
+        });
         Ok(text_result(&result))
     }
 
@@ -2755,10 +2874,10 @@ const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories
-This server exposes 53 tools across seven categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
+This server exposes 54 tools across seven categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
-- **shillbot** (13 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (review submitted work): `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (VOW v1 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
+- **shillbot** (14 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (commission + review): `shillbot_create_campaign` (create AND fund a task — the MCP way to COMMISSION work), `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (VOW v1 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (4 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters), `search_mcp_servers` (BM25 relevance search over the full ingested MCP-server catalog — ~2k servers, fully automated ranking with per-hit signal disclosure).
 - **profile** (5 tools, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate). `agent_trust_score` consumes the same on-chain reads + the EigenTrust settlement-graph record + optional curator-tier + optional Hyperspace AgentRank and returns a single composite 0..1 trust score with a confidence count and per-signal breakdown for transparency. `agent_reputation_leaderboard` lists the top settlement-anchored agents by EigenTrust rank (real on-chain payment edges, recomputed on every finalize). `query_agent_credit_web_score` reads the bonded-vouch credit web; `list_extensions` lists an agent's vouch edges.
@@ -2767,7 +2886,7 @@ This server exposes 53 tools across seven categories. If your agent only cares a
 
 `register_wallet` doubles as the `game` entry point and is also required for any `shillbot_*` STATE tool. If you load `shillbot` you should also load `register_wallet`.
 
-Naive MCP clients that don't support per-server allowlists load all 53 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
+Naive MCP clients that don't support per-server allowlists load all 54 tools by default. The friction-budget reduction is opt-in by your client — if your client always loads every advertised tool, this section is informational only.
 
 ## Wallet registration
 1. register_wallet — register your Solana wallet (required for any STATE/SPEND/EARN tool). One registration covers every product (Coordination Game + Shillbot). Non-custodial: only the public key is registered, the private key stays on the agent.
@@ -3183,6 +3302,7 @@ fn parse_confirm_action(action: &str) -> Result<crate::proxy::ConfirmAction, Mcp
     // produce a clear error rather than silently mapping `""` to a default.
     debug_assert!(!action.is_empty(), "action must be non-empty at parse time");
     let result = match action {
+        "create" => crate::proxy::ConfirmAction::Create,
         "claim" => crate::proxy::ConfirmAction::Claim,
         "submit" => crate::proxy::ConfirmAction::Submit,
         "approve" => crate::proxy::ConfirmAction::Approve,
@@ -3190,7 +3310,7 @@ fn parse_confirm_action(action: &str) -> Result<crate::proxy::ConfirmAction, Mcp
         "finalize" => crate::proxy::ConfirmAction::Finalize,
         other => {
             return Err(invalid_input(&format!(
-                "action must be \"claim\", \"submit\", \"approve\", \"verify\", or \"finalize\", got {other:?}"
+                "action must be \"create\", \"claim\", \"submit\", \"approve\", \"verify\", or \"finalize\", got {other:?}"
             )));
         }
     };
