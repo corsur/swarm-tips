@@ -12,7 +12,7 @@ import {
 } from "@solana/web3.js";
 import { Clock } from "solana-bankrun";
 import { assert } from "chai";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 
 import { createMockPullFeedData } from "./helpers/mock-switchboard-feed";
 
@@ -223,19 +223,14 @@ async function createTask(
   globalPda: PublicKey,
   deadline: BN
 ): Promise<TaskSetup> {
-  const global = await program.account.globalState.fetch(globalPda);
-  const [tPda] = taskPda(
-    global.taskCounter,
-    client.publicKey,
-    program.programId
-  );
-  const content = contentHash(
-    "lifecycle test task " + global.taskCounter.toString()
-  );
+  const nonce = new BN(randomBytes(8));
+  const [tPda] = taskPda(nonce, client.publicKey, program.programId);
+  const content = contentHash("lifecycle test task " + nonce.toString());
 
   const [csPda] = clientStatePda(client.publicKey, program.programId);
   await program.methods
     .createTask(
+      nonce,
       ESCROW_LAMPORTS,
       content as any,
       deadline,
@@ -259,7 +254,7 @@ async function createTask(
     .signers([client])
     .rpc();
 
-  return { taskPda: tPda, taskId: global.taskCounter, globalPda };
+  return { taskPda: tPda, taskId: nonce, globalPda };
 }
 
 async function claimTask(
@@ -971,14 +966,16 @@ describe("shillbot-lifecycle (bankrun)", () => {
       deadlineSec: BN
     ): Promise<PublicKey> {
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce1 = new BN(randomBytes(8));
       const [tPda] = taskPda(
-        global.taskCounter,
+        __nonce1,
         c.publicKey,
         program.programId
       );
       const [csPda] = clientStatePda(c.publicKey, program.programId);
       await program.methods
         .createTask(
+          __nonce1,
           escrow,
           contentHash(contentTag) as any,
           deadlineSec,
@@ -1124,8 +1121,9 @@ describe("shillbot-lifecycle (bankrun)", () => {
       const deadline = new BN(Number(clock.unixTimestamp) + 86_400 * 60);
 
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce2 = new BN(randomBytes(8));
       const [tPda] = taskPda(
-        global.taskCounter,
+        __nonce2,
         cKp.publicKey,
         program.programId
       );
@@ -1133,6 +1131,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       await program.methods
         .createTask(
+          __nonce2,
           TEST_ESCROW,
           contentHash("approve-gate-" + global.taskCounter.toString()) as any,
           deadline,
@@ -1361,8 +1360,9 @@ describe("shillbot-lifecycle (bankrun)", () => {
       const deadline = new BN(Number(clock.unixTimestamp) + 86_400 * 60);
 
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce3 = new BN(randomBytes(8));
       const [tPda] = taskPda(
-        global.taskCounter,
+        __nonce3,
         cKp.publicKey,
         program.programId
       );
@@ -1371,6 +1371,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       await program.methods
         .createTask(
+          __nonce3,
           REP_ESCROW,
           contentHash("rep-counter-" + global.taskCounter.toString()) as any,
           deadline,

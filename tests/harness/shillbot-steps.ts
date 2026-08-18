@@ -24,7 +24,7 @@ import {
   SystemProgram,
   SYSVAR_SLOT_HASHES_PUBKEY,
 } from "@solana/web3.js";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { Shillbot } from "../../target/types/shillbot";
 import { SolanaRuntime } from "./target";
 import {
@@ -79,14 +79,20 @@ function u64le(n: BN): Buffer {
 }
 
 export function taskPda(
-  taskCounter: BN,
+  taskId: BN,
   client: PublicKey,
   programId: PublicKey
 ): PublicKey {
+  // taskId is the client-provided nonce (formerly the global task_counter).
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("task"), u64le(taskCounter), client.toBuffer()],
+    [Buffer.from("task"), u64le(taskId), client.toBuffer()],
     programId
   )[0];
+}
+
+/** A random u64 nonce for a Task PDA (replaces the global counter). */
+export function randomTaskNonce(): BN {
+  return new BN(randomBytes(8));
 }
 
 export function challengePda(
@@ -244,6 +250,9 @@ export interface CreateTaskOpts {
   attestationDelayOverride?: number;
   verificationTimeoutOverride?: number;
   contentTag?: string;
+  /** Task PDA nonce; a fresh random u64 when omitted. Pin it to drive a
+   *  duplicate-nonce test (Anchor `init` must reject reuse of (nonce, client)). */
+  nonce?: BN;
 }
 
 export interface CreatedTask {
@@ -258,8 +267,7 @@ export async function createTask(
   client: Keypair,
   opts: CreateTaskOpts
 ): Promise<CreatedTask> {
-  const global = await ctx.rt.program.account.globalState.fetch(ctx.globalPda);
-  const taskId = global.taskCounter as BN;
+  const taskId = opts.nonce ?? randomTaskNonce();
   const task = taskPda(taskId, client.publicKey, ctx.rt.program.programId);
   const contentTag = opts.contentTag ?? `task-${taskId.toString()}`;
   const now = await ctx.rt.now();
@@ -267,6 +275,7 @@ export async function createTask(
 
   await ctx.rt.program.methods
     .createTask(
+      taskId,
       opts.escrowLamports,
       contentHash(contentTag) as never,
       deadline,

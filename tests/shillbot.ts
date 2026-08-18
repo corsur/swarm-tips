@@ -1,7 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program, BN } from "@coral-xyz/anchor";
 import { Shillbot } from "../target/types/shillbot";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import {
   Keypair,
   LAMPORTS_PER_SOL,
@@ -41,20 +41,22 @@ function globalStatePda(programId: PublicKey): [PublicKey, number] {
   );
 }
 
-/** Derive a Task PDA from its counter value and client. */
+/** Derive a Task PDA from its nonce (formerly the global counter) and client. */
 function taskPda(
-  taskCounter: BN,
+  taskId: BN,
   client: PublicKey,
   programId: PublicKey
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("task"),
-      taskCounter.toArrayLike(Buffer, "le", 8),
-      client.toBuffer(),
-    ],
+    [Buffer.from("task"), taskId.toArrayLike(Buffer, "le", 8), client.toBuffer()],
     programId
   );
+}
+
+/** A fresh random u64 Task nonce — the client-provided PDA seed that replaced the
+ *  global counter, so concurrent creates don't collide. */
+function newTaskNonce(): BN {
+  return new BN(randomBytes(8));
 }
 
 /** Derive a Challenge PDA from task ID and challenger. */
@@ -216,13 +218,9 @@ describe("shillbot", () => {
       const submitMargin = new BN(3600);
       const claimBuffer = new BN(14_400);
 
-      // Task PDA uses the current counter (0) and client
-      const globalBefore = await program.account.globalState.fetch(globalPda);
-      [task0Pda] = taskPda(
-        globalBefore.taskCounter,
-        client.publicKey,
-        program.programId
-      );
+      // Task PDA uses a client-provided random nonce (no global counter).
+      const nonce0 = newTaskNonce();
+      [task0Pda] = taskPda(nonce0, client.publicKey, program.programId);
 
       const clientBalanceBefore = await provider.connection.getBalance(
         client.publicKey
@@ -230,6 +228,7 @@ describe("shillbot", () => {
 
       await program.methods
         .createTask(
+          nonce0,
           ESCROW_LAMPORTS,
           content as any,
           deadline,
@@ -254,7 +253,7 @@ describe("shillbot", () => {
 
       // Verify task state
       const task = await program.account.task.fetch(task0Pda);
-      assert.equal(task.taskId.toString(), "0");
+      assert.equal(task.taskId.toString(), nonce0.toString());
       assert.equal(task.client.toString(), client.publicKey.toString());
       assert.deepEqual(task.state, { open: {} });
       assert.equal(task.escrowLamports.toString(), ESCROW_LAMPORTS.toString());
@@ -270,9 +269,10 @@ describe("shillbot", () => {
       // but the structure should be populated
       assert.equal(nonce.length, 16, "task_nonce should be 16 bytes");
 
-      // Verify counter incremented
+      // The global counter is no longer used or incremented by create_task
+      // (the Task PDA is keyed on the client nonce). It stays at its init value.
       const globalAfter = await program.account.globalState.fetch(globalPda);
-      assert.equal(globalAfter.taskCounter.toString(), "1");
+      assert.equal(globalAfter.taskCounter.toString(), "0");
 
       // Verify escrow was transferred (client balance decreased)
       const clientBalanceAfter = await provider.connection.getBalance(
@@ -292,18 +292,72 @@ describe("shillbot", () => {
       );
     });
 
+    // The scaling invariant: the Task PDA is keyed on a client-provided nonce, not
+    // a global counter, so two creates by the SAME client with DISTINCT nonces are
+    // independent (no counter to predict/collide on) — the thing that used to fail
+    // with ConstraintSeeds under concurrency. Reusing a nonce for the same client
+    // is rejected by Anchor `init`, preserving uniqueness.
+    it("distinct nonces let one client create many tasks; a reused nonce is rejected", async () => {
+      const now = await getClockTimestamp(provider.connection);
+      const deadline = new BN(now + 86_400 * 30);
+      const mk = (nonce: BN) =>
+        program.methods
+          .createTask(
+            nonce,
+            ESCROW_LAMPORTS,
+            contentHash(`nonce-${nonce.toString()}`) as any,
+            deadline,
+            new BN(3600),
+            new BN(14_400),
+            0,
+            0,
+            0,
+            0,
+            true,
+            0
+          )
+          .accountsPartial({
+            globalState: globalPda,
+            task: taskPda(nonce, client.publicKey, program.programId)[0],
+            client: client.publicKey,
+            slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([client])
+          .rpc();
+
+      const nonceA = newTaskNonce();
+      const nonceB = newTaskNonce();
+      await mk(nonceA);
+      await mk(nonceB); // same client, different nonce → independent, no collision
+      const a = await program.account.task.fetch(
+        taskPda(nonceA, client.publicKey, program.programId)[0]
+      );
+      const b = await program.account.task.fetch(
+        taskPda(nonceB, client.publicKey, program.programId)[0]
+      );
+      assert.equal(a.taskId.toString(), nonceA.toString());
+      assert.equal(b.taskId.toString(), nonceB.toString());
+
+      // Reusing nonceA for the same client must fail (PDA already initialized).
+      let reuseFailed = false;
+      try {
+        await mk(nonceA);
+      } catch {
+        reuseFailed = true;
+      }
+      assert.isTrue(reuseFailed, "reusing a nonce for the same client must be rejected");
+    });
+
     it("rejects create_task with zero escrow", async () => {
       const now = await getClockTimestamp(provider.connection);
-      const global = await program.account.globalState.fetch(globalPda);
-      const [badTaskPda] = taskPda(
-        global.taskCounter,
-        client.publicKey,
-        program.programId
-      );
+      const nonce = newTaskNonce();
+      const [badTaskPda] = taskPda(nonce, client.publicKey, program.programId);
 
       try {
         await program.methods
           .createTask(
+            nonce,
             new BN(0),
             content as any,
             new BN(now + 86_400),
@@ -335,16 +389,13 @@ describe("shillbot", () => {
     });
 
     it("rejects create_task with expired deadline", async () => {
-      const global = await program.account.globalState.fetch(globalPda);
-      const [badTaskPda] = taskPda(
-        global.taskCounter,
-        client.publicKey,
-        program.programId
-      );
+      const nonce = newTaskNonce();
+      const [badTaskPda] = taskPda(nonce, client.publicKey, program.programId);
 
       try {
         await program.methods
           .createTask(
+            nonce,
             ESCROW_LAMPORTS,
             content as any,
             new BN(1), // Unix timestamp 1 = far in the past
@@ -387,14 +438,16 @@ describe("shillbot", () => {
       // Create a fresh task for claim tests
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce1 = newTaskNonce();
       [taskPdaForClaim] = taskPda(
-        global.taskCounter,
+        __nonce1,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce1,
           ESCROW_LAMPORTS,
           contentHash("claim test task") as any,
           new BN(now + 86_400 * 30),
@@ -486,8 +539,9 @@ describe("shillbot", () => {
       // Create and claim a task for submit tests
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce2 = newTaskNonce();
       [taskPdaForSubmit] = taskPda(
-        global.taskCounter,
+        __nonce2,
         client.publicKey,
         program.programId
       );
@@ -495,6 +549,7 @@ describe("shillbot", () => {
 
       await program.methods
         .createTask(
+          __nonce2,
           ESCROW_LAMPORTS,
           contentHash("submit test task") as any,
           new BN(now + 86_400 * 30),
@@ -567,8 +622,9 @@ describe("shillbot", () => {
       // Need a fresh task in Claimed state for this test
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce3 = newTaskNonce();
       const [freshTaskPda] = taskPda(
-        global.taskCounter,
+        __nonce3,
         client.publicKey,
         program.programId
       );
@@ -576,6 +632,7 @@ describe("shillbot", () => {
 
       await program.methods
         .createTask(
+          __nonce3,
           ESCROW_LAMPORTS,
           contentHash("non-agent submit test") as any,
           new BN(now + 86_400 * 30),
@@ -660,16 +717,17 @@ describe("shillbot", () => {
     before(async () => {
       // Create, claim, and submit a task
       const now = await getClockTimestamp(provider.connection);
-      const global = await program.account.globalState.fetch(globalPda);
-      taskIdForVerify = global.taskCounter;
+      const __nonce4 = newTaskNonce();
+      taskIdForVerify = __nonce4;
       [taskPdaForVerify] = taskPda(
-        global.taskCounter,
+        __nonce4,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce4,
           ESCROW_LAMPORTS,
           contentHash("verify test task") as any,
           new BN(now + 86_400 * 30),
@@ -841,14 +899,16 @@ describe("shillbot", () => {
       // Create a task in Open state
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce5 = newTaskNonce();
       const [openTaskPda] = taskPda(
-        global.taskCounter,
+        __nonce5,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce5,
           ESCROW_LAMPORTS,
           contentHash("finalize reject test") as any,
           new BN(now + 86_400 * 30),
@@ -908,14 +968,16 @@ describe("shillbot", () => {
       // Create a task in Open state
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce6 = newTaskNonce();
       const [openTaskPda] = taskPda(
-        global.taskCounter,
+        __nonce6,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce6,
           ESCROW_LAMPORTS,
           contentHash("challenge reject test") as any,
           new BN(now + 86_400 * 30),
@@ -976,14 +1038,16 @@ describe("shillbot", () => {
       // Use an Open task to verify the state check
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce7 = newTaskNonce();
       const [openTaskPda] = taskPda(
-        global.taskCounter,
+        __nonce7,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce7,
           ESCROW_LAMPORTS,
           contentHash("resolve reject test") as any,
           new BN(now + 86_400 * 30),
@@ -1059,14 +1123,16 @@ describe("shillbot", () => {
       // Create a task with far-future deadline
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce8 = newTaskNonce();
       const [taskToExpire] = taskPda(
-        global.taskCounter,
+        __nonce8,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce8,
           ESCROW_LAMPORTS,
           contentHash("expire reject test") as any,
           new BN(now + 86_400 * 30),
@@ -1115,8 +1181,9 @@ describe("shillbot", () => {
       // advances with each slot. We set a very tight deadline.
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce9 = newTaskNonce();
       const [shortTaskPda] = taskPda(
-        global.taskCounter,
+        __nonce9,
         client.publicKey,
         program.programId
       );
@@ -1126,6 +1193,7 @@ describe("shillbot", () => {
 
       await program.methods
         .createTask(
+          __nonce9,
           ESCROW_LAMPORTS,
           contentHash("short deadline task") as any,
           tightDeadline,
@@ -1220,14 +1288,16 @@ describe("shillbot", () => {
       // Create and claim 4 tasks
       for (let i = 0; i < 4; i++) {
         const global = await program.account.globalState.fetch(globalPda);
+        const __nonce10 = newTaskNonce();
         const [tp] = taskPda(
-          global.taskCounter,
+          __nonce10,
           client.publicKey,
           program.programId
         );
 
         await program.methods
           .createTask(
+            __nonce10,
             ESCROW_LAMPORTS,
             contentHash(`concurrent task ${i}`) as any,
             new BN(now + 86_400 * 30),
@@ -1274,8 +1344,9 @@ describe("shillbot", () => {
     it("allows 5th claim (agent can have up to 5)", async () => {
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce11 = newTaskNonce();
       const [tp] = taskPda(
-        global.taskCounter,
+        __nonce11,
         client.publicKey,
         program.programId
       );
@@ -1286,6 +1357,7 @@ describe("shillbot", () => {
 
       await program.methods
         .createTask(
+          __nonce11,
           ESCROW_LAMPORTS,
           contentHash("concurrent task 4") as any,
           new BN(now + 86_400 * 30),
@@ -1332,8 +1404,9 @@ describe("shillbot", () => {
     it("rejects 6th concurrent claim (exceeds limit of 5)", async () => {
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce12 = newTaskNonce();
       const [tp] = taskPda(
-        global.taskCounter,
+        __nonce12,
         client.publicKey,
         program.programId
       );
@@ -1344,6 +1417,7 @@ describe("shillbot", () => {
 
       await program.methods
         .createTask(
+          __nonce12,
           ESCROW_LAMPORTS,
           contentHash("concurrent task 5 overflow") as any,
           new BN(now + 86_400 * 30),
@@ -1657,8 +1731,9 @@ describe("shillbot", () => {
     it("rejects claim when claim buffer is insufficient", async () => {
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce13 = newTaskNonce();
       const [tightTaskPda] = taskPda(
-        global.taskCounter,
+        __nonce13,
         client.publicKey,
         program.programId
       );
@@ -1667,6 +1742,7 @@ describe("shillbot", () => {
       // This means now + 14400 > now + 100, so claim should be rejected
       await program.methods
         .createTask(
+          __nonce13,
           ESCROW_LAMPORTS,
           contentHash("tight deadline task") as any,
           new BN(now + 100),
@@ -1724,14 +1800,16 @@ describe("shillbot", () => {
       // Create 2 open tasks
       for (let i = 0; i < 2; i++) {
         const global = await program.account.globalState.fetch(globalPda);
+        const __nonce14 = newTaskNonce();
         const [tp] = taskPda(
-          global.taskCounter,
+          __nonce14,
           client.publicKey,
           program.programId
         );
 
         await program.methods
           .createTask(
+            __nonce14,
             ESCROW_LAMPORTS,
             contentHash(`emergency open task ${i}`) as any,
             new BN(now + 86_400 * 30),
@@ -1814,8 +1892,9 @@ describe("shillbot", () => {
       );
 
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce15 = newTaskNonce();
       const [tp] = taskPda(
-        global.taskCounter,
+        __nonce15,
         client.publicKey,
         program.programId
       );
@@ -1826,6 +1905,7 @@ describe("shillbot", () => {
 
       await program.methods
         .createTask(
+          __nonce15,
           ESCROW_LAMPORTS,
           contentHash("emergency claimed task") as any,
           new BN(now + 86_400 * 30),
@@ -1911,14 +1991,16 @@ describe("shillbot", () => {
       );
 
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce16 = newTaskNonce();
       const [tp] = taskPda(
-        global.taskCounter,
+        __nonce16,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce16,
           ESCROW_LAMPORTS,
           contentHash("emergency auth test") as any,
           new BN(now + 86_400 * 30),
@@ -1966,8 +2048,9 @@ describe("shillbot", () => {
     it("rejects Submitted task (wrong state)", async () => {
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce17 = newTaskNonce();
       const [tp] = taskPda(
-        global.taskCounter,
+        __nonce17,
         client.publicKey,
         program.programId
       );
@@ -1975,6 +2058,7 @@ describe("shillbot", () => {
 
       await program.methods
         .createTask(
+          __nonce17,
           ESCROW_LAMPORTS,
           contentHash("emergency submitted test") as any,
           new BN(now + 86_400 * 30),
@@ -2568,14 +2652,16 @@ describe("shillbot", () => {
     it("claim_task_session: delegate claims a task on behalf of the agent", async () => {
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce18 = newTaskNonce();
       const [openTaskPda] = taskPda(
-        global.taskCounter,
+        __nonce18,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce18,
           ESCROW_LAMPORTS,
           contentHash("session claim happy") as any,
           new BN(now + 86_400 * 30),
@@ -2662,14 +2748,16 @@ describe("shillbot", () => {
 
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce19 = newTaskNonce();
       const [taskForRejection] = taskPda(
-        global.taskCounter,
+        __nonce19,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce19,
           ESCROW_LAMPORTS,
           contentHash("session claim no-perm") as any,
           new BN(now + 86_400 * 30),
@@ -2756,14 +2844,16 @@ describe("shillbot", () => {
       // claim-only delegate to claim+submit and expect submit rejection.
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce20 = newTaskNonce();
       const [taskForClaimOnly] = taskPda(
-        global.taskCounter,
+        __nonce20,
         client.publicKey,
         program.programId
       );
 
       await program.methods
         .createTask(
+          __nonce20,
           ESCROW_LAMPORTS,
           contentHash("session submit no-perm") as any,
           new BN(now + 86_400 * 30),
@@ -2833,8 +2923,9 @@ describe("shillbot", () => {
     it("rejects submit on Open task (not claimed)", async () => {
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
+      const __nonce21 = newTaskNonce();
       const [openTaskPda] = taskPda(
-        global.taskCounter,
+        __nonce21,
         client.publicKey,
         program.programId
       );
@@ -2842,6 +2933,7 @@ describe("shillbot", () => {
 
       await program.methods
         .createTask(
+          __nonce21,
           ESCROW_LAMPORTS,
           contentHash("submit on open task") as any,
           new BN(now + 86_400 * 30),

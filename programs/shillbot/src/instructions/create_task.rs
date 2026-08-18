@@ -9,6 +9,13 @@ use crate::state::{ClientState, GlobalState, Task, TaskState};
 #[allow(clippy::too_many_arguments)]
 pub fn create_task(
     ctx: Context<CreateTask>,
+    // Client-provided random nonce — the Task PDA seed and the stored `task_id`.
+    // Replaces the former global `GlobalState.task_counter` seed, which serialized
+    // every create on one account write and forced the orchestrator to predict the
+    // PDA off-chain (any concurrent create invalidated the prediction →
+    // ConstraintSeeds). A per-client-unique random nonce makes concurrent creates
+    // independent. `init` on the Task PDA rejects `(nonce, client)` reuse.
+    nonce: u64,
     escrow_lamports: u64,
     content_hash: [u8; 32],
     deadline: i64,
@@ -47,7 +54,8 @@ pub fn create_task(
         verification_kind,
         now,
     )?;
-    // Effects: rate limit + global counter + derive nonce + init Task PDA.
+    // Effects: rate limit + derive content nonce + init Task PDA (keyed on the
+    // client nonce). No global counter — creates don't contend on GlobalState.
     apply_rate_limit(
         &mut ctx.accounts.client_state,
         ctx.bumps.client_state,
@@ -56,13 +64,9 @@ pub fn create_task(
         global.max_tasks_per_rate_window,
         now,
     )?;
-    let task_id = ctx.accounts.global_state.task_counter;
-    ctx.accounts.global_state.task_counter = ctx
-        .accounts
-        .global_state
-        .task_counter
-        .checked_add(1)
-        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    // task_id IS the client-provided nonce now — no global counter read/increment,
+    // so create_task no longer takes a write lock on GlobalState (creates scale).
+    let task_id = nonce;
     let task_nonce = derive_task_nonce(&ctx.accounts.slot_hashes)?;
     init_task_account(
         &mut ctx.accounts.task,
@@ -307,9 +311,11 @@ fn init_task_account(
 }
 
 #[derive(Accounts)]
+#[instruction(nonce: u64)]
 pub struct CreateTask<'info> {
+    // No longer `mut` — create_task doesn't write GlobalState (no counter), so
+    // concurrent creates don't serialize on its write lock. Read-only for params.
     #[account(
-        mut,
         seeds = [b"shillbot_global"],
         bump = global_state.bump,
     )]
@@ -320,7 +326,7 @@ pub struct CreateTask<'info> {
         space = Task::SPACE,
         seeds = [
             b"task",
-            global_state.task_counter.to_le_bytes().as_ref(),
+            nonce.to_le_bytes().as_ref(),
             client.key().as_ref(),
         ],
         bump,

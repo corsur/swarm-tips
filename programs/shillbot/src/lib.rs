@@ -96,6 +96,7 @@ pub mod shillbot {
     #[allow(clippy::too_many_arguments)]
     pub fn create_task(
         ctx: Context<CreateTask>,
+        nonce: u64,
         escrow_lamports: u64,
         content_hash: [u8; 32],
         deadline: i64,
@@ -110,6 +111,7 @@ pub mod shillbot {
     ) -> Result<()> {
         instructions::create_task::create_task(
             ctx,
+            nonce,
             escrow_lamports,
             content_hash,
             deadline,

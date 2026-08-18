@@ -12,7 +12,7 @@ import {
 } from "@solana/web3.js";
 import { Clock } from "solana-bankrun";
 import { assert } from "chai";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 
 import { Shillbot } from "../target/types/shillbot";
 const IDL = require("../target/idl/shillbot.json");
@@ -104,8 +104,7 @@ describe("shillbot-attested (bankrun)", () => {
     const platform = opts?.platform ?? LEAN_PROOF_PLATFORM;
     const windowOverride =
       opts?.challengeWindowOverride ?? LEAN_CHALLENGE_WINDOW;
-    const global = await program.account.globalState.fetch(globalPda);
-    const taskId = global.taskCounter;
+    const taskId = new BN(randomBytes(8));
     const taskPda = pda(
       [
         Buffer.from("task"),
@@ -117,6 +116,7 @@ describe("shillbot-attested (bankrun)", () => {
     const deadline = new BN((await now()) + 86_400 * 30);
     await program.methods
       .createTask(
+        taskId,
         ESCROW_LAMPORTS,
         contentHash(`statement ${taskId.toString()}`) as any,
         deadline,
