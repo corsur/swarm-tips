@@ -112,12 +112,11 @@ async function main(): Promise<void> {
     [Buffer.from("shillbot_global")],
     program.programId
   );
-  const globalBefore = await program.account.globalState.fetch(globalPda);
-  const counter = globalBefore.taskCounter as BN;
+  const nonce = new BN(randomBytes(8));
   const [taskPda] = PublicKey.findProgramAddressSync(
     [
       Buffer.from("task"),
-      counter.toArrayLike(Buffer, "le", 8),
+      nonce.toArrayLike(Buffer, "le", 8),
       client.publicKey.toBuffer(),
     ],
     program.programId
@@ -128,6 +127,7 @@ async function main(): Promise<void> {
   const deadline = new BN(Math.floor(Date.now() / 1000) + 86_400 * 30);
   await program.methods
     .createTask(
+      nonce,
       ESCROW,
       content as never,
       deadline,

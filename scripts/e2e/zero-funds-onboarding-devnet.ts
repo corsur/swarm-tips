@@ -227,18 +227,18 @@ async function main(): Promise<void> {
     [Buffer.from("shillbot_global")],
     shillbot.programId
   );
-  const counter = (await shillbot.account.globalState.fetch(sbGlobal))
-    .taskCounter as BN;
+  const nonce = new BN(randomBytes(8));
   const [taskPda] = PublicKey.findProgramAddressSync(
     [
       Buffer.from("task"),
-      counter.toArrayLike(Buffer, "le", 8),
+      nonce.toArrayLike(Buffer, "le", 8),
       root.publicKey.toBuffer(),
     ],
     shillbot.programId
   );
   await shillbot.methods
     .createTask(
+      nonce,
       ESCROW,
       Array.from(
         createHash("sha256").update(randomBytes(16)).digest()

@@ -967,11 +967,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
     ): Promise<PublicKey> {
       const global = await program.account.globalState.fetch(globalPda);
       const __nonce1 = new BN(randomBytes(8));
-      const [tPda] = taskPda(
-        __nonce1,
-        c.publicKey,
-        program.programId
-      );
+      const [tPda] = taskPda(__nonce1, c.publicKey, program.programId);
       const [csPda] = clientStatePda(c.publicKey, program.programId);
       await program.methods
         .createTask(
@@ -1122,11 +1118,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       const global = await program.account.globalState.fetch(globalPda);
       const __nonce2 = new BN(randomBytes(8));
-      const [tPda] = taskPda(
-        __nonce2,
-        cKp.publicKey,
-        program.programId
-      );
+      const [tPda] = taskPda(__nonce2, cKp.publicKey, program.programId);
       const [csPda] = clientStatePda(cKp.publicKey, program.programId);
 
       await program.methods
@@ -1361,11 +1353,7 @@ describe("shillbot-lifecycle (bankrun)", () => {
 
       const global = await program.account.globalState.fetch(globalPda);
       const __nonce3 = new BN(randomBytes(8));
-      const [tPda] = taskPda(
-        __nonce3,
-        cKp.publicKey,
-        program.programId
-      );
+      const [tPda] = taskPda(__nonce3, cKp.publicKey, program.programId);
       const [csPda] = clientStatePda(cKp.publicKey, program.programId);
       const [agentPda] = agentStatePda(aKp.publicKey, program.programId);
 

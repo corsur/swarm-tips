@@ -669,7 +669,11 @@ describe("coordination-game", () => {
     await depositStake(TOURNAMENT_ID, tournamentPda, interloper);
 
     const [interloperProfile] = PublicKey.findProgramAddressSync(
-      [Buffer.from("player"), tournamentIdBuf(), interloper.publicKey.toBuffer()],
+      [
+        Buffer.from("player"),
+        tournamentIdBuf(),
+        interloper.publicKey.toBuffer(),
+      ],
       program.programId
     );
     const [interloperEscrow] = escrowPda(TOURNAMENT_ID, interloper.publicKey);

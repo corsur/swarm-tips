@@ -48,7 +48,11 @@ function taskPda(
   programId: PublicKey
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("task"), taskId.toArrayLike(Buffer, "le", 8), client.toBuffer()],
+    [
+      Buffer.from("task"),
+      taskId.toArrayLike(Buffer, "le", 8),
+      client.toBuffer(),
+    ],
     programId
   );
 }
@@ -346,7 +350,10 @@ describe("shillbot", () => {
       } catch {
         reuseFailed = true;
       }
-      assert.isTrue(reuseFailed, "reusing a nonce for the same client must be rejected");
+      assert.isTrue(
+        reuseFailed,
+        "reusing a nonce for the same client must be rejected"
+      );
     });
 
     it("rejects create_task with zero escrow", async () => {
@@ -1289,11 +1296,7 @@ describe("shillbot", () => {
       for (let i = 0; i < 4; i++) {
         const global = await program.account.globalState.fetch(globalPda);
         const __nonce10 = newTaskNonce();
-        const [tp] = taskPda(
-          __nonce10,
-          client.publicKey,
-          program.programId
-        );
+        const [tp] = taskPda(__nonce10, client.publicKey, program.programId);
 
         await program.methods
           .createTask(
@@ -1345,11 +1348,7 @@ describe("shillbot", () => {
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
       const __nonce11 = newTaskNonce();
-      const [tp] = taskPda(
-        __nonce11,
-        client.publicKey,
-        program.programId
-      );
+      const [tp] = taskPda(__nonce11, client.publicKey, program.programId);
       const [claimAgentPda] = agentStatePda(
         claimAgent.publicKey,
         program.programId
@@ -1405,11 +1404,7 @@ describe("shillbot", () => {
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
       const __nonce12 = newTaskNonce();
-      const [tp] = taskPda(
-        __nonce12,
-        client.publicKey,
-        program.programId
-      );
+      const [tp] = taskPda(__nonce12, client.publicKey, program.programId);
       const [claimAgentPda] = agentStatePda(
         claimAgent.publicKey,
         program.programId
@@ -1801,11 +1796,7 @@ describe("shillbot", () => {
       for (let i = 0; i < 2; i++) {
         const global = await program.account.globalState.fetch(globalPda);
         const __nonce14 = newTaskNonce();
-        const [tp] = taskPda(
-          __nonce14,
-          client.publicKey,
-          program.programId
-        );
+        const [tp] = taskPda(__nonce14, client.publicKey, program.programId);
 
         await program.methods
           .createTask(
@@ -1893,11 +1884,7 @@ describe("shillbot", () => {
 
       const global = await program.account.globalState.fetch(globalPda);
       const __nonce15 = newTaskNonce();
-      const [tp] = taskPda(
-        __nonce15,
-        client.publicKey,
-        program.programId
-      );
+      const [tp] = taskPda(__nonce15, client.publicKey, program.programId);
       const [emergencyAgentPda] = agentStatePda(
         emergencyAgent.publicKey,
         program.programId
@@ -1992,11 +1979,7 @@ describe("shillbot", () => {
 
       const global = await program.account.globalState.fetch(globalPda);
       const __nonce16 = newTaskNonce();
-      const [tp] = taskPda(
-        __nonce16,
-        client.publicKey,
-        program.programId
-      );
+      const [tp] = taskPda(__nonce16, client.publicKey, program.programId);
 
       await program.methods
         .createTask(
@@ -2049,11 +2032,7 @@ describe("shillbot", () => {
       const now = await getClockTimestamp(provider.connection);
       const global = await program.account.globalState.fetch(globalPda);
       const __nonce17 = newTaskNonce();
-      const [tp] = taskPda(
-        __nonce17,
-        client.publicKey,
-        program.programId
-      );
+      const [tp] = taskPda(__nonce17, client.publicKey, program.programId);
       const [agentPda] = agentStatePda(agent.publicKey, program.programId);
 
       await program.methods
