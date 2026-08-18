@@ -236,9 +236,25 @@ jobs:
       github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation for the GCP secret read below
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      # Auth to GCP so the deploy step can read the premium mainnet RPC straight
+      # from Secret Manager (single source of truth). The RPC is a runtime secret
+      # that already lives in GCP as `solana-rpc-url-mainnet`; per the org
+      # standard it must NOT be duplicated into GitHub Secrets (that second copy
+      # drifts on rotation). The CI SA (github-actions-ci) holds
+      # secretmanager.secretAccessor, so no key value ever transits a human or a
+      # GitHub secret.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
@@ -274,13 +290,18 @@ jobs:
         # instead of upgrading in place — it silently failed the a685cdf
         # client-nonce upgrade (2026-08-17), leaving mainnet on the pre-nonce
         # program while shillbot-api sends the nonce, so mainnet create_task
-        # deserialization breaks. Premium RPC + in-place upgrade, mirroring the
-        # devnet deploy. Falls back to the public RPC only if the secret is unset.
-        env:
-          MAINNET_RPC: ${{ secrets.SOLANA_RPC_URL_MAINNET }}
+        # deserialization breaks. Premium RPC (read from GCP Secret Manager at
+        # deploy time via Workload Identity) + in-place upgrade, mirroring the
+        # devnet deploy. Fail loudly if the secret can't be read — do NOT fall
+        # back to the flaky public RPC, which is what silently broke a685cdf.
         run: |
+          MAINNET_RPC="$(gcloud secrets versions access latest --secret=solana-rpc-url-mainnet)"
+          if [ -z "$MAINNET_RPC" ]; then
+            echo "::error::could not read solana-rpc-url-mainnet from Secret Manager" >&2
+            exit 1
+          fi
           solana program deploy \
-            --url "${MAINNET_RPC:-https://api.mainnet-beta.solana.com}" \
+            --url "$MAINNET_RPC" \
             --upgrade-authority ~/.config/solana/id.json \
             --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi \
             target/deploy/shillbot.so
