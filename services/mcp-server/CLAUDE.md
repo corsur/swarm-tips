@@ -189,7 +189,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `shillbot_claim_task` — returns unsigned claim tx (non-custodial)
 - `shillbot_submit_work` — returns unsigned submit-work tx with content_id proof
 - `shillbot_approve_task` — client approves a submission (returns unsigned tx; only for `requires_approval` campaigns)
-- `shillbot_reject_task` — client rejects a submission (returns unsigned tx)
+- `shillbot_reject_task` — [v1 STUB] client-side reject. There is NO on-chain `reject_task` instruction; reject is implicit — the client simply doesn't approve, and the permissionless `expire_task` crank returns the full escrow to the client at T+verification_timeout. The tool returns guidance + `expires_at` (NOT a transaction). The frontend RejectModal mirrors this: it records the reject reason locally and explains the implicit-expire effect.
 - `shillbot_verify_task` — record Switchboard-attested score (returns unsigned tx)
 - `shillbot_finalize_task` — release payment after challenge window (returns unsigned tx)
 - `shillbot_complete_task` — next-action dispatcher: returns the next signed-tx step the caller should take, or a wait directive
