@@ -29,6 +29,15 @@ on:
       - 'Anchor.toml'
       - '.github/workflows/shillbot-program.yml'
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'Deploy target cluster (mainnet requires explicitly selecting it)'
+        required: true
+        default: devnet
+        type: choice
+        options:
+          - devnet
+          - mainnet
 
 jobs:
   test:
@@ -111,7 +120,8 @@ jobs:
     # that class of regression. Same test gate + upgradeable-in-place deploy as mainnet.
     if: >-
       needs.test.result == 'success' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'))
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -214,13 +224,16 @@ jobs:
           EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
 
   deploy-mainnet:
-    # Auto-upgrades mainnet on every merge to main, plus manual dispatch.
-    # Solana programs are upgradeable, so a deploy against the existing program
-    # ID swaps bytecode in place and preserves all PDA state — a merge upgrades
-    # rather than orphaning anything. Gated on `needs: test`.
+    # Explicit opt-in only: workflow_dispatch with target=mainnet (never on push).
+    # Auto-deploying mainnet on every merge is how the a685cdf nonce upgrade
+    # failed SILENTLY (the auto-deploy hit the flaky public RPC and nobody
+    # noticed mainnet stayed on the pre-nonce program). Deliberate dispatch +
+    # the premium-RPC deploy step below make mainnet upgrades intentional and
+    # reliable. Solana programs are upgradeable, so this swaps bytecode in place
+    # and preserves all PDA state. Gated on `needs: test`.
     if: >-
       needs.test.result == 'success' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -255,7 +268,22 @@ jobs:
         run: solana program close --buffers --url mainnet-beta --keypair ~/.config/solana/id.json || true
 
       - name: Deploy shillbot to mainnet
-        run: anchor deploy -p shillbot --provider.cluster mainnet
+        # `solana program deploy` against a PREMIUM RPC, not
+        # `anchor deploy --provider.cluster mainnet`. anchor deploy hits the
+        # rate-limited public api.mainnet-beta AND allocates a fresh buffer
+        # instead of upgrading in place — it silently failed the a685cdf
+        # client-nonce upgrade (2026-08-17), leaving mainnet on the pre-nonce
+        # program while shillbot-api sends the nonce, so mainnet create_task
+        # deserialization breaks. Premium RPC + in-place upgrade, mirroring the
+        # devnet deploy. Falls back to the public RPC only if the secret is unset.
+        env:
+          MAINNET_RPC: ${{ secrets.SOLANA_RPC_URL_MAINNET }}
+        run: |
+          solana program deploy \
+            --url "${MAINNET_RPC:-https://api.mainnet-beta.solana.com}" \
+            --upgrade-authority ~/.config/solana/id.json \
+            --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi \
+            target/deploy/shillbot.so
 
       - name: Verify upgrade authority (mainnet)
         run: |
