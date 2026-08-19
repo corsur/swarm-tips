@@ -224,17 +224,27 @@ jobs:
           EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
 
   deploy-mainnet:
-    # Explicit opt-in only: workflow_dispatch with target=mainnet (never on push).
-    # Auto-deploying mainnet on every merge is how the a685cdf nonce upgrade
-    # failed SILENTLY (the auto-deploy hit the flaky public RPC and nobody
-    # noticed mainnet stayed on the pre-nonce program). Deliberate dispatch +
-    # the premium-RPC deploy step below make mainnet upgrades intentional and
-    # reliable. Solana programs are upgradeable, so this swaps bytecode in place
-    # and preserves all PDA state. Gated on `needs: test`.
+    # Auto-deploys mainnet on every merge to main that touches the shillbot
+    # program, but ONLY after devnet deploys cleanly — the staged pipeline is
+    # test -> deploy-devnet -> deploy-mainnet. Manual dispatch with target=mainnet
+    # is also allowed (devnet is skipped in that path, hence the `skipped` branch
+    # below). The a685cdf silent-failure — an auto-deploy that hit the flaky
+    # public RPC and left mainnet on the old program unnoticed — is prevented by
+    # the deploy step below: it reads the PREMIUM RPC from GCP and FAILS LOUD
+    # (red CI) if the RPC read or deploy fails, never falling back to the public
+    # endpoint. Solana programs are upgradeable, so this swaps bytecode in place
+    # and preserves all PDA state.
+    needs: [test, deploy-devnet]
+    # `always()` so the job still evaluates when deploy-devnet is SKIPPED (the
+    # dispatch-target=mainnet path); the explicit result checks then require
+    # devnet to have SUCCEEDED on the push path and merely be skipped on dispatch.
     if: >-
+      always() &&
       needs.test.result == 'success' &&
-      github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'
-    needs: test
+      (needs.deploy-devnet.result == 'success' ||
+       needs.deploy-devnet.result == 'skipped') &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
