@@ -23,6 +23,7 @@ import { PullFeed, Queue, State } from "@switchboard-xyz/on-demand";
 import { Secp256k1InstructionUtils } from "@switchboard-xyz/on-demand/dist/esm/instruction-utils/secp256k1-instruction-utils.js";
 import {
   Connection,
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   TransactionMessage,
@@ -215,10 +216,28 @@ async function main() {
     process.exit(1);
   }
 
-  // Build Secp256k1 native instruction using SDK's implementation
+  // Compute-budget instructions the tx carries ITSELF, at the very front.
+  // This is load-bearing, not a perf tweak: the secp256k1 instruction below
+  // encodes the ABSOLUTE instruction index at which its signature data lives,
+  // so the bundle's ordering is fixed. Wallets with auto-priority-fee (Phantom's
+  // "smart priority fee" et al.) prepend their own ComputeBudget instructions
+  // when a tx carries none — which shifts secp256k1 off the index it points at,
+  // and the precompile then reads a ComputeBudget instruction as its signature
+  // data and fails with "custom program error: 0x2" at the shifted index.
+  // Carrying our own ComputeBudget instructions makes wallets leave the layout
+  // alone (they skip auto-fee when compute budget is already present), and the
+  // secp index below is built for this exact position.
+  const computeBudgetIxs = [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 }),
+  ];
+
+  // Build Secp256k1 native instruction using SDK's implementation. The second
+  // arg is the absolute index at which this instruction sits in the tx — it
+  // follows the two compute-budget instructions above, so it is their count.
   const secpIx = Secp256k1InstructionUtils.buildSecp256k1Instruction(
     secpSignatures,
-    0
+    computeBudgetIxs.length
   );
 
   // 6. Build pullFeedSubmitResponseConsensus instruction
@@ -287,8 +306,11 @@ async function main() {
     }
   );
 
-  // 7. Bundle [secp256k1 verify, submit response, verify_task]
-  const allIxs = [secpIx, submitResponseIx, verifyIx];
+  // 7. Bundle [compute-budget x2, secp256k1 verify, submit response, verify_task].
+  // secp256k1 stays immediately before the Switchboard submit-response (its
+  // relative position is what the on-demand program checks) AND at the absolute
+  // index its own offsets encode (computeBudgetIxs.length). See the note above.
+  const allIxs = [...computeBudgetIxs, secpIx, submitResponseIx, verifyIx];
 
   const { blockhash } = await connection.getLatestBlockhash("confirmed");
   const messageV0 = new TransactionMessage({
