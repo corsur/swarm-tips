@@ -1,0 +1,41 @@
+name: Mainnet Smoke (preflight)
+
+# Standing, SOL-FREE health check of the shillbot earn→verify→pay path on
+# mainnet. Runs the read-only PREFLIGHT in scripts/ops/mainnet-smoke.ts — it
+# reads GlobalState and asserts the invariants that actually break the lifecycle
+# (RPC up, Switchboard feed configured, verify window spans the task lifetime so
+# there is no staleness lockout, platform not paused, MCP build-verify
+# reachable). It signs nothing, spends nothing, and needs no secrets — a fresh
+# throwaway wallet backs the read-only Anchor provider. A red run means a
+# mainnet regression (the kind a green devnet suite can't catch).
+
+on:
+  schedule:
+    - cron: '17 8 * * *' # daily 08:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: mainnet-smoke
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Minimal, self-contained deps — no full workspace install needed for a
+      # read-only preflight. The IDL (target/idl/shillbot.json) is committed.
+      - name: Install preflight deps
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm i --no-save @coral-xyz/anchor@^0.32.1 @solana/web3.js@^1.98.4 tsx
+
+      - name: Run mainnet preflight (no spend, no secrets)
+        run: npx tsx scripts/ops/mainnet-smoke.ts

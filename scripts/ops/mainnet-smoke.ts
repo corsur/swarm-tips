@@ -75,7 +75,16 @@ async function mcpReachable(): Promise<boolean> {
 }
 
 (async () => {
-  const authority = loadKeypair("id.json");
+  // The preflight only READS on-chain state, so it needs no authority key — use
+  // a throwaway wallet when id.json is absent (e.g. scheduled CI, where the
+  // authority key must never live). Only --execute (real spend) needs the real key.
+  let authority: Keypair;
+  try {
+    authority = loadKeypair("id.json");
+  } catch {
+    if (EXECUTE) throw new Error("--execute requires ~/.config/solana/id.json (the authority key)");
+    authority = Keypair.generate();
+  }
   const conn = new Connection(RPC, "confirmed");
   const provider = new anchor.AnchorProvider(conn, new anchor.Wallet(authority), {
     commitment: "confirmed",
