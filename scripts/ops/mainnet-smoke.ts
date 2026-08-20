@@ -90,9 +90,22 @@ async function mcpReachable(): Promise<boolean> {
     commitment: "confirmed",
   });
   anchor.setProvider(provider);
-  const idl = JSON.parse(
-    readFileSync(join(__dirname, "..", "..", "target", "idl", "shillbot.json"), "utf8"),
-  );
+  // Prefer the committed copy next to this script (present in CI); fall back to
+  // the anchor build output for local dev. target/idl is gitignored, so it is
+  // NOT in a fresh checkout — the committed copy is what makes CI work.
+  const idl = ((): any => {
+    for (const p of [
+      join(__dirname, "shillbot.idl.json"),
+      join(__dirname, "..", "..", "target", "idl", "shillbot.json"),
+    ]) {
+      try {
+        return JSON.parse(readFileSync(p, "utf8"));
+      } catch {
+        /* try next */
+      }
+    }
+    throw new Error("shillbot IDL not found (scripts/ops/shillbot.idl.json or target/idl/shillbot.json)");
+  })();
   const program = new anchor.Program(idl as anchor.Idl, provider);
   const globalPda = PublicKey.findProgramAddressSync(
     [Buffer.from("shillbot_global")],

@@ -1,0 +1,4203 @@
+{
+  "address": "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
+  "metadata": {
+    "name": "shillbot",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Shillbot task marketplace — escrow, verification, and payment"
+  },
+  "instructions": [
+    {
+      "name": "approve_task",
+      "discriminator": [
+        81,
+        171,
+        95,
+        228,
+        10,
+        231,
+        167,
+        225
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "client",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "challenge_task",
+      "discriminator": [
+        220,
+        34,
+        209,
+        156,
+        76,
+        254,
+        110,
+        25
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "challenge",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  104,
+                  97,
+                  108,
+                  108,
+                  101,
+                  110,
+                  103,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "challenger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "challenger",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_task",
+      "discriminator": [
+        49,
+        222,
+        219,
+        238,
+        155,
+        68,
+        221,
+        136
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent_state",
+          "docs": [
+            "AgentState PDA tracks the agent's concurrent claim count.",
+            "",
+            "Using `init_if_needed` is acceptable here because:",
+            "(a) the agent pays for creation — no cost to the protocol,",
+            "(b) AgentState does not hold escrow funds,",
+            "(c) the \"no init_if_needed for escrow accounts\" rule does not apply.",
+            "The account is initialized on the agent's first claim and reused thereafter."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_task_session",
+      "discriminator": [
+        147,
+        214,
+        30,
+        229,
+        3,
+        118,
+        164,
+        107
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent_state",
+          "docs": [
+            "AgentState PDA tracks the agent's concurrent claim count.",
+            "Uses `init_if_needed` — see claim_task.rs for justification."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session_delegate.agent",
+                "account": "SessionDelegate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "session_delegate",
+          "docs": [
+            "SessionDelegate PDA proves the delegate is authorized by the agent."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session_delegate.agent",
+                "account": "SessionDelegate"
+              },
+              {
+                "kind": "account",
+                "path": "delegate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "delegate",
+          "docs": [
+            "The session key (MCP server) that signs the transaction."
+          ],
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Pays for AgentState init if needed. Typically the delegate or a relayer."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "close_agent_state",
+      "discriminator": [
+        70,
+        29,
+        98,
+        242,
+        120,
+        8,
+        146,
+        160
+      ],
+      "accounts": [
+        {
+          "name": "agent_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "create_session",
+      "discriminator": [
+        242,
+        193,
+        143,
+        179,
+        150,
+        25,
+        122,
+        227
+      ],
+      "accounts": [
+        {
+          "name": "session_delegate",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent"
+              },
+              {
+                "kind": "account",
+                "path": "delegate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "delegate"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "allowed_instructions",
+          "type": "u8"
+        },
+        {
+          "name": "duration_seconds",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "create_task",
+      "discriminator": [
+        194,
+        80,
+        6,
+        180,
+        232,
+        127,
+        48,
+        171
+      ],
+      "accounts": [
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              },
+              {
+                "kind": "account",
+                "path": "client"
+              }
+            ]
+          }
+        },
+        {
+          "name": "client_state",
+          "docs": [
+            "Per-client rate-limit + lifetime-counter PDA (Phase 3 blocker #2).",
+            "`init_if_needed` is allowed because ClientState holds no escrow",
+            "funds — only counters and a timestamp — so a PDA-resurrection",
+            "attack on a closed account would gain the attacker nothing."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  105,
+                  101,
+                  110,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "client"
+              }
+            ]
+          }
+        },
+        {
+          "name": "client",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "slot_hashes",
+          "address": "SysvarS1otHashes111111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "escrow_lamports",
+          "type": "u64"
+        },
+        {
+          "name": "content_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "deadline",
+          "type": "i64"
+        },
+        {
+          "name": "submit_margin",
+          "type": "i64"
+        },
+        {
+          "name": "claim_buffer",
+          "type": "i64"
+        },
+        {
+          "name": "platform",
+          "type": "u8"
+        },
+        {
+          "name": "attestation_delay_override",
+          "type": "u32"
+        },
+        {
+          "name": "challenge_window_override",
+          "type": "u32"
+        },
+        {
+          "name": "verification_timeout_override",
+          "type": "u32"
+        },
+        {
+          "name": "requires_approval",
+          "type": "bool"
+        },
+        {
+          "name": "verification_kind",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "emergency_return",
+      "discriminator": [
+        18,
+        202,
+        93,
+        39,
+        231,
+        9,
+        32,
+        140
+      ],
+      "accounts": [
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "expire_task",
+      "discriminator": [
+        116,
+        94,
+        206,
+        205,
+        170,
+        51,
+        156,
+        98
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "client",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finalize_task",
+      "discriminator": [
+        126,
+        39,
+        210,
+        32,
+        77,
+        211,
+        27,
+        199
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent",
+          "docs": [
+            "`task.agent` when `task.payout_to` is unset (zero); otherwise it must be",
+            "`task.payout_to` (e.g. an extension-credit splitter vault). Reputation",
+            "still accrues to `task.agent` (see `update_agent_stats`), so routing the",
+            "payout never moves the agent's on-chain stats."
+          ],
+          "writable": true
+        },
+        {
+          "name": "client",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "initialize",
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "global_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "treasury"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "protocol_fee_bps",
+          "type": "u16"
+        },
+        {
+          "name": "quality_threshold",
+          "type": "u64"
+        },
+        {
+          "name": "starting_counter",
+          "type": "u64"
+        },
+        {
+          "name": "switchboard_feed",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "migrate_agent_state",
+      "discriminator": [
+        81,
+        82,
+        34,
+        209,
+        148,
+        145,
+        178,
+        89
+      ],
+      "accounts": [
+        {
+          "name": "agent",
+          "signer": true
+        },
+        {
+          "name": "agent_state",
+          "docs": [
+            "`Account<AgentState>` from opening them. We verify the discriminator,",
+            "the agent pubkey stored in the account, and the PDA derivation",
+            "explicitly inside the handler — those are the same properties Anchor",
+            "would otherwise check."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "migrate_task",
+      "docs": [
+        "One-shot realloc of legacy 315-byte Task accounts to the 347-byte",
+        "payout_to layout (C2). Permissionless + idempotent."
+      ],
+      "discriminator": [
+        114,
+        41,
+        111,
+        76,
+        14,
+        117,
+        128,
+        54
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "docs": [
+            "handler verifies owner + discriminator + size before resizing."
+          ],
+          "writable": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "register_identity",
+      "discriminator": [
+        164,
+        118,
+        227,
+        177,
+        47,
+        176,
+        187,
+        248
+      ],
+      "accounts": [
+        {
+          "name": "identity",
+          "writable": true
+        },
+        {
+          "name": "agent",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "platform",
+          "type": "u8"
+        },
+        {
+          "name": "identity_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "resolve_challenge",
+      "discriminator": [
+        81,
+        191,
+        124,
+        119,
+        131,
+        248,
+        157,
+        109
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "challenge",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  104,
+                  97,
+                  108,
+                  108,
+                  101,
+                  110,
+                  103,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge.task_id",
+                "account": "Challenge"
+              },
+              {
+                "kind": "account",
+                "path": "challenge.challenger",
+                "account": "Challenge"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "agent",
+          "docs": [
+            "routing, mirroring `finalize_task`). Equals `task.agent` when",
+            "`task.payout_to` is unset; otherwise it must be `task.payout_to` (the",
+            "credit vault). Without this, a won challenge would pay the agent wallet",
+            "directly and bypass recoupment. Reputation/`total_challenges_lost` keys",
+            "off `task.agent` independently, so routing never moves on-chain stats."
+          ],
+          "writable": true
+        },
+        {
+          "name": "client",
+          "writable": true
+        },
+        {
+          "name": "challenger",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "challenger_won",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "resolve_challenge_default",
+      "docs": [
+        "Permissionless default resolution of a Disputed task once the",
+        "dispute-resolution window elapses without authority adjudication:",
+        "pinned payment executes, bond returns un-slashed."
+      ],
+      "discriminator": [
+        230,
+        21,
+        237,
+        248,
+        158,
+        186,
+        99,
+        68
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "challenge",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  104,
+                  97,
+                  108,
+                  108,
+                  101,
+                  110,
+                  103,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge.task_id",
+                "account": "Challenge"
+              },
+              {
+                "kind": "account",
+                "path": "challenge.challenger",
+                "account": "Challenge"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent",
+          "docs": [
+            "C2 routing override is set (same rule as finalize/resolve_challenge)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "client",
+          "writable": true
+        },
+        {
+          "name": "challenger",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "revoke_identity",
+      "discriminator": [
+        61,
+        145,
+        66,
+        66,
+        182,
+        179,
+        250,
+        211
+      ],
+      "accounts": [
+        {
+          "name": "identity",
+          "writable": true
+        },
+        {
+          "name": "agent",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "identity"
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "revoke_session",
+      "discriminator": [
+        86,
+        92,
+        198,
+        120,
+        144,
+        2,
+        7,
+        194
+      ],
+      "accounts": [
+        {
+          "name": "session_delegate",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session_delegate.agent",
+                "account": "SessionDelegate"
+              },
+              {
+                "kind": "account",
+                "path": "session_delegate.delegate",
+                "account": "SessionDelegate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "session_delegate"
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_payout_to",
+      "docs": [
+        "Agent routes this task's finalize payment to `payout_to` (e.g. an",
+        "extension-credit splitter vault). Reputation stays on `task.agent`."
+      ],
+      "discriminator": [
+        172,
+        241,
+        189,
+        69,
+        214,
+        164,
+        60,
+        64
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "payout_to",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "submit_work",
+      "discriminator": [
+        158,
+        80,
+        101,
+        51,
+        114,
+        130,
+        101,
+        253
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "content_id",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "submit_work_session",
+      "discriminator": [
+        71,
+        182,
+        198,
+        106,
+        108,
+        197,
+        13,
+        62
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session_delegate.agent",
+                "account": "SessionDelegate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "session_delegate",
+          "docs": [
+            "SessionDelegate PDA proves the delegate is authorized by the agent."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session_delegate.agent",
+                "account": "SessionDelegate"
+              },
+              {
+                "kind": "account",
+                "path": "delegate"
+              }
+            ]
+          }
+        },
+        {
+          "name": "delegate",
+          "docs": [
+            "The session key (MCP server) that signs the transaction."
+          ],
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "content_id",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "transfer_authority",
+      "discriminator": [
+        48,
+        169,
+        76,
+        72,
+        229,
+        180,
+        55,
+        161
+      ],
+      "accounts": [
+        {
+          "name": "global_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_oracle_authority",
+      "discriminator": [
+        69,
+        65,
+        130,
+        209,
+        32,
+        196,
+        23,
+        43
+      ],
+      "accounts": [
+        {
+          "name": "global_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_oracle_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_params",
+      "discriminator": [
+        108,
+        178,
+        190,
+        95,
+        94,
+        203,
+        116,
+        20
+      ],
+      "accounts": [
+        {
+          "name": "global_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "protocol_fee_bps",
+          "type": "u16"
+        },
+        {
+          "name": "quality_threshold",
+          "type": "u64"
+        },
+        {
+          "name": "challenge_window_seconds",
+          "type": "i64"
+        },
+        {
+          "name": "verification_timeout_seconds",
+          "type": "i64"
+        },
+        {
+          "name": "attestation_delay_seconds",
+          "type": "i64"
+        },
+        {
+          "name": "staleness_window_seconds",
+          "type": "i64"
+        },
+        {
+          "name": "max_concurrent_claims",
+          "type": "u8"
+        },
+        {
+          "name": "challenge_bond_multiplier",
+          "type": "u8"
+        },
+        {
+          "name": "bond_slash_treasury_bps",
+          "type": "u16"
+        },
+        {
+          "name": "paused",
+          "type": "bool"
+        },
+        {
+          "name": "paused_platforms",
+          "type": "u16"
+        },
+        {
+          "name": "rate_limit_window_seconds",
+          "type": "i64"
+        },
+        {
+          "name": "max_tasks_per_rate_window",
+          "type": "u32"
+        },
+        {
+          "name": "dispute_resolution_window_seconds",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "update_treasury",
+      "discriminator": [
+        60,
+        16,
+        243,
+        66,
+        96,
+        59,
+        254,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "global_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_treasury",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "verify_task",
+      "discriminator": [
+        175,
+        152,
+        172,
+        204,
+        64,
+        126,
+        201,
+        206
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "switchboard_feed",
+          "docs": [
+            "The Switchboard pull feed account containing the oracle-attested composite score.",
+            "`PullFeedAccountData::parse()` which checks the account discriminator.",
+            "Account ownership is verified by Switchboard's `Owner` implementation."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "composite_score",
+          "type": "u64"
+        },
+        {
+          "name": "verification_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "verify_task_attested",
+      "docs": [
+        "Attester-signed verification for `verification_kind = 1` tasks —",
+        "the `oracle_authority` signs the transaction; `verification_hash`",
+        "is the chain-core `AttestationCert` digest."
+      ],
+      "discriminator": [
+        181,
+        103,
+        34,
+        222,
+        12,
+        179,
+        17,
+        58
+      ],
+      "accounts": [
+        {
+          "name": "task",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "task.task_id",
+                "account": "Task"
+              },
+              {
+                "kind": "account",
+                "path": "task.client",
+                "account": "Task"
+              }
+            ]
+          }
+        },
+        {
+          "name": "global_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "attester",
+          "docs": [
+            "The allow-listed attester — must match `GlobalState.oracle_authority`",
+            "(validated in the handler with a named error; rotate via",
+            "`update_oracle_authority`)."
+          ],
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "score",
+          "type": "u64"
+        },
+        {
+          "name": "verification_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "AgentState",
+      "discriminator": [
+        254,
+        187,
+        98,
+        119,
+        228,
+        48,
+        47,
+        49
+      ]
+    },
+    {
+      "name": "Challenge",
+      "discriminator": [
+        119,
+        250,
+        161,
+        121,
+        119,
+        81,
+        22,
+        208
+      ]
+    },
+    {
+      "name": "ClientState",
+      "discriminator": [
+        147,
+        10,
+        249,
+        80,
+        145,
+        124,
+        219,
+        60
+      ]
+    },
+    {
+      "name": "GlobalState",
+      "discriminator": [
+        163,
+        46,
+        74,
+        168,
+        216,
+        123,
+        133,
+        98
+      ]
+    },
+    {
+      "name": "PlatformIdentity",
+      "discriminator": [
+        18,
+        42,
+        151,
+        110,
+        86,
+        16,
+        173,
+        7
+      ]
+    },
+    {
+      "name": "SessionDelegate",
+      "discriminator": [
+        236,
+        108,
+        128,
+        200,
+        59,
+        199,
+        240,
+        74
+      ]
+    },
+    {
+      "name": "Task",
+      "discriminator": [
+        79,
+        34,
+        229,
+        55,
+        88,
+        90,
+        55,
+        84
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AgentStateClosed",
+      "discriminator": [
+        63,
+        183,
+        169,
+        234,
+        102,
+        194,
+        162,
+        133
+      ]
+    },
+    {
+      "name": "AuthorityTransferred",
+      "discriminator": [
+        245,
+        109,
+        179,
+        54,
+        135,
+        92,
+        22,
+        64
+      ]
+    },
+    {
+      "name": "ChallengeDefaultResolved",
+      "discriminator": [
+        75,
+        197,
+        69,
+        254,
+        116,
+        23,
+        147,
+        110
+      ]
+    },
+    {
+      "name": "ChallengeResolved",
+      "discriminator": [
+        100,
+        153,
+        38,
+        123,
+        172,
+        250,
+        166,
+        105
+      ]
+    },
+    {
+      "name": "EmergencyReturn",
+      "discriminator": [
+        223,
+        31,
+        84,
+        211,
+        228,
+        151,
+        67,
+        196
+      ]
+    },
+    {
+      "name": "IdentityRegistered",
+      "discriminator": [
+        5,
+        243,
+        147,
+        84,
+        8,
+        116,
+        238,
+        24
+      ]
+    },
+    {
+      "name": "IdentityRevoked",
+      "discriminator": [
+        182,
+        184,
+        246,
+        129,
+        30,
+        218,
+        116,
+        12
+      ]
+    },
+    {
+      "name": "OracleAuthorityUpdated",
+      "discriminator": [
+        184,
+        45,
+        33,
+        123,
+        198,
+        6,
+        101,
+        91
+      ]
+    },
+    {
+      "name": "ParamsUpdated",
+      "discriminator": [
+        2,
+        163,
+        138,
+        99,
+        135,
+        11,
+        136,
+        169
+      ]
+    },
+    {
+      "name": "PayoutRouteSet",
+      "discriminator": [
+        81,
+        221,
+        14,
+        197,
+        75,
+        76,
+        14,
+        158
+      ]
+    },
+    {
+      "name": "SessionCreated",
+      "discriminator": [
+        107,
+        111,
+        254,
+        25,
+        21,
+        122,
+        220,
+        225
+      ]
+    },
+    {
+      "name": "SessionRevoked",
+      "discriminator": [
+        90,
+        48,
+        35,
+        234,
+        203,
+        192,
+        126,
+        211
+      ]
+    },
+    {
+      "name": "TaskApproved",
+      "discriminator": [
+        141,
+        97,
+        247,
+        152,
+        147,
+        59,
+        68,
+        164
+      ]
+    },
+    {
+      "name": "TaskChallenged",
+      "discriminator": [
+        234,
+        236,
+        40,
+        66,
+        145,
+        229,
+        205,
+        242
+      ]
+    },
+    {
+      "name": "TaskClaimed",
+      "discriminator": [
+        208,
+        90,
+        243,
+        116,
+        80,
+        15,
+        228,
+        202
+      ]
+    },
+    {
+      "name": "TaskCreated",
+      "discriminator": [
+        49,
+        174,
+        6,
+        7,
+        71,
+        159,
+        69,
+        175
+      ]
+    },
+    {
+      "name": "TaskExpired",
+      "discriminator": [
+        36,
+        130,
+        189,
+        154,
+        110,
+        249,
+        231,
+        45
+      ]
+    },
+    {
+      "name": "TaskFinalized",
+      "discriminator": [
+        154,
+        242,
+        225,
+        183,
+        87,
+        124,
+        101,
+        128
+      ]
+    },
+    {
+      "name": "TaskVerified",
+      "discriminator": [
+        8,
+        131,
+        95,
+        118,
+        38,
+        42,
+        132,
+        106
+      ]
+    },
+    {
+      "name": "TreasuryUpdated",
+      "discriminator": [
+        80,
+        239,
+        54,
+        168,
+        43,
+        38,
+        85,
+        145
+      ]
+    },
+    {
+      "name": "WorkSubmitted",
+      "discriminator": [
+        136,
+        185,
+        210,
+        174,
+        216,
+        140,
+        64,
+        125
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidTaskState",
+      "msg": "Instruction not valid for current task state"
+    },
+    {
+      "code": 6001,
+      "name": "NotTaskClient",
+      "msg": "Caller is not the task's client"
+    },
+    {
+      "code": 6002,
+      "name": "NotTaskAgent",
+      "msg": "Caller is not the task's agent"
+    },
+    {
+      "code": 6003,
+      "name": "NotAuthority",
+      "msg": "Caller is not the GlobalState authority"
+    },
+    {
+      "code": 6004,
+      "name": "DeadlineExpired",
+      "msg": "Claim or submit attempted after deadline"
+    },
+    {
+      "code": 6005,
+      "name": "ClaimBufferInsufficient",
+      "msg": "Not enough time remaining before deadline to claim"
+    },
+    {
+      "code": 6006,
+      "name": "SubmitMarginInsufficient",
+      "msg": "Submission too close to deadline"
+    },
+    {
+      "code": 6007,
+      "name": "MaxConcurrentClaimsExceeded",
+      "msg": "Agent is at GlobalState.max_concurrent_claims active claims"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidAttestation",
+      "msg": "Switchboard account ownership or feed PDA mismatch"
+    },
+    {
+      "code": 6009,
+      "name": "AttestationStale",
+      "msg": "Oracle attestation data outside acceptable staleness window"
+    },
+    {
+      "code": 6010,
+      "name": "ScoreOutOfBounds",
+      "msg": "Composite score exceeds MAX_SCORE"
+    },
+    {
+      "code": 6011,
+      "name": "ChallengeWindowClosed",
+      "msg": "Challenge attempted after window expired"
+    },
+    {
+      "code": 6012,
+      "name": "ChallengeWindowOpen",
+      "msg": "Finalize attempted before challenge window closes"
+    },
+    {
+      "code": 6013,
+      "name": "InsufficientBond",
+      "msg": "Challenge bond below minimum required"
+    },
+    {
+      "code": 6014,
+      "name": "VerificationTimeoutNotReached",
+      "msg": "Expire called on Submitted task before verification timeout reached"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidSessionDelegate",
+      "msg": "Session delegate not authorized for this instruction"
+    },
+    {
+      "code": 6016,
+      "name": "ArithmeticOverflow",
+      "msg": "Checked arithmetic overflow or underflow"
+    },
+    {
+      "code": 6017,
+      "name": "PaymentExceedsEscrow",
+      "msg": "Computed payment + fee exceeds escrowed lamports"
+    },
+    {
+      "code": 6018,
+      "name": "ContentIdTooLong",
+      "msg": "Content ID exceeds maximum allowed length"
+    },
+    {
+      "code": 6019,
+      "name": "ProtocolFeeBoundsExceeded",
+      "msg": "Protocol fee basis points outside allowed bounds"
+    },
+    {
+      "code": 6020,
+      "name": "QualityThresholdBoundsExceeded",
+      "msg": "Quality threshold outside allowed bounds"
+    },
+    {
+      "code": 6021,
+      "name": "MissingAgentState",
+      "msg": "AgentState account required but not provided in remaining_accounts"
+    },
+    {
+      "code": 6022,
+      "name": "InvalidAccountPairs",
+      "msg": "remaining_accounts count must be even (task/client pairs)"
+    },
+    {
+      "code": 6023,
+      "name": "ProtocolPaused",
+      "msg": "Protocol is paused"
+    },
+    {
+      "code": 6024,
+      "name": "PlatformPaused",
+      "msg": "Platform is paused"
+    },
+    {
+      "code": 6025,
+      "name": "InvalidPlatform",
+      "msg": "Invalid platform type"
+    },
+    {
+      "code": 6026,
+      "name": "OracleAuthorityMismatch",
+      "msg": "Oracle authority mismatch"
+    },
+    {
+      "code": 6027,
+      "name": "SessionExpired",
+      "msg": "Session delegation has expired"
+    },
+    {
+      "code": 6028,
+      "name": "TimingOverrideOutOfBounds",
+      "msg": "Timing override value outside allowed bounds"
+    },
+    {
+      "code": 6029,
+      "name": "InvalidIdentity",
+      "msg": "Identity hash must not be zero"
+    },
+    {
+      "code": 6030,
+      "name": "InvalidVerificationHash",
+      "msg": "Verification hash must not be zero"
+    },
+    {
+      "code": 6031,
+      "name": "SwitchboardFeedMismatch",
+      "msg": "Switchboard feed account does not match the configured feed"
+    },
+    {
+      "code": 6032,
+      "name": "SwitchboardParseError",
+      "msg": "Failed to parse Switchboard feed account data"
+    },
+    {
+      "code": 6033,
+      "name": "SwitchboardScoreMismatch",
+      "msg": "Switchboard feed value does not match the provided composite score"
+    },
+    {
+      "code": 6034,
+      "name": "SwitchboardInvalidValue",
+      "msg": "Switchboard feed value is negative or zero"
+    },
+    {
+      "code": 6035,
+      "name": "SwitchboardFeedNotConfigured",
+      "msg": "Switchboard feed not configured in GlobalState"
+    },
+    {
+      "code": 6036,
+      "name": "EscrowBelowMinimumRetired",
+      "msg": "(retired 2026-05-07; see ShillbotError comment) MIN_ESCROW gate removed"
+    },
+    {
+      "code": 6037,
+      "name": "RateLimitExceeded",
+      "msg": "Client exceeded MAX_TASKS_PER_RATE_WINDOW within RATE_LIMIT_WINDOW_SECONDS"
+    },
+    {
+      "code": 6038,
+      "name": "AgentStateDiscriminatorMismatch",
+      "msg": "AgentState account discriminator does not match — refusing to migrate"
+    },
+    {
+      "code": 6039,
+      "name": "AgentStateUnsupportedSize",
+      "msg": "AgentState account size is unsupported by migrate_agent_state (expected legacy 41 or current 90)"
+    },
+    {
+      "code": 6040,
+      "name": "AgentStateAgentMismatch",
+      "msg": "AgentState account agent pubkey does not match the signer"
+    },
+    {
+      "code": 6041,
+      "name": "MalformedSlotHashes",
+      "msg": "SlotHashes sysvar data is malformed (less than 24 bytes)"
+    },
+    {
+      "code": 6042,
+      "name": "InvalidParameter",
+      "msg": "Instruction parameter is outside its allowed range or is zero where positive is required"
+    },
+    {
+      "code": 6043,
+      "name": "ZeroPubkey",
+      "msg": "Pubkey parameter must not be the zero pubkey"
+    },
+    {
+      "code": 6044,
+      "name": "NoActiveClaim",
+      "msg": "Operation requires the agent to have at least one active claim"
+    },
+    {
+      "code": 6045,
+      "name": "AgentStateHasActiveClaims",
+      "msg": "AgentState cannot be closed while it has active claims"
+    },
+    {
+      "code": 6046,
+      "name": "PayoutRouteLocked",
+      "msg": "Payout route is already set and cannot be changed (one-shot, set early and locked)"
+    },
+    {
+      "code": 6047,
+      "name": "InvalidPayoutTarget",
+      "msg": "Payout route target is invalid (must not be zero, the task PDA, or the client)"
+    },
+    {
+      "code": 6048,
+      "name": "InvalidVerificationKind",
+      "msg": "Unknown verification kind (append-only: 0 = OracleMetrics, 1 = DeterministicAttested)"
+    },
+    {
+      "code": 6049,
+      "name": "VerificationKindMismatch",
+      "msg": "Task's verification kind does not admit this verify instruction"
+    },
+    {
+      "code": 6050,
+      "name": "AttestedScoreNotBinary",
+      "msg": "Attested score must be exactly 0 or MAX_SCORE (binary verification)"
+    },
+    {
+      "code": 6051,
+      "name": "QualityThresholdTooHighForBinary",
+      "msg": "quality_threshold == MAX_SCORE would pay 0 for a passing binary score — fix params"
+    },
+    {
+      "code": 6052,
+      "name": "ArmsLengthViolation",
+      "msg": "Attester must be arms-length from the task agent"
+    },
+    {
+      "code": 6053,
+      "name": "SelfClaimForbidden",
+      "msg": "Deterministic tasks reject self-claims (agent must not be the client)"
+    },
+    {
+      "code": 6054,
+      "name": "DisputeWindowDisabled",
+      "msg": "Dispute default-resolution is disabled (dispute_resolution_window_seconds == 0)"
+    },
+    {
+      "code": 6055,
+      "name": "DisputeWindowStillOpen",
+      "msg": "Dispute resolution window still open — authority resolve_challenge only"
+    },
+    {
+      "code": 6056,
+      "name": "InvalidAccountOwner",
+      "msg": "Account is not owned by this program"
+    }
+  ],
+  "types": [
+    {
+      "name": "AgentState",
+      "docs": [
+        "Per-agent PDA that tracks the number of currently claimed (but not yet submitted)",
+        "tasks. Used to enforce the concurrent claim limit on-chain without relying on",
+        "remaining_accounts, which callers can omit to bypass the check.",
+        "",
+        "Seeds: `[\"agent_state\", agent_pubkey]`",
+        "",
+        "**Phase 1 reputation counters** (added 2026-05-02 from previously reserved",
+        "space): `total_score_sum`, `total_tasks_claimed`, and `total_challenges_lost`",
+        "are the on-chain inputs to the `agent_profile` MCP tool's derived metrics:",
+        "",
+        "average_score    = total_score_sum / total_completed",
+        "completion_rate  = total_completed / total_tasks_claimed",
+        "dispute_rate     = total_challenges_lost / total_completed",
+        "",
+        "**Migration safety:** the new fields were carved out of the front of the",
+        "previous `_reserved: [u8; 32]` block. Existing on-chain accounts had those",
+        "24 bytes zero-initialized, so reading them as `u64`s yields 0 — the correct",
+        "initial value for each counter. Total `SPACE` is unchanged at 90 bytes, so",
+        "no reallocation is required.",
+        "",
+        "**Counter semantics:**",
+        "- `total_completed` and `total_score_sum` increment only when a task",
+        "finalizes with `payment_amount > 0` (i.e., score >= quality_threshold).",
+        "This preserves the existing pre-#12 `total_completed` behavior — a",
+        "below-threshold finalize is a completed task but doesn't count toward",
+        "the agent's reputation metrics.",
+        "- `total_tasks_claimed` increments on every `claim_task` call, regardless",
+        "of the eventual outcome (expire, submit, finalize, dispute). The",
+        "completion_rate denominator therefore captures \"of all tasks they ever",
+        "started, what fraction did they finish above threshold.\"",
+        "- `total_challenges_lost` increments only on `resolve_challenge` with",
+        "`challenger_won == true`. Updates require the caller to pass AgentState",
+        "as a remaining_account (same optional pattern as `finalize_task` —",
+        "if omitted, the counter doesn't update but the resolution still runs)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "docs": [
+              "The agent this state belongs to."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "claimed_count",
+            "docs": [
+              "Number of tasks currently in Claimed state for this agent."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "total_completed",
+            "docs": [
+              "Total number of tasks this agent has completed (finalized or resolved in their favor)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_earned",
+            "docs": [
+              "Total lamports earned by this agent across all tasks."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_score_sum",
+            "docs": [
+              "Running sum of composite scores from above-threshold finalized tasks.",
+              "Combined with `total_completed` to derive `average_score` off-chain."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_tasks_claimed",
+            "docs": [
+              "Total `claim_task` calls (numerator's denominator for `completion_rate`)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_challenges_lost",
+            "docs": [
+              "Total challenges this agent has lost (basis for `dispute_rate`)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "_reserved",
+            "docs": [
+              "Reserved space for future fields without reallocation. Reduced from",
+              "32 to 8 bytes when the three counters above were claimed."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AgentStateClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityTransferred",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Challenge",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "challenger",
+            "type": "pubkey"
+          },
+          {
+            "name": "bond_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "is_client_challenge",
+            "docs": [
+              "True if challenger is the task's client."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "resolved",
+            "type": "bool"
+          },
+          {
+            "name": "challenger_won",
+            "type": "bool"
+          },
+          {
+            "name": "_reserved",
+            "docs": [
+              "Reserved space for future fields without reallocation."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChallengeDefaultResolved",
+      "docs": [
+        "Emitted when a Disputed task is default-resolved permissionlessly after",
+        "the dispute-resolution window elapsed with no authority adjudication.",
+        "The pinned payment executed (agent-favoring) and the bond returned to",
+        "the challenger un-slashed."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "payment_amount",
+            "type": "u64"
+          },
+          {
+            "name": "fee_amount",
+            "type": "u64"
+          },
+          {
+            "name": "bond_returned",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChallengeResolved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "challenger_won",
+            "type": "bool"
+          },
+          {
+            "name": "bond_slashed",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClientState",
+      "docs": [
+        "Per-client PDA used by `create_task` to enforce a per-client",
+        "task-creation rate limit (Phase 3 blocker #2).",
+        "",
+        "Sliding window: at each `create_task` call, the program compares the",
+        "current `unix_timestamp` against `window_start_ts`. If the current",
+        "time is within the window",
+        "(`now - window_start_ts < RATE_LIMIT_WINDOW_SECONDS`), the existing",
+        "counter is incremented and checked against",
+        "`MAX_TASKS_PER_RATE_WINDOW`. Otherwise the window is reset",
+        "(start_ts → now, count → 1).",
+        "",
+        "Created via `init_if_needed` so a client's first `create_task` pays",
+        "the rent (idempotent across subsequent calls). Anchor's",
+        "`init_if_needed` is allowed for this PDA because it holds no escrow",
+        "funds — only counters and a timestamp — so a PDA-resurrection",
+        "attack on a closed client account would gain the attacker nothing.",
+        "",
+        "Seeds: `[\"client_state\", client_pubkey]`"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "client",
+            "docs": [
+              "The wallet pubkey this state tracks."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "window_start_ts",
+            "docs": [
+              "Unix timestamp (seconds) marking the start of the current",
+              "rate-limit window. Set on first task creation, reset every time",
+              "the window expires."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "tasks_in_window",
+            "docs": [
+              "Number of `create_task` calls landed in the current window.",
+              "Capped by `crate::constants::MAX_TASKS_PER_RATE_WINDOW`."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "total_tasks_created",
+            "docs": [
+              "Total tasks ever created by this client. Monotonic counter",
+              "across all windows. Useful for off-chain analytics + future",
+              "reputation signals; not load-bearing for the rate limit itself."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "_reserved",
+            "docs": [
+              "Reserved space for future fields without reallocation."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EmergencyReturn",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_ids",
+            "type": {
+              "vec": "u64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "GlobalState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_counter",
+            "docs": [
+              "Monotonic counter incremented on each create_task."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "Single upgrade authority key (EOA on both devnet and mainnet for v1)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "docs": [
+              "Treasury account for protocol fee collection."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "protocol_fee_bps",
+            "docs": [
+              "Protocol fee in basis points (100 = 1%)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "quality_threshold",
+            "docs": [
+              "Minimum composite score for payment (fixed-point, max = MAX_SCORE)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "challenge_window_seconds",
+            "docs": [
+              "Duration of the challenge window after verification (seconds)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "verification_timeout_seconds",
+            "docs": [
+              "Maximum time allowed for oracle verification after submission (seconds)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "attestation_delay_seconds",
+            "docs": [
+              "Minimum delay between submission and attestation (seconds)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "staleness_window_seconds",
+            "docs": [
+              "Maximum age of oracle data relative to submission (seconds)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "max_concurrent_claims",
+            "docs": [
+              "Maximum number of tasks an agent can have in Claimed state simultaneously."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "challenge_bond_multiplier_bps",
+            "docs": [
+              "Challenge bond multiplier — raw u8 multiplier on the task's escrow,",
+              "stored in a u16 slot for forward compat.",
+              "",
+              "**Naming caveat:** the `_bps` suffix is misleading. Despite the",
+              "name, this is **NOT** basis points (1bp = 0.01%). It's a raw",
+              "multiplier: `2` means 2x escrow, `10` means 10x escrow, NOT",
+              "`200` for 2% or `20000` for 200%. The wire format is u16 only",
+              "because the original design considered bps semantics; the",
+              "final spec uses `MIN_CHALLENGE_BOND_MULTIPLIER..=MAX` which",
+              "are u8 values [2, 10]. `update_params` accepts `u8` and casts",
+              "to u16 on write. `challenge_task` reads this and multiplies",
+              "against `task.escrow_lamports` directly. The field is NOT",
+              "renamed because that's a wire-format change requiring an",
+              "account migration; the `_bps` suffix stays for binary compat."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "bond_slash_treasury_bps",
+            "docs": [
+              "Portion of slashed bond sent to treasury in basis points."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "oracle_authority",
+            "docs": [
+              "Authority allowed to submit oracle attestations."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "paused",
+            "docs": [
+              "Whether the entire protocol is paused."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "paused_platforms",
+            "docs": [
+              "Bitmask of paused platforms (bit N = PlatformType with value N)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "switchboard_feed",
+            "docs": [
+              "Switchboard pull feed account that provides oracle-attested",
+              "composite scores. Read by `verify_task` to validate the feed",
+              "passed in by the caller. Different per-network (mainnet",
+              "`En9CN…T6qQ`, devnet `BSSv19i…`); rotated via the multisig if",
+              "needed (re-adding `set_switchboard_feed` is a follow-up). The",
+              "2026-05-01 lock-down to a compile-time const was reverted on",
+              "2026-05-08 because the const shipped as a placeholder and the",
+              "load-bearing TODO was missed — see `verify_task.rs` comment."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "min_escrow_lamports",
+            "docs": [
+              "Minimum task escrow in lamports (Phase 3 blocker #2 — D2).",
+              "Carved from `_reserved` 2026-05-07. Pre-D2 was a compile-time",
+              "**Vestigial slot — retired 2026-05-07.** Was the per-task",
+              "minimum escrow floor for sybil deterrence (Phase 3 blocker #2).",
+              "Removed because the friction on legitimate small clients",
+              "exceeded the benefit at solo + pre-PMF scale. The right",
+              "end-state defense is the EigenTrust reputation graph (Phase 2",
+              "in `swarm-tips/CLAUDE.md`). The slot is preserved here so",
+              "existing on-chain 227-byte GlobalState accounts continue to",
+              "deserialize unchanged; no instruction reads or writes it.",
+              "`initialize` zero-fills it; future GlobalState v2 may rename",
+              "to `_reserved_min_escrow`."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "rate_limit_window_seconds",
+            "docs": [
+              "Per-client task-creation rate-limit window length (D3).",
+              "Same migration story as `min_escrow_lamports`: was const,",
+              "now governance with bounds."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "max_tasks_per_rate_window",
+            "docs": [
+              "Per-client task-creation rate-limit count within the window",
+              "(D3). Same migration story."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "dispute_resolution_window_seconds",
+            "docs": [
+              "Dispute-resolution liveness window (2026-07-07, carved from",
+              "`_reserved` — bytewise-compatible because the bytes were zero).",
+              "Seconds after `Challenge.created_at` at which the permissionless",
+              "`resolve_challenge_default` arms on a Disputed task, executing the",
+              "pinned payment and returning the bond un-slashed. `0` = disabled",
+              "(legacy behavior: only the authority's `resolve_challenge` can",
+              "unlock a dispute — the exact liveness hole this field closes).",
+              "Existing deployments read 0 until `update_params` sets it;",
+              "`initialize` defaults new deployments to 7 days."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "_reserved",
+            "docs": [
+              "Reserved space for future fields without reallocation.",
+              "32 → 12 by D2/D3 → 4 by the 2026-07-07",
+              "`dispute_resolution_window_seconds` carve."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IdentityRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "platform",
+            "type": "u8"
+          },
+          {
+            "name": "identity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "IdentityRevoked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "platform",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OracleAuthorityUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_oracle_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_oracle_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ParamsUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "quality_threshold",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PayoutRouteSet",
+      "docs": [
+        "Emitted when the agent sets a payment-routing override (C2 —",
+        "extension-credit). `finalize_task` will pay `payout_to` instead of the",
+        "agent wallet; reputation is unaffected."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "payout_to",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PlatformIdentity",
+      "docs": [
+        "On-chain binding between an agent wallet and a platform identity.",
+        "PDA seeds: `[\"identity\", agent.key().as_ref(), &[platform]]`",
+        "",
+        "One identity per (agent, platform) pair. Agent must revoke before",
+        "re-registering with a different platform user ID."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "docs": [
+              "The agent wallet that owns this identity."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "platform",
+            "docs": [
+              "Platform type (PlatformType discriminant)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "identity_hash",
+            "docs": [
+              "SHA-256 hash of the platform user ID (e.g., X handle or user ID string).",
+              "Hashed to save space — the verifier knows the plaintext and can verify the hash."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "registered_at",
+            "docs": [
+              "Unix timestamp of registration."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "delegate",
+            "type": "pubkey"
+          },
+          {
+            "name": "allowed_instructions",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionDelegate",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "docs": [
+              "The agent who delegated."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "delegate",
+            "docs": [
+              "The session key (MCP server holds this)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "allowed_instructions",
+            "docs": [
+              "Bitmask: 0x01 = claim_task, 0x02 = submit_work."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "expires_at",
+            "docs": [
+              "Unix timestamp when this session delegation expires (0 = no expiry)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "_reserved",
+            "docs": [
+              "Reserved space for future fields without reallocation."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionRevoked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "delegate",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Task",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "client",
+            "type": "pubkey"
+          },
+          {
+            "name": "agent",
+            "docs": [
+              "Zero-key until claimed."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "state",
+            "type": {
+              "defined": {
+                "name": "TaskState"
+              }
+            }
+          },
+          {
+            "name": "platform",
+            "docs": [
+              "Platform this task targets (PlatformType discriminant)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "escrow_lamports",
+            "docs": [
+              "Client's escrowed payment (lamports)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "content_hash",
+            "docs": [
+              "SHA-256 of the off-chain campaign brief."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "content_id_hash",
+            "docs": [
+              "SHA-256 of submitted content ID (zeroed until submitted)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "task_nonce",
+            "docs": [
+              "Random nonce the agent must include in the content."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "composite_score",
+            "docs": [
+              "Fixed-point score from oracle attestation (0 until verified)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "payment_amount",
+            "docs": [
+              "Computed payment amount (0 until verified)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fee_amount",
+            "docs": [
+              "Computed protocol fee amount (0 until verified). Stored at verification time",
+              "so finalize_task and resolve_challenge use the fee that was in effect when",
+              "the oracle attested, preventing parameter-change bricking (S-03)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "deadline",
+            "type": "i64"
+          },
+          {
+            "name": "submit_margin",
+            "docs": [
+              "Seconds before deadline that submission must occur."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "claim_buffer",
+            "docs": [
+              "Minimum seconds remaining to claim."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "submitted_at",
+            "docs": [
+              "0 until submitted."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "verified_at",
+            "docs": [
+              "0 until oracle attestation."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "challenge_deadline",
+            "docs": [
+              "0 until challenge window starts."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "attestation_delay_override",
+            "docs": [
+              "Per-task attestation delay override in seconds. 0 = use GlobalState default."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "challenge_window_override",
+            "docs": [
+              "Per-task challenge window override in seconds. 0 = use GlobalState default."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "verification_timeout_override",
+            "docs": [
+              "Per-task verification timeout override in seconds. 0 = use GlobalState default."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "verification_hash",
+            "docs": [
+              "SHA-256 of the verification snapshot (content + metrics JSON). 0 until verified."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "requires_approval",
+            "docs": [
+              "Whether this task requires explicit client `approve_task`",
+              "before oracle verification (D1, 2026-05-07). 0 = false (oracle",
+              "path proceeds directly from Submitted), 1 = true (mandatory",
+              "client approval gate, matches v4 #11 behavior).",
+              "",
+              "Default OFF — matches the protocol spec at",
+              "`~/swarm/shillbot/CLAUDE.md` line 433: \"Optional pre-approval",
+              "flow: Clients can enable a mode where agent submissions are",
+              "queued for client review.\" v4 #11 made approval mandatory for",
+              "every task; D1 reverts to per-campaign opt-in.",
+              "",
+              "Carved from `_reserved` 2026-05-07 — bytewise-compatible with",
+              "pre-D1 layout because the byte was zero in `_reserved`. In-flight",
+              "Submitted-state tasks at the moment of program upgrade transition",
+              "from \"mandatory approval\" to \"no approval needed\" — caller",
+              "instructions migrate accordingly. **Operators with in-flight",
+              "Submitted tasks should ensure they're approved or expired before",
+              "the program upgrade.**"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "verification_kind",
+            "docs": [
+              "How this task's verification is adjudicated (2026-07-07, carved",
+              "from `_reserved` following the D1 precedent — bytewise-compatible",
+              "because the byte was zero). Wire-format twin:",
+              "`chain-core::verify_schema::VerificationKind` (append-only).",
+              "`0 = OracleMetrics` — legacy Switchboard path, `verify_task` only.",
+              "`1 = DeterministicAttested` — allow-listed attester path,",
+              "`verify_task_attested` only; score must be exactly 0 or MAX_SCORE.",
+              "The two verify entries are mutually exclusive on this byte."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "_reserved",
+            "docs": [
+              "Reserved space for future fields without reallocation.",
+              "Reduced from 20 → 19 by D1 (`requires_approval`) → 18 by the",
+              "2026-07-07 `verification_kind` carve."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                18
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "payout_to",
+            "docs": [
+              "Payment-routing override (C2 — extension-credit). `Pubkey::default()`",
+              "(zero) = pay the agent (`task.agent`); otherwise `finalize_task` pays",
+              "THIS account instead, while reputation still accrues to `task.agent`.",
+              "Set by `set_payout_to` (agent-only) — e.g. an extension-credit splitter",
+              "vault. Appended AFTER `bump` (32 bytes > the 19 reserved) so existing",
+              "on-chain accounts stay bytewise-identical for bytes [0..315); the",
+              "`migrate_task` ix reallocs 315 → 347 and zero-fills the tail."
+            ],
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TaskApproved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "client",
+            "type": "pubkey"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TaskChallenged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "challenger",
+            "type": "pubkey"
+          },
+          {
+            "name": "bond_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "is_client_challenge",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TaskClaimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TaskCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "client",
+            "type": "pubkey"
+          },
+          {
+            "name": "escrow_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "deadline",
+            "type": "i64"
+          },
+          {
+            "name": "task_nonce",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "platform",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TaskExpired",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "state_at_expiry",
+            "type": "u8"
+          },
+          {
+            "name": "platform",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TaskFinalized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "payment_amount",
+            "type": "u64"
+          },
+          {
+            "name": "fee_amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TaskState",
+      "docs": [
+        "Task lifecycle states.",
+        "",
+        "```text",
+        "--(create_task)--> Open",
+        "Open --(claim_task)--> Claimed",
+        "Open --(expire_task: past deadline)--> [closed]",
+        "Open --(emergency_return)--> [closed]",
+        "Claimed --(submit_work)--> Submitted",
+        "Claimed --(expire_task: past deadline)--> [closed]",
+        "Claimed --(emergency_return)--> [closed]",
+        "Submitted --(approve_task: client signs)--> Approved",
+        "Submitted --(expire_task: T+14d timeout)--> [closed]",
+        "Approved/Submitted --(verify_task: Switchboard, kind=0)--> Verified",
+        "Approved/Submitted --(verify_task_attested: attester signer, kind=1)--> Verified",
+        "Approved --(expire_task: T+14d timeout)--> [closed]",
+        "Verified --(finalize_task)--> Finalized --> [closed]",
+        "Verified --(challenge_task)--> Disputed",
+        "Disputed --(resolve_challenge: authority)--> Resolved --> [closed]",
+        "Disputed --(resolve_challenge_default: permissionless past",
+        "dispute-resolution deadline)--> Resolved --> [closed]",
+        "```",
+        "",
+        "Note: `Approved = 7` is appended to preserve `#[repr(u8)]` discriminants",
+        "of all prior variants. Existing on-chain Task accounts (created before",
+        "the Phase 3 blocker #3a upgrade) keep their bytewise interpretation;",
+        "new variants must always append."
+      ],
+      "repr": {
+        "kind": "rust"
+      },
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Open"
+          },
+          {
+            "name": "Claimed"
+          },
+          {
+            "name": "Submitted"
+          },
+          {
+            "name": "Verified"
+          },
+          {
+            "name": "Finalized"
+          },
+          {
+            "name": "Disputed"
+          },
+          {
+            "name": "Resolved"
+          },
+          {
+            "name": "Approved"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TaskVerified",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "composite_score",
+            "type": "u64"
+          },
+          {
+            "name": "payment_amount",
+            "type": "u64"
+          },
+          {
+            "name": "fee_amount",
+            "type": "u64"
+          },
+          {
+            "name": "verification_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "TreasuryUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_treasury",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "WorkSubmitted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "content_id_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
