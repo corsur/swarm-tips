@@ -30,12 +30,12 @@ jobs:
         with:
           node-version: '20'
 
-      # Minimal, self-contained deps — no full workspace install needed for a
-      # read-only preflight. The IDL (target/idl/shillbot.json) is committed.
+      # Read-only preflight deps. --legacy-peer-deps because the repo's root
+      # package.json pins a dev anchor-bankrun whose anchor ^0.30 peer conflicts
+      # with the anchor ^0.32 we want — harmless here (bankrun is unused). The
+      # IDL (target/idl/shillbot.json) is committed, so no build is needed.
       - name: Install preflight deps
-        run: |
-          npm init -y >/dev/null 2>&1
-          npm i --no-save @coral-xyz/anchor@^0.32.1 @solana/web3.js@^1.98.4 tsx
+        run: npm install --no-save --legacy-peer-deps @coral-xyz/anchor@^0.32.1 @solana/web3.js@^1.98.4 tsx
 
       - name: Run mainnet preflight (no spend, no secrets)
         run: npx tsx scripts/ops/mainnet-smoke.ts
