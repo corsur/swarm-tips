@@ -302,26 +302,28 @@ describe("shillbot-attested (bankrun)", () => {
     });
   });
 
-  describe("claim arms-length guard (kind 1)", () => {
-    it("rejects the client claiming their own deterministic task", async () => {
+  describe("claim self-claim (kind 1, guard removed)", () => {
+    it("allows the client to claim their own deterministic task", async () => {
+      // The kind-1 self-claim guard was removed — it only blocked same-wallet
+      // credential wash (bypassable with two wallets), so it protected nothing
+      // real. The client claiming their own deterministic task must now succeed.
       const { taskPda } = await createTask();
       const clientAgentState = pda(
         [Buffer.from("agent_state"), client.publicKey.toBuffer()],
         program.programId
       );
-      await expectError(
-        program.methods
-          .claimTask()
-          .accountsPartial({
-            task: taskPda,
-            agentState: clientAgentState,
-            agent: client.publicKey,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([client])
-          .rpc(),
-        /SelfClaimForbidden/
-      );
+      await program.methods
+        .claimTask()
+        .accountsPartial({
+          task: taskPda,
+          agentState: clientAgentState,
+          agent: client.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([client])
+        .rpc();
+      const task = await program.account.task.fetch(taskPda);
+      assert.equal(task.agent.toBase58(), client.publicKey.toBase58());
     });
   });
 

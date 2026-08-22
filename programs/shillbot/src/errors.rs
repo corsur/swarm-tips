@@ -173,6 +173,9 @@ pub enum ShillbotError {
     #[msg("Attester must be arms-length from the task agent")]
     ArmsLengthViolation,
 
+    /// DEPRECATED (no longer thrown): the kind-1 self-claim guard was removed —
+    /// it only blocked same-wallet credential wash, which a two-wallet split
+    /// bypasses. Retained to preserve Anchor error numbering.
     #[msg("Deterministic tasks reject self-claims (agent must not be the client)")]
     SelfClaimForbidden,
 

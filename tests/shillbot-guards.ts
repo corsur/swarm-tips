@@ -113,7 +113,10 @@ describe("shillbot-guards (bankrun, discrete)", () => {
   // --- claim / verify guards --------------------------------------------
 
   describe("claim + verify guards", () => {
-    it("rejects the client self-claiming their own deterministic task", async () => {
+    it("allows the client to self-claim their own deterministic task (guard removed)", async () => {
+      // The kind-1 self-claim guard was removed — it only blocked same-wallet
+      // credential wash, which a two-wallet split bypasses, so it guarded
+      // nothing real. Self-claiming a deterministic task must now succeed.
       const client = await freshClient();
       const { task } = await createTask(ctx, client, {
         escrowLamports: ESCROW,
@@ -122,7 +125,7 @@ describe("shillbot-guards (bankrun, discrete)", () => {
         requiresApproval: false,
         challengeWindowOverride: CHALLENGE_WINDOW,
       });
-      await expectErr(claimTask(ctx, client, task), /SelfClaimForbidden/);
+      await claimTask(ctx, client, task); // no longer throws SelfClaimForbidden
     });
 
     it("verify_task_attested rejects a non-binary score", async () => {

@@ -24,16 +24,14 @@ pub fn claim_task(ctx: Context<ClaimTask>) -> Result<()> {
         ShillbotError::InvalidTaskState
     );
 
-    // Checks: deterministic (kind 1) tasks reject self-claims — the poster
-    // must be arms-length from the worker or a wash-attested task would
-    // mint a portable "proved theorem X" credential at fee cost. Scoped to
-    // kind 1 so live marketing-task behavior is unchanged.
-    if task.verification_kind == 1 {
-        require!(
-            ctx.accounts.agent.key() != task.client,
-            ShillbotError::SelfClaimForbidden
-        );
-    }
+    // The kind-1 self-claim guard (agent != client) was removed: it only
+    // blocked the same-wallet wash of a portable "proved theorem X" credential,
+    // which a two-wallet poster/worker split bypasses trivially. A credential is
+    // only worth what its POSER is worth, so the real defense is off-chain
+    // reputation weighting of the poster — the on-chain check added friction and
+    // a kind-0/kind-1 inconsistency while protecting nothing a naive consumer
+    // wasn't already exposed to. `SelfClaimForbidden` is retained (unused) in the
+    // error enum to preserve Anchor error numbering.
 
     // Checks: minimum time buffer before deadline
     let earliest_claim_deadline = clock

@@ -55,14 +55,9 @@ fn validate_claim_session_inputs(
         task.state == TaskState::Open,
         ShillbotError::InvalidTaskState
     );
-    // Deterministic (kind 1) tasks reject self-claims — same arms-length
-    // rule as claim_task, keyed on the DELEGATING agent, not the session key.
-    if task.verification_kind == 1 {
-        require!(
-            session.agent != task.client,
-            ShillbotError::SelfClaimForbidden
-        );
-    }
+    // The kind-1 self-claim guard was removed here too (see claim_task.rs for
+    // the rationale) — it protected nothing real and a two-wallet split bypassed
+    // it. Kept the delegated and direct claim paths consistent.
     let earliest_claim_deadline = now
         .checked_add(task.claim_buffer)
         .ok_or(ShillbotError::ArithmeticOverflow)?;

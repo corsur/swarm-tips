@@ -44,8 +44,13 @@ MAX_SCORE). The two verify entries are mutually exclusive on this byte. Wire-for
 `chain-core::verify_schema::VerificationKind` (append-only). `verify_task_attested` requires
 the `oracle_authority` as a transaction `Signer` — the first instruction to enforce that
 (previously dormant) GlobalState field — and stores the `AttestationCert` digest as
-`verification_hash`. Arms-length guard: the attester must not equal `task.agent`, and
-kind-1 tasks reject self-claims (`agent != client`).
+`verification_hash`. Arms-length guard: the attester must not equal `task.agent`.
+(The former kind-1 self-claim guard — `agent != client` on `claim_task` /
+`claim_task_session` — was removed: it only blocked same-wallet credential wash,
+which a two-wallet poster/worker split bypasses, so it protected nothing real
+while adding friction and a kind-0/kind-1 inconsistency. A Lean credential is
+worth what its poser is worth; that weighting is off-chain. `SelfClaimForbidden`
+is retained unused in the error enum to preserve Anchor numbering.)
 
 **Dispute-resolution liveness (2026-07-07):** `challenge_task` previously moved a task into
 Disputed with NO bound on how long the single authority could sit on `resolve_challenge`
