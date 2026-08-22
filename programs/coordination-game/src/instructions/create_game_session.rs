@@ -7,10 +7,13 @@ use crate::state::{
 };
 use anchor_lang::prelude::*;
 
-/// Session-delegated variant of `create_game`. The session key signs instead
-/// of the player wallet; the matchmaker wallet is verified against
-/// GlobalConfig but does not need to sign (session authority proves
-/// matchmaker delegation). Helpers shared with `create_game.rs`.
+/// Session-delegated variant of `create_game`. The PLAYER's session key signs
+/// and pays instead of the player wallet (no wallet popup), and the matchmaker
+/// STILL co-signs — exactly like `join_game_session`. The matchmaker signature
+/// is the forgery guard: game-api's `/games/cosign` validates the
+/// `matchup_commitment` against the true match before signing, so a player
+/// cannot create a game with a commitment only they can open. Helpers shared
+/// with `create_game.rs`.
 pub fn create_game_session(
     ctx: Context<CreateGameSession>,
     stake_lamports: u64,
@@ -19,16 +22,17 @@ pub fn create_game_session(
     let now = Clock::get()?.unix_timestamp;
     let player_key = ctx.accounts.player.key();
     let tournament_id = ctx.accounts.tournament.tournament_id;
-    // Checks
+    // Checks — validate the PLAYER's session authority (same PDA join_game_session
+    // uses), so the session key is a delegate of THIS player, not the matchmaker.
     validate_session_authority(
         &ctx.accounts.session_authority,
-        &ctx.accounts.matchmaker_wallet.key(),
+        &ctx.accounts.player.key(),
         &ctx.accounts.session_signer.key(),
     )?;
     validate_create_inputs(
         stake_lamports,
         matchup_commitment,
-        ctx.accounts.matchmaker_wallet.key(),
+        ctx.accounts.matchmaker.key(),
         ctx.accounts.global_config.matchmaker,
         &ctx.accounts.tournament,
         &ctx.accounts.escrow,
@@ -115,15 +119,16 @@ pub struct CreateGameSession<'info> {
         bump = global_config.bump,
     )]
     pub global_config: Account<'info, GlobalConfig>,
+    /// Matchmaker co-signs to attest this commitment is legitimate. Verified
+    /// against GlobalConfig.matchmaker. Does not pay gas.
+    pub matchmaker: Signer<'info>,
     /// CHECK: The player wallet. Not a signer — the session key signs instead.
-    /// Verified via escrow seeds and session_authority.
+    /// Verified against session_authority.player in the handler.
     pub player: UncheckedAccount<'info>,
-    /// CHECK: The matchmaker wallet. Verified against global_config.matchmaker.
-    pub matchmaker_wallet: UncheckedAccount<'info>,
     #[account(
         seeds = [
             b"game_session",
-            matchmaker_wallet.key().as_ref(),
+            player.key().as_ref(),
             session_signer.key().as_ref(),
         ],
         bump = session_authority.bump,

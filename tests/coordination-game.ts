@@ -1555,7 +1555,7 @@ describe("coordination-game", () => {
       assert.isFalse(escrowAcct.consumed);
     });
 
-    it("create_game_session: matchmaker session signer creates game for player 1", async () => {
+    it("create_game_session: player 1 session signer creates game, matchmaker co-signs", async () => {
       const matchupCommit = generateMatchupCommit(GUESS_DIFF_TEAM as 0 | 1);
       sessionMatchupR = matchupCommit.r;
 
@@ -1574,9 +1574,12 @@ describe("coordination-game", () => {
         program.programId
       );
       const [escrow] = escrowPda(SESSION_TOURNAMENT_ID, player1.publicKey);
-      const [matchmakerSessionAuthorityPda] = gameSessionPda(
-        matchmaker.publicKey,
-        matchmakerSessionKey.publicKey
+      // The PLAYER's own session authority (same PDA join_game_session uses),
+      // NOT the matchmaker's — the player's session key pays + signs, and the
+      // matchmaker co-signs to attest the commitment.
+      const [p1SessionAuthorityPda] = gameSessionPda(
+        player1.publicKey,
+        p1SessionKey.publicKey
       );
 
       await program.methods
@@ -1588,13 +1591,13 @@ describe("coordination-game", () => {
           escrow,
           tournament: sessionTournamentPda,
           globalConfig: globalConfigPda,
+          matchmaker: matchmaker.publicKey,
           player: player1.publicKey,
-          matchmakerWallet: matchmaker.publicKey,
-          sessionAuthority: matchmakerSessionAuthorityPda,
-          sessionSigner: matchmakerSessionKey.publicKey,
+          sessionAuthority: p1SessionAuthorityPda,
+          sessionSigner: p1SessionKey.publicKey,
           systemProgram: SystemProgram.programId,
         })
-        .signers([matchmakerSessionKey])
+        .signers([p1SessionKey])
         .rpc();
 
       const game = await program.account.game.fetch(sessionGamePda);
@@ -1604,6 +1607,68 @@ describe("coordination-game", () => {
         game.stakeLamports.toString(),
         STAKE.toString(),
         "stake transferred to game PDA"
+      );
+    });
+
+    it("create_game_session: rejects a non-matchmaker co-signer (forgery guard)", async () => {
+      // The whole point of requiring `matchmaker: Signer` is that a player
+      // cannot self-create a game with a commitment only they can open. A
+      // co-signer that is not GlobalConfig.matchmaker must revert BEFORE any
+      // game is created — so the player can never bypass game-api's cosign
+      // (which validates the true matchup_commitment).
+      const fakeMatchmaker = Keypair.generate();
+      const air = await provider.connection.requestAirdrop(
+        fakeMatchmaker.publicKey,
+        LAMPORTS_PER_SOL
+      );
+      await provider.connection.confirmTransaction(air, "confirmed");
+
+      const counter = await program.account.gameCounter.fetch(gameCounterPda);
+      const forgedGameId = counter.count as BN;
+      const [forgedGamePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("game"), forgedGameId.toArrayLike(Buffer, "le", 8)],
+        program.programId
+      );
+      const [profilePda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("player"),
+          SESSION_TOURNAMENT_ID.toArrayLike(Buffer, "le", 8),
+          player1.publicKey.toBuffer(),
+        ],
+        program.programId
+      );
+      const [escrow] = escrowPda(SESSION_TOURNAMENT_ID, player1.publicKey);
+      const [p1SessionAuthorityPda] = gameSessionPda(
+        player1.publicKey,
+        p1SessionKey.publicKey
+      );
+      const forged = generateMatchupCommit(GUESS_DIFF_TEAM as 0 | 1);
+
+      let reverted = false;
+      try {
+        await program.methods
+          .createGameSession(STAKE, forged.commitment as any)
+          .accountsPartial({
+            game: forgedGamePda,
+            gameCounter: gameCounterPda,
+            playerProfile: profilePda,
+            escrow,
+            tournament: sessionTournamentPda,
+            globalConfig: globalConfigPda,
+            matchmaker: fakeMatchmaker.publicKey,
+            player: player1.publicKey,
+            sessionAuthority: p1SessionAuthorityPda,
+            sessionSigner: p1SessionKey.publicKey,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([p1SessionKey, fakeMatchmaker])
+          .rpc();
+      } catch (_e) {
+        reverted = true;
+      }
+      assert.isTrue(
+        reverted,
+        "create_game_session must reject a co-signer that is not the matchmaker"
       );
     });
 
