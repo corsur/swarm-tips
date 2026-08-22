@@ -33,13 +33,19 @@ const EXECUTE = process.argv.includes("--execute");
 const PLATFORMS: { id: number; name: string; content: string }[] = [
   { id: 4, name: "Referral", content: "a funded shillbot campaign UUID" },
   { id: 5, name: "GamePlay", content: "a resolved coordination.game game_id" },
-  { id: 9, name: "Website", content: "a URL whose footer links swarm.tips + task nonce" },
+  {
+    id: 9,
+    name: "Website",
+    content: "a URL whose footer links swarm.tips + task nonce",
+  },
   { id: 10, name: "LeanProof", content: "a Lean statement (attester path)" },
 ];
 
 function loadKeypair(name: string): Keypair {
   return Keypair.fromSecretKey(
-    Uint8Array.from(JSON.parse(readFileSync(join(homedir(), ".config/solana", name), "utf8"))),
+    Uint8Array.from(
+      JSON.parse(readFileSync(join(homedir(), ".config/solana", name), "utf8"))
+    )
   );
 }
 
@@ -82,13 +88,20 @@ async function mcpReachable(): Promise<boolean> {
   try {
     authority = loadKeypair("id.json");
   } catch {
-    if (EXECUTE) throw new Error("--execute requires ~/.config/solana/id.json (the authority key)");
+    if (EXECUTE)
+      throw new Error(
+        "--execute requires ~/.config/solana/id.json (the authority key)"
+      );
     authority = Keypair.generate();
   }
   const conn = new Connection(RPC, "confirmed");
-  const provider = new anchor.AnchorProvider(conn, new anchor.Wallet(authority), {
-    commitment: "confirmed",
-  });
+  const provider = new anchor.AnchorProvider(
+    conn,
+    new anchor.Wallet(authority),
+    {
+      commitment: "confirmed",
+    }
+  );
   anchor.setProvider(provider);
   // Prefer the committed copy next to this script (present in CI); fall back to
   // the anchor build output for local dev. target/idl is gitignored, so it is
@@ -104,27 +117,35 @@ async function mcpReachable(): Promise<boolean> {
         /* try next */
       }
     }
-    throw new Error("shillbot IDL not found (scripts/ops/shillbot.idl.json or target/idl/shillbot.json)");
+    throw new Error(
+      "shillbot IDL not found (scripts/ops/shillbot.idl.json or target/idl/shillbot.json)"
+    );
   })();
   const program = new anchor.Program(idl as anchor.Idl, provider);
   const globalPda = PublicKey.findProgramAddressSync(
     [Buffer.from("shillbot_global")],
-    program.programId,
+    program.programId
   )[0];
   const g: any = await (program.account as any).globalState.fetch(globalPda);
   const ZERO = PublicKey.default;
 
   console.log("=== Shillbot mainnet smoke — PREFLIGHT (no spend) ===");
-  console.log(`program ${program.programId.toBase58()}  global ${globalPda.toBase58()}\n`);
+  console.log(
+    `program ${program.programId.toBase58()}  global ${globalPda.toBase58()}\n`
+  );
 
   const c = new Checks();
   c.check(await rpcHealthy(conn), "RPC healthy", RPC);
   c.check(await mcpReachable(), "MCP reachable (build-verify host)", MCP);
-  c.check(!g.authority.equals(ZERO), "GlobalState.authority configured", g.authority.toBase58());
+  c.check(
+    !g.authority.equals(ZERO),
+    "GlobalState.authority configured",
+    g.authority.toBase58()
+  );
   c.check(
     !g.switchboardFeed.equals(ZERO),
     "Switchboard feed configured (oracle verify fails closed if unset)",
-    g.switchboardFeed.toBase58(),
+    g.switchboardFeed.toBase58()
   );
   // The verify window is [submitted_at + delay ± staleness]. If staleness is
   // shorter than the verification timeout, verify CLOSES before the task expires
@@ -136,36 +157,49 @@ async function mcpReachable(): Promise<boolean> {
   c.check(
     stale >= vtimeout,
     "verify window spans task lifetime (no staleness lockout)",
-    `staleness ${(stale / 86400).toFixed(1)}d vs timeout ${(vtimeout / 86400).toFixed(1)}d`,
+    `staleness ${(stale / 86400).toFixed(1)}d vs timeout ${(
+      vtimeout / 86400
+    ).toFixed(1)}d`
   );
   c.check(!g.paused, "protocol not paused");
   const minEscrow = (g.minEscrowLamports as BN).toNumber();
-  console.log(`  · min_escrow_lamports = ${minEscrow} (${minEscrow / 1e9} SOL)`);
-  console.log(`  · attestation_delay = ${(g.attestationDelaySeconds as BN).toString()}s\n`);
+  console.log(
+    `  · min_escrow_lamports = ${minEscrow} (${minEscrow / 1e9} SOL)`
+  );
+  console.log(
+    `  · attestation_delay = ${(g.attestationDelaySeconds as BN).toString()}s\n`
+  );
 
-  console.log("=== per-platform lifecycle plan (create→claim→submit→verify→finalize) ===");
+  console.log(
+    "=== per-platform lifecycle plan (create→claim→submit→verify→finalize) ==="
+  );
   const escrow = Math.max(minEscrow, 1_000_000); // >= min, ~0.001 SOL floor
   for (const p of PLATFORMS) {
     const paused = ((g.pausedPlatforms as number) & (1 << p.id)) !== 0;
     console.log(
-      `  [${p.id}] ${p.name}: escrow ${escrow / 1e9} SOL | content = ${p.content}` +
-        (paused ? "  ⚠ PLATFORM PAUSED" : ""),
+      `  [${p.id}] ${p.name}: escrow ${escrow / 1e9} SOL | content = ${
+        p.content
+      }` + (paused ? "  ⚠ PLATFORM PAUSED" : "")
     );
     console.log(
-      `        recovery: emergency_return (Open/Claimed) or expire_task returns escrow to client`,
+      `        recovery: emergency_return (Open/Claimed) or expire_task returns escrow to client`
     );
   }
   const total = (escrow * PLATFORMS.length) / 1e9;
-  console.log(`\n  estimated max escrow at risk (all recoverable): ~${total} SOL + gas`);
+  console.log(
+    `\n  estimated max escrow at risk (all recoverable): ~${total} SOL + gas`
+  );
 
-  console.log(`\nPREFLIGHT ${c.failures === 0 ? "PASS" : `FAIL (${c.failures})`}`);
+  console.log(
+    `\nPREFLIGHT ${c.failures === 0 ? "PASS" : `FAIL (${c.failures})`}`
+  );
 
   if (EXECUTE) {
     console.log(
       "\n--execute requested — REFUSED. The real lifecycle spends mainnet SOL from the\n" +
         "authority wallet. Get explicit spend sign-off, then wire the real steps here\n" +
         "(create_task → claim_task → submit_work → verify_task → finalize_task, with an\n" +
-        "emergency_return sweep) reusing scripts/ops/crank-verify.ts + crank-finalize.ts.",
+        "emergency_return sweep) reusing scripts/ops/crank-verify.ts + crank-finalize.ts."
     );
   }
   process.exit(c.failures === 0 ? 0 : 1);
