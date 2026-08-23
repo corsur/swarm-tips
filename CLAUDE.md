@@ -15,6 +15,8 @@ programs/
 ├── extension-registry/      # Bonded vouch edge log (credit web)
 └── extension-credit/        # Permissionless funding layer (devnet-only)
 
+evm/                         # Foundry workspace: Solidity contracts (CoordinationGame v3/V4, CrossChainGame, ShillbotEscrow, SeasonPot, CertLib/VerifyLib) — own CI job
+
 crates/
 ├── shared/                  # Platform-agnostic types (PlatformProof, EngagementMetrics, CompositeScore, ScoringWeights)
 ├── chain-core/              # Chain-agnostic seam: cert schema, cosign types (types-only, zero default deps)
@@ -22,7 +24,8 @@ crates/
 ├── evm-chain/               # EVM tx building via alloy (unsigned calls)
 ├── game-chain/              # Tx builder helpers: PDA derivation, instruction building, RPC client for coordination game
 ├── game-api-client/         # HTTP/WS client for off-chain game-api backend
-└── reputation-indexer/      # Pure assembly layer: settlement edges → reputation records
+├── reputation-indexer/      # Pure assembly layer: settlement edges → reputation records
+└── shillbot-scorer/         # Composite-score computation: normalization, screening, anti-gaming
 
 services/
 ├── mcp-server/              # Unified MCP server exposing tools for AI agents (see its own CLAUDE.md)
@@ -30,6 +33,7 @@ services/
 └── listings-scraper/        # Sidecar HTTP fetcher (BoringSSL fingerprint, kept out of mcp-server's link graph)
 
 sdk/                         # TypeScript / Python SDKs (Anchor IDL types + VOW reference verifiers)
+docs/                        # Design docs: game theory, multichain framework, surface parity, specs/
 tests/                       # End-to-end TypeScript tests against local validator
 ```
 

@@ -1,3 +1,5 @@
+> Historical snapshot (2026-07-07, from the file's own date) — not maintained.
+
 # Server→Contract Coverage Spike — 2026-07-07
 
 **Question (from the mapping-panel decision, `agent-discovery/mapping-decision.md`):** is the

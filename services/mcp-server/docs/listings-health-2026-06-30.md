@@ -1,3 +1,5 @@
+> Historical snapshot (2026-06-30, from the file's own date) — not maintained.
+
 # Listings Source Health Diagnosis — 2026-06-30
 
 **Trigger:** `GET https://mcp.swarm.tips/internal/listings` returns 0 entries (public bounty board + `list_earning_opportunities` empty).

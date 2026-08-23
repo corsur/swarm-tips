@@ -2,7 +2,7 @@
 
 Solana programs and MCP server for [Swarm Tips](https://swarm.tips): an AI agent platform governing two protocols — the Coordination Game (anonymous social deduction) and Shillbot (AI agent task marketplace).
 
-Built with [Anchor](https://www.anchor-lang.com/) on Solana.
+Built with [Anchor](https://www.anchor-lang.com/) on Solana, plus an EVM leg: Solidity contracts in the [`evm/`](./evm) [Foundry](https://getfoundry.sh/) workspace, live on Base and Ethereum mainnet.
 
 ## Quick Start for AI Agents
 
@@ -10,7 +10,7 @@ Built with [Anchor](https://www.anchor-lang.com/) on Solana.
 claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp
 ```
 
-51 MCP tools across all verticals: play games, claim Shillbot tasks, browse bounties, generate videos, look up on-chain agent reputation. Non-custodial — agents sign transactions locally.
+The MCP server exposes tools across all verticals: play games, claim Shillbot tasks, browse bounties, generate videos, look up on-chain agent reputation. Non-custodial — agents sign transactions locally. The tool surface is generated from source — see [`services/mcp-server`](./services/mcp-server); count with `grep -c '#[tool(' services/mcp-server/src/server.rs` (54 as of 2026-08-22).
 
 ## Community & Discovery
 
@@ -43,36 +43,64 @@ A task marketplace where autonomous AI agents create content (YouTube Shorts) on
 
 **Program ID:** `2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi`
 
+### Extension Registry (`extension_registry`)
+
+Bonded vouch edge log — the on-chain credit web that backs agent reputation queries.
+
+**Program ID:** `H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j`
+
+### Extension Credit (`extension_credit`)
+
+Permissionless funding layer. Devnet-only — not mainnet-eligible (see [MAINNET_DEPLOY.md](./MAINNET_DEPLOY.md)).
+
 ### Shared (`shared`)
 
 Library crate (not a deployed program) containing platform-agnostic types used by both programs and off-chain services: `PlatformProof`, `EngagementMetrics`, `CompositeScore`, `ScoringWeights`.
+
+## EVM Contracts
+
+The [`evm/`](./evm) directory is a Foundry workspace holding the Solidity side of the coordination game (per the org's multichain standard: no Solidity inside `programs/`, no EVM SDKs other than alloy/viem):
+
+- **`CoordinationGame.sol`** — same-chain 1v1 game (v3, wallet-as-player). Deployed to mainnet 2026-07-30 (Base `0x567e114EB53228aFd9b20d7121668D4ce082a4F8`, Ethereum `0x1b75ddB73ebAC8aD7C0B26787B534e7Db0e7917d`); superseded by the V4 proxies below, retained for residual state.
+- **`CoordinationGameV4.sol`** — v4 as a UUPS proxy, with escrowed sessions and push-at-resolve auto-payout (winnings are paid at `resolve`; no separate withdraw). **Current production contracts:** Base `0xd585baE48901513202dAEb7d4feE4Af508a96234`, Ethereum `0x265818b054E8413Bab870e0Ce0D8aB68400CF0F9` (proxies currently running v6 logic; canonical source: `crates/chain-registry`).
+- **`CrossChainGame.sol`** — cross-chain (Solana ↔ EVM) match settlement via mutual-signature checkpoints and operator float pools. Testnet-live (Solana devnet ↔ Base Sepolia); mainnet routes gated on pool liquidity.
+- **`ShillbotEscrow.sol`**, **`SeasonPot.sol`** — EVM-side escrow and season prize pot.
+- **`CertLib.sol`** / **`VerifyLib.sol`** — canonical cross-chain certificate byte layout and signature verification, held equal to the Rust `chain-core::cert_schema` implementation by golden test vectors in `tests/fixtures/`.
+
+Per-chain addresses, stakes, and RPC config live in `crates/chain-registry` (CAIP-2 keyed) — never hardcoded elsewhere.
 
 ## Architecture
 
 ```
 swarm-tips-repo/
 ├── programs/
-│   ├── coordination-game/   # Coordination Game program
+│   ├── coordination-game/   # Coordination Game program (incl. cross-chain xmatch)
 │   │   └── src/
-│   │       ├── instructions/  # 23 instruction handlers
+│   │       ├── instructions/  # Instruction handlers (one file each)
 │   │       ├── state/         # Game, Tournament, PlayerProfile, Escrow, Session
 │   │       ├── payoff.rs      # Payoff matrix computation
 │   │       ├── errors.rs
 │   │       └── events.rs
 │   ├── shillbot/            # Shillbot Task Marketplace program
 │   │   └── src/
-│   │       ├── instructions/  # 23 instruction handlers
+│   │       ├── instructions/  # Instruction handlers (one file each)
 │   │       ├── state/         # Task, GlobalState, Challenge, AgentState
 │   │       ├── scoring.rs     # Payment + bond computation (fixed-point)
 │   │       ├── errors.rs
 │   │       └── events.rs
-│   └── shared/              # Shared types library crate
-│       └── src/
-│           ├── platform.rs    # PlatformProof, EngagementMetrics
-│           ├── scoring.rs     # CompositeScore, ScoringWeights
-│           └── constants.rs   # Shared constants
-├── crates/                  # Shared library crates (game-chain, game-api-client, shared)
-├── services/                # MCP server, scorer, eigentrust, listings-scraper
+│   ├── extension-registry/  # Bonded vouch edge log (credit web)
+│   └── extension-credit/    # Permissionless funding layer (devnet-only)
+├── evm/                     # Foundry workspace: Solidity contracts (see "EVM Contracts")
+├── crates/                  # Shared library crates:
+│   ├── chain-core/          #   chain-agnostic seam: cert schema, cosign types
+│   ├── chain-registry/      #   CAIP-2 per-chain config (single source of truth)
+│   ├── evm-chain/           #   EVM tx building via alloy
+│   ├── game-chain/          #   Solana tx builders: PDAs, instructions, RPC client
+│   ├── game-api-client/     #   HTTP/WS client for the off-chain game-api backend
+│   ├── reputation-indexer/  #   settlement edges → reputation records
+│   ├── shillbot-scorer/     #   composite-score computation
+│   └── shared/              #   platform-agnostic types (PlatformProof, EngagementMetrics, ...)
+├── services/                # mcp-server, eigentrust, listings-scraper
 ├── sdk/                     # TypeScript + Python SDKs (Anchor IDL bindings, VOW verifiers)
 ├── tests/
 │   ├── coordination-game.ts  # Game end-to-end tests
@@ -218,16 +246,25 @@ Anyone can challenge a verified task during the 24-hour challenge window by post
 
 ## Deployment
 
-CI deploys to devnet on merge to `main` after all tests pass. Mainnet deployment is gated through CI as well.
+All deploys go through CI (GitHub Actions); local mainnet deploys are forbidden. Triggers are per-program (canonical detail: [MAINNET_DEPLOY.md](./MAINNET_DEPLOY.md)):
+
+| Program | Devnet | Mainnet |
+|---|---|---|
+| `coordination_game` | manual dispatch | **auto on merge to `main`** (after tests) + manual dispatch |
+| `shillbot` | **auto on merge to `main`** | **auto on merge to `main`**, staged behind the devnet deploy, + manual dispatch |
+| `extension_registry` | manual dispatch | manual dispatch |
+| `extension_credit` | manual dispatch | no mainnet job (devnet-only) |
+
+EVM contracts deploy via `deploy-evm-testnet.yml` / `deploy-evm-mainnet.yml` (manual dispatch) with Foundry scripts in `evm/script/`; `auto-upgrade-evm-testnet.yml` additionally auto-upgrades the testnet V4 proxy after a green `EVM Contracts` CI run on `main`.
 
 ## Code Standards
 
 Full code standards are documented in [CLAUDE.md](./CLAUDE.md). Key rules:
 
-- Functions ≤100 lines; thin instruction handlers that delegate to pure functions
+- Functions ≤60 lines; thin instruction handlers that delegate to pure functions
 - Minimum 2 assertions per function (pre/postconditions)
 - No recursion (Solana BPF 4KB stack limit)
 - All loops have fixed, verifiable upper bounds
-- `init` for shillbot accounts; `init_if_needed` only for game PlayerProfile
+- `init` by default; `init_if_needed` only for the narrow signer-pays-own-PDA exceptions listed in [CLAUDE.md](./CLAUDE.md)
 - Events emitted for every state transition
 - Named error variants for every failure mode

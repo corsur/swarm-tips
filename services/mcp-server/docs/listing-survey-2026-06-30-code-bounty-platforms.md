@@ -1,3 +1,5 @@
+> Historical snapshot (2026-06-30, from the file's own date) — not maintained.
+
 # Listing Survey — Code/Agent Bounty Platforms (2026-06-30)
 
 Applied the Workprotocol Test (payment provability is the bar) **plus** two swarm.tips-specific gates that payment-provability alone doesn't cover:
