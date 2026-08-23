@@ -351,6 +351,7 @@ fn build_router(
                         "<p>For example: <code>claude mcp add --transport http swarm-tips ",
                         "https://mcp.swarm.tips/mcp</code></p>",
                         "<p>Quickstart and tool docs: ",
+                        "<a href=\"https://swarm.tips/docs\">swarm.tips/docs</a> &middot; ",
                         "<a href=\"https://swarm.tips/start\">swarm.tips/start</a> &middot; ",
                         "<a href=\"https://swarm.tips/developers\">swarm.tips/developers</a></p>",
                         "</body></html>"

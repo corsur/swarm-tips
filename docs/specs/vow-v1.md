@@ -325,6 +325,9 @@ paths name the repo explicitly.
 - Shillbot on-chain `Task` account schema: `programs/shillbot/src/state/task.rs`
 - Shillbot on-chain `TaskState` enum (the published state enum
   VOW verifiers consume): `programs/shillbot/src/state/task.rs`
-- Switchboard feed: compile-time-locked at `programs/shillbot/src/constants.rs::SWITCHBOARD_FEED`
-- Reference verifiers (planned): `sdk/vow-verifier-ts` and
-  `sdk/vow-verifier-py` (task #18)
+- Switchboard feed: stored in `GlobalState.switchboard_feed`
+  (`programs/shillbot/src/state/global.rs`). An earlier compile-time lock at
+  `constants.rs::SWITCHBOARD_FEED` was reverted 2026-05-08; re-locking is a
+  tracked follow-up.
+- Reference verifiers (shipped): `sdk/vow-verifier-ts` (npm
+  `@swarm-tips/vow-verifier`) and `sdk/vow-verifier-py` (PyPI `vow-verifier`)
