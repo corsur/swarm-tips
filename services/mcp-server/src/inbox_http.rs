@@ -34,6 +34,7 @@
 //! `resolve_verified()` are reused verbatim, so invalidation semantics
 //! (re-bind clears verification) are identical across surfaces.
 
+use crate::a2a;
 use crate::errors::McpServiceError;
 use crate::game_proxy::GameApiProxy;
 use crate::inbox::{self, Inbox};
@@ -987,6 +988,195 @@ async fn handle_delivery_result(state: &InboxHttpState, raw: &str) -> axum::resp
     }
 }
 
+// -- A2A facade (/a2a) — Google-A2A JSON-RPC over the SAME inbox ops --
+//
+// Translation only (decision.md condition 7): the pure A2A↔inbox mapping lives
+// in `crate::a2a`; these handlers add auth (the same `require_verified_mailbox`
+// the twins use → identical 401) and the `inbox::` op calls. No new storage,
+// no new quota path — every write rides the W1–W4 chokepoint.
+
+fn a2a_ok(id: &serde_json::Value, result: serde_json::Value) -> axum::response::Response {
+    json_ok(a2a::result_envelope(id, result))
+}
+
+fn a2a_error(
+    status: StatusCode,
+    id: &serde_json::Value,
+    code: i64,
+    message: &str,
+) -> axum::response::Response {
+    (
+        status,
+        INBOX_CORS_HEADERS,
+        axum::Json(a2a::error_envelope(id, code, message)),
+    )
+        .into_response()
+}
+
+/// Map an inbox op error into a JSON-RPC error envelope, logging exactly like
+/// `inbox_error_response`: rejections log-and-400, internals log-and-500.
+fn a2a_inbox_error(
+    state: &InboxHttpState,
+    e: inbox::InboxError,
+    wallet: &str,
+    id: &serde_json::Value,
+) -> axum::response::Response {
+    match e {
+        inbox::InboxError::Rejected(r) => {
+            inbox::log_rejection(
+                r.reason(),
+                wallet,
+                state.inbox_seed_wallets.contains(wallet),
+            );
+            a2a_error(
+                StatusCode::BAD_REQUEST,
+                id,
+                a2a::INVALID_PARAMS,
+                &r.message(),
+            )
+        }
+        inbox::InboxError::Internal(err) => {
+            tracing::error!(wallet, error = %err, "a2a inbox operation failed");
+            a2a_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                id,
+                a2a::INTERNAL_ERROR,
+                &format!("inbox operation failed: {err}"),
+            )
+        }
+    }
+}
+
+async fn a2a_message_send(
+    state: &InboxHttpState,
+    me: &str,
+    req: &a2a::JsonRpcRequest,
+) -> axum::response::Response {
+    let mapped = match a2a::map_message_send(&req.params) {
+        Ok(m) => m,
+        Err(e) => {
+            inbox::log_rejection("invalid_request", me, state.inbox_seed_wallets.contains(me));
+            return a2a_error(StatusCode::BAD_REQUEST, &req.id, a2a::INVALID_PARAMS, &e);
+        }
+    };
+    let seed = state.inbox_seed_wallets.contains(me);
+    let tier = state.inbox.resolve_sender_tier(me, true).await;
+    match state
+        .inbox
+        .send_message(inbox::SendRequest {
+            from: me.to_string(),
+            to_wallet: mapped.to_wallet,
+            body: mapped.body,
+            thread_id: mapped.thread_id,
+            intent: mapped.intent,
+            tier,
+            seed,
+        })
+        .await
+    {
+        Ok(receipt) => {
+            inbox::log_message_sent(me, &receipt, tier, seed);
+            a2a_ok(&req.id, a2a::send_receipt_to_task(&receipt))
+        }
+        Err(e) => a2a_inbox_error(state, e, me, &req.id),
+    }
+}
+
+async fn a2a_tasks_get(
+    state: &InboxHttpState,
+    me: &str,
+    req: &a2a::JsonRpcRequest,
+) -> axum::response::Response {
+    let g = match a2a::map_tasks_get(&req.params) {
+        Ok(g) => g,
+        Err(e) => {
+            inbox::log_rejection("invalid_request", me, state.inbox_seed_wallets.contains(me));
+            return a2a_error(StatusCode::BAD_REQUEST, &req.id, a2a::INVALID_PARAMS, &e);
+        }
+    };
+    // include_sent → the A2A Task history carries both directions of the thread.
+    match state
+        .inbox
+        .get_messages(me, None, g.history_length, Some(&g.thread_id), None, true)
+        .await
+    {
+        Ok(page) => {
+            inbox::log_messages_read(me, &page);
+            a2a_ok(&req.id, a2a::read_page_to_task(&g.thread_id, &page))
+        }
+        Err(e) => a2a_inbox_error(state, e, me, &req.id),
+    }
+}
+
+async fn a2a_push_config_set(
+    state: &InboxHttpState,
+    me: &str,
+    req: &a2a::JsonRpcRequest,
+) -> axum::response::Response {
+    let p = match a2a::map_push_config_set(&req.params) {
+        Ok(p) => p,
+        Err(e) => {
+            inbox::log_rejection("invalid_request", me, state.inbox_seed_wallets.contains(me));
+            return a2a_error(StatusCode::BAD_REQUEST, &req.id, a2a::INVALID_PARAMS, &e);
+        }
+    };
+    match state.inbox.register_webhook(me, &p.url).await {
+        Ok(doc) => {
+            inbox::log_webhook_registered(&doc);
+            a2a_ok(
+                &req.id,
+                a2a::webhook_to_push_config(p.task_id.as_deref(), &doc),
+            )
+        }
+        Err(e) => a2a_inbox_error(state, e, me, &req.id),
+    }
+}
+
+/// `POST /a2a` — parse the JSON-RPC envelope (malformed → 400), authenticate
+/// through the SAME session guard the twins use (unknown/unverified → the same
+/// 401), then dispatch. Every A2A method is session-gated: send writes, get
+/// reads a private mailbox, pushConfig registers a webhook.
+async fn handle_a2a(
+    state: &InboxHttpState,
+    headers: &axum::http::HeaderMap,
+    raw: &str,
+) -> axum::response::Response {
+    let req = match a2a::parse_request(raw) {
+        Ok(r) => r,
+        Err((code, message)) => {
+            inbox::log_rejection("invalid_request", "", false);
+            return a2a_error(
+                StatusCode::BAD_REQUEST,
+                &serde_json::Value::Null,
+                code,
+                &message,
+            );
+        }
+    };
+    let me = match require_verified_mailbox(state, headers).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    match req.method.as_str() {
+        "message/send" => a2a_message_send(state, &me, &req).await,
+        "tasks/get" => a2a_tasks_get(state, &me, &req).await,
+        "tasks/pushNotificationConfig/set" => a2a_push_config_set(state, &me, &req).await,
+        other => {
+            inbox::log_rejection(
+                "invalid_request",
+                &me,
+                state.inbox_seed_wallets.contains(&me),
+            );
+            a2a_error(
+                StatusCode::BAD_REQUEST,
+                &req.id,
+                a2a::METHOD_NOT_FOUND,
+                &format!("method not found: {other}"),
+            )
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Route builders (wired in main.rs next to the other /internal/* routes)
 // ---------------------------------------------------------------------------
@@ -1076,6 +1266,15 @@ pub fn delivery_result_handler(state: Arc<InboxHttpState>) -> axum::routing::Met
         let state = state.clone();
         async move { handle_delivery_result(&state, &body).await }
     })
+}
+
+/// `POST /a2a` — the Google-A2A JSON-RPC facade over the inbox (see handle_a2a).
+pub fn a2a_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+        let state = state.clone();
+        async move { handle_a2a(&state, &headers, &body).await }
+    })
+    .options(|| async { preflight_response() })
 }
 
 // ---------------------------------------------------------------------------
@@ -1420,6 +1619,23 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("*")
         );
+    }
+
+    #[test]
+    fn a2a_auth_matches_the_twins_at_the_shared_guard() {
+        // The /a2a handler authenticates through the SAME `require_verified_mailbox`
+        // the REST twins use: no `X-Inbox-Session` header → `session_id_from_headers`
+        // is None → `missing_session_response()` (401), byte-for-byte the twins'
+        // rejection. A JSON-RPC body without the header cannot mint a write path.
+        let headers = axum::http::HeaderMap::new();
+        assert!(
+            session_id_from_headers(&headers).is_none(),
+            "an A2A call without the session header has no session"
+        );
+        let twin_401 = missing_session_response();
+        let a2a_401 = missing_session_response();
+        assert_eq!(twin_401.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(a2a_401.status(), twin_401.status());
     }
 
     #[test]

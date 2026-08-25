@@ -3,6 +3,7 @@
 #![deny(clippy::all)]
 #![deny(clippy::arithmetic_side_effects)]
 
+mod a2a;
 mod composite_trust;
 mod config;
 mod discovery;
@@ -489,8 +490,12 @@ fn build_router(
         )
         .route(
             "/internal/topics/report",
-            inbox_http::topics_report_handler(inbox_http_state),
+            inbox_http::topics_report_handler(Arc::clone(&inbox_http_state)),
         )
+        // W5: Google-A2A JSON-RPC facade over the inbox (message/send,
+        // tasks/get, tasks/pushNotificationConfig/set). Translation only —
+        // same session guard + inbox chokepoint as the twins (src/a2a.rs).
+        .route("/a2a", inbox_http::a2a_handler(inbox_http_state))
         .route(
             "/internal/build-verify-tx",
             axum::routing::post(move |body: axum::Json<serde_json::Value>| {
