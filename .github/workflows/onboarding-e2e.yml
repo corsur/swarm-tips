@@ -70,7 +70,11 @@ jobs:
           echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
 
       - name: Build IDLs + TS types (extension-registry, extension-credit, shillbot)
-        run: anchor build -p extension_registry -p extension_credit -p shillbot
+        # anchor build accepts only one -p at a time; build each in turn.
+        run: |
+          anchor build -p extension_registry
+          anchor build -p extension_credit
+          anchor build -p shillbot
 
       - name: Run the zero-funds onboarding e2e against devnet
         run: |
