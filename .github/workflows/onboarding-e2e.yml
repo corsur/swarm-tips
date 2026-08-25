@@ -1,0 +1,84 @@
+name: Gasless Onboarding E2E (devnet)
+
+# End-to-end test of the zero-funds agent onboarding path on devnet — the
+# reputation-graph vouch + extension-credit recoupable rent advance + a SPONSORED
+# claim by a wallet that brought $0. Complements the SOL-free read-only
+# "Reputation E2E (devnet)": this one SIGNS and SPENDS (funds a throwaway sponsor
+# from the root/treasury key, creates a task, drives the full flow, then recovers
+# everything but the agent's irreducible AgentState rent — net ~0.0016 SOL/run).
+#
+# Uses the PREMIUM devnet RPC from GCP Secret Manager: on the public endpoint,
+# 429s corrupt the balance reads the final ledger check relies on. The root
+# keypair is the standard CI deploy key (SOLANA_DEPLOY_KEYPAIR == the
+# web-position root). Manual-dispatch + on-path (not every push) since it spends.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'programs/extension-registry/**'
+      - 'programs/extension-credit/**'
+      - 'programs/shillbot/**'
+      - 'scripts/e2e/zero-funds-onboarding-devnet.ts'
+      - '.github/workflows/onboarding-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: onboarding-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  onboarding-e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Workload Identity for the premium-RPC secret read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+
+      - name: Write root keypair (web-position root + fee payer)
+        run: |
+          mkdir -p ~/.config/solana
+          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
+
+      - name: Build IDLs + TS types (extension-registry, extension-credit, shillbot)
+        run: anchor build -p extension_registry -p extension_credit -p shillbot
+
+      - name: Run the zero-funds onboarding e2e against devnet
+        run: |
+          DEVNET_RPC="$(gcloud secrets versions access latest --secret=solana-rpc-url-devnet)"
+          if [ -z "$DEVNET_RPC" ]; then
+            echo "::error::could not read solana-rpc-url-devnet from Secret Manager" >&2
+            exit 1
+          fi
+          DEVNET_RPC="$DEVNET_RPC" npx tsx scripts/e2e/zero-funds-onboarding-devnet.ts
+        env:
+          GCP_PROJECT_ID: coordination-game-prod
