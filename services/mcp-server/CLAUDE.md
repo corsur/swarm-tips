@@ -18,7 +18,7 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 54 tools live (count them:
 
 The registry is at v0.3.0. Its description said "51 tools" while `src/server.rs`
 declares 53 — run `grep -c '#[tool(' src/server.rs` for the authoritative number,
-never trust a prose count. `server.json`'s description is corrected to 53; its
+never trust a prose count. `server.json`'s description carries a prose count that drifts (last synced at 53; live is 54); its
 `version` is deliberately NOT bumped, because that field only matters at
 `mcp-publisher publish` time and the live server never reads it. Publish from
 `services/mcp-server/` when the tool INVENTORY itself changes (if OAuth tokens
@@ -243,7 +243,7 @@ mcp-server-specific notes:
 - **Layer 2 LLM classifier (`/internal/mcp/llm-classify`)** is currently invoked synchronously by HTTP. When the cap-bounded run grows past comfortable HTTP timeouts, migrate to a Google Workflow that calls `/internal/mcp/llm-classify` once per batch with a `sys.sleep` between batches. Workflow YAML belongs in `infra/workflows/` once it exists; today the directory only holds the daily discovery refresh skeleton.
 - **Layer 3 deep analysis (`/internal/mcp/deep-analyze`)** has the same property — the current ~15s sync run is fine, but a future "full deep-analyze across the whole index" pass should be a Workflow.
 - **Discovery refresh (`/internal/mcp/refresh`)** is meant to run daily. The Cloud Workflow + scheduled trigger that calls it lives in the `infra/workflows/` directory once added — this is the correct pattern for any periodic recompute.
-- **What you must NOT add to mcp-server:** any background `tokio::spawn` task that runs forever, any Mutex<HashMap<job_id, ...>> queue, any "remind me later" mechanism that lives in a single pod's memory. Mcp-server is KEDA-scaled and stateless — anything in-process is lost on scale-down.
+- **What you must NOT add to mcp-server:** any background `tokio::spawn` task that runs forever, any Mutex<HashMap<job_id, ...>> queue, any "remind me later" mechanism that lives in a single pod's memory. Mcp-server is Cloud-Run-scaled and stateless — anything in-process is lost on scale-down.
 
 ---
 
