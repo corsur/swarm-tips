@@ -699,6 +699,22 @@ pub fn search_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter
                     )
                         .into_response();
                 };
+                // Reject unknown parameters instead of silently ignoring them:
+                // a caller passing `q=` (the common shorthand) used to get the
+                // full quality-ordered browse list back — indistinguishable
+                // from a real search result, so the mistake was invisible.
+                const ACCEPTED: [&str; 5] =
+                    ["query", "category", "currency", "provenance", "limit"];
+                if let Some(bad) = q.keys().find(|k| !ACCEPTED.contains(&k.as_str())) {
+                    return (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        [("Access-Control-Allow-Origin", "*")],
+                        format!(
+                            "{{\"error\": \"unknown parameter '{bad}' — accepted: query, category, currency, provenance, limit\"}}"
+                        ),
+                    )
+                        .into_response();
+                }
                 let limit = q
                     .get("limit")
                     .and_then(|s| s.parse::<usize>().ok())
