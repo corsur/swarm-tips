@@ -10,6 +10,7 @@ mod errors;
 mod game_proxy;
 mod game_session;
 mod inbox;
+mod inbox_http;
 mod listings;
 #[cfg(test)]
 mod matrix_tests;
@@ -122,6 +123,16 @@ async fn main() -> anyhow::Result<()> {
         "true" | "1"
     );
 
+    // Browser REST twins for the agent inbox (/internal/inbox/*): the SAME
+    // session-binding + inbox handles the MCP tools use, with its own
+    // game-api adapter for the auth-challenge passthrough.
+    let inbox_http_state = Arc::new(inbox_http::InboxHttpState {
+        game_api: GameApiProxy::new(cfg.game_api_url.clone())?,
+        session_binding: Arc::clone(&session_binding),
+        inbox: Arc::clone(&inbox_state),
+        inbox_seed_wallets: inbox_seed_wallets.clone(),
+    });
+
     let shared = Arc::new(SharedState {
         orchestrator: OrchestratorProxy::new(
             cfg.orchestrator_url.clone(),
@@ -176,6 +187,7 @@ async fn main() -> anyhow::Result<()> {
         internal_api_key,
         rpc_url_mainnet,
         rpc_url_devnet,
+        inbox_http_state,
         service,
     );
 
@@ -345,6 +357,7 @@ fn build_router(
     internal_api_key: Option<String>,
     rpc_url_mainnet: String,
     rpc_url_devnet: String,
+    inbox_http_state: Arc<inbox_http::InboxHttpState>,
     mcp_service: StreamableHttpService<SwarmTipsMcp, LocalSessionManager>,
 ) -> axum::Router {
     let mainnet_for_verify = rpc_url_mainnet.clone();
@@ -419,6 +432,24 @@ fn build_router(
         .route(
             "/internal/traffic-stats",
             traffic_stats::traffic_stats_handler(traffic_stats_state),
+        )
+        // Browser REST twins for the agent inbox — same storage layer and
+        // events as the agent_* MCP tools (see src/inbox_http.rs).
+        .route(
+            "/internal/inbox/session",
+            inbox_http::session_handler(Arc::clone(&inbox_http_state)),
+        )
+        .route(
+            "/internal/inbox/messages",
+            inbox_http::messages_handler(Arc::clone(&inbox_http_state)),
+        )
+        .route(
+            "/internal/inbox/ack",
+            inbox_http::ack_handler(Arc::clone(&inbox_http_state)),
+        )
+        .route(
+            "/internal/inbox/send",
+            inbox_http::send_handler(inbox_http_state),
         )
         .route(
             "/internal/build-verify-tx",
