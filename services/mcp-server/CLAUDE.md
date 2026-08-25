@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 54 tools live (count them: `grep -c '#[tool(' src/server.rs`): same-chain Solana game (10 incl. `register_wallet`), same-chain EVM game (5: `game_find_evm_match`, `game_evm_match_status`, `game_evm_committed`, `game_evm_commit_guess`, `game_evm_reveal_guess`), cross-chain game (14, all `xchain_*`-prefixed incl. gameplay `xchain_commit_guess`/`xchain_sign_checkpoint`/`xchain_reveal_guess`/`xchain_gameplay_status`), Shillbot marketplace (14, all `shillbot_*`-prefixed — incl. `shillbot_create_campaign` for the MCP client-commission path), video generation (2), listings/discovery (4: `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities`, `search_mcp_servers`), and agent reputation (5: `agent_profile`, `agent_trust_score`, `query_agent_credit_web_score`, `list_extensions`, `agent_reputation_leaderboard`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 55 tools live (count them: `grep -c '#[tool(' src/server.rs`): same-chain Solana game (10 incl. `register_wallet`), same-chain EVM game (5: `game_find_evm_match`, `game_evm_match_status`, `game_evm_committed`, `game_evm_commit_guess`, `game_evm_reveal_guess`), cross-chain game (14, all `xchain_*`-prefixed incl. gameplay `xchain_commit_guess`/`xchain_sign_checkpoint`/`xchain_reveal_guess`/`xchain_gameplay_status`), Shillbot marketplace (15, all `shillbot_*`-prefixed — incl. `shillbot_create_campaign` for the MCP client-commission path), video generation (2), listings/discovery (4: `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities`, `search_mcp_servers`), and agent reputation (5: `agent_profile`, `agent_trust_score`, `query_agent_credit_web_score`, `list_extensions`, `agent_reputation_leaderboard`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -128,7 +128,7 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 
 ---
 
-## Tools (54 active)
+## Tools (55 active)
 
 ### Cross-chain game (14 tools)
 - `xchain_build_create_match` — [SPEND] build the unsigned EVM `createMatch` tx (via `crates/evm-chain`) from a matched relay payload so the EVM-leg player can fund their leg. Parses the payload's `leg_b` (contract/session-key/stake) + `leg_a` session key as counterparty, derives `playerIsP1 = (a_is_p1 == 0)` and a `fund_deadline` before `match_deadline`; returns `{to, data, value_wei, chain, fund/match deadlines}` for client-side signing. `build_evm_create_match_call` in `src/xchain.rs`.
@@ -181,7 +181,8 @@ Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
 - `game_reveal_guess` — poll until resolved, returns unsigned reveal tx
 - `game_get_result` — read game outcome
 
-### Shillbot (14 tools, Solana mainnet, on-chain escrow)
+### Shillbot (15 tools, Solana mainnet, on-chain escrow)
+- `shillbot_onboard` — (AGENT bootstrap) zero-funds entry point. Proxies `POST /agent/onboard`: the sponsor vouches a brand-new wallet into the reputation graph and fronts its one-time AgentState rent as a recoupable advance, so a 0-SOL wallet gains standing and can then claim/submit gaslessly (`sponsor=auto`). Network-throttled (20/hr devnet, 5/hr mainnet — real SOL); fresh wallets only. Surfaced to broke agents via the `next_step` field on `register_wallet` when balance is 0. This is what makes "spawn an agent with nothing → it earns" work on mainnet.
 - `shillbot_create_campaign` — (CLIENT) create AND fund a campaign task in one call — the MCP counterpart to the frontend campaign form, so an agent can COMMISSION work, not just earn it. Returns an unsigned `create_task` funding tx (escrow from the client's own wallet); sign locally and broadcast via `shillbot_submit_tx` with `action="create"`. Closes the frontend↔MCP parity gap where campaign creation was frontend-only.
 - `shillbot_list_available_tasks` — browse tasks (Shillbot-specific deep query; for cross-source aggregation use `list_earning_opportunities`)
 - `shillbot_get_task_details` — full task brief, blocklist, brand voice

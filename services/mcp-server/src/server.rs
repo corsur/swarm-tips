@@ -151,6 +151,13 @@ pub struct ClaimTaskArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct OnboardArgs {
+    /// Solana network. `"mainnet"` (default) or `"devnet"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct CreateCampaignArgs {
     /// Campaign topic — what the commissioned content should be about.
     pub topic: String,
@@ -715,8 +722,41 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
+        name = "shillbot_onboard",
+        description = "[EARN][STATE] Bootstrap a brand-new wallet that holds ZERO SOL so it can start earning on Shillbot with no funds. The sponsor vouches you into the reputation graph and fronts your one-time on-chain rent as a recoupable advance; afterwards shillbot_claim_task and shillbot_submit_work are gasless (sponsor-paid). Call this FIRST if register_wallet showed balance_lamports: 0 — otherwise your first claim fails because a 0-SOL wallet can't pay the transaction fee. Fresh wallets only (once per wallet; a wallet that already has standing or an AgentState is rejected). Non-custodial. Optional `network`: 'mainnet' (default) or 'devnet'.",
+        annotations(destructive_hint = true)
+    )]
+    async fn shillbot_onboard(
+        &self,
+        Parameters(args): Parameters<OnboardArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let network = parse_network_arg(args.network.as_deref())?;
+
+        let wallet_pubkey = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+
+        let response = self
+            .state
+            .orchestrator
+            .onboard_agent(&wallet_pubkey, network)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+
+        tracing::info!(
+            event = "shillbot_onboard",
+            wallet = %wallet_pubkey,
+            "agent onboarded (gasless bootstrap)"
+        );
+
+        Ok(text_result(&response))
+    }
+
+    #[tool(
         name = "shillbot_claim_task",
-        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call register_wallet first). Optional `network`: 'mainnet' (default) or 'devnet'.",
+        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call register_wallet first). If your wallet has 0 SOL, call shillbot_onboard first (gasless bootstrap) — a 0-SOL wallet cannot pay the claim fee. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_claim_task(
@@ -1822,11 +1862,22 @@ impl SwarmTipsMcp {
             "game wallet registered"
         );
 
-        let response = serde_json::json!({
+        let mut response = serde_json::json!({
             "wallet": wallet,
             "balance_lamports": balance,
             "status": "registered",
         });
+        // Self-discovery for a broke agent: a 0-SOL wallet can't pay the fee on
+        // its first Shillbot claim, so point it at the gasless bootstrap instead
+        // of letting it hit an opaque "AccountNotFound" at submit time.
+        if balance == 0 {
+            response["next_step"] = serde_json::json!(
+                "Your wallet holds 0 SOL. To earn on Shillbot with no funds, call \
+                 shillbot_onboard first — it vouches you into the reputation graph and \
+                 fronts your on-chain rent, after which shillbot_claim_task and \
+                 shillbot_submit_work are gasless (sponsor-paid)."
+            );
+        }
         Ok(text_result(&response))
     }
 
@@ -2886,7 +2937,7 @@ Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multi
 This server exposes 54 tools across seven categories. If your agent only cares about a subset, configure your MCP client's tool allowlist to load only the prefixes below — most clients (Claude Code, Cursor, Continue) support per-server allowlists. Filtering at the client saves context tokens on every initialize.
 
 - **game** (10 tools, prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
-- **shillbot** (14 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (commission + review): `shillbot_create_campaign` (create AND fund a task — the MCP way to COMMISSION work), `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (VOW v1 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
+- **shillbot** (15 tools, prefix `shillbot_*`): content-creation marketplace. AGENT side (earn): `shillbot_onboard` (BOOTSTRAP — call first if your wallet has 0 SOL: gasless vouch + fronted rent so you can earn with no funds), `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT side (commission + review): `shillbot_create_campaign` (create AND fund a task — the MCP way to COMMISSION work), `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation` (VOW v1 portable proof for Verified/Finalized tasks; agent or third-party can read), `shillbot_complete_task` (single-call \"what do I do next?\" guide that collapses the 6-step lifecycle into one ask-then-execute loop). Note: `shillbot_verify_task` and `shillbot_finalize_task` are required to complete the EARN lifecycle on-chain — leaving them out of an allowlist locks your agent out of getting paid.
 - **video** (2 tools): paid short-form video generation. `generate_video`, `check_video_status`.
 - **listings** (4 tools): aggregated discovery across all sources. `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities` (unified search across earn + spend with intent / category / keyword filters), `search_mcp_servers` (BM25 relevance search over the full ingested MCP-server catalog — 17,000+ servers, fully automated ranking with per-hit signal disclosure).
 - **profile** (5 tools, cross-cutting): `agent_profile` reads on-chain reputation directly via Solana RPC (no orchestrator hop). Combines Shillbot AgentState (claim / completion / score / dispute counters) and Coordination Game PlayerProfile (wins / total_games / score) plus derived metrics (average_score, completion_rate, dispute_rate, win_rate). `agent_trust_score` consumes the same on-chain reads + the EigenTrust settlement-graph record + optional curator-tier + optional Hyperspace AgentRank and returns a single composite 0..1 trust score with a confidence count and per-signal breakdown for transparency. `agent_reputation_leaderboard` lists the top settlement-anchored agents by EigenTrust rank (real on-chain payment edges, recomputed on every finalize). `query_agent_credit_web_score` reads the bonded-vouch credit web; `list_extensions` lists an agent's vouch edges.

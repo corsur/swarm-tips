@@ -598,6 +598,39 @@ impl OrchestratorProxy {
         Ok(parsed)
     }
 
+    /// Bootstrap a brand-new 0-SOL agent. Proxies `POST /agent/onboard`, which
+    /// (network-throttled) has the sponsor wallet vouch the agent into the
+    /// reputation graph and front its one-time AgentState rent as a recoupable
+    /// advance — so a wallet that arrived with $0 gains standing and can then
+    /// claim/submit gaslessly (`sponsor=auto`). Returns the on-chain signature +
+    /// a human-readable next-step message. Fresh wallets only (once per wallet);
+    /// a wallet that already has standing / an AgentState is rejected.
+    pub async fn onboard_agent(
+        &self,
+        wallet_pubkey: &str,
+        network: Option<&str>,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        if wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "wallet_pubkey must not be empty".to_string(),
+            ));
+        }
+        let qs = network_query_suffix(network);
+        let url = format!("{}/agent/onboard{qs}", self.base_url);
+        let response = self
+            .bodyless_post(&url, wallet_pubkey)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, wallet = %wallet_pubkey, "orchestrator onboard failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+        let response = require_success(response, "onboard", wallet_pubkey).await?;
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid onboard response: {e}"))
+        })
+    }
+
     pub async fn claim_task(
         &self,
         task_id: &str,
@@ -1569,6 +1602,40 @@ mod tests {
                 .expect("ok");
             assert_eq!(resp.task_id, "camp1:task1");
             assert!(resp.transaction.is_some());
+        }
+
+        #[tokio::test]
+        async fn onboard_agent_posts_to_onboard_endpoint_with_network() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/agent/onboard"))
+                .and(query_param("network", "mainnet"))
+                .and(header("authorization", "Bearer wallet1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "signature": "sig123",
+                    "message": "Onboarded: ... Claim tasks with ?network=mainnet&sponsor=true.",
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let resp = proxy
+                .onboard_agent("wallet1", Some("mainnet"))
+                .await
+                .expect("ok");
+            assert_eq!(resp["signature"], "sig123");
+        }
+
+        #[tokio::test]
+        async fn onboard_agent_rejects_empty_wallet_without_calling() {
+            let server = MockServer::start().await;
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let err = proxy
+                .onboard_agent("", Some("mainnet"))
+                .await
+                .expect_err("empty wallet must be rejected");
+            assert!(matches!(err, McpServiceError::InvalidInput(_)));
         }
 
         #[tokio::test]
