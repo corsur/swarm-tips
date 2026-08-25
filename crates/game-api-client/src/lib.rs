@@ -272,6 +272,67 @@ impl GameApiClient {
             .map_err(Into::into)
     }
 
+    /// `POST /auth/evm/challenge` — request a nonce for an EVM (`0x`) wallet.
+    ///
+    /// Same nonce store as the Solana path server-side; only the wallet-format
+    /// validation differs (game-api rejects non-`0x` wallets here).
+    pub async fn evm_request_challenge(
+        &self,
+        wallet: &str,
+    ) -> Result<ChallengeResponse, GameApiError> {
+        assert!(!wallet.is_empty(), "wallet must not be empty");
+        assert!(wallet.starts_with("0x"), "EVM wallet must start with 0x");
+
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+        }
+
+        let url = self.url("/auth/evm/challenge");
+        let resp = self.inner.post(&url).json(&Body { wallet }).send().await?;
+
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `POST /auth/evm/verify` — verify an EIP-191 `personal_sign` secp256k1
+    /// signature over the nonce and receive a JWT (same token shape as the
+    /// Solana `verify_challenge` path).
+    pub async fn evm_verify_challenge(
+        &self,
+        wallet: &str,
+        nonce: &str,
+        signature: &str,
+    ) -> Result<AuthTokenResponse, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+            nonce: &'a str,
+            signature: &'a str,
+        }
+
+        let url = self.url("/auth/evm/verify");
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body {
+                wallet,
+                nonce,
+                signature,
+            })
+            .send()
+            .await?;
+
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
     /// `POST /auth/session` — authenticate via a Solana transaction signature.
     ///
     /// The game-api fetches the transaction from Solana RPC and verifies the
@@ -1134,5 +1195,92 @@ mod tests {
             "expected status code in message: {msg}"
         );
         assert!(msg.contains("not found"), "expected body in message: {msg}");
+    }
+
+    // -- EVM auth flow tests (wiremock) ------------------------------------
+    // Wire-shape mirrors of game-api's /auth/evm/* handlers: the request body
+    // is {wallet[, nonce, signature]} and the response is {nonce} / {token}.
+
+    mod evm_auth {
+        use super::*;
+        use serde_json::json;
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const EVM_WALLET: &str = "0x996213ed4099707059b8b5d7489fff23dac9770d";
+
+        #[tokio::test]
+        async fn evm_request_challenge_posts_wallet_and_parses_nonce() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/auth/evm/challenge"))
+                .and(body_partial_json(json!({ "wallet": EVM_WALLET })))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(json!({ "nonce": "evm-n-1" })),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = GameApiClient::new(&server.uri()).expect("client builds");
+            let resp = client
+                .evm_request_challenge(EVM_WALLET)
+                .await
+                .expect("challenge ok");
+            assert_eq!(resp.nonce, "evm-n-1");
+        }
+
+        #[tokio::test]
+        async fn evm_verify_challenge_posts_triple_and_parses_token() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/auth/evm/verify"))
+                .and(body_partial_json(json!({
+                    "wallet": EVM_WALLET,
+                    "nonce": "evm-n-1",
+                    "signature": "0xsig",
+                })))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(json!({ "token": "jwt-evm" })),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = GameApiClient::new(&server.uri()).expect("client builds");
+            let resp = client
+                .evm_verify_challenge(EVM_WALLET, "evm-n-1", "0xsig")
+                .await
+                .expect("verify ok");
+            assert_eq!(resp.token, "jwt-evm");
+        }
+
+        #[tokio::test]
+        async fn evm_verify_non_2xx_maps_to_status_error_with_body() {
+            // A bad signature must surface as GameApiError::Status carrying the
+            // body — never a silent default (no-error-swallowing rule).
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/auth/evm/verify"))
+                .respond_with(
+                    ResponseTemplate::new(401).set_body_string(r#"{"error":"invalid_signature"}"#),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = GameApiClient::new(&server.uri()).expect("client builds");
+            let err = client
+                .evm_verify_challenge(EVM_WALLET, "n", "0xbad")
+                .await
+                .expect_err("must fail");
+            match err {
+                GameApiError::Status { status, body } => {
+                    assert_eq!(status.as_u16(), 401);
+                    assert!(body.contains("invalid_signature"), "carries body: {body}");
+                }
+                other => panic!("wrong error variant: {other:?}"),
+            }
+        }
     }
 }

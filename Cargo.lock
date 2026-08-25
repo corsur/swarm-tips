@@ -2385,6 +2385,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]

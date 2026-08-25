@@ -19,16 +19,71 @@ impl GameApiProxy {
         Ok(Self { client })
     }
 
-    /// Request an auth challenge nonce for a wallet. Currently unused at the
-    /// MCP tool layer; kept as a reusable adapter for any future pattern that
-    /// needs the challenge/sign/JWT flow.
-    #[allow(dead_code)]
+    /// Request an auth challenge nonce for a Solana wallet. Phase 1 of the
+    /// `agent_verify_wallet` two-phase flow (and the register_wallet
+    /// verify-before-bind path) — the nonce machine lives in game-api.
     pub async fn auth_challenge(
         &self,
         wallet: &str,
     ) -> Result<game_api_client::ChallengeResponse, McpServiceError> {
         self.client
             .request_challenge(wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Verify an ed25519-signed nonce for a Solana wallet (game-api
+    /// `/auth/verify`). Success proves the caller controls the wallet's
+    /// private key — the JWT is discarded; verification is the product.
+    pub async fn auth_verify(
+        &self,
+        wallet: &str,
+        nonce: &str,
+        signature: &str,
+    ) -> Result<game_api_client::AuthTokenResponse, McpServiceError> {
+        self.client
+            .verify_challenge(wallet, nonce, signature)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Request an auth challenge nonce for an EVM (`0x`) wallet
+    /// (game-api `/auth/evm/challenge`).
+    pub async fn auth_evm_challenge(
+        &self,
+        wallet: &str,
+    ) -> Result<game_api_client::ChallengeResponse, McpServiceError> {
+        self.client
+            .evm_request_challenge(wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Verify an EIP-191 `personal_sign` signature over the nonce for an EVM
+    /// wallet (game-api `/auth/evm/verify`).
+    pub async fn auth_evm_verify(
+        &self,
+        wallet: &str,
+        nonce: &str,
+        signature: &str,
+    ) -> Result<game_api_client::AuthTokenResponse, McpServiceError> {
+        self.client
+            .evm_verify_challenge(wallet, nonce, signature)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Verify wallet ownership via an on-chain Solana transaction that carries
+    /// the nonce as an SPL-Memo (game-api `/auth/session`). The strongest
+    /// verification tier: the proof cost a real on-chain action.
+    pub async fn auth_session(
+        &self,
+        wallet: &str,
+        tx_signature: &str,
+        nonce: &str,
+    ) -> Result<game_api_client::AuthTokenResponse, McpServiceError> {
+        self.client
+            .session_auth(wallet, tx_signature, nonce)
             .await
             .map_err(map_game_api_error)
     }
@@ -292,6 +347,121 @@ mod tests {
 
         let resp = proxy(&server).auth_challenge("walletA").await.expect("ok");
         assert_eq!(resp.nonce, "n-123");
+    }
+
+    #[tokio::test]
+    async fn auth_verify_posts_signed_nonce_and_parses_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/verify"))
+            .and(body_partial_json(json!({
+                "wallet": "walletA",
+                "nonce": "n-123",
+                "signature": "sigB58",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "token": "jwt-1" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server)
+            .auth_verify("walletA", "n-123", "sigB58")
+            .await
+            .expect("ok");
+        assert_eq!(resp.token, "jwt-1");
+    }
+
+    #[tokio::test]
+    async fn auth_evm_challenge_and_verify_hit_the_evm_endpoints() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/evm/challenge"))
+            .and(body_partial_json(
+                json!({ "wallet": "0x996213ed4099707059b8b5d7489fff23dac9770d" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "nonce": "evm-n" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/evm/verify"))
+            .and(body_partial_json(json!({
+                "wallet": "0x996213ed4099707059b8b5d7489fff23dac9770d",
+                "nonce": "evm-n",
+                "signature": "0xsig",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "token": "jwt-evm" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let p = proxy(&server);
+        let challenge = p
+            .auth_evm_challenge("0x996213ed4099707059b8b5d7489fff23dac9770d")
+            .await
+            .expect("challenge ok");
+        assert_eq!(challenge.nonce, "evm-n");
+        let verify = p
+            .auth_evm_verify(
+                "0x996213ed4099707059b8b5d7489fff23dac9770d",
+                "evm-n",
+                "0xsig",
+            )
+            .await
+            .expect("verify ok");
+        assert_eq!(verify.token, "jwt-evm");
+    }
+
+    #[tokio::test]
+    async fn auth_session_posts_tx_signature_and_nonce() {
+        // The wallet-verified tier: /auth/session requires the tx to carry the
+        // nonce as an SPL-Memo (verified server-side by game-api) — the proxy
+        // must thread all three fields.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/session"))
+            .and(body_partial_json(json!({
+                "wallet": "walletA",
+                "tx_signature": "5sig",
+                "nonce": "n-123",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "token": "jwt-tx" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = proxy(&server)
+            .auth_session("walletA", "5sig", "n-123")
+            .await
+            .expect("ok");
+        assert_eq!(resp.token, "jwt-tx");
+    }
+
+    #[tokio::test]
+    async fn auth_verify_non_2xx_maps_to_game_api_error() {
+        // A wrong signature must reject loudly — verification failures are the
+        // security path, not a fall-through.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/verify"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_string(r#"{"error":"invalid_signature"}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let err = proxy(&server)
+            .auth_verify("walletA", "n", "bad")
+            .await
+            .expect_err("must fail");
+        match err {
+            McpServiceError::GameApiError(msg) => {
+                assert!(msg.contains("401"), "carries status: {msg}");
+                assert!(msg.contains("invalid_signature"), "carries body: {msg}");
+            }
+            other => panic!("wrong error variant: {other:?}"),
+        }
     }
 
     #[tokio::test]

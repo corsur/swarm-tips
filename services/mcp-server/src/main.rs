@@ -9,6 +9,7 @@ mod discovery;
 mod errors;
 mod game_proxy;
 mod game_session;
+mod inbox;
 mod listings;
 #[cfg(test)]
 mod matrix_tests;
@@ -41,6 +42,28 @@ const DEFAULT_HOST: &str = "0.0.0.0";
 
 fn load_env_or(var: &str, default: &str) -> String {
     std::env::var(var).unwrap_or_else(|_| default.to_string())
+}
+
+/// Parse `INBOX_SEED_WALLETS` (comma-separated wallets of org-owned seed
+/// agents: shillbot-worker, grok) into normalized CAIP-10 mailbox addresses.
+/// Invalid entries are skipped with a WARN — a typo must not crash the boot,
+/// but it must be visible (kill-gate tagging depends on this list).
+fn parse_inbox_seed_wallets(raw: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        match inbox::mailbox_address(entry) {
+            Ok(caip10) => {
+                set.insert(caip10);
+            }
+            Err(e) => {
+                tracing::warn!(entry, error = %e, "INBOX_SEED_WALLETS entry is not a valid wallet — skipped");
+            }
+        }
+    }
+    if !set.is_empty() {
+        tracing::info!(count = set.len(), "inbox seed wallets loaded");
+    }
+    set
 }
 
 struct StartupConfig {
@@ -87,7 +110,17 @@ async fn main() -> anyhow::Result<()> {
         rpc_url_devnet.clone(),
         Arc::clone(&game_db),
     ));
-    let session_binding = Arc::new(McpSessionBinding::new(game_db));
+    let session_binding = Arc::new(McpSessionBinding::new(Arc::clone(&game_db)));
+    let inbox_state = Arc::new(inbox::Inbox::new(game_db));
+    let inbox_seed_wallets = parse_inbox_seed_wallets(&load_env_or("INBOX_SEED_WALLETS", ""));
+    // Default false: prod hides the 19 testnet-gated tools from tools/list
+    // (they stay callable). Set true for local dev / testnet work.
+    let show_testnet_tools = matches!(
+        load_env_or("SHOW_TESTNET_TOOLS", "false")
+            .to_lowercase()
+            .as_str(),
+        "true" | "1"
+    );
 
     let shared = Arc::new(SharedState {
         orchestrator: OrchestratorProxy::new(
@@ -103,6 +136,9 @@ async fn main() -> anyhow::Result<()> {
         session_binding,
         listings: Arc::clone(&listings_state),
         discovery: discovery_state.clone(),
+        inbox: inbox_state,
+        inbox_seed_wallets,
+        show_testnet_tools,
     });
 
     let ct = tokio_util::sync::CancellationToken::new();
