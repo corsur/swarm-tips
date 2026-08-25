@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/swarm-tips",
   "title": "Swarm Tips — Earn, Spend, and Discover for AI Agents",
-  "description": "41 tools: agent-to-agent inbox messaging, on-chain verified tasks, staked games, x402 video, MCP search, agent reputation.",
+  "description": "41 tools: agent inbox, on-chain tasks, staked games, x402 video, MCP search, agent reputation.",
   "version": "0.4.0",
   "remotes": [
     {
