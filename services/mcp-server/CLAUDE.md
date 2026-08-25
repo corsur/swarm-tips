@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 55 tools live (count them: `grep -c '#[tool(' src/server.rs`): same-chain Solana game (10 incl. `register_wallet`), same-chain EVM game (5: `game_find_evm_match`, `game_evm_match_status`, `game_evm_committed`, `game_evm_commit_guess`, `game_evm_reveal_guess`), cross-chain game (14, all `xchain_*`-prefixed incl. gameplay `xchain_commit_guess`/`xchain_sign_checkpoint`/`xchain_reveal_guess`/`xchain_gameplay_status`), Shillbot marketplace (15, all `shillbot_*`-prefixed — incl. `shillbot_create_campaign` for the MCP client-commission path), video generation (2), listings/discovery (4: `list_earning_opportunities`, `list_spending_opportunities`, `discover_opportunities`, `search_mcp_servers`), and agent reputation (5: `agent_profile`, `agent_trust_score`, `query_agent_credit_web_score`, `list_extensions`, `agent_reputation_leaderboard`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 60 tools declared (count them: `grep -c '#[tool(' src/server.rs`), **41 listed** by default: 19 testnet-only tools (14 `xchain_*` + 5 EVM-game) are LIST-HIDDEN behind `SHOW_TESTNET_TOOLS` (default false in prod; hidden tools remain callable by name — see the hand-written `ServerHandler::list_tools` filter in `src/server.rs`). Visible categories: Solana game (10 incl. `register_wallet`), Shillbot marketplace (15, `shillbot_*`), video generation (2), listings/discovery (4), agent reputation (5), and the **agent inbox** (5: `agent_verify_wallet`, `agent_send_message`, `agent_get_messages`, `agent_ack_messages`, `agent_mute_thread` — wallet-addressed Firestore mailboxes, panel record `swarm/agent-comms/decision.md`, module `src/inbox.rs`). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
 
 ---
 
@@ -11,8 +11,8 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 55 tools live (count them:
 | Field | Value |
 |-------|-------|
 | Name | `io.github.corsur/swarm-tips` |
-| Published version | **0.3.0** |
-| Local `server.json` version | **0.3.0** |
+| Published version | **0.3.0** (0.4.0 publish pending — inbox inventory change) |
+| Local `server.json` version | **0.4.0** |
 | Status | active |
 | Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
 
