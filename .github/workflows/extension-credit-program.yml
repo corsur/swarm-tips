@@ -19,6 +19,15 @@ on:
       - 'Anchor.toml'
       - '.github/workflows/extension-credit-program.yml'
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'Deploy target cluster (mainnet requires explicitly selecting it)'
+        required: true
+        default: devnet
+        type: choice
+        options:
+          - devnet
+          - mainnet
 
 jobs:
   test:
@@ -78,7 +87,7 @@ jobs:
         run: pkill -f solana-test-validator || true
 
   deploy-devnet:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -112,4 +121,64 @@ jobs:
             --url https://api.devnet.solana.com \
             --upgrade-authority ~/.config/solana/id.json \
             --program-id GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm \
+            target/deploy/extension_credit.so
+
+  deploy-mainnet:
+    # Manual dispatch only, target=mainnet. First-time mainnet deploy of
+    # extension-credit (enables gasless onboarding on mainnet — the advance
+    # instruction the onboard flow needs). Mirrors shillbot-program.yml's
+    # mainnet job: reads the PREMIUM RPC from GCP Secret Manager via Workload
+    # Identity and FAILS LOUD if the read/deploy fails — never falls back to
+    # the flaky public api.mainnet-beta (the a685cdf silent-failure class).
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation for the GCP secret read below
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
+
+      - name: Write deploy + program keypairs
+        run: |
+          mkdir -p ~/.config/solana target/deploy
+          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
+          echo '${{ secrets.EXTENSION_CREDIT_PROGRAM_KEYPAIR }}' > target/deploy/extension_credit-keypair.json
+
+      - name: Build program
+        run: anchor build -p extension-credit
+
+      - name: Close orphaned buffer accounts
+        run: solana program close --buffers --url mainnet-beta --keypair ~/.config/solana/id.json || true
+
+      - name: Deploy extension-credit to mainnet
+        run: |
+          MAINNET_RPC="$(gcloud secrets versions access latest --secret=solana-rpc-url-mainnet)"
+          if [ -z "$MAINNET_RPC" ]; then
+            echo "::error::could not read solana-rpc-url-mainnet from Secret Manager" >&2
+            exit 1
+          fi
+          solana program deploy \
+            --url "$MAINNET_RPC" \
+            --upgrade-authority ~/.config/solana/id.json \
+            --program-id target/deploy/extension_credit-keypair.json \
             target/deploy/extension_credit.so
