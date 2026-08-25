@@ -52,7 +52,7 @@ pub const INBOX_SESSION_HEADER: &str = "x-inbox-session";
 /// custom session header.
 const INBOX_CORS_HEADERS: [(&str, &str); 4] = [
     ("Access-Control-Allow-Origin", "*"),
-    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    ("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"),
     (
         "Access-Control-Allow-Headers",
         "content-type, x-inbox-session",
@@ -222,17 +222,160 @@ fn parse_ack_request(raw: &str) -> Result<String, String> {
 }
 
 #[derive(Debug)]
+struct TopicPublishBody {
+    topic_id: String,
+    body: String,
+    reply_to: Option<String>,
+    intent: Option<String>,
+    ref_id: Option<String>,
+}
+
+/// Shape-only validation — topic membership, body bounds, intent enum, and
+/// quota semantics live in `inbox::publish_post` so both surfaces reject
+/// identically.
+fn parse_topic_publish_request(raw: &str) -> Result<TopicPublishBody, String> {
+    let obj = parse_json_object(raw)?;
+    known_fields_only(&obj, &["topic_id", "body", "reply_to", "intent", "ref_id"])?;
+    Ok(TopicPublishBody {
+        topic_id: string_field(&obj, "topic_id", true)?.ok_or("topic_id is required")?,
+        body: string_field(&obj, "body", true)?.ok_or("body is required")?,
+        reply_to: string_field(&obj, "reply_to", false)?,
+        intent: string_field(&obj, "intent", false)?,
+        ref_id: string_field(&obj, "ref_id", false)?,
+    })
+}
+
+fn parse_topic_report_request(raw: &str) -> Result<(String, String), String> {
+    let obj = parse_json_object(raw)?;
+    known_fields_only(&obj, &["topic_id", "post_id"])?;
+    let topic_id = string_field(&obj, "topic_id", true)?.ok_or("topic_id is required")?;
+    let post_id = string_field(&obj, "post_id", true)?.ok_or("post_id is required")?;
+    Ok((topic_id, post_id))
+}
+
+fn parse_webhook_register_request(raw: &str) -> Result<String, String> {
+    let obj = parse_json_object(raw)?;
+    known_fields_only(&obj, &["url"])?;
+    string_field(&obj, "url", true)?.ok_or_else(|| "url is required".to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DeliveryResultBody {
+    delivery_id: String,
+    wallet: String,
+    delivered: bool,
+    reason: String,
+}
+
+/// The agent-webhook-delivery workflow's callback body. `outcome` and
+/// `reason` are closed enums — an unknown value is a contract drift and must
+/// reject loudly, not coerce.
+fn parse_delivery_result_request(raw: &str) -> Result<DeliveryResultBody, String> {
+    let obj = parse_json_object(raw)?;
+    known_fields_only(&obj, &["delivery_id", "wallet", "outcome", "reason"])?;
+    let delivery_id = string_field(&obj, "delivery_id", true)?.ok_or("delivery_id is required")?;
+    let wallet = string_field(&obj, "wallet", true)?.ok_or("wallet is required")?;
+    let outcome = string_field(&obj, "outcome", true)?.ok_or("outcome is required")?;
+    let delivered = match outcome.as_str() {
+        "delivered" => true,
+        "failed" => false,
+        other => {
+            return Err(format!(
+                "outcome must be 'delivered' or 'failed', got '{other}'"
+            ))
+        }
+    };
+    let reason = string_field(&obj, "reason", false)?.unwrap_or_default();
+    match reason.as_str() {
+        "" | "ssrf_rejected" | "retries_exhausted" => {}
+        other => {
+            return Err(format!(
+                "reason must be '', 'ssrf_rejected', or 'retries_exhausted', got '{other}'"
+            ))
+        }
+    }
+    Ok(DeliveryResultBody {
+        delivery_id,
+        wallet,
+        delivered,
+        reason,
+    })
+}
+
+#[derive(Debug)]
+struct TopicsQuery {
+    topic_id: String,
+    cursor: Option<String>,
+    limit: Option<u32>,
+    min_trust: Option<f64>,
+}
+
+fn parse_topics_query(q: &HashMap<String, String>) -> Result<TopicsQuery, String> {
+    const ACCEPTED: [&str; 4] = ["topic_id", "cursor", "limit", "min_trust"];
+    if let Some(bad) = q.keys().find(|k| !ACCEPTED.contains(&k.as_str())) {
+        return Err(format!(
+            "unknown parameter '{bad}' — accepted: {}",
+            ACCEPTED.join(", ")
+        ));
+    }
+    let get = |k: &str| q.get(k).cloned().filter(|s| !s.is_empty());
+    let topic_id = get("topic_id").ok_or("topic_id is required")?;
+    let limit = match get("limit") {
+        None => None,
+        Some(raw) => Some(
+            raw.parse::<u32>()
+                .map_err(|_| "limit must be an unsigned integer".to_string())?,
+        ),
+    };
+    Ok(TopicsQuery {
+        topic_id,
+        cursor: get("cursor"),
+        limit,
+        min_trust: parse_min_trust(get("min_trust"))?,
+    })
+}
+
+#[derive(Debug)]
 struct MessagesQuery {
     thread_id: Option<String>,
     cursor: Option<String>,
     limit: Option<u32>,
+    min_trust: Option<f64>,
+    include_sent: bool,
+}
+
+/// Reject-unknown parsers for the optional typed query params — a value the
+/// caller bothered to send must parse, never silently degrade to None.
+fn parse_min_trust(raw: Option<String>) -> Result<Option<f64>, String> {
+    match raw {
+        None => Ok(None),
+        Some(v) => {
+            let parsed = v
+                .parse::<f64>()
+                .map_err(|_| "min_trust must be a number".to_string())?;
+            if !parsed.is_finite() {
+                return Err("min_trust must be a finite number".to_string());
+            }
+            Ok(Some(parsed))
+        }
+    }
+}
+
+fn parse_bool_param(raw: Option<String>, name: &str) -> Result<bool, String> {
+    match raw.as_deref() {
+        None => Ok(false),
+        Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        Some(other) => Err(format!("{name} must be 'true' or 'false', got '{other}'")),
+    }
 }
 
 fn parse_messages_query(q: &HashMap<String, String>) -> Result<MessagesQuery, String> {
-    const ACCEPTED: [&str; 3] = ["thread_id", "cursor", "limit"];
+    const ACCEPTED: [&str; 5] = ["thread_id", "cursor", "limit", "min_trust", "include_sent"];
     if let Some(bad) = q.keys().find(|k| !ACCEPTED.contains(&k.as_str())) {
         return Err(format!(
-            "unknown parameter '{bad}' — accepted: thread_id, cursor, limit"
+            "unknown parameter '{bad}' — accepted: {}",
+            ACCEPTED.join(", ")
         ));
     }
     let get = |k: &str| q.get(k).cloned().filter(|s| !s.is_empty());
@@ -247,6 +390,8 @@ fn parse_messages_query(q: &HashMap<String, String>) -> Result<MessagesQuery, St
         thread_id: get("thread_id"),
         cursor: get("cursor"),
         limit,
+        min_trust: parse_min_trust(get("min_trust"))?,
+        include_sent: parse_bool_param(get("include_sent"), "include_sent")?,
     })
 }
 
@@ -373,6 +518,16 @@ async fn respond_verify(
         method = "signed_nonce",
         wallet = %caip10,
         "wallet ownership proven"
+    );
+    // CONTRACT: distinct browser/REST-mint event, IN ADDITION to the
+    // register_wallet_bound the shared bind() emits — the
+    // swarm_funnel_inbox_session_bound metric watches this token so browser
+    // mints stop inflating mcp_agent_registrations.
+    tracing::info!(
+        event = "inbox_session_bound",
+        wallet = %caip10,
+        tier = tier.as_str(),
+        "browser inbox session minted"
     );
     json_ok(serde_json::json!({
         "session_id": session_id,
@@ -530,7 +685,8 @@ async fn handle_get_messages(
             query.cursor.as_deref(),
             query.limit,
             query.thread_id.as_deref(),
-            None,
+            query.min_trust,
+            query.include_sent,
         )
         .await
     {
@@ -614,6 +770,223 @@ async fn handle_send(
     }
 }
 
+// -- Topic board twins (/internal/topics/*) --
+
+async fn handle_topic_publish(
+    state: &InboxHttpState,
+    headers: &axum::http::HeaderMap,
+    raw: &str,
+) -> axum::response::Response {
+    let me = match require_verified_mailbox(state, headers).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let body = match parse_topic_publish_request(raw) {
+        Ok(b) => b,
+        Err(e) => {
+            inbox::log_rejection(
+                "invalid_request",
+                &me,
+                state.inbox_seed_wallets.contains(&me),
+            );
+            return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
+        }
+    };
+    let seed = state.inbox_seed_wallets.contains(&me);
+    let tier = state.inbox.resolve_sender_tier(&me, true).await;
+    match state
+        .inbox
+        .publish_post(inbox::PublishPostRequest {
+            from: me.clone(),
+            topic_id: body.topic_id,
+            body: body.body,
+            reply_to: body.reply_to,
+            intent: body.intent,
+            ref_id: body.ref_id,
+            tier,
+            seed,
+        })
+        .await
+    {
+        Ok(receipt) => {
+            inbox::log_topic_post(&me, &receipt, tier, seed);
+            json_ok(inbox::post_receipt_json(&receipt))
+        }
+        Err(e) => inbox_error_response(state, e, &me),
+    }
+}
+
+/// Board reads are OPEN (no session) — same policy as /internal/listings;
+/// the page bound and fixed topic set bound the work.
+async fn handle_topic_read(
+    state: &InboxHttpState,
+    q: &HashMap<String, String>,
+) -> axum::response::Response {
+    let query = match parse_topics_query(q) {
+        Ok(v) => v,
+        Err(e) => {
+            inbox::log_rejection("invalid_request", "", false);
+            return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
+        }
+    };
+    match state
+        .inbox
+        .read_posts(
+            &query.topic_id,
+            query.cursor.as_deref(),
+            query.limit,
+            query.min_trust,
+        )
+        .await
+    {
+        Ok(page) => {
+            inbox::log_topic_read(&query.topic_id, &page);
+            json_ok(inbox::post_page_json(&page))
+        }
+        Err(e) => inbox_error_response(state, e, ""),
+    }
+}
+
+async fn handle_topic_report(
+    state: &InboxHttpState,
+    headers: &axum::http::HeaderMap,
+    raw: &str,
+) -> axum::response::Response {
+    let me = match require_verified_mailbox(state, headers).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let (topic_id, post_id) = match parse_topic_report_request(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            inbox::log_rejection(
+                "invalid_request",
+                &me,
+                state.inbox_seed_wallets.contains(&me),
+            );
+            return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
+        }
+    };
+    match state.inbox.report_post(&me, &topic_id, &post_id).await {
+        Ok(outcome) => {
+            inbox::log_topic_report(&me, &outcome);
+            json_ok(inbox::report_outcome_json(&outcome))
+        }
+        Err(e) => inbox_error_response(state, e, &me),
+    }
+}
+
+// -- Webhook twins (/internal/inbox/webhook + the workflow callback) --
+
+async fn handle_webhook_register(
+    state: &InboxHttpState,
+    headers: &axum::http::HeaderMap,
+    raw: &str,
+) -> axum::response::Response {
+    let me = match require_verified_mailbox(state, headers).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let url = match parse_webhook_register_request(raw) {
+        Ok(u) => u,
+        Err(e) => {
+            inbox::log_rejection(
+                "invalid_request",
+                &me,
+                state.inbox_seed_wallets.contains(&me),
+            );
+            return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
+        }
+    };
+    match state.inbox.register_webhook(&me, &url).await {
+        Ok(doc) => {
+            inbox::log_webhook_registered(&doc);
+            json_ok(inbox::webhook_json(&doc))
+        }
+        Err(e) => inbox_error_response(state, e, &me),
+    }
+}
+
+async fn handle_webhook_get(
+    state: &InboxHttpState,
+    headers: &axum::http::HeaderMap,
+) -> axum::response::Response {
+    let me = match require_verified_mailbox(state, headers).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    match state.inbox.webhook(&me).await {
+        Some(doc) => json_ok(inbox::webhook_json(&doc)),
+        None => json_ok(serde_json::json!({ "registered": false })),
+    }
+}
+
+async fn handle_webhook_delete(
+    state: &InboxHttpState,
+    headers: &axum::http::HeaderMap,
+) -> axum::response::Response {
+    let me = match require_verified_mailbox(state, headers).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    match state.inbox.delete_webhook(&me).await {
+        Ok(()) => {
+            tracing::info!(event = "webhook_deleted", wallet = %me, "inbox webhook deleted");
+            json_ok(serde_json::json!({ "deleted": true }))
+        }
+        Err(e) => inbox_error_response(state, e, &me),
+    }
+}
+
+/// The agent-webhook-delivery workflow's outcome callback. No session header
+/// — the gate is knowledge of the pending (wallet, delivery_id) pair, which
+/// only mcp-server, the workflow, and the owner's own endpoint ever see; a
+/// mismatch is a structured-logged 400 with no state change.
+async fn handle_delivery_result(state: &InboxHttpState, raw: &str) -> axum::response::Response {
+    let body = match parse_delivery_result_request(raw) {
+        Ok(b) => b,
+        Err(e) => {
+            inbox::log_rejection("invalid_request", "", false);
+            return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
+        }
+    };
+    let wallet = match inbox::mailbox_address(&body.wallet) {
+        Ok(w) => w,
+        Err(e) => {
+            inbox::log_rejection("invalid_wallet", &body.wallet, false);
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_wallet",
+                &format!("invalid wallet: {e}"),
+            );
+        }
+    };
+    match state
+        .inbox
+        .record_delivery_result(&wallet, &body.delivery_id, body.delivered)
+        .await
+    {
+        Ok(doc) => {
+            tracing::info!(
+                event = "webhook_delivery_result",
+                wallet = %wallet,
+                delivery_id = %body.delivery_id,
+                delivered = body.delivered,
+                reason = %body.reason,
+                consecutive_failures = doc.consecutive_failures,
+                disabled = doc.disabled_at.is_some(),
+                "webhook delivery outcome recorded"
+            );
+            json_ok(serde_json::json!({
+                "recorded": true,
+                "consecutive_failures": doc.consecutive_failures,
+                "disabled": doc.disabled_at.is_some(),
+            }))
+        }
+        Err(e) => inbox_error_response(state, e, &wallet),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Route builders (wired in main.rs next to the other /internal/* routes)
 // ---------------------------------------------------------------------------
@@ -650,6 +1023,59 @@ pub fn send_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
         async move { handle_send(&state, &headers, &body).await }
     })
     .options(|| async { preflight_response() })
+}
+
+pub fn topics_publish_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+        let state = state.clone();
+        async move { handle_topic_publish(&state, &headers, &body).await }
+    })
+    .options(|| async { preflight_response() })
+}
+
+pub fn topics_read_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    axum::routing::get(move |q: axum::extract::Query<HashMap<String, String>>| {
+        let state = state.clone();
+        async move { handle_topic_read(&state, &q).await }
+    })
+    .options(|| async { preflight_response() })
+}
+
+pub fn topics_report_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+        let state = state.clone();
+        async move { handle_topic_report(&state, &headers, &body).await }
+    })
+    .options(|| async { preflight_response() })
+}
+
+/// One route, three methods: POST registers (body {url}), GET reads,
+/// DELETE removes — all owner-scoped through the session header.
+pub fn webhook_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    let post_state = Arc::clone(&state);
+    let get_state = Arc::clone(&state);
+    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+        let state = post_state.clone();
+        async move { handle_webhook_register(&state, &headers, &body).await }
+    })
+    .get(move |headers: axum::http::HeaderMap| {
+        let state = get_state.clone();
+        async move { handle_webhook_get(&state, &headers).await }
+    })
+    .delete(move |headers: axum::http::HeaderMap| {
+        let state = state.clone();
+        async move { handle_webhook_delete(&state, &headers).await }
+    })
+    .options(|| async { preflight_response() })
+}
+
+/// The delivery workflow's outcome callback (see handle_delivery_result for
+/// the knowledge-based gate).
+pub fn delivery_result_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    axum::routing::post(move |body: String| {
+        let state = state.clone();
+        async move { handle_delivery_result(&state, &body).await }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -808,10 +1234,13 @@ mod tests {
     #[test]
     fn parse_messages_query_rejects_unknown_param_and_bad_limit() {
         let mut q = HashMap::new();
-        q.insert("min_trust".to_string(), "0.5".to_string());
+        q.insert("mintrust".to_string(), "0.5".to_string());
         let err = parse_messages_query(&q).expect_err("unknown param");
-        assert!(err.contains("unknown parameter 'min_trust'"), "{err}");
-        assert!(err.contains("thread_id, cursor, limit"), "{err}");
+        assert!(err.contains("unknown parameter 'mintrust'"), "{err}");
+        assert!(
+            err.contains("thread_id, cursor, limit, min_trust, include_sent"),
+            "{err}"
+        );
 
         let mut q = HashMap::new();
         q.insert("limit".to_string(), "lots".to_string());
@@ -819,6 +1248,145 @@ mod tests {
         let mut q = HashMap::new();
         q.insert("limit".to_string(), "-1".to_string());
         assert!(parse_messages_query(&q).is_err(), "negative limit");
+    }
+
+    #[test]
+    fn parse_messages_query_min_trust_and_include_sent() {
+        // W1 + W2 twin params: both accepted, both strictly typed.
+        let mut q = HashMap::new();
+        q.insert("min_trust".to_string(), "0.5".to_string());
+        q.insert("include_sent".to_string(), "true".to_string());
+        let parsed = parse_messages_query(&q).expect("ok");
+        assert_eq!(parsed.min_trust, Some(0.5));
+        assert!(parsed.include_sent);
+
+        // Omitted → default off; empty string → treated as absent.
+        let parsed = parse_messages_query(&HashMap::new()).expect("ok");
+        assert_eq!(parsed.min_trust, None);
+        assert!(!parsed.include_sent);
+
+        // Malformed values reject rather than silently degrade.
+        let mut q = HashMap::new();
+        q.insert("min_trust".to_string(), "high".to_string());
+        assert!(parse_messages_query(&q).is_err(), "non-numeric min_trust");
+        let mut q = HashMap::new();
+        q.insert("min_trust".to_string(), "NaN".to_string());
+        assert!(parse_messages_query(&q).is_err(), "non-finite min_trust");
+        let mut q = HashMap::new();
+        q.insert("include_sent".to_string(), "yes".to_string());
+        assert!(
+            parse_messages_query(&q).is_err(),
+            "non-boolean include_sent"
+        );
+    }
+
+    // -- topics twins request shapes ----------------------------------------
+
+    #[test]
+    fn parse_topic_publish_request_minimal_and_full() {
+        let min = parse_topic_publish_request(r#"{"topic_id":"open-challenge","body":"1v1 me"}"#)
+            .expect("ok");
+        assert_eq!(min.topic_id, "open-challenge");
+        assert!(min.reply_to.is_none() && min.intent.is_none() && min.ref_id.is_none());
+
+        let full = parse_topic_publish_request(
+            r#"{"topic_id":"subcontract","body":"handing off","reply_to":"p1","intent":"subcontract_offer","ref_id":"task:42"}"#,
+        )
+        .expect("ok");
+        assert_eq!(full.ref_id.as_deref(), Some("task:42"));
+
+        let err = parse_topic_publish_request(r#"{"topic_id":"x","body":"y","title":"z"}"#)
+            .expect_err("unknown field");
+        assert!(err.contains("unknown field 'title'"), "{err}");
+        assert!(
+            parse_topic_publish_request(r#"{"body":"y"}"#).is_err(),
+            "no topic_id"
+        );
+        assert!(
+            parse_topic_publish_request(r#"{"topic_id":"open-challenge"}"#).is_err(),
+            "no body"
+        );
+    }
+
+    #[test]
+    fn parse_topic_report_request_shape() {
+        assert_eq!(
+            parse_topic_report_request(r#"{"topic_id":"subcontract","post_id":"p1"}"#).expect("ok"),
+            ("subcontract".to_string(), "p1".to_string())
+        );
+        assert!(parse_topic_report_request(r#"{"topic_id":"subcontract"}"#).is_err());
+        assert!(
+            parse_topic_report_request(r#"{"topic_id":"t","post_id":"p","why":"spam"}"#).is_err(),
+            "unknown field"
+        );
+    }
+
+    #[test]
+    fn parse_topics_query_requires_topic_id_and_rejects_unknown() {
+        let mut q = HashMap::new();
+        q.insert("topic_id".to_string(), "open-challenge".to_string());
+        q.insert("min_trust".to_string(), "0.25".to_string());
+        let parsed = parse_topics_query(&q).expect("ok");
+        assert_eq!(parsed.topic_id, "open-challenge");
+        assert_eq!(parsed.min_trust, Some(0.25));
+
+        assert!(
+            parse_topics_query(&HashMap::new()).is_err(),
+            "topic_id required"
+        );
+        let mut q = HashMap::new();
+        q.insert("topic_id".to_string(), "t".to_string());
+        q.insert("hidden".to_string(), "true".to_string());
+        let err = parse_topics_query(&q).expect_err("unknown param");
+        assert!(err.contains("unknown parameter 'hidden'"), "{err}");
+    }
+
+    // -- webhook twins request shapes ---------------------------------------
+
+    #[test]
+    fn parse_webhook_register_request_shape() {
+        assert_eq!(
+            parse_webhook_register_request(r#"{"url":"https://a.example/h"}"#).expect("ok"),
+            "https://a.example/h"
+        );
+        assert!(parse_webhook_register_request("{}").is_err());
+        assert!(
+            parse_webhook_register_request(r#"{"url":"https://a.example/h","secret":"x"}"#)
+                .is_err(),
+            "unknown field"
+        );
+    }
+
+    #[test]
+    fn parse_delivery_result_request_closed_enums() {
+        // The workflow contract: outcome ∈ delivered|failed, reason ∈
+        // ""|ssrf_rejected|retries_exhausted. Anything else is drift.
+        let ok = parse_delivery_result_request(
+            r#"{"delivery_id":"d1","wallet":"w","outcome":"delivered","reason":""}"#,
+        )
+        .expect("ok");
+        assert!(ok.delivered);
+        let failed = parse_delivery_result_request(
+            r#"{"delivery_id":"d1","wallet":"w","outcome":"failed","reason":"retries_exhausted"}"#,
+        )
+        .expect("ok");
+        assert!(!failed.delivered);
+        assert_eq!(failed.reason, "retries_exhausted");
+        // reason may be omitted entirely.
+        assert!(parse_delivery_result_request(
+            r#"{"delivery_id":"d1","wallet":"w","outcome":"failed"}"#
+        )
+        .is_ok());
+
+        for bad in [
+            r#"{"delivery_id":"d1","wallet":"w","outcome":"maybe"}"#,
+            r#"{"delivery_id":"d1","wallet":"w","outcome":"failed","reason":"dns"}"#,
+            r#"{"wallet":"w","outcome":"failed"}"#,
+            r#"{"delivery_id":"d1","outcome":"failed"}"#,
+            r#"{"delivery_id":"d1","wallet":"w","outcome":"failed","extra":1}"#,
+        ] {
+            assert!(parse_delivery_result_request(bad).is_err(), "{bad}");
+        }
     }
 
     // -- session header guard ----------------------------------------------

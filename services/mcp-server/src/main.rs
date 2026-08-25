@@ -22,6 +22,7 @@ mod solana_reads;
 mod solana_tx;
 mod traffic_stats;
 mod web_position;
+mod workflows_trigger;
 mod xchain;
 
 use crate::discovery::DiscoveryState;
@@ -112,7 +113,22 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&game_db),
     ));
     let session_binding = Arc::new(McpSessionBinding::new(Arc::clone(&game_db)));
-    let inbox_state = Arc::new(inbox::Inbox::new(game_db));
+    // Durable webhook delivery (W4): send_message triggers the
+    // agent-webhook-delivery workflow. No project id (local dev) → None, and
+    // the trigger degrades to log-and-skip (agents fall back to polling).
+    let workflows = if cfg.gcp_project_id.is_empty() {
+        None
+    } else {
+        Some(Arc::new(workflows_trigger::WorkflowsTrigger::new(
+            cfg.gcp_project_id.clone(),
+            load_env_or("WORKFLOWS_LOCATION", "us-central1"),
+        )))
+    };
+    // This service's public base URL, handed to the delivery workflow for
+    // its POST /internal/webhooks/delivery-result callback. Empty → the
+    // workflow skips callbacks (failure counters simply don't advance).
+    let self_url = load_env_or("MCP_SELF_URL", "");
+    let inbox_state = Arc::new(inbox::Inbox::new(game_db, workflows, self_url));
     let inbox_seed_wallets = parse_inbox_seed_wallets(&load_env_or("INBOX_SEED_WALLETS", ""));
     // Default false: prod hides the 19 testnet-gated tools from tools/list
     // (they stay callable). Set true for local dev / testnet work.
@@ -449,7 +465,31 @@ fn build_router(
         )
         .route(
             "/internal/inbox/send",
-            inbox_http::send_handler(inbox_http_state),
+            inbox_http::send_handler(Arc::clone(&inbox_http_state)),
+        )
+        // W4: webhook registration/management + the agent-webhook-delivery
+        // workflow's outcome callback.
+        .route(
+            "/internal/inbox/webhook",
+            inbox_http::webhook_handler(Arc::clone(&inbox_http_state)),
+        )
+        .route(
+            "/internal/webhooks/delivery-result",
+            inbox_http::delivery_result_handler(Arc::clone(&inbox_http_state)),
+        )
+        // W3: topic-board twins (publish/report share the inbox session
+        // chokepoint; read is open like /internal/listings).
+        .route(
+            "/internal/topics/publish",
+            inbox_http::topics_publish_handler(Arc::clone(&inbox_http_state)),
+        )
+        .route(
+            "/internal/topics/read",
+            inbox_http::topics_read_handler(Arc::clone(&inbox_http_state)),
+        )
+        .route(
+            "/internal/topics/report",
+            inbox_http::topics_report_handler(inbox_http_state),
         )
         .route(
             "/internal/build-verify-tx",
