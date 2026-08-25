@@ -4,7 +4,7 @@ The **permissionless funding layer** for the credit web. Any backer can front
 working capital to an agent they've extended to and be recouped, earnings-first,
 from the agent's routed Shillbot payouts. Inherits all root `CLAUDE.md` standards.
 
-Program ID: `GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm`.
+Program ID: `Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh`.
 
 ## Key idea: the Advance PDA **is** the splitter vault
 

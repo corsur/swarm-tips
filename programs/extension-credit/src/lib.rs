@@ -24,7 +24,7 @@ pub mod transfers;
 
 use instructions::*;
 
-declare_id!("GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm");
+declare_id!("Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh");
 
 #[program]
 pub mod extension_credit {

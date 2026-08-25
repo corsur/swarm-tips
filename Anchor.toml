@@ -9,22 +9,24 @@ skip-lint = false
 coordination_game = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 shillbot = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
 extension_registry = "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j"
-extension_credit = "GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm"
+extension_credit = "Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh"
 
 [programs.devnet]
 coordination_game = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 shillbot = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
 extension_registry = "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j"
-extension_credit = "GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm"
+extension_credit = "Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh"
 
 # Mainnet-eligible programs ONLY — this list IS the mainnet gate. A program
 # absent here has no mainnet ID configured, so `anchor deploy --provider.cluster
-# mainnet` cannot deploy it. extension_credit is devnet-only (in development)
-# and deliberately excluded. See MAINNET_DEPLOY.md.
+# mainnet` cannot deploy it. extension_credit is now mainnet-eligible (enables
+# gasless agent onboarding on mainnet: the reputation-graph vouch +
+# recoupable rent advance). See MAINNET_DEPLOY.md.
 [programs.mainnet]
 coordination_game = "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 shillbot = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
 extension_registry = "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j"
+extension_credit = "Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh"
 
 [registry]
 url = "https://api.apr.dev"

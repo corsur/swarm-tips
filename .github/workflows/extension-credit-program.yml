@@ -70,7 +70,7 @@ jobs:
       - name: Start local validator
         run: |
           solana-test-validator \
-            --bpf-program GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm target/deploy/extension_credit.so \
+            --bpf-program Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh target/deploy/extension_credit.so \
             --reset --quiet &
           sleep 8
           solana config set --url localhost --keypair /home/runner/.config/solana/id.json
@@ -116,11 +116,15 @@ jobs:
         run: anchor build -p extension-credit
 
       - name: Deploy to devnet
+        # `--program-id <keypair>` (not a bare pubkey): the program moved to a new
+        # address (the original devnet key was never CI-managed and is gone), so
+        # the first deploy at the new id is a fresh account-create that the
+        # program keypair must sign. Subsequent deploys upgrade in place.
         run: |
           solana program deploy \
             --url https://api.devnet.solana.com \
             --upgrade-authority ~/.config/solana/id.json \
-            --program-id GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm \
+            --program-id target/deploy/extension_credit-keypair.json \
             target/deploy/extension_credit.so
 
   deploy-mainnet:

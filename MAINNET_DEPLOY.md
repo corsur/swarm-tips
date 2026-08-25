@@ -42,7 +42,7 @@ adds status:
 
 | Program | Program ID |
 |---|---|
-| `extension_credit` | `GJLUpJHceGekHBeZMZX4ZYX4xdkK4kFw2tH6uRuQHDqm` |
+| `extension_credit` | `Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh` |
 
 These have **no `deploy-mainnet` job**. They run on devnet for the
 extension-credit dogfood and are not mainnet-eligible. Adding a mainnet job for a
