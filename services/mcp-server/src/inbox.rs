@@ -474,6 +474,15 @@ fn is_support_mailbox(normalized: &str) -> bool {
     support_mailbox().map(|m| m == normalized).unwrap_or(false)
 }
 
+/// True when `wallet` (any accepted form) resolves to the org support
+/// mailbox — the pure core of the tier short-circuit in
+/// `resolve_sender_tier`.
+pub(crate) fn is_support_sender(wallet: &str) -> bool {
+    mailbox_address(wallet)
+        .ok()
+        .is_some_and(|w| is_support_mailbox(&w))
+}
+
 /// The responder POST body: the fields the bridge needs to auto-compose a
 /// reply. Serialized ONCE — the exact bytes are both what the HMAC signs and
 /// what the POST sends, so a re-serialize would break the signature.
@@ -1575,6 +1584,15 @@ impl Inbox {
     pub async fn resolve_sender_tier(&self, caip10: &str, session_verified: bool) -> SenderTier {
         if !session_verified {
             return SenderTier::Unproven;
+        }
+        // The org support mailbox (the telegram-bridge wallet) answers
+        // support threads and mirrors Telegram conversations — all sends
+        // from this one wallet. At the signed-nonce session tier its 5/day
+        // cap starved both paths (seen live 2026-08-26). Reputable keeps a
+        // real ceiling (500/day) instead of an unlimited bypass; the wallet
+        // is still session-proven like any other sender.
+        if is_support_sender(caip10) {
+            return SenderTier::Reputable;
         }
         let wallet_verified = self.wallet_verification(caip10).await.is_some();
         let has_reputation = if wallet_verified {
@@ -3817,6 +3835,21 @@ mod tests {
     }
 
     // -- support-responder trigger -----------------------------------------
+
+    #[test]
+    fn support_sender_gets_tier_short_circuit_in_any_form() {
+        // The resolve_sender_tier short-circuit's pure core: the support
+        // wallet resolves as the support sender in every accepted input
+        // form; other wallets and garbage never do.
+        assert!(is_support_sender(SUPPORT_WALLET));
+        assert!(is_support_sender(&format!(
+            "{}:{SUPPORT_WALLET}",
+            chain_registry::SOLANA_MAINNET_CAIP2
+        )));
+        assert!(!is_support_sender(SOL_B58));
+        assert!(!is_support_sender("not-a-wallet"));
+        assert!(!is_support_sender(""));
+    }
 
     #[test]
     fn support_wallet_matches_across_input_forms() {
