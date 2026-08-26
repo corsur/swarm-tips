@@ -120,6 +120,18 @@ const INBOX_WEBHOOKS_COLLECTION: &str = "inbox_webhooks";
 /// backoff, egress SSRF re-check, and the dead-letter callback live there.
 const WEBHOOK_DELIVERY_WORKFLOW: &str = "agent-webhook-delivery";
 
+/// The org support/bridge mailbox (base58). Messages addressed here are pinged
+/// out to the responder service so an agent asking for help gets an auto-reply.
+/// Single source: this is the one place mcp-server names the support wallet;
+/// it matches coordination-app `game_constants::org` OUR_WALLETS /
+/// INBOX_SEED_WALLETS. Overridable via the `SUPPORT_WALLET` env var (same
+/// default) so a test/staging bridge can point at a different mailbox.
+const SUPPORT_WALLET: &str = "5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu";
+
+/// The header the responder service verifies: `sha256=<hex HMAC-SHA256>` over
+/// the EXACT request body bytes, keyed by the shared `inbox-responder-secret`.
+const RESPONDER_SIGNATURE_HEADER: &str = "X-Swarm-Responder-Signature";
+
 /// The structured intents a message may carry (decision.md §6.1). Money
 /// intents reference existing unsigned-tx flows by id — the message carries a
 /// pointer, never a transaction.
@@ -434,6 +446,86 @@ pub fn caip10_address(caip10: &str) -> &str {
         Some(idx) => caip10.get(idx.saturating_add(1)..).unwrap_or(caip10),
         None => caip10,
     }
+}
+
+/// The configured support wallet (env `SUPPORT_WALLET`, else the baked
+/// `SUPPORT_WALLET` default). One source of truth for the raw identifier.
+fn support_wallet_raw() -> String {
+    std::env::var("SUPPORT_WALLET").unwrap_or_else(|_| SUPPORT_WALLET.to_string())
+}
+
+/// Normalized CAIP-10 of the support mailbox, or None if it is unparseable
+/// (a build-time constant, so None only happens if the env override is bad).
+fn support_mailbox() -> Option<String> {
+    match mailbox_address(&support_wallet_raw()) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            tracing::warn!(error = %e, "SUPPORT_WALLET is not a valid wallet — responder trigger disabled");
+            None
+        }
+    }
+}
+
+/// True if an already-normalized mailbox address IS the support mailbox. Both
+/// sides pass through `mailbox_address`, so base58 / `0x` / CAIP-10 input forms
+/// converge before this compare — a support message addressed in any form
+/// resolves identically.
+fn is_support_mailbox(normalized: &str) -> bool {
+    support_mailbox().map(|m| m == normalized).unwrap_or(false)
+}
+
+/// The responder POST body: the fields the bridge needs to auto-compose a
+/// reply. Serialized ONCE — the exact bytes are both what the HMAC signs and
+/// what the POST sends, so a re-serialize would break the signature.
+fn responder_payload_json(from_wallet: &str, thread_id: &str, msg_id: &str, body: &str) -> String {
+    serde_json::json!({
+        "from_wallet": from_wallet,
+        "thread_id": thread_id,
+        "msg_id": msg_id,
+        "body": body,
+    })
+    .to_string()
+}
+
+/// A ready-to-send support-responder POST: url + signed body + header value.
+struct ResponderPost {
+    url: String,
+    signature: String,
+    body: String,
+}
+
+/// Decide whether a send should ping the support responder, and if so with
+/// what signed request parts. Pure — every skip branch (wrong recipient,
+/// self-reply loop, unconfigured url, missing secret) and the configured
+/// happy path are unit-testable without Firestore or a network. `None` = skip.
+fn plan_support_responder(
+    to: &str,
+    from: &str,
+    thread_id: &str,
+    msg_id: &str,
+    body: &str,
+    responder_url: &str,
+    responder_secret: Option<&str>,
+) -> Option<ResponderPost> {
+    if !is_support_mailbox(to) {
+        return None;
+    }
+    // Self-reply guard: a message the support wallet itself sent must never
+    // re-trigger the responder.
+    if is_support_mailbox(from) {
+        return None;
+    }
+    if responder_url.is_empty() {
+        return None;
+    }
+    let secret = responder_secret?;
+    let payload = responder_payload_json(from, thread_id, msg_id, body);
+    let signature = webhook_signature(secret, &payload);
+    Some(ResponderPost {
+        url: responder_url.to_string(),
+        signature,
+        body: payload,
+    })
 }
 
 /// Validate the optional intent discriminator. Unknown values are rejected at
@@ -1381,6 +1473,14 @@ pub struct Inbox {
     /// This service's public base URL, passed to the delivery workflow for
     /// its delivery-result callback. Empty = callbacks skipped.
     self_url: String,
+    /// Support-responder trigger: a message landing in the SUPPORT_WALLET
+    /// mailbox fires a best-effort signed POST here so the bridge auto-replies.
+    /// Empty url = disabled (log-and-skip); the message is still delivered.
+    responder_url: String,
+    /// Shared secret (GCP Secret Manager `inbox-responder-secret`) keying the
+    /// `X-Swarm-Responder-Signature` HMAC. None = disabled — we never POST an
+    /// unsigned body the bridge would reject anyway.
+    responder_secret: Option<String>,
 }
 
 impl Inbox {
@@ -1388,12 +1488,16 @@ impl Inbox {
         db: Arc<FirestoreDb>,
         workflows: Option<Arc<crate::workflows_trigger::WorkflowsTrigger>>,
         self_url: String,
+        responder_url: String,
+        responder_secret: Option<String>,
     ) -> Self {
         Self {
             db,
             http: reqwest::Client::new(),
             workflows,
             self_url,
+            responder_url,
+            responder_secret,
         }
     }
 
@@ -1725,6 +1829,13 @@ impl Inbox {
         self.notify_recipient_webhook(&to, &req.from, &thread_id, &msg_id, now)
             .await;
 
+        // Support-responder trigger: a message TO the support mailbox (and not
+        // FROM it — no self-reply loop) pings the bridge so it auto-answers.
+        // Best-effort, same contract as the webhook trigger: WARN on failure,
+        // never fail the send (the message is already in the mailbox).
+        self.notify_support_responder(&to, &req.from, &thread_id, &msg_id, &req.body)
+            .await;
+
         let sends_remaining = u32::try_from(
             i64::from(limit)
                 .saturating_sub(sends_used)
@@ -1845,6 +1956,83 @@ impl Inbox {
                 delivery_id = %delivery_id,
                 error = %e,
                 "webhook delivery trigger failed (agent falls back to polling)"
+            ),
+        }
+    }
+
+    /// Ping the support-responder service when a message lands in the support
+    /// mailbox, so the bridge can auto-reply. A direct signed POST (not via
+    /// Workflows) — this is an immediate notify, not deferred work, mirroring
+    /// how the bridge already receives webhook deliveries directly.
+    ///
+    /// Guards: skips when `to` isn't the support mailbox, when `from` IS the
+    /// support wallet (no self-reply loop), and when url/secret aren't
+    /// configured. Every failure WARNs and returns — the message is already
+    /// delivered, so the reply is strictly best-effort.
+    async fn notify_support_responder(
+        &self,
+        to: &str,
+        from: &str,
+        thread_id: &str,
+        msg_id: &str,
+        body: &str,
+    ) {
+        let Some(post) = plan_support_responder(
+            to,
+            from,
+            thread_id,
+            msg_id,
+            body,
+            &self.responder_url,
+            self.responder_secret.as_deref(),
+        ) else {
+            // The one skip worth logging: a real support message we're set up
+            // to forward (url present) but the signing secret is missing.
+            if is_support_mailbox(to)
+                && !is_support_mailbox(from)
+                && !self.responder_url.is_empty()
+                && self.responder_secret.is_none()
+            {
+                tracing::warn!(
+                    event = "support_responder_unconfigured",
+                    "support message received but inbox-responder-secret is unset — auto-reply skipped"
+                );
+            }
+            return;
+        };
+        // post.body is THE signed byte string; the POST sends it verbatim as
+        // the request body (re-serializing would break the HMAC).
+        let result = self
+            .http
+            .post(&post.url)
+            .header(RESPONDER_SIGNATURE_HEADER, post.signature)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .timeout(std::time::Duration::from_secs(10))
+            .body(post.body)
+            .send()
+            .await;
+        match result {
+            Ok(resp) if resp.status().is_success() => tracing::info!(
+                event = "support_responder_triggered",
+                from = %from,
+                thread_id = %thread_id,
+                msg_id = %msg_id,
+                status = resp.status().as_u16(),
+                "support-responder pinged"
+            ),
+            Ok(resp) => tracing::warn!(
+                event = "support_responder_triggered",
+                from = %from,
+                msg_id = %msg_id,
+                status = resp.status().as_u16(),
+                "support-responder returned non-2xx (message still delivered)"
+            ),
+            Err(e) => tracing::warn!(
+                event = "support_responder_triggered",
+                from = %from,
+                msg_id = %msg_id,
+                error = %e,
+                "support-responder POST failed (message still delivered)"
             ),
         }
     }
@@ -3625,6 +3813,116 @@ mod tests {
         assert_eq!(
             webhook_signature("key", "The quick brown fox jumps over the lazy dog"),
             "sha256=f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+    }
+
+    // -- support-responder trigger -----------------------------------------
+
+    #[test]
+    fn support_wallet_matches_across_input_forms() {
+        // base58, full solana CAIP-10, and a whitespace-padded base58 all
+        // normalize to the one support mailbox; an unrelated wallet does not.
+        let canonical = mailbox_address(SUPPORT_WALLET).expect("support wallet is valid base58");
+        assert!(is_support_mailbox(&canonical));
+        let full_caip10 = format!("{}:{SUPPORT_WALLET}", chain_registry::SOLANA_MAINNET_CAIP2);
+        assert!(is_support_mailbox(
+            &mailbox_address(&full_caip10).expect("caip10 form parses")
+        ));
+        assert!(is_support_mailbox(
+            &mailbox_address(&format!("  {SUPPORT_WALLET}  ")).expect("padded form parses")
+        ));
+        // A different Solana wallet and an EVM wallet are NOT the support box.
+        assert!(!is_support_mailbox(
+            &mailbox_address(SOL_B58).expect("other solana wallet")
+        ));
+        assert!(!is_support_mailbox(
+            &mailbox_address(EVM_ADDR).expect("evm wallet")
+        ));
+    }
+
+    #[test]
+    fn support_self_reply_guard_recognizes_the_support_sender() {
+        // notify_support_responder skips when the SENDER is the support wallet
+        // (no self-reply loop). The guard is `is_support_mailbox(from)`, so a
+        // message FROM the support wallet — in any input form — trips it.
+        let from = mailbox_address(SUPPORT_WALLET).expect("support wallet");
+        assert!(is_support_mailbox(&from), "from == support → guard fires");
+        // A normal sender does not trip the guard.
+        let other = mailbox_address(SOL_B58).expect("other wallet");
+        assert!(!is_support_mailbox(&other));
+    }
+
+    #[test]
+    fn responder_payload_and_signature_pin_to_known_bytes() {
+        // The bridge verifies X-Swarm-Responder-Signature over the EXACT body
+        // bytes; pin both the serialized shape and the HMAC so a change to
+        // either breaks here, not in production.
+        let payload = responder_payload_json("wallet-from", "task:42", "m1", "need help");
+        assert_eq!(
+            payload,
+            r#"{"body":"need help","from_wallet":"wallet-from","msg_id":"m1","thread_id":"task:42"}"#
+        );
+        // The 4 fields the bridge needs, decodable back from the raw bytes.
+        let decoded: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(decoded["from_wallet"], "wallet-from");
+        assert_eq!(decoded["thread_id"], "task:42");
+        assert_eq!(decoded["msg_id"], "m1");
+        assert_eq!(decoded["body"], "need help");
+        // Known-answer HMAC (openssl dgst -sha256 -hmac <secret> over payload).
+        assert_eq!(
+            webhook_signature("shared-responder-secret", &payload),
+            "sha256=5bb2438d6985c8b0be589f6704d2c8d6724cbd4e5e33c1cdf89e55ee34fb083f"
+        );
+    }
+
+    #[test]
+    fn plan_support_responder_covers_every_branch() {
+        let support = mailbox_address(SUPPORT_WALLET).expect("support wallet");
+        let other = mailbox_address(SOL_B58).expect("other wallet");
+        let url = "https://bridge.example.run.app/webhook/inbox";
+        let secret = "shared-responder-secret";
+
+        // Happy path: to == support, from != support, url + secret present.
+        let post = plan_support_responder(
+            &support,
+            &other,
+            "task:42",
+            "m1",
+            "need help",
+            url,
+            Some(secret),
+        )
+        .expect("configured support message triggers");
+        assert_eq!(post.url, url);
+        assert_eq!(
+            post.body,
+            responder_payload_json(&other, "task:42", "m1", "need help"),
+            "signed body matches the wire body"
+        );
+        assert_eq!(post.signature, webhook_signature(secret, &post.body));
+
+        // Not the support mailbox → no trigger.
+        assert!(
+            plan_support_responder(&other, &other, "t", "m", "hi", url, Some(secret)).is_none(),
+            "non-support recipient never triggers"
+        );
+
+        // Self-reply loop guard: FROM the support wallet → no trigger.
+        assert!(
+            plan_support_responder(&support, &support, "t", "m", "hi", url, Some(secret)).is_none(),
+            "support→support never triggers"
+        );
+
+        // Not configured: empty url → no trigger, no error.
+        assert!(
+            plan_support_responder(&support, &other, "t", "m", "hi", "", Some(secret)).is_none(),
+            "empty url disables the trigger"
+        );
+
+        // Not configured: missing secret → no trigger (never POST unsigned).
+        assert!(
+            plan_support_responder(&support, &other, "t", "m", "hi", url, None).is_none(),
+            "missing secret disables the trigger"
         );
     }
 
