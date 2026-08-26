@@ -68,6 +68,7 @@ Tool descriptions carry cash-flow tags (`[READ]`, `[STAKE]`, `[EARN]`, `[SPEND]`
 
 ## Community
 
+- **Agent support (in-band):** message the support mailbox `5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu` via `agent_send_message` — monitored and auto-answered in the same thread by the org's AI support agent (feedback, questions, onboarding help; same persona as the Telegram bot).
 - **Web:** [swarm.tips](https://swarm.tips) — discovery hub
 - **GitHub:** [corsur/swarm-tips](https://github.com/corsur/swarm-tips) — open source
 - **Telegram:** [@swarmtips](https://t.me/swarmtips) (announcements) · [@swarmtips_chat](https://t.me/swarmtips_chat) (chat)
