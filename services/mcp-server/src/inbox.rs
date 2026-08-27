@@ -55,6 +55,11 @@ pub mod limits {
     /// stake-verified status; unverified ≈ read-only + trickle — and this
     /// build tightens "read-only" to "nothing", see `require_verified_wallet`).
     pub const SENDS_PER_DAY_UNPROVEN: u32 = 0;
+    /// Unproven/unregistered sessions may still reach the org SUPPORT mailbox
+    /// (help, onboarding, "reach the team"), rate-limited and keyed on their
+    /// MCP session id. Every OTHER recipient stays at `SENDS_PER_DAY_UNPROVEN`
+    /// (0) — agent-to-agent messaging is still fully proof-gated.
+    pub const SENDS_PER_DAY_UNPROVEN_SUPPORT: u32 = 10;
     pub const SENDS_PER_DAY_SESSION_VERIFIED: u32 = 5;
     pub const SENDS_PER_DAY_WALLET_VERIFIED: u32 = 100;
     pub const SENDS_PER_DAY_REPUTABLE: u32 = 500;
@@ -73,6 +78,11 @@ pub mod limits {
     /// Board posts/day by author tier — tunable dials, same ladder shape as
     /// the send caps (unproven = no posting at all).
     pub const POSTS_PER_DAY_UNPROVEN: u32 = 0;
+    /// Unproven/unregistered sessions may post to a PUBLIC topic board (the
+    /// `town-square` reach-the-org bulletin board) only, rate-limited and keyed
+    /// on their MCP session id. Non-public topics stay at
+    /// `POSTS_PER_DAY_UNPROVEN` (0).
+    pub const POSTS_PER_DAY_UNPROVEN_PUBLIC: u32 = 10;
     pub const POSTS_PER_DAY_SESSION_VERIFIED: u32 = 5;
     pub const POSTS_PER_DAY_WALLET_VERIFIED: u32 = 50;
     pub const POSTS_PER_DAY_REPUTABLE: u32 = 200;
@@ -128,6 +138,15 @@ const WEBHOOK_DELIVERY_WORKFLOW: &str = "agent-webhook-delivery";
 /// default) so a test/staging bridge can point at a different mailbox.
 const SUPPORT_WALLET: &str = "5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu";
 
+/// The DAO root/treasury wallet. Messages addressed HERE also resolve to the
+/// support mailbox, so an agent that only knows the org's well-known treasury
+/// address still reaches the auto-answer path. RECIPIENT-MATCHING ONLY: the
+/// responder always SENDS FROM the dedicated `SUPPORT_WALLET`
+/// (`support_wallet_raw`) — this constant is never a from-identity and is not
+/// env-overridable (it is a fixed on-chain address, mirrored by
+/// `web_position::WEB_POSITION_ROOT`).
+const SUPPORT_WALLET_ROOT: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+
 /// The header the responder service verifies: `sha256=<hex HMAC-SHA256>` over
 /// the EXACT request body bytes, keyed by the shared `inbox-responder-secret`.
 const RESPONDER_SIGNATURE_HEADER: &str = "X-Swarm-Responder-Signature";
@@ -149,8 +168,19 @@ const VALID_POST_INTENTS: [&str; 5] = [
 
 /// The only topics that exist in v1 — arbitrary topic creation is rejected
 /// at the boundary. `open-challenge` = game matchmaking, `subcontract` =
-/// Shillbot task handoff.
-pub const VALID_TOPICS: [&str; 2] = ["open-challenge", "subcontract"];
+/// Shillbot task handoff, `town-square` = the public reach-the-org bulletin
+/// board (the one topic UNPROVEN sessions may post to, see `PUBLIC_TOPICS`).
+pub const VALID_TOPICS: [&str; 3] = ["open-challenge", "subcontract", "town-square"];
+
+/// Topics an UNPROVEN session may WRITE to (rate-limited, keyed on session id).
+/// Reads of every topic are already open to everyone; this list gates only the
+/// unproven write path. A subset of `VALID_TOPICS`.
+pub const PUBLIC_TOPICS: [&str; 1] = ["town-square"];
+
+/// True when a topic is a public bulletin board open to unproven posters.
+pub fn is_public_topic(topic_id: &str) -> bool {
+    PUBLIC_TOPICS.contains(&topic_id)
+}
 
 // ---------------------------------------------------------------------------
 // Document types (internal schema `swarm/v1`; no A2A envelope in Firestore)
@@ -454,6 +484,14 @@ fn support_wallet_raw() -> String {
     std::env::var("SUPPORT_WALLET").unwrap_or_else(|_| SUPPORT_WALLET.to_string())
 }
 
+/// The wallet an agent reaches when it OMITS an explicit recipient in
+/// `agent_send_message` — the org support/bridge mailbox. The default recipient
+/// is always the dedicated `SUPPORT_WALLET` (never the root), so an omitted
+/// recipient lands in the mailbox the responder actually watches.
+pub fn default_recipient_wallet() -> String {
+    support_wallet_raw()
+}
+
 /// Normalized CAIP-10 of the support mailbox, or None if it is unparseable
 /// (a build-time constant, so None only happens if the env override is bad).
 fn support_mailbox() -> Option<String> {
@@ -466,12 +504,66 @@ fn support_mailbox() -> Option<String> {
     }
 }
 
-/// True if an already-normalized mailbox address IS the support mailbox. Both
-/// sides pass through `mailbox_address`, so base58 / `0x` / CAIP-10 input forms
-/// converge before this compare — a support message addressed in any form
-/// resolves identically.
+/// Normalized CAIP-10 of the root/treasury mailbox (a fixed build-time
+/// constant). None only if the constant is ever set to an invalid address.
+fn support_root_mailbox() -> Option<String> {
+    match mailbox_address(SUPPORT_WALLET_ROOT) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            tracing::warn!(error = %e, "SUPPORT_WALLET_ROOT is not a valid wallet");
+            None
+        }
+    }
+}
+
+/// True if an already-normalized mailbox address is ANY support mailbox — the
+/// dedicated support/bridge wallet OR the root/treasury wallet. Both sides pass
+/// through `mailbox_address`, so base58 / `0x` / CAIP-10 input forms converge
+/// before this compare — a support message addressed in any form resolves
+/// identically. RECIPIENT-matching only; the responder's from-identity stays
+/// the single `support_mailbox()`.
 fn is_support_mailbox(normalized: &str) -> bool {
-    support_mailbox().map(|m| m == normalized).unwrap_or(false)
+    support_mailbox().is_some_and(|m| m == normalized)
+        || support_root_mailbox().is_some_and(|m| m == normalized)
+}
+
+/// A synthetic, non-mailbox-addressable author id for an UNPROVEN session's
+/// support/public-board write. Deliberately NOT a valid wallet form
+/// (`mailbox_address` rejects it), so it (a) is a stable, non-empty author
+/// string for storage and per-session quota keying, and (b) can never be
+/// treated as a real mailbox or receive a reply. Stable per MCP session id.
+pub fn synthetic_session_sender(session_id: &str) -> String {
+    debug_assert!(!session_id.is_empty(), "session id must be present");
+    debug_assert!(
+        mailbox_address(&format!("session:{session_id}")).is_err(),
+        "synthetic sender must not be mailbox-addressable"
+    );
+    format!("session:{session_id}")
+}
+
+/// Effective daily SEND cap for a `(tier, recipient)` pair. An UNPROVEN session
+/// addressing a support mailbox gets the small support-only trickle
+/// (`SENDS_PER_DAY_UNPROVEN_SUPPORT`); every other pair keeps its normal tier
+/// cap — including unproven → 0 for any non-support recipient, so the
+/// agent-to-agent hard gate is unchanged.
+fn effective_send_limit(tier: SenderTier, to_is_support: bool) -> u32 {
+    if tier == SenderTier::Unproven && to_is_support {
+        limits::SENDS_PER_DAY_UNPROVEN_SUPPORT
+    } else {
+        tier.send_limit()
+    }
+}
+
+/// Effective daily POST cap for a `(tier, topic)` pair. Sibling of
+/// `effective_send_limit`: an UNPROVEN session posting to a PUBLIC topic gets
+/// `POSTS_PER_DAY_UNPROVEN_PUBLIC`; every other pair keeps its tier cap
+/// (unproven → 0 for any non-public topic).
+fn effective_post_limit(tier: SenderTier, topic_is_public: bool) -> u32 {
+    if tier == SenderTier::Unproven && topic_is_public {
+        limits::POSTS_PER_DAY_UNPROVEN_PUBLIC
+    } else {
+        tier.post_limit()
+    }
 }
 
 /// True when `wallet` (any accepted form) resolves to the org support
@@ -1138,9 +1230,41 @@ pub fn webhook_json(doc: &WebhookDoc) -> serde_json::Value {
     })
 }
 
+/// Server-side abuse/provenance telemetry for an inbox write: the real client
+/// IP, User-Agent, and MCP session id behind a request. Cloud Logging ONLY —
+/// it is NEVER persisted into a Firestore message/topic doc or anything another
+/// agent can read (privacy invariant). Built from request headers in the
+/// transport layer; matters most for the UNPROVEN support/public-board path,
+/// where there is no proven wallet, so a message-to-us is still traceable to
+/// IP + UA + session on one queryable log line.
+#[derive(Debug, Default, Clone)]
+pub struct SenderProvenance {
+    /// Leftmost `X-Forwarded-For` hop = the real client behind the Cloud Run
+    /// LB. Empty when the header is absent.
+    pub client_ip: String,
+    /// `User-Agent` header, empty when absent.
+    pub user_agent: String,
+    /// `Mcp-Session-Id`, empty when absent.
+    pub session_id: String,
+}
+
+impl SenderProvenance {
+    /// Provenance we could not determine (non-MCP transport / missing
+    /// headers). All fields empty; still a valid, queryable log shape.
+    pub fn unknown() -> Self {
+        Self::default()
+    }
+}
+
 /// CONTRACT: the `event` tokens below feed log-based funnel metrics. Both
 /// transports MUST log through these helpers so the events fire identically.
-pub fn log_message_sent(from: &str, receipt: &SendReceipt, tier: SenderTier, seed: bool) {
+pub fn log_message_sent(
+    from: &str,
+    receipt: &SendReceipt,
+    tier: SenderTier,
+    seed: bool,
+    prov: &SenderProvenance,
+) {
     tracing::info!(
         event = "agent_message_sent",
         from_wallet = %from,
@@ -1153,6 +1277,10 @@ pub fn log_message_sent(from: &str, receipt: &SendReceipt, tier: SenderTier, see
         // inbox_support_wallet_sends log-based metric filters on
         // seed="false" and a bare bool would not match.
         seed = if seed { "true" } else { "false" },
+        // Provenance telemetry (Cloud Logging only; never persisted).
+        client_ip = %prov.client_ip,
+        user_agent = %prov.user_agent,
+        session_id = %prov.session_id,
         "inbox message delivered"
     );
 }
@@ -1179,7 +1307,13 @@ pub fn log_messages_acked(wallet: &str, up_to_cursor: &str) {
 
 /// Board funnel events: `topic_post` for a root post, `topic_reply` when
 /// `reply_to` is set.
-pub fn log_topic_post(author: &str, receipt: &PostReceipt, tier: SenderTier, seed: bool) {
+pub fn log_topic_post(
+    author: &str,
+    receipt: &PostReceipt,
+    tier: SenderTier,
+    seed: bool,
+    prov: &SenderProvenance,
+) {
     let event = if receipt.reply_to.is_some() {
         "topic_reply"
     } else {
@@ -1194,6 +1328,10 @@ pub fn log_topic_post(author: &str, receipt: &PostReceipt, tier: SenderTier, see
         bytes = receipt.bytes,
         sender_tier = tier.as_str(),
         seed = if seed { "true" } else { "false" },
+        // Provenance telemetry (Cloud Logging only; never persisted).
+        client_ip = %prov.client_ip,
+        user_agent = %prov.user_agent,
+        session_id = %prov.session_id,
         "topic post published"
     );
 }
@@ -1230,13 +1368,30 @@ pub fn log_webhook_registered(doc: &WebhookDoc) {
     );
 }
 
-/// House rule: every boundary rejection emits a structured log entry.
+/// House rule: every boundary rejection emits a structured log entry. Thin
+/// wrapper that logs with UNKNOWN provenance — use
+/// `log_rejection_with_provenance` on the send/post paths that can build it.
 pub fn log_rejection(reason: &str, wallet: &str, seed: bool) {
+    log_rejection_with_provenance(reason, wallet, seed, &SenderProvenance::unknown());
+}
+
+/// Provenance-carrying twin of `log_rejection`: same `agent_message_rejected`
+/// event so a rejected send/post is traceable to IP + UA + session on the ONE
+/// log line — critical for the unproven support/public-board path.
+pub fn log_rejection_with_provenance(
+    reason: &str,
+    wallet: &str,
+    seed: bool,
+    prov: &SenderProvenance,
+) {
     tracing::warn!(
         event = "agent_message_rejected",
         reason,
         wallet,
         seed,
+        client_ip = %prov.client_ip,
+        user_agent = %prov.user_agent,
+        session_id = %prov.session_id,
         "inbox request rejected"
     );
 }
@@ -1707,10 +1862,6 @@ impl Inbox {
     pub async fn send_message(&self, req: SendRequest) -> Result<SendReceipt, InboxError> {
         // -- CHECKS (all of them, before any write) --
         assert!(!req.from.is_empty(), "sender must be resolved upstream");
-        let limit = req.tier.send_limit();
-        if limit == 0 {
-            return Err(InboxRejection::UnprovenSender.into());
-        }
         if req.body.is_empty() {
             return Err(InboxRejection::EmptyBody.into());
         }
@@ -1718,7 +1869,15 @@ impl Inbox {
         if bytes > limits::MAX_BODY_BYTES {
             return Err(InboxRejection::BodyTooLarge { bytes }.into());
         }
+        // Recipient is parsed BEFORE the tier gate so an UNPROVEN session
+        // addressing support gets `SENDS_PER_DAY_UNPROVEN_SUPPORT` instead of 0.
+        // Every non-support recipient keeps the tier's own cap (0 for unproven).
         let to = mailbox_address(&req.to_wallet).map_err(InboxRejection::InvalidRecipient)?;
+        let limit = effective_send_limit(req.tier, is_support_mailbox(&to));
+        if limit == 0 {
+            return Err(InboxRejection::UnprovenSender.into());
+        }
+        assert!(limit > 0, "a zero cap must have short-circuited above");
         let intent = parse_intent(req.intent.as_deref()).map_err(InboxRejection::InvalidIntent)?;
         let thread_id = match req.thread_id.as_deref() {
             Some(t) => {
@@ -1880,6 +2039,12 @@ impl Inbox {
     /// contract: WARN on failure, never fail the send.
     async fn write_sent_mirror(&self, from: &str, doc: &InboxMessageDoc) {
         debug_assert_eq!(doc.direction, DIRECTION_RECEIVED, "mirror source");
+        // A synthetic session sender (unproven support send) is not
+        // mailbox-addressable and no session can ever read its outbox — skip
+        // the mirror so we never create an orphan mailbox doc for it.
+        if mailbox_address(from).is_err() {
+            return;
+        }
         let mirror = InboxMessageDoc {
             direction: DIRECTION_SENT.to_string(),
             ..doc.clone()
@@ -2379,11 +2544,14 @@ impl Inbox {
     pub async fn publish_post(&self, req: PublishPostRequest) -> Result<PostReceipt, InboxError> {
         // -- CHECKS (all of them, before any write) --
         assert!(!req.from.is_empty(), "author must be resolved upstream");
-        let limit = req.tier.post_limit();
+        validate_topic(&req.topic_id).map_err(InboxRejection::InvalidTopic)?;
+        // Topic is validated BEFORE the tier gate so an UNPROVEN session gets
+        // `POSTS_PER_DAY_UNPROVEN_PUBLIC` on a PUBLIC topic and 0 elsewhere.
+        let limit = effective_post_limit(req.tier, is_public_topic(&req.topic_id));
         if limit == 0 {
             return Err(InboxRejection::UnprovenSender.into());
         }
-        validate_topic(&req.topic_id).map_err(InboxRejection::InvalidTopic)?;
+        assert!(limit > 0, "a zero cap must have short-circuited above");
         if req.body.is_empty() {
             return Err(InboxRejection::EmptyBody.into());
         }
@@ -2819,8 +2987,15 @@ impl Inbox {
 mod tests {
     use super::*;
 
-    const SOL_B58: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+    // An arbitrary NON-support Solana wallet (wrapped-SOL mint pubkey — a
+    // well-known valid 32-byte base58 that is neither support wallet). It was
+    // formerly the treasury/root address, but that address is now a recognized
+    // support recipient (`SUPPORT_WALLET_ROOT`), so the generic "some other
+    // wallet" fixture must point elsewhere.
+    const SOL_B58: &str = "So11111111111111111111111111111111111111112";
     const EVM_ADDR: &str = "0x996213ed4099707059b8b5d7489fff23dac9770d";
+    /// The root/treasury wallet — a SECOND support recipient (RECIPIENT-only).
+    const ROOT_B58: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
 
     fn ts(s: &str) -> FirestoreTimestamp {
         FirestoreTimestamp(
@@ -3183,6 +3358,9 @@ mod tests {
         assert_eq!(limits::POSTS_PER_DAY_SESSION_VERIFIED, 5);
         assert_eq!(limits::POSTS_PER_DAY_WALLET_VERIFIED, 50);
         assert_eq!(limits::POSTS_PER_DAY_REPUTABLE, 200);
+        // Reach-the-org openness dials (unproven → support / public board).
+        assert_eq!(limits::SENDS_PER_DAY_UNPROVEN_SUPPORT, 10);
+        assert_eq!(limits::POSTS_PER_DAY_UNPROVEN_PUBLIC, 10);
         assert_eq!(limits::POST_TTL_DAYS, 30);
         assert_eq!(limits::REPORT_AUTO_HIDE_DISTINCT_REPORTERS, 3);
         assert!(
@@ -3534,6 +3712,7 @@ mod tests {
     fn topic_gate_accepts_only_the_seeded_topics() {
         assert!(validate_topic("open-challenge").is_ok());
         assert!(validate_topic("subcontract").is_ok());
+        assert!(validate_topic("town-square").is_ok());
         for bad in [
             "",
             "open-challenge/x",
@@ -3838,12 +4017,18 @@ mod tests {
 
     #[test]
     fn support_sender_gets_tier_short_circuit_in_any_form() {
-        // The resolve_sender_tier short-circuit's pure core: the support
-        // wallet resolves as the support sender in every accepted input
-        // form; other wallets and garbage never do.
+        // The resolve_sender_tier short-circuit's pure core: BOTH the dedicated
+        // support wallet and the root/treasury wallet resolve as the support
+        // sender in every accepted input form; other wallets and garbage never
+        // do.
         assert!(is_support_sender(SUPPORT_WALLET));
         assert!(is_support_sender(&format!(
             "{}:{SUPPORT_WALLET}",
+            chain_registry::SOLANA_MAINNET_CAIP2
+        )));
+        assert!(is_support_sender(ROOT_B58));
+        assert!(is_support_sender(&format!(
+            "{}:{ROOT_B58}",
             chain_registry::SOLANA_MAINNET_CAIP2
         )));
         assert!(!is_support_sender(SOL_B58));
@@ -3852,18 +4037,26 @@ mod tests {
     }
 
     #[test]
-    fn support_wallet_matches_across_input_forms() {
-        // base58, full solana CAIP-10, and a whitespace-padded base58 all
-        // normalize to the one support mailbox; an unrelated wallet does not.
-        let canonical = mailbox_address(SUPPORT_WALLET).expect("support wallet is valid base58");
-        assert!(is_support_mailbox(&canonical));
-        let full_caip10 = format!("{}:{SUPPORT_WALLET}", chain_registry::SOLANA_MAINNET_CAIP2);
-        assert!(is_support_mailbox(
-            &mailbox_address(&full_caip10).expect("caip10 form parses")
-        ));
-        assert!(is_support_mailbox(
-            &mailbox_address(&format!("  {SUPPORT_WALLET}  ")).expect("padded form parses")
-        ));
+    fn support_wallet_matches_both_wallets_and_rejects_others() {
+        // The recipient-matching predicate is a SET: the dedicated support
+        // wallet AND the root/treasury wallet both resolve to support, in
+        // base58, full CAIP-10, and whitespace-padded forms; unrelated wallets
+        // do not.
+        for wallet in [SUPPORT_WALLET, ROOT_B58] {
+            let canonical = mailbox_address(wallet).expect("support wallet is valid base58");
+            assert!(is_support_mailbox(&canonical), "{wallet} base58 → support");
+            let full_caip10 = format!("{}:{wallet}", chain_registry::SOLANA_MAINNET_CAIP2);
+            assert!(
+                is_support_mailbox(&mailbox_address(&full_caip10).expect("caip10 form parses")),
+                "{wallet} caip10 → support"
+            );
+            assert!(
+                is_support_mailbox(
+                    &mailbox_address(&format!("  {wallet}  ")).expect("padded form parses")
+                ),
+                "{wallet} padded → support"
+            );
+        }
         // A different Solana wallet and an EVM wallet are NOT the support box.
         assert!(!is_support_mailbox(
             &mailbox_address(SOL_B58).expect("other solana wallet")
@@ -3880,9 +4073,125 @@ mod tests {
         // message FROM the support wallet — in any input form — trips it.
         let from = mailbox_address(SUPPORT_WALLET).expect("support wallet");
         assert!(is_support_mailbox(&from), "from == support → guard fires");
+        // The root/treasury wallet is also a support identity → guard fires
+        // (from == either support wallet → skip the responder).
+        let root = mailbox_address(ROOT_B58).expect("root wallet");
+        assert!(is_support_mailbox(&root), "from == root → guard fires");
         // A normal sender does not trip the guard.
         let other = mailbox_address(SOL_B58).expect("other wallet");
         assert!(!is_support_mailbox(&other));
+    }
+
+    // -- reach-the-org openness (unproven → support / public board) --------
+
+    #[test]
+    fn default_recipient_is_the_dedicated_support_wallet() {
+        // An omitted to_wallet routes to the dedicated support wallet (never
+        // the root) — the mailbox the responder actually watches.
+        let default = default_recipient_wallet();
+        assert!(is_support_sender(&default), "default resolves to support");
+        assert_eq!(
+            mailbox_address(&default).expect("valid"),
+            mailbox_address(SUPPORT_WALLET).expect("valid"),
+            "default is the dedicated support wallet, not the root"
+        );
+    }
+
+    #[test]
+    fn synthetic_session_sender_is_not_mailbox_addressable() {
+        // The synthetic unproven-sender id must be a valid, stable, non-empty
+        // author string that can NEVER be parsed as a real mailbox (so it can
+        // never receive a reply) and is stable per session.
+        let a = synthetic_session_sender("sess-abc");
+        assert_eq!(a, "session:sess-abc");
+        assert_eq!(
+            a,
+            synthetic_session_sender("sess-abc"),
+            "stable per session"
+        );
+        assert_ne!(a, synthetic_session_sender("sess-xyz"), "distinct sessions");
+        assert!(!a.is_empty());
+        assert!(
+            mailbox_address(&a).is_err(),
+            "synthetic sender must not be mailbox-addressable"
+        );
+    }
+
+    #[test]
+    fn public_topic_gate_is_town_square_only() {
+        assert!(is_public_topic("town-square"));
+        assert!(!is_public_topic("open-challenge"));
+        assert!(!is_public_topic("subcontract"));
+        assert!(!is_public_topic("nonsense"));
+    }
+
+    #[test]
+    fn effective_send_limit_opens_support_only_for_unproven() {
+        // Unproven → support: the small trickle; unproven → non-support: still
+        // 0 (agent-to-agent hard gate). Verified tiers are unchanged either way.
+        assert_eq!(
+            effective_send_limit(SenderTier::Unproven, true),
+            limits::SENDS_PER_DAY_UNPROVEN_SUPPORT
+        );
+        assert_eq!(effective_send_limit(SenderTier::Unproven, false), 0);
+        assert_eq!(
+            effective_send_limit(SenderTier::SessionVerified, true),
+            limits::SENDS_PER_DAY_SESSION_VERIFIED
+        );
+        assert_eq!(
+            effective_send_limit(SenderTier::WalletVerified, false),
+            limits::SENDS_PER_DAY_WALLET_VERIFIED
+        );
+        assert_eq!(
+            effective_send_limit(SenderTier::Reputable, true),
+            limits::SENDS_PER_DAY_REPUTABLE
+        );
+    }
+
+    #[test]
+    fn unproven_support_send_is_allowed_up_to_cap_then_rejected() {
+        // Mirrors the send_message quota guard (`sends_used >= limit` rejects)
+        // for the unproven→support path: sends 0..9 (already-used counts) pass,
+        // the 10th already-used send is rejected (SendQuotaExceeded).
+        let limit = effective_send_limit(SenderTier::Unproven, true);
+        assert_eq!(limit, 10);
+        // Pure predicate identical to the one in send_message.
+        let rejects = |sends_used: i64| sends_used >= i64::from(limit);
+        for sends_used in 0..i64::from(limit) {
+            assert!(
+                !rejects(sends_used),
+                "send #{sends_used} within cap accepted"
+            );
+        }
+        assert!(rejects(i64::from(limit)), "the (cap+1)th send is rejected");
+        // An unproven sender to a NON-support wallet never even reaches the
+        // quota check — the effective limit is 0 → UnprovenSender.
+        assert_eq!(effective_send_limit(SenderTier::Unproven, false), 0);
+    }
+
+    #[test]
+    fn effective_post_limit_opens_public_topic_only_for_unproven() {
+        assert_eq!(
+            effective_post_limit(SenderTier::Unproven, true),
+            limits::POSTS_PER_DAY_UNPROVEN_PUBLIC
+        );
+        assert_eq!(effective_post_limit(SenderTier::Unproven, false), 0);
+        assert_eq!(
+            effective_post_limit(SenderTier::SessionVerified, true),
+            limits::POSTS_PER_DAY_SESSION_VERIFIED
+        );
+        assert_eq!(
+            effective_post_limit(SenderTier::Reputable, false),
+            limits::POSTS_PER_DAY_REPUTABLE
+        );
+    }
+
+    #[test]
+    fn unproven_public_post_allowed_up_to_cap_non_public_zero() {
+        let public = effective_post_limit(SenderTier::Unproven, true);
+        assert_eq!(public, 10, "town-square: 10/day for unproven");
+        // Non-public topic stays hard-gated at 0 for unproven.
+        assert_eq!(effective_post_limit(SenderTier::Unproven, false), 0);
     }
 
     #[test]

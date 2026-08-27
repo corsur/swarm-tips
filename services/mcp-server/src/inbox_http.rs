@@ -764,7 +764,13 @@ async fn handle_send(
         .await
     {
         Ok(receipt) => {
-            inbox::log_message_sent(&me, &receipt, tier, seed);
+            inbox::log_message_sent(
+                &me,
+                &receipt,
+                tier,
+                seed,
+                &inbox::SenderProvenance::unknown(),
+            );
             json_ok(inbox::send_receipt_json(&receipt))
         }
         Err(e) => inbox_error_response(state, e, &me),
@@ -810,7 +816,13 @@ async fn handle_topic_publish(
         .await
     {
         Ok(receipt) => {
-            inbox::log_topic_post(&me, &receipt, tier, seed);
+            inbox::log_topic_post(
+                &me,
+                &receipt,
+                tier,
+                seed,
+                &inbox::SenderProvenance::unknown(),
+            );
             json_ok(inbox::post_receipt_json(&receipt))
         }
         Err(e) => inbox_error_response(state, e, &me),
@@ -1075,7 +1087,13 @@ async fn a2a_message_send(
         .await
     {
         Ok(receipt) => {
-            inbox::log_message_sent(me, &receipt, tier, seed);
+            inbox::log_message_sent(
+                me,
+                &receipt,
+                tier,
+                seed,
+                &inbox::SenderProvenance::unknown(),
+            );
             a2a_ok(&req.id, a2a::send_receipt_to_task(&receipt))
         }
         Err(e) => a2a_inbox_error(state, e, me, &req.id),
