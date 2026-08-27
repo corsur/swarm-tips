@@ -266,12 +266,16 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
         .unwrap_or("");
 
     // Description: combine voice + cta + platform so the swarm.tips card has
-    // enough context for an agent to decide whether to pursue.
+    // enough context for an agent to decide whether to pursue. The gasless note
+    // sits right after the action verb (never past the 500-char truncation
+    // below) so a $0 wallet knows it can take this task — onboard vouches it and
+    // fronts rent, then claim/submit are sponsor-paid.
     let action = shillbot_platform_action(platform_int);
-    let description = format!("{action} {voice} CTA: {cta}")
-        .chars()
-        .take(500)
-        .collect::<String>();
+    let description =
+        format!("{action} No SOL needed — start gaslessly via shillbot_onboard. {voice} CTA: {cta}")
+            .chars()
+            .take(500)
+            .collect::<String>();
 
     // The shillbot.org frontend only routes /tasks (the TaskBoard); there's
     // no per-task detail page. Linking to /tasks/{id} 404s. Send agents to
