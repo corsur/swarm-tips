@@ -128,6 +128,82 @@ fn native_wallet_address(bound: &str) -> &str {
     }
 }
 
+/// Mint an ownership-challenge nonce via the SAME game-api nonce machine
+/// `agent_verify_wallet` phase 1 uses — routed to the Solana (`/auth/challenge`)
+/// or EVM (`/auth/evm/challenge`) endpoint by native-address shape. The nonce
+/// is persisted server-side, so one minted here validates later through the
+/// identical `agent_verify_wallet {nonce, signature}` phase-2 path. Free
+/// function (not a method) so the routing is unit-testable against a mock
+/// game-api, mirroring `inbox_http::issue_challenge`.
+async fn mint_challenge_nonce(
+    game_api: &GameApiProxy,
+    native: &str,
+) -> Result<String, McpServiceError> {
+    debug_assert!(!native.is_empty(), "native wallet address is non-empty");
+    let resp = if native.starts_with("0x") {
+        game_api.auth_evm_challenge(native).await?
+    } else {
+        game_api.auth_challenge(native).await?
+    };
+    debug_assert!(!resp.nonce.is_empty(), "game-api issued a non-empty nonce");
+    Ok(resp.nonce)
+}
+
+/// The `register_wallet` inbox guidance: how to turn a bare registration into
+/// inbox access (send-FROM / receive-AT your own address). `solana` gates the
+/// SPL-Memo higher-tier clause, which only exists on the Solana verify path;
+/// the EVM path has signature verification only.
+fn inbox_next_step_text(solana: bool) -> String {
+    let memo_clause = if solana {
+        " (or land a tx carrying it as an SPL-Memo for the higher tier)"
+    } else {
+        ""
+    };
+    format!(
+        "To send from and receive messages at this address, prove ownership: sign \
+         verify_nonce with your wallet key and call agent_verify_wallet with \
+         {{nonce, signature}}{memo_clause}. register_wallet alone is not proof. You can \
+         message the Swarm Tips team right now without verifying — agent_send_message \
+         with no to_wallet."
+    )
+}
+
+/// Assemble the `register_wallet` JSON for a Solana registration. Pure, so the
+/// response shape — `verify_nonce`, `inbox_next_step`, and the pre-existing
+/// balance==0 gasless-onboard `next_step` hint — is unit-testable without a
+/// live game-api or Solana RPC. `verify_nonce` is omitted when the best-effort
+/// mint failed (registration still succeeds).
+fn solana_registration_response(
+    wallet: &str,
+    balance: u64,
+    verify_nonce: Option<&str>,
+) -> serde_json::Value {
+    debug_assert!(!wallet.is_empty(), "wallet is non-empty");
+    let mut response = serde_json::json!({
+        "wallet": wallet,
+        "balance_lamports": balance,
+        "status": "registered",
+        "inbox_next_step": inbox_next_step_text(true),
+    });
+    if let Some(nonce) = verify_nonce {
+        debug_assert!(!nonce.is_empty(), "verify_nonce is non-empty when present");
+        response["verify_nonce"] = serde_json::json!(nonce);
+    }
+    // Self-discovery for a broke agent: a 0-SOL wallet can't pay the fee on its
+    // first Shillbot claim, so point it at the gasless bootstrap instead of
+    // letting it hit an opaque "AccountNotFound" at submit time. Kept distinct
+    // from `inbox_next_step` so BOTH hints are conveyed.
+    if balance == 0 {
+        response["next_step"] = serde_json::json!(
+            "Your wallet holds 0 SOL. To earn on Shillbot with no funds, call \
+             shillbot_onboard first — it vouches you into the reputation graph and \
+             fronts your on-chain rent, after which shillbot_claim_task and \
+             shillbot_submit_work are gasless (sponsor-paid)."
+        );
+    }
+    response
+}
+
 /// The tournament a game tool defaults to when the caller omits one.
 ///
 /// Reads `chain_registry::active_tournament_id` — never a literal. This was
@@ -2072,7 +2148,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "register_wallet",
-        description = "[STATE] Register your wallet to use any swarm.tips tool that touches funds. Provide a Solana base58 public key (32 bytes) for same-chain Coordination Game + Shillbot tools, OR an EVM 0x address (40 hex) for the cross-chain game leg (testnet: Base Sepolia) — call xchain_supported_chains first to choose. Non-custodial: your private key never leaves your device. Solana returns address + SOL balance; EVM returns your CAIP-10 account (the server holds no EVM RPC client, so check your own balance). One Solana registration covers every same-chain product (game_find_match, game_commit_guess, shillbot_claim_task, ...). The Mcp-Session-Id → wallet binding is persisted to Firestore so a pod restart doesn't strand the agent mid-game."
+        description = "[STATE] Register your wallet to use any swarm.tips tool that touches funds. Provide a Solana base58 public key (32 bytes) for same-chain Coordination Game + Shillbot tools, OR an EVM 0x address (40 hex) for the cross-chain game leg (testnet: Base Sepolia) — call xchain_supported_chains first to choose. Non-custodial: your private key never leaves your device. Solana returns address + SOL balance; EVM returns your CAIP-10 account (the server holds no EVM RPC client, so check your own balance). One Solana registration covers every same-chain product (game_find_match, game_commit_guess, shillbot_claim_task, ...). The Mcp-Session-Id → wallet binding is persisted to Firestore so a pod restart doesn't strand the agent mid-game. The response hands back a `verify_nonce`: inbox use (send-FROM / receive-AT your address) requires agent_verify_wallet — registration alone is NOT proof — while reaching the Swarm Tips team works unverified (agent_send_message with no to_wallet)."
     )]
     async fn register_wallet(
         &self,
@@ -2125,9 +2201,18 @@ impl SwarmTipsMcp {
                 self.finalize_wallet_verification(Some(&parts), &account_id, method, &proof_sig)
                     .await?;
             }
-            return Ok(text_result(&crate::xchain::evm_registration_response(
-                &account_id,
-            )));
+            // Same additive surface as the Solana path: a convenience
+            // verify_nonce (best-effort) plus the inbox-oriented next step. The
+            // EVM verify path is signature-only (no SPL-Memo tier).
+            let mut response = crate::xchain::evm_registration_response(&account_id);
+            if let Some(nonce) = self
+                .best_effort_verify_nonce(native_wallet_address(&account_id))
+                .await
+            {
+                response["verify_nonce"] = serde_json::json!(nonce);
+            }
+            response["inbox_next_step"] = serde_json::json!(inbox_next_step_text(false));
+            return Ok(text_result(&response));
         }
 
         let (wallet, balance) = self
@@ -2160,22 +2245,12 @@ impl SwarmTipsMcp {
                 .await?;
         }
 
-        let mut response = serde_json::json!({
-            "wallet": wallet,
-            "balance_lamports": balance,
-            "status": "registered",
-        });
-        // Self-discovery for a broke agent: a 0-SOL wallet can't pay the fee on
-        // its first Shillbot claim, so point it at the gasless bootstrap instead
-        // of letting it hit an opaque "AccountNotFound" at submit time.
-        if balance == 0 {
-            response["next_step"] = serde_json::json!(
-                "Your wallet holds 0 SOL. To earn on Shillbot with no funds, call \
-                 shillbot_onboard first — it vouches you into the reputation graph and \
-                 fronts your on-chain rent, after which shillbot_claim_task and \
-                 shillbot_submit_work are gasless (sponsor-paid)."
-            );
-        }
+        // Hand the agent a challenge nonce up front so verifying (required for
+        // inbox send-from / receive-at their address) is a single follow-up
+        // call. Best-effort: a mint failure omits `verify_nonce` but never
+        // fails registration (the non-custodial bind above already succeeded).
+        let verify_nonce = self.best_effort_verify_nonce(&wallet).await;
+        let response = solana_registration_response(&wallet, balance, verify_nonce.as_deref());
         Ok(text_result(&response))
     }
 
@@ -3620,19 +3695,37 @@ impl SwarmTipsMcp {
     /// nonce machine (Solana or EVM route by wallet shape).
     async fn issue_verify_challenge(&self, bound: &str) -> Result<CallToolResult, McpError> {
         let native = native_wallet_address(bound);
-        debug_assert!(!native.is_empty(), "bound wallet resolves to an address");
-        let resp = if native.starts_with("0x") {
-            self.state.game_api.auth_evm_challenge(native).await
-        } else {
-            self.state.game_api.auth_challenge(native).await
-        }
-        .map_err(|e| McpError::internal_error(format!("challenge issuance failed: {e}"), None))?;
+        let nonce = mint_challenge_nonce(&self.state.game_api, native)
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("challenge issuance failed: {e}"), None)
+            })?;
         Ok(text_result(&serde_json::json!({
             "phase": "challenge",
             "wallet": native,
-            "nonce": resp.nonce,
+            "nonce": nonce,
             "next": "EITHER sign this nonce with your wallet key and call agent_verify_wallet {nonce, signature} (base58 ed25519 for Solana, 0x EIP-191 personal_sign for EVM), OR (Solana, stronger tier) land a transaction carrying the nonce as an SPL-Memo and call agent_verify_wallet {nonce, tx_signature}.",
         })))
+    }
+
+    /// Best-effort convenience nonce for the `register_wallet` response. Reuses
+    /// the SAME `mint_challenge_nonce` path `agent_verify_wallet` phase 1 uses,
+    /// so a nonce handed back at registration validates later through
+    /// `agent_verify_wallet {nonce, signature}` phase 2. Issuance failure is
+    /// NON-fatal — registration must still succeed — so we WARN-log and return
+    /// `None`, and the `verify_nonce` field is simply omitted.
+    async fn best_effort_verify_nonce(&self, native: &str) -> Option<String> {
+        match mint_challenge_nonce(&self.state.game_api, native).await {
+            Ok(nonce) => Some(nonce),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    wallet = %native,
+                    "register_wallet verify nonce issuance failed; omitting verify_nonce"
+                );
+                None
+            }
+        }
     }
 
     /// Verify an ownership proof for `wallet` via game-api's auth endpoints.
@@ -4848,6 +4941,149 @@ mod tests {
             serde_json::from_str(r#"{"pubkey":"CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY"}"#)
                 .expect("legacy args deserialize");
         assert!(args.nonce.is_none() && args.signature.is_none() && args.tx_signature.is_none());
+    }
+
+    // -- register_wallet: verify_nonce + inbox next-step surface ------------
+
+    #[test]
+    fn inbox_next_step_text_solana_names_verify_flow_and_memo_tier() {
+        let text = inbox_next_step_text(true);
+        // The agent must learn: verify is the gate, register alone is not proof,
+        // signing the nonce is the free path, SPL-Memo is the higher tier, and
+        // reaching the team needs no verification.
+        assert!(
+            text.contains("agent_verify_wallet"),
+            "names the verify tool"
+        );
+        assert!(text.contains("verify_nonce"), "names the nonce field");
+        assert!(
+            text.contains("register_wallet alone is not proof"),
+            "states registration is not proof"
+        );
+        assert!(
+            text.contains("SPL-Memo"),
+            "mentions the higher-tier memo path"
+        );
+        assert!(
+            text.contains("agent_send_message"),
+            "tells the agent it can reach the team unverified"
+        );
+    }
+
+    #[test]
+    fn inbox_next_step_text_evm_omits_spl_memo_tier() {
+        // The EVM verify path is signature-only — there is no SPL-Memo tier, so
+        // the hint must not advertise one.
+        let text = inbox_next_step_text(false);
+        assert!(
+            text.contains("agent_verify_wallet"),
+            "still names the verify tool"
+        );
+        assert!(!text.contains("SPL-Memo"), "no memo tier on the EVM path");
+    }
+
+    #[test]
+    fn solana_registration_response_carries_verify_nonce_and_inbox_step() {
+        let resp = solana_registration_response("WalletBase58", 1_000_000, Some("nonce-xyz"));
+        assert_eq!(
+            resp["verify_nonce"], "nonce-xyz",
+            "verify_nonce is surfaced"
+        );
+        assert!(
+            !resp["verify_nonce"].as_str().unwrap_or("").is_empty(),
+            "verify_nonce is non-empty"
+        );
+        let inbox = resp["inbox_next_step"].as_str().unwrap_or("");
+        assert!(
+            inbox.contains("agent_verify_wallet") && inbox.contains("verify_nonce"),
+            "inbox_next_step guides toward verification, got: {inbox}"
+        );
+        // A funded wallet gets no gasless-onboard hint.
+        assert!(
+            resp.get("next_step").is_none(),
+            "funded wallet skips onboard hint"
+        );
+    }
+
+    #[test]
+    fn solana_registration_response_zero_balance_keeps_gasless_onboard_hint() {
+        // The verify_nonce / inbox surface must COEXIST with the pre-existing
+        // balance==0 gasless-onboard hint — neither clobbers the other.
+        let resp = solana_registration_response("WalletBase58", 0, Some("nonce-xyz"));
+        let onboard = resp["next_step"].as_str().unwrap_or("");
+        assert!(
+            onboard.contains("shillbot_onboard") && onboard.contains("0 SOL"),
+            "balance==0 gasless onboard hint still present, got: {onboard}"
+        );
+        assert_eq!(resp["verify_nonce"], "nonce-xyz", "inbox nonce coexists");
+        assert!(
+            resp["inbox_next_step"].is_string(),
+            "inbox next-step coexists with the onboard hint"
+        );
+    }
+
+    #[test]
+    fn solana_registration_response_omits_verify_nonce_when_mint_failed() {
+        // A best-effort mint failure must not fail registration nor emit an
+        // empty verify_nonce — the field is simply absent.
+        let resp = solana_registration_response("WalletBase58", 5, None);
+        assert!(
+            resp.get("verify_nonce").is_none(),
+            "absent when mint failed"
+        );
+        assert_eq!(resp["status"], "registered", "registration still succeeds");
+    }
+
+    #[tokio::test]
+    async fn mint_challenge_nonce_routes_solana_to_the_verify_phase1_endpoint() {
+        // Proves register_wallet's convenience nonce is minted through the SAME
+        // game-api endpoint agent_verify_wallet phase 1 uses (/auth/challenge),
+        // so the returned nonce validates on the later phase-2 verify call.
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/challenge"))
+            .and(body_partial_json(
+                serde_json::json!({ "wallet": "WalletBase58" }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "nonce": "mint-nonce-1" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let game_api = GameApiProxy::new(server.uri()).expect("proxy builds against mock uri");
+        let nonce = mint_challenge_nonce(&game_api, "WalletBase58")
+            .await
+            .expect("solana nonce mints");
+        assert_eq!(nonce, "mint-nonce-1");
+    }
+
+    #[tokio::test]
+    async fn mint_challenge_nonce_routes_evm_to_the_evm_challenge_endpoint() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/evm/challenge"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "nonce": "evm-mint-1" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let game_api = GameApiProxy::new(server.uri()).expect("proxy builds against mock uri");
+        let nonce = mint_challenge_nonce(&game_api, "0x996213ed4099707059b8b5d7489fff23dac9770d")
+            .await
+            .expect("evm nonce mints");
+        assert_eq!(nonce, "evm-mint-1");
     }
 
     #[test]
