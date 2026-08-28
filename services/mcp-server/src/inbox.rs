@@ -1368,32 +1368,93 @@ pub fn log_webhook_registered(doc: &WebhookDoc) {
     );
 }
 
-/// House rule: every boundary rejection emits a structured log entry. Thin
-/// wrapper that logs with UNKNOWN provenance — use
-/// `log_rejection_with_provenance` on the send/post paths that can build it.
-pub fn log_rejection(reason: &str, wallet: &str, seed: bool) {
-    log_rejection_with_provenance(reason, wallet, seed, &SenderProvenance::unknown());
+/// The structured fields of one `agent_message_rejected` log line. Split out as
+/// a pure seam so the field SELECTION — a SEND reject carries `to`, a POST
+/// reject carries `topic_id`, a READ / session-gate reject carries neither — is
+/// unit-testable without standing up a tracing subscriber. `to` / `topic_id`
+/// are `None` (and omitted from the emitted line, never logged empty) whenever
+/// the reject site has no recipient; provenance is always present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectionLogFields {
+    pub reason: String,
+    /// Intended recipient for a SEND reject (resolved/normalized `to_wallet`,
+    /// or the raw arg when resolution itself failed). `None` for posts/reads.
+    pub to: Option<String>,
+    /// Target board for a POST reject. `None` for sends/reads.
+    pub topic_id: Option<String>,
+    pub client_ip: String,
+    pub user_agent: String,
+    pub session_id: String,
 }
 
-/// Provenance-carrying twin of `log_rejection`: same `agent_message_rejected`
-/// event so a rejected send/post is traceable to IP + UA + session on the ONE
-/// log line — critical for the unproven support/public-board path.
-pub fn log_rejection_with_provenance(
+impl RejectionLogFields {
+    pub fn build(
+        reason: &str,
+        recipient: Option<&str>,
+        topic: Option<&str>,
+        prov: &SenderProvenance,
+    ) -> Self {
+        Self {
+            reason: reason.to_string(),
+            to: recipient.map(str::to_string),
+            topic_id: topic.map(str::to_string),
+            client_ip: prov.client_ip.clone(),
+            user_agent: prov.user_agent.clone(),
+            session_id: prov.session_id.clone(),
+        }
+    }
+}
+
+/// House rule: every inbox/topic boundary rejection emits ONE structured
+/// `agent_message_rejected` line. THE single sink — every reject site on both
+/// transports logs through here, so none can silently drop the intended
+/// recipient or the caller provenance. `recipient` = the resolved/normalized
+/// `to_wallet` for a send (or the raw arg when resolution failed); `topic` =
+/// the target board for a post; both `None` on reads / session gates, where the
+/// caller has no recipient. `prov` carries client IP + User-Agent + session id
+/// (Cloud Logging only, never persisted).
+pub fn log_rejection(
     reason: &str,
-    wallet: &str,
-    seed: bool,
+    recipient: Option<&str>,
+    topic: Option<&str>,
     prov: &SenderProvenance,
 ) {
-    tracing::warn!(
-        event = "agent_message_rejected",
-        reason,
-        wallet,
-        seed,
-        client_ip = %prov.client_ip,
-        user_agent = %prov.user_agent,
-        session_id = %prov.session_id,
-        "inbox request rejected"
-    );
+    RejectionLogFields::build(reason, recipient, topic, prov).emit();
+}
+
+impl RejectionLogFields {
+    /// Emit the line. Matches on recipient/topic so an absent field is truly
+    /// omitted from the log line rather than recorded as an empty value.
+    fn emit(&self) {
+        match (self.to.as_deref(), self.topic_id.as_deref()) {
+            (Some(to), _) => tracing::warn!(
+                event = "agent_message_rejected",
+                reason = %self.reason,
+                to,
+                client_ip = %self.client_ip,
+                user_agent = %self.user_agent,
+                session_id = %self.session_id,
+                "inbox request rejected"
+            ),
+            (None, Some(topic_id)) => tracing::warn!(
+                event = "agent_message_rejected",
+                reason = %self.reason,
+                topic_id,
+                client_ip = %self.client_ip,
+                user_agent = %self.user_agent,
+                session_id = %self.session_id,
+                "inbox request rejected"
+            ),
+            (None, None) => tracing::warn!(
+                event = "agent_message_rejected",
+                reason = %self.reason,
+                client_ip = %self.client_ip,
+                user_agent = %self.user_agent,
+                session_id = %self.session_id,
+                "inbox request rejected"
+            ),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3511,6 +3572,61 @@ mod tests {
             InboxRejection::DeliveryIdMismatch.reason(),
             "delivery_id_mismatch"
         );
+    }
+
+    fn prov_fixture() -> SenderProvenance {
+        SenderProvenance {
+            client_ip: "203.0.113.7".to_string(),
+            user_agent: "swarm-agent/1.0".to_string(),
+            session_id: "sess-abc".to_string(),
+        }
+    }
+
+    #[test]
+    fn send_reject_log_carries_recipient_and_provenance() {
+        // A bounced send must record WHICH address it tried to reach AND from
+        // whom (IP + UA + session), all on the one `agent_message_rejected`
+        // line — the whole point of Change A.
+        let f = RejectionLogFields::build(
+            "send_quota_exceeded",
+            Some("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY"),
+            None,
+            &prov_fixture(),
+        );
+        assert_eq!(f.reason, "send_quota_exceeded");
+        assert_eq!(
+            f.to.as_deref(),
+            Some("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY")
+        );
+        assert_eq!(f.topic_id, None);
+        assert_eq!(f.client_ip, "203.0.113.7");
+        assert_eq!(f.user_agent, "swarm-agent/1.0");
+        assert_eq!(f.session_id, "sess-abc");
+    }
+
+    #[test]
+    fn post_reject_log_carries_topic_not_recipient() {
+        let f = RejectionLogFields::build(
+            "post_quota_exceeded",
+            None,
+            Some("open-challenge"),
+            &prov_fixture(),
+        );
+        assert_eq!(f.to, None);
+        assert_eq!(f.topic_id.as_deref(), Some("open-challenge"));
+        assert_eq!(f.session_id, "sess-abc");
+    }
+
+    #[test]
+    fn read_reject_log_omits_recipient_but_keeps_provenance() {
+        // Reads (get/ack/mute/report/webhook) have no recipient — provenance
+        // only, and `to` must be omitted, never logged empty.
+        let f = RejectionLogFields::build("unproven_sender", None, None, &prov_fixture());
+        assert_eq!(f.to, None);
+        assert_eq!(f.topic_id, None);
+        assert_eq!(f.client_ip, "203.0.113.7");
+        assert_eq!(f.user_agent, "swarm-agent/1.0");
+        assert_eq!(f.session_id, "sess-abc");
     }
 
     // -- W2: merge-cursor property (no skip / no dup) -----------------------
