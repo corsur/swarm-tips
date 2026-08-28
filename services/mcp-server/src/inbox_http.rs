@@ -405,6 +405,38 @@ fn session_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The client-IP-chain header the Cloud Run load balancer injects; the LEFTMOST
+/// hop is the real client (later hops are proxies).
+const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
+
+/// The real client IP behind the LB: the first (leftmost) `X-Forwarded-For`
+/// hop, or empty when absent. Provenance telemetry only (Cloud Logging).
+fn client_ip_from_headers(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get(X_FORWARDED_FOR_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|raw| raw.split(',').next().unwrap_or("").trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+}
+
+/// Build the REST-twin provenance (client IP + User-Agent + inbox session id)
+/// for an inbox write from the request headers. The twin of
+/// `server::provenance_from_parts`, sourcing the session id from
+/// `X-Inbox-Session` instead of `Mcp-Session-Id`. This is the follow-up flagged
+/// in PR #6 — replaces the `SenderProvenance::unknown()` the twins used to log.
+fn provenance_from_headers(headers: &axum::http::HeaderMap) -> inbox::SenderProvenance {
+    inbox::SenderProvenance {
+        client_ip: client_ip_from_headers(headers),
+        user_agent: headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string(),
+        session_id: session_id_from_headers(headers).unwrap_or_default(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Auth: session mint (twin of agent_verify_wallet) + per-request guard
 // ---------------------------------------------------------------------------
@@ -592,13 +624,14 @@ async fn require_verified_mailbox(
     state: &InboxHttpState,
     headers: &axum::http::HeaderMap,
 ) -> Result<String, axum::response::Response> {
+    let prov = provenance_from_headers(headers);
     let Some(session_id) = session_id_from_headers(headers) else {
-        inbox::log_rejection("missing_session", "", false);
+        inbox::log_rejection("missing_session", None, None, &prov);
         return Err(missing_session_response());
     };
     match state.session_binding.resolve_verified(&session_id).await {
         Some(wallet) => inbox::mailbox_address(&wallet).map_err(|e| {
-            inbox::log_rejection("invalid_wallet", &wallet, false);
+            inbox::log_rejection("invalid_wallet", None, None, &prov);
             json_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_wallet",
@@ -606,18 +639,9 @@ async fn require_verified_mailbox(
             )
         }),
         None => {
-            // Log with whatever wallet the session is bound to (may be none)
-            // — the rejection itself is the funnel signal.
-            let bound = state
-                .session_binding
-                .resolve(&session_id)
-                .await
-                .unwrap_or_default();
-            inbox::log_rejection(
-                "unproven_sender",
-                &bound,
-                state.inbox_seed_wallets.contains(&bound),
-            );
+            // Read/session gate: no recipient — the caller identity rides the
+            // provenance (session id + IP + UA).
+            inbox::log_rejection("unproven_sender", None, None, &prov);
             Err(json_error(
                 StatusCode::UNAUTHORIZED,
                 "unproven_sender",
@@ -628,23 +652,22 @@ async fn require_verified_mailbox(
 }
 
 /// Map inbox op errors exactly like `map_inbox_error`: rejections
-/// log-and-400 with the stable reason token, internals log-and-500.
+/// log-and-400 with the stable reason token (recipient/topic + provenance on
+/// the funnel line), internals log-and-500. `recipient`/`topic` come from the
+/// calling handler where the send `to_wallet` / post topic is in scope.
 fn inbox_error_response(
-    state: &InboxHttpState,
     e: inbox::InboxError,
-    wallet: &str,
+    recipient: Option<&str>,
+    topic: Option<&str>,
+    prov: &inbox::SenderProvenance,
 ) -> axum::response::Response {
     match e {
         inbox::InboxError::Rejected(r) => {
-            inbox::log_rejection(
-                r.reason(),
-                wallet,
-                state.inbox_seed_wallets.contains(wallet),
-            );
+            inbox::log_rejection(r.reason(), recipient, topic, prov);
             json_error(StatusCode::BAD_REQUEST, r.reason(), &r.message())
         }
         inbox::InboxError::Internal(err) => {
-            tracing::error!(wallet, error = %err, "inbox operation failed");
+            tracing::error!(session_id = %prov.session_id, error = %err, "inbox operation failed");
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
@@ -664,6 +687,7 @@ async fn handle_get_messages(
     headers: &axum::http::HeaderMap,
     q: &HashMap<String, String>,
 ) -> axum::response::Response {
+    let prov = provenance_from_headers(headers);
     let me = match require_verified_mailbox(state, headers).await {
         Ok(m) => m,
         Err(resp) => return resp,
@@ -671,11 +695,7 @@ async fn handle_get_messages(
     let query = match parse_messages_query(q) {
         Ok(v) => v,
         Err(e) => {
-            inbox::log_rejection(
-                "invalid_request",
-                &me,
-                state.inbox_seed_wallets.contains(&me),
-            );
+            inbox::log_rejection("invalid_request", None, None, &prov);
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
@@ -695,7 +715,7 @@ async fn handle_get_messages(
             inbox::log_messages_read(&me, &page);
             json_ok(inbox::read_page_json(&page))
         }
-        Err(e) => inbox_error_response(state, e, &me),
+        Err(e) => inbox_error_response(e, None, None, &prov),
     }
 }
 
@@ -704,6 +724,7 @@ async fn handle_ack(
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
+    let prov = provenance_from_headers(headers);
     let me = match require_verified_mailbox(state, headers).await {
         Ok(m) => m,
         Err(resp) => return resp,
@@ -711,11 +732,7 @@ async fn handle_ack(
     let up_to_cursor = match parse_ack_request(raw) {
         Ok(c) => c,
         Err(e) => {
-            inbox::log_rejection(
-                "invalid_request",
-                &me,
-                state.inbox_seed_wallets.contains(&me),
-            );
+            inbox::log_rejection("invalid_request", None, None, &prov);
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
@@ -724,7 +741,7 @@ async fn handle_ack(
             inbox::log_messages_acked(&me, &up_to_cursor);
             json_ok(inbox::ack_json(&watermark))
         }
-        Err(e) => inbox_error_response(state, e, &me),
+        Err(e) => inbox_error_response(e, None, None, &prov),
     }
 }
 
@@ -733,6 +750,7 @@ async fn handle_send(
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
+    let prov = provenance_from_headers(headers);
     let me = match require_verified_mailbox(state, headers).await {
         Ok(m) => m,
         Err(resp) => return resp,
@@ -740,14 +758,11 @@ async fn handle_send(
     let body = match parse_send_request(raw) {
         Ok(b) => b,
         Err(e) => {
-            inbox::log_rejection(
-                "invalid_request",
-                &me,
-                state.inbox_seed_wallets.contains(&me),
-            );
+            inbox::log_rejection("invalid_request", None, None, &prov);
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
+    let to_wallet = body.to_wallet.clone();
     let seed = state.inbox_seed_wallets.contains(&me);
     let tier = state.inbox.resolve_sender_tier(&me, true).await;
     match state
@@ -764,16 +779,10 @@ async fn handle_send(
         .await
     {
         Ok(receipt) => {
-            inbox::log_message_sent(
-                &me,
-                &receipt,
-                tier,
-                seed,
-                &inbox::SenderProvenance::unknown(),
-            );
+            inbox::log_message_sent(&me, &receipt, tier, seed, &prov);
             json_ok(inbox::send_receipt_json(&receipt))
         }
-        Err(e) => inbox_error_response(state, e, &me),
+        Err(e) => inbox_error_response(e, Some(&to_wallet), None, &prov),
     }
 }
 
@@ -784,6 +793,7 @@ async fn handle_topic_publish(
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
+    let prov = provenance_from_headers(headers);
     let me = match require_verified_mailbox(state, headers).await {
         Ok(m) => m,
         Err(resp) => return resp,
@@ -791,14 +801,11 @@ async fn handle_topic_publish(
     let body = match parse_topic_publish_request(raw) {
         Ok(b) => b,
         Err(e) => {
-            inbox::log_rejection(
-                "invalid_request",
-                &me,
-                state.inbox_seed_wallets.contains(&me),
-            );
+            inbox::log_rejection("invalid_request", None, None, &prov);
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
+    let topic_id = body.topic_id.clone();
     let seed = state.inbox_seed_wallets.contains(&me);
     let tier = state.inbox.resolve_sender_tier(&me, true).await;
     match state
@@ -816,16 +823,10 @@ async fn handle_topic_publish(
         .await
     {
         Ok(receipt) => {
-            inbox::log_topic_post(
-                &me,
-                &receipt,
-                tier,
-                seed,
-                &inbox::SenderProvenance::unknown(),
-            );
+            inbox::log_topic_post(&me, &receipt, tier, seed, &prov);
             json_ok(inbox::post_receipt_json(&receipt))
         }
-        Err(e) => inbox_error_response(state, e, &me),
+        Err(e) => inbox_error_response(e, None, Some(&topic_id), &prov),
     }
 }
 
@@ -835,10 +836,12 @@ async fn handle_topic_read(
     state: &InboxHttpState,
     q: &HashMap<String, String>,
 ) -> axum::response::Response {
+    // Board reads are open (no session header) — no provenance to attach.
+    let prov = inbox::SenderProvenance::unknown();
     let query = match parse_topics_query(q) {
         Ok(v) => v,
         Err(e) => {
-            inbox::log_rejection("invalid_request", "", false);
+            inbox::log_rejection("invalid_request", None, None, &prov);
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
@@ -856,7 +859,7 @@ async fn handle_topic_read(
             inbox::log_topic_read(&query.topic_id, &page);
             json_ok(inbox::post_page_json(&page))
         }
-        Err(e) => inbox_error_response(state, e, ""),
+        Err(e) => inbox_error_response(e, None, Some(&query.topic_id), &prov),
     }
 }
 
@@ -865,6 +868,7 @@ async fn handle_topic_report(
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
+    let prov = provenance_from_headers(headers);
     let me = match require_verified_mailbox(state, headers).await {
         Ok(m) => m,
         Err(resp) => return resp,
@@ -872,11 +876,7 @@ async fn handle_topic_report(
     let (topic_id, post_id) = match parse_topic_report_request(raw) {
         Ok(v) => v,
         Err(e) => {
-            inbox::log_rejection(
-                "invalid_request",
-                &me,
-                state.inbox_seed_wallets.contains(&me),
-            );
+            inbox::log_rejection("invalid_request", None, None, &prov);
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
@@ -885,7 +885,7 @@ async fn handle_topic_report(
             inbox::log_topic_report(&me, &outcome);
             json_ok(inbox::report_outcome_json(&outcome))
         }
-        Err(e) => inbox_error_response(state, e, &me),
+        Err(e) => inbox_error_response(e, None, None, &prov),
     }
 }
 
@@ -896,6 +896,7 @@ async fn handle_webhook_register(
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
+    let prov = provenance_from_headers(headers);
     let me = match require_verified_mailbox(state, headers).await {
         Ok(m) => m,
         Err(resp) => return resp,
@@ -903,11 +904,7 @@ async fn handle_webhook_register(
     let url = match parse_webhook_register_request(raw) {
         Ok(u) => u,
         Err(e) => {
-            inbox::log_rejection(
-                "invalid_request",
-                &me,
-                state.inbox_seed_wallets.contains(&me),
-            );
+            inbox::log_rejection("invalid_request", None, None, &prov);
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
@@ -916,7 +913,7 @@ async fn handle_webhook_register(
             inbox::log_webhook_registered(&doc);
             json_ok(inbox::webhook_json(&doc))
         }
-        Err(e) => inbox_error_response(state, e, &me),
+        Err(e) => inbox_error_response(e, None, None, &prov),
     }
 }
 
@@ -938,6 +935,7 @@ async fn handle_webhook_delete(
     state: &InboxHttpState,
     headers: &axum::http::HeaderMap,
 ) -> axum::response::Response {
+    let prov = provenance_from_headers(headers);
     let me = match require_verified_mailbox(state, headers).await {
         Ok(m) => m,
         Err(resp) => return resp,
@@ -947,7 +945,7 @@ async fn handle_webhook_delete(
             tracing::info!(event = "webhook_deleted", wallet = %me, "inbox webhook deleted");
             json_ok(serde_json::json!({ "deleted": true }))
         }
-        Err(e) => inbox_error_response(state, e, &me),
+        Err(e) => inbox_error_response(e, None, None, &prov),
     }
 }
 
@@ -956,17 +954,19 @@ async fn handle_webhook_delete(
 /// only mcp-server, the workflow, and the owner's own endpoint ever see; a
 /// mismatch is a structured-logged 400 with no state change.
 async fn handle_delivery_result(state: &InboxHttpState, raw: &str) -> axum::response::Response {
+    // Workflow callback — no session header, so no provenance to attach.
+    let prov = inbox::SenderProvenance::unknown();
     let body = match parse_delivery_result_request(raw) {
         Ok(b) => b,
         Err(e) => {
-            inbox::log_rejection("invalid_request", "", false);
+            inbox::log_rejection("invalid_request", None, None, &prov);
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
     let wallet = match inbox::mailbox_address(&body.wallet) {
         Ok(w) => w,
         Err(e) => {
-            inbox::log_rejection("invalid_wallet", &body.wallet, false);
+            inbox::log_rejection("invalid_wallet", None, None, &prov);
             return json_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_wallet",
@@ -996,7 +996,7 @@ async fn handle_delivery_result(state: &InboxHttpState, raw: &str) -> axum::resp
                 "disabled": doc.disabled_at.is_some(),
             }))
         }
-        Err(e) => inbox_error_response(state, e, &wallet),
+        Err(e) => inbox_error_response(e, None, None, &prov),
     }
 }
 
@@ -1028,18 +1028,15 @@ fn a2a_error(
 /// Map an inbox op error into a JSON-RPC error envelope, logging exactly like
 /// `inbox_error_response`: rejections log-and-400, internals log-and-500.
 fn a2a_inbox_error(
-    state: &InboxHttpState,
     e: inbox::InboxError,
-    wallet: &str,
+    recipient: Option<&str>,
+    topic: Option<&str>,
+    prov: &inbox::SenderProvenance,
     id: &serde_json::Value,
 ) -> axum::response::Response {
     match e {
         inbox::InboxError::Rejected(r) => {
-            inbox::log_rejection(
-                r.reason(),
-                wallet,
-                state.inbox_seed_wallets.contains(wallet),
-            );
+            inbox::log_rejection(r.reason(), recipient, topic, prov);
             a2a_error(
                 StatusCode::BAD_REQUEST,
                 id,
@@ -1048,7 +1045,7 @@ fn a2a_inbox_error(
             )
         }
         inbox::InboxError::Internal(err) => {
-            tracing::error!(wallet, error = %err, "a2a inbox operation failed");
+            tracing::error!(session_id = %prov.session_id, error = %err, "a2a inbox operation failed");
             a2a_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 id,
@@ -1063,14 +1060,16 @@ async fn a2a_message_send(
     state: &InboxHttpState,
     me: &str,
     req: &a2a::JsonRpcRequest,
+    prov: &inbox::SenderProvenance,
 ) -> axum::response::Response {
     let mapped = match a2a::map_message_send(&req.params) {
         Ok(m) => m,
         Err(e) => {
-            inbox::log_rejection("invalid_request", me, state.inbox_seed_wallets.contains(me));
+            inbox::log_rejection("invalid_request", None, None, prov);
             return a2a_error(StatusCode::BAD_REQUEST, &req.id, a2a::INVALID_PARAMS, &e);
         }
     };
+    let to_wallet = mapped.to_wallet.clone();
     let seed = state.inbox_seed_wallets.contains(me);
     let tier = state.inbox.resolve_sender_tier(me, true).await;
     match state
@@ -1087,16 +1086,10 @@ async fn a2a_message_send(
         .await
     {
         Ok(receipt) => {
-            inbox::log_message_sent(
-                me,
-                &receipt,
-                tier,
-                seed,
-                &inbox::SenderProvenance::unknown(),
-            );
+            inbox::log_message_sent(me, &receipt, tier, seed, prov);
             a2a_ok(&req.id, a2a::send_receipt_to_task(&receipt))
         }
-        Err(e) => a2a_inbox_error(state, e, me, &req.id),
+        Err(e) => a2a_inbox_error(e, Some(&to_wallet), None, prov, &req.id),
     }
 }
 
@@ -1104,11 +1097,12 @@ async fn a2a_tasks_get(
     state: &InboxHttpState,
     me: &str,
     req: &a2a::JsonRpcRequest,
+    prov: &inbox::SenderProvenance,
 ) -> axum::response::Response {
     let g = match a2a::map_tasks_get(&req.params) {
         Ok(g) => g,
         Err(e) => {
-            inbox::log_rejection("invalid_request", me, state.inbox_seed_wallets.contains(me));
+            inbox::log_rejection("invalid_request", None, None, prov);
             return a2a_error(StatusCode::BAD_REQUEST, &req.id, a2a::INVALID_PARAMS, &e);
         }
     };
@@ -1122,7 +1116,7 @@ async fn a2a_tasks_get(
             inbox::log_messages_read(me, &page);
             a2a_ok(&req.id, a2a::read_page_to_task(&g.thread_id, &page))
         }
-        Err(e) => a2a_inbox_error(state, e, me, &req.id),
+        Err(e) => a2a_inbox_error(e, None, None, prov, &req.id),
     }
 }
 
@@ -1130,11 +1124,12 @@ async fn a2a_push_config_set(
     state: &InboxHttpState,
     me: &str,
     req: &a2a::JsonRpcRequest,
+    prov: &inbox::SenderProvenance,
 ) -> axum::response::Response {
     let p = match a2a::map_push_config_set(&req.params) {
         Ok(p) => p,
         Err(e) => {
-            inbox::log_rejection("invalid_request", me, state.inbox_seed_wallets.contains(me));
+            inbox::log_rejection("invalid_request", None, None, prov);
             return a2a_error(StatusCode::BAD_REQUEST, &req.id, a2a::INVALID_PARAMS, &e);
         }
     };
@@ -1146,7 +1141,7 @@ async fn a2a_push_config_set(
                 a2a::webhook_to_push_config(p.task_id.as_deref(), &doc),
             )
         }
-        Err(e) => a2a_inbox_error(state, e, me, &req.id),
+        Err(e) => a2a_inbox_error(e, None, None, prov, &req.id),
     }
 }
 
@@ -1159,10 +1154,11 @@ async fn handle_a2a(
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
+    let prov = provenance_from_headers(headers);
     let req = match a2a::parse_request(raw) {
         Ok(r) => r,
         Err((code, message)) => {
-            inbox::log_rejection("invalid_request", "", false);
+            inbox::log_rejection("invalid_request", None, None, &prov);
             return a2a_error(
                 StatusCode::BAD_REQUEST,
                 &serde_json::Value::Null,
@@ -1176,15 +1172,11 @@ async fn handle_a2a(
         Err(resp) => return resp,
     };
     match req.method.as_str() {
-        "message/send" => a2a_message_send(state, &me, &req).await,
-        "tasks/get" => a2a_tasks_get(state, &me, &req).await,
-        "tasks/pushNotificationConfig/set" => a2a_push_config_set(state, &me, &req).await,
+        "message/send" => a2a_message_send(state, &me, &req, &prov).await,
+        "tasks/get" => a2a_tasks_get(state, &me, &req, &prov).await,
+        "tasks/pushNotificationConfig/set" => a2a_push_config_set(state, &me, &req, &prov).await,
         other => {
-            inbox::log_rejection(
-                "invalid_request",
-                &me,
-                state.inbox_seed_wallets.contains(&me),
-            );
+            inbox::log_rejection("invalid_request", None, None, &prov);
             a2a_error(
                 StatusCode::BAD_REQUEST,
                 &req.id,
