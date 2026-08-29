@@ -3197,6 +3197,22 @@ mod tests {
         );
     }
 
+    /// Pins the key-only identity contract: ANY 32-byte ed25519 public key is
+    /// mailbox-addressable — no on-chain account, no funded wallet, no
+    /// existence check. This is what lets an agent with only a keypair (e.g.
+    /// generated for messaging alone) verify and use the inbox; the docs
+    /// promise it, this test keeps the promise.
+    #[test]
+    fn mailbox_address_accepts_any_ed25519_key_without_onchain_presence() {
+        // A synthetic key that certainly has no on-chain account.
+        let key = bs58::encode([7u8; 32]).into_string();
+        let addr = mailbox_address(&key).expect("key-only identity is addressable");
+        assert_eq!(
+            addr,
+            format!("{}:{key}", chain_registry::SOLANA_MAINNET_CAIP2)
+        );
+    }
+
     #[test]
     fn mailbox_address_solana_caip10_canonicalizes_chain_ref_to_mainnet() {
         // A devnet CAIP-10 of the same key must land in the SAME mailbox as

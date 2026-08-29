@@ -211,13 +211,14 @@ fn visible_surface_fits_the_token_ratchet() {
 #[test]
 fn descriptions_fit_their_caps() {
     // name -> grandfathered cap (current measured size; may shrink, never
-    // grow). Only the inbox/registration four remain — the fusion PR
-    // rewrites exactly these and empties this map.
+    // grow). Post-fusion residue: these three deliberately spend a little
+    // over 200 on the register/verify one-tool loop + support-path carve-out
+    // — the exact copy the usage data showed agents bouncing off when it was
+    // missing.
     let grandfathered: BTreeMap<&str, usize> = [
-        ("agent_get_messages", 225),
-        ("agent_send_message", 355),
-        ("agent_verify_wallet", 225),
-        ("register_wallet", 325),
+        ("agent_send_message", 225),
+        ("agent_verify_wallet", 205),
+        ("register_wallet", 232),
     ]
     .into_iter()
     .collect();
