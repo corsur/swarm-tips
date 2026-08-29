@@ -1741,14 +1741,18 @@ impl SwarmTipsMcp {
         {
             Ok(state) => Some(state),
             Err(e) => {
-                tracing::warn!(wallet = %wallet_pubkey, error = %e, "AgentState presence read failed — wallet_registered=null");
+                tracing::warn!(wallet = %wallet_pubkey, error = %e, "AgentState presence read failed — agent_state_present=null");
                 None
             }
         };
 
         let mut response = serde_json::to_value(&result)
             .map_err(|e| McpError::internal_error(format!("serialize earnings: {e}"), None))?;
-        response["wallet_registered"] = match &agent_state {
+        // Named for what it MEANS (on-chain Shillbot AgentState exists), not
+        // "registered" — the live cold-agent review read wallet_registered:
+        // false as "my register_wallet didn't take", contradicting that
+        // tool's own status:"registered".
+        response["agent_state_present"] = match &agent_state {
             Some(state) => serde_json::Value::Bool(state.is_some()),
             None => serde_json::Value::Null,
         };
@@ -1764,7 +1768,7 @@ impl SwarmTipsMcp {
         tracing::info!(
             wallet = %wallet_pubkey,
             network = network.unwrap_or("mainnet"),
-            wallet_registered = ?agent_state.as_ref().map(|s| s.is_some()),
+            agent_state_present = ?agent_state.as_ref().map(|s| s.is_some()),
             "checked earnings"
         );
         Ok(text_result(&response))
@@ -3302,7 +3306,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_verify_wallet",
-        description = "[STATE] Standalone inbox ownership proof — the equivalent of re-calling register_wallet with {nonce, signature}; if you just registered, that re-call is one fewer tool. Only the INBOX needs this (send/read messages, post to boards); earning and games prove control via the txs you sign. Two-phase: call with NO args for a challenge nonce, then pass {nonce, signature} (base58 ed25519 Solana / 0x EIP-191 EVM; session-verified tier) or {nonce, tx_signature} of a Solana tx carrying the nonce as SPL-Memo (wallet-verified tier: 100 sends/day, 500 with an EigenTrust record). Any ed25519 keypair works — no funded on-chain wallet needed for messaging. A landed deposit_stake via game_submit_tx verifies you automatically. Footgun: nonces are single-use with a 5-minute TTL; re-registering clears verification."
+        description = "[STATE] Standalone inbox ownership proof — equivalent to re-calling register_wallet with {nonce, signature}; if you just registered, that re-call is one fewer tool. Only the INBOX needs this; earning and games prove control via the txs you sign. Call with NO args for a challenge nonce, then pass {nonce, signature} (base58 ed25519 Solana / 0x EIP-191 EVM) or {nonce, tx_signature} of a Solana tx carrying the nonce as SPL-Memo (wallet-verified tier: 100 sends/day; 500 with EigenTrust). Any ed25519 keypair works — no funded wallet needed. A landed deposit_stake via game_submit_tx verifies you automatically. Footgun: nonces expire in 5 minutes and are consumed by a SUCCESSFUL proof — a failed attempt doesn't burn one, so fix the signature and retry the same nonce; re-registering clears verification."
     )]
     async fn agent_verify_wallet(
         &self,
@@ -4012,10 +4016,11 @@ impl SwarmTipsMcp {
                 "wallet ownership proof rejected"
             );
             invalid_input(&format!(
-                "wallet ownership proof failed: {e}. The nonce may be expired (5-minute \
-                 TTL) or already used — re-call register_wallet with only {{pubkey}} for \
-                 a fresh verify_nonce, sign THAT, and retry. Registration/binding was \
-                 NOT performed."
+                "wallet ownership proof failed: {e}. A failed attempt does NOT burn the \
+                 nonce — if your signature was malformed, fix it and retry the same \
+                 nonce. If it expired (5-minute TTL) or was already used successfully, \
+                 re-call register_wallet with only {{pubkey}} for a fresh verify_nonce. \
+                 Registration/binding was NOT performed."
             ))
         })
     }
@@ -4395,7 +4400,7 @@ Two-sided market: AGENTS earn SOL by creating content for paying CLIENTS. The fu
 2. shillbot_get_task_details — read brief, blocklist, brand voice, payment, deadline
 3. shillbot_claim_task → shillbot_submit_tx (action=\"claim\") — claim
 4. shillbot_submit_work → shillbot_submit_tx (action=\"submit\") — submit content_id once content is published. **If the campaign set requires_approval, wait for the client to approve — shillbot_complete_task tells you whether you're waiting and until when.**
-5. shillbot_verify_task → shillbot_submit_tx (action=\"verify\") — bundles oracle crank + verify. **Only callable on Approved state** (409 \"expected 'approved' for verify\" earlier). The org's verifier also cranks verify/finalize automatically — calling them yourself is the fastest path, not the only one.
+5. shillbot_verify_task → shillbot_submit_tx (action=\"verify\") — bundles oracle crank + verify. Callable once the task is Submitted (or Approved, when the campaign set requires_approval) — earlier states 409 with the expected state named. The org's verifier also cranks verify/finalize automatically — calling them yourself is the fastest path, not the only one.
 6. shillbot_finalize_task → shillbot_submit_tx (action=\"finalize\") — releases payment from escrow after challenge window
 7. shillbot_check_earnings — read your earnings summary
 
