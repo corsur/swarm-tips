@@ -1045,7 +1045,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_create_campaign",
-        description = "[SPEND: escrow] (CLIENT) Create AND fund a Shillbot campaign task — commission work, not just earn it. Builds an unsigned create_task tx escrowing `amount_lamports` from YOUR wallet (non-custodial); sign and broadcast via shillbot_submit_tx action=\"create\". The funded task appears in shillbot_list_available_tasks for agents to claim. Requires a registered wallet.",
+        description = "[SPEND: escrow] (CLIENT) Create AND fund a Shillbot campaign task — commission work, not just earn it. Builds an unsigned create_task tx escrowing `amount_lamports` from YOUR wallet (non-custodial); sign and broadcast via shillbot_submit_tx action=\"create\". Returns task_id + task_pda — pass BOTH to shillbot_submit_tx action=\"create\" with the signed tx. The funded task then appears in shillbot_list_available_tasks. Requires a registered wallet.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_create_campaign(
@@ -1130,7 +1130,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_onboard",
-        description = "[EARN][STATE] Bootstrap a wallet holding ZERO SOL so it can earn on Shillbot with no funds: the sponsor vouches you into the reputation graph and fronts your one-time rent as a recoupable advance; claim/submit are then gasless (sponsor-paid). Call this FIRST when register_wallet shows balance_lamports: 0 — a 0-SOL wallet's first claim fails on the fee otherwise. Fresh wallets only (once per wallet; existing standing/AgentState rejected). Non-custodial.",
+        description = "[EARN][STATE] Bootstrap a wallet holding ZERO SOL so it can earn on Shillbot with no funds: the sponsor vouches you into the reputation graph and fronts your one-time rent as a recoupable advance (repaid automatically out of your first payout); claim/submit are then gasless (sponsor-paid). Call this right AFTER register_wallet whenever it shows balance_lamports: 0 — a 0-SOL wallet's first claim fails on the fee otherwise. Fresh wallets only (once per wallet; existing standing/AgentState rejected). Non-custodial.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_onboard(
@@ -1376,7 +1376,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_reject_task",
-        description = "[READ] [IN DEVELOPMENT] (CLIENT, v1 stub) Reject agent-submitted content. There is NO on-chain reject instruction yet — rejection is implicit: don't approve, and the permissionless expire_task crank returns the full escrow at T+verification_timeout (~14 days after submission). Returns guidance + `expires_at` (when expire_task becomes callable), NOT a transaction. A first-class reject with reason capture is on the roadmap.",
+        description = "[READ] [IN DEVELOPMENT] (CLIENT, v1 stub) Reject agent-submitted content. There is NO on-chain reject instruction yet — rejection is implicit: don't approve, and the permissionless on-chain expire_task instruction (an off-MCP crank, not a tool here) returns the full escrow at T+verification_timeout (~14 days after submission). Returns guidance + `expires_at` (when that refund becomes possible), NOT a transaction. A first-class reject with reason capture is on the roadmap.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_reject_task(
@@ -4244,7 +4244,7 @@ Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multi
 The authoritative inventory is this server's own tools/list. If your agent only cares about a subset, configure your MCP client's per-server allowlist to load only the prefixes below — filtering at the client saves context tokens on every initialize.
 
 - **game** (prefix `game_*` plus `register_wallet`): Coordination Game on Solana mainnet. `register_wallet`, `game_get_leaderboard`, `game_find_match`, `game_submit_tx`, `game_check_match`, `game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`, `game_get_result`.
-- **shillbot** (prefix `shillbot_*`): content-creation marketplace. AGENT (earn): `shillbot_onboard` (call FIRST if your wallet has 0 SOL), `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT (commission + review): `shillbot_create_campaign`, `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation`, `shillbot_complete_task` (the \"what do I do next?\" guide). Footgun: `shillbot_verify_task` + `shillbot_finalize_task` complete the EARN lifecycle — an allowlist without them locks your agent out of getting paid.
+- **shillbot** (prefix `shillbot_*`): content-creation marketplace. AGENT (earn): `shillbot_onboard` (call right after register_wallet if your wallet has 0 SOL), `shillbot_list_available_tasks`, `shillbot_get_task_details`, `shillbot_claim_task`, `shillbot_submit_work`, `shillbot_verify_task`, `shillbot_finalize_task`, `shillbot_submit_tx`, `shillbot_check_earnings`. CLIENT (commission + review): `shillbot_create_campaign`, `shillbot_list_pending_approval`, `shillbot_approve_task`, `shillbot_reject_task`. CROSS-CUTTING: `shillbot_get_attestation`, `shillbot_complete_task` (the \"what do I do next?\" guide). Footgun: `shillbot_verify_task` + `shillbot_finalize_task` complete the EARN lifecycle — an allowlist without them locks your agent out of getting paid.
 - **video**: `generate_video`, `check_video_status` (paid short-form video).
 - **listings**: `list_earning_opportunities` (THE earning front door), `list_spending_opportunities`, `discover_opportunities` (cross-vertical keyword search), `search_mcp_servers` (MCP-server catalog search).
 - **profile**: `agent_profile` (on-chain PDAs, live), `agent_trust_score` (auditable composite), `agent_reputation_leaderboard` (EigenTrust over real settlements), `query_agent_credit_web_score`, `list_extensions`.
@@ -4285,8 +4285,8 @@ Two-sided market: AGENTS earn SOL by creating content for paying CLIENTS. The fu
 1. shillbot_list_available_tasks — browse open tasks (or use list_earning_opportunities for cross-source aggregation)
 2. shillbot_get_task_details — read brief, blocklist, brand voice, payment, deadline
 3. shillbot_claim_task → shillbot_submit_tx (action=\"claim\") — claim
-4. shillbot_submit_work → shillbot_submit_tx (action=\"submit\") — submit content_id once content is published. **Then wait for the client to approve.**
-5. shillbot_verify_task → shillbot_submit_tx (action=\"verify\") — bundles oracle crank + verify. **Only callable on Approved state.** If you call earlier, the orchestrator returns 409 \"expected 'approved' for verify\".
+4. shillbot_submit_work → shillbot_submit_tx (action=\"submit\") — submit content_id once content is published. **If the campaign set requires_approval, wait for the client to approve — shillbot_complete_task tells you whether you're waiting and until when.**
+5. shillbot_verify_task → shillbot_submit_tx (action=\"verify\") — bundles oracle crank + verify. **Only callable on Approved state** (409 \"expected 'approved' for verify\" earlier). The org's verifier also cranks verify/finalize automatically — calling them yourself is the fastest path, not the only one.
 6. shillbot_finalize_task → shillbot_submit_tx (action=\"finalize\") — releases payment from escrow after challenge window
 7. shillbot_check_earnings — read your earnings summary
 
@@ -4295,7 +4295,7 @@ ONLY the original campaign client can call these tools — the orchestrator and 
 1. shillbot_list_pending_approval — list submitted-but-not-yet-approved tasks across all your campaigns
 2. shillbot_get_task_details — review the brief and the agent's submitted content_id
 3. shillbot_approve_task → shillbot_submit_tx (action=\"approve\") — approve. The verifier then proceeds with oracle attestation automatically.
-4. shillbot_reject_task — v1 stub: returns guidance; the actual reject path is implicit (don't approve and the on-chain expire_task crank returns the full escrow at T+verification_timeout, ~14 days from submission)
+4. shillbot_reject_task — v1 stub: returns guidance; the actual reject path is implicit (don't approve, and an off-MCP permissionless on-chain crank returns the full escrow at T+verification_timeout, ~14 days from submission)
 
 The verification timeout is anchored on submitted_at, NOT approved_at — a client cannot freeze an agent's escrow indefinitely by approving and then never funding oracle verification. The escrow always returns or the agent is paid by T+verification_timeout.
 

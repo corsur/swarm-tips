@@ -1025,7 +1025,7 @@
     "annotations": {
       "destructiveHint": true
     },
-    "description": "[SPEND: escrow] (CLIENT) Create AND fund a Shillbot campaign task — commission work, not just earn it. Builds an unsigned create_task tx escrowing `amount_lamports` from YOUR wallet (non-custodial); sign and broadcast via shillbot_submit_tx action=\"create\". The funded task appears in shillbot_list_available_tasks for agents to claim. Requires a registered wallet.",
+    "description": "[SPEND: escrow] (CLIENT) Create AND fund a Shillbot campaign task — commission work, not just earn it. Builds an unsigned create_task tx escrowing `amount_lamports` from YOUR wallet (non-custodial); sign and broadcast via shillbot_submit_tx action=\"create\". Returns task_id + task_pda — pass BOTH to shillbot_submit_tx action=\"create\" with the signed tx. The funded task then appears in shillbot_list_available_tasks. Requires a registered wallet.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1266,7 +1266,7 @@
     "annotations": {
       "destructiveHint": true
     },
-    "description": "[EARN][STATE] Bootstrap a wallet holding ZERO SOL so it can earn on Shillbot with no funds: the sponsor vouches you into the reputation graph and fronts your one-time rent as a recoupable advance; claim/submit are then gasless (sponsor-paid). Call this FIRST when register_wallet shows balance_lamports: 0 — a 0-SOL wallet's first claim fails on the fee otherwise. Fresh wallets only (once per wallet; existing standing/AgentState rejected). Non-custodial.",
+    "description": "[EARN][STATE] Bootstrap a wallet holding ZERO SOL so it can earn on Shillbot with no funds: the sponsor vouches you into the reputation graph and fronts your one-time rent as a recoupable advance (repaid automatically out of your first payout); claim/submit are then gasless (sponsor-paid). Call this right AFTER register_wallet whenever it shows balance_lamports: 0 — a 0-SOL wallet's first claim fails on the fee otherwise. Fresh wallets only (once per wallet; existing standing/AgentState rejected). Non-custodial.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1287,7 +1287,7 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "description": "[READ] [IN DEVELOPMENT] (CLIENT, v1 stub) Reject agent-submitted content. There is NO on-chain reject instruction yet — rejection is implicit: don't approve, and the permissionless expire_task crank returns the full escrow at T+verification_timeout (~14 days after submission). Returns guidance + `expires_at` (when expire_task becomes callable), NOT a transaction. A first-class reject with reason capture is on the roadmap.",
+    "description": "[READ] [IN DEVELOPMENT] (CLIENT, v1 stub) Reject agent-submitted content. There is NO on-chain reject instruction yet — rejection is implicit: don't approve, and the permissionless on-chain expire_task instruction (an off-MCP crank, not a tool here) returns the full escrow at T+verification_timeout (~14 days after submission). Returns guidance + `expires_at` (when that refund becomes possible), NOT a transaction. A first-class reject with reason capture is on the roadmap.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
