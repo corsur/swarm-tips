@@ -1624,18 +1624,30 @@ impl SwarmTipsMcp {
         // both serialize as all-zeros from the orchestrator. Distinguish them
         // here — the cold-agent review hit exactly this: a wallet that never
         // claimed reads zeros with no hint that claiming is the missing step.
-        let agent_state = crate::solana_reads::read_agent_state(
+        // Best-effort: an RPC blip must not fail an earnings summary that the
+        // orchestrator already answered, so a failed read degrades to null
+        // ("unknown") rather than an error.
+        let agent_state = match crate::solana_reads::read_agent_state(
             &self.state.rpc_client,
             self.rpc_url_for_network(network),
             &wallet_pubkey,
         )
         .await
-        .map_err(|e| to_mcp_error(&e))?;
+        {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(wallet = %wallet_pubkey, error = %e, "AgentState presence read failed — wallet_registered=null");
+                None
+            }
+        };
 
         let mut response = serde_json::to_value(&result)
             .map_err(|e| McpError::internal_error(format!("serialize earnings: {e}"), None))?;
-        response["wallet_registered"] = serde_json::Value::Bool(agent_state.is_some());
-        if agent_state.is_none() {
+        response["wallet_registered"] = match &agent_state {
+            Some(state) => serde_json::Value::Bool(state.is_some()),
+            None => serde_json::Value::Null,
+        };
+        if matches!(&agent_state, Some(None)) {
             response["next_step"] = serde_json::Value::String(
                 "This wallet has no on-chain Shillbot AgentState yet — earnings begin \
                  with a first claim. Call shillbot_list_available_tasks, then \
@@ -1647,7 +1659,7 @@ impl SwarmTipsMcp {
         tracing::info!(
             wallet = %wallet_pubkey,
             network = network.unwrap_or("mainnet"),
-            wallet_registered = agent_state.is_some(),
+            wallet_registered = ?agent_state.as_ref().map(|s| s.is_some()),
             "checked earnings"
         );
         Ok(text_result(&response))
