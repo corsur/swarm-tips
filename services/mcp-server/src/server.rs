@@ -3511,7 +3511,16 @@ impl ServerHandler for SwarmTipsMcp {
 /// The 19 testnet-only tools hidden from `tools/list` until cross-chain /
 /// EVM-game mainnet un-gates (`SHOW_TESTNET_TOOLS=true` restores them, e.g.
 /// for local dev). Calls by name are NEVER blocked by this list.
-const HIDDEN_UNTIL_MAINNET: &[&str] = &[
+#[cfg(test)]
+impl SwarmTipsMcp {
+    /// The full declared surface for the cross-module guards in
+    /// `tool_surface_tests` (the macro-generated `tool_router()` is private).
+    pub(crate) fn declared_tools() -> Vec<Tool> {
+        Self::tool_router().list_all()
+    }
+}
+
+pub(crate) const HIDDEN_UNTIL_MAINNET: &[&str] = &[
     // Cross-chain game (14, all `xchain_*`).
     "xchain_supported_chains",
     "xchain_find_match",
@@ -3537,7 +3546,7 @@ const HIDDEN_UNTIL_MAINNET: &[&str] = &[
 
 /// Drop the testnet-gated tools from a listing unless the env flag shows
 /// them. Pure — the list_tools filter test drives it directly.
-fn filter_visible_tools(tools: Vec<Tool>, show_testnet: bool) -> Vec<Tool> {
+pub(crate) fn filter_visible_tools(tools: Vec<Tool>, show_testnet: bool) -> Vec<Tool> {
     if show_testnet {
         return tools;
     }
@@ -4101,7 +4110,7 @@ impl SwarmTipsMcp {
 
 // -- Constants --
 
-const INSTRUCTIONS: &str = "\
+pub(crate) const INSTRUCTIONS: &str = "\
 Swarm Tips MCP server (mcp.swarm.tips). Aggregated agent activities across multiple platforms.
 
 ## Tool categories

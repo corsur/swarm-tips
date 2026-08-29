@@ -21,6 +21,8 @@ mod server;
 mod session_binding;
 mod solana_reads;
 mod solana_tx;
+#[cfg(test)]
+mod tool_surface_tests;
 mod traffic_stats;
 mod web_position;
 mod workflows_trigger;
