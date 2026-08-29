@@ -22,10 +22,13 @@ const SNAPSHOT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tool-surface.s
 
 /// Total budget for the default-visible surface: serialized tools + the
 /// INSTRUCTIONS blob, estimated at chars/4. Ratchet — lower it, never raise
-/// it. chars/4 overestimates vs a real tokenizer (~18.3k here ≈ 13.3k
-/// tiktoken live), so the Phase-3 target of ≤8.8k real tokens lands around
-/// 12_100 in this unit.
-const TOTAL_TOKEN_RATCHET: usize = 18_400;
+/// it. chars/4 overestimates vs a real tokenizer by ~1.37x (18.3k here was
+/// 13.3k tiktoken live), so this ceiling ≈ 11.4k real tokens. History:
+/// 18_400 pre-trim → 15_650 after the Phase-3 trim (the keep-list — flows,
+/// footguns, signing walkthroughs, the complete_task guide — is protected
+/// content and priced in; the fusion PR trims the four inbox/registration
+/// descriptions further). The live e2e gate measures the real tokenizer.
+const TOTAL_TOKEN_RATCHET: usize = 15_650;
 
 /// Per-description budget for NEW tools (the v4 audit cap that
 /// scripts/e2e/mcp-initialize.sh also enforces live).
@@ -207,34 +210,14 @@ fn visible_surface_fits_the_token_ratchet() {
 /// their current size — they may shrink, never grow; new tools get 200.
 #[test]
 fn descriptions_fit_their_caps() {
-    // name -> grandfathered cap (current measured size). Phase 3 empties this.
+    // name -> grandfathered cap (current measured size; may shrink, never
+    // grow). Only the inbox/registration four remain — the fusion PR
+    // rewrites exactly these and empties this map.
     let grandfathered: BTreeMap<&str, usize> = [
-        ("agent_get_messages", 320),
-        ("agent_send_message", 560),
-        ("agent_verify_wallet", 400),
-        ("game_evm_commit_guess", 230),
-        ("game_evm_committed", 230),
-        ("game_evm_reveal_guess", 260),
-        ("game_find_evm_match", 230),
-        ("generate_video", 350),
-        ("list_earning_opportunities", 340),
-        ("register_wallet", 460),
-        ("register_webhook", 300),
-        ("search_mcp_servers", 300),
-        ("shillbot_complete_task", 300),
-        ("shillbot_create_campaign", 280),
-        ("shillbot_get_attestation", 400),
-        ("shillbot_onboard", 300),
-        ("shillbot_reject_task", 260),
-        ("topic_publish", 300),
-        ("xchain_build_create_match", 260),
-        ("xchain_build_create_xmatch", 260),
-        ("xchain_build_lock", 300),
-        ("xchain_build_lock_xmatch", 260),
-        ("xchain_build_refund", 230),
-        ("xchain_build_settle", 340),
-        ("xchain_find_match", 260),
-        ("xchain_supported_chains", 230),
+        ("agent_get_messages", 225),
+        ("agent_send_message", 355),
+        ("agent_verify_wallet", 225),
+        ("register_wallet", 325),
     ]
     .into_iter()
     .collect();
@@ -410,11 +393,12 @@ fn read_tag_and_read_only_hint_agree() {
     );
 }
 
-/// INSTRUCTIONS parity, both directions: every visible tool is mentioned by
-/// name, and every count the prose states matches the computed surface. This
-/// runs pre-deploy — the shell e2e re-checks the same contract live.
+/// INSTRUCTIONS parity: every visible tool is mentioned by name, and the
+/// prose carries NO literal tool counts — seven different stale counts were
+/// on disk across the doc surfaces before this rule; pointing at tools/list
+/// is the only claim that can't rot. Runs pre-deploy.
 #[test]
-fn instructions_name_every_visible_tool_and_counts_match() {
+fn instructions_name_every_visible_tool_and_state_no_counts() {
     let visible = visible_tools();
     let missing: Vec<_> = visible
         .iter()
@@ -426,16 +410,17 @@ fn instructions_name_every_visible_tool_and_counts_match() {
         "visible tools absent from INSTRUCTIONS: {missing:?}"
     );
 
-    let count_phrases = [
-        format!("exposes {} tools", visible.len()),
-        format!("all {} tools", visible.len()),
-    ];
-    for phrase in &count_phrases {
-        assert!(
-            INSTRUCTIONS.contains(phrase.as_str()),
-            "INSTRUCTIONS count drifted: expected the phrase {phrase:?} \
-             (visible surface is {} tools)",
-            visible.len()
-        );
-    }
+    assert!(
+        INSTRUCTIONS.contains("authoritative inventory is this server's own tools/list"),
+        "INSTRUCTIONS must defer inventory claims to tools/list"
+    );
+    // No "<N> tools" phrases anywhere — counts drift, the pointer doesn't.
+    let mut digits_then_tools = INSTRUCTIONS
+        .split_whitespace()
+        .zip(INSTRUCTIONS.split_whitespace().skip(1))
+        .filter(|(a, b)| a.chars().all(|c| c.is_ascii_digit()) && b.starts_with("tool"));
+    assert!(
+        digits_then_tools.next().is_none(),
+        "INSTRUCTIONS states a literal tool count — drop it, tools/list is authoritative"
+    );
 }
