@@ -569,6 +569,28 @@ fn effective_post_limit(tier: SenderTier, topic_is_public: bool) -> u32 {
 /// True when `wallet` (any accepted form) resolves to the org support
 /// mailbox — the pure core of the tier short-circuit in
 /// `resolve_sender_tier`.
+/// Route a `to_wallet` to its mailbox key. Wallets normalize via
+/// `mailbox_address`; `session:{id}` synthetic guests are addressable ONLY
+/// by the org's support identities — that's how auto-answers reach an
+/// unproven sender's session inbox. Found live: the support responder's
+/// replies to unproven senders all died as invalid_recipient, making the
+/// "monitored and auto-answered" promise silently false for guests.
+pub(crate) fn resolve_recipient(to_wallet: &str, from_is_support: bool) -> Result<String, String> {
+    if let Some(session_id) = to_wallet.strip_prefix("session:") {
+        if !from_is_support {
+            return Err(format!(
+                "'session:{session_id}' is a session-scoped guest sender, not a public \
+                 mailbox — only the Swarm Tips team can reply to it. To reach the team \
+                 yourself, omit to_wallet; a guest reads team replies from its own \
+                 session inbox via agent_get_messages."
+            ));
+        }
+        validate_id_token(session_id, "session id")?;
+        return Ok(to_wallet.to_string());
+    }
+    mailbox_address(to_wallet)
+}
+
 pub(crate) fn is_support_sender(wallet: &str) -> bool {
     mailbox_address(wallet)
         .ok()
@@ -685,6 +707,34 @@ pub fn validate_id_token(token: &str, what: &str) -> Result<(), String> {
 pub fn pairwise_thread_id(a: &str, b: &str) -> String {
     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
     format!("dm:{lo}|{hi}")
+}
+
+/// Ceiling for a caller-echoed pairwise `dm:` thread id: two CAIP-10
+/// addresses plus separators (~172 bytes observed live), with headroom.
+const MAX_DM_THREAD_BYTES: usize = 400;
+
+/// Thread-id validation. Caller-minted ids follow the generic token rules;
+/// the system's own `dm:<lo>|<hi>` ids get their own (longer) ceiling —
+/// found live: the support responder echoes the thread id of the message it
+/// answers, and a pairwise id of two CAIP-10s is 172 bytes against the
+/// 128-byte generic cap, so every dm-threaded auto-reply was rejected by
+/// the very server that minted the id.
+pub fn validate_thread_id(token: &str) -> Result<(), String> {
+    if token.starts_with("dm:") {
+        if token.len() > MAX_DM_THREAD_BYTES {
+            return Err(format!("thread_id exceeds {MAX_DM_THREAD_BYTES} bytes"));
+        }
+        if token.contains('/') {
+            return Err("thread_id must not contain '/'".to_string());
+        }
+        return Ok(());
+    }
+    validate_id_token(token, "thread_id").map_err(|e| {
+        format!(
+            "{e} — use a short id like 'task:{{id}}' or 'game:{{id}}', omit thread_id \
+             for an automatic pairwise thread, or echo a server-generated 'dm:...' id"
+        )
+    })
 }
 
 /// `{sent_at_micros:020}_{rand8}` — zero-padded so lexicographic order equals
@@ -1933,7 +1983,8 @@ impl Inbox {
         // Recipient is parsed BEFORE the tier gate so an UNPROVEN session
         // addressing support gets `SENDS_PER_DAY_UNPROVEN_SUPPORT` instead of 0.
         // Every non-support recipient keeps the tier's own cap (0 for unproven).
-        let to = mailbox_address(&req.to_wallet).map_err(InboxRejection::InvalidRecipient)?;
+        let to = resolve_recipient(&req.to_wallet, is_support_sender(&req.from))
+            .map_err(InboxRejection::InvalidRecipient)?;
         let limit = effective_send_limit(req.tier, is_support_mailbox(&to));
         if limit == 0 {
             return Err(InboxRejection::UnprovenSender.into());
@@ -1942,7 +1993,7 @@ impl Inbox {
         let intent = parse_intent(req.intent.as_deref()).map_err(InboxRejection::InvalidIntent)?;
         let thread_id = match req.thread_id.as_deref() {
             Some(t) => {
-                validate_id_token(t, "thread_id").map_err(InboxRejection::InvalidThreadId)?;
+                validate_thread_id(t).map_err(InboxRejection::InvalidThreadId)?;
                 t.to_string()
             }
             None => pairwise_thread_id(&req.from, &to),
@@ -2333,7 +2384,7 @@ impl Inbox {
             validate_id_token(c, "cursor").map_err(InboxRejection::InvalidCursor)?;
         }
         if let Some(t) = thread_id {
-            validate_id_token(t, "thread_id").map_err(InboxRejection::InvalidThreadId)?;
+            validate_thread_id(t).map_err(InboxRejection::InvalidThreadId)?;
         }
 
         let meta: Option<MailboxMetaDoc> = self
@@ -2572,7 +2623,7 @@ impl Inbox {
         report: bool,
     ) -> Result<(), InboxError> {
         assert!(!me.is_empty(), "owner must be resolved upstream");
-        validate_id_token(thread_id, "thread_id").map_err(InboxRejection::InvalidThreadId)?;
+        validate_thread_id(thread_id).map_err(InboxRejection::InvalidThreadId)?;
 
         let parent = self.mailbox_parent(me)?;
         let doc = ThreadMetaDoc {
@@ -3202,6 +3253,58 @@ mod tests {
     /// existence check. This is what lets an agent with only a keypair (e.g.
     /// generated for messaging alone) verify and use the inbox; the docs
     /// promise it, this test keeps the promise.
+    /// The support responder echoes the thread id of the message it answers.
+    /// A pairwise dm id of two CAIP-10s is ~172 bytes — it must round-trip
+    /// through validation even though caller-minted ids cap at 128.
+    #[test]
+    fn thread_validation_roundtrips_the_systems_own_dm_ids() {
+        let a = format!("{}:{SOL_B58}", chain_registry::SOLANA_MAINNET_CAIP2);
+        let b = format!(
+            "{}:{}",
+            chain_registry::SOLANA_MAINNET_CAIP2,
+            SUPPORT_WALLET
+        );
+        let dm = pairwise_thread_id(&a, &b);
+        assert!(
+            dm.len() > limits::MAX_ID_BYTES,
+            "the bug requires a long dm id"
+        );
+        assert!(
+            validate_thread_id(&dm).is_ok(),
+            "self-minted ids must validate"
+        );
+        // Caller-minted ids keep the generic rules, with teaching in the error.
+        assert!(validate_thread_id("task:abc").is_ok());
+        let err = validate_thread_id(&"x".repeat(200)).expect_err("long non-dm rejects");
+        assert!(err.contains("task:{id}"), "error teaches the format: {err}");
+        assert!(
+            validate_thread_id("dm:a/b").is_err(),
+            "no '/' even in dm ids"
+        );
+    }
+
+    /// Only the org's support identities may address a session-scoped guest;
+    /// everyone else gets guidance instead of a dead end. This is the reply
+    /// path for auto-answers to unproven senders.
+    #[test]
+    fn session_guests_are_addressable_by_support_only() {
+        let to = "session:2c0141e4-5ca0-4184-855b-a4e69e9f4535";
+        assert_eq!(
+            resolve_recipient(to, true).expect("support may reply to a guest"),
+            to
+        );
+        let err = resolve_recipient(to, false).expect_err("others get guidance");
+        assert!(
+            err.contains("omit to_wallet"),
+            "teaches the support path: {err}"
+        );
+        // Wallet recipients still normalize exactly as before.
+        assert_eq!(
+            resolve_recipient(SOL_B58, false).expect("wallet ok"),
+            format!("{}:{SOL_B58}", chain_registry::SOLANA_MAINNET_CAIP2)
+        );
+    }
+
     #[test]
     fn mailbox_address_accepts_any_ed25519_key_without_onchain_presence() {
         // A synthetic key that certainly has no on-chain account.
