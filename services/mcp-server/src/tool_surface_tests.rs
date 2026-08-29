@@ -358,23 +358,8 @@ fn tool_references_in_descriptions_resolve() {
 /// read_only_hint=true and vice versa — agents trust both signals.
 #[test]
 fn read_tag_and_read_only_hint_agree() {
-    // Known incoherences, frozen so they can't multiply. Phase 2's honesty
-    // pass reconciles them (reject_task/build_settle are hint-true without
-    // the tag; gameplay_status is tagged [READ] without the hint — a real
-    // annotation bug).
-    let grandfathered: BTreeSet<&str> = [
-        "shillbot_reject_task",
-        "xchain_build_settle",
-        "xchain_gameplay_status",
-    ]
-    .into_iter()
-    .collect();
-
     let mut mismatches = Vec::new();
     for tool in all_tools() {
-        if grandfathered.contains(tool.name.as_ref()) {
-            continue;
-        }
         let desc = tool.description.as_deref().unwrap_or_default();
         let tagged_read = desc.starts_with("[READ]");
         let hinted_read = tool
