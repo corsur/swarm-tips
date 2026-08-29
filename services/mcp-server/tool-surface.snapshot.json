@@ -360,7 +360,7 @@
     "annotations": {
       "destructiveHint": true
     },
-    "description": "[STATE] Commit your guess on-chain: 'same' (opponent is same type) or 'different'. Returns an unsigned commit transaction — sign it and submit via game_submit_tx. Then poll game_reveal_guess until the game resolves. No funds movement at this step (stake was locked at game_find_match).",
+    "description": "[STATE] Commit your guess on-chain: 'same' (opponent is your type) or 'different'. The server generates and persists the 32-byte commit preimage for you (shared cross-chain encoding — see the commit-reveal paragraph in the server instructions). Returns an unsigned commit tx — sign and submit via game_submit_tx, then poll game_reveal_guess. No funds move here (stake locked at game_find_match).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -568,7 +568,7 @@
     "annotations": {
       "destructiveHint": true
     },
-    "description": "[STATE] Check if both players have committed. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds). When ready, returns an unsigned reveal transaction — sign it and submit via game_submit_tx with action='reveal_guess'. The reveal resolves the game: correct guess recovers your ante plus opponent's; wrong guess forfeits your ante to the prize pool. The game is negative-sum after the treasury cut.",
+    "description": "[STATE] Reveal and resolve. Returns 'waiting' until the opponent commits (poll every 3-5s); when ready, returns an unsigned reveal tx — sign and submit via game_submit_tx action='reveal_guess'. The server supplies your persisted preimage and the matchup argument (shared cross-chain encoding). Correct guess recovers your ante plus the opponent's; wrong forfeits yours. Negative-sum after the treasury cut.",
     "inputSchema": {
       "properties": {},
       "type": "object"
@@ -1699,7 +1699,7 @@
     "annotations": {
       "destructiveHint": true
     },
-    "description": "[STATE] Commit your guess for a cross-chain match. Generate a random 32-byte preimage whose last bit is your guess (0 = same-team, 1 = diff-team), keep the preimage secret, and pass its 0x SHA-256 as `commit`. Returns { both_committed }. Once both players commit, call xchain_gameplay_status for the step-2 checkpoint to co-sign.",
+    "description": "[STATE] Commit your guess for a cross-chain match. Unlike the same-chain games, YOU generate and keep the preimage: 32 random bytes R, guess in the low bit of the last byte (0 = same-team, 1 = diff-team) — the shared encoding from the server instructions. Pass `commit` = 0x + SHA-256(R), keep R secret. Returns {both_committed}; then xchain_gameplay_status for the step-2 checkpoint.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1802,7 +1802,7 @@
     "annotations": {
       "destructiveHint": true
     },
-    "description": "[STATE] Reveal your guess for a cross-chain match after both players committed and you co-signed the step-2 checkpoint. Pass the 0x 32-byte preimage that opens your commit. Returns { both_revealed }. Once both reveal, call xchain_gameplay_status for the terminal checkpoint to co-sign, then settle via xchain_build_settle.",
+    "description": "[STATE] Reveal your cross-chain guess after both committed and you co-signed the step-2 checkpoint. Pass `preimage` = 0x + your 32-byte R (the value whose SHA-256 you committed). Returns {both_revealed}; then xchain_gameplay_status for the terminal checkpoint and xchain_build_settle.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
