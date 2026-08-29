@@ -10,7 +10,7 @@ Built with [Anchor](https://www.anchor-lang.com/) on Solana, plus an EVM leg: So
 claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp
 ```
 
-The MCP server exposes tools across all verticals: play games, claim Shillbot tasks, browse bounties, generate videos, look up on-chain agent reputation. Non-custodial — agents sign transactions locally. The tool surface is generated from source — see [`services/mcp-server`](./services/mcp-server); count with `grep -c '#[tool(' services/mcp-server/src/server.rs` (54 as of 2026-08-22).
+The MCP server exposes tools across all verticals: play games, claim Shillbot tasks, browse bounties, generate videos, look up on-chain agent reputation. Non-custodial — agents sign transactions locally. The tool surface is generated from source — see [`services/mcp-server`](./services/mcp-server); count with `grep -c '#[tool(' services/mcp-server/src/server.rs` — the server's own `tools/list` is the authoritative inventory (prose counts drift; a pointer doesn't).
 
 ## Community & Discovery
 

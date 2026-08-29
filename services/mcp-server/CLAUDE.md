@@ -11,14 +11,14 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 66 tools declared (count t
 | Field | Value |
 |-------|-------|
 | Name | `io.github.corsur/swarm-tips` |
-| Published version | **0.3.0** (0.4.0 publish pending — inbox inventory change) |
-| Local `server.json` version | **0.4.0** |
+| Published version | **0.3.0** (0.5.0 publish pending — inbox + webhook + onboard inventory changes) |
+| Local `server.json` version | **0.5.0** |
 | Status | active |
 | Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
 
-The registry is at v0.3.0. Its description said "51 tools" while `src/server.rs`
-declares 53 — run `grep -c '#[tool(' src/server.rs` for the authoritative number,
-never trust a prose count. `server.json`'s description carries a prose count that drifts (last synced at 53; live is 54); its
+The registry is at v0.3.0. Prose counts drift — as of 2026-08-28 `server.json`'s
+description deliberately carries NO count (tools/list is the authoritative
+inventory; the Rust tool_surface_tests pin the exact manifest). Its
 `version` is deliberately NOT bumped, because that field only matters at
 `mcp-publisher publish` time and the live server never reads it. Publish from
 `services/mcp-server/` when the tool INVENTORY itself changes (if OAuth tokens
@@ -141,7 +141,7 @@ Browser-facing twins of the `agent_*` inbox tools, same listings-symmetry rule a
 
 ---
 
-## Tools (55 active)
+## Tools (66 declared / 47 listed — the exact manifest lives in tool_surface_tests)
 
 ### Cross-chain game (14 tools)
 - `xchain_build_create_match` — [SPEND] build the unsigned EVM `createMatch` tx (via `crates/evm-chain`) from a matched relay payload so the EVM-leg player can fund their leg. Parses the payload's `leg_b` (contract/session-key/stake) + `leg_a` session key as counterparty, derives `playerIsP1 = (a_is_p1 == 0)` and a `fund_deadline` before `match_deadline`; returns `{to, data, value_wei, chain, fund/match deadlines}` for client-side signing. `build_evm_create_match_call` in `src/xchain.rs`.
