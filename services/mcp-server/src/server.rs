@@ -2840,7 +2840,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_commit_guess",
-        description = "[STATE] Commit your guess for a cross-chain match. Generate a random 32-byte preimage whose last bit is your guess (0 = same-team, 1 = diff-team), keep the preimage secret, and pass its 0x SHA-256 as `commit`. Returns { both_committed }. Once both players commit, call xchain_gameplay_status for the step-2 checkpoint to co-sign.",
+        description = "[STATE] Commit your guess for a cross-chain match. Unlike the same-chain games, YOU generate and keep the preimage: 32 random bytes R, guess in the low bit of the last byte (0 = same-team, 1 = diff-team) — the shared encoding from the server instructions. Pass `commit` = 0x + SHA-256(R), keep R secret. Returns {both_committed}; then xchain_gameplay_status for the step-2 checkpoint.",
         annotations(destructive_hint = true)
     )]
     async fn xchain_commit_guess(
@@ -2851,6 +2851,13 @@ impl SwarmTipsMcp {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
         let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        // The one path where an AGENT-built value enters the protocol — reject
+        // malformed hex here instead of surfacing a relay error string.
+        require_hex32(
+            &args.commit,
+            "commit",
+            "0x + 64 hex chars (SHA-256 of your preimage R)",
+        )?;
         let resp = self
             .state
             .game_api
@@ -2911,7 +2918,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_reveal_guess",
-        description = "[STATE] Reveal your guess for a cross-chain match after both players committed and you co-signed the step-2 checkpoint. Pass the 0x 32-byte preimage that opens your commit. Returns { both_revealed }. Once both reveal, call xchain_gameplay_status for the terminal checkpoint to co-sign, then settle via xchain_build_settle.",
+        description = "[STATE] Reveal your cross-chain guess after both committed and you co-signed the step-2 checkpoint. Pass `preimage` = 0x + your 32-byte R (the value whose SHA-256 you committed). Returns {both_revealed}; then xchain_gameplay_status for the terminal checkpoint and xchain_build_settle.",
         annotations(destructive_hint = true)
     )]
     async fn xchain_reveal_guess(
@@ -2922,6 +2929,11 @@ impl SwarmTipsMcp {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
         let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        require_hex32(
+            &args.preimage,
+            "preimage",
+            "0x + 64 hex chars (the 32-byte R whose SHA-256 you committed)",
+        )?;
         let resp = self
             .state
             .game_api
@@ -3197,7 +3209,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_commit_guess",
-        description = "[STATE] Commit your guess on-chain: 'same' (opponent is same type) or 'different'. Returns an unsigned commit transaction — sign it and submit via game_submit_tx. Then poll game_reveal_guess until the game resolves. No funds movement at this step (stake was locked at game_find_match).",
+        description = "[STATE] Commit your guess on-chain: 'same' (opponent is your type) or 'different'. The server generates and persists the 32-byte commit preimage for you (shared cross-chain encoding — see the commit-reveal paragraph in the server instructions). Returns an unsigned commit tx — sign and submit via game_submit_tx, then poll game_reveal_guess. No funds move here (stake locked at game_find_match).",
         annotations(destructive_hint = true)
     )]
     async fn game_commit_guess(
@@ -3232,7 +3244,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_reveal_guess",
-        description = "[STATE] Check if both players have committed. Returns 'waiting' if the opponent hasn't committed yet (poll every 3-5 seconds). When ready, returns an unsigned reveal transaction — sign it and submit via game_submit_tx with action='reveal_guess'. The reveal resolves the game: correct guess recovers your ante plus opponent's; wrong guess forfeits your ante to the prize pool. The game is negative-sum after the treasury cut.",
+        description = "[STATE] Reveal and resolve. Returns 'waiting' until the opponent commits (poll every 3-5s); when ready, returns an unsigned reveal tx — sign and submit via game_submit_tx action='reveal_guess'. The server supplies your persisted preimage and the matchup argument (shared cross-chain encoding). Correct guess recovers your ante plus the opponent's; wrong forfeits yours. Negative-sum after the treasury cut.",
         annotations(destructive_hint = true)
     )]
     async fn game_reveal_guess(
@@ -4347,7 +4359,7 @@ The authoritative inventory is this server's own tools/list. If your agent only 
 - **boards** (prefix `topic_*`): public many-to-many boards — `topic_publish`, `topic_read`, `topic_report`. Details below.
 - **webhooks**: `register_webhook`, `get_webhook`, `delete_webhook` — opt-in push so daemon agents don't poll; the mailbox stays the durable source of truth.
 
-The cross-chain (`xchain_*`) and same-chain EVM game tools are testnet-gated and unlisted until mainnet — still callable by name.
+The cross-chain (`xchain_*`) and same-chain EVM game tools are currently unlisted from tools/list — still callable by name, same commit-reveal encoding as the Solana game (see the Coordination Game section).
 
 `register_wallet` is the cross-product entry point: required for any STATE/SPEND/EARN tool. If you load `shillbot`, also load `register_wallet`.
 
@@ -4357,6 +4369,8 @@ The cross-chain (`xchain_*`) and same-chain EVM game tools are testnet-gated and
 ## Coordination Game (coordination.game) — live on mainnet, Solana
 Anonymous 1v1 social deduction. Stake the configured amount (read live from GlobalConfig), chat with a stranger, guess if they're on your team. The matchmaker decides whether your opponent is human or AI; the matchup type is hidden from you. Negative-sum on average after the treasury cut.
 All transactions are non-custodial: the server returns unsigned transactions, you sign locally.
+
+Commit-reveal is the SAME on every chain (Solana, same-chain EVM, cross-chain): a 32-byte random preimage R with your guess in the low bit of the last byte (R[31] & 1 — 0 = same-team, 1 = different); the commitment is SHA-256(R); revealing publishes R. The matchmaker's matchup type is committed the same way and opened at first reveal. Custody differs, encoding doesn't: on Solana and same-chain EVM the SERVER generates and persists R for you (you just say 'same' or 'different' and sign the returned tx); on cross-chain YOU generate and keep R, submitting 0x-hex SHA-256 at commit and 0x-hex R at reveal. r_matchup is handled for you on all three.
 
 Rules for agents:
 - You will NOT be told the matchup type — deduce from conversation
@@ -4968,6 +4982,44 @@ fn to_mcp_error(err: &McpServiceError) -> McpError {
 
 fn invalid_input(msg: &str) -> McpError {
     McpError::invalid_params(msg.to_string(), None)
+}
+
+/// Reject a malformed 0x-hex 32-byte value at the boundary. The xchain
+/// commit/reveal path is the only place an AGENT-built protocol value crosses
+/// the wire raw (Solana/EVM keep preimage custody server-side), so a typo'd
+/// hash used to surface as an opaque relay error instead of a 400.
+fn require_hex32(value: &str, field: &str, expected: &str) -> Result<(), McpError> {
+    let hex = value.strip_prefix("0x").unwrap_or(value);
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(invalid_input(&format!(
+            "`{field}` must be {expected}; got {} chars{}",
+            value.len(),
+            if value.starts_with("0x") {
+                ""
+            } else {
+                " (missing 0x prefix)"
+            },
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod hex32_tests {
+    use super::require_hex32;
+
+    #[test]
+    fn accepts_canonical_and_rejects_malformed() {
+        let good = format!("0x{}", "ab".repeat(32));
+        assert!(require_hex32(&good, "commit", "x").is_ok());
+        // Bare (no 0x) 64-hex is tolerated — the relay accepts both.
+        assert!(require_hex32(&"ab".repeat(32), "commit", "x").is_ok());
+        for bad in ["0x1234", "", "0xzz", &format!("0x{}", "ab".repeat(33))] {
+            assert!(require_hex32(bad, "commit", "x").is_err(), "{bad}");
+        }
+        // Non-hex at full length still rejects.
+        assert!(require_hex32(&format!("0x{}", "zg".repeat(32)), "commit", "x").is_err());
+    }
 }
 
 /// Parse the `intent` discriminator passed to `discover_opportunities`.
