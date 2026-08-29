@@ -1080,7 +1080,7 @@ impl SwarmTipsMcp {
         let result = self
             .state
             .orchestrator
-            .get_task_details(&args.task_id, network)
+            .get_task_details(normalize_task_id(&args.task_id), network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -1233,7 +1233,7 @@ impl SwarmTipsMcp {
         let response = self
             .state
             .orchestrator
-            .claim_task(&args.task_id, &wallet_pubkey, network)
+            .claim_task(normalize_task_id(&args.task_id), &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -1280,7 +1280,12 @@ impl SwarmTipsMcp {
         let response = self
             .state
             .orchestrator
-            .submit_task(&args.task_id, &wallet_pubkey, &args.content_id, network)
+            .submit_task(
+                normalize_task_id(&args.task_id),
+                &wallet_pubkey,
+                &args.content_id,
+                network,
+            )
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -1327,13 +1332,18 @@ impl SwarmTipsMcp {
         let vdata = self
             .state
             .orchestrator
-            .get_verification_data(&args.task_id, &wallet_pubkey, network)
+            .get_verification_data(normalize_task_id(&args.task_id), &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
         let rpc_url = self.rpc_url_for_network(network);
-        let unsigned_tx =
-            run_build_verify_tx(&args.task_id, &wallet_pubkey, &vdata, rpc_url).await?;
+        let unsigned_tx = run_build_verify_tx(
+            normalize_task_id(&args.task_id),
+            &wallet_pubkey,
+            &vdata,
+            rpc_url,
+        )
+        .await?;
 
         let result = serde_json::json!({
             "action": "verify",
@@ -1367,7 +1377,7 @@ impl SwarmTipsMcp {
         let response = self
             .state
             .orchestrator
-            .build_finalize(&args.task_id, &wallet_pubkey, network)
+            .build_finalize(normalize_task_id(&args.task_id), &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -1403,7 +1413,7 @@ impl SwarmTipsMcp {
         let response = self
             .state
             .orchestrator
-            .approve_task(&args.task_id, &wallet_pubkey, network)
+            .approve_task(normalize_task_id(&args.task_id), &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -1449,7 +1459,7 @@ impl SwarmTipsMcp {
         let task = self
             .state
             .orchestrator
-            .get_task_details(&args.task_id, network)
+            .get_task_details(normalize_task_id(&args.task_id), network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -1469,8 +1479,11 @@ impl SwarmTipsMcp {
             "shillbot_reject_task: v1 stub — no on-chain action, escrow returns at expire_task"
         );
 
-        let result =
-            build_reject_v1_stub_response(&args.task_id, task.submitted_at.as_deref(), expires_at);
+        let result = build_reject_v1_stub_response(
+            normalize_task_id(&args.task_id),
+            task.submitted_at.as_deref(),
+            expires_at,
+        );
         Ok(text_result(&result))
     }
 
@@ -1553,7 +1566,7 @@ impl SwarmTipsMcp {
             .state
             .orchestrator
             .confirm_task(
-                &args.task_id,
+                normalize_task_id(&args.task_id),
                 &wallet_pubkey,
                 &tx_signature,
                 action,
@@ -1583,7 +1596,10 @@ impl SwarmTipsMcp {
     ) -> Result<CallToolResult, McpError> {
         let network = parse_network_arg(args.network.as_deref())?;
         let attestation = match (
-            args.task_id.as_deref().filter(|s| !s.is_empty()),
+            args.task_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(normalize_task_id),
             args.task_pda.as_deref().filter(|s| !s.is_empty()),
         ) {
             (Some(_), Some(_)) => {
@@ -1643,7 +1659,7 @@ impl SwarmTipsMcp {
         let task = self
             .state
             .orchestrator
-            .get_task_details(&args.task_id, network)
+            .get_task_details(normalize_task_id(&args.task_id), network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -1682,8 +1698,11 @@ impl SwarmTipsMcp {
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_default();
 
-        let next =
-            next_action_for_task_state(task.state.as_str(), &args.task_id, &escrow_expires_iso);
+        let next = next_action_for_task_state(
+            task.state.as_str(),
+            normalize_task_id(&args.task_id),
+            &escrow_expires_iso,
+        );
 
         tracing::info!(
             task_id = %args.task_id,
@@ -1694,7 +1713,7 @@ impl SwarmTipsMcp {
         );
 
         let result = serde_json::json!({
-            "task_id": args.task_id,
+            "task_id": normalize_task_id(&args.task_id),
             "current_state": task.state,
             "role": role,
             "wallet": wallet_pubkey,
@@ -4015,13 +4034,26 @@ impl SwarmTipsMcp {
                 error = %e,
                 "wallet ownership proof rejected"
             );
-            invalid_input(&format!(
-                "wallet ownership proof failed: {e}. A failed attempt does NOT burn the \
-                 nonce — if your signature was malformed, fix it and retry the same \
-                 nonce. If it expired (5-minute TTL) or was already used successfully, \
-                 re-call register_wallet with only {{pubkey}} for a fresh verify_nonce. \
-                 Registration/binding was NOT performed."
-            ))
+            // A consumed nonce surfaces from game-api as a JWT 401 — leak-proof
+            // but baffling ("Missing or invalid JWT" in a flow with no JWT
+            // concept, per the final cold-agent review). Translate it.
+            let detail = e.to_string();
+            if detail.contains("JWT") || detail.contains("401") {
+                invalid_input(
+                    "wallet ownership proof failed: this verify_nonce was already \
+                     used or has expired (5-minute TTL, consumed on success). \
+                     Re-call register_wallet with only {pubkey} for a fresh \
+                     verify_nonce, sign THAT, and retry. Registration/binding was \
+                     NOT performed.",
+                )
+            } else {
+                invalid_input(&format!(
+                    "wallet ownership proof failed: {detail}. A failed attempt does \
+                     NOT burn the nonce — if your signature was malformed, fix it \
+                     and retry the same nonce. Registration/binding was NOT \
+                     performed."
+                ))
+            }
         })
     }
 
@@ -4987,6 +5019,31 @@ fn to_mcp_error(err: &McpServiceError) -> McpError {
 
 fn invalid_input(msg: &str) -> McpError {
     McpError::invalid_params(msg.to_string(), None)
+}
+
+/// Accept the aggregator's own id for first-party tasks. The final cold-agent
+/// review hit this exactly: `list_earning_opportunities` labels shillbot
+/// entries `id: "shillbot:<campaign>:<task>"` while every shillbot tool wants
+/// the bare `<campaign>:<task>` — the natural read ("use the id") 404'd on
+/// the first hop from discovery into the claim path. Strip the known source
+/// prefix defensively so BOTH id shapes work.
+fn normalize_task_id(raw: &str) -> &str {
+    raw.strip_prefix("shillbot:").unwrap_or(raw)
+}
+
+#[cfg(test)]
+mod normalize_task_id_tests {
+    use super::normalize_task_id;
+
+    #[test]
+    fn strips_only_the_known_source_prefix() {
+        assert_eq!(normalize_task_id("shillbot:c1:t1"), "c1:t1");
+        assert_eq!(normalize_task_id("c1:t1"), "c1:t1");
+        // Unknown prefixes pass through untouched — better a clean not_found
+        // for a foreign source than a mangled lookup.
+        assert_eq!(normalize_task_id("bountycaster:x"), "bountycaster:x");
+        assert_eq!(normalize_task_id(""), "");
+    }
 }
 
 /// Reject a malformed 0x-hex 32-byte value at the boundary. The xchain
