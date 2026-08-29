@@ -267,24 +267,18 @@ fn descriptions_fit_their_caps() {
 /// collisions are frozen here; Phase 3 splits the structs and empties this.
 #[test]
 fn schema_title_collisions_do_not_grow() {
-    let known: BTreeSet<&str> = [
-        "ClaimTaskArgs",
-        "EvmCommittedArgs",
-        "NetworkOnlyArgs",
-        "WebhookManageArgs",
-        "XchainBuildCreateMatchArgs",
-        "XchainBuildRefundArgs",
-        "XchainGameplayArgs",
-        // Six tools publish NO title at all (schemars emits none for their
-        // arg shapes) — as misleading as a shared one. Phase 3 fixes.
-        "",
-    ]
-    .into_iter()
-    .collect();
-
     let mut by_title: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for tool in all_tools() {
-        let title = tool_json(&tool)["inputSchema"]["title"]
+        let json = tool_json(&tool);
+        // Argless tools share an untitled empty schema — nothing misleading
+        // to collide on. The lint targets tools that actually take input.
+        let has_properties = json["inputSchema"]["properties"]
+            .as_object()
+            .is_some_and(|p| !p.is_empty());
+        if !has_properties {
+            continue;
+        }
+        let title = json["inputSchema"]["title"]
             .as_str()
             .unwrap_or_default()
             .to_string();
@@ -293,13 +287,48 @@ fn schema_title_collisions_do_not_grow() {
             .or_default()
             .push(tool.name.to_string());
     }
-    let new_collisions: Vec<_> = by_title
+    let collisions: Vec<_> = by_title
         .iter()
-        .filter(|(title, tools)| tools.len() > 1 && !known.contains(title.as_str()))
+        .filter(|(_, tools)| tools.len() > 1)
         .collect();
     assert!(
-        new_collisions.is_empty(),
-        "new schema-title collisions (give each tool's arg struct its own title): {new_collisions:?}"
+        collisions.is_empty(),
+        "schema-title collisions (give each tool's arg struct its own title): {collisions:?}"
+    );
+}
+
+/// Every plain `network` selector tells the SAME story. The bespoke
+/// exceptions are tools where the field genuinely does more, and only those.
+#[test]
+fn network_arg_docs_are_canonical() {
+    let bespoke: BTreeSet<&str> = [
+        "game_find_match",          // names the PDAs the read targets
+        "game_submit_tx",           // BlockhashNotFound broadcast semantics
+        "shillbot_submit_tx",       // broadcast + confirm routing semantics
+        "shillbot_get_attestation", // 409 on mismatched network
+    ]
+    .into_iter()
+    .collect();
+
+    let mut off_script = Vec::new();
+    for tool in all_tools() {
+        if bespoke.contains(tool.name.as_ref()) {
+            continue;
+        }
+        let json = tool_json(&tool);
+        let Some(desc) = json["inputSchema"]["properties"]["network"]["description"].as_str()
+        else {
+            continue;
+        };
+        if desc != crate::server::NETWORK_ARG_DOC {
+            off_script.push(format!("{}: {desc:?}", tool.name));
+        }
+    }
+    assert!(
+        off_script.is_empty(),
+        "network arg docs diverged from NETWORK_ARG_DOC (one concept, one \
+         explanation — add a bespoke entry only if the field does more):\n{}",
+        off_script.join("\n")
     );
 }
 

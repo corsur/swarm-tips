@@ -301,15 +301,68 @@ pub struct SwarmTipsMcp {
 
 // -- Tool parameter structs --
 
+/// The ONE canonical doc for the plain per-network selector. Eleven arg
+/// structs each carried their own wording of this two-valued field — an
+/// agent got four different explanations of one concept depending on which
+/// tool it read first. Bespoke docs remain only where the field genuinely
+/// does more (broadcast routing on submit_tx, 409 semantics on attestation).
+pub(crate) const NETWORK_ARG_DOC: &str = "Solana network: \"mainnet\" (default) or \"devnet\". \
+     Mismatched network = the on-chain accounts won't be found.";
+
+/// One thin arg struct PER task-lifecycle tool (task_id + network), so each
+/// tool's input schema carries its own accurate title instead of six tools
+/// wearing \"ClaimTaskArgs\" — an LLM reading the schema saw a claim noun on
+/// finalize/approve/reject (the cold-agent review's schema-title finding).
+macro_rules! task_ref_args {
+    ($name:ident, $task_doc:expr) => {
+        #[derive(Debug, serde::Deserialize, JsonSchema)]
+        pub struct $name {
+            #[schemars(description = $task_doc)]
+            pub task_id: String,
+            #[schemars(description = NETWORK_ARG_DOC)]
+            #[serde(skip_serializing_if = "Option::is_none")]
+            pub network: Option<String>,
+        }
+    };
+}
+
+task_ref_args!(
+    ClaimTaskArgs,
+    "The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned by \
+     shillbot_list_available_tasks or list_earning_opportunities."
+);
+task_ref_args!(
+    VerifyTaskArgs,
+    "The task identifier (format: `<campaign_id>:<task_uuid>`) of the submitted task to verify."
+);
+task_ref_args!(
+    FinalizeTaskArgs,
+    "The task identifier (format: `<campaign_id>:<task_uuid>`) of the verified task whose \
+     payment should be released."
+);
+task_ref_args!(
+    ApproveTaskArgs,
+    "The task identifier (format: `<campaign_id>:<task_uuid>`) returned by \
+     shillbot_list_pending_approval."
+);
+task_ref_args!(
+    RejectTaskArgs,
+    "The task identifier (format: `<campaign_id>:<task_uuid>`) returned by \
+     shillbot_list_pending_approval."
+);
+task_ref_args!(
+    CompleteTaskArgs,
+    "The task identifier (format: `<campaign_id>:<task_uuid>`) of any task in your lifecycle — \
+     the tool answers \"what do I do next\" for it."
+);
+
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct ListAvailableTasksArgs {
     /// Maximum number of tasks to return (default 20, max 100).
     pub limit: Option<u32>,
     /// Minimum price in lamports to filter tasks (optional).
     pub min_price: Option<u64>,
-    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
-    /// the orchestrator which dispatches per-network state. Mismatched
-    /// network = the on-chain accounts won't be found.
+    #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 }
@@ -318,28 +371,14 @@ pub struct ListAvailableTasksArgs {
 pub struct GetTaskDetailsArgs {
     /// The unique task identifier.
     pub task_id: String,
-    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
-    /// the orchestrator which dispatches per-network state. Mismatched
-    /// network = the on-chain accounts won't be found.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub network: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct ClaimTaskArgs {
-    /// The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned
-    /// by `list_available_tasks`.
-    pub task_id: String,
-    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
-    /// the orchestrator which dispatches per-network state. Mismatched
-    /// network = the on-chain accounts won't be found.
+    #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct OnboardArgs {
-    /// Solana network. `"mainnet"` (default) or `"devnet"`.
+    #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 }
@@ -373,7 +412,7 @@ pub struct CreateCampaignArgs {
     /// or 2 mathlib.
     #[serde(default)]
     pub lean_policy: Option<u32>,
-    /// Solana network. `"mainnet"` (default) or `"devnet"`.
+    #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 }
@@ -410,9 +449,7 @@ pub struct SubmitWorkArgs {
     /// The content ID of the completed work (YouTube video ID, tweet ID,
     /// game session ID, etc.).
     pub content_id: String,
-    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
-    /// the orchestrator which dispatches per-network state. Mismatched
-    /// network = the on-chain accounts won't be found.
+    #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 }
@@ -444,14 +481,16 @@ pub struct ShillbotSubmitTxArgs {
     pub network: Option<String>,
 }
 
-/// Argument struct for tools that just need the network discriminator
-/// (currently `shillbot_list_pending_approval`). Lets us mirror the
-/// validation pattern from the other tools without inventing an empty
-/// struct.
 #[derive(Debug, serde::Deserialize, JsonSchema, Default)]
-pub struct NetworkOnlyArgs {
-    /// Solana network. `"mainnet"` (default) or `"devnet"`. Forwarded to
-    /// the orchestrator which dispatches per-network state.
+pub struct PendingApprovalArgs {
+    #[schemars(description = NETWORK_ARG_DOC)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema, Default)]
+pub struct CheckEarningsArgs {
+    #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 }
@@ -630,10 +669,6 @@ pub struct RegisterWebhookArgs {
     pub url: String,
 }
 
-/// Zero-argument marker for the webhook management tools.
-#[derive(Debug, Default, serde::Deserialize, JsonSchema)]
-pub struct WebhookManageArgs {}
-
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct GenerateVideoArgs {
     /// A text prompt describing the video to generate (max 1000 chars).
@@ -681,6 +716,12 @@ pub struct EvmCommittedArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct EvmRevealGuessArgs {
+    /// 0x game id of your same-chain EVM match (from the match payload).
+    pub game_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct EvmCommitGuessArgs {
     /// Your guess: "same" or "different".
     pub guess: String,
@@ -719,7 +760,23 @@ pub struct XchainBuildCreateMatchArgs {
 }
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct XchainBuildLockArgs {
+    /// The `match` payload object from xchain_find_match / xchain_match_status.
+    #[serde(rename = "match")]
+    pub match_payload: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct XchainBuildRefundArgs {
+    /// The `match` payload object from xchain_find_match / xchain_match_status.
+    #[serde(rename = "match")]
+    pub match_payload: serde_json::Value,
+    /// "timeout" (default) or "nocert".
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct XchainBuildRefundXmatchArgs {
     /// The `match` payload object from xchain_find_match / xchain_match_status.
     #[serde(rename = "match")]
     pub match_payload: serde_json::Value,
@@ -759,6 +816,24 @@ pub struct XchainGameplayArgs {
     #[serde(default)]
     pub poll_handle: Option<String>,
 }
+
+/// Per-tool clones of the poll_handle-only shape, so each tool's input schema
+/// carries its own title (schema_name == struct name) instead of four tools
+/// sharing "XchainGameplayArgs".
+macro_rules! poll_handle_args {
+    ($name:ident) => {
+        #[derive(Debug, serde::Deserialize, JsonSchema)]
+        pub struct $name {
+            /// The poll_handle returned by xchain_find_match. Pass it so the server acts
+            /// by an unguessable secret, not your public wallet. Optional during rollout.
+            #[serde(default)]
+            pub poll_handle: Option<String>,
+        }
+    };
+}
+poll_handle_args!(XchainBuildCreateXmatchArgs);
+poll_handle_args!(XchainBuildSettleArgs);
+poll_handle_args!(XchainBuildLockXmatchArgs);
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct XchainRevealArgs {
@@ -1205,7 +1280,7 @@ impl SwarmTipsMcp {
     )]
     async fn shillbot_verify_task(
         &self,
-        Parameters(args): Parameters<ClaimTaskArgs>, // reuse — just needs task_id (+ network)
+        Parameters(args): Parameters<VerifyTaskArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
@@ -1246,7 +1321,7 @@ impl SwarmTipsMcp {
     )]
     async fn shillbot_finalize_task(
         &self,
-        Parameters(args): Parameters<ClaimTaskArgs>, // reuse — just needs task_id (+ network)
+        Parameters(args): Parameters<FinalizeTaskArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
@@ -1282,7 +1357,7 @@ impl SwarmTipsMcp {
     )]
     async fn shillbot_approve_task(
         &self,
-        Parameters(args): Parameters<ClaimTaskArgs>,
+        Parameters(args): Parameters<ApproveTaskArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
@@ -1325,7 +1400,7 @@ impl SwarmTipsMcp {
     )]
     async fn shillbot_reject_task(
         &self,
-        Parameters(args): Parameters<ClaimTaskArgs>,
+        Parameters(args): Parameters<RejectTaskArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
@@ -1376,7 +1451,7 @@ impl SwarmTipsMcp {
     )]
     async fn shillbot_list_pending_approval(
         &self,
-        Parameters(args): Parameters<NetworkOnlyArgs>,
+        Parameters(args): Parameters<PendingApprovalArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let network = parse_network_arg(args.network.as_deref())?;
@@ -1522,7 +1597,7 @@ impl SwarmTipsMcp {
     )]
     async fn shillbot_complete_task(
         &self,
-        Parameters(args): Parameters<ClaimTaskArgs>,
+        Parameters(args): Parameters<CompleteTaskArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
@@ -1605,7 +1680,7 @@ impl SwarmTipsMcp {
     )]
     async fn shillbot_check_earnings(
         &self,
-        Parameters(args): Parameters<NetworkOnlyArgs>,
+        Parameters(args): Parameters<CheckEarningsArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let network = parse_network_arg(args.network.as_deref())?;
@@ -2564,7 +2639,7 @@ impl SwarmTipsMcp {
     )]
     async fn game_evm_reveal_guess(
         &self,
-        Parameters(args): Parameters<EvmCommittedArgs>,
+        Parameters(args): Parameters<EvmRevealGuessArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
@@ -2649,7 +2724,7 @@ impl SwarmTipsMcp {
     )]
     async fn xchain_build_create_xmatch(
         &self,
-        Parameters(args): Parameters<XchainGameplayArgs>,
+        Parameters(args): Parameters<XchainBuildCreateXmatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
@@ -2687,7 +2762,7 @@ impl SwarmTipsMcp {
     )]
     async fn xchain_build_settle(
         &self,
-        Parameters(args): Parameters<XchainGameplayArgs>,
+        Parameters(args): Parameters<XchainBuildSettleArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
@@ -2809,7 +2884,7 @@ impl SwarmTipsMcp {
     )]
     async fn xchain_build_refund_xmatch(
         &self,
-        Parameters(args): Parameters<XchainBuildRefundArgs>,
+        Parameters(args): Parameters<XchainBuildRefundXmatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
@@ -2862,7 +2937,7 @@ impl SwarmTipsMcp {
     )]
     async fn xchain_build_lock(
         &self,
-        Parameters(args): Parameters<XchainBuildCreateMatchArgs>,
+        Parameters(args): Parameters<XchainBuildLockArgs>,
     ) -> Result<CallToolResult, McpError> {
         let call = crate::xchain::build_evm_lock_call(&args.match_payload)
             .map_err(|e| invalid_input(&format!("invalid match payload: {e}")))?;
@@ -2876,7 +2951,7 @@ impl SwarmTipsMcp {
     )]
     async fn xchain_build_lock_xmatch(
         &self,
-        Parameters(args): Parameters<XchainGameplayArgs>,
+        Parameters(args): Parameters<XchainBuildLockXmatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
@@ -3494,7 +3569,6 @@ impl SwarmTipsMcp {
     )]
     async fn get_webhook(
         &self,
-        Parameters(_args): Parameters<WebhookManageArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let me = self.require_verified_wallet(Some(&parts)).await?;
@@ -3513,7 +3587,6 @@ impl SwarmTipsMcp {
     )]
     async fn delete_webhook(
         &self,
-        Parameters(_args): Parameters<WebhookManageArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let me = self.require_verified_wallet(Some(&parts)).await?;

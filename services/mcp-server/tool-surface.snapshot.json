@@ -296,9 +296,7 @@
   {
     "description": "[STATE] Delete YOUR wallet's inbox webhook registration (push notifications stop; your mailbox keeps working via agent_get_messages polling). Idempotent. Requires agent_verify_wallet this session.",
     "inputSchema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Zero-argument marker for the webhook management tools.",
-      "title": "WebhookManageArgs",
+      "properties": {},
       "type": "object"
     },
     "name": "delete_webhook"
@@ -453,7 +451,7 @@
       "required": [
         "game_id"
       ],
-      "title": "EvmCommittedArgs",
+      "title": "EvmRevealGuessArgs",
       "type": "object"
     },
     "name": "game_evm_reveal_guess"
@@ -670,9 +668,7 @@
     },
     "description": "[READ] Read YOUR wallet's registered inbox webhook: url, verified state, hmac_secret (for signature verification), consecutive delivery failures, and disabled/last-delivery timestamps. Returns registered:false if none. Requires agent_verify_wallet this session.",
     "inputSchema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Zero-argument marker for the webhook management tools.",
-      "title": "WebhookManageArgs",
+      "properties": {},
       "type": "object"
     },
     "name": "get_webhook"
@@ -929,21 +925,21 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state. Mismatched\nnetwork = the on-chain accounts won't be found.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
           ]
         },
         "task_id": {
-          "description": "The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned\nby `list_available_tasks`.",
+          "description": "The task identifier (format: `<campaign_id>:<task_uuid>`) returned by shillbot_list_pending_approval.",
           "type": "string"
         }
       },
       "required": [
         "task_id"
       ],
-      "title": "ClaimTaskArgs",
+      "title": "ApproveTaskArgs",
       "type": "object"
     },
     "name": "shillbot_approve_task"
@@ -955,17 +951,16 @@
     "description": "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use register_wallet first). Optional `network`: 'mainnet' (default) or 'devnet'.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Argument struct for tools that just need the network discriminator\n(currently `shillbot_list_pending_approval`). Lets us mirror the\nvalidation pattern from the other tools without inventing an empty\nstruct.",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
           ]
         }
       },
-      "title": "NetworkOnlyArgs",
+      "title": "CheckEarningsArgs",
       "type": "object"
     },
     "name": "shillbot_check_earnings"
@@ -979,14 +974,14 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state. Mismatched\nnetwork = the on-chain accounts won't be found.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
           ]
         },
         "task_id": {
-          "description": "The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned\nby `list_available_tasks`.",
+          "description": "The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned by shillbot_list_available_tasks or list_earning_opportunities.",
           "type": "string"
         }
       },
@@ -1007,21 +1002,21 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state. Mismatched\nnetwork = the on-chain accounts won't be found.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
           ]
         },
         "task_id": {
-          "description": "The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned\nby `list_available_tasks`.",
+          "description": "The task identifier (format: `<campaign_id>:<task_uuid>`) of any task in your lifecycle — the tool answers \"what do I do next\" for it.",
           "type": "string"
         }
       },
       "required": [
         "task_id"
       ],
-      "title": "ClaimTaskArgs",
+      "title": "CompleteTaskArgs",
       "type": "object"
     },
     "name": "shillbot_complete_task"
@@ -1059,7 +1054,7 @@
           ]
         },
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
@@ -1122,21 +1117,21 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state. Mismatched\nnetwork = the on-chain accounts won't be found.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
           ]
         },
         "task_id": {
-          "description": "The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned\nby `list_available_tasks`.",
+          "description": "The task identifier (format: `<campaign_id>:<task_uuid>`) of the verified task whose payment should be released.",
           "type": "string"
         }
       },
       "required": [
         "task_id"
       ],
-      "title": "ClaimTaskArgs",
+      "title": "FinalizeTaskArgs",
       "type": "object"
     },
     "name": "shillbot_finalize_task"
@@ -1188,7 +1183,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state. Mismatched\nnetwork = the on-chain accounts won't be found.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
@@ -1234,7 +1229,7 @@
           ]
         },
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state. Mismatched\nnetwork = the on-chain accounts won't be found.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
@@ -1253,17 +1248,16 @@
     "description": "[READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all of your campaigns. Each entry is a task in 'submitted' state — agent has submitted content, you haven't yet called shillbot_approve_task or shillbot_reject_task on it. Use this to populate a review queue / inbox. Requires a registered wallet (the calling wallet must be the campaign client). Optional `network`: 'mainnet' (default) or 'devnet'.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Argument struct for tools that just need the network discriminator\n(currently `shillbot_list_pending_approval`). Lets us mirror the\nvalidation pattern from the other tools without inventing an empty\nstruct.",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
           ]
         }
       },
-      "title": "NetworkOnlyArgs",
+      "title": "PendingApprovalArgs",
       "type": "object"
     },
     "name": "shillbot_list_pending_approval"
@@ -1277,7 +1271,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
@@ -1298,21 +1292,21 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state. Mismatched\nnetwork = the on-chain accounts won't be found.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
           ]
         },
         "task_id": {
-          "description": "The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned\nby `list_available_tasks`.",
+          "description": "The task identifier (format: `<campaign_id>:<task_uuid>`) returned by shillbot_list_pending_approval.",
           "type": "string"
         }
       },
       "required": [
         "task_id"
       ],
-      "title": "ClaimTaskArgs",
+      "title": "RejectTaskArgs",
       "type": "object"
     },
     "name": "shillbot_reject_task"
@@ -1375,7 +1369,7 @@
           "type": "string"
         },
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state. Mismatched\nnetwork = the on-chain accounts won't be found.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
@@ -1404,21 +1398,21 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "network": {
-          "description": "Solana network. `\"mainnet\"` (default) or `\"devnet\"`. Forwarded to\nthe orchestrator which dispatches per-network state. Mismatched\nnetwork = the on-chain accounts won't be found.",
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
             "string",
             "null"
           ]
         },
         "task_id": {
-          "description": "The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned\nby `list_available_tasks`.",
+          "description": "The task identifier (format: `<campaign_id>:<task_uuid>`) of the submitted task to verify.",
           "type": "string"
         }
       },
       "required": [
         "task_id"
       ],
-      "title": "ClaimTaskArgs",
+      "title": "VerifyTaskArgs",
       "type": "object"
     },
     "name": "shillbot_verify_task"
@@ -1578,7 +1572,7 @@
           ]
         }
       },
-      "title": "XchainGameplayArgs",
+      "title": "XchainBuildCreateXmatchArgs",
       "type": "object"
     },
     "name": "xchain_build_create_xmatch"
@@ -1598,7 +1592,7 @@
       "required": [
         "match"
       ],
-      "title": "XchainBuildCreateMatchArgs",
+      "title": "XchainBuildLockArgs",
       "type": "object"
     },
     "name": "xchain_build_lock"
@@ -1620,7 +1614,7 @@
           ]
         }
       },
-      "title": "XchainGameplayArgs",
+      "title": "XchainBuildLockXmatchArgs",
       "type": "object"
     },
     "name": "xchain_build_lock_xmatch"
@@ -1674,7 +1668,7 @@
       "required": [
         "match"
       ],
-      "title": "XchainBuildRefundArgs",
+      "title": "XchainBuildRefundXmatchArgs",
       "type": "object"
     },
     "name": "xchain_build_refund_xmatch"
@@ -1696,7 +1690,7 @@
           ]
         }
       },
-      "title": "XchainGameplayArgs",
+      "title": "XchainBuildSettleArgs",
       "type": "object"
     },
     "name": "xchain_build_settle"
