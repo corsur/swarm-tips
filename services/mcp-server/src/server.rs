@@ -1320,7 +1320,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_reject_task",
-        description = "[IN DEVELOPMENT] [READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is on the roadmap; once it ships, this tool will route through it instead. Optional `network`: 'mainnet' (default) or 'devnet'.",
+        description = "[READ] [IN DEVELOPMENT] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is on the roadmap; once it ships, this tool will route through it instead. Optional `network`: 'mainnet' (default) or 'devnet'.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_reject_task(
@@ -1620,12 +1620,49 @@ impl SwarmTipsMcp {
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
+        // "Registered, earned nothing" and "no on-chain AgentState at all"
+        // both serialize as all-zeros from the orchestrator. Distinguish them
+        // here — the cold-agent review hit exactly this: a wallet that never
+        // claimed reads zeros with no hint that claiming is the missing step.
+        // Best-effort: an RPC blip must not fail an earnings summary that the
+        // orchestrator already answered, so a failed read degrades to null
+        // ("unknown") rather than an error.
+        let agent_state = match crate::solana_reads::read_agent_state(
+            &self.state.rpc_client,
+            self.rpc_url_for_network(network),
+            &wallet_pubkey,
+        )
+        .await
+        {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(wallet = %wallet_pubkey, error = %e, "AgentState presence read failed — wallet_registered=null");
+                None
+            }
+        };
+
+        let mut response = serde_json::to_value(&result)
+            .map_err(|e| McpError::internal_error(format!("serialize earnings: {e}"), None))?;
+        response["wallet_registered"] = match &agent_state {
+            Some(state) => serde_json::Value::Bool(state.is_some()),
+            None => serde_json::Value::Null,
+        };
+        if matches!(&agent_state, Some(None)) {
+            response["next_step"] = serde_json::Value::String(
+                "This wallet has no on-chain Shillbot AgentState yet — earnings begin \
+                 with a first claim. Call shillbot_list_available_tasks, then \
+                 shillbot_claim_task (0-SOL wallets: shillbot_onboard first)."
+                    .to_string(),
+            );
+        }
+
         tracing::info!(
             wallet = %wallet_pubkey,
             network = network.unwrap_or("mainnet"),
+            wallet_registered = ?agent_state.as_ref().map(|s| s.is_some()),
             "checked earnings"
         );
-        Ok(text_result(&result))
+        Ok(text_result(&response))
     }
 
     #[tool(
@@ -1665,7 +1702,11 @@ impl SwarmTipsMcp {
                 "raw": player_profile,
                 "derived": game_derived,
             },
-            "last_updated": now_iso,
+            // When THIS read happened — the PDAs are fetched live, so the
+            // data is exactly as fresh as the request. Named retrieved_at
+            // (not last_updated) so it can't be misread as a data-change
+            // stamp.
+            "retrieved_at": now_iso,
             "source": "on-chain (Solana getAccountInfo); orchestrator NOT consulted.",
         });
 
@@ -1902,16 +1943,16 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "list_earning_opportunities",
-        description = "[READ] Aggregated list of earning opportunities across the swarm.tips ecosystem. Includes Shillbot tasks (claim via shillbot_claim_task — first-party deep integration with on-chain Solana escrow + Switchboard oracle attestation), plus external bounties from Bountycaster, BotBounty, and 0xWork (each entry's `source_url` is a direct off-platform redirect — agents claim through the source platform itself, swarm.tips does not mediate). Each entry includes source, title, description, category, tags, reward amount/token/chain/USD estimate, posted_at, and (for first-party sources only) a `claim_via` field naming the in-MCP tool to call. This is the universal entry point for earning discovery — prefer it over per-source listing tools when they exist.",
+        description = "[READ] Aggregated list of earning opportunities across the swarm.tips ecosystem. Includes Shillbot tasks (claim via shillbot_claim_task — first-party deep integration with on-chain Solana escrow + Switchboard oracle attestation), plus external bounties from Bountycaster, BotBounty, and 0xWork (each entry's `source_url` is a direct off-platform redirect — agents claim through the source platform itself, swarm.tips does not mediate). Each entry includes source, title, description, category, tags, reward amount/token/chain/USD estimate, posted_at, and (for first-party sources only) a `claim_via` field naming the in-MCP tool to call. This is THE earning front door — start here to earn. Per-source tools (e.g. shillbot_list_available_tasks) are the follow-up deep query; discover_opportunities is only for searching earn + spend together.",
         annotations(read_only_hint = true)
     )]
     async fn list_earning_opportunities(
         &self,
         Parameters(args): Parameters<ListEarningOpportunitiesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let mut listings = get_listings(&self.state.listings)
-            .await
-            .map_err(|e| McpError::internal_error(format!("get_listings failed: {e}"), None))?;
+        let mut listings = get_listings(&self.state.listings).await.map_err(|e| {
+            McpError::internal_error(format!("listings aggregation failed: {e}"), None)
+        })?;
 
         // Apply args filters in-process. The cached listings come unfiltered;
         // we filter per-call so different agents can apply different filters
@@ -1980,7 +2021,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "discover_opportunities",
-        description = "[READ] Unified search across earn + spend verticals. Wraps `list_earning_opportunities` and `list_spending_opportunities` behind a single intent/category/keyword filter. Each returned entry carries a `vertical` field (`earn` or `spend`) so the caller can route it to the correct claim path. Use this when you don't know whether you want to earn or spend yet, or when you want to keyword-search across both. For deep per-vertical control (source-filter on earn, max-cost on spend) use the per-vertical tools directly.",
+        description = "[READ] Cross-vertical keyword search over earn + spend together. Wraps `list_earning_opportunities` and `list_spending_opportunities` behind one intent/category/keyword filter; results interleave both verticals (earn first) and each entry carries a `vertical` field (`earn` or `spend`) for routing to the correct claim path. Use this ONLY when you don't yet know whether you want to earn or spend, or want one keyword search across both. To earn, start at list_earning_opportunities; to spend, list_spending_opportunities.",
         annotations(read_only_hint = true)
     )]
     async fn discover_opportunities(
@@ -2000,17 +2041,18 @@ impl SwarmTipsMcp {
         // schemas (`Listing` + `SpendingOpportunity`) into one
         // homogeneous list — the caller can pick fields on the
         // discriminator.
-        let mut merged: Vec<serde_json::Value> = Vec::new();
+        let mut earn: Vec<serde_json::Value> = Vec::new();
+        let mut spend: Vec<serde_json::Value> = Vec::new();
 
         if intent.map(|i| i == "earn").unwrap_or(true) {
-            let listings = get_listings(&self.state.listings)
-                .await
-                .map_err(|e| McpError::internal_error(format!("get_listings failed: {e}"), None))?;
+            let listings = get_listings(&self.state.listings).await.map_err(|e| {
+                McpError::internal_error(format!("listings aggregation failed: {e}"), None)
+            })?;
             collect_earn_entries(
                 listings,
                 category_needle.as_deref(),
                 keyword_needle.as_deref(),
-                &mut merged,
+                &mut earn,
             );
         }
 
@@ -2020,12 +2062,12 @@ impl SwarmTipsMcp {
                 opportunities,
                 category_needle.as_deref(),
                 keyword_needle.as_deref(),
-                &mut merged,
+                &mut spend,
             );
         }
 
         let limit = args.limit.unwrap_or(50).min(200) as usize;
-        merged.truncate(limit);
+        let merged = interleave_verticals(earn, spend, limit);
 
         tracing::info!(
             count = merged.len(),
@@ -2040,7 +2082,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "search_mcp_servers",
-        description = "[READ] BM25 relevance search over the full ingested MCP-server catalog (17,000+ servers from the official MCP registry + awesome-lists, auto-classified by heuristics + LLM). Query by capability in free text (e.g. \"solana defi swap\", \"browser automation\") — results are relevance-gated, then ordered by fully AUTOMATED quality signals (multi-source corroboration, GitHub stars, npm downloads, upstream quality scores, LLM classification confidence); no manual curation influences ranking, and each hit discloses its ranking_signals for audit. Filter by `category`, `currency`, and `tier` (automated provenance: first-party = hosted on a swarm.tips-operated domain, external = everything else). Omit `query` to browse quality-ordered. Use this when an agent needs an MCP server for a capability; for earn/spend opportunities use discover_opportunities.",
+        description = "[READ] BM25 relevance search over the ingested MCP-server catalog (official MCP registry + awesome-lists, auto-classified by heuristics + LLM; live size reported as `corpus_size`). Query by capability in free text (e.g. \"solana defi swap\", \"browser automation\") — results are relevance-gated, then ordered by fully AUTOMATED quality signals (multi-source corroboration, GitHub stars, npm downloads, upstream quality scores, LLM classification confidence); no manual curation influences ranking, and each hit discloses its ranking_signals for audit. Footgun: `category`/`currency`/`tier` filters apply WITHIN the top-400 BM25 candidates for the query — a narrow filter plus a broad query can miss matching servers outside that window; tighten the query instead. Tier provenance is automated (first-party = hosted on a swarm.tips-operated domain, external = everything else). Omit `query` to browse quality-ordered. Use this to find an MCP server for a capability; for earn/spend opportunities use discover_opportunities.",
         annotations(read_only_hint = true)
     )]
     async fn search_mcp_servers(
@@ -2071,7 +2113,10 @@ impl SwarmTipsMcp {
         let catalog_age_hours = chrono::Utc::now()
             .signed_duration_since(index.catalog_refreshed_at)
             .num_hours();
-        if catalog_age_hours > 24 * 7 {
+        // Surface staleness to the CALLER, not only the log — an agent
+        // reading week-old rankings should know it.
+        let stale_catalog = catalog_age_hours > 24 * 7;
+        if stale_catalog {
             tracing::warn!(
                 catalog_age_hours,
                 "search served from a stale catalog snapshot — refresh overdue"
@@ -2094,6 +2139,7 @@ impl SwarmTipsMcp {
             "returned": hits.len(),
             "corpus_size": index.corpus_size(),
             "catalog_age_hours": catalog_age_hours,
+            "stale_catalog": stale_catalog,
             "ranking": "BM25 relevance gate × automated quality prior (source corroboration, GitHub stars, npm downloads, upstream quality, LLM confidence). No manual curation — see each hit's ranking_signals.",
             "provenance_definitions": {
                 "first-party": "Endpoint or repo hosted on a swarm.tips-operated domain — an automated fact, same operator as this MCP server.",
@@ -2295,7 +2341,9 @@ impl SwarmTipsMcp {
             .game_api
             .xqueue_join(&address, &chain, &args.session_key, tournament_id)
             .await
-            .map_err(|e| McpError::internal_error(format!("xqueue_join failed: {e}"), None))?;
+            .map_err(|e| {
+                McpError::internal_error(format!("cross-chain queue join failed: {e}"), None)
+            })?;
 
         tracing::info!(
             event = "xchain_find_match",
@@ -2339,7 +2387,9 @@ impl SwarmTipsMcp {
             }
             _ => self.state.game_api.xqueue_status(&address).await,
         }
-        .map_err(|e| McpError::internal_error(format!("xqueue_status failed: {e}"), None))?;
+        .map_err(|e| {
+            McpError::internal_error(format!("cross-chain queue status failed: {e}"), None)
+        })?;
 
         Ok(text_result(&serde_json::json!({
             "status": resp.status,
@@ -2376,7 +2426,9 @@ impl SwarmTipsMcp {
             .game_api
             .evmgame_join(&address, &chain, tournament_id)
             .await
-            .map_err(|e| McpError::internal_error(format!("evmgame_join failed: {e}"), None))?;
+            .map_err(|e| {
+                McpError::internal_error(format!("EVM game queue join failed: {e}"), None)
+            })?;
 
         tracing::info!(
             event = "game_find_evm_match",
@@ -2412,7 +2464,7 @@ impl SwarmTipsMcp {
             .game_api
             .evmgame_status(&address)
             .await
-            .map_err(|e| McpError::internal_error(format!("evmgame_status failed: {e}"), None))?;
+            .map_err(|e| McpError::internal_error(format!("EVM match status failed: {e}"), None))?;
 
         Ok(text_result(&serde_json::json!({
             "status": resp.status,
@@ -2442,7 +2494,7 @@ impl SwarmTipsMcp {
             .evmgame_committed(&args.game_id, &address)
             .await
             .map_err(|e| {
-                McpError::internal_error(format!("evmgame_committed failed: {e}"), None)
+                McpError::internal_error(format!("EVM commit signal failed: {e}"), None)
             })?;
 
         Ok(text_result(&resp))
@@ -2489,7 +2541,9 @@ impl SwarmTipsMcp {
             .game_sessions
             .store_evm_preimage(&address, &args.game_id, preimage)
             .await
-            .map_err(|e| McpError::internal_error(format!("persist preimage failed: {e}"), None))?;
+            .map_err(|e| {
+                McpError::internal_error(format!("commitment persistence failed: {e}"), None)
+            })?;
 
         tracing::info!(event = "game_evm_commit_guess", wallet = %address, chain = %chain, guess, "built unsigned commitGuess");
         Ok(text_result(&serde_json::json!({
@@ -2526,7 +2580,7 @@ impl SwarmTipsMcp {
             .game_sessions
             .load_evm_preimage(&address, &args.game_id)
             .await
-            .map_err(|e| McpError::internal_error(format!("load preimage failed: {e}"), None))?
+            .map_err(|e| McpError::internal_error(format!("commitment lookup failed: {e}"), None))?
             .ok_or_else(|| {
                 invalid_input(
                     "no stored commit preimage for this game — call game_evm_commit_guess first",
@@ -2542,7 +2596,7 @@ impl SwarmTipsMcp {
             .evmgame_committed(&args.game_id, &address)
             .await
             .map_err(|e| {
-                McpError::internal_error(format!("evmgame_committed failed: {e}"), None)
+                McpError::internal_error(format!("EVM commit signal failed: {e}"), None)
             })?;
         if !resp
             .get("both_committed")
@@ -2612,7 +2666,9 @@ impl SwarmTipsMcp {
             .game_api
             .xqueue_build_sol_fund(&address, args.poll_handle.as_deref())
             .await
-            .map_err(|e| McpError::internal_error(format!("build_sol_fund failed: {e}"), None))?;
+            .map_err(|e| {
+                McpError::internal_error(format!("Solana funding-tx build failed: {e}"), None)
+            })?;
 
         Ok(text_result(&serde_json::json!({
             "action": resp.action,
@@ -2626,7 +2682,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_build_settle",
-        description = "[STATE] Get the operator-cosigned OUTCOME of your cross-chain match, ready to settle. Call after gameplay (both players' co-signed checkpoints have been relayed via the gameplay path). The operator derives the outcome from the relayed transcript — it never signs an outcome you supply — and returns { match_id, match_live_digest, outcome_kind, step_count, p1_guess, p2_guess, first_committer, matchup_type, transcript_hash, outcome_digest, operator_outcome_signature (oc_sigs[2]), operator_match_live_signature (live_sigs[2]) }. Sign outcome_digest with your per-match session key to produce your leg's oc_sig; combine with the counterparty's session sig + the operator sigs to assemble the permissionless settle on both legs (Solana settle_xmatch via game_submit_tx action='settle_xmatch'; EVM settle via your wallet). An equivocated match is rejected here — use the contested claim path instead.",
+        description = "[READ] Get the operator-cosigned OUTCOME of your cross-chain match, ready to settle. Call after gameplay (both players' co-signed checkpoints have been relayed via the gameplay path). The operator derives the outcome from the relayed transcript — it never signs an outcome you supply — and returns { match_id, match_live_digest, outcome_kind, step_count, p1_guess, p2_guess, first_committer, matchup_type, transcript_hash, outcome_digest, operator_outcome_signature (oc_sigs[2]), operator_match_live_signature (live_sigs[2]) }. Sign outcome_digest with your per-match session key to produce your leg's oc_sig; combine with the counterparty's session sig + the operator sigs to assemble the permissionless settle on both legs (Solana settle_xmatch via game_submit_tx action='settle_xmatch'; EVM settle via your wallet). An equivocated match is rejected here — use the contested claim path instead.",
         annotations(read_only_hint = true)
     )]
     async fn xchain_build_settle(
@@ -2643,7 +2699,9 @@ impl SwarmTipsMcp {
             .game_api
             .xqueue_outcome_cosign(&address, args.poll_handle.as_deref())
             .await
-            .map_err(|e| McpError::internal_error(format!("outcome_cosign failed: {e}"), None))?;
+            .map_err(|e| {
+                McpError::internal_error(format!("outcome cosign fetch failed: {e}"), None)
+            })?;
 
         Ok(text_result(&serde_json::json!({
             "outcome": outcome,
@@ -2675,7 +2733,8 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_gameplay_status",
-        description = "[READ] Your cross-chain 'what to sign next' view: the canonical step-2 checkpoint to co-sign once both players commit, the revealed r_matchup once the step-2 checkpoint is stored (so you can learn the matchup type and reveal), and the canonical terminal checkpoint once both reveal. Sign each returned checkpoint's digest with your session key and submit via xchain_sign_checkpoint."
+        description = "[READ] Your cross-chain 'what to sign next' view: the canonical step-2 checkpoint to co-sign once both players commit, the revealed r_matchup once the step-2 checkpoint is stored (so you can learn the matchup type and reveal), and the canonical terminal checkpoint once both reveal. Sign each returned checkpoint's digest with your session key and submit via xchain_sign_checkpoint.",
+        annotations(read_only_hint = true)
     )]
     async fn xchain_gameplay_status(
         &self,
@@ -2773,7 +2832,9 @@ impl SwarmTipsMcp {
             .game_api
             .xqueue_build_sol_refund(&address, match_id, kind)
             .await
-            .map_err(|e| McpError::internal_error(format!("build_sol_refund failed: {e}"), None))?;
+            .map_err(|e| {
+                McpError::internal_error(format!("Solana refund-tx build failed: {e}"), None)
+            })?;
         Ok(text_result(&serde_json::json!({
             "refund": resp,
             "instructions": "Sign the unsigned_tx with your Solana wallet and broadcast via game_submit_tx.",
@@ -2831,7 +2892,9 @@ impl SwarmTipsMcp {
             .game_api
             .xqueue_build_sol_lock(&address, args.poll_handle.as_deref())
             .await
-            .map_err(|e| McpError::internal_error(format!("build_sol_lock failed: {e}"), None))?;
+            .map_err(|e| {
+                McpError::internal_error(format!("Solana lock-tx build failed: {e}"), None)
+            })?;
         Ok(text_result(&serde_json::json!({
             "lock": resp,
             "instructions": "Sign the unsigned_tx with your Solana wallet and broadcast via game_submit_tx with action 'lock_xtranche'. Permissionless — you pay only the network fee.",
@@ -3946,7 +4009,13 @@ impl SwarmTipsMcp {
         prov: &crate::inbox::SenderProvenance,
     ) -> McpError {
         crate::inbox::log_rejection(reason, recipient, topic, prov);
-        invalid_input(msg)
+        // The machine-readable reason code used to stop at the log line; the
+        // caller only got prose. Ride it in error.data so an agent can branch
+        // on the code instead of substring-matching the message.
+        McpError::invalid_params(
+            msg.to_string(),
+            Some(serde_json::json!({ "reason": reason })),
+        )
     }
 
     /// Map inbox op errors: rejections log-and-400 (through `inbox_reject`, so
@@ -3966,7 +4035,11 @@ impl SwarmTipsMcp {
             }
             crate::inbox::InboxError::Internal(err) => {
                 tracing::error!(session_id = %prov.session_id, error = %err, "inbox operation failed");
-                McpError::internal_error(format!("inbox operation failed: {err}"), None)
+                McpError::internal_error(
+                    "inbox operation failed — details logged server-side; retry in a moment"
+                        .to_string(),
+                    None,
+                )
             }
         }
     }
@@ -4425,7 +4498,15 @@ fn build_trust_score_response(
             "agent_rank": agent_rank_present,
             "eigentrust": eigentrust.is_some(),
         },
-        "last_updated": now_iso,
+        // Freshness is PER SIGNAL, not one stamp: the on-chain inputs are
+        // read live at request time, but eigentrust comes from the last
+        // rebuild — a fresh top-level timestamp over a weeks-old rank is the
+        // stale-reputation bug the cold-agent review flagged.
+        "signal_as_of": {
+            "on_chain_reads": now_iso,
+            "eigentrust": eigentrust.map(|e| e.computed_at),
+        },
+        "retrieved_at": now_iso,
     })
 }
 
@@ -4506,14 +4587,19 @@ async fn run_build_verify_tx(
         .await
         .map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, "failed to spawn build-verify-tx.ts");
-            McpError::internal_error(format!("failed to spawn build-verify-tx: {e}"), None)
+            McpError::internal_error(
+                "verify-tx builder unavailable — details logged server-side".to_string(),
+                None,
+            )
         })?;
 
     if !output.status.success() {
+        // Raw subprocess stderr stays in the server log; forwarding it to the
+        // caller leaked file paths and internal stack frames to agents.
         let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::error!(service = "mcp-server", stderr = %stderr, "build-verify-tx.ts failed");
         return Err(McpError::internal_error(
-            format!("build-verify-tx failed: {stderr}"),
+            "verify-tx build failed — details logged server-side; retry, and report the task_id if it persists".to_string(),
             None,
         ));
     }
@@ -4721,8 +4807,16 @@ fn next_action_for_task_state(
     }
 }
 
+/// Map a service error onto the JSON-RPC envelope. Caller mistakes surface
+/// as -32602 invalid_params (actionable, message intact); everything else is
+/// -32603 with the thiserror category prefix — one vocabulary for "the call
+/// didn't produce the thing you asked for" instead of the four shapes the
+/// tool-surface review found.
 fn to_mcp_error(err: &McpServiceError) -> McpError {
-    McpError::internal_error(err.to_string(), None)
+    match err {
+        McpServiceError::InvalidInput(msg) => McpError::invalid_params(msg.clone(), None),
+        other => McpError::internal_error(other.to_string(), None),
+    }
 }
 
 fn invalid_input(msg: &str) -> McpError {
@@ -4754,6 +4848,35 @@ fn parse_discover_intent(raw: Option<&str>) -> Result<Option<&'static str>, McpE
 
 /// Filter, annotate, and append earning listings to `merged`. Mutates each
 /// listing in place to attach `claim_via` for first-party (`shillbot`) entries.
+/// Merge the two verticals round-robin (earn first) up to `limit`.
+///
+/// The old `earn.extend(spend); truncate(limit)` meant that with >= limit
+/// earning listings — the normal state of the board — the spend half was
+/// truncated away ENTIRELY in exactly the "I don't know which I want yet"
+/// case the tool exists for. Alternation keeps both verticals represented at
+/// any limit while preserving each vertical's own ordering.
+fn interleave_verticals(
+    earn: Vec<serde_json::Value>,
+    spend: Vec<serde_json::Value>,
+    limit: usize,
+) -> Vec<serde_json::Value> {
+    let mut merged = Vec::with_capacity(limit.min(earn.len().saturating_add(spend.len())));
+    let mut earn_iter = earn.into_iter();
+    let mut spend_iter = spend.into_iter();
+    while merged.len() < limit {
+        match (earn_iter.next(), spend_iter.next()) {
+            (None, None) => break,
+            (a, b) => {
+                merged.extend(a);
+                if merged.len() < limit {
+                    merged.extend(b);
+                }
+            }
+        }
+    }
+    merged
+}
+
 fn collect_earn_entries(
     listings: Vec<crate::listings::models::AgentJob>,
     category_needle: Option<&str>,
@@ -4950,6 +5073,73 @@ mod tests {
             serde_json::from_str(r#"{"pubkey":"CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY"}"#)
                 .expect("legacy args deserialize");
         assert!(args.nonce.is_none() && args.signature.is_none() && args.tx_signature.is_none());
+    }
+
+    // -- discover_opportunities: vertical interleave ------------------------
+
+    fn tagged(vertical: &str, i: usize) -> serde_json::Value {
+        serde_json::json!({ "vertical": vertical, "i": i })
+    }
+
+    /// The bug this replaces: earn-then-spend + truncate(50) made spend
+    /// entries unreachable whenever >= 50 earning listings existed — the
+    /// normal state of the board, in exactly the "either vertical" case the
+    /// tool advertises.
+    #[test]
+    fn interleave_keeps_both_verticals_visible_at_the_default_limit() {
+        let earn: Vec<_> = (0..60).map(|i| tagged("earn", i)).collect();
+        let spend: Vec<_> = (0..5).map(|i| tagged("spend", i)).collect();
+        let merged = interleave_verticals(earn, spend, 50);
+
+        assert_eq!(merged.len(), 50, "limit respected");
+        let spends = merged.iter().filter(|v| v["vertical"] == "spend").count();
+        assert_eq!(spends, 5, "every spend entry survives the limit");
+        // Each vertical's own ordering is preserved.
+        let earn_order: Vec<_> = merged
+            .iter()
+            .filter(|v| v["vertical"] == "earn")
+            .map(|v| v["i"].as_u64().expect("i"))
+            .collect();
+        assert!(
+            earn_order.windows(2).all(|w| w[0] < w[1]),
+            "earn order kept"
+        );
+        assert_eq!(merged[0]["vertical"], "earn", "earn leads the interleave");
+    }
+
+    #[test]
+    fn interleave_handles_single_vertical_and_zero_limit() {
+        let earn: Vec<_> = (0..3).map(|i| tagged("earn", i)).collect();
+        assert_eq!(interleave_verticals(earn.clone(), Vec::new(), 50).len(), 3);
+        assert_eq!(interleave_verticals(Vec::new(), earn.clone(), 2).len(), 2);
+        assert!(interleave_verticals(earn, Vec::new(), 0).is_empty());
+    }
+
+    // -- error envelope: service errors onto JSON-RPC codes -----------------
+
+    /// Caller mistakes must surface as -32602 (actionable), not -32603 —
+    /// before this mapping, an InvalidInput variant reached agents as an
+    /// "internal error", telling them to retry what could never succeed.
+    #[test]
+    fn service_errors_map_to_the_right_json_rpc_codes() {
+        let invalid = to_mcp_error(&McpServiceError::InvalidInput("bad task_id".to_string()));
+        assert_eq!(invalid.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(invalid.message.contains("bad task_id"));
+
+        for internal in [
+            McpServiceError::OrchestratorError("status 500".to_string()),
+            McpServiceError::GameApiError("timeout".to_string()),
+            McpServiceError::SolanaRpcError("-32002".to_string()),
+            McpServiceError::TransactionError("bad blockhash".to_string()),
+            McpServiceError::Internal("boom".to_string()),
+        ] {
+            let err = to_mcp_error(&internal);
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "{internal}"
+            );
+        }
     }
 
     // -- register_wallet: verify_nonce + inbox next-step surface ------------

@@ -56,7 +56,12 @@ pub struct TrustEdgeDoc {
     /// CAIP-2 chain id the settlement happened on (e.g.
     /// "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp").
     pub chain: String,
-    pub settled_at: chrono::DateTime<chrono::Utc>,
+    /// When the settlement landed on chain. `None` when the RPC omitted
+    /// `blockTime` for the signature — recorded honestly as unknown rather
+    /// than fabricated as "now", which would corrupt any future time-decay
+    /// weighting over the graph.
+    #[serde(default)]
+    pub settled_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Computed reputation for one wallet — what the mcp-server writes to
@@ -81,7 +86,15 @@ pub struct AgentReputation {
     /// Distinct counterparties across both directions — the Sybil-relevant
     /// diversity signal.
     pub counterparty_count: u32,
+    /// When THIS REBUILD ran — every agent gets the same stamp on every
+    /// rebuild, even when no new edges arrived. Pair with
+    /// `newest_edge_settled_at` to tell "recomputed" from "actually new".
     pub computed_at: chrono::DateTime<chrono::Utc>,
+    /// The most recent on-chain settlement touching this wallet (either
+    /// direction). `None` when the wallet has no edge with a known
+    /// block time. This is the staleness signal `computed_at` is not.
+    #[serde(default)]
+    pub newest_edge_settled_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Result of one reputation build.
@@ -133,7 +146,16 @@ pub fn build_reputation(
     let mut received: HashMap<&str, u32> = HashMap::new();
     let mut paid: HashMap<&str, u32> = HashMap::new();
     let mut counterparties: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut newest_edge: HashMap<&str, chrono::DateTime<chrono::Utc>> = HashMap::new();
     for d in &unique {
+        if let Some(at) = d.settled_at {
+            for wallet in [d.from.as_str(), d.to.as_str()] {
+                let entry = newest_edge.entry(wallet).or_insert(at);
+                if at > *entry {
+                    *entry = at;
+                }
+            }
+        }
         // saturating: the rank computed below already uses checked arithmetic,
         // and a u32 overflow here would silently wrap a settlement count.
         let r = received.entry(d.to.as_str()).or_default();
@@ -168,6 +190,7 @@ pub fn build_reputation(
                 .unwrap_or(0),
             rank: (i as u32).saturating_add(1),
             eigentrust_score: score,
+            newest_edge_settled_at: newest_edge.get(wallet.as_str()).copied(),
             wallet,
             computed_at: now,
         })
@@ -207,12 +230,46 @@ mod tests {
             task_id: 1,
             source: "shillbot_finalize".to_string(),
             chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string(),
-            settled_at: chrono::Utc::now(),
+            settled_at: Some(chrono::Utc::now()),
         }
     }
 
     fn pre(names: &[&str]) -> HashSet<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn newest_edge_settled_at_is_max_over_both_directions_and_null_without_dates() {
+        let t1 = chrono::DateTime::from_timestamp(1_000, 0).expect("valid ts");
+        let t2 = chrono::DateTime::from_timestamp(2_000, 0).expect("valid ts");
+        let mut e1 = edge("s1", "root", "a", 1.0);
+        e1.settled_at = Some(t1);
+        let mut e2 = edge("s2", "a", "b", 1.0);
+        e2.settled_at = Some(t2);
+        // An edge whose RPC read had no blockTime: recorded, but dateless.
+        let mut e3 = edge("s3", "root", "c", 1.0);
+        e3.settled_at = None;
+
+        let build = build_reputation(
+            &[e1, e2, e3],
+            &pre(&["root"]),
+            &EigenTrustConfig::default(),
+            chrono::Utc::now(),
+        )
+        .expect("build succeeds");
+        let by = |w: &str| {
+            build
+                .agents
+                .iter()
+                .find(|r| r.wallet == w)
+                .unwrap_or_else(|| panic!("{w} scored"))
+        };
+        // `a` received s1 (t1) and paid s2 (t2) — the PAID edge is newer and
+        // still counts: staleness is about graph activity, not income only.
+        assert_eq!(by("a").newest_edge_settled_at, Some(t2));
+        assert_eq!(by("b").newest_edge_settled_at, Some(t2));
+        // `c`'s only edge is dateless — honest null, not a fabricated now.
+        assert_eq!(by("c").newest_edge_settled_at, None);
     }
 
     #[test]

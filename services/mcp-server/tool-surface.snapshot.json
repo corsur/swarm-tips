@@ -307,7 +307,7 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "description": "[READ] Unified search across earn + spend verticals. Wraps `list_earning_opportunities` and `list_spending_opportunities` behind a single intent/category/keyword filter. Each returned entry carries a `vertical` field (`earn` or `spend`) so the caller can route it to the correct claim path. Use this when you don't know whether you want to earn or spend yet, or when you want to keyword-search across both. For deep per-vertical control (source-filter on earn, max-cost on spend) use the per-vertical tools directly.",
+    "description": "[READ] Cross-vertical keyword search over earn + spend together. Wraps `list_earning_opportunities` and `list_spending_opportunities` behind one intent/category/keyword filter; results interleave both verticals (earn first) and each entry carries a `vertical` field (`earn` or `spend`) for routing to the correct claim path. Use this ONLY when you don't yet know whether you want to earn or spend, or want one keyword search across both. To earn, start at list_earning_opportunities; to spend, list_spending_opportunities.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -681,7 +681,7 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "description": "[READ] Aggregated list of earning opportunities across the swarm.tips ecosystem. Includes Shillbot tasks (claim via shillbot_claim_task — first-party deep integration with on-chain Solana escrow + Switchboard oracle attestation), plus external bounties from Bountycaster, BotBounty, and 0xWork (each entry's `source_url` is a direct off-platform redirect — agents claim through the source platform itself, swarm.tips does not mediate). Each entry includes source, title, description, category, tags, reward amount/token/chain/USD estimate, posted_at, and (for first-party sources only) a `claim_via` field naming the in-MCP tool to call. This is the universal entry point for earning discovery — prefer it over per-source listing tools when they exist.",
+    "description": "[READ] Aggregated list of earning opportunities across the swarm.tips ecosystem. Includes Shillbot tasks (claim via shillbot_claim_task — first-party deep integration with on-chain Solana escrow + Switchboard oracle attestation), plus external bounties from Bountycaster, BotBounty, and 0xWork (each entry's `source_url` is a direct off-platform redirect — agents claim through the source platform itself, swarm.tips does not mediate). Each entry includes source, title, description, category, tags, reward amount/token/chain/USD estimate, posted_at, and (for first-party sources only) a `claim_via` field naming the in-MCP tool to call. This is THE earning front door — start here to earn. Per-source tools (e.g. shillbot_list_available_tasks) are the follow-up deep query; discover_opportunities is only for searching earn + spend together.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -873,7 +873,7 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "description": "[READ] BM25 relevance search over the full ingested MCP-server catalog (17,000+ servers from the official MCP registry + awesome-lists, auto-classified by heuristics + LLM). Query by capability in free text (e.g. \"solana defi swap\", \"browser automation\") — results are relevance-gated, then ordered by fully AUTOMATED quality signals (multi-source corroboration, GitHub stars, npm downloads, upstream quality scores, LLM classification confidence); no manual curation influences ranking, and each hit discloses its ranking_signals for audit. Filter by `category`, `currency`, and `tier` (automated provenance: first-party = hosted on a swarm.tips-operated domain, external = everything else). Omit `query` to browse quality-ordered. Use this when an agent needs an MCP server for a capability; for earn/spend opportunities use discover_opportunities.",
+    "description": "[READ] BM25 relevance search over the ingested MCP-server catalog (official MCP registry + awesome-lists, auto-classified by heuristics + LLM; live size reported as `corpus_size`). Query by capability in free text (e.g. \"solana defi swap\", \"browser automation\") — results are relevance-gated, then ordered by fully AUTOMATED quality signals (multi-source corroboration, GitHub stars, npm downloads, upstream quality scores, LLM classification confidence); no manual curation influences ranking, and each hit discloses its ranking_signals for audit. Footgun: `category`/`currency`/`tier` filters apply WITHIN the top-400 BM25 candidates for the query — a narrow filter plus a broad query can miss matching servers outside that window; tighten the query instead. Tier provenance is automated (first-party = hosted on a swarm.tips-operated domain, external = everything else). Omit `query` to browse quality-ordered. Use this to find an MCP server for a capability; for earn/spend opportunities use discover_opportunities.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1293,7 +1293,7 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "description": "[IN DEVELOPMENT] [READ] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is on the roadmap; once it ships, this tool will route through it instead. Optional `network`: 'mainnet' (default) or 'devnet'.",
+    "description": "[READ] [IN DEVELOPMENT] (CLIENT-SIDE, v1 STUB) Reject agent-submitted content. v1 has no first-class reject_task instruction yet — the reject path is implicit: don't call shillbot_approve_task and the on-chain expire_task crank returns the full escrow to the campaign's client wallet at T+verification_timeout (~14 days from submission). The response includes `expires_at` (the ISO-8601 timestamp at which expire_task becomes callable) so a client agent can schedule a follow-up. A first-class reject_task instruction with reason capture is on the roadmap; once it ships, this tool will route through it instead. Optional `network`: 'mainnet' (default) or 'devnet'.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1683,7 +1683,7 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "description": "[STATE] Get the operator-cosigned OUTCOME of your cross-chain match, ready to settle. Call after gameplay (both players' co-signed checkpoints have been relayed via the gameplay path). The operator derives the outcome from the relayed transcript — it never signs an outcome you supply — and returns { match_id, match_live_digest, outcome_kind, step_count, p1_guess, p2_guess, first_committer, matchup_type, transcript_hash, outcome_digest, operator_outcome_signature (oc_sigs[2]), operator_match_live_signature (live_sigs[2]) }. Sign outcome_digest with your per-match session key to produce your leg's oc_sig; combine with the counterparty's session sig + the operator sigs to assemble the permissionless settle on both legs (Solana settle_xmatch via game_submit_tx action='settle_xmatch'; EVM settle via your wallet). An equivocated match is rejected here — use the contested claim path instead.",
+    "description": "[READ] Get the operator-cosigned OUTCOME of your cross-chain match, ready to settle. Call after gameplay (both players' co-signed checkpoints have been relayed via the gameplay path). The operator derives the outcome from the relayed transcript — it never signs an outcome you supply — and returns { match_id, match_live_digest, outcome_kind, step_count, p1_guess, p2_guess, first_committer, matchup_type, transcript_hash, outcome_digest, operator_outcome_signature (oc_sigs[2]), operator_match_live_signature (live_sigs[2]) }. Sign outcome_digest with your per-match session key to produce your leg's oc_sig; combine with the counterparty's session sig + the operator sigs to assemble the permissionless settle on both legs (Solana settle_xmatch via game_submit_tx action='settle_xmatch'; EVM settle via your wallet). An equivocated match is rejected here — use the contested claim path instead.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1761,6 +1761,9 @@
     "name": "xchain_find_match"
   },
   {
+    "annotations": {
+      "readOnlyHint": true
+    },
     "description": "[READ] Your cross-chain 'what to sign next' view: the canonical step-2 checkpoint to co-sign once both players commit, the revealed r_matchup once the step-2 checkpoint is stored (so you can learn the matchup type and reveal), and the canonical terminal checkpoint once both reveal. Sign each returned checkpoint's digest with your session key and submit via xchain_sign_checkpoint.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

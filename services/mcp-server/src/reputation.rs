@@ -492,7 +492,7 @@ struct EventDelta {
 fn apply_events(
     events: Vec<ChainEvent>,
     sig: &str,
-    settled_at: chrono::DateTime<chrono::Utc>,
+    settled_at: Option<chrono::DateTime<chrono::Utc>>,
     state: &mut JoinState,
 ) -> (Vec<TrustEdgeDoc>, EventDelta) {
     let mut docs = Vec::new();
@@ -634,9 +634,17 @@ pub async fn backfill(
             })
             .unwrap_or_default();
 
-        let settled_at = block_time
-            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
-            .unwrap_or_else(chrono::Utc::now);
+        // No blockTime from the RPC → record the edge with settled_at=null
+        // rather than stamping "now" over history. A fabricated timestamp
+        // silently corrupts any future time-decay weighting; an honest null
+        // is filterable.
+        let settled_at = block_time.and_then(|t| chrono::DateTime::from_timestamp(t, 0));
+        if settled_at.is_none() {
+            tracing::warn!(
+                sig,
+                "blockTime missing — edge recorded with settled_at=null"
+            );
+        }
         let (docs, delta) = apply_events(events_from_logs(&logs), sig, settled_at, &mut join);
         skipped_incomplete = skipped_incomplete.saturating_add(delta.skipped_incomplete);
         finalized_edges = finalized_edges.saturating_add(delta.finalized);
@@ -937,7 +945,7 @@ mod backfill_tests {
                 },
             ],
             "sig-1",
-            at(),
+            Some(at()),
             &mut st,
         );
 
@@ -973,7 +981,7 @@ mod backfill_tests {
                 },
             ],
             "sig",
-            at(),
+            Some(at()),
             &mut st,
         );
         assert!((docs[0].weight - 1.0).abs() < f64::EPSILON);
@@ -989,7 +997,7 @@ mod backfill_tests {
                 agent: "AGENT".into(),
             }],
             "sig",
-            at(),
+            Some(at()),
             &mut st,
         );
         // An edge IS drawn — the settlement happened — but it carries no trust.
@@ -1008,7 +1016,7 @@ mod backfill_tests {
                 agent: "AGENT".into(),
             }],
             "sig",
-            at(),
+            Some(at()),
             &mut st,
         );
         assert!(docs.is_empty(), "no client means there is no edge to draw");
@@ -1026,7 +1034,7 @@ mod backfill_tests {
                 challenger_won: false,
             }],
             "sig",
-            at(),
+            Some(at()),
             &mut st,
         );
         // The agent won, so the Finalized path pays out and draws the edge.
@@ -1047,7 +1055,7 @@ mod backfill_tests {
                 challenger_won: true,
             }],
             "sig",
-            at(),
+            Some(at()),
             &mut st,
         );
         assert_eq!(docs.len(), 1);
@@ -1067,7 +1075,7 @@ mod backfill_tests {
                 client: "CLIENT".into(),
             }],
             "sig-a",
-            at(),
+            Some(at()),
             &mut st,
         );
         assert!(docs.is_empty());
@@ -1078,7 +1086,7 @@ mod backfill_tests {
                 agent: "AGENT".into(),
             }],
             "sig-b",
-            at(),
+            Some(at()),
             &mut st,
         );
         assert_eq!(docs.len(), 1);
