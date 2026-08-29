@@ -684,8 +684,9 @@ async fn track_inflight(
 /// game-api is probed for observability but never fails readiness: game-api
 /// scales to zero (KEDA HTTP add-on) and in-cluster DNS bypasses the wake
 /// interceptor, so "connection refused" is a NORMAL state — gating on it takes
-/// all 51 tools offline to guard the ~10 game tools, which surface game-api
-/// errors per-call anyway (2026-07-24 outage: stuck NotReady rollout).
+/// the ENTIRE tool surface offline to guard the handful of game tools, which
+/// surface game-api errors per-call anyway (2026-07-24 outage: stuck NotReady
+/// rollout).
 /// Wired to the readiness probe and `/ready` ONLY, never liveness: a failing
 /// dependency should drain traffic from this pod, never kill the (healthy) process.
 ///
