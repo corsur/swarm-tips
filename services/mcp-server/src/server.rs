@@ -2819,7 +2819,12 @@ impl SwarmTipsMcp {
             .xqueue_build_sol_fund(&address, args.poll_handle.as_deref())
             .await
             .map_err(|e| {
-                McpError::internal_error(format!("Solana funding-tx build failed: {e}"), None)
+                let hint = if args.poll_handle.is_none() && e.to_string().contains("no pending") {
+                    " — pass the poll_handle from xchain_find_match; the wallet-based lookup is deprecated and can miss your match"
+                } else {
+                    ""
+                };
+                McpError::internal_error(format!("Solana funding-tx build failed: {e}{hint}"), None)
             })?;
 
         Ok(text_result(&serde_json::json!({
@@ -3057,12 +3062,21 @@ impl SwarmTipsMcp {
             .xqueue_build_sol_lock(&address, args.poll_handle.as_deref())
             .await
             .map_err(|e| {
-                McpError::internal_error(format!("Solana lock-tx build failed: {e}"), None)
+                let hint = if args.poll_handle.is_none() && e.to_string().contains("no pending") {
+                    " — pass the poll_handle from xchain_find_match; the wallet-based lookup is deprecated and can miss your match"
+                } else {
+                    ""
+                };
+                McpError::internal_error(format!("Solana lock-tx build failed: {e}{hint}"), None)
             })?;
-        Ok(text_result(&serde_json::json!({
-            "lock": resp,
-            "instructions": "Sign the unsigned_tx with your Solana wallet and broadcast via game_submit_tx with action 'lock_xtranche'. Permissionless — you pay only the network fee.",
-        })))
+        // Flat, matching the description and the sibling build tools — the
+        // live spot check found the old {lock: {...}} nesting broke the
+        // documented {unsigned_tx, blockhash, ...} contract.
+        let mut resp = resp;
+        resp["instructions"] = serde_json::json!(
+            "Sign the unsigned_tx with your Solana wallet and broadcast via game_submit_tx with action 'lock_xtranche'. Permissionless — you pay only the network fee."
+        );
+        Ok(text_result(&resp))
     }
 
     #[tool(
