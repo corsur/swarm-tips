@@ -253,7 +253,16 @@ pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
         a_is_p1: u8::try_from(u64_at("a_is_p1")?).map_err(|_| "a_is_p1 overflow".to_string())?,
     };
     let contract = decode_0x::<20>(&str_at(leg_b, "contract")?)?;
-    let operator_sig = decode_0x::<65>(&str_at(payload, "operator_signature")?)?;
+    let mut operator_sig = decode_0x::<65>(&str_at(payload, "operator_signature")?)?;
+    // The relay stores signatures with v normalized to 0/1 (the form the
+    // Solana program and game-api verify); the EVM contract's ECDSA.recover
+    // demands 27/28. Passing the relay form through verbatim made EVERY
+    // lockTranche revert ECDSAInvalidSignature (0xf645eedf) — found live on
+    // Base Sepolia 2026-08-30; the v+27 patched call landed. Tolerate both
+    // forms here so neither storage convention can brick the lock.
+    if operator_sig[64] < 27 {
+        operator_sig[64] = operator_sig[64].saturating_add(27);
+    }
 
     let call = evm_chain::build_lock_tranche_parts(contract, cert, operator_sig);
     let (to, data, value) = call.to_hex_parts();
@@ -390,8 +399,7 @@ mod tests {
         assert!(build_evm_create_match_call(&json!({"leg_a":{},"leg_b":{}})).is_err());
     }
 
-    #[test]
-    fn build_evm_lock_call_from_relay_payload() {
+    fn lock_test_payload() -> Value {
         let leg = |sk: &str| {
             json!({
                 "chain": "eip155:84532",
@@ -402,7 +410,7 @@ mod tests {
                 "tranche_base_units": "10000000000000",
             })
         };
-        let payload = json!({
+        json!({
             "match_id": format!("0x{}", "aa".repeat(32)),
             "tournament_id": 2u64,
             "matchup_commitment": format!("0x{}", "bb".repeat(32)),
@@ -421,7 +429,12 @@ mod tests {
                 "stake_base_units": "10000000000000",
                 "tranche_base_units": "10000000000000",
             },
-        });
+        })
+    }
+
+    #[test]
+    fn build_evm_lock_call_from_relay_payload() {
+        let payload = lock_test_payload();
         let call = build_evm_lock_call(&payload).expect("valid payload");
         // Permissionless lock: pays only gas (value 0); `to` is the EVM contract.
         assert_eq!(call["value_wei"], "0");
@@ -434,6 +447,46 @@ mod tests {
         // selector(4) + cert tuple + dynamic operatorSig (65 bytes) → well over 200 bytes.
         assert!(data.len() > 2 + 200 * 2, "lock calldata unexpectedly short");
         assert_eq!(call["match_id"], format!("0x{}", "aa".repeat(32)));
+    }
+
+    /// Live regression (Base Sepolia, 2026-08-30): the relay stores the
+    /// operator match-live signature with v in 0/1 form; forwarding it
+    /// verbatim made every lockTranche revert ECDSAInvalidSignature. The
+    /// builder must emit contract-form v (27/28) — and leave already-
+    /// normalized signatures untouched.
+    #[test]
+    fn build_evm_lock_call_normalizes_relay_form_v_to_contract_form() {
+        let payload_with_v = |v: u8| {
+            let mut sig = vec![0xcdu8; 65];
+            sig[64] = v;
+            let mut p = lock_test_payload();
+            p["operator_signature"] = json!(format!("0x{}", hex::encode(sig)));
+            p
+        };
+        // The dynamic bytes arg is ABI-tail-padded: the final 32-byte word is
+        // the 65th signature byte (v) followed by 31 zeros.
+        // Skip "0x" + the 8-hex selector so 32-byte words align.
+        let v_word = |call: &serde_json::Value| {
+            call["data"].as_str().unwrap()[2 + 8..]
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(64)
+                .last()
+                .unwrap()
+                .iter()
+                .collect::<String>()
+        };
+        let relay_form = build_evm_lock_call(&payload_with_v(0)).expect("valid");
+        assert!(
+            v_word(&relay_form).starts_with("1b"),
+            "v=0 must become 27 (0x1b), got word {}",
+            v_word(&relay_form)
+        );
+        let contract_form = build_evm_lock_call(&payload_with_v(28)).expect("valid");
+        assert!(
+            v_word(&contract_form).starts_with("1c"),
+            "v=28 must pass through untouched"
+        );
     }
 
     #[test]
