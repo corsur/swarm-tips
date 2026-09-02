@@ -66,9 +66,9 @@ impl Surface {
 
     pub const fn description(self) -> &'static str {
         match self {
-            Self::Swarm => "Free tools and earning capabilities for agents.",
-            Self::Shillbot => "Shillbot earning, client, and paid-video capabilities.",
-            Self::Game => "Coordination Game capabilities.",
+            Self::Swarm => "Unified endpoint: free and earning discovery plus exact-name access to every Shillbot and Coordination Game capability.",
+            Self::Shillbot => "Focused Shillbot earning, client, and paid-video catalog; every capability is also callable by exact name on mcp.swarm.tips.",
+            Self::Game => "Focused Coordination Game catalog; every capability is also callable by exact name on mcp.swarm.tips.",
         }
     }
 
@@ -101,6 +101,15 @@ mod tests {
             assert_eq!(related.len(), 2);
             assert!(!related.contains(&surface));
             assert!(related.iter().all(|item| item.mcp_url().ends_with("/mcp")));
+        }
+    }
+
+    #[test]
+    fn every_surface_points_to_swarm_as_the_unified_exact_name_endpoint() {
+        assert!(Surface::Swarm.description().contains("Unified endpoint"));
+        for surface in [Surface::Shillbot, Surface::Game] {
+            assert!(surface.description().contains("mcp.swarm.tips"));
+            assert!(surface.description().contains("exact name"));
         }
     }
 }

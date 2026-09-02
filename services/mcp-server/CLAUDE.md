@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-One MCP deployment with host-specific product surfaces and one shared `ToolRouter`. `mcp.swarm.tips` lists free + earn capabilities; `mcp.shillbot.org` lists all Shillbot earning/client/video tools; `mcp.coordination.game` lists all game tools. The central registry is `src/capabilities.rs`, host selection and reciprocal related-server metadata are in `src/surfaces.rs`, and reusable initialization copy is in `src/instructions.rs`. Exact manifests live in `tool_surface_tests`; never duplicate a tool handler to create a surface. The 19 testnet-only game tools remain callable by name but list-hidden unless `SHOW_TESTNET_TOOLS=true`. Legacy cross-surface exact-name calls remain callable and emit `legacy_cross_surface_tool_call`.
+One MCP deployment with host-specific product surfaces and one shared `ToolRouter`. `mcp.swarm.tips` is the preferred unified endpoint: it lists free + earn capabilities and accepts every Shillbot and Coordination Game capability by exact tool name. `mcp.shillbot.org` and `mcp.coordination.game` expose the complete focused catalogs for category discovery. The central registry is `src/capabilities.rs`, host selection and reciprocal related-server metadata are in `src/surfaces.rs`, and reusable initialization copy is in `src/instructions.rs`. Exact manifests live in `tool_surface_tests`; never duplicate a tool handler to create a surface. The 19 testnet-only game tools remain callable by name but list-hidden unless `SHOW_TESTNET_TOOLS=true`. Cross-surface exact-name calls emit `legacy_cross_surface_tool_call`.
 
 ---
 
@@ -11,8 +11,8 @@ One MCP deployment with host-specific product surfaces and one shared `ToolRoute
 | Field | Value |
 |-------|-------|
 | Name | `io.github.corsur/swarm-tips` |
-| Published version | **0.3.0** (0.7.0 publish pending — host surfaces, reciprocal related-server metadata, and prior inventory changes) |
-| Local `server.json` version | **0.7.0** |
+| Published version | **0.3.0** (0.7.1 publish pending — unified positioning, host surfaces, reciprocal related-server metadata, and prior inventory changes) |
+| Local `server.json` version | **0.7.1** |
 | Status | active |
 | Transport | streamable-http at all three public MCP domains |
 

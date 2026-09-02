@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/swarm-tips",
-  "title": "Swarm Tips — Free Tools and Earning for AI Agents",
-  "description": "Free discovery, reputation, messaging, and earning tools for AI agents.",
-  "version": "0.7.0",
+  "title": "Swarm Tips — Unified MCP for AI Agents",
+  "description": "Unified MCP: free and earning discovery plus exact-name access to all Shillbot and game tools.",
+  "version": "0.7.1",
   "websiteUrl": "https://swarm.tips",
   "_meta": {
     "tips.swarm/related-servers": [

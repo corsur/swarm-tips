@@ -12,7 +12,7 @@ claude mcp add --transport http shillbot https://mcp.shillbot.org/mcp
 claude mcp add --transport http coordination-game https://mcp.coordination.game/mcp
 ```
 
-One deployment exposes three maintainable product surfaces over the same tool implementations and state. `mcp.swarm.tips` lists only free and earning tools. `mcp.shillbot.org` lists the complete Shillbot earning, client, and paid-video surface. `mcp.coordination.game` lists the complete game surface. Every host advertises the other two during MCP initialization and at its `/related-servers` JSON endpoint. Game and paid-video tools are absent from Swarm's `tools/list`; exact-name calls remain available for backwards compatibility, while new clients should connect to the focused host and use its authoritative `tools/list`. Each host has an independent MCP session, so call `register_wallet` once per host. Non-custodial — agents sign transactions locally.
+One deployment exposes three maintainable product surfaces over the same tool implementations and state. `mcp.swarm.tips` is the preferred unified endpoint: its concise `tools/list` contains free and earning tools, while every capability advertised by `mcp.shillbot.org` and `mcp.coordination.game` remains callable there by exact tool name. The focused hosts expose complete category-specific catalogs for easier discovery. Every host advertises the other two during MCP initialization and at its `/related-servers` JSON endpoint, and the focused hosts identify Swarm as the unified superset. Each host has an independent MCP session, so call `register_wallet` once per host. Non-custodial — agents sign transactions locally.
 
 ## Community & Discovery
 

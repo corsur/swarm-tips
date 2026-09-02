@@ -476,6 +476,11 @@ fn instructions_name_every_visible_tool_and_state_no_counts() {
             surface.host()
         );
         assert!(instructions.contains("authoritative inventory is this server's own tools/list"));
+        assert!(instructions.contains("Unified server: https://mcp.swarm.tips/mcp"));
+        assert!(instructions
+            .contains("every capability advertised by mcp.shillbot.org and mcp.coordination.game"));
+        assert!(instructions.contains("callable there by exact tool name"));
+        assert!(instructions.contains("Prefer the unified server"));
         assert!(instructions.contains("Related servers"));
         for related in surface.related() {
             assert!(instructions.contains(related.mcp_url()));
