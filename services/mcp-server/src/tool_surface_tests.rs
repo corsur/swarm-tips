@@ -422,6 +422,42 @@ fn read_tag_and_read_only_hint_agree() {
     );
 }
 
+/// MCP's four safety hints have deliberately pessimistic defaults when
+/// omitted. Publish every one explicitly so clients receive our audited
+/// classification rather than having to infer behavior from prose.
+#[test]
+fn every_tool_has_complete_standard_annotations() {
+    let mut incomplete = Vec::new();
+    for tool in all_tools() {
+        let Some(a) = tool.annotations.as_ref() else {
+            incomplete.push(format!("{}: annotations missing", tool.name));
+            continue;
+        };
+        let fields = [
+            ("readOnlyHint", a.read_only_hint),
+            ("destructiveHint", a.destructive_hint),
+            ("idempotentHint", a.idempotent_hint),
+            ("openWorldHint", a.open_world_hint),
+        ];
+        for (name, value) in fields {
+            if value.is_none() {
+                incomplete.push(format!("{}: {name} missing", tool.name));
+            }
+        }
+        if a.read_only_hint == Some(true) && a.destructive_hint != Some(false) {
+            incomplete.push(format!(
+                "{}: read-only tool must set destructiveHint=false",
+                tool.name
+            ));
+        }
+    }
+    assert!(
+        incomplete.is_empty(),
+        "incomplete MCP safety annotations:\n{}",
+        incomplete.join("\n")
+    );
+}
+
 /// INSTRUCTIONS parity: every visible tool is mentioned by name, and the
 /// prose carries NO literal tool counts — seven different stale counts were
 /// on disk across the doc surfaces before this rule; pointing at tools/list

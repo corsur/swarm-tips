@@ -75,22 +75,60 @@ pub fn describe(
     }
 
     let requested = if let Some(slug) = args.category.as_deref() {
-        Some(
-            capabilities::categories()
-                .find(|c| c.slug() == slug)
-                .ok_or_else(|| {
-                    rmcp::ErrorData::invalid_params(
-                        format!("unknown capability category: {slug}"),
-                        None,
-                    )
-                })?,
-        )
+        capabilities::categories()
+            .find(|c| c.slug() == slug)
+            .ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("unknown capability category: {slug}"),
+                    None,
+                )
+            })?
     } else {
-        None
+        // The zero-argument call is intentionally an index, not a dump of all
+        // hidden schemas. This keeps the Swarm front door small while still
+        // telling callers what focused surfaces exist and how broad they are.
+        let categories: Vec<_> = capabilities::categories()
+            .map(|category| {
+                let entries: Vec<_> = tools
+                    .iter()
+                    .filter(|tool| !capabilities::GATEWAY_TOOLS.contains(&tool.name.as_ref()))
+                    .filter_map(|tool| {
+                        let cap = capabilities::capability(tool.name.as_ref())?;
+                        (cap.category == category).then_some(cap)
+                    })
+                    .collect();
+                let free = entries
+                    .iter()
+                    .filter(|cap| cap.economics == capabilities::Economics::Free)
+                    .count();
+                let earn = entries
+                    .iter()
+                    .filter(|cap| cap.economics == capabilities::Economics::Earn)
+                    .count();
+                let spend = entries
+                    .iter()
+                    .filter(|cap| cap.economics == capabilities::Economics::Spend)
+                    .count();
+                let mixed = entries
+                    .iter()
+                    .filter(|cap| cap.economics == capabilities::Economics::Mixed)
+                    .count();
+                serde_json::json!({
+                    "category": category.slug(),
+                    "tool_count": entries.len(),
+                    "economics": {"free": free, "earn": earn, "spend": spend, "mixed": mixed},
+                    "mcp_url": endpoint(category),
+                })
+            })
+            .collect();
+        return Ok(serde_json::json!({
+            "categories": categories,
+            "usage": "Pass one category to list its tools, or one exact tool name for its schema. Use the focused mcp_url directly for repeated work; swarm_use_capability is a one-call bridge and requires acknowledge_spend:true only for spend-capable calls.",
+        }));
     };
 
     let mut grouped = serde_json::Map::new();
-    for category in capabilities::categories().filter(|c| requested.is_none_or(|r| r == *c)) {
+    for category in capabilities::categories().filter(|c| requested == *c) {
         let mut entries: Vec<_> = tools
             .iter()
             .filter(|t| !capabilities::GATEWAY_TOOLS.contains(&t.name.as_ref()))
@@ -179,6 +217,14 @@ mod tests {
         .unwrap();
         assert_eq!(request.name, "check_video_status");
         assert_eq!(request.arguments.unwrap()["session_id"], "s");
+
+        let leaderboard = rewrite(gateway_request(
+            "game_get_leaderboard",
+            serde_json::json!({"limit": 5}),
+            None,
+        ))
+        .unwrap();
+        assert_eq!(leaderboard.name, "game_get_leaderboard");
     }
 
     #[test]
@@ -218,6 +264,17 @@ mod tests {
     #[test]
     fn discovery_routes_hidden_categories_and_returns_the_router_schema() {
         let tools = declared_tools();
+        let index = describe(&tools, &DiscoverCapabilityArgs::default()).unwrap();
+        let categories = index["categories"].as_array().unwrap();
+        assert_eq!(categories.len(), Category::ALL.len());
+        assert!(categories
+            .iter()
+            .all(|entry| entry.get("tool_count").is_some()));
+        assert!(
+            categories.iter().all(|entry| entry.get("tools").is_none()),
+            "zero-argument discovery must remain a compact index"
+        );
+
         let game = describe(
             &tools,
             &DiscoverCapabilityArgs {
@@ -231,6 +288,9 @@ mod tests {
             entry["tool"] == "game_find_match"
                 && entry["mcp_url"] == "https://mcp.coordination.game/mcp"
                 && entry["economics"] == "spend"
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry["tool"] == "game_get_leaderboard" && entry["economics"] == "free"
         }));
 
         let described = describe(

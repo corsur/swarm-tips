@@ -1,6 +1,7 @@
 use crate::errors::McpServiceError;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
+use crate::listings::models::AgentJob;
 use crate::listings::spending::{get_spending_opportunities, SpendingOpportunity};
 use crate::listings::{get_listings, ListingsState};
 use crate::proxy::OrchestratorProxy;
@@ -409,6 +410,7 @@ task_ref_args!(
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct ListAvailableTasksArgs {
     /// Maximum number of tasks to return (default 20, max 100).
+    #[schemars(range(min = 1, max = 100))]
     pub limit: Option<u32>,
     /// Minimum price in lamports to filter tasks (optional).
     pub min_price: Option<u64>,
@@ -531,6 +533,7 @@ pub struct GameGetLeaderboardArgs {
     /// Tournament ID to get leaderboard for. Defaults to the tournament currently accepting play (chain-registry::active_tournament_id); omit unless you know what you're doing.
     pub tournament_id: Option<u64>,
     /// Maximum number of entries to return (default 20, max 100).
+    #[schemars(range(min = 1, max = 100))]
     pub limit: Option<u32>,
 }
 
@@ -605,6 +608,7 @@ pub struct AgentGetMessagesArgs {
     pub cursor: Option<String>,
     /// Page size (default 20, max 50).
     #[serde(default)]
+    #[schemars(range(min = 1, max = 50))]
     pub limit: Option<u32>,
     /// Restrict to one thread.
     #[serde(default)]
@@ -613,6 +617,7 @@ pub struct AgentGetMessagesArgs {
     /// without a settlement-graph record score 0 and are filtered out by any
     /// positive floor. Read-side filtering only — never a write-time gate.
     #[serde(default)]
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub min_trust: Option<f64>,
     /// Also merge YOUR OWN sent messages (marked `direction: "sent"`) into
     /// the page — a thread-scoped read with include_sent=true returns the
@@ -676,10 +681,12 @@ pub struct TopicReadArgs {
     pub cursor: Option<String>,
     /// Page size (default 20, max 50).
     #[serde(default)]
+    #[schemars(range(min = 1, max = 50))]
     pub limit: Option<u32>,
     /// Minimum author EigenTrust rank-normalized score in [0,1]; unknown
     /// authors score 0. Read-side filter only.
     #[serde(default)]
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub min_trust: Option<f64>,
 }
 
@@ -925,8 +932,10 @@ pub struct ListEarningOpportunitiesArgs {
     /// Filter by category (e.g., "code", "content", "agent-services"). Omit for all categories.
     pub category: Option<String>,
     /// Minimum reward in USD. Omit for no floor. Listings without a USD estimate are excluded when set.
+    #[schemars(range(min = 0.0))]
     pub min_reward_usd: Option<f64>,
     /// Maximum results to return. Default 50, max 200.
+    #[schemars(range(min = 1, max = 200))]
     pub limit: Option<u32>,
 }
 
@@ -935,8 +944,10 @@ pub struct ListSpendingOpportunitiesArgs {
     /// Filter by category (e.g., "video", "inference", "compute"). Omit for all categories.
     pub category: Option<String>,
     /// Maximum cost in USD. Omit for no ceiling. Opportunities without a USD estimate are always included.
+    #[schemars(range(min = 0.0))]
     pub max_cost_usd: Option<f64>,
     /// Maximum results to return. Default 50, max 200.
+    #[schemars(range(min = 1, max = 200))]
     pub limit: Option<u32>,
 }
 
@@ -988,6 +999,7 @@ pub struct AgentTrustScoreArgs {
 #[derive(Debug, serde::Deserialize, JsonSchema, Default)]
 pub struct AgentReputationLeaderboardArgs {
     /// Max agents to return (1..=100). Defaults to 25.
+    #[schemars(range(min = 1, max = 100))]
     pub limit: Option<u32>,
 }
 
@@ -1009,6 +1021,7 @@ pub struct SearchMcpServersArgs {
     /// values return zero results.
     pub tier: Option<String>,
     /// Maximum results to return. Default 50, max 200.
+    #[schemars(range(min = 1, max = 200))]
     pub limit: Option<u32>,
 }
 
@@ -1023,6 +1036,7 @@ pub struct DiscoverOpportunitiesArgs {
     /// Omit to skip keyword filtering.
     pub keyword: Option<String>,
     /// Maximum results to return. Default 50, max 200.
+    #[schemars(range(min = 1, max = 200))]
     pub limit: Option<u32>,
 }
 
@@ -1047,7 +1061,7 @@ impl SwarmTipsMcp {
         &self,
         Parameters(args): Parameters<crate::capability_gateway::DiscoverCapabilityArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let tools = self.tool_router.list_all();
+        let tools = with_standard_tool_metadata(self.tool_router.list_all());
         let value = crate::capability_gateway::describe(&tools, &args)?;
         Ok(text_result(&value))
     }
@@ -2101,7 +2115,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "list_earning_opportunities",
-        description = "[READ] THE earning front door — aggregated opportunities across swarm.tips and external boards (Bountycaster, BotBounty, 0xWork). First-party entries carry `claim_via` plus the focused `mcp_url`; external entries carry `source_url` and are claimed there. Per-source deep query: shillbot_list_available_tasks. Cross-vertical keyword search: discover_opportunities.",
+        description = "[READ] THE earning front door — aggregated opportunities across swarm.tips and external boards (Bountycaster, BotBounty, 0xWork). Semantically identical open jobs are represented once with `similar_count`; the representative `id` remains claimable. First-party entries carry `claim_via` plus the focused `mcp_url`; external entries carry `source_url` and are claimed there. Per-source deep query: shillbot_list_available_tasks. Cross-vertical keyword search: discover_opportunities.",
         annotations(read_only_hint = true)
     )]
     async fn list_earning_opportunities(
@@ -2136,11 +2150,17 @@ impl SwarmTipsMcp {
             }
         }
 
+        let matching_count = listings.len();
+        listings = group_similar_earning_opportunities(listings);
+        let grouped_count = listings.len();
         let limit = args.limit.unwrap_or(50).min(200) as usize;
         listings.truncate(limit);
 
         tracing::info!(
-            count = listings.len(),
+            returned = listings.len(),
+            matching_count,
+            grouped_count,
+            collapsed_count = matching_count.saturating_sub(grouped_count),
             source_filter = args.source.as_deref().unwrap_or(""),
             "list_earning_opportunities served"
         );
@@ -3838,7 +3858,7 @@ impl SwarmTipsMcp {
     /// The full declared surface for the cross-module guards in
     /// `tool_surface_tests` (the macro-generated `tool_router()` is private).
     pub(crate) fn declared_tools() -> Vec<Tool> {
-        Self::tool_router().list_all()
+        with_standard_tool_metadata(Self::tool_router().list_all())
     }
 }
 
@@ -3850,10 +3870,58 @@ pub(crate) fn filter_tools_for_surface(
     surface: crate::surfaces::Surface,
     show_testnet: bool,
 ) -> Vec<Tool> {
-    tools
+    with_standard_tool_metadata(tools)
         .into_iter()
         .filter(|t| crate::capabilities::listed_on(t.name.as_ref(), surface, show_testnet))
         .collect()
+}
+
+/// Complete the standard MCP risk vocabulary for every tool in one place.
+/// Macro declarations retain their hand-authored read/destructive decisions;
+/// this fills every omitted field with an explicit, conservative value so a
+/// client never has to infer safety from prose or MCP's pessimistic defaults.
+fn with_standard_tool_metadata(tools: Vec<Tool>) -> Vec<Tool> {
+    tools.into_iter().map(with_standard_metadata).collect()
+}
+
+fn with_standard_metadata(mut tool: Tool) -> Tool {
+    let mut annotations = tool.annotations.take().unwrap_or_default();
+    let read_only = annotations.read_only_hint.unwrap_or(false);
+    let name = tool.name.as_ref();
+    let destructive = if read_only {
+        false
+    } else {
+        annotations.destructive_hint.unwrap_or(matches!(
+            name,
+            "agent_ack_messages"
+                | "agent_mute_thread"
+                | "delete_webhook"
+                | "register_webhook"
+                | "swarm_use_capability"
+                | "topic_report"
+        ))
+    };
+    let idempotent = if read_only {
+        true
+    } else {
+        matches!(
+            name,
+            "agent_ack_messages"
+                | "agent_mute_thread"
+                | "delete_webhook"
+                | "register_webhook"
+                | "topic_report"
+        )
+    };
+    annotations.read_only_hint = Some(read_only);
+    annotations.destructive_hint = Some(destructive);
+    annotations.idempotent_hint = Some(idempotent);
+    // Every tool reaches a remote chain, API, database, marketplace, inbox, or
+    // arbitrary gateway target. Marking the boundary explicitly is safer than
+    // relying on the protocol's open-world default.
+    annotations.open_world_hint = Some(true);
+    tool.annotations = Some(annotations);
+    tool
 }
 
 // -- Helper methods --
@@ -5070,12 +5138,13 @@ fn interleave_verticals(
 }
 
 fn collect_earn_entries(
-    listings: Vec<crate::listings::models::AgentJob>,
+    listings: Vec<AgentJob>,
     category_needle: Option<&str>,
     keyword_needle: Option<&str>,
     merged: &mut Vec<serde_json::Value>,
 ) {
     let initial_len = merged.len();
+    let mut matching = Vec::new();
     for mut listing in listings {
         if listing.source == "shillbot" {
             listing.claim_via = Some("shillbot_claim_task".to_string());
@@ -5087,6 +5156,9 @@ fn collect_earn_entries(
         if !keyword_matches_earn(&listing, keyword_needle) {
             continue;
         }
+        matching.push(listing);
+    }
+    for listing in group_similar_earning_opportunities(matching) {
         let mut value = serde_json::to_value(&listing).unwrap_or(serde_json::Value::Null);
         if let Some(obj) = value.as_object_mut() {
             obj.insert(
@@ -5098,6 +5170,104 @@ fn collect_earn_entries(
     }
     // Postcondition: we never shrink the merged vector and never panic.
     debug_assert!(merged.len() >= initial_len, "merged must only grow");
+}
+
+/// Collapse exact semantic repeats while keeping one actionable representative.
+/// Source IDs and titles are deliberately excluded from the fingerprint: a
+/// campaign may mint several differently titled task rows with the same work,
+/// reward, and deadline. The newest row wins because ingestion already orders
+/// listings newest-first; `similar_count` tells the caller how much inventory
+/// the row represents without flooding context with near-identical prose.
+fn group_similar_earning_opportunities(listings: Vec<AgentJob>) -> Vec<AgentJob> {
+    let mut grouped: Vec<AgentJob> = Vec::new();
+    let mut indexes = std::collections::HashMap::<String, usize>::new();
+    for listing in listings {
+        let mut tags = listing.tags.clone();
+        tags.sort();
+        let normalized_description = listing
+            .description
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let key = serde_json::json!({
+            "source": listing.source,
+            "description": normalized_description,
+            "category": listing.category,
+            "tags": tags,
+            "reward_amount": listing.reward_amount,
+            "reward_token": listing.reward_token,
+            "reward_chain": listing.reward_chain,
+            "payment_model": listing.payment_model,
+            "escrow": listing.escrow,
+            "deadline": listing.deadline,
+        })
+        .to_string();
+        if let Some(index) = indexes.get(&key).copied() {
+            grouped[index].similar_count = grouped[index].similar_count.saturating_add(1);
+        } else {
+            indexes.insert(key, grouped.len());
+            grouped.push(listing);
+        }
+    }
+    grouped
+}
+
+#[cfg(test)]
+mod earning_group_tests {
+    use super::{group_similar_earning_opportunities, AgentJob};
+
+    fn job(id: &str, title: &str, description: &str, reward: &str) -> AgentJob {
+        AgentJob {
+            id: id.to_string(),
+            source: "shillbot".to_string(),
+            source_id: id.to_string(),
+            source_url: "https://shillbot.org/tasks".to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            category: "content".to_string(),
+            tags: vec!["game-play".to_string(), "solana".to_string()],
+            reward_amount: reward.to_string(),
+            reward_token: "SOL".to_string(),
+            reward_chain: "solana".to_string(),
+            reward_usd_estimate: Some(1.5),
+            payment_model: "fixed".to_string(),
+            escrow: true,
+            posted_at: "2026-09-01T00:00:00Z".to_string(),
+            deadline: None,
+            status: "open".to_string(),
+            indexed_at: "2026-09-02T00:00:00Z".to_string(),
+            claim_via: Some("shillbot_claim_task".to_string()),
+            mcp_url: Some("https://mcp.shillbot.org/mcp".to_string()),
+            similar_count: 1,
+        }
+    }
+
+    #[test]
+    fn collapses_title_variants_and_counts_the_inventory() {
+        let grouped = group_similar_earning_opportunities(vec![
+            job("newest", "Play a round", "Same work and reward", "0.01"),
+            job("older", "Win a match", "Same   work and reward", "0.01"),
+            job("higher", "Win a match", "Same work and reward", "0.02"),
+        ]);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].id, "newest", "newest representative is retained");
+        assert_eq!(grouped[0].similar_count, 2);
+        assert_eq!(grouped[1].id, "higher", "different economics stay distinct");
+        assert_eq!(grouped[1].similar_count, 1);
+    }
+
+    #[test]
+    fn singleton_count_stays_out_of_the_wire_json() {
+        let value = serde_json::to_value(job("one", "One", "Unique", "0.01")).unwrap();
+        assert!(value.get("similar_count").is_none());
+        let grouped = group_similar_earning_opportunities(vec![
+            job("a", "A", "Repeat", "0.01"),
+            job("b", "B", "Repeat", "0.01"),
+        ]);
+        let value = serde_json::to_value(&grouped[0]).unwrap();
+        assert_eq!(value["similar_count"], 2);
+    }
 }
 
 /// Filter, annotate, and append spending opportunities to `merged`.
@@ -5139,7 +5309,7 @@ fn category_matches(category: &str, needle: Option<&str>) -> bool {
 
 /// `discover_opportunities` keyword filter for earn entries — match
 /// against title, description, OR any tag (case-insensitive substring).
-fn keyword_matches_earn(listing: &crate::listings::models::AgentJob, needle: Option<&str>) -> bool {
+fn keyword_matches_earn(listing: &AgentJob, needle: Option<&str>) -> bool {
     let n = match needle {
         None => return true,
         Some(s) => s,
@@ -5168,9 +5338,50 @@ fn keyword_matches_spend(
 }
 
 fn text_result(value: &impl serde::Serialize) -> CallToolResult {
-    let json = serde_json::to_string_pretty(value)
+    let raw = serde_json::to_value(value)
+        .unwrap_or_else(|e| serde_json::json!({"error": format!("serialization failed: {e}")}));
+    // The stable MCP schema defines structuredContent as an object. Preserve
+    // the historical text JSON byte-shape for older clients, while giving new
+    // clients an object envelope for arrays/primitives.
+    let structured = match &raw {
+        serde_json::Value::Object(_) => raw.clone(),
+        serde_json::Value::Array(_) => serde_json::json!({"items": raw}),
+        _ => serde_json::json!({"value": raw}),
+    };
+    let json = serde_json::to_string_pretty(&raw)
         .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {e}\"}}"));
-    CallToolResult::success(vec![Content::text(json)])
+    let mut result = CallToolResult::success(vec![Content::text(json)]);
+    result.structured_content = Some(structured);
+    result
+}
+
+#[cfg(test)]
+mod structured_result_tests {
+    use super::text_result;
+
+    #[test]
+    fn objects_are_returned_as_standard_structured_content() {
+        let result = text_result(&serde_json::json!({"ok": true}));
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({"ok": true}))
+        );
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[test]
+    fn arrays_keep_legacy_text_and_gain_an_object_envelope() {
+        let result = text_result(&vec![1, 2]);
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({"items": [1, 2]}))
+        );
+        let text = result.content[0].as_text().expect("text fallback");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text.text).unwrap(),
+            serde_json::json!([1, 2])
+        );
+    }
 }
 
 #[cfg(test)]

@@ -151,6 +151,18 @@ pub struct AgentJob {
     /// per host, so callers should register_wallet there before acting.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub mcp_url: Option<String>,
+    /// Number of currently open opportunities represented by this row after
+    /// semantic grouping. Omitted when the row represents only itself.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub similar_count: u32,
+}
+
+const fn one() -> u32 {
+    1
+}
+
+const fn is_one(value: &u32) -> bool {
+    *value == 1
 }
 
 impl From<&ListingDoc> for AgentJob {
@@ -178,6 +190,7 @@ impl From<&ListingDoc> for AgentJob {
             // MCP tool based on `source` — not persisted with the listing.
             claim_via: None,
             mcp_url: None,
+            similar_count: 1,
         }
     }
 }

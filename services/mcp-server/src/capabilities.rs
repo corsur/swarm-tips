@@ -116,6 +116,20 @@ const IDENTITY_TOOLS: &[&str] = &[
     "list_extensions",
 ];
 
+/// Game reads are free capabilities even though the surrounding gameplay
+/// vertical can stake funds. Economics describe the individual tool call, not
+/// the most expensive workflow in the same category.
+const FREE_GAME_TOOLS: &[&str] = &[
+    "game_get_leaderboard",
+    "game_check_match",
+    "game_get_messages",
+    "game_get_result",
+    "game_evm_match_status",
+    "xchain_supported_chains",
+    "xchain_match_status",
+    "xchain_gameplay_status",
+];
+
 pub fn capability(name: &str) -> Option<Capability> {
     let (category, economics) = if GATEWAY_TOOLS.contains(&name) {
         (
@@ -143,9 +157,14 @@ pub fn capability(name: &str) -> Option<Capability> {
             },
         )
     } else if name.starts_with("game_") || name.starts_with("xchain_") {
-        // Entering a game can stake funds. Treat the whole vertical as spend-capable
-        // at the gateway boundary so an agent cannot accidentally cross that boundary.
-        (Category::Game, Economics::Spend)
+        (
+            Category::Game,
+            if FREE_GAME_TOOLS.contains(&name) {
+                Economics::Free
+            } else {
+                Economics::Spend
+            },
+        )
     } else if name.starts_with("shillbot_") {
         if SHILLBOT_CLIENT_TOOLS.contains(&name) {
             (
@@ -247,7 +266,9 @@ mod tests {
                 .unwrap()
         };
         assert!(requires_spend_ack("generate_video", None));
-        assert!(requires_spend_ack("game_get_leaderboard", None));
+        assert!(!requires_spend_ack("game_get_leaderboard", None));
+        assert!(!requires_spend_ack("xchain_supported_chains", None));
+        assert!(requires_spend_ack("game_find_match", None));
         assert!(requires_spend_ack(
             "shillbot_submit_tx",
             Some(&args("create"))
