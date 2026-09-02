@@ -149,8 +149,6 @@ fn tool_name_manifest_is_exact() {
         "shillbot_submit_tx",
         "shillbot_submit_work",
         "shillbot_verify_task",
-        "swarm_capabilities",
-        "swarm_use_capability",
         "topic_publish",
         "topic_read",
         "topic_report",
@@ -224,8 +222,8 @@ fn visible_surface_fits_the_token_ratchet() {
                     .len()
             })
             .sum();
-        let total =
-            tools_chars.div_ceil(4) + approx_tokens(crate::instructions::for_surface(surface));
+        let instructions = crate::instructions::for_surface(surface);
+        let total = tools_chars.div_ceil(4) + approx_tokens(&instructions);
         assert!(
             total <= TOTAL_TOKEN_RATCHET,
             "{} surface is ~{total} tokens (ratchet {TOTAL_TOKEN_RATCHET})",
@@ -478,6 +476,10 @@ fn instructions_name_every_visible_tool_and_state_no_counts() {
             surface.host()
         );
         assert!(instructions.contains("authoritative inventory is this server's own tools/list"));
+        assert!(instructions.contains("Related servers"));
+        for related in surface.related() {
+            assert!(instructions.contains(related.mcp_url()));
+        }
         let mut digits_then_tools = instructions
             .split_whitespace()
             .zip(instructions.split_whitespace().skip(1))

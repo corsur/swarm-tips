@@ -13,47 +13,12 @@ pub enum Category {
     Game,
 }
 
-impl Category {
-    pub const ALL: [Self; 7] = [
-        Self::Discovery,
-        Self::Identity,
-        Self::Messaging,
-        Self::ShillbotEarn,
-        Self::ShillbotClient,
-        Self::Video,
-        Self::Game,
-    ];
-
-    pub const fn slug(self) -> &'static str {
-        match self {
-            Self::Discovery => "discovery",
-            Self::Identity => "identity",
-            Self::Messaging => "messaging",
-            Self::ShillbotEarn => "shillbot_earn",
-            Self::ShillbotClient => "shillbot_client",
-            Self::Video => "video",
-            Self::Game => "game",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Economics {
     Free,
     Earn,
     Spend,
     Mixed,
-}
-
-impl Economics {
-    pub const fn slug(self) -> &'static str {
-        match self {
-            Self::Free => "free",
-            Self::Earn => "earn",
-            Self::Spend => "spend",
-            Self::Mixed => "mixed",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,8 +33,6 @@ pub struct Capability {
     pub economics: Economics,
     pub gate: Gate,
 }
-
-pub const GATEWAY_TOOLS: &[&str] = &["swarm_capabilities", "swarm_use_capability"];
 
 pub const TESTNET_GAME_TOOLS: &[&str] = &[
     "xchain_supported_chains",
@@ -131,16 +94,7 @@ const FREE_GAME_TOOLS: &[&str] = &[
 ];
 
 pub fn capability(name: &str) -> Option<Capability> {
-    let (category, economics) = if GATEWAY_TOOLS.contains(&name) {
-        (
-            Category::Discovery,
-            if name == "swarm_capabilities" {
-                Economics::Free
-            } else {
-                Economics::Mixed
-            },
-        )
-    } else if DISCOVERY_TOOLS.contains(&name) {
+    let (category, economics) = if DISCOVERY_TOOLS.contains(&name) {
         (Category::Discovery, Economics::Free)
     } else if IDENTITY_TOOLS.contains(&name) {
         (Category::Identity, Economics::Free)
@@ -221,27 +175,6 @@ pub fn listed_on(name: &str, surface: Surface, show_testnet: bool) -> bool {
     }
 }
 
-pub fn requires_spend_ack(
-    name: &str,
-    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> bool {
-    let Some(cap) = capability(name) else {
-        return false;
-    };
-    match cap.economics {
-        Economics::Spend => true,
-        Economics::Mixed if name == "shillbot_submit_tx" => arguments
-            .and_then(|a| a.get("action"))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|a| matches!(a, "create" | "approve")),
-        _ => false,
-    }
-}
-
-pub fn categories() -> impl Iterator<Item = Category> {
-    Category::ALL.into_iter()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,25 +191,14 @@ mod tests {
     }
 
     #[test]
-    fn spend_ack_handles_mixed_submit_actions() {
-        let args = |action| {
-            serde_json::json!({"action": action})
-                .as_object()
-                .cloned()
-                .unwrap()
-        };
-        assert!(requires_spend_ack("generate_video", None));
-        assert!(!requires_spend_ack("game_get_leaderboard", None));
-        assert!(!requires_spend_ack("xchain_supported_chains", None));
-        assert!(requires_spend_ack("game_find_match", None));
-        assert!(requires_spend_ack(
-            "shillbot_submit_tx",
-            Some(&args("create"))
-        ));
-        assert!(!requires_spend_ack(
-            "shillbot_submit_tx",
-            Some(&args("claim"))
-        ));
-        assert!(!requires_spend_ack("shillbot_claim_task", None));
+    fn hidden_capabilities_remain_classified_for_exact_name_calls() {
+        assert_eq!(
+            capability("generate_video").map(|cap| (cap.category, cap.economics)),
+            Some((Category::Video, Economics::Spend))
+        );
+        assert_eq!(
+            capability("game_get_leaderboard").map(|cap| (cap.category, cap.economics)),
+            Some((Category::Game, Economics::Free))
+        );
     }
 }

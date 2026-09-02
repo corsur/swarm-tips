@@ -1052,34 +1052,6 @@ impl SwarmTipsMcp {
         }
     }
 
-    #[tool(
-        name = "swarm_capabilities",
-        description = "[READ] Discover focused capability categories hidden from the small Swarm surface. Omit arguments for categories, pass category to list tools, or tool for its exact schema and destination MCP URL.",
-        annotations(read_only_hint = true)
-    )]
-    async fn swarm_capabilities(
-        &self,
-        Parameters(args): Parameters<crate::capability_gateway::DiscoverCapabilityArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let tools = with_standard_tool_metadata(self.tool_router.list_all());
-        let value = crate::capability_gateway::describe(&tools, &args)?;
-        Ok(text_result(&value))
-    }
-
-    #[tool(
-        name = "swarm_use_capability",
-        description = "Invoke one focused capability through the same implementation and validation as its direct tool. Pass {tool, arguments}; spend-capable calls require acknowledge_spend:true. Prefer the returned focused MCP host for repeated use."
-    )]
-    async fn swarm_use_capability(
-        &self,
-        Parameters(_args): Parameters<crate::capability_gateway::UseCapabilityArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        Err(McpError::internal_error(
-            "capability gateway dispatch was not intercepted",
-            None,
-        ))
-    }
-
     // -- Shillbot marketplace tools (live on Solana mainnet) --
 
     #[tool(
@@ -3786,7 +3758,7 @@ impl SwarmTipsMcp {
 // Hand-written (not `#[tool_handler]`-generated) so `list_tools` can filter
 // the testnet-gated tools while `call_tool` keeps dispatching to the full
 // router — list-hidden ≠ disabled. Mirrors rmcp 1.3's macro expansion
-// exactly except for the host-specific registry filter and gateway rewrite.
+// exactly except for the host-specific registry filter.
 
 impl ServerHandler for SwarmTipsMcp {
     fn get_info(&self) -> ServerInfo {
@@ -3795,25 +3767,15 @@ impl ServerHandler for SwarmTipsMcp {
                 self.surface.server_name(),
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions(crate::instructions::for_surface(self.surface).to_string())
+            .with_instructions(crate::instructions::for_surface(self.surface))
     }
 
     async fn call_tool(
         &self,
-        mut request: rmcp::model::CallToolRequestParams,
+        request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        let via_gateway = request.name.as_ref() == "swarm_use_capability";
-        if via_gateway {
-            if self.surface != crate::surfaces::Surface::Swarm {
-                return Err(McpError::invalid_params(
-                    "swarm_use_capability is available on mcp.swarm.tips",
-                    None,
-                ));
-            }
-            request = crate::capability_gateway::rewrite(request)?;
-            tracing::info!(event = "capability_gateway_call", tool = %request.name, "dispatching capability through shared router");
-        } else if !crate::capabilities::listed_on(
+        if !crate::capabilities::listed_on(
             request.name.as_ref(),
             self.surface,
             self.state.show_testnet_tools,
@@ -3822,7 +3784,7 @@ impl ServerHandler for SwarmTipsMcp {
                 event = "legacy_cross_surface_tool_call",
                 surface = self.surface.host(),
                 tool = %request.name,
-                "calling an unlisted tool by name for backwards compatibility"
+                "calling an unlisted tool by exact name for backwards compatibility"
             );
         }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
@@ -3897,7 +3859,6 @@ fn with_standard_metadata(mut tool: Tool) -> Tool {
                 | "agent_mute_thread"
                 | "delete_webhook"
                 | "register_webhook"
-                | "swarm_use_capability"
                 | "topic_report"
         ))
     };
@@ -5393,10 +5354,10 @@ mod tests {
     #[test]
     fn list_tools_filter_selects_each_product_surface() {
         let all = SwarmTipsMcp::tool_router().list_all();
-        assert_eq!(all.len(), 68, "declared tool count");
+        assert_eq!(all.len(), 66, "declared tool count");
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Swarm, false).len(),
-            34
+            32
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, false).len(),
@@ -5413,7 +5374,7 @@ mod tests {
         let all = SwarmTipsMcp::tool_router().list_all();
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Swarm, true).len(),
-            34
+            32
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, true).len(),

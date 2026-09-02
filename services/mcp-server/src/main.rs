@@ -5,7 +5,6 @@
 
 mod a2a;
 mod capabilities;
-mod capability_gateway;
 mod composite_trust;
 mod config;
 mod discovery;
@@ -416,6 +415,7 @@ fn build_router(
         // MCP protocol endpoint lives at /mcp — without this route a browser
         // visit to the bare domain is an empty 404.
         .route("/", axum::routing::get(root_page))
+        .route("/related-servers", axum::routing::get(related_servers_page))
         // Readiness / observability: the game-api + Solana RPC dependency check.
         // Wired to the readiness probe only — a failing dependency drains traffic,
         // it never kills the process.
@@ -666,27 +666,60 @@ async fn root_page(headers: axum::http::HeaderMap) -> axum::response::Html<Strin
         .and_then(|v| v.to_str().ok())
         .map(surfaces::Surface::from_host)
         .unwrap_or(surfaces::Surface::Swarm);
-    let (title, summary, docs) = match surface {
+    let (summary, docs) = match surface {
         surfaces::Surface::Swarm => (
-            "Swarm Tips MCP",
-            "Free tools, earning capabilities, and a compact gateway to focused product surfaces.",
+            "Free tools and earning capabilities for agents.",
             "https://swarm.tips/docs",
         ),
         surfaces::Surface::Shillbot => (
-            "Shillbot MCP",
             "The complete Shillbot earning, client, and paid-video capability surface.",
             "https://shillbot.org",
         ),
         surfaces::Surface::Game => (
-            "Coordination Game MCP",
             "The complete Coordination Game capability surface.",
             "https://coordination.game",
         ),
     };
+    let title = surface.title();
+    let related = surface
+        .related()
+        .map(|server| {
+            format!(
+                "<li><a href=\"{}\">{}</a> — {}</li>",
+                server.mcp_url(),
+                server.title(),
+                server.description()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
     axum::response::Html(format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title></head><body style=\"font-family:system-ui,sans-serif;max-width:42rem;margin:4rem auto;padding:0 1rem;line-height:1.6\"><h1>{title}</h1><p>{summary}</p><p>Connect an MCP client to <code>https://{}/mcp</code> (streamable HTTP).</p><p><a href=\"{docs}\">Product documentation</a></p></body></html>",
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title></head><body style=\"font-family:system-ui,sans-serif;max-width:42rem;margin:4rem auto;padding:0 1rem;line-height:1.6\"><h1>{title}</h1><p>{summary}</p><p>Connect an MCP client to <code>https://{}/mcp</code> (streamable HTTP).</p><h2>Related servers</h2><ul>{related}</ul><p><a href=\"/related-servers\">Machine-readable related-server directory</a></p><p><a href=\"{docs}\">Product documentation</a></p></body></html>",
         surface.host()
     ))
+}
+
+async fn related_servers_page(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Value> {
+    let surface = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(surfaces::Surface::from_host)
+        .unwrap_or(surfaces::Surface::Swarm);
+    let related_servers: Vec<_> = surface
+        .related()
+        .map(|server| {
+            serde_json::json!({
+                "name": server.registry_name(),
+                "title": server.title(),
+                "description": server.description(),
+                "remotes": [{"type": "streamable-http", "url": server.mcp_url()}],
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({
+        "server": surface.registry_name(),
+        "related_servers": related_servers,
+    }))
 }
 
 /// Ensure every `/mcp` response carries an `Mcp-Session-Id`. In stateless rmcp

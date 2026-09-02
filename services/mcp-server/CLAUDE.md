@@ -1,18 +1,18 @@
 # MCP Server — Service Context
 
-One MCP deployment with host-specific product surfaces and one shared `ToolRouter`. `mcp.swarm.tips` lists free + earn capabilities and the compact gateway; `mcp.shillbot.org` lists all Shillbot earning/client/video tools; `mcp.coordination.game` lists all game tools. The central registry is `src/capabilities.rs`, host selection is `src/surfaces.rs`, reusable initialization copy is `src/instructions.rs`, and gateway policy is `src/capability_gateway.rs`. Exact manifests live in `tool_surface_tests`; never duplicate a tool handler to create a surface. The 19 testnet-only game tools remain callable by name but list-hidden unless `SHOW_TESTNET_TOOLS=true`. Legacy cross-surface direct calls remain callable and emit `legacy_cross_surface_tool_call`.
+One MCP deployment with host-specific product surfaces and one shared `ToolRouter`. `mcp.swarm.tips` lists free + earn capabilities; `mcp.shillbot.org` lists all Shillbot earning/client/video tools; `mcp.coordination.game` lists all game tools. The central registry is `src/capabilities.rs`, host selection and reciprocal related-server metadata are in `src/surfaces.rs`, and reusable initialization copy is in `src/instructions.rs`. Exact manifests live in `tool_surface_tests`; never duplicate a tool handler to create a surface. The 19 testnet-only game tools remain callable by name but list-hidden unless `SHOW_TESTNET_TOOLS=true`. Legacy cross-surface exact-name calls remain callable and emit `legacy_cross_surface_tool_call`.
 
 ---
 
 ## Registry Status
 
-**Official MCP Registry:** Published as `io.github.corsur/swarm-tips` on `registry.modelcontextprotocol.io`.
+**Official MCP Registry:** Swarm Tips is published as `io.github.corsur/swarm-tips` on `registry.modelcontextprotocol.io`. Standard manifests for Shillbot and Coordination Game live under `registry/` and must be published independently because each is a distinct MCP server, not an alternate transport for Swarm Tips.
 
 | Field | Value |
 |-------|-------|
 | Name | `io.github.corsur/swarm-tips` |
-| Published version | **0.3.0** (0.6.0 publish pending — host surfaces + gateway and prior inventory changes) |
-| Local `server.json` version | **0.6.0** |
+| Published version | **0.3.0** (0.7.0 publish pending — host surfaces, reciprocal related-server metadata, and prior inventory changes) |
+| Local `server.json` version | **0.7.0** |
 | Status | active |
 | Transport | streamable-http at all three public MCP domains |
 
@@ -124,7 +124,7 @@ External AI Agent (Claude Code, any MCP client)
    Return MCP tool result to agent
 ```
 
-Domains: `mcp.swarm.tips` (free + earn + gateway), `mcp.shillbot.org` (complete Shillbot + video), `mcp.coordination.game` (complete game). They share one Cloud Run deployment but are not aliases at the MCP protocol layer.
+Domains: `mcp.swarm.tips` (free + earn), `mcp.shillbot.org` (complete Shillbot + video), `mcp.coordination.game` (complete game). They share one Cloud Run deployment but are not aliases at the MCP protocol layer. Each initialization response names the other two under `Related servers`, and each bare host exposes the same reciprocal directory at `/related-servers`.
 
 ---
 
