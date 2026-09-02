@@ -4,6 +4,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 mod a2a;
+mod capabilities;
+mod capability_gateway;
 mod composite_trust;
 mod config;
 mod discovery;
@@ -12,6 +14,7 @@ mod game_proxy;
 mod game_session;
 mod inbox;
 mod inbox_http;
+mod instructions;
 mod listings;
 #[cfg(test)]
 mod matrix_tests;
@@ -21,6 +24,7 @@ mod server;
 mod session_binding;
 mod solana_reads;
 mod solana_tx;
+mod surfaces;
 #[cfg(test)]
 mod tool_surface_tests;
 mod traffic_stats;
@@ -195,14 +199,11 @@ async fn main() -> anyhow::Result<()> {
     // tolerates the resulting 405 on its optional GET stream). The
     // `ensure_mcp_session_id` middleware below still threads an `Mcp-Session-Id`
     // so the Firestore wallet binding keeps a stable correlation key.
-    let service = StreamableHttpService::new(
-        move || Ok(SwarmTipsMcp::new(shared.clone())),
-        LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default()
-            .with_stateful_mode(false)
-            .with_json_response(true)
-            .with_cancellation_token(ct.child_token()),
-    );
+    let services = McpServices {
+        swarm: streamable_service(Arc::clone(&shared), surfaces::Surface::Swarm, &ct),
+        shillbot: streamable_service(Arc::clone(&shared), surfaces::Surface::Shillbot, &ct),
+        game: streamable_service(shared, surfaces::Surface::Game, &ct),
+    };
 
     let reputation_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
     // Shared internal key: /internal/reputation/rebuild is a service-to-service
@@ -220,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
         rpc_url_mainnet,
         rpc_url_devnet,
         inbox_http_state,
-        service,
+        services,
     );
 
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);
@@ -390,7 +391,7 @@ fn build_router(
     rpc_url_mainnet: String,
     rpc_url_devnet: String,
     inbox_http_state: Arc<inbox_http::InboxHttpState>,
-    mcp_service: StreamableHttpService<SwarmTipsMcp, LocalSessionManager>,
+    mcp_services: McpServices,
 ) -> axum::Router {
     let mainnet_for_verify = rpc_url_mainnet.clone();
     let devnet_for_verify = rpc_url_devnet.clone();
@@ -414,32 +415,7 @@ fn build_router(
         // Human-facing root. swarm.tips links to this host in its nav, and the
         // MCP protocol endpoint lives at /mcp — without this route a browser
         // visit to the bare domain is an empty 404.
-        .route(
-            "/",
-            axum::routing::get(|| async {
-                (
-                    [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                    concat!(
-                        "<!doctype html><html><head><meta charset=\"utf-8\">",
-                        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
-                        "<title>Swarm Tips MCP</title></head>",
-                        "<body style=\"font-family:system-ui,sans-serif;max-width:40rem;",
-                        "margin:4rem auto;padding:0 1rem;line-height:1.6\">",
-                        "<h1>Swarm Tips MCP server</h1>",
-                        "<p>This host is an MCP endpoint for AI agents, not a website. ",
-                        "Connect an MCP client to <code>https://mcp.swarm.tips/mcp</code> ",
-                        "(streamable HTTP).</p>",
-                        "<p>For example: <code>claude mcp add --transport http swarm-tips ",
-                        "https://mcp.swarm.tips/mcp</code></p>",
-                        "<p>Quickstart and tool docs: ",
-                        "<a href=\"https://swarm.tips/docs\">swarm.tips/docs</a> &middot; ",
-                        "<a href=\"https://swarm.tips/start\">swarm.tips/start</a> &middot; ",
-                        "<a href=\"https://swarm.tips/developers\">swarm.tips/developers</a></p>",
-                        "</body></html>"
-                    ),
-                )
-            }),
-        )
+        .route("/", axum::routing::get(root_page))
         // Readiness / observability: the game-api + Solana RPC dependency check.
         // Wired to the readiness probe only — a failing dependency drains traffic,
         // it never kills the process.
@@ -622,9 +598,16 @@ fn build_router(
     // Apply body limit to the internal HTTP surface ONLY. The MCP
     // streamable-http transport at /mcp manages its own framing; layering
     // a body limit before nest_service excludes it from the cap.
+    let routed_services = mcp_services.clone();
     router
         .layer(axum::extract::DefaultBodyLimit::max(1_048_576))
-        .nest_service("/mcp", mcp_service)
+        .route(
+            "/mcp",
+            axum::routing::any(move |req: axum::extract::Request| {
+                let services = routed_services.clone();
+                async move { services.handle(req).await }
+            }),
+        )
         // In-flight counter wraps EVERYTHING (incl. /mcp) so the scaling
         // metric reflects real agent load, not just the internal API.
         .layer(axum::middleware::from_fn_with_state(
@@ -634,6 +617,76 @@ fn build_router(
         // Thread a stable Mcp-Session-Id so the Firestore wallet binding has a
         // cross-pod correlation key even though the transport is stateless.
         .layer(axum::middleware::from_fn(ensure_mcp_session_id))
+}
+
+type McpTransport = StreamableHttpService<SwarmTipsMcp, LocalSessionManager>;
+
+fn streamable_service(
+    shared: Arc<SharedState>,
+    surface: surfaces::Surface,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> McpTransport {
+    StreamableHttpService::new(
+        move || Ok(SwarmTipsMcp::new(Arc::clone(&shared), surface)),
+        LocalSessionManager::default().into(),
+        StreamableHttpServerConfig::default()
+            .with_stateful_mode(false)
+            .with_json_response(true)
+            .with_cancellation_token(cancellation.child_token()),
+    )
+}
+
+#[derive(Clone)]
+struct McpServices {
+    swarm: McpTransport,
+    shillbot: McpTransport,
+    game: McpTransport,
+}
+
+impl McpServices {
+    async fn handle(&self, req: axum::extract::Request) -> axum::response::Response {
+        let surface = req
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .map(surfaces::Surface::from_host)
+            .unwrap_or(surfaces::Surface::Swarm);
+        let response = match surface {
+            surfaces::Surface::Swarm => self.swarm.handle(req).await,
+            surfaces::Surface::Shillbot => self.shillbot.handle(req).await,
+            surfaces::Surface::Game => self.game.handle(req).await,
+        };
+        response.map(axum::body::Body::new)
+    }
+}
+
+async fn root_page(headers: axum::http::HeaderMap) -> axum::response::Html<String> {
+    let surface = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(surfaces::Surface::from_host)
+        .unwrap_or(surfaces::Surface::Swarm);
+    let (title, summary, docs) = match surface {
+        surfaces::Surface::Swarm => (
+            "Swarm Tips MCP",
+            "Free tools, earning capabilities, and a compact gateway to focused product surfaces.",
+            "https://swarm.tips/docs",
+        ),
+        surfaces::Surface::Shillbot => (
+            "Shillbot MCP",
+            "The complete Shillbot earning, client, and paid-video capability surface.",
+            "https://shillbot.org",
+        ),
+        surfaces::Surface::Game => (
+            "Coordination Game MCP",
+            "The complete Coordination Game capability surface.",
+            "https://coordination.game",
+        ),
+    };
+    axum::response::Html(format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title></head><body style=\"font-family:system-ui,sans-serif;max-width:42rem;margin:4rem auto;padding:0 1rem;line-height:1.6\"><h1>{title}</h1><p>{summary}</p><p>Connect an MCP client to <code>https://{}/mcp</code> (streamable HTTP).</p><p><a href=\"{docs}\">Product documentation</a></p></body></html>",
+        surface.host()
+    ))
 }
 
 /// Ensure every `/mcp` response carries an `Mcp-Session-Id`. In stateless rmcp

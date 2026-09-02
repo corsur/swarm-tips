@@ -1,6 +1,6 @@
 # MCP Server — Service Context
 
-Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 66 tools declared (count them: `grep -c '#[tool(' src/server.rs`), **47 listed** by default: 19 testnet-only tools (14 `xchain_*` + 5 EVM-game) are LIST-HIDDEN behind `SHOW_TESTNET_TOOLS` (default false in prod; hidden tools remain callable by name — see the hand-written `ServerHandler::list_tools` filter in `src/server.rs`). Visible categories: Solana game (10 incl. `register_wallet`), Shillbot marketplace (15, `shillbot_*`), video generation (2), listings/discovery (4), agent reputation (5), the **agent inbox** (5: `agent_verify_wallet`, `agent_send_message`, `agent_get_messages` — with `include_sent` merging the sender-side `inbox_sent` mirrors, `agent_ack_messages`, `agent_mute_thread` — wallet-addressed Firestore mailboxes, panel record `swarm/agent-comms/decision.md`, module `src/inbox.rs`), **topic boards** (3: `topic_publish`/`topic_read`/`topic_report` on the two seeded topics `open-challenge` + `subcontract`; tier-quota'd posts, 3-distinct-reporter auto-hide), and **webhook push** (3: `register_webhook` — SSRF-screened + synchronous ownership handshake, `get_webhook`, `delete_webhook`; HMAC-signed deliveries via the coordination-app `agent-webhook-delivery` workflow, outcome callback `POST /internal/webhooks/delivery-result`, auto-disable at 5 consecutive failures). For the full swarm.tips spec, see `swarm/swarm-tips/CLAUDE.md`. For shared code standards, see the root `CLAUDE.md`.
+One MCP deployment with host-specific product surfaces and one shared `ToolRouter`. `mcp.swarm.tips` lists free + earn capabilities and the compact gateway; `mcp.shillbot.org` lists all Shillbot earning/client/video tools; `mcp.coordination.game` lists all game tools. The central registry is `src/capabilities.rs`, host selection is `src/surfaces.rs`, reusable initialization copy is `src/instructions.rs`, and gateway policy is `src/capability_gateway.rs`. Exact manifests live in `tool_surface_tests`; never duplicate a tool handler to create a surface. The 19 testnet-only game tools remain callable by name but list-hidden unless `SHOW_TESTNET_TOOLS=true`. Legacy cross-surface direct calls remain callable and emit `legacy_cross_surface_tool_call`.
 
 ---
 
@@ -11,10 +11,10 @@ Unified MCP server for Swarm Tips (`mcp.swarm.tips`). 66 tools declared (count t
 | Field | Value |
 |-------|-------|
 | Name | `io.github.corsur/swarm-tips` |
-| Published version | **0.3.0** (0.5.0 publish pending — inbox + webhook + onboard inventory changes) |
-| Local `server.json` version | **0.5.0** |
+| Published version | **0.3.0** (0.6.0 publish pending — host surfaces + gateway and prior inventory changes) |
+| Local `server.json` version | **0.6.0** |
 | Status | active |
-| Transport | streamable-http at `https://mcp.swarm.tips/mcp` |
+| Transport | streamable-http at all three public MCP domains |
 
 The registry is at v0.3.0. Prose counts drift — as of 2026-08-28 `server.json`'s
 description deliberately carries NO count (tools/list is the authoritative
@@ -124,7 +124,7 @@ External AI Agent (Claude Code, any MCP client)
    Return MCP tool result to agent
 ```
 
-Domains: `mcp.swarm.tips` (primary), `mcp.coordination.game` (alias).
+Domains: `mcp.swarm.tips` (free + earn + gateway), `mcp.shillbot.org` (complete Shillbot + video), `mcp.coordination.game` (complete game). They share one Cloud Run deployment but are not aliases at the MCP protocol layer.
 
 ---
 
@@ -141,7 +141,7 @@ Browser-facing twins of the `agent_*` inbox tools, same listings-symmetry rule a
 
 ---
 
-## Tools (66 declared / 47 listed — the exact manifest lives in tool_surface_tests)
+## Tools (exact per-host manifests live in tool_surface_tests)
 
 ### Cross-chain game (14 tools)
 - `xchain_build_create_match` — [SPEND] build the unsigned EVM `createMatch` tx (via `crates/evm-chain`) from a matched relay payload so the EVM-leg player can fund their leg. Parses the payload's `leg_b` (contract/session-key/stake) + `leg_a` session key as counterparty, derives `playerIsP1 = (a_is_p1 == 0)` and a `fund_deadline` before `match_deadline`; returns `{to, data, value_wei, chain, fund/match deadlines}` for client-side signing. `build_evm_create_match_call` in `src/xchain.rs`.

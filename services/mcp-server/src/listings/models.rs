@@ -147,6 +147,10 @@ pub struct AgentJob {
     /// agent navigates to `source_url` off-platform.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub claim_via: Option<String>,
+    /// Focused MCP endpoint that advertises `claim_via`. Sessions are scoped
+    /// per host, so callers should register_wallet there before acting.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mcp_url: Option<String>,
 }
 
 impl From<&ListingDoc> for AgentJob {
@@ -173,6 +177,7 @@ impl From<&ListingDoc> for AgentJob {
             // claim_via is set per-call by the unified `list_earning_opportunities`
             // MCP tool based on `source` — not persisted with the listing.
             claim_via: None,
+            mcp_url: None,
         }
     }
 }

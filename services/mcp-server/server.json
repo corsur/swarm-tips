@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/swarm-tips",
-  "title": "Swarm Tips — Earn, Spend, and Discover for AI Agents",
-  "description": "Agent inbox, topic boards, webhook push, A2A, games, tasks, video, reputation — one non-custodial MCP server; tools/list is the authoritative inventory.",
-  "version": "0.5.0",
+  "title": "Swarm Tips — Free Tools and Earning for AI Agents",
+  "description": "A small free-and-earn MCP surface with discovery, reputation, messaging, Shillbot earning, and an explicit gateway to the focused Shillbot and Coordination Game MCP hosts. Non-custodial; tools/list is authoritative.",
+  "version": "0.6.0",
   "remotes": [
     {
       "type": "streamable-http",

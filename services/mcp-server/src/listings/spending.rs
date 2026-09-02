@@ -38,6 +38,12 @@ pub struct SpendingOpportunity {
     /// integration available. `None` for external sources.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend_via: Option<String>,
+    /// Focused MCP endpoint that advertises the tool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_url: Option<String>,
+    /// Qualified first-party tool name. `spend_via` remains for compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
 }
 
 /// Result of fetching from one spending source: opportunities + health check.
@@ -68,6 +74,8 @@ fn first_party_opportunities() -> Vec<SpendingOpportunity> {
         cost_usd_estimate: Some(5.0),
         url: "https://shillbot.org".to_string(),
         spend_via: Some("generate_video".to_string()),
+        mcp_url: Some("https://mcp.shillbot.org/mcp".to_string()),
+        tool: Some("generate_video".to_string()),
     }]
 }
 
@@ -149,6 +157,11 @@ mod tests {
         assert_eq!(video.cost_amount, "5");
         assert_eq!(video.cost_usd_estimate, Some(5.0));
         assert_eq!(video.spend_via.as_deref(), Some("generate_video"));
+        assert_eq!(video.tool.as_deref(), Some("generate_video"));
+        assert_eq!(
+            video.mcp_url.as_deref(),
+            Some("https://mcp.shillbot.org/mcp")
+        );
     }
 
     #[test]
@@ -164,11 +177,15 @@ mod tests {
             cost_usd_estimate: None,
             url: "https://example.com".to_string(),
             spend_via: None,
+            mcp_url: None,
+            tool: None,
         };
         let json = serde_json::to_string(&op).expect("must serialize");
         // Skip-if-none should drop both fields when None
         assert!(!json.contains("cost_usd_estimate"));
         assert!(!json.contains("spend_via"));
+        assert!(!json.contains("mcp_url"));
+        assert!(!json.contains("tool"));
     }
 
     #[tokio::test]
@@ -191,5 +208,10 @@ mod tests {
         let video = &opps[0];
         assert_eq!(video.source, "swarm.tips");
         assert_eq!(video.spend_via.as_deref(), Some("generate_video"));
+        assert_eq!(video.tool.as_deref(), Some("generate_video"));
+        assert_eq!(
+            video.mcp_url.as_deref(),
+            Some("https://mcp.shillbot.org/mcp")
+        );
     }
 }

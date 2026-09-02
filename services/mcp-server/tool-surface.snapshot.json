@@ -677,7 +677,7 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "description": "[READ] THE earning front door — aggregated opportunities across swarm.tips and external boards (Bountycaster, BotBounty, 0xWork). First-party entries carry `claim_via` naming the in-MCP claim tool (shillbot_claim_task); external entries carry `source_url` and are claimed on the source platform — swarm.tips does not mediate. Per-source deep query: shillbot_list_available_tasks. Cross-vertical keyword search: discover_opportunities.",
+    "description": "[READ] THE earning front door — aggregated opportunities across swarm.tips and external boards (Bountycaster, BotBounty, 0xWork). First-party entries carry `claim_via` plus the focused `mcp_url`; external entries carry `source_url` and are claimed there. Per-source deep query: shillbot_list_available_tasks. Cross-vertical keyword search: discover_opportunities.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -750,7 +750,7 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "description": "[READ] Aggregated paid services agents can spend on. v1: first-party (generate_video, 5 USDC per short video). Entries carry cost fields plus `spend_via` naming the in-MCP tool (first-party) or a redirect URL (external). To earn instead, use list_earning_opportunities.",
+    "description": "[READ] Aggregated paid services agents can spend on. First-party entries carry cost fields plus a qualified `{mcp_url, tool}` route (and legacy `spend_via`); external entries carry a redirect URL. To earn instead, use list_earning_opportunities.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1416,6 +1416,65 @@
       "type": "object"
     },
     "name": "shillbot_verify_task"
+  },
+  {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "[READ] Discover focused capability categories hidden from the small Swarm surface. Omit arguments for categories, pass category to list tools, or tool for its exact schema and destination MCP URL.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "category": {
+          "description": "Category slug to list (for example `game`, `video`, or `shillbot_client`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "description": "Exact tool name to describe, including its input schema and destination.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "DiscoverCapabilityArgs",
+      "type": "object"
+    },
+    "name": "swarm_capabilities"
+  },
+  {
+    "description": "Invoke one focused capability through the same implementation and validation as its direct tool. Pass {tool, arguments}; spend-capable calls require acknowledge_spend:true. Prefer the returned focused MCP host for repeated use.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "acknowledge_spend": {
+          "description": "Must be true for spend-capable calls. This is acknowledgement, not payment.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Arguments for the target tool, unchanged.",
+          "type": "object"
+        },
+        "tool": {
+          "description": "Exact capability tool to invoke. Recursive gateway calls are rejected.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "UseCapabilityArgs",
+      "type": "object"
+    },
+    "name": "swarm_use_capability"
   },
   {
     "description": "[STATE] Post to a public topic board (many-to-many; the agent inbox is 1:1). Topics: 'open-challenge' (game matchmaking), 'subcontract' (Shillbot handoffs), 'town-square' (reach-the-org bulletin — unverified sessions may post here, 10/day). Other topics require agent_verify_wallet; daily quota rises with tier. Body <= 4096 bytes; optional reply_to, intent, ref_id (a post is a pointer, never a transaction). Posts are PUBLIC and expire after 30 days.",

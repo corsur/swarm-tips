@@ -14,7 +14,8 @@
 //! Ratchets hold the CURRENT surface as the ceiling; the Phase-3 trim tightens
 //! them (total → 8_800, per-description → 200, allowlists → empty).
 
-use crate::server::{filter_visible_tools, SwarmTipsMcp, HIDDEN_UNTIL_MAINNET, INSTRUCTIONS};
+use crate::server::{filter_tools_for_surface, SwarmTipsMcp};
+use crate::surfaces::Surface;
 use rmcp::model::Tool;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,7 +29,7 @@ const SNAPSHOT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tool-surface.s
 /// footguns, signing walkthroughs, the complete_task guide — is protected
 /// content and priced in; the fusion PR trims the four inbox/registration
 /// descriptions further). The live e2e gate measures the real tokenizer.
-const TOTAL_TOKEN_RATCHET: usize = 15_650;
+const TOTAL_TOKEN_RATCHET: usize = 12_000;
 
 /// Per-description budget for NEW tools (the v4 audit cap that
 /// scripts/e2e/mcp-initialize.sh also enforces live).
@@ -44,8 +45,8 @@ fn all_tools() -> Vec<Tool> {
     tools
 }
 
-fn visible_tools() -> Vec<Tool> {
-    filter_visible_tools(all_tools(), false)
+fn visible_tools(surface: Surface) -> Vec<Tool> {
+    filter_tools_for_surface(all_tools(), surface, false)
 }
 
 fn tool_json(tool: &Tool) -> serde_json::Value {
@@ -58,7 +59,7 @@ fn surface_json() -> serde_json::Value {
 
 // -- snapshot ---------------------------------------------------------------
 
-/// The full declared surface (all 66 tools — hidden ones are callable and
+/// The full declared surface — hidden ones are callable and
 /// ship to clients with SHOW_TESTNET_TOOLS) against the committed snapshot.
 /// Regenerate deliberately with:
 ///   UPDATE_TOOL_SNAPSHOT=1 cargo test -p mcp-server tool_surface
@@ -118,9 +119,7 @@ fn tool_surface_matches_committed_snapshot() {
 /// here NAMES the tool that appeared/vanished/renamed.
 #[test]
 fn tool_name_manifest_is_exact() {
-    let visible_owned = visible_tools();
-    let visible: Vec<&str> = visible_owned.iter().map(|t| t.name.as_ref()).collect();
-    let expected_visible = [
+    const SWARM: &[&str] = &[
         "agent_ack_messages",
         "agent_get_messages",
         "agent_mute_thread",
@@ -129,19 +128,8 @@ fn tool_name_manifest_is_exact() {
         "agent_send_message",
         "agent_trust_score",
         "agent_verify_wallet",
-        "check_video_status",
         "delete_webhook",
         "discover_opportunities",
-        "game_check_match",
-        "game_commit_guess",
-        "game_find_match",
-        "game_get_leaderboard",
-        "game_get_messages",
-        "game_get_result",
-        "game_reveal_guess",
-        "game_send_message",
-        "game_submit_tx",
-        "generate_video",
         "get_webhook",
         "list_earning_opportunities",
         "list_extensions",
@@ -150,6 +138,27 @@ fn tool_name_manifest_is_exact() {
         "register_wallet",
         "register_webhook",
         "search_mcp_servers",
+        "shillbot_check_earnings",
+        "shillbot_claim_task",
+        "shillbot_complete_task",
+        "shillbot_finalize_task",
+        "shillbot_get_attestation",
+        "shillbot_get_task_details",
+        "shillbot_list_available_tasks",
+        "shillbot_onboard",
+        "shillbot_submit_tx",
+        "shillbot_submit_work",
+        "shillbot_verify_task",
+        "swarm_capabilities",
+        "swarm_use_capability",
+        "topic_publish",
+        "topic_read",
+        "topic_report",
+    ];
+    const SHILLBOT: &[&str] = &[
+        "check_video_status",
+        "generate_video",
+        "register_wallet",
         "shillbot_approve_task",
         "shillbot_check_earnings",
         "shillbot_claim_task",
@@ -165,23 +174,39 @@ fn tool_name_manifest_is_exact() {
         "shillbot_submit_tx",
         "shillbot_submit_work",
         "shillbot_verify_task",
-        "topic_publish",
-        "topic_read",
-        "topic_report",
     ];
-    assert_eq!(visible, expected_visible, "default-visible tool names");
+    const GAME: &[&str] = &[
+        "game_check_match",
+        "game_commit_guess",
+        "game_find_match",
+        "game_get_leaderboard",
+        "game_get_messages",
+        "game_get_result",
+        "game_reveal_guess",
+        "game_send_message",
+        "game_submit_tx",
+        "register_wallet",
+    ];
 
-    // Declared = visible + the hidden testnet list, no overlap, nothing else.
-    let declared: BTreeSet<String> = all_tools().iter().map(|t| t.name.to_string()).collect();
-    let mut expected_declared: BTreeSet<String> =
-        expected_visible.iter().map(|s| s.to_string()).collect();
-    for hidden in HIDDEN_UNTIL_MAINNET {
-        assert!(
-            expected_declared.insert((*hidden).to_string()),
-            "{hidden} is both visible and hidden"
-        );
+    for (surface, expected) in [
+        (Surface::Swarm, SWARM),
+        (Surface::Shillbot, SHILLBOT),
+        (Surface::Game, GAME),
+    ] {
+        let listed = visible_tools(surface);
+        let names: Vec<&str> = listed.iter().map(|t| t.name.as_ref()).collect();
+        assert_eq!(names, expected, "{} tool names", surface.host());
     }
-    assert_eq!(declared, expected_declared, "declared tool names");
+
+    let unregistered: Vec<_> = all_tools()
+        .iter()
+        .filter(|t| crate::capabilities::capability(t.name.as_ref()).is_none())
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(
+        unregistered.is_empty(),
+        "tools missing registry metadata: {unregistered:?}"
+    );
 }
 
 // -- token budget -----------------------------------------------------------
@@ -190,20 +215,23 @@ fn tool_name_manifest_is_exact() {
 /// plus INSTRUCTIONS, at the chars/4 estimate the live e2e uses.
 #[test]
 fn visible_surface_fits_the_token_ratchet() {
-    let tools_chars: usize = visible_tools()
-        .iter()
-        .map(|t| {
-            serde_json::to_string(&tool_json(t))
-                .expect("serialize")
-                .len()
-        })
-        .sum();
-    let total = tools_chars.div_ceil(4) + approx_tokens(INSTRUCTIONS);
-    assert!(
-        total <= TOTAL_TOKEN_RATCHET,
-        "visible surface is ~{total} tokens (ratchet {TOTAL_TOKEN_RATCHET}). \
-         Trim before adding — this ceiling only goes down."
-    );
+    for surface in [Surface::Swarm, Surface::Shillbot, Surface::Game] {
+        let tools_chars: usize = visible_tools(surface)
+            .iter()
+            .map(|t| {
+                serde_json::to_string(&tool_json(t))
+                    .expect("serialize")
+                    .len()
+            })
+            .sum();
+        let total =
+            tools_chars.div_ceil(4) + approx_tokens(crate::instructions::for_surface(surface));
+        assert!(
+            total <= TOTAL_TOKEN_RATCHET,
+            "{} surface is ~{total} tokens (ratchet {TOTAL_TOKEN_RATCHET})",
+            surface.host()
+        );
+    }
 }
 
 /// Per-description cap. Known oversized descriptions are grandfathered at
@@ -400,28 +428,28 @@ fn read_tag_and_read_only_hint_agree() {
 /// is the only claim that can't rot. Runs pre-deploy.
 #[test]
 fn instructions_name_every_visible_tool_and_state_no_counts() {
-    let visible = visible_tools();
-    let missing: Vec<_> = visible
-        .iter()
-        .map(|t| t.name.as_ref())
-        .filter(|name: &&str| !INSTRUCTIONS.contains(*name))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "visible tools absent from INSTRUCTIONS: {missing:?}"
-    );
-
-    assert!(
-        INSTRUCTIONS.contains("authoritative inventory is this server's own tools/list"),
-        "INSTRUCTIONS must defer inventory claims to tools/list"
-    );
-    // No "<N> tools" phrases anywhere — counts drift, the pointer doesn't.
-    let mut digits_then_tools = INSTRUCTIONS
-        .split_whitespace()
-        .zip(INSTRUCTIONS.split_whitespace().skip(1))
-        .filter(|(a, b)| a.chars().all(|c| c.is_ascii_digit()) && b.starts_with("tool"));
-    assert!(
-        digits_then_tools.next().is_none(),
-        "INSTRUCTIONS states a literal tool count — drop it, tools/list is authoritative"
-    );
+    for surface in [Surface::Swarm, Surface::Shillbot, Surface::Game] {
+        let instructions = crate::instructions::for_surface(surface);
+        let visible = visible_tools(surface);
+        let missing: Vec<_> = visible
+            .iter()
+            .map(|t| t.name.as_ref())
+            .filter(|name: &&str| !instructions.contains(*name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} tools absent from instructions: {missing:?}",
+            surface.host()
+        );
+        assert!(instructions.contains("authoritative inventory is this server's own tools/list"));
+        let mut digits_then_tools = instructions
+            .split_whitespace()
+            .zip(instructions.split_whitespace().skip(1))
+            .filter(|(a, b)| a.chars().all(|c| c.is_ascii_digit()) && b.starts_with("tool"));
+        assert!(
+            digits_then_tools.next().is_none(),
+            "{} instructions state a literal tool count",
+            surface.host()
+        );
+    }
 }
