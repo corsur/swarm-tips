@@ -1230,13 +1230,15 @@ impl SwarmTipsMcp {
         shillbot_transaction_result(
             result,
             unsigned_tx,
-            shillbot_chain::Action::Create,
-            network.unwrap_or("mainnet"),
-            &wallet_pubkey,
-            task_pda,
-            Some(args.amount_lamports),
-            None,
-            None,
+            ShillbotTransactionContext {
+                action: shillbot_chain::Action::Create,
+                network: network.unwrap_or("mainnet"),
+                wallet: &wallet_pubkey,
+                task_pda,
+                escrow_lamports: Some(args.amount_lamports),
+                content_id: None,
+                switchboard_feed: None,
+            },
         )
     }
 
@@ -1325,13 +1327,15 @@ impl SwarmTipsMcp {
         shillbot_transaction_result(
             result,
             unsigned_tx,
-            shillbot_chain::Action::Claim,
-            network.unwrap_or("mainnet"),
-            &wallet_pubkey,
-            task_pda,
-            None,
-            None,
-            None,
+            ShillbotTransactionContext {
+                action: shillbot_chain::Action::Claim,
+                network: network.unwrap_or("mainnet"),
+                wallet: &wallet_pubkey,
+                task_pda,
+                escrow_lamports: None,
+                content_id: None,
+                switchboard_feed: None,
+            },
         )
     }
 
@@ -1397,13 +1401,15 @@ impl SwarmTipsMcp {
         shillbot_transaction_result(
             result,
             unsigned_tx,
-            shillbot_chain::Action::Submit,
-            network.unwrap_or("mainnet"),
-            &wallet_pubkey,
-            task_pda,
-            None,
-            Some(args.content_id),
-            None,
+            ShillbotTransactionContext {
+                action: shillbot_chain::Action::Submit,
+                network: network.unwrap_or("mainnet"),
+                wallet: &wallet_pubkey,
+                task_pda,
+                escrow_lamports: None,
+                content_id: Some(args.content_id),
+                switchboard_feed: None,
+            },
         )
     }
 
@@ -1453,13 +1459,15 @@ impl SwarmTipsMcp {
         shillbot_transaction_result(
             result,
             &unsigned_tx,
-            shillbot_chain::Action::Verify,
-            network.unwrap_or("mainnet"),
-            &wallet_pubkey,
-            &vdata.task_pda,
-            None,
-            None,
-            Some(vdata.switchboard_feed.clone()),
+            ShillbotTransactionContext {
+                action: shillbot_chain::Action::Verify,
+                network: network.unwrap_or("mainnet"),
+                wallet: &wallet_pubkey,
+                task_pda: &vdata.task_pda,
+                escrow_lamports: None,
+                content_id: None,
+                switchboard_feed: Some(vdata.switchboard_feed.clone()),
+            },
         )
     }
 
@@ -1507,13 +1515,15 @@ impl SwarmTipsMcp {
         shillbot_transaction_result(
             result,
             unsigned_tx,
-            shillbot_chain::Action::Finalize,
-            network.unwrap_or("mainnet"),
-            &wallet_pubkey,
-            task_pda,
-            None,
-            None,
-            None,
+            ShillbotTransactionContext {
+                action: shillbot_chain::Action::Finalize,
+                network: network.unwrap_or("mainnet"),
+                wallet: &wallet_pubkey,
+                task_pda,
+                escrow_lamports: None,
+                content_id: None,
+                switchboard_feed: None,
+            },
         )
     }
 
@@ -1568,13 +1578,15 @@ impl SwarmTipsMcp {
         shillbot_transaction_result(
             result,
             unsigned_tx,
-            shillbot_chain::Action::Approve,
-            network.unwrap_or("mainnet"),
-            &wallet_pubkey,
-            task_pda,
-            None,
-            None,
-            None,
+            ShillbotTransactionContext {
+                action: shillbot_chain::Action::Approve,
+                network: network.unwrap_or("mainnet"),
+                wallet: &wallet_pubkey,
+                task_pda,
+                escrow_lamports: None,
+                content_id: None,
+                switchboard_feed: None,
+            },
         )
     }
 
@@ -1821,13 +1833,15 @@ impl SwarmTipsMcp {
             return shillbot_transaction_result(
                 result,
                 unsigned_tx,
-                action,
-                network.unwrap_or("mainnet"),
-                &wallet,
-                task_pda,
-                None,
-                args.content_id,
-                None,
+                ShillbotTransactionContext {
+                    action,
+                    network: network.unwrap_or("mainnet"),
+                    wallet: &wallet,
+                    task_pda,
+                    escrow_lamports: None,
+                    content_id: args.content_id,
+                    switchboard_feed: None,
+                },
             );
         }
         let unsigned_transaction = args.unsigned_transaction.as_deref().unwrap_or_default();
@@ -1871,13 +1885,17 @@ impl SwarmTipsMcp {
         shillbot_transaction_result(
             result,
             unsigned_tx,
-            action,
-            network.unwrap_or("mainnet"),
-            &wallet,
-            task_pda,
-            None,
-            (args.action == "submit").then(|| task.content_id).flatten(),
-            None,
+            ShillbotTransactionContext {
+                action,
+                network: network.unwrap_or("mainnet"),
+                wallet: &wallet,
+                task_pda,
+                escrow_lamports: None,
+                content_id: (args.action == "submit")
+                    .then_some(task.content_id)
+                    .flatten(),
+                switchboard_feed: None,
+            },
         )
     }
 
@@ -5649,39 +5667,43 @@ fn text_result(value: &impl serde::Serialize) -> CallToolResult {
     result
 }
 
-fn shillbot_transaction_result(
-    mut value: serde_json::Value,
-    unsigned_tx: &str,
+struct ShillbotTransactionContext<'a> {
     action: shillbot_chain::Action,
-    network: &str,
-    wallet: &str,
-    task_pda: &str,
+    network: &'a str,
+    wallet: &'a str,
+    task_pda: &'a str,
     escrow_lamports: Option<u64>,
     content_id: Option<String>,
     switchboard_feed: Option<String>,
+}
+
+fn shillbot_transaction_result(
+    mut value: serde_json::Value,
+    unsigned_tx: &str,
+    context: ShillbotTransactionContext<'_>,
 ) -> Result<CallToolResult, McpError> {
     let fee_payer = shillbot_chain::fee_payer_base64(unsigned_tx)
         .map_err(|error| invalid_input(&error.to_string()))?;
-    let sponsor = (fee_payer != wallet).then_some(fee_payer);
-    let allowed_payout_to = if action == shillbot_chain::Action::Claim {
-        shillbot_chain::payout_to_base64(unsigned_tx, task_pda, wallet)
+    let sponsor = (fee_payer != context.wallet).then_some(fee_payer);
+    let allowed_payout_to = if context.action == shillbot_chain::Action::Claim {
+        shillbot_chain::payout_to_base64(unsigned_tx, context.task_pda, context.wallet)
             .map_err(|error| invalid_input(&error.to_string()))?
     } else {
         None
     };
     let request = shillbot_chain::ValidationRequest {
-        action,
-        network: network.to_string(),
-        wallet: wallet.to_string(),
-        task_pda: task_pda.to_string(),
-        escrow_lamports,
-        content_id,
+        action: context.action,
+        network: context.network.to_string(),
+        wallet: context.wallet.to_string(),
+        task_pda: context.task_pda.to_string(),
+        escrow_lamports: context.escrow_lamports,
+        content_id: context.content_id,
         sponsor,
         expected_accounts: None,
         expected_data: None,
         allowed_payout_to,
         require_payout_routing: false,
-        switchboard_feed,
+        switchboard_feed: context.switchboard_feed,
     };
     let inspection = shillbot_chain::validate_base64(unsigned_tx, &request)
         .map_err(|error| invalid_input(&error.to_string()))?;
