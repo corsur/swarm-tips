@@ -231,6 +231,10 @@ pub struct ValidationRequest {
     /// `set_payout_to` companion. Omit to forbid payout routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_payout_to: Option<String>,
+    /// Require the authorized payout route to be present (rather than merely
+    /// allowing it) when an open sponsor advance must be repaid.
+    #[serde(default)]
+    pub require_payout_routing: bool,
     /// Expected feed for the Switchboard crank bundled with verify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switchboard_feed: Option<String>,
@@ -248,6 +252,7 @@ pub struct Inspection {
     pub movements: Vec<Movement>,
     pub task_pda: String,
     pub instruction_count: usize,
+    pub instruction_index: usize,
     pub intent_digest: String,
     pub risk: String,
 }
@@ -430,6 +435,7 @@ pub fn validate(
     let shillbot_program = shillbot::ID;
     let expected_disc = discriminator(expected.action.instruction_name());
     let set_payout_disc = discriminator("set_payout_to");
+    let switchboard_submit_disc = discriminator("pull_feed_submit_response_consensus");
     let compute_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).expect("valid constant");
     let secp_program = Pubkey::from_str(SECP256K1_PROGRAM).expect("valid constant");
     let switchboard_program = Pubkey::from_str(if expected.network == "devnet" {
@@ -496,9 +502,19 @@ pub fn validate(
                 compute_kinds[kind] = true;
                 true
             } else if expected.action == Action::Verify && *program == secp_program {
+                if ix.data.first().copied().unwrap_or(0) == 0 {
+                    return Err(ValidationError::Rejected(
+                        "secp256k1 verification contains no signatures".into(),
+                    ));
+                }
                 secp_indices.push(position);
                 true
             } else if expected.action == Action::Verify && *program == switchboard_program {
+                if ix.data.get(..8) != Some(switchboard_submit_disc.as_slice()) {
+                    return Err(ValidationError::Rejected(
+                        "unexpected Switchboard instruction".into(),
+                    ));
+                }
                 switchboard_indices.push(position);
                 true
             } else {
@@ -518,6 +534,11 @@ pub fn validate(
             expected.action.instruction_name()
         ))
     })?;
+    if expected.require_payout_routing && payout_routing != 1 {
+        return Err(ValidationError::Rejected(
+            "required sponsor payout routing is missing".into(),
+        ));
+    }
     if expected.action == Action::Verify {
         if secp_indices.len() != 1 || switchboard_indices.len() != 1 {
             return Err(ValidationError::Rejected(
@@ -677,6 +698,10 @@ pub fn validate(
         },
         task_pda: task.to_string(),
         instruction_count: instructions(&tx.message).len(),
+        instruction_index: instructions(&tx.message)
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, lifecycle))
+            .expect("matched instruction belongs to message"),
         intent_digest: hex::encode(digest),
         risk: match expected.action {
             Action::Create => "spend",
@@ -739,8 +764,31 @@ mod tests {
             expected_accounts: None,
             expected_data: None,
             allowed_payout_to: None,
+            require_payout_routing: false,
             switchboard_feed: None,
         }
+    }
+
+    fn transaction(ixs: Vec<Instruction>, payer: &Pubkey) -> VersionedTransaction {
+        let message = Message::new_with_blockhash(&ixs, Some(payer), &Hash::new_unique());
+        VersionedTransaction::from(Transaction::new_unsigned(message))
+    }
+
+    fn exact_request(
+        action: Action,
+        wallet: Pubkey,
+        task: Pubkey,
+        ix: &Instruction,
+    ) -> ValidationRequest {
+        let mut expected = request(action, wallet, task);
+        expected.expected_accounts = Some(
+            ix.accounts
+                .iter()
+                .map(|account| account.pubkey.to_string())
+                .collect(),
+        );
+        expected.expected_data = Some(base64::engine::general_purpose::STANDARD.encode(&ix.data));
+        expected
     }
 
     #[test]
@@ -801,5 +849,139 @@ mod tests {
         }
         let error = validate(&tx, &request(Action::Claim, wallet, task)).unwrap_err();
         assert!(error.to_string().contains("unexpected companion program"));
+    }
+
+    #[test]
+    fn create_binds_amount_terms_accounts_and_wallet() {
+        let wallet = Keypair::new().pubkey();
+        let args = CreateTaskArgs {
+            nonce: 42,
+            escrow_lamports: 1_000_000,
+            content_hash: [9; 32],
+            deadline: 1_900_000_000,
+            submit_margin: 14_400,
+            claim_buffer: 14_400,
+            platform: 0,
+            attestation_delay_override: 0,
+            challenge_window_override: 0,
+            verification_timeout_override: 0,
+            requires_approval: true,
+            verification_kind: 0,
+        };
+        let ix = create_task_instruction(wallet, args);
+        let task = task_pda(args.nonce, &wallet);
+        let tx = transaction(vec![ix.clone()], &wallet);
+        let mut expected = exact_request(Action::Create, wallet, task, &ix);
+        expected.escrow_lamports = Some(args.escrow_lamports);
+        assert_eq!(validate(&tx, &expected).unwrap().risk, "spend");
+
+        let mut altered_amount = expected.clone();
+        altered_amount.escrow_lamports = Some(args.escrow_lamports + 1);
+        assert!(validate(&tx, &altered_amount)
+            .unwrap_err()
+            .to_string()
+            .contains("escrow amount"));
+
+        let mut altered_terms = expected;
+        altered_terms.expected_data =
+            Some(base64::engine::general_purpose::STANDARD.encode([0_u8; 128]));
+        assert!(validate(&tx, &altered_terms)
+            .unwrap_err()
+            .to_string()
+            .contains("arguments"));
+    }
+
+    #[test]
+    fn submit_binds_content_id_and_exact_accounts() {
+        let wallet = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let ix = submit_work_instruction(wallet, task, b"content-A".to_vec());
+        let tx = transaction(vec![ix.clone()], &wallet);
+        let mut expected = exact_request(Action::Submit, wallet, task, &ix);
+        expected.content_id = Some("content-A".into());
+        validate(&tx, &expected).unwrap();
+
+        let mut wrong_content = expected.clone();
+        wrong_content.content_id = Some("content-B".into());
+        assert!(validate(&tx, &wrong_content)
+            .unwrap_err()
+            .to_string()
+            .contains("content id"));
+
+        let mut wrong_accounts = expected;
+        wrong_accounts.expected_accounts.as_mut().unwrap()[2] = Pubkey::new_unique().to_string();
+        assert!(validate(&tx, &wrong_accounts)
+            .unwrap_err()
+            .to_string()
+            .contains("accounts"));
+    }
+
+    #[test]
+    fn rejects_wrong_wallet_network_and_excessive_compute_fee() {
+        let wallet = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let ix = claim_task_instruction(wallet, task);
+        let tx = transaction(vec![ix.clone()], &wallet);
+
+        let mut wrong_wallet = exact_request(Action::Claim, Pubkey::new_unique(), task, &ix);
+        assert!(validate(&tx, &wrong_wallet)
+            .unwrap_err()
+            .to_string()
+            .contains("fee payer"));
+        wrong_wallet.wallet = wallet.to_string();
+        wrong_wallet.network = "testnet".into();
+        assert!(validate(&tx, &wrong_wallet)
+            .unwrap_err()
+            .to_string()
+            .contains("network"));
+
+        let compute = Instruction {
+            program_id: Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).unwrap(),
+            accounts: vec![],
+            data: [vec![3], 100_001_u64.to_le_bytes().to_vec()].concat(),
+        };
+        let tx = transaction(vec![compute, ix], &wallet);
+        assert!(validate(&tx, &request(Action::Claim, wallet, task))
+            .unwrap_err()
+            .to_string()
+            .contains("compute-unit price"));
+    }
+
+    #[test]
+    fn verify_binds_feed_score_hash_and_bundle_order() {
+        let payer = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let feed = Pubkey::new_unique();
+        let lifecycle = verify_task_instruction(task, feed, 900_000, [4; 32]);
+        let secp = Instruction {
+            program_id: Pubkey::from_str(SECP256K1_PROGRAM).unwrap(),
+            accounts: vec![],
+            data: vec![1, 0],
+        };
+        let switchboard = Instruction {
+            program_id: Pubkey::from_str(SWITCHBOARD_DEVNET).unwrap(),
+            accounts: vec![AccountMeta::new(feed, false)],
+            data: discriminator("pull_feed_submit_response_consensus").to_vec(),
+        };
+        let tx = transaction(
+            vec![secp.clone(), switchboard.clone(), lifecycle.clone()],
+            &payer,
+        );
+        let mut expected = exact_request(Action::Verify, payer, task, &lifecycle);
+        expected.switchboard_feed = Some(feed.to_string());
+        validate(&tx, &expected).unwrap();
+
+        let mut wrong_feed = expected.clone();
+        wrong_feed.switchboard_feed = Some(Pubkey::new_unique().to_string());
+        assert!(validate(&tx, &wrong_feed)
+            .unwrap_err()
+            .to_string()
+            .contains("different feed"));
+
+        let reordered = transaction(vec![switchboard, secp, lifecycle], &payer);
+        assert!(validate(&reordered, &expected)
+            .unwrap_err()
+            .to_string()
+            .contains("unsafe order"));
     }
 }
