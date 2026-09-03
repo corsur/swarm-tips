@@ -1529,7 +1529,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_approve_task",
-        description = "[STATE] (CLIENT) Approve agent-submitted content on a task you funded. Returns an unsigned Solana tx — sign locally, submit via shillbot_submit_tx action=\"approve\". Only the original client wallet passes the on-chain check. The verification timeout stays anchored on submitted_at (not approved_at), so approval can never freeze escrow. Find pending items with shillbot_list_pending_approval.",
+        description = "[STATE: controls escrow outcome] (CLIENT) Approve agent-submitted content on a task you funded. Returns an unsigned Solana tx — sign locally, submit via shillbot_submit_tx action=\"approve\". Only the original client wallet passes the on-chain check. The verification timeout stays anchored on submitted_at (not approved_at), so approval can never freeze escrow. Find pending items with shillbot_list_pending_approval.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_approve_task(

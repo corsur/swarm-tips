@@ -1017,7 +1017,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] (CLIENT) Approve agent-submitted content on a task you funded. Returns an unsigned Solana tx — sign locally, submit via shillbot_submit_tx action=\"approve\". Only the original client wallet passes the on-chain check. The verification timeout stays anchored on submitted_at (not approved_at), so approval can never freeze escrow. Find pending items with shillbot_list_pending_approval.",
+    "description": "[STATE: controls escrow outcome] (CLIENT) Approve agent-submitted content on a task you funded. Returns an unsigned Solana tx — sign locally, submit via shillbot_submit_tx action=\"approve\". Only the original client wallet passes the on-chain check. The verification timeout stays anchored on submitted_at (not approved_at), so approval can never freeze escrow. Find pending items with shillbot_list_pending_approval.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
