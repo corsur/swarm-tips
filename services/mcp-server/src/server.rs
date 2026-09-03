@@ -397,11 +397,6 @@ task_ref_args!(
      shillbot_list_pending_approval."
 );
 task_ref_args!(
-    RejectTaskArgs,
-    "The task identifier (format: `<campaign_id>:<task_uuid>`) returned by \
-     shillbot_list_pending_approval."
-);
-task_ref_args!(
     CompleteTaskArgs,
     "The task identifier (format: `<campaign_id>:<task_uuid>`) of any task in your lifecycle — \
      the tool answers \"what do I do next\" for it."
@@ -510,6 +505,37 @@ pub struct ShillbotSubmitTxArgs {
     pub task_pda: Option<String>,
     /// "mainnet" (default) or "devnet" — must match the network the unsigned
     /// tx was built on, or the broadcast lands on the wrong cluster.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct ShillbotConfirmTxArgs {
+    /// The task identifier the already-broadcast transaction applies to.
+    pub task_id: String,
+    /// One of create, claim, submit, approve, verify, or finalize.
+    pub action: String,
+    /// Base58 Solana signature returned by the caller's own RPC broadcaster.
+    pub tx_signature: String,
+    /// Required for create; ignored for other actions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_pda: Option<String>,
+    /// Mainnet (default) or devnet; must be the cluster used for broadcast.
+    #[schemars(description = NETWORK_ARG_DOC)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct ShillbotSponsorTxArgs {
+    /// The task identifier for the locally constructed transaction.
+    pub task_id: String,
+    /// Sponsorship is deliberately limited to "claim" or "submit".
+    pub action: String,
+    /// Base64 unsigned transaction constructed locally. The sponsor validates
+    /// the complete message and adds only its fee-payer signature.
+    pub unsigned_transaction: String,
+    #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 }
@@ -1081,7 +1107,7 @@ impl SwarmTipsMcp {
         }
         let network = parse_network_arg(args.network.as_deref())?;
 
-        let result = self
+        let task = self
             .state
             .orchestrator
             .get_task_details(normalize_task_id(&args.task_id), network)
@@ -1093,6 +1119,16 @@ impl SwarmTipsMcp {
             network = network.unwrap_or("mainnet"),
             "retrieved task details"
         );
+        let mut result = serde_json::to_value(&task)
+            .map_err(|error| invalid_input(&format!("could not serialize task: {error}")))?;
+        if task.state == "submitted" {
+            result["decline_policy"] = serde_json::Value::String(
+                "Declining is not a transaction: do not approve. Permissionless expiry returns escrow to the campaign client after the verification timeout.".into(),
+            );
+            result["expires_at"] = compute_expire_task_deadline(task.submitted_at.as_deref())
+                .map(|deadline| serde_json::Value::String(deadline.to_rfc3339()))
+                .unwrap_or(serde_json::Value::Null);
+        }
         Ok(text_result(&result))
     }
 
@@ -1170,15 +1206,32 @@ impl SwarmTipsMcp {
             "create_campaign: campaign created + funding tx built"
         );
 
+        let unsigned_tx = funded
+            .transaction
+            .as_deref()
+            .ok_or_else(|| invalid_input("funding response omitted unsigned transaction"))?;
+        let task_pda = funded
+            .task_pda
+            .as_deref()
+            .ok_or_else(|| invalid_input("funding response omitted task PDA"))?;
         let result = serde_json::json!({
             "action": "create",
             "campaign_id": campaign_id,
             "task_id": funded.task_id,
-            "task_pda": funded.task_pda,
-            "unsigned_tx": funded.transaction,
+            "task_pda": task_pda,
             "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"create\" to broadcast and confirm — this funds the task's on-chain escrow and opens it for agents to claim.",
         });
-        Ok(text_result(&result))
+        shillbot_transaction_result(
+            result,
+            unsigned_tx,
+            shillbot_chain::Action::Create,
+            network.unwrap_or("mainnet"),
+            &wallet_pubkey,
+            task_pda,
+            Some(args.amount_lamports),
+            None,
+            None,
+        )
     }
 
     #[tool(
@@ -1249,13 +1302,31 @@ impl SwarmTipsMcp {
             "claim_task: unsigned tx built"
         );
 
+        let unsigned_tx = response
+            .transaction
+            .as_deref()
+            .ok_or_else(|| invalid_input("claim response omitted unsigned transaction"))?;
+        let task_pda = response
+            .task_pda
+            .as_deref()
+            .ok_or_else(|| invalid_input("claim response omitted task PDA"))?;
         let result = serde_json::json!({
             "action": "claim",
             "task_id": response.task_id,
-            "unsigned_tx": response.transaction,
+            "task_pda": task_pda,
             "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"claim\" to broadcast and confirm the claim with the orchestrator.",
         });
-        Ok(text_result(&result))
+        shillbot_transaction_result(
+            result,
+            unsigned_tx,
+            shillbot_chain::Action::Claim,
+            network.unwrap_or("mainnet"),
+            &wallet_pubkey,
+            task_pda,
+            None,
+            None,
+            None,
+        )
     }
 
     #[tool(
@@ -1302,14 +1373,32 @@ impl SwarmTipsMcp {
             "submit_work: unsigned tx built"
         );
 
+        let unsigned_tx = response
+            .transaction
+            .as_deref()
+            .ok_or_else(|| invalid_input("submit response omitted unsigned transaction"))?;
+        let task_pda = response
+            .task_pda
+            .as_deref()
+            .ok_or_else(|| invalid_input("submit response omitted task PDA"))?;
         let result = serde_json::json!({
             "action": "submit",
             "task_id": response.task_id,
             "content_id": args.content_id,
-            "unsigned_tx": response.transaction,
+            "task_pda": task_pda,
             "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"submit\" to broadcast and confirm submission with the orchestrator.",
         });
-        Ok(text_result(&result))
+        shillbot_transaction_result(
+            result,
+            unsigned_tx,
+            shillbot_chain::Action::Submit,
+            network.unwrap_or("mainnet"),
+            &wallet_pubkey,
+            task_pda,
+            None,
+            Some(args.content_id),
+            None,
+        )
     }
 
     #[tool(
@@ -1355,7 +1444,17 @@ impl SwarmTipsMcp {
             "unsigned_tx": unsigned_tx,
             "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"verify\".",
         });
-        Ok(text_result(&result))
+        shillbot_transaction_result(
+            result,
+            &unsigned_tx,
+            shillbot_chain::Action::Verify,
+            network.unwrap_or("mainnet"),
+            &wallet_pubkey,
+            &vdata.task_pda,
+            None,
+            None,
+            Some(vdata.switchboard_feed.clone()),
+        )
     }
 
     #[tool(
@@ -1385,13 +1484,31 @@ impl SwarmTipsMcp {
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
+        let unsigned_tx = response
+            .transaction
+            .as_deref()
+            .ok_or_else(|| invalid_input("finalize response omitted unsigned transaction"))?;
+        let task_pda = response
+            .task_pda
+            .as_deref()
+            .ok_or_else(|| invalid_input("finalize response omitted task PDA"))?;
         let result = serde_json::json!({
             "action": "finalize",
             "task_id": response.task_id,
-            "unsigned_tx": response.transaction,
+            "task_pda": task_pda,
             "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"finalize\". Payment will be transferred from escrow to the agent's wallet.",
         });
-        Ok(text_result(&result))
+        shillbot_transaction_result(
+            result,
+            unsigned_tx,
+            shillbot_chain::Action::Finalize,
+            network.unwrap_or("mainnet"),
+            &wallet_pubkey,
+            task_pda,
+            None,
+            None,
+            None,
+        )
     }
 
     #[tool(
@@ -1428,72 +1545,36 @@ impl SwarmTipsMcp {
             "shillbot_approve_task: unsigned tx built"
         );
 
+        let unsigned_tx = response
+            .transaction
+            .as_deref()
+            .ok_or_else(|| invalid_input("approve response omitted unsigned transaction"))?;
+        let task_pda = response
+            .task_pda
+            .as_deref()
+            .ok_or_else(|| invalid_input("approve response omitted task PDA"))?;
         let result = serde_json::json!({
             "action": "approve",
             "task_id": response.task_id,
-            "unsigned_tx": response.transaction,
+            "task_pda": task_pda,
             "instructions": "Sign this base64 transaction with your Solana wallet (must be the campaign client wallet). Then call shillbot_submit_tx with action=\"approve\" to broadcast and confirm the approval with the orchestrator. Verification by the oracle proceeds automatically once approval lands on-chain.",
         });
-        Ok(text_result(&result))
-    }
-
-    #[tool(
-        name = "shillbot_reject_task",
-        description = "[READ] [IN DEVELOPMENT] (CLIENT, v1 stub) Reject agent-submitted content. There is NO on-chain reject instruction yet — rejection is implicit: don't approve, and the permissionless on-chain expire_task instruction (an off-MCP crank, not a tool here) returns the full escrow at T+verification_timeout (~14 days after submission). Returns guidance + `expires_at` (when that refund becomes possible), NOT a transaction. A first-class reject with reason capture is on the roadmap.",
-        annotations(read_only_hint = true)
-    )]
-    async fn shillbot_reject_task(
-        &self,
-        Parameters(args): Parameters<RejectTaskArgs>,
-        Extension(parts): Extension<http::request::Parts>,
-    ) -> Result<CallToolResult, McpError> {
-        if args.task_id.is_empty() {
-            return Err(invalid_input("task_id is required"));
-        }
-        let network = parse_network_arg(args.network.as_deref())?;
-
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
-
-        // Confirm the task is in a state where rejection is even meaningful
-        // (Submitted). Reject from any other state would be a no-op or
-        // misleading.
-        let task = self
-            .state
-            .orchestrator
-            .get_task_details(normalize_task_id(&args.task_id), network)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        if task.state != "submitted" {
-            return Err(invalid_input(&format!(
-                "task is in state {:?}, not 'submitted' — rejection only meaningful for submitted tasks awaiting client review",
-                task.state
-            )));
-        }
-
-        let expires_at = compute_expire_task_deadline(task.submitted_at.as_deref());
-
-        tracing::info!(
-            task_id = %args.task_id,
-            wallet = %wallet_pubkey,
-            expires_at = ?expires_at,
-            "shillbot_reject_task: v1 stub — no on-chain action, escrow returns at expire_task"
-        );
-
-        let result = build_reject_v1_stub_response(
-            normalize_task_id(&args.task_id),
-            task.submitted_at.as_deref(),
-            expires_at,
-        );
-        Ok(text_result(&result))
+        shillbot_transaction_result(
+            result,
+            unsigned_tx,
+            shillbot_chain::Action::Approve,
+            network.unwrap_or("mainnet"),
+            &wallet_pubkey,
+            task_pda,
+            None,
+            None,
+            None,
+        )
     }
 
     #[tool(
         name = "shillbot_list_pending_approval",
-        description = "[READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all of your campaigns. Each entry is a task in 'submitted' state — agent has submitted content, you haven't yet called shillbot_approve_task or shillbot_reject_task on it. Use this to populate a review queue / inbox. Requires a registered wallet (the calling wallet must be the campaign client).",
+        description = "[READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all campaigns. Approve acceptable work with shillbot_approve_task. Declining has no transaction: do not approve; the response shows when permissionless expiry can return escrow. Requires the campaign client wallet.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_list_pending_approval(
@@ -1524,14 +1605,15 @@ impl SwarmTipsMcp {
         let result = serde_json::json!({
             "tasks": response.tasks,
             "count": response.tasks.len(),
-            "next_step": "For each task, call shillbot_get_task_details and shillbot_approve_task / shillbot_reject_task as appropriate.",
+            "decline_policy": "Declining is not a transaction: do not approve. The task remains submitted until its verification timeout, when permissionless expiry returns escrow to the campaign client.",
+            "next_step": "Approve acceptable work with shillbot_approve_task; otherwise wait until the task's expiry deadline and use the permissionless expiry path.",
         });
         Ok(text_result(&result))
     }
 
     #[tool(
         name = "shillbot_submit_tx",
-        description = "[STATE] Broadcast a signed Shillbot Solana tx (create, claim, submit, approve, verify, finalize) and notify the orchestrator it landed. Returns the on-chain signature + confirmation. Pair with the build tool that returned the unsigned tx. Footgun: pass the SAME network you built on — a different cluster produces an InvalidAccount-shaped error.",
+        description = "[STATE] Broadcast a fully signed, self-paid Shillbot Solana tx (create, claim, submit, approve, verify, finalize) only after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Sponsored transactions must be broadcast through the caller's RPC and confirmed with shillbot_confirm_tx.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_tx(
@@ -1552,6 +1634,47 @@ impl SwarmTipsMcp {
             .resolve_wallet(Some(&parts))
             .await
             .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+
+        // Provenance is intentionally irrelevant: independently constructed
+        // transactions are welcome, but their semantics must match the task
+        // and claimed lifecycle action before we spend RPC quota broadcasting.
+        let task = self
+            .state
+            .orchestrator
+            .get_task_details(normalize_task_id(&args.task_id), network)
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+        let task_pda = args
+            .task_pda
+            .as_deref()
+            .or(task.task_pda.as_deref())
+            .ok_or_else(|| invalid_input("task has no on-chain PDA; task_pda is required"))?;
+        let fee_payer = shillbot_chain::fee_payer_base64(&args.signed_transaction)
+            .map_err(|e| invalid_input(&e.to_string()))?;
+        if fee_payer != wallet_pubkey {
+            return Err(invalid_input(
+                "shillbot_submit_tx accepts only self-paid transactions; broadcast sponsored transactions through your own RPC and call shillbot_confirm_tx",
+            ));
+        }
+        let expected = shillbot_chain::ValidationRequest {
+            action: parse_chain_action(&args.action)?,
+            network: network.unwrap_or("mainnet").to_string(),
+            wallet: wallet_pubkey.clone(),
+            task_pda: task_pda.to_string(),
+            escrow_lamports: None,
+            content_id: (args.action == "submit")
+                .then(|| task.content_id.clone())
+                .flatten(),
+            sponsor: None,
+            expected_accounts: None,
+            expected_data: None,
+            allowed_payout_to: None,
+            require_payout_routing: false,
+            switchboard_feed: None,
+        };
+        let inspection =
+            shillbot_chain::validate_signed_base64(&args.signed_transaction, &expected)
+                .map_err(|e| invalid_input(&e.to_string()))?;
 
         let tx_signature = self
             .broadcast_and_wait_for_confirmation(&args.signed_transaction, network)
@@ -1585,8 +1708,123 @@ impl SwarmTipsMcp {
             "task_id": confirm.task_id,
             "action": confirm.action,
             "message": confirm.message,
+            "validated_transaction": inspection,
         });
         Ok(text_result(&result))
+    }
+
+    #[tool(
+        name = "shillbot_confirm_tx",
+        description = "[STATE] Confirm a Shillbot transaction you constructed and broadcast through your own Solana RPC. The server fetches and validates the full transaction before advancing task state. Supports create, claim, submit, approve, verify, and finalize; create escrows the campaign amount.",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    async fn shillbot_confirm_tx(
+        &self,
+        Parameters(args): Parameters<ShillbotConfirmTxArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.task_id.is_empty() || args.tx_signature.is_empty() {
+            return Err(invalid_input("task_id and tx_signature are required"));
+        }
+        let action = parse_confirm_action(&args.action)?;
+        let network = parse_network_arg(args.network.as_deref())?;
+        let wallet = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let confirm = self
+            .state
+            .orchestrator
+            .confirm_task(
+                normalize_task_id(&args.task_id),
+                &wallet,
+                &args.tx_signature,
+                action,
+                args.task_pda.as_deref(),
+                network,
+            )
+            .await
+            .map_err(|e| to_mcp_error(&e))?;
+        Ok(text_result(&serde_json::json!({
+            "tx_signature": args.tx_signature,
+            "task_id": confirm.task_id,
+            "action": confirm.action,
+            "message": confirm.message,
+            "broadcast_by": "client",
+        })))
+    }
+
+    #[tool(
+        name = "shillbot_sponsor_tx",
+        description = "[EARN][STATE] Request gas sponsorship for a claim or submit transaction constructed locally with @swarm-tips/tx-client. The server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast the returned transaction through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
+        annotations(destructive_hint = false, idempotent_hint = false)
+    )]
+    async fn shillbot_sponsor_tx(
+        &self,
+        Parameters(args): Parameters<ShillbotSponsorTxArgs>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.task_id.is_empty() || args.unsigned_transaction.is_empty() {
+            return Err(invalid_input(
+                "task_id and unsigned_transaction are required",
+            ));
+        }
+        if args.action != "claim" && args.action != "submit" {
+            return Err(invalid_input("sponsorship is limited to claim and submit"));
+        }
+        let network = parse_network_arg(args.network.as_deref())?;
+        let wallet = self
+            .resolve_wallet(Some(&parts))
+            .await
+            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let response = self
+            .state
+            .orchestrator
+            .sponsor_transaction(
+                normalize_task_id(&args.task_id),
+                &wallet,
+                &args.action,
+                &args.unsigned_transaction,
+                network,
+            )
+            .await
+            .map_err(|error| to_mcp_error(&error))?;
+        let unsigned_tx = response.transaction.as_deref().ok_or_else(|| {
+            invalid_input("sponsor response omitted the partially signed transaction")
+        })?;
+        let task_pda = response
+            .task_pda
+            .as_deref()
+            .ok_or_else(|| invalid_input("sponsor response omitted task PDA"))?;
+        let task = self
+            .state
+            .orchestrator
+            .get_task_details(normalize_task_id(&args.task_id), network)
+            .await
+            .map_err(|error| to_mcp_error(&error))?;
+        let action = if args.action == "claim" {
+            shillbot_chain::Action::Claim
+        } else {
+            shillbot_chain::Action::Submit
+        };
+        let result = serde_json::json!({
+            "action": args.action,
+            "task_id": response.task_id,
+            "task_pda": task_pda,
+            "broadcast_by": "client",
+            "instructions": "Add your wallet signature without changing the message, broadcast through your chosen Solana RPC, then call shillbot_confirm_tx.",
+        });
+        shillbot_transaction_result(
+            result,
+            unsigned_tx,
+            action,
+            network.unwrap_or("mainnet"),
+            &wallet,
+            task_pda,
+            None,
+            (args.action == "submit").then(|| task.content_id).flatten(),
+            None,
+        )
     }
 
     #[tool(
@@ -1688,7 +1926,7 @@ impl SwarmTipsMcp {
         };
 
         // Compute the verification-timeout deadline from `submitted_at`,
-        // mirroring the pattern in `shillbot_reject_task` so the
+        // preserving the same on-chain expiry semantics so the
         // `submitted` branch below can surface a real ISO timestamp
         // instead of `not_before: null`. 14 days = 1_209_600 seconds —
         // matches the on-chain `DEFAULT_VERIFICATION_TIMEOUT_SECONDS`
@@ -3719,7 +3957,15 @@ impl SwarmTipsMcp {
 
 impl ServerHandler for SwarmTipsMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        let capabilities = if self.surface == crate::surfaces::Surface::Swarm {
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build()
+        } else {
+            ServerCapabilities::builder().enable_tools().build()
+        };
+        ServerInfo::new(capabilities)
             .with_server_info(Implementation::new(
                 self.surface.server_name(),
                 env!("CARGO_PKG_VERSION"),
@@ -3764,9 +4010,98 @@ impl ServerHandler for SwarmTipsMcp {
         })
     }
 
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        if self.surface != crate::surfaces::Surface::Swarm {
+            return Ok(ListResourcesResult::default());
+        }
+        Ok(ListResourcesResult {
+            meta: None,
+            next_cursor: None,
+            resources: transaction_resources(),
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        if self.surface != crate::surfaces::Surface::Swarm {
+            return Err(McpError::invalid_params(
+                "resource is not available on this host",
+                None,
+            ));
+        }
+        let (text, mime) = match request.uri.as_str() {
+            TX_CLIENT_MANIFEST_URI => (TX_CLIENT_MANIFEST, "application/json"),
+            TX_INTENT_SCHEMA_URI => (TX_INTENT_SCHEMA, "application/schema+json"),
+            TX_CLIENT_GUIDE_URI => (TX_CLIENT_GUIDE, "text/markdown"),
+            _ => return Err(McpError::invalid_params("unknown resource URI", None)),
+        };
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            text,
+            request.uri,
+        )
+        .with_mime_type(mime)]))
+    }
+
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
         self.tool_router.get(name).cloned()
     }
+}
+
+const TX_CLIENT_MANIFEST_URI: &str = "https://swarm.tips/.well-known/transaction-client.json";
+const TX_INTENT_SCHEMA_URI: &str = "https://swarm.tips/schemas/shillbot-transaction-intent-v1.json";
+const TX_CLIENT_GUIDE_URI: &str = "https://swarm.tips/docs/mcp/local-transactions";
+const TX_CLIENT_MANIFEST: &str = r#"{"name":"@swarm-tips/tx-client","version":"0.1.0","registry":"https://www.npmjs.com/package/@swarm-tips/tx-client","source":"https://github.com/corsur/swarm-tips/tree/main/sdk/tx-client","schema":"swarm.shillbot.transaction-intent/v1","security":"Construct and inspect locally; never send a private key to an MCP server."}"#;
+const TX_INTENT_SCHEMA: &str =
+    include_str!("../../../docs/specs/shillbot-transaction-intent-v1.schema.json");
+const TX_CLIENT_GUIDE: &str = r#"# Local Shillbot transactions
+
+Install `@swarm-tips/tx-client` from public npm and inspect its source at
+https://github.com/corsur/swarm-tips/tree/main/sdk/tx-client.
+
+Preferred flow: obtain the structured transaction intent, construct and inspect
+the transaction locally, sign with your local wallet, broadcast through your
+chosen Solana RPC, then call `shillbot_confirm_tx`. The compatibility flow is to
+inspect and sign the server-prepared `unsigned_tx`, then call `shillbot_submit_tx`.
+Never provide a private key to Swarm Tips or execute source code supplied dynamically.
+"#;
+
+fn transaction_resources() -> Vec<Resource> {
+    [
+        (
+            TX_CLIENT_MANIFEST_URI,
+            "transaction-client",
+            "Pinned open-source transaction client",
+            "application/json",
+        ),
+        (
+            TX_INTENT_SCHEMA_URI,
+            "transaction-intent-v1",
+            "Shillbot transaction intent JSON Schema",
+            "application/schema+json",
+        ),
+        (
+            TX_CLIENT_GUIDE_URI,
+            "local-transactions",
+            "Local construction and direct broadcast guide",
+            "text/markdown",
+        ),
+    ]
+    .into_iter()
+    .map(|(uri, name, description, mime)| {
+        RawResource::new(uri, name)
+            .with_title(name)
+            .with_description(description)
+            .with_mime_type(mime)
+            .no_annotation()
+    })
+    .collect()
 }
 
 /// The 19 testnet-only tools hidden from `tools/list` until cross-chain /
@@ -4646,7 +4981,7 @@ fn parse_curator_tier(
     Ok(result)
 }
 
-/// Resolve the build-verify-tx.ts script path. In Docker the script lives at
+/// Resolve the tx-client Switchboard wrapper path. In Docker the script lives at
 /// `~/scripts/`; locally it sits next to `Cargo.toml`. The `BUILD_VERIFY_SCRIPT`
 /// env var lets tests / one-offs override the resolution.
 fn resolve_build_verify_script_path() -> std::path::PathBuf {
@@ -4655,11 +4990,11 @@ fn resolve_build_verify_script_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("scripts")
-                .join("build-verify-tx.ts")
+                .join("build-verify-tx-client.ts")
         })
 }
 
-/// Spawn `tsx build-verify-tx.ts` with the verification-data flags and return
+/// Spawn the tx-client wrapper with the verification-data flags and return
 /// the unsigned transaction (base64) the script prints to stdout. Surfaces
 /// spawn-failure, non-zero-exit, and empty-output as separate MCP errors so
 /// the agent gets actionable diagnostics.
@@ -4701,7 +5036,7 @@ async fn run_build_verify_tx(
         .output()
         .await
         .map_err(|e| {
-            tracing::error!(service = "mcp-server", error = %e, "failed to spawn build-verify-tx.ts");
+            tracing::error!(service = "mcp-server", error = %e, "failed to spawn tx-client verify wrapper");
             McpError::internal_error(
                 "verify-tx builder unavailable — details logged server-side".to_string(),
                 None,
@@ -4712,7 +5047,7 @@ async fn run_build_verify_tx(
         // Raw subprocess stderr stays in the server log; forwarding it to the
         // caller leaked file paths and internal stack frames to agents.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!(service = "mcp-server", stderr = %stderr, "build-verify-tx.ts failed");
+        tracing::error!(service = "mcp-server", stderr = %stderr, "tx-client verify wrapper failed");
         return Err(McpError::internal_error(
             "verify-tx build failed — details logged server-side; retry, and report the task_id if it persists".to_string(),
             None,
@@ -4785,7 +5120,21 @@ fn parse_confirm_action(action: &str) -> Result<crate::proxy::ConfirmAction, Mcp
     Ok(result)
 }
 
-/// Default on-chain `expire_task` window for the v1 reject stub. Matches the
+fn parse_chain_action(action: &str) -> Result<shillbot_chain::Action, McpError> {
+    match action {
+        "create" => Ok(shillbot_chain::Action::Create),
+        "claim" => Ok(shillbot_chain::Action::Claim),
+        "submit" => Ok(shillbot_chain::Action::Submit),
+        "approve" => Ok(shillbot_chain::Action::Approve),
+        "verify" => Ok(shillbot_chain::Action::Verify),
+        "finalize" => Ok(shillbot_chain::Action::Finalize),
+        other => Err(invalid_input(&format!(
+            "unsupported Shillbot action {other:?}"
+        ))),
+    }
+}
+
+/// Default on-chain `expire_task` window used in decline guidance. Matches the
 /// Anchor program's `DEFAULT_VERIFICATION_TIMEOUT_SECONDS = 1_209_600` (14 days).
 /// Per-task on-chain overrides can shorten this; the orchestrator doesn't
 /// surface them today so we use the conservative upper bound.
@@ -4815,34 +5164,6 @@ fn compute_expire_task_deadline(
         "computed deadline must follow submitted_at"
     );
     result
-}
-
-/// Build the v1 reject stub response payload for `shillbot_reject_task`.
-/// Pure formatting — kept separate so the handler stays focused on auth +
-/// state validation.
-fn build_reject_v1_stub_response(
-    task_id: &str,
-    submitted_at: Option<&str>,
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
-) -> serde_json::Value {
-    // Preconditions: identifying input must be non-empty and the timeout
-    // constant must be the canonical value (mirrors the on-chain default).
-    debug_assert!(!task_id.is_empty(), "task_id must be non-empty");
-    debug_assert_eq!(
-        DEFAULT_VERIFICATION_TIMEOUT_SECS, 1_209_600,
-        "DEFAULT_VERIFICATION_TIMEOUT_SECS must match on-chain default"
-    );
-    serde_json::json!({
-        "action": "reject_v1_stub",
-        "task_id": task_id,
-        "on_chain_action": "none",
-        "submitted_at": submitted_at,
-        "expires_at": expires_at.map(|dt| dt.to_rfc3339()),
-        "verification_timeout_secs": DEFAULT_VERIFICATION_TIMEOUT_SECS,
-        "guidance": "v1 reject is implicit: do NOT call shillbot_approve_task. The agent's submitted content stays in 'submitted' state. At T+verification_timeout (~14 days from the agent's submitted_at), expire_task can be cranked permissionlessly by anyone (including the campaign client) and the full escrow returns to the campaign's client wallet. The agent is paid nothing.",
-        "next_step": "Wait until expires_at, then call expire_task (out-of-band crank — no MCP tool today; use solana CLI or the orchestrator's expire endpoint when available). Use the expires_at timestamp to schedule a follow-up reminder.",
-        "future_work": "A first-class reject_task on-chain instruction with reason capture is on the roadmap. When it ships, this tool will route through it and shorten the rejection window.",
-    })
 }
 
 /// Build the "next action" hint block for `shillbot_complete_task` based on
@@ -4880,7 +5201,8 @@ fn next_action_for_task_state(
                     "Task is awaiting CLIENT review. If you are the campaign client, call shillbot_approve_task. If you are the agent, there is nothing for you to do until the client approves or the verification timeout returns the escrow at {}.",
                     timeout_str
                 ),
-                "client_actions": ["shillbot_approve_task", "shillbot_reject_task"],
+                "client_actions": ["shillbot_approve_task"],
+                "decline_policy": "Do not approve. There is no rejection transaction; after the displayed deadline, permissionless expiry returns escrow to the campaign client.",
                 "agent_actions": [],
             })
         }
@@ -5273,9 +5595,65 @@ fn text_result(value: &impl serde::Serialize) -> CallToolResult {
     result
 }
 
+fn shillbot_transaction_result(
+    mut value: serde_json::Value,
+    unsigned_tx: &str,
+    action: shillbot_chain::Action,
+    network: &str,
+    wallet: &str,
+    task_pda: &str,
+    escrow_lamports: Option<u64>,
+    content_id: Option<String>,
+    switchboard_feed: Option<String>,
+) -> Result<CallToolResult, McpError> {
+    let fee_payer = shillbot_chain::fee_payer_base64(unsigned_tx)
+        .map_err(|error| invalid_input(&error.to_string()))?;
+    let sponsor = (fee_payer != wallet).then_some(fee_payer);
+    let allowed_payout_to = if action == shillbot_chain::Action::Claim {
+        shillbot_chain::payout_to_base64(unsigned_tx, task_pda, wallet)
+            .map_err(|error| invalid_input(&error.to_string()))?
+    } else {
+        None
+    };
+    let request = shillbot_chain::ValidationRequest {
+        action,
+        network: network.to_string(),
+        wallet: wallet.to_string(),
+        task_pda: task_pda.to_string(),
+        escrow_lamports,
+        content_id,
+        sponsor,
+        expected_accounts: None,
+        expected_data: None,
+        allowed_payout_to,
+        require_payout_routing: false,
+        switchboard_feed,
+    };
+    let inspection = shillbot_chain::validate_base64(unsigned_tx, &request)
+        .map_err(|error| invalid_input(&error.to_string()))?;
+    value["unsigned_tx"] = serde_json::Value::String(unsigned_tx.to_string());
+    value["transaction_intent"] = serde_json::to_value(&inspection).map_err(|error| {
+        invalid_input(&format!("could not serialize transaction intent: {error}"))
+    })?;
+    value["risk"] = serde_json::Value::String(inspection.risk.clone());
+    value["local_client"] = serde_json::json!({
+        "package": "@swarm-tips/tx-client",
+        "version": "0.1.0",
+        "resource_uri": TX_CLIENT_MANIFEST_URI,
+    });
+    let mut result = text_result(&value);
+    result.content.push(Content::resource_link(
+        RawResource::new(TX_CLIENT_MANIFEST_URI, "transaction-client")
+            .with_title("Open-source Shillbot transaction client")
+            .with_description("Pinned npm and GitHub metadata for independent construction, inspection, and broadcasting")
+            .with_mime_type("application/json"),
+    ));
+    Ok(result)
+}
+
 #[cfg(test)]
 mod structured_result_tests {
-    use super::text_result;
+    use super::{text_result, transaction_resources, TX_CLIENT_MANIFEST, TX_CLIENT_MANIFEST_URI};
 
     #[test]
     fn objects_are_returned_as_standard_structured_content() {
@@ -5300,6 +5678,20 @@ mod structured_result_tests {
             serde_json::json!([1, 2])
         );
     }
+
+    #[test]
+    fn local_transaction_resources_are_stable_and_public() {
+        let resources = transaction_resources();
+        assert_eq!(resources.len(), 3);
+        assert_eq!(resources[0].raw.uri, TX_CLIENT_MANIFEST_URI);
+        let manifest: serde_json::Value = serde_json::from_str(TX_CLIENT_MANIFEST).unwrap();
+        assert_eq!(manifest["name"], "@swarm-tips/tx-client");
+        assert_eq!(manifest["version"], "0.1.0");
+        assert!(manifest["source"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://github.com/"));
+    }
 }
 
 #[cfg(test)]
@@ -5311,14 +5703,14 @@ mod tests {
     #[test]
     fn list_tools_filter_selects_each_product_surface() {
         let all = SwarmTipsMcp::tool_router().list_all();
-        assert_eq!(all.len(), 65, "declared tool count");
+        assert_eq!(all.len(), 66, "declared tool count");
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Swarm, false).len(),
-            31
+            36
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, false).len(),
-            18
+            19
         );
         assert_eq!(
             filter_tools_for_surface(all, crate::surfaces::Surface::Game, false).len(),
@@ -5331,11 +5723,11 @@ mod tests {
         let all = SwarmTipsMcp::tool_router().list_all();
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Swarm, true).len(),
-            31
+            36
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, true).len(),
-            18
+            19
         );
         assert_eq!(
             filter_tools_for_surface(all, crate::surfaces::Surface::Game, true).len(),
@@ -5679,9 +6071,7 @@ mod tests {
         );
     }
 
-    // -- shillbot_reject_task / shillbot_complete_task pure builders --------
-    // These back the two tools' response payloads; the HTTP orchestration
-    // around them is covered by the proxy wiremock flow tests.
+    // -- shillbot_complete_task pure builders --------------------------------
 
     #[test]
     fn expire_deadline_is_submitted_at_plus_verification_timeout() {
@@ -5695,25 +6085,6 @@ mod tests {
     fn expire_deadline_absent_or_garbage_input_yields_none() {
         assert!(compute_expire_task_deadline(None).is_none());
         assert!(compute_expire_task_deadline(Some("not-a-timestamp")).is_none());
-    }
-
-    #[test]
-    fn reject_stub_carries_expiry_and_no_onchain_action() {
-        let expires = compute_expire_task_deadline(Some("2026-07-01T00:00:00Z"));
-        let stub = build_reject_v1_stub_response("task-9", Some("2026-07-01T00:00:00Z"), expires);
-        assert_eq!(stub["action"], "reject_v1_stub");
-        assert_eq!(stub["task_id"], "task-9");
-        // v1 reject is implicit — it must never claim an on-chain action.
-        assert_eq!(stub["on_chain_action"], "none");
-        assert_eq!(stub["expires_at"], "2026-07-15T00:00:00+00:00");
-        assert_eq!(stub["verification_timeout_secs"], 1_209_600);
-    }
-
-    #[test]
-    fn reject_stub_without_submitted_at_leaves_expiry_null() {
-        let stub = build_reject_v1_stub_response("task-9", None, None);
-        assert!(stub["expires_at"].is_null());
-        assert!(stub["submitted_at"].is_null());
     }
 
     #[test]

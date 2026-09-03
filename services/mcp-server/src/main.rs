@@ -843,7 +843,7 @@ fn build_readiness_handler(
 
 /// HTTP handler for `/internal/build-verify-tx`.
 ///
-/// Spawns `build-verify-tx.ts` server-side (no CORS issues with the
+/// Spawns the tx-client Switchboard wrapper server-side (no CORS issues with the
 /// Switchboard gateway) and returns the unsigned bundled tx.
 async fn build_verify_tx_handler(
     axum::Json(body): axum::Json<serde_json::Value>,
@@ -870,7 +870,7 @@ async fn build_verify_tx_handler(
         .unwrap_or_else(|_| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("scripts")
-                .join("build-verify-tx.ts")
+                .join("build-verify-tx-client.ts")
         });
     let script_dir = script_path
         .parent()

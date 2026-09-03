@@ -101,7 +101,7 @@ pub struct TaskSummary {
     #[serde(default)]
     pub created_at: Option<String>,
     /// ISO-8601 timestamp the agent called `submit_work` on-chain. Required
-    /// by `shillbot_reject_task` to compute the verification-timeout deadline
+    /// by pending-review responses to compute the permissionless-expiry deadline
     /// (`expires_at = submitted_at + verification_timeout_secs`).
     #[serde(default)]
     pub submitted_at: Option<String>,
@@ -541,7 +541,8 @@ impl OrchestratorProxy {
             })
     }
 
-    /// Fund one task of a campaign. Proxies `POST /campaigns/:id/fund?sponsor=auto`,
+    /// Fund one task of a campaign. Proxies `POST /campaigns/:id/fund` without
+    /// sponsor mode: the campaign client is both fee payer and escrow signer.
     /// which builds the unsigned `create_task` tx. The client signs it locally and
     /// broadcasts via `shillbot_submit_tx` with `action="create"`; the escrow moves
     /// from the client's own account (non-custodial). Returns the unsigned tx +
@@ -569,11 +570,7 @@ impl OrchestratorProxy {
             ));
         }
         let qs = network_query_suffix(network);
-        let sep = if qs.is_empty() { "?" } else { "&" };
-        let url = format!(
-            "{}/campaigns/{campaign_id}/fund{qs}{sep}sponsor=auto",
-            self.base_url
-        );
+        let url = format!("{}/campaigns/{campaign_id}/fund{qs}", self.base_url);
         let body = serde_json::json!({ "amount_lamports": amount_lamports });
         let response = self
             .client
@@ -602,7 +599,7 @@ impl OrchestratorProxy {
     /// (network-throttled) has the sponsor wallet vouch the agent into the
     /// reputation graph and front its one-time AgentState rent as a recoupable
     /// advance — so a wallet that arrived with $0 gains standing and can then
-    /// claim/submit gaslessly (`sponsor=auto`). Returns the on-chain signature +
+    /// request claim/submit sponsorship. Returns the on-chain signature +
     /// a human-readable next-step message. Fresh wallets only (once per wallet);
     /// a wallet that already has standing / an AgentState is rejected.
     pub async fn onboard_agent(
@@ -648,16 +645,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        // Always request `sponsor=auto`: a vouched (root-reachable) agent is
-        // gasless by default; the orchestrator silently falls back to the agent
-        // paying its own gas when it lacks standing (never an error). This is the
-        // C3 gasless-onboarding path surfaced to agents transparently.
         let qs = network_query_suffix(network);
-        let sep = if qs.is_empty() { "?" } else { "&" };
-        let url = format!(
-            "{}/tasks/{task_id}/claim{qs}{sep}sponsor=auto",
-            self.base_url
-        );
+        let url = format!("{}/tasks/{task_id}/claim{qs}", self.base_url);
         let response = self.bodyless_post(&url, wallet_pubkey)
             .send()
             .await
@@ -707,13 +696,8 @@ impl OrchestratorProxy {
             ));
         }
 
-        // See claim_task: gasless-by-default via `sponsor=auto`, self-pay fallback.
         let qs = network_query_suffix(network);
-        let sep = if qs.is_empty() { "?" } else { "&" };
-        let url = format!(
-            "{}/tasks/{task_id}/submit{qs}{sep}sponsor=auto",
-            self.base_url
-        );
+        let url = format!("{}/tasks/{task_id}/submit{qs}", self.base_url);
         let body = serde_json::json!({ "content_id": content_id });
         let response = self
             .client
@@ -740,6 +724,45 @@ impl OrchestratorProxy {
         }
 
         Ok(parsed)
+    }
+
+    /// Validate a locally constructed claim/submit transaction and add only
+    /// the configured gas sponsor's fee-payer signature.
+    pub async fn sponsor_transaction(
+        &self,
+        task_id: &str,
+        wallet_pubkey: &str,
+        action: &str,
+        unsigned_transaction: &str,
+        network: Option<&str>,
+    ) -> Result<TransactionResponse, McpServiceError> {
+        if task_id.is_empty() || wallet_pubkey.is_empty() || unsigned_transaction.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id, wallet_pubkey, and unsigned_transaction are required".to_string(),
+            ));
+        }
+        if action != "claim" && action != "submit" {
+            return Err(McpServiceError::InvalidInput(
+                "sponsorship is limited to claim and submit".to_string(),
+            ));
+        }
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{task_id}/sponsor{qs}", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(wallet_pubkey)
+            .json(&serde_json::json!({
+                "action": action,
+                "unsigned_transaction": unsigned_transaction,
+            }))
+            .send()
+            .await
+            .map_err(|e| McpServiceError::OrchestratorError(format!("request failed: {e}")))?;
+        let response = require_success(response, "sponsor_transaction", task_id).await?;
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid sponsor response: {e}"))
+        })
     }
 
     /// Request the orchestrator build an unsigned `verify_task` Solana
@@ -1530,7 +1553,6 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/tasks/c:t/claim"))
                 .and(query_param("network", "devnet"))
-                .and(query_param("sponsor", "auto"))
                 .and(header("authorization", "Bearer wallet1"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
                 .expect(1)
@@ -1581,12 +1603,11 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn fund_campaign_builds_create_tx_with_sponsor_auto() {
+        async fn fund_campaign_builds_self_paid_create_tx() {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/campaigns/camp1/fund"))
                 .and(query_param("network", "devnet"))
-                .and(query_param("sponsor", "auto"))
                 .and(header("authorization", "Bearer wallet1"))
                 .respond_with(
                     ResponseTemplate::new(200).set_body_json(minimal_tx_json("camp1:task1")),
@@ -1656,7 +1677,6 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/tasks/c:t/submit"))
                 .and(query_param("network", "devnet"))
-                .and(query_param("sponsor", "auto"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
                 .expect(1)
                 .mount(&server)

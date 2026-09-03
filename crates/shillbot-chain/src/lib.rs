@@ -247,12 +247,14 @@ pub struct Inspection {
     pub program_id: String,
     pub network: String,
     pub fee_payer: String,
+    #[serde(rename = "signers")]
     pub required_signers: Vec<String>,
     pub accounts: Vec<String>,
     pub movements: Vec<Movement>,
     pub task_pda: String,
     pub instruction_count: usize,
     pub instruction_index: usize,
+    #[serde(rename = "digest")]
     pub intent_digest: String,
     pub risk: String,
 }
@@ -337,6 +339,44 @@ pub fn fee_payer_base64(value: &str) -> Result<String, ValidationError> {
     keys.first()
         .map(ToString::to_string)
         .ok_or_else(|| ValidationError::Rejected("transaction has no fee payer".into()))
+}
+
+/// Return the recipient encoded by a claim's optional `set_payout_to`
+/// companion, after checking that it is bound to the expected task and agent.
+pub fn payout_to_base64(
+    value: &str,
+    task: &str,
+    wallet: &str,
+) -> Result<Option<String>, ValidationError> {
+    let tx = decode_base64(value)?;
+    ensure_no_lookups(&tx.message)?;
+    let task = Pubkey::from_str(task)
+        .map_err(|_| ValidationError::Request("task_pda is not a Solana pubkey".into()))?;
+    let wallet = Pubkey::from_str(wallet)
+        .map_err(|_| ValidationError::Request("wallet is not a Solana pubkey".into()))?;
+    let keys = static_keys(&tx.message);
+    let disc = discriminator("set_payout_to");
+    let mut recipient = None;
+    for ix in instructions(&tx.message) {
+        let program = keys.get(usize::from(ix.program_id_index));
+        if program != Some(&shillbot::ID) || ix.data.get(..8) != Some(disc.as_slice()) {
+            continue;
+        }
+        if recipient.is_some()
+            || ix.accounts.len() != 2
+            || keys.get(usize::from(ix.accounts[0])) != Some(&task)
+            || keys.get(usize::from(ix.accounts[1])) != Some(&wallet)
+            || ix.data.len() != 40
+        {
+            return Err(ValidationError::Rejected(
+                "invalid or repeated payout-routing instruction".into(),
+            ));
+        }
+        recipient = Some(Pubkey::new_from_array(
+            ix.data[8..40].try_into().expect("length checked"),
+        ));
+    }
+    Ok(recipient.map(|key| key.to_string()))
 }
 
 pub fn validate_signed_base64(
@@ -722,6 +762,58 @@ mod tests {
         signature::{Keypair, Signer},
         transaction::Transaction,
     };
+
+    #[test]
+    fn rust_builders_match_the_public_client_golden_vectors() {
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("../../../sdk/tx-client/test-vectors.json")).unwrap();
+        let wallet = Pubkey::from_str(golden["wallet"].as_str().unwrap()).unwrap();
+        let task = Pubkey::from_str(golden["task"].as_str().unwrap()).unwrap();
+        let feed = Pubkey::from_str(golden["feed"].as_str().unwrap()).unwrap();
+        let client = Pubkey::from_str(golden["client"].as_str().unwrap()).unwrap();
+        let instructions = [
+            create_task_instruction(
+                wallet,
+                CreateTaskArgs {
+                    nonce: 42,
+                    escrow_lamports: 1_000_000,
+                    content_hash: [0x11; 32],
+                    deadline: 1_900_000_000,
+                    submit_margin: 14_400,
+                    claim_buffer: 14_400,
+                    platform: 0,
+                    attestation_delay_override: 0,
+                    challenge_window_override: 0,
+                    verification_timeout_override: 0,
+                    requires_approval: true,
+                    verification_kind: 0,
+                },
+            ),
+            claim_task_instruction(wallet, task),
+            submit_work_instruction(wallet, task, b"video-123".to_vec()),
+            approve_task_instruction(wallet, task),
+            verify_task_instruction(task, feed, 900_000, [0x22; 32]),
+            finalize_task_instruction(task, wallet, client, feed),
+        ];
+        for (actual, expected) in instructions
+            .iter()
+            .zip(golden["vectors"].as_array().unwrap())
+        {
+            let accounts: Vec<_> = actual
+                .accounts
+                .iter()
+                .map(|a| a.pubkey.to_string())
+                .collect();
+            assert_eq!(
+                accounts,
+                serde_json::from_value::<Vec<String>>(expected["accounts"].clone()).unwrap()
+            );
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD.encode(&actual.data),
+                expected["data_base64"].as_str().unwrap()
+            );
+        }
+    }
 
     fn test_tx(action: Action, wallet: &Pubkey, task: &Pubkey) -> VersionedTransaction {
         let (accounts, data) = match action {

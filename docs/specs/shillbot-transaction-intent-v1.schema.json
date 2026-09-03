@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swarm.tips/schemas/shillbot-transaction-intent-v1.json",
+  "title": "Swarm Shillbot Transaction Intent v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "action", "network", "task_pda", "program_id", "fee_payer", "accounts", "signers", "movements", "risk", "digest"],
+  "properties": {
+    "version": { "const": "swarm.shillbot.transaction-intent/v1" },
+    "action": { "enum": ["create", "claim", "submit", "approve", "verify", "finalize"] },
+    "network": { "enum": ["mainnet", "devnet"] },
+    "wallet": { "type": "string", "minLength": 32 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "task_pda": { "type": "string", "minLength": 32 },
+    "program_id": { "const": "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi" },
+    "fee_payer": { "type": "string", "minLength": 32 },
+    "accounts": { "type": "array", "items": { "type": "string", "minLength": 32 } },
+    "signers": { "type": "array", "items": { "type": "string", "minLength": 32 }, "minItems": 1 },
+    "movements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["asset", "from", "to", "condition"],
+        "properties": {
+          "asset": { "type": "string" },
+          "from": { "type": "string" },
+          "to": { "type": "string" },
+          "amount": { "type": ["string", "integer", "null"] },
+          "condition": { "type": "string" }
+        }
+      }
+    },
+    "arguments": { "type": "object" },
+    "instruction_count": { "type": "integer", "minimum": 1 },
+    "instruction_index": { "type": "integer", "minimum": 0 },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sponsor": { "type": ["string", "null"] },
+    "escrow_lamports": { "type": ["string", "null"], "pattern": "^[0-9]+$" },
+    "content_id": { "type": ["string", "null"] },
+    "risk": { "enum": ["earn", "spend", "escrow_control"] }
+  }
+}

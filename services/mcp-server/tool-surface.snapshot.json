@@ -1134,6 +1134,54 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
+    "description": "[STATE] Confirm a Shillbot transaction you constructed and broadcast through your own Solana RPC. The server fetches and validates the full transaction before advancing task state. Supports create, claim, submit, approve, verify, and finalize; create escrows the campaign amount.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "action": {
+          "description": "One of create, claim, submit, approve, verify, or finalize.",
+          "type": "string"
+        },
+        "network": {
+          "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "description": "The task identifier the already-broadcast transaction applies to.",
+          "type": "string"
+        },
+        "task_pda": {
+          "description": "Required for create; ignored for other actions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tx_signature": {
+          "description": "Base58 Solana signature returned by the caller's own RPC broadcaster.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "action",
+        "tx_signature"
+      ],
+      "title": "ShillbotConfirmTxArgs",
+      "type": "object"
+    },
+    "name": "shillbot_confirm_tx"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
     "description": "[SPEND: escrow] (CLIENT) Create AND fund a Shillbot campaign task — commission work, not just earn it. Builds an unsigned create_task tx escrowing `amount_lamports` from YOUR wallet (non-custodial); sign and broadcast via shillbot_submit_tx action=\"create\". Returns task_id + task_pda — pass BOTH to shillbot_submit_tx action=\"create\" with the signed tx. The funded task then appears in shillbot_list_available_tasks. Requires a registered wallet.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1370,7 +1418,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "[READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all of your campaigns. Each entry is a task in 'submitted' state — agent has submitted content, you haven't yet called shillbot_approve_task or shillbot_reject_task on it. Use this to populate a review queue / inbox. Requires a registered wallet (the calling wallet must be the campaign client).",
+    "description": "[READ] (CLIENT-SIDE) List Shillbot tasks awaiting your client review across all campaigns. Approve acceptable work with shillbot_approve_task. Declining has no transaction: do not approve; the response shows when permissionless expiry can return escrow. Requires the campaign client wallet.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1414,14 +1462,18 @@
   {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": true,
+      "idempotentHint": false,
       "openWorldHint": true,
-      "readOnlyHint": true
+      "readOnlyHint": false
     },
-    "description": "[READ] [IN DEVELOPMENT] (CLIENT, v1 stub) Reject agent-submitted content. There is NO on-chain reject instruction yet — rejection is implicit: don't approve, and the permissionless on-chain expire_task instruction (an off-MCP crank, not a tool here) returns the full escrow at T+verification_timeout (~14 days after submission). Returns guidance + `expires_at` (when that refund becomes possible), NOT a transaction. A first-class reject with reason capture is on the roadmap.",
+    "description": "[EARN][STATE] Request gas sponsorship for a claim or submit transaction constructed locally with @swarm-tips/tx-client. The server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast the returned transaction through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "action": {
+          "description": "Sponsorship is deliberately limited to \"claim\" or \"submit\".",
+          "type": "string"
+        },
         "network": {
           "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
@@ -1430,17 +1482,23 @@
           ]
         },
         "task_id": {
-          "description": "The task identifier (format: `<campaign_id>:<task_uuid>`) returned by shillbot_list_pending_approval.",
+          "description": "The task identifier for the locally constructed transaction.",
+          "type": "string"
+        },
+        "unsigned_transaction": {
+          "description": "Base64 unsigned transaction constructed locally. The sponsor validates\nthe complete message and adds only its fee-payer signature.",
           "type": "string"
         }
       },
       "required": [
-        "task_id"
+        "task_id",
+        "action",
+        "unsigned_transaction"
       ],
-      "title": "RejectTaskArgs",
+      "title": "ShillbotSponsorTxArgs",
       "type": "object"
     },
-    "name": "shillbot_reject_task"
+    "name": "shillbot_sponsor_tx"
   },
   {
     "annotations": {
@@ -1449,7 +1507,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Broadcast a signed Shillbot Solana tx (create, claim, submit, approve, verify, finalize) and notify the orchestrator it landed. Returns the on-chain signature + confirmation. Pair with the build tool that returned the unsigned tx. Footgun: pass the SAME network you built on — a different cluster produces an InvalidAccount-shaped error.",
+    "description": "[STATE] Broadcast a fully signed, self-paid Shillbot Solana tx (create, claim, submit, approve, verify, finalize) only after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Sponsored transactions must be broadcast through the caller's RPC and confirmed with shillbot_confirm_tx.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {

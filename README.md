@@ -218,9 +218,8 @@ Disputed --(resolve_challenge)--> [resolved, closed]
 | `migrate_agent_state` | anyone | One-time PDA-size migration (42 → 90 bytes) |
 | `close_agent_state` | agent | Close agent's PDA, reclaim rent |
 
-There is no on-chain `reject_task` instruction in v1. The MCP/UI
-`shillbot_reject_task` action is a read-only guidance stub: declining a
-submission means not approving it, then waiting until
+There is no on-chain `reject_task` instruction in v1 and the MCP does not
+pretend otherwise. Declining a submission means not approving it, then waiting until
 `verification_timeout` (14 days by default) when anyone may crank
 `expire_task` to return the escrow to the client. It does not immediately
 change on-chain state or return funds.

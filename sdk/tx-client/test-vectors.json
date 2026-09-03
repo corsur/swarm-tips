@@ -1,0 +1,18 @@
+{
+  "wallet": "9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj",
+  "task": "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx",
+  "feed": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+  "client": "54B23SrtQ4rv8tRs1PzACs4WZJY2PzyMXnZzeu1Zo5FE",
+  "vectors": [
+    {"action":"create","accounts":["FV6v93WcTB1G8xS8Z1kATR12oRKyapQ74uuRwmfTqQud","5X32PTzoH9wrFTsV2Dz9NRGVzFQUqsowpvmoRZYFT1EW","GedMuUnCZeYEwyXCexLuztYUn7noSTgBi4w5RtCWQEVJ","9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj","SysvarS1otHashes111111111111111111111111111","11111111111111111111111111111111"],"data_base64":"wlAGtOh/MKsqAAAAAAAAAEBCDwAAAAAAEREREREREREREREREREREREREREREREREREREREREREAsz9xAAAAAEA4AAAAAAAAQDgAAAAAAAAAAAAAAAAAAAAAAAAAAQA="},
+    {"action":"claim","accounts":["US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","FV6v93WcTB1G8xS8Z1kATR12oRKyapQ74uuRwmfTqQud","EDikF4bo9zMVLD7JzdrZ9R2CRRXSXDB2gkpiTGunjyE8","9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj","11111111111111111111111111111111"],"data_base64":"Md7b7ptE3Yg="},
+    {"action":"submit","accounts":["US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","FV6v93WcTB1G8xS8Z1kATR12oRKyapQ74uuRwmfTqQud","EDikF4bo9zMVLD7JzdrZ9R2CRRXSXDB2gkpiTGunjyE8","9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj"],"data_base64":"nlBlM3KCZf0JAAAAdmlkZW8tMTIz"},
+    {"action":"approve","accounts":["US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj"],"data_base64":"Uatf5Arnp+E="},
+    {"action":"verify","accounts":["US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","FV6v93WcTB1G8xS8Z1kATR12oRKyapQ74uuRwmfTqQud","YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf"],"data_base64":"r5iszEB+yc6guw0AAAAAACIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIi"},
+    {"action":"finalize","accounts":["US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","FV6v93WcTB1G8xS8Z1kATR12oRKyapQ74uuRwmfTqQud","9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj","54B23SrtQ4rv8tRs1PzACs4WZJY2PzyMXnZzeu1Zo5FE","YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf"],"data_base64":"fifSIE3TG8c="}
+  ],
+  "sponsored": [
+    {"action":"claim","fee_payer":"54B23SrtQ4rv8tRs1PzACs4WZJY2PzyMXnZzeu1Zo5FE","signers":["54B23SrtQ4rv8tRs1PzACs4WZJY2PzyMXnZzeu1Zo5FE","9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj"]},
+    {"action":"submit","fee_payer":"54B23SrtQ4rv8tRs1PzACs4WZJY2PzyMXnZzeu1Zo5FE","signers":["54B23SrtQ4rv8tRs1PzACs4WZJY2PzyMXnZzeu1Zo5FE","9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj"]}
+  ]
+}

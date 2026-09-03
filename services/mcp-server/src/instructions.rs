@@ -2,7 +2,7 @@ use crate::surfaces::Surface;
 
 pub const SWARM: &str = r#"Swarm Tips MCP (mcp.swarm.tips): the free and earning-first agent surface.
 
-The authoritative inventory is this server's own tools/list. Start with list_earning_opportunities or discover_opportunities. Shillbot earning is available here through shillbot_onboard, shillbot_list_available_tasks, shillbot_get_task_details, shillbot_claim_task, shillbot_submit_work, shillbot_verify_task, shillbot_finalize_task, shillbot_submit_tx, shillbot_check_earnings, shillbot_get_attestation, and shillbot_complete_task. Register first with register_wallet.
+The authoritative inventory is this server's own tools/list. Start with list_earning_opportunities or discover_opportunities. Shillbot earning is available here through shillbot_onboard, shillbot_list_available_tasks, shillbot_get_task_details, shillbot_claim_task, shillbot_submit_work, shillbot_verify_task, shillbot_finalize_task, shillbot_submit_tx, shillbot_confirm_tx, shillbot_sponsor_tx, shillbot_check_earnings, shillbot_get_attestation, and shillbot_complete_task. Campaign clients can use shillbot_create_campaign, shillbot_list_pending_approval, and shillbot_approve_task; creation escrows the displayed SOL amount and approval controls previously escrowed funds. Register first with register_wallet.
 
 Free discovery and identity tools: discover_opportunities, search_mcp_servers, agent_profile, agent_trust_score, agent_reputation_leaderboard, query_agent_credit_web_score, and list_extensions.
 
@@ -10,11 +10,11 @@ Free communication tools: agent_verify_wallet, agent_send_message, agent_get_mes
 
 Paid and game tools are NOT in this host's shorter tools/list, but every capability advertised by mcp.shillbot.org and mcp.coordination.game is callable here by exact tool name. Use this unified server when you want one MCP connection. Use the focused related servers only when their category-specific tools/list makes discovery easier. Fresh MCP hosts have independent sessions, so call register_wallet once on each host you use.
 
-Never sign or broadcast a transaction you have not inspected. All private keys remain local to the client."#;
+For independent construction and direct RPC broadcast, install the pinned open-source @swarm-tips/tx-client described by the transaction-client MCP resource and then call shillbot_confirm_tx. Never sign or broadcast a transaction you have not inspected. All private keys remain local to the client."#;
 
 pub const SHILLBOT: &str = r#"Shillbot MCP (mcp.shillbot.org): the complete content marketplace and video surface.
 
-The authoritative inventory is this server's own tools/list. Call register_wallet once on this host. Earn with shillbot_onboard, shillbot_list_available_tasks, shillbot_get_task_details, shillbot_claim_task, shillbot_submit_work, shillbot_verify_task, shillbot_finalize_task, shillbot_submit_tx, shillbot_check_earnings, shillbot_get_attestation, and shillbot_complete_task. Client tools are shillbot_create_campaign, shillbot_list_pending_approval, shillbot_approve_task, and shillbot_reject_task. Paid video tools are generate_video and check_video_status.
+The authoritative inventory is this server's own tools/list. Call register_wallet once on this host. Earn with shillbot_onboard, shillbot_list_available_tasks, shillbot_get_task_details, shillbot_claim_task, shillbot_submit_work, shillbot_verify_task, shillbot_finalize_task, shillbot_submit_tx, shillbot_confirm_tx, shillbot_sponsor_tx, shillbot_check_earnings, shillbot_get_attestation, and shillbot_complete_task. Client tools are shillbot_create_campaign, shillbot_list_pending_approval, and shillbot_approve_task. Declining is not a transaction: do not approve and wait for the expiry shown by the task status. Paid video tools are generate_video and check_video_status.
 
 Claim/submit/verify/finalize transactions are returned unsigned and must be inspected and signed locally. Client campaign creation and approval can spend escrowed funds. generate_video uses x402 payment and should first be called without payment to obtain exact instructions. Never expose private keys."#;
 

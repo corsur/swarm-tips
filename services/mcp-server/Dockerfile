@@ -17,11 +17,11 @@ RUN cargo build --release -p mcp-server -p listings-scraper
 FROM builder AS test
 RUN cargo fmt --check
 RUN cargo clippy --release --no-deps -p mcp-server -p listings-scraper -- -D warnings
-RUN cargo test --release -p mcp-server -p listings-scraper
+RUN cargo test --release -p mcp-server -p listings-scraper -p shillbot-chain
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 curl && rm -rf /var/lib/apt/lists/*
-# Install Node.js 22 LTS for build-verify-tx.ts (Switchboard SDK subprocess)
+# Install Node.js 22 LTS for the tx-client Switchboard SDK subprocess
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -31,11 +31,14 @@ COPY --from=test /app/target/release/mcp-server /usr/local/bin/mcp-server
 # listings-scraper is invoked as a subprocess by mcp-server's
 # fetch_moltlaunch (Cloudflare-blocked upstream needing JA3 impersonation).
 COPY --from=test /app/target/release/listings-scraper /usr/local/bin/listings-scraper
-# Install TS script + deps (node_modules next to the script so tsx can resolve them)
-COPY services/mcp-server/scripts /home/appuser/scripts
-RUN cd /home/appuser/scripts && npm install \
+# Install the shared tx client and thin TS wrapper in their repository-relative
+# layout so the file dependency resolves exactly as it does in local tests.
+COPY sdk/tx-client /home/appuser/sdk/tx-client
+COPY services/mcp-server/scripts /home/appuser/services/mcp-server/scripts
+RUN cd /home/appuser/sdk/tx-client && npm install && npm run build \
+    && cd /home/appuser/services/mcp-server/scripts && npm install \
     && chown -R appuser:appuser /home/appuser
-ENV BUILD_VERIFY_SCRIPT=/home/appuser/scripts/build-verify-tx.ts
+ENV BUILD_VERIFY_SCRIPT=/home/appuser/services/mcp-server/scripts/build-verify-tx-client.ts
 USER appuser
 WORKDIR /home/appuser
 EXPOSE 8080

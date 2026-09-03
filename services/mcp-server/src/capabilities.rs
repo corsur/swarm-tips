@@ -60,7 +60,6 @@ const SHILLBOT_CLIENT_TOOLS: &[&str] = &[
     "shillbot_create_campaign",
     "shillbot_list_pending_approval",
     "shillbot_approve_task",
-    "shillbot_reject_task",
 ];
 
 const DISCOVERY_TOOLS: &[&str] = &[
@@ -160,10 +159,7 @@ pub fn listed_on(name: &str, surface: Surface, show_testnet: bool) -> bool {
         return false;
     }
     match surface {
-        Surface::Swarm => !matches!(
-            cap.category,
-            Category::Game | Category::Video | Category::ShillbotClient
-        ),
+        Surface::Swarm => !matches!(cap.category, Category::Game | Category::Video),
         Surface::Shillbot => {
             matches!(
                 cap.category,

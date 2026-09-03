@@ -7,6 +7,9 @@ on:
       - 'services/mcp-server/**'
       - 'crates/game-api-client/**'
       - 'crates/game-chain/**'
+      - 'crates/shillbot-chain/**'
+      - 'sdk/tx-client/**'
+      - 'docs/specs/shillbot-transaction-intent-v1.schema.json'
       # The MCP server builds cross-chain calldata from these crates, so a
       # registry address change or chain-seam edit must redeploy it.
       - 'crates/chain-registry/**'

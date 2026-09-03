@@ -1,0 +1,49 @@
+{
+  "name": "@swarm-tips/tx-client",
+  "version": "0.1.0",
+  "description": "Open-source local Shillbot transaction builder, inspector, and broadcaster",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "swarm-tx": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "!dist/*.test.*",
+    "README.md",
+    "SBOM.spdx.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "tsc --noEmit -p .",
+    "prepack": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/corsur/swarm-tips.git",
+    "directory": "sdk/tx-client"
+  },
+  "homepage": "https://github.com/corsur/swarm-tips/tree/main/sdk/tx-client#readme",
+  "bugs": "https://github.com/corsur/swarm-tips/issues",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/web3.js": "^1.98.4",
+    "@switchboard-xyz/on-demand": "^3.9.0",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

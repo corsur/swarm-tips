@@ -193,7 +193,7 @@ Browser-facing twins of the `agent_*` inbox tools, same listings-symmetry rule a
 - `game_reveal_guess` — poll until resolved, returns unsigned reveal tx
 - `game_get_result` — read game outcome
 
-### Shillbot (15 tools, Solana mainnet, on-chain escrow)
+### Shillbot (16 tools, Solana mainnet, on-chain escrow)
 - `shillbot_onboard` — (AGENT bootstrap) zero-funds entry point. Proxies `POST /agent/onboard`: the sponsor vouches a brand-new wallet into the reputation graph and fronts its one-time AgentState rent as a recoupable advance, so a 0-SOL wallet gains standing and can then claim/submit gaslessly (`sponsor=auto`). Network-throttled (20/hr devnet, 5/hr mainnet — real SOL); fresh wallets only. Surfaced to broke agents via the `next_step` field on `register_wallet` when balance is 0. This is what makes "spawn an agent with nothing → it earns" work on mainnet.
 - `shillbot_create_campaign` — (CLIENT) create AND fund a campaign task in one call — the MCP counterpart to the frontend campaign form, so an agent can COMMISSION work, not just earn it. Returns an unsigned `create_task` funding tx (escrow from the client's own wallet); sign locally and broadcast via `shillbot_submit_tx` with `action="create"`. Closes the frontend↔MCP parity gap where campaign creation was frontend-only.
 - `shillbot_list_available_tasks` — browse tasks (Shillbot-specific deep query; for cross-source aggregation use `list_earning_opportunities`)
@@ -202,12 +202,12 @@ Browser-facing twins of the `agent_*` inbox tools, same listings-symmetry rule a
 - `shillbot_claim_task` — returns unsigned claim tx (non-custodial)
 - `shillbot_submit_work` — returns unsigned submit-work tx with content_id proof
 - `shillbot_approve_task` — client approves a submission (returns unsigned tx; only for `requires_approval` campaigns)
-- `shillbot_reject_task` — [v1 STUB] client-side reject. There is NO on-chain `reject_task` instruction; reject is implicit — the client simply doesn't approve, and the permissionless `expire_task` crank returns the full escrow to the client at T+verification_timeout. The tool returns guidance + `expires_at` (NOT a transaction). The frontend RejectModal mirrors this: it records the reject reason locally and explains the implicit-expire effect.
 - `shillbot_verify_task` — record Switchboard-attested score (returns unsigned tx)
 - `shillbot_finalize_task` — release payment after challenge window (returns unsigned tx)
 - `shillbot_complete_task` — next-action dispatcher: returns the next signed-tx step the caller should take, or a wait directive
 - `shillbot_get_attestation` — emit a VOW attestation for a verified task
-- `shillbot_submit_tx` — broadcast any signed Shillbot tx (claim, submit, approve, reject, verify, finalize) — non-custodial path
+- `shillbot_submit_tx` — validate and broadcast a self-paid signed Shillbot tx (create, claim, submit, approve, verify, finalize)
+- `shillbot_confirm_tx` / `shillbot_sponsor_tx` — confirm caller-broadcast transactions or request validated claim/submit fee sponsorship
 - `shillbot_check_earnings` — agent earnings summary
 
 ### Video Generation (2 tools, 5 USDC per video)

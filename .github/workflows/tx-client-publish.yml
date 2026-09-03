@@ -1,0 +1,44 @@
+name: Shillbot Transaction Client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/tx-client/**'
+      - '.github/workflows/tx-client-publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+          cache-dependency-path: sdk/tx-client/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: sdk/tx-client
+      - run: pnpm lint
+        working-directory: sdk/tx-client
+      - run: pnpm test
+        working-directory: sdk/tx-client
+      - run: pnpm build
+        working-directory: sdk/tx-client
+      - name: Publish immutable public package with provenance
+        run: |
+          if npm view @swarm-tips/tx-client@0.1.0 version >/dev/null 2>&1; then
+            echo "@swarm-tips/tx-client@0.1.0 is already published; npm versions are immutable"
+          else
+            npm publish --access public --provenance
+          fi
+        working-directory: sdk/tx-client
