@@ -532,9 +532,15 @@ pub struct ShillbotSponsorTxArgs {
     pub task_id: String,
     /// Sponsorship is deliberately limited to "claim" or "submit".
     pub action: String,
-    /// Base64 unsigned transaction constructed locally. The sponsor validates
-    /// the complete message and adds only its fee-payer signature.
-    pub unsigned_transaction: String,
+    /// Base64 unsigned transaction constructed locally. Omit on the first
+    /// call to receive the sponsor fee payer and any required payout route;
+    /// pass it on the second call for complete validation and co-signing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsigned_transaction: Option<String>,
+    /// Required when requesting a submit sponsorship template; it must match
+    /// the content id encoded in the locally constructed transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
     #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
@@ -1756,7 +1762,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_sponsor_tx",
-        description = "[EARN][STATE] Request gas sponsorship for a claim or submit transaction constructed locally with @swarm-tips/tx-client. The server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast the returned transaction through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
+        description = "[EARN][STATE] Two-step gas sponsorship for a locally constructed claim or submit transaction. First omit unsigned_transaction to receive the sponsor fee payer and any required payout route (include content_id for submit). Build locally with @swarm-tips/tx-client, then call again with unsigned_transaction: the server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
         annotations(destructive_hint = false, idempotent_hint = false)
     )]
     async fn shillbot_sponsor_tx(
@@ -1764,10 +1770,8 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<ShillbotSponsorTxArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        if args.task_id.is_empty() || args.unsigned_transaction.is_empty() {
-            return Err(invalid_input(
-                "task_id and unsigned_transaction are required",
-            ));
+        if args.task_id.is_empty() {
+            return Err(invalid_input("task_id is required"));
         }
         if args.action != "claim" && args.action != "submit" {
             return Err(invalid_input("sponsorship is limited to claim and submit"));
@@ -1777,6 +1781,56 @@ impl SwarmTipsMcp {
             .resolve_wallet(Some(&parts))
             .await
             .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        if args.unsigned_transaction.is_none() {
+            if args.action == "submit" && args.content_id.as_deref().is_none_or(str::is_empty) {
+                return Err(invalid_input(
+                    "content_id is required when requesting a submit sponsorship template",
+                ));
+            }
+            let response = self
+                .state
+                .orchestrator
+                .sponsorship_template(
+                    normalize_task_id(&args.task_id),
+                    &wallet,
+                    &args.action,
+                    args.content_id.as_deref(),
+                    network,
+                )
+                .await
+                .map_err(|error| to_mcp_error(&error))?;
+            let unsigned_tx = response.transaction.as_deref().ok_or_else(|| {
+                invalid_input("sponsorship template omitted the unsigned transaction")
+            })?;
+            let task_pda = response
+                .task_pda
+                .as_deref()
+                .ok_or_else(|| invalid_input("sponsorship template omitted task PDA"))?;
+            let action = if args.action == "claim" {
+                shillbot_chain::Action::Claim
+            } else {
+                shillbot_chain::Action::Submit
+            };
+            let result = serde_json::json!({
+                "stage": "template",
+                "action": args.action,
+                "task_id": response.task_id,
+                "task_pda": task_pda,
+                "instructions": "Read fee_payer and any payout route from transaction_intent, construct the same action locally, then call shillbot_sponsor_tx again with unsigned_transaction.",
+            });
+            return shillbot_transaction_result(
+                result,
+                unsigned_tx,
+                action,
+                network.unwrap_or("mainnet"),
+                &wallet,
+                task_pda,
+                None,
+                args.content_id,
+                None,
+            );
+        }
+        let unsigned_transaction = args.unsigned_transaction.as_deref().unwrap_or_default();
         let response = self
             .state
             .orchestrator
@@ -1784,7 +1838,7 @@ impl SwarmTipsMcp {
                 normalize_task_id(&args.task_id),
                 &wallet,
                 &args.action,
-                &args.unsigned_transaction,
+                unsigned_transaction,
                 network,
             )
             .await

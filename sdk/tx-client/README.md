@@ -15,8 +15,11 @@ and compare locally, sign through a wallet callback, broadcast through your own
 RPC, and call `shillbot_confirm_tx`. `shillbot_submit_tx` remains available as a
 validated convenience broadcaster for self-paid transactions. For an eligible
 claim or submit, set `sponsor` as the fee payer (and `payoutTo` when an open
-advance must be repaid), call `shillbot_sponsor_tx`, add your wallet signature,
-broadcast through your own RPC, and call `shillbot_confirm_tx`.
+advance must be repaid). Discover those values by first calling
+`shillbot_sponsor_tx` without `unsigned_transaction` (include `content_id` for
+submit), build locally, then call the tool again with your unsigned message.
+Add your wallet signature, broadcast through your own RPC, and call
+`shillbot_confirm_tx`.
 
 Every builder returns both `unsigned_tx` and a versioned, SHA-256-digested
 `transaction_intent` describing the action, program, accounts, required

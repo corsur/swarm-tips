@@ -765,6 +765,60 @@ impl OrchestratorProxy {
         })
     }
 
+    /// Obtain the sponsor fee payer and optional repayment route before the
+    /// caller constructs its own claim/submit transaction. The returned
+    /// transaction is a template only; the caller may independently rebuild
+    /// the same message and send that message to `sponsor_transaction`.
+    pub async fn sponsorship_template(
+        &self,
+        task_id: &str,
+        wallet_pubkey: &str,
+        action: &str,
+        content_id: Option<&str>,
+        network: Option<&str>,
+    ) -> Result<TransactionResponse, McpServiceError> {
+        if task_id.is_empty() || wallet_pubkey.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id and wallet_pubkey are required".to_string(),
+            ));
+        }
+        if action != "claim" && action != "submit" {
+            return Err(McpServiceError::InvalidInput(
+                "sponsorship is limited to claim and submit".to_string(),
+            ));
+        }
+        let mut qs = network_query_suffix(network);
+        qs.push_str(if qs.is_empty() {
+            "?sponsor=true"
+        } else {
+            "&sponsor=true"
+        });
+        let response = if action == "claim" {
+            let url = format!("{}/tasks/{task_id}/claim{qs}", self.base_url);
+            self.bodyless_post(&url, wallet_pubkey).send().await
+        } else {
+            let content_id = content_id
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    McpServiceError::InvalidInput(
+                        "content_id is required for a submit sponsorship template".to_string(),
+                    )
+                })?;
+            let url = format!("{}/tasks/{task_id}/submit{qs}", self.base_url);
+            self.client
+                .post(&url)
+                .bearer_auth(wallet_pubkey)
+                .json(&serde_json::json!({ "content_id": content_id }))
+                .send()
+                .await
+        }
+        .map_err(|e| McpServiceError::OrchestratorError(format!("request failed: {e}")))?;
+        let response = require_success(response, "sponsorship_template", task_id).await?;
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid sponsorship template: {e}"))
+        })
+    }
+
     /// Request the orchestrator build an unsigned `verify_task` Solana
     /// transaction. Bundles the Switchboard feed read + composite score
     /// into the on-chain verify instruction. The agent signs and submits.
@@ -1562,6 +1616,51 @@ mod tests {
             let proxy = OrchestratorProxy::new(server.uri(), server.uri());
             let resp = proxy
                 .claim_task("c:t", "wallet1", Some("devnet"))
+                .await
+                .expect("ok");
+            assert_eq!(resp.task_id, "c:t");
+        }
+
+        #[tokio::test]
+        async fn claim_sponsorship_template_requires_sponsor_and_network() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/claim"))
+                .and(query_param("network", "devnet"))
+                .and(query_param("sponsor", "true"))
+                .and(header("authorization", "Bearer wallet1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let resp = proxy
+                .sponsorship_template("c:t", "wallet1", "claim", None, Some("devnet"))
+                .await
+                .expect("ok");
+            assert_eq!(resp.task_id, "c:t");
+        }
+
+        #[tokio::test]
+        async fn submit_sponsorship_template_forwards_content_id() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/tasks/c:t/submit"))
+                .and(query_param("network", "devnet"))
+                .and(query_param("sponsor", "true"))
+                .and(header("authorization", "Bearer wallet1"))
+                .and(body_partial_json(
+                    serde_json::json!({ "content_id": "post:123" }),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let resp = proxy
+                .sponsorship_template("c:t", "wallet1", "submit", Some("post:123"), Some("devnet"))
                 .await
                 .expect("ok");
             assert_eq!(resp.task_id, "c:t");

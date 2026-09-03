@@ -1466,13 +1466,20 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN][STATE] Request gas sponsorship for a claim or submit transaction constructed locally with @swarm-tips/tx-client. The server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast the returned transaction through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
+    "description": "[EARN][STATE] Two-step gas sponsorship for a locally constructed claim or submit transaction. First omit unsigned_transaction to receive the sponsor fee payer and any required payout route (include content_id for submit). Build locally with @swarm-tips/tx-client, then call again with unsigned_transaction: the server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "action": {
           "description": "Sponsorship is deliberately limited to \"claim\" or \"submit\".",
           "type": "string"
+        },
+        "content_id": {
+          "description": "Required when requesting a submit sponsorship template; it must match\nthe content id encoded in the locally constructed transaction.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "network": {
           "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
@@ -1486,14 +1493,16 @@
           "type": "string"
         },
         "unsigned_transaction": {
-          "description": "Base64 unsigned transaction constructed locally. The sponsor validates\nthe complete message and adds only its fee-payer signature.",
-          "type": "string"
+          "description": "Base64 unsigned transaction constructed locally. Omit on the first\ncall to receive the sponsor fee payer and any required payout route;\npass it on the second call for complete validation and co-signing.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "task_id",
-        "action",
-        "unsigned_transaction"
+        "action"
       ],
       "title": "ShillbotSponsorTxArgs",
       "type": "object"
