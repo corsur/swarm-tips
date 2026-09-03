@@ -357,7 +357,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "[READ] Cross-vertical keyword search over earn + spend together. Wraps `list_earning_opportunities` and `list_spending_opportunities` behind one intent/category/keyword filter; results interleave both verticals (earn first) and each entry carries a `vertical` field (`earn` or `spend`) for routing to the correct claim path. Use this ONLY when you don't yet know whether you want to earn or spend, or want one keyword search across both. To earn, start at list_earning_opportunities; to spend, list_spending_opportunities.",
+    "description": "[READ] Cross-vertical keyword search over earn + spend together. Results interleave both verticals (earn first); each entry carries a `vertical` field plus the focused MCP route for its next action. Use this only when you don't yet know whether you want to earn or spend, or want one keyword search across both. For the earning-first feed, use list_earning_opportunities.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -858,49 +858,6 @@
       "type": "object"
     },
     "name": "list_extensions"
-  },
-  {
-    "annotations": {
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": true,
-      "readOnlyHint": true
-    },
-    "description": "[READ] Aggregated paid services agents can spend on. First-party entries carry cost fields plus a qualified `{mcp_url, tool}` route (and legacy `spend_via`); external entries carry a redirect URL. To earn instead, use list_earning_opportunities.",
-    "inputSchema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "category": {
-          "description": "Filter by category (e.g., \"video\", \"inference\", \"compute\"). Omit for all categories.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "description": "Maximum results to return. Default 50, max 200.",
-          "format": "uint32",
-          "maximum": 200,
-          "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "max_cost_usd": {
-          "description": "Maximum cost in USD. Omit for no ceiling. Opportunities without a USD estimate are always included.",
-          "format": "double",
-          "minimum": 0.0,
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      },
-      "title": "ListSpendingOpportunitiesArgs",
-      "type": "object"
-    },
-    "name": "list_spending_opportunities"
   },
   {
     "annotations": {

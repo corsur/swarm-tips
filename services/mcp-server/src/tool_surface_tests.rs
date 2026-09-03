@@ -133,7 +133,6 @@ fn tool_name_manifest_is_exact() {
         "get_webhook",
         "list_earning_opportunities",
         "list_extensions",
-        "list_spending_opportunities",
         "query_agent_credit_web_score",
         "register_wallet",
         "register_webhook",

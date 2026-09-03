@@ -2,7 +2,7 @@ use crate::errors::McpServiceError;
 use crate::game_proxy::GameApiProxy;
 use crate::game_session::GameSessionManager;
 use crate::listings::models::AgentJob;
-use crate::listings::spending::{get_spending_opportunities, SpendingOpportunity};
+use crate::listings::spending::get_spending_opportunities;
 use crate::listings::{get_listings, ListingsState};
 use crate::proxy::OrchestratorProxy;
 use crate::session_binding::McpSessionBinding;
@@ -934,18 +934,6 @@ pub struct ListEarningOpportunitiesArgs {
     /// Minimum reward in USD. Omit for no floor. Listings without a USD estimate are excluded when set.
     #[schemars(range(min = 0.0))]
     pub min_reward_usd: Option<f64>,
-    /// Maximum results to return. Default 50, max 200.
-    #[schemars(range(min = 1, max = 200))]
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, serde::Deserialize, JsonSchema)]
-pub struct ListSpendingOpportunitiesArgs {
-    /// Filter by category (e.g., "video", "inference", "compute"). Omit for all categories.
-    pub category: Option<String>,
-    /// Maximum cost in USD. Omit for no ceiling. Opportunities without a USD estimate are always included.
-    #[schemars(range(min = 0.0))]
-    pub max_cost_usd: Option<f64>,
     /// Maximum results to return. Default 50, max 200.
     #[schemars(range(min = 1, max = 200))]
     pub limit: Option<u32>,
@@ -2140,39 +2128,8 @@ impl SwarmTipsMcp {
     }
 
     #[tool(
-        name = "list_spending_opportunities",
-        description = "[READ] Aggregated paid services agents can spend on. First-party entries carry cost fields plus a qualified `{mcp_url, tool}` route (and legacy `spend_via`); external entries carry a redirect URL. To earn instead, use list_earning_opportunities.",
-        annotations(read_only_hint = true)
-    )]
-    async fn list_spending_opportunities(
-        &self,
-        Parameters(args): Parameters<ListSpendingOpportunitiesArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let mut opportunities: Vec<SpendingOpportunity> =
-            get_spending_opportunities(&self.state.rpc_client).await;
-
-        if let Some(category_filter) = args.category.as_deref() {
-            let needle = category_filter.to_lowercase();
-            opportunities.retain(|o| o.category.to_lowercase() == needle);
-        }
-        if let Some(max_usd) = args.max_cost_usd {
-            // Keep entries without a USD estimate (None) since we can't compare them.
-            opportunities.retain(|o| o.cost_usd_estimate.map(|v| v <= max_usd).unwrap_or(true));
-        }
-
-        let limit = args.limit.unwrap_or(50).min(200) as usize;
-        opportunities.truncate(limit);
-
-        tracing::info!(
-            count = opportunities.len(),
-            "list_spending_opportunities served"
-        );
-        Ok(text_result(&opportunities))
-    }
-
-    #[tool(
         name = "discover_opportunities",
-        description = "[READ] Cross-vertical keyword search over earn + spend together. Wraps `list_earning_opportunities` and `list_spending_opportunities` behind one intent/category/keyword filter; results interleave both verticals (earn first) and each entry carries a `vertical` field (`earn` or `spend`) for routing to the correct claim path. Use this ONLY when you don't yet know whether you want to earn or spend, or want one keyword search across both. To earn, start at list_earning_opportunities; to spend, list_spending_opportunities.",
+        description = "[READ] Cross-vertical keyword search over earn + spend together. Results interleave both verticals (earn first); each entry carries a `vertical` field plus the focused MCP route for its next action. Use this only when you don't yet know whether you want to earn or spend, or want one keyword search across both. For the earning-first feed, use list_earning_opportunities.",
         annotations(read_only_hint = true)
     )]
     async fn discover_opportunities(
@@ -5354,10 +5311,10 @@ mod tests {
     #[test]
     fn list_tools_filter_selects_each_product_surface() {
         let all = SwarmTipsMcp::tool_router().list_all();
-        assert_eq!(all.len(), 66, "declared tool count");
+        assert_eq!(all.len(), 65, "declared tool count");
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Swarm, false).len(),
-            32
+            31
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, false).len(),
@@ -5374,7 +5331,7 @@ mod tests {
         let all = SwarmTipsMcp::tool_router().list_all();
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Swarm, true).len(),
-            32
+            31
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, true).len(),

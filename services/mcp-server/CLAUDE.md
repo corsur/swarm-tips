@@ -81,14 +81,14 @@ expire, run `mcp-publisher login github` first).
 
 **The structural rule (2026-04-08 strategic shift).** Layered on top of (not replacing) the workprotocol test. Routes integration decisions deterministically instead of forcing per-source forensic investigation.
 
-**Two universal MCP tools** are the canonical entry point for opportunity discovery:
+**Two complementary MCP tools** are the canonical entry point for opportunity discovery:
 
 - `list_earning_opportunities` — aggregates earning entries across all known sources via the existing `fetch_*` infrastructure in `src/listings/sources.rs`. Each entry has a `source` field (`shillbot`, `bountycaster`, `botbounty`, `0xwork`, `defillama-ai`, ...). First-party entries (currently only `source = "shillbot"`) get a `claim_via` field naming the in-MCP tool to call (`shillbot_claim_task`). External entries have a direct `source_url` redirect — agents claim through the source platform itself, swarm.tips does not mediate.
-- `list_spending_opportunities` — aggregates paid services. v1 hardcoded with `generate_video` (first-party). External spend sources (Chutes inference, x402-paywalled APIs) are deferred to follow-up integrations. First-party entries get a `spend_via` field; external entries get a `url`.
+- `discover_opportunities` — searches earning and spending entries together when the caller does not yet know which vertical it needs. Spending entries route to the focused server that owns the paid action; Swarm Tips does not expose a standalone spending-list tool.
 
 **The integration rule:**
 
-- **Listings sources** in `src/listings/sources.rs` (`fetch_*`) feed `list_earning_opportunities`. Adding a new source means writing a `fetch_*` function. The workprotocol test still applies — the source must have payment provability before we list it — but the MCP surface stays at two tools regardless.
+- **Listings sources** in `src/listings/sources.rs` (`fetch_*`) feed `list_earning_opportunities` and the earning side of `discover_opportunities`. Adding a new source means writing a `fetch_*` function. The workprotocol test still applies — the source must have payment provability before we list it — but the MCP surface stays at two tools regardless.
 - **Per-source CRUD MCP tools** are reserved for two cases: (1) first-party verticals we own end-to-end (Coordination Game, Shillbot, video generation), or (2) external platforms with verifiable on-chain enforceable escrow that mathematically guarantees payout independent of the platform's good behavior. We have zero examples of case (2) today; the first such integration is a future plan. **Centralized full-CRUD proxies are banned** — they're fundamentally fragile (the platform can break, change schemas, pivot, or shut down) and we can't independently verify pay-out.
 
 **Why this matters:** before 2026-04-08 we proxied ClawTasks and BotBounty as full CRUD MCP tools. ClawTasks's API broke (returned HTTP 500 on every endpoint) and we caught it in real time during the audit, exposing the structural fragility. The unified-tools-with-redirect pattern eliminates that failure mode for the discovery surface and reserves the deeper engineering effort for cases where it actually pays off.
@@ -100,7 +100,7 @@ expire, run `mcp-publisher login github` first).
 - The swarm.tips frontend at `coordination-app/frontend/swarm-tips/src/lib/fetch-bounties.ts:29-54` fetches from `https://mcp.swarm.tips/internal/listings` directly. No Firebase client, no separate backend, no per-source pages — single source of truth.
 - Both surfaces share the same 5-minute cache TTL on `ListingsState`.
 
-The symmetry on the spending side was added 2026-04-08 in the same commit as this doc update: `get_spending_opportunities` in `services/mcp-server/src/listings/spending.rs` mirrors `get_listings` (parallel `tokio::join!` aggregation, per-source health logging, dedupe). v1 has only `fetch_first_party_spending` as the source, but the structural slot is in place for external spend sources (Chutes inference, x402-paywalled directories, Replicate, Hugging Face Spaces with paid tier) to land as new `fetch_*_spending` functions.
+The symmetry on the spending side was added 2026-04-08 in the same commit as this doc update: `get_spending_opportunities` in `services/mcp-server/src/listings/spending.rs` mirrors `get_listings` (parallel `tokio::join!` aggregation, per-source health logging, dedupe) and feeds the spending side of `discover_opportunities`. v1 has only `fetch_first_party_spending` as the source, but the structural slot is in place for external spend sources (Chutes inference, x402-paywalled directories, Replicate, Hugging Face Spaces with paid tier) to land as new `fetch_*_spending` functions.
 
 **The "no version bump for new sources" rule.** Adding a new bounty source means writing a `fetch_*` function in `listings/sources.rs` and wiring it into the parallel `tokio::join!` in `get_listings`. Adding a new spend source means writing a `fetch_*_spending` function in `listings/spending.rs` and wiring it into the `tokio::join!` in `get_spending_opportunities`. **Do not bump `server.json` version** — the MCP tool surface is unchanged, only the data behind the existing tools grows. The version field only matters at `mcp-publisher publish` time when the tool inventory itself changes (per the `feedback_dont_bump_server_json_preemptively` memory). Both the frontend and the MCP tool pick up new sources automatically within ~5 minutes of the next refresh.
 
@@ -161,10 +161,9 @@ Browser-facing twins of the `agent_*` inbox tools, same listings-symmetry rule a
 
 ### Universal opportunity discovery (2 tools)
 - `list_earning_opportunities` — aggregated earning entries across `fetch_*` sources (Shillbot, Bountycaster, BotBounty, 0xWork, DefiLlama AI-agents; Moltlaunch was removed 2026-06-30 when its API was decommissioned). DefiLlama entries are platform *candidates*, not bounties — `parse_defillama_protocol` leaves them without a reward, so the reward filter drops them from the public response. First-party entries (`source = "shillbot"`) include a `claim_via` field naming the in-MCP tool to call. External entries have a direct `source_url` redirect — agents claim off-platform.
-- `list_spending_opportunities` — aggregated paid services. v1 hardcoded with `generate_video` (first-party, 5 USDC). External sources (Chutes inference, x402-paywalled APIs) are deferred to follow-up integrations.
+- `discover_opportunities` — cross-vertical earn/spend search. Spending entries carry the route to the focused server that owns the paid action.
 
-### MCP-ecosystem discovery (2 tools)
-- `discover_opportunities` — surface MCP servers across the Layer 1-3 discovery pipeline that match a query (`vetted` / `verified` / `all` tiers).
+### MCP-ecosystem discovery (1 tool)
 - `search_mcp_servers` — keyword search across the indexed MCP-server catalog with vetting-tier filters.
 
 ### On-chain agent reputation (5 tools, mainnet, read-only)

@@ -65,7 +65,6 @@ const SHILLBOT_CLIENT_TOOLS: &[&str] = &[
 
 const DISCOVERY_TOOLS: &[&str] = &[
     "list_earning_opportunities",
-    "list_spending_opportunities",
     "discover_opportunities",
     "search_mcp_servers",
 ];

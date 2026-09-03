@@ -9,7 +9,8 @@
 //! `tokio::join!` in `get_spending_opportunities`. No further structural
 //! refactoring required as new sources land.
 //!
-//! This is the data source behind the `list_spending_opportunities` MCP tool.
+//! This is the spending-side data source behind the cross-vertical
+//! `discover_opportunities` MCP tool.
 
 use crate::listings::models::HealthCheck;
 use chrono::Utc;
