@@ -1,0 +1,25 @@
+[package]
+name = "shillbot-chain"
+version = "0.1.0"
+edition = "2021"
+description = "Canonical Shillbot transaction construction, inspection, and validation"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+arithmetic_side_effects = "deny"
+
+[dependencies]
+anchor-lang = "0.32.1"
+base64 = "0.22"
+bincode = "1"
+hex = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+solana-sdk = "2.2"
+solana-system-interface = "1"
+thiserror = { workspace = true }
+shillbot = { path = "../../programs/shillbot", features = ["cpi"] }

@@ -3469,6 +3469,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "shillbot-chain",
  "solana-sdk",
  "thiserror 1.0.69",
  "tokio",
@@ -5320,6 +5321,23 @@ dependencies = [
  "shared",
  "solana-sha256-hasher",
  "switchboard-on-demand",
+]
+
+[[package]]
+name = "shillbot-chain"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "base64 0.22.1",
+ "bincode",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shillbot",
+ "solana-sdk",
+ "solana-system-interface",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

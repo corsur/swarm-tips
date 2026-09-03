@@ -36,6 +36,7 @@ gcloud-sdk = { version = "0.29", features = [
 ] }
 game-api-client = { workspace = true }
 game-chain = { workspace = true }
+shillbot-chain = { path = "../../crates/shillbot-chain" }
 chain-registry = { workspace = true }
 chain-core = { workspace = true, features = ["keccak"] }
 evm-chain = { workspace = true }
