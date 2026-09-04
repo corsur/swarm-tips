@@ -4,7 +4,7 @@
   "title": "Swarm Shillbot Transaction Intent v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "action", "network", "task_pda", "program_id", "fee_payer", "accounts", "signers", "movements", "risk", "digest"],
+  "required": ["version", "action", "network", "wallet", "task_pda", "program_id", "fee_payer", "accounts", "signers", "movements", "risk", "digest"],
   "properties": {
     "version": { "const": "swarm.shillbot.transaction-intent/v1" },
     "action": { "enum": ["create", "claim", "submit", "approve", "verify", "finalize"] },
@@ -35,6 +35,7 @@
     "instruction_index": { "type": "integer", "minimum": 0 },
     "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "sponsor": { "type": ["string", "null"] },
+    "payout_to": { "type": ["string", "null"] },
     "escrow_lamports": { "type": ["string", "null"], "pattern": "^[0-9]+$" },
     "content_id": { "type": ["string", "null"] },
     "risk": { "enum": ["earn", "spend", "escrow_control"] }

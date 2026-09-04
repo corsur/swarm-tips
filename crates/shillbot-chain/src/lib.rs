@@ -246,7 +246,16 @@ pub struct Inspection {
     pub action: Action,
     pub program_id: String,
     pub network: String,
+    pub wallet: String,
     pub fee_payer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sponsor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payout_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow_lamports: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
     #[serde(rename = "signers")]
     pub required_signers: Vec<String>,
     pub accounts: Vec<String>,
@@ -709,7 +718,12 @@ pub fn validate(
         action: expected.action,
         program_id: shillbot_program.to_string(),
         network: expected.network.clone(),
+        wallet: expected.wallet.clone(),
         fee_payer: fee_payer.to_string(),
+        sponsor: expected.sponsor.clone(),
+        payout_to: expected.allowed_payout_to.clone(),
+        escrow_lamports: expected.escrow_lamports.map(|amount| amount.to_string()),
+        content_id: expected.content_id.clone(),
         required_signers: keys[..required].iter().map(ToString::to_string).collect(),
         accounts: lifecycle_accounts,
         movements: match expected.action {
@@ -894,6 +908,41 @@ mod tests {
         .unwrap();
         assert_eq!(inspected.action, Action::Claim);
         assert_eq!(inspected.risk, "earn");
+        assert_eq!(inspected.wallet, wallet.to_string());
+        assert_eq!(inspected.sponsor, None);
+        assert_eq!(inspected.payout_to, None);
+    }
+
+    #[test]
+    fn sponsored_claim_intent_exposes_fee_payer_and_payout_route() {
+        let wallet = Keypair::new().pubkey();
+        let sponsor = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let payout_to = Pubkey::new_unique();
+        let route = Instruction {
+            program_id: shillbot::ID,
+            accounts: vec![
+                AccountMeta::new(task, false),
+                AccountMeta::new_readonly(wallet, true),
+            ],
+            data: [
+                discriminator("set_payout_to").to_vec(),
+                payout_to.to_bytes().to_vec(),
+            ]
+            .concat(),
+        };
+        let lifecycle = claim_task_instruction(wallet, task);
+        let tx = transaction(vec![route, lifecycle], &sponsor);
+        let mut expected = request(Action::Claim, wallet, task);
+        expected.sponsor = Some(sponsor.to_string());
+        expected.allowed_payout_to = Some(payout_to.to_string());
+        expected.require_payout_routing = true;
+
+        let inspected = validate(&tx, &expected).unwrap();
+        assert_eq!(inspected.wallet, wallet.to_string());
+        assert_eq!(inspected.fee_payer, sponsor.to_string());
+        assert_eq!(inspected.sponsor, Some(sponsor.to_string()));
+        assert_eq!(inspected.payout_to, Some(payout_to.to_string()));
     }
 
     #[test]
@@ -965,7 +1014,9 @@ mod tests {
         let tx = transaction(vec![ix.clone()], &wallet);
         let mut expected = exact_request(Action::Create, wallet, task, &ix);
         expected.escrow_lamports = Some(args.escrow_lamports);
-        assert_eq!(validate(&tx, &expected).unwrap().risk, "spend");
+        let inspected = validate(&tx, &expected).unwrap();
+        assert_eq!(inspected.risk, "spend");
+        assert_eq!(inspected.escrow_lamports.as_deref(), Some("1000000"));
 
         let mut altered_amount = expected.clone();
         altered_amount.escrow_lamports = Some(args.escrow_lamports + 1);
@@ -991,7 +1042,10 @@ mod tests {
         let tx = transaction(vec![ix.clone()], &wallet);
         let mut expected = exact_request(Action::Submit, wallet, task, &ix);
         expected.content_id = Some("content-A".into());
-        validate(&tx, &expected).unwrap();
+        assert_eq!(
+            validate(&tx, &expected).unwrap().content_id.as_deref(),
+            Some("content-A")
+        );
 
         let mut wrong_content = expected.clone();
         wrong_content.content_id = Some("content-B".into());
