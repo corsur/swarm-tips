@@ -4129,7 +4129,7 @@ impl ServerHandler for SwarmTipsMcp {
 const TX_CLIENT_MANIFEST_URI: &str = "https://swarm.tips/.well-known/transaction-client.json";
 const TX_INTENT_SCHEMA_URI: &str = "https://swarm.tips/schemas/shillbot-transaction-intent-v1.json";
 const TX_CLIENT_GUIDE_URI: &str = "https://swarm.tips/docs/mcp/local-transactions";
-const TX_CLIENT_MANIFEST: &str = r#"{"name":"@swarm-tips/tx-client","version":"0.1.0","registry":"https://www.npmjs.com/package/@swarm-tips/tx-client/v/0.1.0","integrity":"sha512-Sa8LJ64otnuEU84TGeWnwYfOewTnFHU6O5Om5tflqVyT1iolCjVLyP3GHJe9RzlYtgEGRp3eD2vv2TPa/dYJdQ==","shasum":"be2095965204f0b0a56705d8aed8b4e7e33b5d9a","source_commit":"c0dc4b483458408d3a4a5dde7ae3ed515e898e76","source":"https://github.com/corsur/swarm-tips/tree/c0dc4b483458408d3a4a5dde7ae3ed515e898e76/sdk/tx-client","sbom":"https://unpkg.com/@swarm-tips/tx-client@0.1.0/SBOM.spdx.json","schema":"swarm.shillbot.transaction-intent/v1","security":"Construct and inspect locally; never send a private key to an MCP server."}"#;
+const TX_CLIENT_MANIFEST: &str = r#"{"name":"@swarm-tips/tx-client","version":"0.1.1","registry":"https://www.npmjs.com/package/@swarm-tips/tx-client/v/0.1.1","integrity":"sha512-KUL8vJSovyN0cP/NffLtHhwE1grJ85X2IhYWg1TbRreW95n7fmi+QyuQuSPdWGGw6bx1DE7bPyD/FEvu6t/VXw==","shasum":"64cedb574fd2e56a80b8fa5e841e369d471e10b4","source_commit":"64654a97c48610004251b369a7329edfd98b961b","source":"https://github.com/corsur/swarm-tips/tree/64654a97c48610004251b369a7329edfd98b961b/sdk/tx-client","sbom":"https://unpkg.com/@swarm-tips/tx-client@0.1.1/SBOM.spdx.json","schema":"swarm.shillbot.transaction-intent/v1","security":"Construct and inspect locally; never send a private key to an MCP server."}"#;
 const TX_INTENT_SCHEMA: &str =
     include_str!("../../../docs/specs/shillbot-transaction-intent-v1.schema.json");
 const TX_CLIENT_GUIDE: &str = r#"# Local Shillbot transactions
@@ -5714,7 +5714,7 @@ fn shillbot_transaction_result(
     value["risk"] = serde_json::Value::String(inspection.risk.clone());
     value["local_client"] = serde_json::json!({
         "package": "@swarm-tips/tx-client",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "resource_uri": TX_CLIENT_MANIFEST_URI,
     });
     let mut result = text_result(&value);
@@ -5762,14 +5762,14 @@ mod structured_result_tests {
         assert_eq!(resources[0].raw.uri, TX_CLIENT_MANIFEST_URI);
         let manifest: serde_json::Value = serde_json::from_str(TX_CLIENT_MANIFEST).unwrap();
         assert_eq!(manifest["name"], "@swarm-tips/tx-client");
-        assert_eq!(manifest["version"], "0.1.0");
+        assert_eq!(manifest["version"], "0.1.1");
         assert_eq!(
             manifest["integrity"],
-            "sha512-Sa8LJ64otnuEU84TGeWnwYfOewTnFHU6O5Om5tflqVyT1iolCjVLyP3GHJe9RzlYtgEGRp3eD2vv2TPa/dYJdQ=="
+            "sha512-KUL8vJSovyN0cP/NffLtHhwE1grJ85X2IhYWg1TbRreW95n7fmi+QyuQuSPdWGGw6bx1DE7bPyD/FEvu6t/VXw=="
         );
         assert_eq!(
             manifest["source_commit"],
-            "c0dc4b483458408d3a4a5dde7ae3ed515e898e76"
+            "64654a97c48610004251b369a7329edfd98b961b"
         );
         assert!(manifest["source"]
             .as_str()
