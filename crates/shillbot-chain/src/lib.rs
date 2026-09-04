@@ -515,6 +515,11 @@ pub fn validate(
                 }
                 matched = Some(ix);
             } else if expected.action == Action::Claim && disc == set_payout_disc {
+                if matched.is_none() {
+                    return Err(ValidationError::Rejected(
+                        "payout-routing instruction must follow claim".into(),
+                    ));
+                }
                 payout_routing = payout_routing.saturating_add(1);
                 if payout_routing > 1 || allowed_payout_to.is_none() {
                     return Err(ValidationError::Rejected(
@@ -932,7 +937,7 @@ mod tests {
             .concat(),
         };
         let lifecycle = claim_task_instruction(wallet, task);
-        let tx = transaction(vec![route, lifecycle], &sponsor);
+        let tx = transaction(vec![lifecycle, route], &sponsor);
         let mut expected = request(Action::Claim, wallet, task);
         expected.sponsor = Some(sponsor.to_string());
         expected.allowed_payout_to = Some(payout_to.to_string());
@@ -943,6 +948,35 @@ mod tests {
         assert_eq!(inspected.fee_payer, sponsor.to_string());
         assert_eq!(inspected.sponsor, Some(sponsor.to_string()));
         assert_eq!(inspected.payout_to, Some(payout_to.to_string()));
+    }
+
+    #[test]
+    fn rejects_payout_route_before_claim_establishes_the_agent() {
+        let wallet = Keypair::new().pubkey();
+        let sponsor = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let payout_to = Pubkey::new_unique();
+        let route = Instruction {
+            program_id: shillbot::ID,
+            accounts: vec![
+                AccountMeta::new(task, false),
+                AccountMeta::new_readonly(wallet, true),
+            ],
+            data: [
+                discriminator("set_payout_to").to_vec(),
+                payout_to.to_bytes().to_vec(),
+            ]
+            .concat(),
+        };
+        let lifecycle = claim_task_instruction(wallet, task);
+        let tx = transaction(vec![route, lifecycle], &sponsor);
+        let mut expected = request(Action::Claim, wallet, task);
+        expected.sponsor = Some(sponsor.to_string());
+        expected.allowed_payout_to = Some(payout_to.to_string());
+        expected.require_payout_routing = true;
+
+        let error = validate(&tx, &expected).unwrap_err();
+        assert!(error.to_string().contains("must follow claim"));
     }
 
     #[test]

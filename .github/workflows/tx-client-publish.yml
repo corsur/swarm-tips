@@ -36,8 +36,9 @@ jobs:
         working-directory: sdk/tx-client
       - name: Publish immutable public package with provenance
         run: |
-          if npm view @swarm-tips/tx-client@0.1.0 version >/dev/null 2>&1; then
-            echo "@swarm-tips/tx-client@0.1.0 is already published; npm versions are immutable"
+          package_version="$(node --input-type=module -e "import pkg from './package.json' with { type: 'json' }; process.stdout.write(pkg.version)")"
+          if npm view "@swarm-tips/tx-client@${package_version}" version >/dev/null 2>&1; then
+            echo "@swarm-tips/tx-client@${package_version} is already published; npm versions are immutable"
           else
             npm publish --access public --provenance
           fi

@@ -1,6 +1,6 @@
 {
   "name": "@swarm-tips/tx-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Open-source local Shillbot transaction builder, inspector, and broadcaster",
   "type": "module",
   "main": "dist/index.js",

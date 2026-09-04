@@ -1,4 +1,4 @@
-import { ComputeBudgetProgram, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
@@ -121,7 +121,27 @@ describe("transaction construction", () => {
       (ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58(),
     );
     expect(shillbotInstructions).toHaveLength(2);
-    expect(shillbotInstructions[0].accounts).toEqual([task.toBase58(), wallet.toBase58()]);
+    expect(shillbotInstructions[0].data_base64).toBe(
+      golden.vectors.find((candidate) => candidate.action === "claim")!.data_base64,
+    );
+    expect(shillbotInstructions[1].accounts).toEqual([task.toBase58(), wallet.toBase58()]);
+  });
+
+  it("rejects a payout route placed before claim establishes the agent", () => {
+    const built = buildTransaction({
+      ...fixtures()[1],
+      action: "claim",
+      sponsor: sponsor.toBase58(),
+      payoutTo: feed.toBase58(),
+    } as BuildRequest);
+    const tx = Transaction.from(Buffer.from(built.unsigned_tx, "base64"));
+    tx.instructions.reverse();
+    const reordered = tx
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+    expect(() => verifyIntent(reordered, built.transaction_intent)).toThrow(
+      "payout route must follow claim",
+    );
   });
 
   it("detects intent tampering", () => {

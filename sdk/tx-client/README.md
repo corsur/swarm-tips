@@ -7,7 +7,7 @@ submit transactions, and all Shillbot lifecycle actions: create, claim, submit,
 approve, verify, and finalize.
 
 ```sh
-npm install @swarm-tips/tx-client@0.1.0
+npm install @swarm-tips/tx-client@0.1.1
 ```
 
 The safest flow is: obtain the task/campaign intent from `mcp.swarm.tips`, build

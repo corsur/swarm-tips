@@ -347,10 +347,15 @@ export function buildTransaction(request: BuildRequest): BuiltTransaction {
     : request.action === "claim"
       ? [payoutInstruction(request)].filter((ix): ix is TransactionInstruction => ix !== undefined)
       : [];
+  // set_payout_to authorizes against task.agent, which claim_task establishes.
+  // Keep the two operations atomic, but execute the claim first.
+  const instructions = request.action === "claim"
+    ? [lifecycle, ...companions]
+    : [...companions, lifecycle];
   const unsignedTx = serializeUnsigned(
     payer,
     request.recentBlockhash,
-    [...companions, lifecycle],
+    instructions,
     request.version ?? (request.action === "verify" ? "v0" : "legacy"),
   );
   const task = lifecycle.keys[request.action === "create" ? 1 : 0].pubkey.toBase58();
@@ -466,6 +471,19 @@ export function verifyIntent(encoded: string, intent: TransactionIntent): Transa
   );
   const payoutDiscriminator = discriminator("set_payout_to");
   const companions = shillbotInstructions.filter((ix) => ix !== lifecycle[0]);
+  const lifecycleIndex = inspected.instructions.indexOf(lifecycle[0]);
+  if (
+    intent.action === "claim" &&
+    companions.some(
+      (ix) =>
+        Buffer.from(ix.data_base64, "base64")
+          .subarray(0, 8)
+          .equals(payoutDiscriminator) &&
+        inspected.instructions.indexOf(ix) < lifecycleIndex,
+    )
+  ) {
+    throw new Error("payout route must follow claim");
+  }
   if (
     companions.length > (intent.action === "claim" && intent.arguments.payoutTo ? 1 : 0) ||
     companions.some(
