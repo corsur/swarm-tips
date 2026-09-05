@@ -7,6 +7,7 @@ test-ledger
 
 sdk/*.d.ts
 sdk/*.js
+sdk/*/dist/
 services/mcp-server/.mcpregistry_*
 logs/
 tests/live/.worker-e2e-client.json

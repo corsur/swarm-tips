@@ -1,0 +1,23 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "@swarm-tips/contracts-0.1.0",
+  "documentNamespace": "https://github.com/corsur/swarm-tips/sbom/contracts/0.1.0",
+  "creationInfo": {
+    "created": "2026-09-04T00:00:00Z",
+    "creators": ["Tool: npm", "Organization: Swarm Tips"]
+  },
+  "packages": [
+    {
+      "name": "@swarm-tips/contracts",
+      "SPDXID": "SPDXRef-Package",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "https://www.npmjs.com/package/@swarm-tips/contracts",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    }
+  ]
+}

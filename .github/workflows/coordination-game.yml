@@ -88,6 +88,9 @@ jobs:
           anchor build -p extension-registry
           anchor build -p extension-credit
 
+      - name: Check committed public contract bindings
+        run: node sdk/contracts/scripts/sync-generated.mjs --check
+
       - name: Lint coordination-game tests
         run: npx prettier "tests/coordination-game.ts" "tests/xchain-contested.ts" "tests/game-harness.ts" "tests/timeout-harness.ts" --check
 

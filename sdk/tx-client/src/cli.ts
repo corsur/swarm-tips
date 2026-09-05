@@ -17,7 +17,9 @@ async function input(): Promise<Record<string, unknown>> {
     : await new Promise<string>((resolve, reject) => {
         const chunks: Buffer[] = [];
         process.stdin.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-        process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        process.stdin.on("end", () =>
+          resolve(Buffer.concat(chunks).toString("utf8"))
+        );
         process.stdin.on("error", reject);
       });
   return JSON.parse(raw) as Record<string, unknown>;
@@ -27,19 +29,25 @@ async function main(): Promise<void> {
   const command = process.argv[2];
   const value = await input();
   if (command === "build") {
-    process.stdout.write(`${JSON.stringify(buildTransaction(value as unknown as BuildRequest))}\n`);
+    process.stdout.write(
+      `${JSON.stringify(buildTransaction(value as unknown as BuildRequest))}\n`
+    );
     return;
   }
   if (command === "inspect") {
-    process.stdout.write(`${JSON.stringify(inspectTransaction(String(value.transaction)))}\n`);
+    process.stdout.write(
+      `${JSON.stringify(inspectTransaction(String(value.transaction)))}\n`
+    );
     return;
   }
   if (command === "verify") {
     const result = verifyIntent(
       String(value.transaction),
-      value.intent as unknown as TransactionIntent,
+      value.intent as unknown as TransactionIntent
     );
-    process.stdout.write(`${JSON.stringify({ valid: true, inspection: result })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ valid: true, inspection: result })}\n`
+    );
     return;
   }
   if (command === "broadcast") {
@@ -49,15 +57,19 @@ async function main(): Promise<void> {
     const signature = await signAndBroadcast(
       connection,
       String(value.transaction),
-      async (transaction) => transaction,
+      async (transaction) => transaction
     );
     process.stdout.write(`${JSON.stringify({ signature })}\n`);
     return;
   }
-  throw new Error("usage: swarm-tx <build|inspect|verify|broadcast> [input.json]; otherwise JSON is read from stdin");
+  throw new Error(
+    "usage: swarm-tx <build|inspect|verify|broadcast> [input.json]; otherwise JSON is read from stdin"
+  );
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(
+    `${error instanceof Error ? error.message : String(error)}\n`
+  );
   process.exitCode = 1;
 });

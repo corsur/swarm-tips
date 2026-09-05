@@ -1,10 +1,18 @@
 import { createHash } from "node:crypto";
+import {
+  BN,
+  SHILLBOT_PROGRAM_ID,
+  agentStatePda,
+  buildShillbotInstruction,
+  clientStatePda,
+  globalStatePda,
+  shillbotInstructionDiscriminator,
+  taskPda,
+} from "@swarm-tips/contracts";
 import bs58 from "bs58";
 import {
   Connection,
   PublicKey,
-  SystemProgram,
-  SYSVAR_SLOT_HASHES_PUBKEY,
   Transaction,
   TransactionInstruction,
   TransactionMessage,
@@ -12,11 +20,25 @@ import {
   type BlockhashWithExpiryBlockHeight,
 } from "@solana/web3.js";
 
-export const SCHEMA_VERSION = "swarm.shillbot.transaction-intent/v1" as const;
-export const SHILLBOT_PROGRAM_ID = new PublicKey(
-  "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
-);
+export {
+  COORDINATION_GAME_IDL,
+  COORDINATION_GAME_PROGRAM_ID,
+  SHILLBOT_IDL,
+  SHILLBOT_PROGRAM_ID,
+  agentStatePda,
+  buildShillbotInstruction,
+  clientStatePda,
+  globalStatePda,
+  shillbotInstructionDiscriminator,
+  taskPda,
+} from "@swarm-tips/contracts";
+export type {
+  BuildShillbotInstructionRequest,
+  CoordinationGame,
+  Shillbot,
+} from "@swarm-tips/contracts";
 
+export const SCHEMA_VERSION = "swarm.shillbot.transaction-intent/v1" as const;
 export type Action =
   | "create"
   | "claim"
@@ -125,173 +147,104 @@ export type BuildRequest =
   | VerifyBuild
   | FinalizeBuild;
 
-function discriminator(name: string): Buffer {
-  return createHash("sha256").update(`global:${name}`).digest().subarray(0, 8);
-}
-
-function u64(value: string | bigint): Buffer {
-  const out = Buffer.alloc(8);
-  out.writeBigUInt64LE(BigInt(value));
-  return out;
-}
-
-function i64(value: string | bigint): Buffer {
-  const out = Buffer.alloc(8);
-  out.writeBigInt64LE(BigInt(value));
-  return out;
-}
-
-function u32(value: number): Buffer {
-  const out = Buffer.alloc(4);
-  out.writeUInt32LE(value);
-  return out;
-}
-
-function bytes(value: string): Buffer {
-  const raw = Buffer.from(value, "utf8");
-  return Buffer.concat([u32(raw.length), raw]);
-}
-
-export function globalStatePda(): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("shillbot_global")],
-    SHILLBOT_PROGRAM_ID,
-  )[0];
-}
-
-export function taskPda(nonce: bigint, client: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("task"), u64(nonce), client.toBuffer()],
-    SHILLBOT_PROGRAM_ID,
-  )[0];
-}
-
-export function clientStatePda(client: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("client_state"), client.toBuffer()],
-    SHILLBOT_PROGRAM_ID,
-  )[0];
-}
-
-export function agentStatePda(agent: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("agent_state"), agent.toBuffer()],
-    SHILLBOT_PROGRAM_ID,
-  )[0];
-}
-
-export function buildInstruction(request: BuildRequest): TransactionInstruction {
+export function buildInstruction(
+  request: BuildRequest
+): TransactionInstruction {
   const wallet = new PublicKey(request.wallet);
   if (request.action === "create") {
     const nonce = BigInt(request.nonce);
-    return new TransactionInstruction({
-      programId: SHILLBOT_PROGRAM_ID,
-      keys: [
-        { pubkey: globalStatePda(), isSigner: false, isWritable: true },
-        { pubkey: taskPda(nonce, wallet), isSigner: false, isWritable: true },
-        { pubkey: clientStatePda(wallet), isSigner: false, isWritable: true },
-        { pubkey: wallet, isSigner: true, isWritable: true },
-        { pubkey: SYSVAR_SLOT_HASHES_PUBKEY, isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.concat([
-        discriminator("create_task"),
-        u64(nonce),
-        u64(request.escrowLamports),
-        Buffer.from(request.contentHash, "hex"),
-        i64(request.deadline),
-        i64(request.submitMargin),
-        i64(request.claimBuffer),
-        Buffer.from([request.platform]),
-        u32(request.attestationDelayOverride),
-        u32(request.challengeWindowOverride),
-        u32(request.verificationTimeoutOverride),
-        Buffer.from([request.requiresApproval ? 1 : 0, request.verificationKind]),
-      ]),
+    return buildShillbotInstruction({
+      name: "create_task",
+      accounts: {
+        global_state: globalStatePda(),
+        task: taskPda(nonce, wallet),
+        client_state: clientStatePda(wallet),
+        client: wallet,
+      },
+      args: {
+        nonce: new BN(request.nonce),
+        escrow_lamports: new BN(request.escrowLamports),
+        content_hash: Array.from(Buffer.from(request.contentHash, "hex")),
+        deadline: new BN(request.deadline),
+        submit_margin: new BN(request.submitMargin),
+        claim_buffer: new BN(request.claimBuffer),
+        platform: request.platform,
+        attestation_delay_override: request.attestationDelayOverride,
+        challenge_window_override: request.challengeWindowOverride,
+        verification_timeout_override: request.verificationTimeoutOverride,
+        requires_approval: request.requiresApproval,
+        verification_kind: request.verificationKind,
+      },
     });
   }
 
   const task = new PublicKey(request.taskPda);
   if (request.action === "claim") {
-    return new TransactionInstruction({
-      programId: SHILLBOT_PROGRAM_ID,
-      keys: [
-        { pubkey: task, isSigner: false, isWritable: true },
-        { pubkey: globalStatePda(), isSigner: false, isWritable: false },
-        { pubkey: agentStatePda(wallet), isSigner: false, isWritable: true },
-        { pubkey: wallet, isSigner: true, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ],
-      data: discriminator("claim_task"),
+    return buildShillbotInstruction({
+      name: "claim_task",
+      accounts: {
+        task,
+        global_state: globalStatePda(),
+        agent_state: agentStatePda(wallet),
+        agent: wallet,
+      },
     });
   }
   if (request.action === "submit") {
-    return new TransactionInstruction({
-      programId: SHILLBOT_PROGRAM_ID,
-      keys: [
-        { pubkey: task, isSigner: false, isWritable: true },
-        { pubkey: globalStatePda(), isSigner: false, isWritable: false },
-        { pubkey: agentStatePda(wallet), isSigner: false, isWritable: true },
-        { pubkey: wallet, isSigner: true, isWritable: false },
-      ],
-      data: Buffer.concat([discriminator("submit_work"), bytes(request.contentId)]),
+    return buildShillbotInstruction({
+      name: "submit_work",
+      accounts: {
+        task,
+        global_state: globalStatePda(),
+        agent_state: agentStatePda(wallet),
+        agent: wallet,
+      },
+      args: { content_id: Buffer.from(request.contentId, "utf8") },
     });
   }
   if (request.action === "approve") {
-    return new TransactionInstruction({
-      programId: SHILLBOT_PROGRAM_ID,
-      keys: [
-        { pubkey: task, isSigner: false, isWritable: true },
-        { pubkey: wallet, isSigner: true, isWritable: false },
-      ],
-      data: discriminator("approve_task"),
+    return buildShillbotInstruction({
+      name: "approve_task",
+      accounts: { task, client: wallet },
     });
   }
   if (request.action === "verify") {
-    return new TransactionInstruction({
-      programId: SHILLBOT_PROGRAM_ID,
-      keys: [
-        { pubkey: task, isSigner: false, isWritable: true },
-        { pubkey: globalStatePda(), isSigner: false, isWritable: false },
-        {
-          pubkey: new PublicKey(request.switchboardFeed),
-          isSigner: false,
-          isWritable: false,
-        },
-      ],
-      data: Buffer.concat([
-        discriminator("verify_task"),
-        u64(request.compositeScore),
-        Buffer.from(request.verificationHash, "hex"),
-      ]),
+    return buildShillbotInstruction({
+      name: "verify_task",
+      accounts: {
+        task,
+        global_state: globalStatePda(),
+        switchboard_feed: request.switchboardFeed,
+      },
+      args: {
+        composite_score: new BN(request.compositeScore),
+        verification_hash: Array.from(
+          Buffer.from(request.verificationHash, "hex")
+        ),
+      },
     });
   }
   const finalize = request as FinalizeBuild;
-  return new TransactionInstruction({
-    programId: SHILLBOT_PROGRAM_ID,
-    keys: [
-      { pubkey: task, isSigner: false, isWritable: true },
-      { pubkey: globalStatePda(), isSigner: false, isWritable: false },
-      { pubkey: new PublicKey(finalize.agent), isSigner: false, isWritable: true },
-      { pubkey: new PublicKey(finalize.client), isSigner: false, isWritable: true },
-      { pubkey: new PublicKey(finalize.treasury), isSigner: false, isWritable: true },
-    ],
-    data: discriminator("finalize_task"),
+  return buildShillbotInstruction({
+    name: "finalize_task",
+    accounts: {
+      task,
+      global_state: globalStatePda(),
+      agent: finalize.agent,
+      client: finalize.client,
+      treasury: finalize.treasury,
+    },
   });
 }
 
-function payoutInstruction(request: ClaimBuild): TransactionInstruction | undefined {
+function payoutInstruction(
+  request: ClaimBuild
+): TransactionInstruction | undefined {
   if (!request.payoutTo) return undefined;
-  return new TransactionInstruction({
-    programId: SHILLBOT_PROGRAM_ID,
-    keys: [
-      { pubkey: new PublicKey(request.taskPda), isSigner: false, isWritable: true },
-      { pubkey: new PublicKey(request.wallet), isSigner: true, isWritable: false },
-    ],
-    data: Buffer.concat([
-      discriminator("set_payout_to"),
-      new PublicKey(request.payoutTo).toBuffer(),
-    ]),
+  return buildShillbotInstruction({
+    name: "set_payout_to",
+    accounts: { task: request.taskPda, agent: request.wallet },
+    args: { payout_to: new PublicKey(request.payoutTo) },
   });
 }
 
@@ -302,14 +255,18 @@ function stable(value: unknown): unknown {
       Object.entries(value as Record<string, unknown>)
         .filter(([, child]) => child !== undefined)
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, child]) => [key, stable(child)]),
+        .map(([key, child]) => [key, stable(child)])
     );
   }
   return value;
 }
 
-export function intentDigest(intent: Omit<TransactionIntent, "digest">): string {
-  return createHash("sha256").update(JSON.stringify(stable(intent))).digest("hex");
+export function intentDigest(
+  intent: Omit<TransactionIntent, "digest">
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify(stable(intent)))
+    .digest("hex");
 }
 
 function actionRisk(action: Action): Risk {
@@ -322,7 +279,7 @@ function serializeUnsigned(
   payer: PublicKey,
   blockhash: string,
   instructions: TransactionInstruction[],
-  version: TransactionVersion,
+  version: TransactionVersion
 ): string {
   if (version === "v0") {
     const message = new TransactionMessage({
@@ -330,35 +287,48 @@ function serializeUnsigned(
       recentBlockhash: blockhash,
       instructions,
     }).compileToV0Message();
-    return Buffer.from(new VersionedTransaction(message).serialize()).toString("base64");
+    return Buffer.from(new VersionedTransaction(message).serialize()).toString(
+      "base64"
+    );
   }
-  const tx = new Transaction({ feePayer: payer, recentBlockhash: blockhash }).add(
-    ...instructions,
-  );
-  return tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+  const tx = new Transaction({
+    feePayer: payer,
+    recentBlockhash: blockhash,
+  }).add(...instructions);
+  return tx
+    .serialize({ requireAllSignatures: false, verifySignatures: false })
+    .toString("base64");
 }
 
 export function buildTransaction(request: BuildRequest): BuiltTransaction {
   const lifecycle = buildInstruction(request);
-  const sponsor = request.action === "claim" || request.action === "submit" ? request.sponsor : undefined;
+  const sponsor =
+    request.action === "claim" || request.action === "submit"
+      ? request.sponsor
+      : undefined;
   const payer = new PublicKey(sponsor ?? request.wallet);
-  const companions = request.action === "verify"
-    ? request.crankInstructions
-    : request.action === "claim"
-      ? [payoutInstruction(request)].filter((ix): ix is TransactionInstruction => ix !== undefined)
+  const companions =
+    request.action === "verify"
+      ? request.crankInstructions
+      : request.action === "claim"
+      ? [payoutInstruction(request)].filter(
+          (ix): ix is TransactionInstruction => ix !== undefined
+        )
       : [];
   // set_payout_to authorizes against task.agent, which claim_task establishes.
   // Keep the two operations atomic, but execute the claim first.
-  const instructions = request.action === "claim"
-    ? [lifecycle, ...companions]
-    : [...companions, lifecycle];
+  const instructions =
+    request.action === "claim"
+      ? [lifecycle, ...companions]
+      : [...companions, lifecycle];
   const unsignedTx = serializeUnsigned(
     payer,
     request.recentBlockhash,
     instructions,
-    request.version ?? (request.action === "verify" ? "v0" : "legacy"),
+    request.version ?? (request.action === "verify" ? "v0" : "legacy")
   );
-  const task = lifecycle.keys[request.action === "create" ? 1 : 0].pubkey.toBase58();
+  const task =
+    lifecycle.keys[request.action === "create" ? 1 : 0].pubkey.toBase58();
   const accounts = lifecycle.keys.map((key) => key.pubkey.toBase58());
   const signers = [payer.toBase58()];
   if (payer.toBase58() !== request.wallet) signers.push(request.wallet);
@@ -374,21 +344,29 @@ export function buildTransaction(request: BuildRequest): BuiltTransaction {
           },
         ]
       : request.action === "approve"
-        ? [
-            {
-              asset: "escrow control",
-              from: task,
-              to: task,
-              condition: "authorizes verification; no immediate transfer",
-            },
-          ]
-        : [];
+      ? [
+          {
+            asset: "escrow control",
+            from: task,
+            to: task,
+            condition: "authorizes verification; no immediate transfer",
+          },
+        ]
+      : [];
   const actionArguments = Object.fromEntries(
     Object.entries(request).filter(
       ([key, value]) =>
-        !["action", "wallet", "network", "recentBlockhash", "version", "sponsor", "crankInstructions"].includes(key) &&
-        ["string", "number", "boolean"].includes(typeof value),
-    ),
+        ![
+          "action",
+          "wallet",
+          "network",
+          "recentBlockhash",
+          "version",
+          "sponsor",
+          "crankInstructions",
+        ].includes(key) &&
+        ["string", "number", "boolean"].includes(typeof value)
+    )
   ) as Record<string, string | number | boolean>;
   const withoutDigest: Omit<TransactionIntent, "digest"> = {
     version: SCHEMA_VERSION,
@@ -406,7 +384,10 @@ export function buildTransaction(request: BuildRequest): BuiltTransaction {
   };
   return {
     unsigned_tx: unsignedTx,
-    transaction_intent: { ...withoutDigest, digest: intentDigest(withoutDigest) },
+    transaction_intent: {
+      ...withoutDigest,
+      digest: intentDigest(withoutDigest),
+    },
   };
 }
 
@@ -414,7 +395,11 @@ export interface TransactionInspection {
   version: TransactionVersion;
   fee_payer: string;
   signers: string[];
-  instructions: Array<{ program_id: string; accounts: string[]; data_base64: string }>;
+  instructions: Array<{
+    program_id: string;
+    accounts: string[];
+    data_base64: string;
+  }>;
 }
 
 export function inspectTransaction(encoded: string): TransactionInspection {
@@ -425,7 +410,9 @@ export function inspectTransaction(encoded: string): TransactionInspection {
     return {
       version: tx.version === "legacy" ? "legacy" : "v0",
       fee_payer: keys[0].toBase58(),
-      signers: keys.slice(0, tx.message.header.numRequiredSignatures).map((key) => key.toBase58()),
+      signers: keys
+        .slice(0, tx.message.header.numRequiredSignatures)
+        .map((key) => key.toBase58()),
       instructions: tx.message.compiledInstructions.map((ix) => ({
         program_id: keys[ix.programIdIndex].toBase58(),
         accounts: ix.accountKeyIndexes.map((index) => keys[index].toBase58()),
@@ -443,33 +430,44 @@ export function inspectTransaction(encoded: string): TransactionInspection {
         .map((key) => key.toBase58()),
       instructions: message.instructions.map((ix) => ({
         program_id: message.accountKeys[ix.programIdIndex].toBase58(),
-        accounts: ix.accounts.map((index) => message.accountKeys[index].toBase58()),
+        accounts: ix.accounts.map((index) =>
+          message.accountKeys[index].toBase58()
+        ),
         data_base64: Buffer.from(bs58.decode(ix.data)).toString("base64"),
       })),
     };
   }
 }
 
-export function verifyIntent(encoded: string, intent: TransactionIntent): TransactionInspection {
+export function verifyIntent(
+  encoded: string,
+  intent: TransactionIntent
+): TransactionInspection {
   const { digest: _digest, ...rest } = intent;
   const expectedDigest = intentDigest(rest);
-  if (expectedDigest !== intent.digest) throw new Error("intent digest mismatch");
+  if (expectedDigest !== intent.digest)
+    throw new Error("intent digest mismatch");
   const inspected = inspectTransaction(encoded);
-  if (inspected.fee_payer !== intent.fee_payer) throw new Error("fee payer differs from intent");
-  if (!inspected.signers.includes(intent.wallet)) throw new Error("wallet is not a required signer");
-  const expectedDiscriminator = discriminator(
-    intent.action === "submit" ? "submit_work" : `${intent.action}_task`,
+  if (inspected.fee_payer !== intent.fee_payer)
+    throw new Error("fee payer differs from intent");
+  if (!inspected.signers.includes(intent.wallet))
+    throw new Error("wallet is not a required signer");
+  const expectedDiscriminator = shillbotInstructionDiscriminator(
+    intent.action === "submit" ? "submit_work" : `${intent.action}_task`
   );
   const lifecycle = inspected.instructions.filter(
     (ix) =>
       ix.program_id === SHILLBOT_PROGRAM_ID.toBase58() &&
-      Buffer.from(ix.data_base64, "base64").subarray(0, 8).equals(expectedDiscriminator),
+      Buffer.from(ix.data_base64, "base64")
+        .subarray(0, 8)
+        .equals(expectedDiscriminator)
   );
-  if (lifecycle.length !== 1) throw new Error("expected exactly one Shillbot lifecycle instruction");
+  if (lifecycle.length !== 1)
+    throw new Error("expected exactly one Shillbot lifecycle instruction");
   const shillbotInstructions = inspected.instructions.filter(
-    (ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58(),
+    (ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58()
   );
-  const payoutDiscriminator = discriminator("set_payout_to");
+  const payoutDiscriminator = shillbotInstructionDiscriminator("set_payout_to");
   const companions = shillbotInstructions.filter((ix) => ix !== lifecycle[0]);
   const lifecycleIndex = inspected.instructions.indexOf(lifecycle[0]);
   if (
@@ -479,20 +477,25 @@ export function verifyIntent(encoded: string, intent: TransactionIntent): Transa
         Buffer.from(ix.data_base64, "base64")
           .subarray(0, 8)
           .equals(payoutDiscriminator) &&
-        inspected.instructions.indexOf(ix) < lifecycleIndex,
+        inspected.instructions.indexOf(ix) < lifecycleIndex
     )
   ) {
     throw new Error("payout route must follow claim");
   }
   if (
-    companions.length > (intent.action === "claim" && intent.arguments.payoutTo ? 1 : 0) ||
+    companions.length >
+      (intent.action === "claim" && intent.arguments.payoutTo ? 1 : 0) ||
     companions.some(
       (ix) =>
         intent.action !== "claim" ||
-        !Buffer.from(ix.data_base64, "base64").subarray(0, 8).equals(payoutDiscriminator) ||
+        !Buffer.from(ix.data_base64, "base64")
+          .subarray(0, 8)
+          .equals(payoutDiscriminator) ||
         ix.accounts.join(",") !== [intent.task_pda, intent.wallet].join(",") ||
         Buffer.from(ix.data_base64, "base64").subarray(8).toString("hex") !==
-          new PublicKey(String(intent.arguments.payoutTo)).toBuffer().toString("hex"),
+          new PublicKey(String(intent.arguments.payoutTo))
+            .toBuffer()
+            .toString("hex")
     )
   ) {
     throw new Error("unexpected Shillbot companion instruction");
@@ -504,14 +507,14 @@ export function verifyIntent(encoded: string, intent: TransactionIntent): Transa
 }
 
 export type WalletSignCallback = (
-  transaction: Transaction | VersionedTransaction,
+  transaction: Transaction | VersionedTransaction
 ) => Promise<Transaction | VersionedTransaction>;
 
 export async function signAndBroadcast(
   connection: Connection,
   encodedUnsigned: string,
   sign: WalletSignCallback,
-  confirmation?: BlockhashWithExpiryBlockHeight,
+  confirmation?: BlockhashWithExpiryBlockHeight
 ): Promise<string> {
   const raw = Buffer.from(encodedUnsigned, "base64");
   let transaction: Transaction | VersionedTransaction;
@@ -524,10 +527,16 @@ export async function signAndBroadcast(
   const wire =
     signed instanceof VersionedTransaction
       ? signed.serialize()
-      : signed.serialize({ requireAllSignatures: true, verifySignatures: true });
+      : signed.serialize({
+          requireAllSignatures: true,
+          verifySignatures: true,
+        });
   const signature = await connection.sendRawTransaction(wire);
   if (confirmation) {
-    await connection.confirmTransaction({ signature, ...confirmation }, "confirmed");
+    await connection.confirmTransaction(
+      { signature, ...confirmation },
+      "confirmed"
+    );
   } else {
     await connection.confirmTransaction(signature, "confirmed");
   }

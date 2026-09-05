@@ -1,16 +1,20 @@
 {
-  "name": "@swarm-tips/tx-client",
-  "version": "0.1.2",
-  "description": "Open-source local Shillbot transaction builder, inspector, and broadcaster",
+  "name": "@swarm-tips/contracts",
+  "version": "0.1.0",
+  "description": "Generated public Solana IDLs, types, program IDs, PDAs, and instruction encoding for Swarm Tips",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "bin": {
-    "swarm-tx": "dist/cli.js"
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./idl/shillbot": "./dist/idl/shillbot.json",
+    "./idl/coordination-game": "./dist/idl/coordination_game.json"
   },
   "files": [
     "dist",
-    "!dist/*.test.*",
     "README.md",
     "SBOM.spdx.json"
   ],
@@ -18,14 +22,16 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "lint": "tsc --noEmit -p .",
+    "check:generated": "node scripts/sync-generated.mjs --check",
+    "sync:generated": "node scripts/sync-generated.mjs",
     "prepack": "npm run build"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/corsur/swarm-tips.git",
-    "directory": "sdk/tx-client"
+    "directory": "sdk/contracts"
   },
-  "homepage": "https://github.com/corsur/swarm-tips/tree/main/sdk/tx-client#readme",
+  "homepage": "https://github.com/corsur/swarm-tips/tree/main/sdk/contracts#readme",
   "bugs": "https://github.com/corsur/swarm-tips/issues",
   "license": "MIT",
   "publishConfig": {
@@ -34,11 +40,7 @@
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
-    "@solana/web3.js": "^1.98.4",
-    "@swarm-tips/contracts": "workspace:^",
-    "@switchboard-xyz/on-demand": "^3.9.0",
-    "bs58": "^6.0.0",
-    "yaml": "^2.9.0"
+    "@solana/web3.js": "^1.98.4"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

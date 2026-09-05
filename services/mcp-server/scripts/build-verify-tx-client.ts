@@ -13,12 +13,22 @@ function parseArgs(): Record<string, string> {
 
 async function main(): Promise<void> {
   const args = parseArgs();
-  const required = ["task-id", "payer", "score", "hash", "task-pda", "feed", "rpc"];
+  const required = [
+    "task-id",
+    "payer",
+    "score",
+    "hash",
+    "task-pda",
+    "feed",
+    "rpc",
+  ];
   for (const name of required) {
     if (!args[name]) throw new Error(`missing required --${name}`);
   }
   const network =
-    args.network === "devnet" || args.rpc.includes("devnet") ? "devnet" : "mainnet";
+    args.network === "devnet" || args.rpc.includes("devnet")
+      ? "devnet"
+      : "mainnet";
   const transaction = await buildSwitchboardCrankAndVerify({
     connection: new Connection(args.rpc, "confirmed"),
     taskId: args["task-id"],
@@ -34,7 +44,9 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   process.stderr.write(
-    `build-verify-tx failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    `build-verify-tx failed: ${
+      error instanceof Error ? error.message : String(error)
+    }\n`
   );
   process.exitCode = 1;
 });

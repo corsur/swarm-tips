@@ -1,4 +1,10 @@
-import { ComputeBudgetProgram, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import {
+  ComputeBudgetProgram,
+  Keypair,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+} from "@solana/web3.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,13 +15,17 @@ import {
   type BuildRequest,
 } from "./index.js";
 
-const wallet = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, i) => i + 1)).publicKey;
-const sponsor = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, i) => 32 - i)).publicKey;
+const wallet = Keypair.fromSeed(
+  Uint8Array.from({ length: 32 }, (_, i) => i + 1)
+).publicKey;
+const sponsor = Keypair.fromSeed(
+  Uint8Array.from({ length: 32 }, (_, i) => 32 - i)
+).publicKey;
 const task = new PublicKey(Uint8Array.from({ length: 32 }, () => 7));
 const feed = new PublicKey(Uint8Array.from({ length: 32 }, () => 8));
 const recentBlockhash = PublicKey.default.toBase58();
 const golden = JSON.parse(
-  readFileSync(new URL("../test-vectors.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../test-vectors.json", import.meta.url), "utf8")
 ) as {
   vectors: Array<{ action: string; accounts: string[]; data_base64: string }>;
   sponsored: Array<{ action: string; fee_payer: string; signers: string[] }>;
@@ -49,7 +59,12 @@ function fixtures(): BuildRequest[] {
       verificationKind: 0,
     },
     { ...base("claim"), action: "claim", taskPda: task.toBase58() },
-    { ...base("submit"), action: "submit", taskPda: task.toBase58(), contentId: "video-123" },
+    {
+      ...base("submit"),
+      action: "submit",
+      taskPda: task.toBase58(),
+      contentId: "video-123",
+    },
     { ...base("approve"), action: "approve", taskPda: task.toBase58() },
     {
       ...base("verify"),
@@ -58,7 +73,9 @@ function fixtures(): BuildRequest[] {
       switchboardFeed: feed.toBase58(),
       compositeScore: "900000",
       verificationHash: "22".repeat(32),
-      crankInstructions: [ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })],
+      crankInstructions: [
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ],
     },
     {
       ...base("finalize"),
@@ -74,36 +91,57 @@ function fixtures(): BuildRequest[] {
 describe("transaction construction", () => {
   it("matches the Rust instruction golden vectors for every action", () => {
     for (const request of fixtures()) {
-      const vector = golden.vectors.find((candidate) => candidate.action === request.action)!;
+      const vector = golden.vectors.find(
+        (candidate) => candidate.action === request.action
+      )!;
       const instruction = buildTransaction(request).transaction_intent;
       const decoded = inspectTransaction(buildTransaction(request).unsigned_tx);
       const lifecycle = decoded.instructions.find(
-        (ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58(),
+        (ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58()
       )!;
       expect(instruction.accounts).toEqual(vector.accounts);
       expect(lifecycle.data_base64).toBe(vector.data_base64);
     }
   });
 
-  it.each(fixtures().flatMap((request) => [
-    { request, version: "legacy" as const },
-    { request, version: "v0" as const },
-  ]))("builds and inspects $request.action $version", ({ request, version }) => {
+  it.each(
+    fixtures().flatMap((request) => [
+      { request, version: "legacy" as const },
+      { request, version: "v0" as const },
+    ])
+  )("builds and inspects $request.action $version", ({ request, version }) => {
     const built = buildTransaction({ ...request, version } as BuildRequest);
     const inspection = inspectTransaction(built.unsigned_tx);
     expect(inspection.version).toBe(version);
     expect(inspection.fee_payer).toBe(wallet.toBase58());
-    expect(inspection.instructions.some((ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58())).toBe(true);
-    expect(verifyIntent(built.unsigned_tx, built.transaction_intent)).toEqual(inspection);
+    expect(
+      inspection.instructions.some(
+        (ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58()
+      )
+    ).toBe(true);
+    expect(verifyIntent(built.unsigned_tx, built.transaction_intent)).toEqual(
+      inspection
+    );
   });
 
   it("constructs sponsored claim and submit messages without any private key", () => {
-    for (const request of fixtures().filter((candidate) => candidate.action === "claim" || candidate.action === "submit")) {
-      const built = buildTransaction({ ...request, sponsor: sponsor.toBase58() } as BuildRequest);
+    for (const request of fixtures().filter(
+      (candidate) =>
+        candidate.action === "claim" || candidate.action === "submit"
+    )) {
+      const built = buildTransaction({
+        ...request,
+        sponsor: sponsor.toBase58(),
+      } as BuildRequest);
       const inspection = inspectTransaction(built.unsigned_tx);
       expect(inspection.fee_payer).toBe(sponsor.toBase58());
-      expect(inspection.signers).toEqual([sponsor.toBase58(), wallet.toBase58()]);
-      const vector = golden.sponsored.find((candidate) => candidate.action === request.action)!;
+      expect(inspection.signers).toEqual([
+        sponsor.toBase58(),
+        wallet.toBase58(),
+      ]);
+      const vector = golden.sponsored.find(
+        (candidate) => candidate.action === request.action
+      )!;
       expect(inspection.fee_payer).toBe(vector.fee_payer);
       expect(inspection.signers).toEqual(vector.signers);
     }
@@ -116,15 +154,22 @@ describe("transaction construction", () => {
       sponsor: sponsor.toBase58(),
       payoutTo: feed.toBase58(),
     } as BuildRequest);
-    const inspection = verifyIntent(built.unsigned_tx, built.transaction_intent);
+    const inspection = verifyIntent(
+      built.unsigned_tx,
+      built.transaction_intent
+    );
     const shillbotInstructions = inspection.instructions.filter(
-      (ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58(),
+      (ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58()
     );
     expect(shillbotInstructions).toHaveLength(2);
     expect(shillbotInstructions[0].data_base64).toBe(
-      golden.vectors.find((candidate) => candidate.action === "claim")!.data_base64,
+      golden.vectors.find((candidate) => candidate.action === "claim")!
+        .data_base64
     );
-    expect(shillbotInstructions[1].accounts).toEqual([task.toBase58(), wallet.toBase58()]);
+    expect(shillbotInstructions[1].accounts).toEqual([
+      task.toBase58(),
+      wallet.toBase58(),
+    ]);
   });
 
   it("rejects a payout route placed before claim establishes the agent", () => {
@@ -140,7 +185,7 @@ describe("transaction construction", () => {
       .serialize({ requireAllSignatures: false, verifySignatures: false })
       .toString("base64");
     expect(() => verifyIntent(reordered, built.transaction_intent)).toThrow(
-      "payout route must follow claim",
+      "payout route must follow claim"
     );
   });
 
@@ -148,9 +193,14 @@ describe("transaction construction", () => {
     const built = buildTransaction(fixtures()[1]);
     const altered = {
       ...built.transaction_intent,
-      accounts: [PublicKey.default.toBase58(), ...built.transaction_intent.accounts.slice(1)],
+      accounts: [
+        PublicKey.default.toBase58(),
+        ...built.transaction_intent.accounts.slice(1),
+      ],
     };
-    expect(() => verifyIntent(built.unsigned_tx, altered)).toThrow("intent digest mismatch");
+    expect(() => verifyIntent(built.unsigned_tx, altered)).toThrow(
+      "intent digest mismatch"
+    );
   });
 
   it("does not accept arbitrary companion instructions as a second lifecycle", () => {
@@ -170,9 +220,9 @@ describe("transaction construction", () => {
       crankInstructions: [extra],
     };
     const built = buildTransaction(verifyRequest);
-    expect(() => verifyIntent(built.unsigned_tx, built.transaction_intent)).toThrow(
-      "unexpected Shillbot companion",
-    );
+    expect(() =>
+      verifyIntent(built.unsigned_tx, built.transaction_intent)
+    ).toThrow("unexpected Shillbot companion");
     expect(request.action).toBe("claim");
   });
 });

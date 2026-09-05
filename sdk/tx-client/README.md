@@ -7,7 +7,7 @@ submit transactions, and all Shillbot lifecycle actions: create, claim, submit,
 approve, verify, and finalize.
 
 ```sh
-npm install @swarm-tips/tx-client@0.1.1
+npm install @swarm-tips/tx-client@0.1.2
 ```
 
 The safest flow is: obtain the task/campaign intent from `mcp.swarm.tips`, build
@@ -37,3 +37,7 @@ swarm-tx broadcast signed-transaction-and-rpc.json
 
 `broadcast` accepts only an already-signed transaction. There is intentionally
 no private-key-file flag and no generic server-side broadcaster.
+
+The package depends on and re-exports `@swarm-tips/contracts`, whose generated
+IDLs and low-level instruction encoder are the ABI authority. Applications that
+only need raw contract bindings can install that package directly.

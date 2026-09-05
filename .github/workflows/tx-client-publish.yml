@@ -1,10 +1,14 @@
-name: Shillbot Transaction Client
+name: Public Contract Packages
 
 on:
   push:
     branches: [main]
     paths:
+      - 'sdk/contracts/**'
       - 'sdk/tx-client/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'services/mcp-server/scripts/package.json'
       - '.github/workflows/tx-client-publish.yml'
   workflow_dispatch:
 
@@ -23,23 +27,38 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
           cache: pnpm
-          cache-dependency-path: sdk/tx-client/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
       - name: Install npm with trusted-publishing support
         run: npm install --global npm@^11.15.0
       - run: pnpm install --frozen-lockfile
-        working-directory: sdk/tx-client
-      - run: pnpm lint
-        working-directory: sdk/tx-client
-      - run: pnpm test
-        working-directory: sdk/tx-client
-      - run: pnpm build
-        working-directory: sdk/tx-client
-      - name: Publish immutable public package with provenance
+      - name: Test, type-check, and build both packages
         run: |
-          package_version="$(node --input-type=module -e "import pkg from './package.json' with { type: 'json' }; process.stdout.write(pkg.version)")"
+          pnpm --filter @swarm-tips/contracts test
+          pnpm --filter @swarm-tips/contracts lint
+          pnpm --filter @swarm-tips/contracts build
+          pnpm --filter @swarm-tips/tx-client test
+          pnpm --filter @swarm-tips/tx-client lint
+          pnpm --filter @swarm-tips/tx-client build
+      - name: Pack publishable workspace packages
+        run: |
+          mkdir -p "$RUNNER_TEMP/swarm-packages"
+          pnpm --filter @swarm-tips/contracts pack --pack-destination "$RUNNER_TEMP/swarm-packages"
+          pnpm --filter @swarm-tips/tx-client pack --pack-destination "$RUNNER_TEMP/swarm-packages"
+      - name: Publish immutable contracts package with provenance
+        run: |
+          package_version="$(node --input-type=module -e "import pkg from './sdk/contracts/package.json' with { type: 'json' }; process.stdout.write(pkg.version)")"
+          package_tarball="$RUNNER_TEMP/swarm-packages/swarm-tips-contracts-${package_version}.tgz"
+          if npm view "@swarm-tips/contracts@${package_version}" version >/dev/null 2>&1; then
+            echo "@swarm-tips/contracts@${package_version} is already published; npm versions are immutable"
+          else
+            npm publish "$package_tarball" --access public --provenance
+          fi
+      - name: Publish immutable transaction client with provenance
+        run: |
+          package_version="$(node --input-type=module -e "import pkg from './sdk/tx-client/package.json' with { type: 'json' }; process.stdout.write(pkg.version)")"
+          package_tarball="$RUNNER_TEMP/swarm-packages/swarm-tips-tx-client-${package_version}.tgz"
           if npm view "@swarm-tips/tx-client@${package_version}" version >/dev/null 2>&1; then
             echo "@swarm-tips/tx-client@${package_version} is already published; npm versions are immutable"
           else
-            npm publish --access public --provenance
+            npm publish "$package_tarball" --access public --provenance
           fi
-        working-directory: sdk/tx-client

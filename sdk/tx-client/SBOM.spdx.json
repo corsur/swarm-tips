@@ -2,8 +2,8 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "@swarm-tips/tx-client-0.1.1",
-  "documentNamespace": "https://swarm.tips/sbom/tx-client/0.1.1",
+  "name": "@swarm-tips/tx-client-0.1.2",
+  "documentNamespace": "https://swarm.tips/sbom/tx-client/0.1.2",
   "creationInfo": {
     "created": "2026-09-02T00:00:00Z",
     "creators": ["Organization: Swarm Tips"]
@@ -12,7 +12,7 @@
     {
       "name": "@swarm-tips/tx-client",
       "SPDXID": "SPDXRef-Package",
-      "versionInfo": "0.1.1",
+      "versionInfo": "0.1.2",
       "downloadLocation": "https://www.npmjs.com/package/@swarm-tips/tx-client",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",

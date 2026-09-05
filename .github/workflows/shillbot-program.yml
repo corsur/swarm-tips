@@ -83,6 +83,9 @@ jobs:
           anchor build -p extension-registry
           anchor build -p extension-credit
 
+      - name: Check committed public contract bindings
+        run: node sdk/contracts/scripts/sync-generated.mjs --check
+
       - run: pnpm run lint
 
       # Bankrun suites run in-process (no validator) — fast, and they include the
