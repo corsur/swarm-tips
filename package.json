@@ -2,6 +2,7 @@
   "license": "ISC",
   "scripts": {
     "lint:fix": "prettier \"**/*.ts\" -w",
+    "prelint": "pnpm --filter @swarm-tips/contracts build && pnpm --filter @swarm-tips/tx-client build",
     "lint": "prettier \"**/*.ts\" --check && tsc --noEmit -p tsconfig.lint.json",
     "ts-node": "ts-node"
   },
