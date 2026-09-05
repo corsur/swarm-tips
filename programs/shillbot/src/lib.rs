@@ -1,6 +1,9 @@
 #![deny(warnings)]
 #![deny(clippy::all)]
 #![deny(clippy::arithmetic_side_effects)]
+// Anchor's #[program] macro generates ABI wrappers with one parameter per
+// instruction argument. These signatures are fixed by the public contract.
+#![allow(clippy::too_many_arguments)]
 
 use anchor_lang::prelude::*;
 

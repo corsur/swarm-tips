@@ -547,7 +547,9 @@ pub fn validate(
         } else {
             let allowed = if *program == compute_program {
                 validate_compute_budget(&ix.data)?;
-                let kind = usize::from(ix.data[0] - 2);
+                let kind = usize::from(ix.data[0].checked_sub(2).ok_or_else(|| {
+                    ValidationError::Rejected("invalid compute-budget instruction kind".into())
+                })?);
                 if compute_kinds[kind] {
                     return Err(ValidationError::Rejected(
                         "duplicate compute-budget instruction".into(),
@@ -707,7 +709,10 @@ pub fn validate(
                 .map_err(|_| ValidationError::Rejected("content id length is invalid".into()))?;
             let len = usize::try_from(u32::from_le_bytes(len_bytes))
                 .map_err(|_| ValidationError::Rejected("content id is too large".into()))?;
-            if raw.get(4..4 + len) != Some(content_id.as_bytes()) {
+            let content_end = 4usize.checked_add(len).ok_or_else(|| {
+                ValidationError::Rejected("content id length overflows transaction data".into())
+            })?;
+            if raw.get(4..content_end) != Some(content_id.as_bytes()) {
                 return Err(ValidationError::Rejected(
                     "content id differs from intent".into(),
                 ));
