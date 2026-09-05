@@ -1,0 +1,6 @@
+{
+  "src/contracts/idl/coordination_game.json": "924b76773ca91d57a0854a7471b3438432f9496a7bb700b0645d3dee11c713c1",
+  "src/contracts/idl/shillbot.json": "8747b84bea9911f4b6372fc20412092cdec9410c1f6591d66268578a496b68a0",
+  "src/contracts/generated/coordination_game.ts": "609fcef4e013b0a50a5aed55b5bdc1ef838be43523a8a358de8d4445a1e1adee",
+  "src/contracts/generated/shillbot.ts": "fc25702d0e8f2b51a4a60d59ebc0decaf3dd99881b46defc28bf697c0a87bd37"
+}
