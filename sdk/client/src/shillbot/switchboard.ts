@@ -1,5 +1,4 @@
 import * as anchor from "@coral-xyz/anchor";
-import { BN } from "@coral-xyz/anchor";
 import { Buffer } from "buffer";
 import { OracleJob } from "@switchboard-xyz/common/protos";
 import {
@@ -37,11 +36,13 @@ const SWITCHBOARD_PROGRAMS: Record<Network, PublicKey> = {
 
 const CROSSBAR_URL = "https://crossbar.switchboard.xyz";
 const SWITCHBOARD_GATEWAY_API_VERSION = "1.0.0";
+const anchorRuntime =
+  (anchor as typeof anchor & { default?: typeof anchor }).default ?? anchor;
 
 type SwitchboardFeedData = {
   feedHash: Uint8Array;
   queue: PublicKey;
-  maxVariance: BN;
+  maxVariance: { toNumber(): number };
   minResponses: number;
 };
 
@@ -214,14 +215,14 @@ export async function buildSwitchboardCrankAndVerify(
 ): Promise<VersionedTransaction> {
   const switchboardProgramId = SWITCHBOARD_PROGRAMS[request.network];
   const dummy = Keypair.generate();
-  const provider = new anchor.AnchorProvider(
+  const provider = new anchorRuntime.AnchorProvider(
     request.connection,
-    new anchor.Wallet(dummy),
+    new anchorRuntime.Wallet(dummy),
     { commitment: "confirmed" }
   );
-  const idl = await anchor.Program.fetchIdl(switchboardProgramId, provider);
+  const idl = await anchorRuntime.Program.fetchIdl(switchboardProgramId, provider);
   if (!idl) throw new Error("failed to fetch Switchboard IDL");
-  const program = new anchor.Program(idl, provider);
+  const program = new anchorRuntime.Program(idl, provider);
   const switchboardAccounts = program.account as unknown as {
     pullFeedAccountData: { fetch(pubkey: PublicKey): Promise<unknown> };
   };
@@ -276,9 +277,9 @@ export async function buildSwitchboardCrankAndVerify(
   );
   const submit = program.instruction.pullFeedSubmitResponseConsensus(
     {
-      slot: new BN(response.slot),
+      slot: new anchorRuntime.BN(response.slot),
       values: response.median_responses.map(
-        (median: any) => new BN(median.value)
+        (median) => new anchorRuntime.BN(median.value)
       ),
     },
     {

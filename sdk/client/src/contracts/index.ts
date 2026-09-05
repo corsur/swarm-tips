@@ -1,8 +1,13 @@
-import { BN, BorshInstructionCoder, type Idl } from "@coral-xyz/anchor";
+import * as anchor from "@coral-xyz/anchor";
+import type { Idl } from "@coral-xyz/anchor";
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { Buffer } from "buffer";
 import coordinationGameIdl from "./idl/coordination_game.json" with { type: "json" };
 import shillbotIdl from "./idl/shillbot.json" with { type: "json" };
+
+const anchorRuntime =
+  (anchor as typeof anchor & { default?: typeof anchor }).default ?? anchor;
+const { BN, BorshInstructionCoder } = anchorRuntime;
 
 export type { CoordinationGame } from "./generated/coordination_game.js";
 export type { Shillbot } from "./generated/shillbot.js";
