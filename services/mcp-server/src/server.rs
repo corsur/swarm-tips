@@ -4129,13 +4129,35 @@ impl ServerHandler for SwarmTipsMcp {
 const TX_CLIENT_MANIFEST_URI: &str = "https://swarm.tips/.well-known/transaction-client.json";
 const TX_INTENT_SCHEMA_URI: &str = "https://swarm.tips/schemas/shillbot-transaction-intent-v1.json";
 const TX_CLIENT_GUIDE_URI: &str = "https://swarm.tips/docs/mcp/local-transactions";
-const TX_CLIENT_MANIFEST: &str = r#"{"name":"@swarm-tips/tx-client","version":"0.1.1","registry":"https://www.npmjs.com/package/@swarm-tips/tx-client/v/0.1.1","integrity":"sha512-KUL8vJSovyN0cP/NffLtHhwE1grJ85X2IhYWg1TbRreW95n7fmi+QyuQuSPdWGGw6bx1DE7bPyD/FEvu6t/VXw==","shasum":"64cedb574fd2e56a80b8fa5e841e369d471e10b4","source_commit":"64654a97c48610004251b369a7329edfd98b961b","source":"https://github.com/corsur/swarm-tips/tree/64654a97c48610004251b369a7329edfd98b961b/sdk/tx-client","sbom":"https://unpkg.com/@swarm-tips/tx-client@0.1.1/SBOM.spdx.json","schema":"swarm.shillbot.transaction-intent/v1","security":"Construct and inspect locally; never send a private key to an MCP server."}"#;
+const TX_CLIENT_MANIFEST: &str = r#"{
+  "name": "@swarm-tips/tx-client",
+  "version": "0.1.2",
+  "registry": "https://www.npmjs.com/package/@swarm-tips/tx-client/v/0.1.2",
+  "integrity": "sha512-afAzWubL3x/cF6eldof2cYYEwCFLBr0zp0tI6O2WU9wDt1CRDE2GRX8U5pXUg6AnjUnwTwdCq8NEJl++Y4zHaA==",
+  "shasum": "b24949ef147c3b28d07aeba10c937302d6de44bb",
+  "source_commit": "f789358a6c8db3451ce17b743ac4635129347dd5",
+  "source": "https://github.com/corsur/swarm-tips/tree/f789358a6c8db3451ce17b743ac4635129347dd5/sdk/tx-client",
+  "sbom": "https://unpkg.com/@swarm-tips/tx-client@0.1.2/SBOM.spdx.json",
+  "contracts": {
+    "name": "@swarm-tips/contracts",
+    "version": "0.1.0",
+    "registry": "https://www.npmjs.com/package/@swarm-tips/contracts/v/0.1.0",
+    "integrity": "sha512-NCRJth4K3OTrnN2frp84G4DkHtvdOay7JTbcXK8amhiF/4B8WiXVaB1i7VKICnfZ6CQlp9em5jrfvCZhqNxzmg==",
+    "shasum": "e9f044bb857fb5ae706f1a4bbece3b15b7042181",
+    "source": "https://github.com/corsur/swarm-tips/tree/f789358a6c8db3451ce17b743ac4635129347dd5/sdk/contracts",
+    "sbom": "https://unpkg.com/@swarm-tips/contracts@0.1.0/SBOM.spdx.json"
+  },
+  "schema": "swarm.shillbot.transaction-intent/v1",
+  "security": "Construct and inspect locally; never send a private key to an MCP server."
+}"#;
 const TX_INTENT_SCHEMA: &str =
     include_str!("../../../docs/specs/shillbot-transaction-intent-v1.schema.json");
 const TX_CLIENT_GUIDE: &str = r#"# Local Shillbot transactions
 
 Install `@swarm-tips/tx-client` from public npm and inspect its source at
 https://github.com/corsur/swarm-tips/tree/main/sdk/tx-client.
+It depends on and re-exports the generated IDLs, Anchor types, program IDs,
+PDA helpers, and ABI-driven instruction encoder from `@swarm-tips/contracts`.
 
 Preferred flow: obtain the structured transaction intent, construct and inspect
 the transaction locally, sign with your local wallet, broadcast through your
@@ -5714,7 +5736,11 @@ fn shillbot_transaction_result(
     value["risk"] = serde_json::Value::String(inspection.risk.clone());
     value["local_client"] = serde_json::json!({
         "package": "@swarm-tips/tx-client",
-        "version": "0.1.1",
+        "version": "0.1.2",
+        "contracts": {
+            "package": "@swarm-tips/contracts",
+            "version": "0.1.0",
+        },
         "resource_uri": TX_CLIENT_MANIFEST_URI,
     });
     let mut result = text_result(&value);
@@ -5762,14 +5788,14 @@ mod structured_result_tests {
         assert_eq!(resources[0].raw.uri, TX_CLIENT_MANIFEST_URI);
         let manifest: serde_json::Value = serde_json::from_str(TX_CLIENT_MANIFEST).unwrap();
         assert_eq!(manifest["name"], "@swarm-tips/tx-client");
-        assert_eq!(manifest["version"], "0.1.1");
+        assert_eq!(manifest["version"], "0.1.2");
         assert_eq!(
             manifest["integrity"],
-            "sha512-KUL8vJSovyN0cP/NffLtHhwE1grJ85X2IhYWg1TbRreW95n7fmi+QyuQuSPdWGGw6bx1DE7bPyD/FEvu6t/VXw=="
+            "sha512-afAzWubL3x/cF6eldof2cYYEwCFLBr0zp0tI6O2WU9wDt1CRDE2GRX8U5pXUg6AnjUnwTwdCq8NEJl++Y4zHaA=="
         );
         assert_eq!(
             manifest["source_commit"],
-            "64654a97c48610004251b369a7329edfd98b961b"
+            "f789358a6c8db3451ce17b743ac4635129347dd5"
         );
         assert!(manifest["source"]
             .as_str()
@@ -5779,6 +5805,16 @@ mod structured_result_tests {
             .as_str()
             .unwrap()
             .ends_with("SBOM.spdx.json"));
+        assert_eq!(manifest["contracts"]["name"], "@swarm-tips/contracts");
+        assert_eq!(manifest["contracts"]["version"], "0.1.0");
+        assert_eq!(
+            manifest["contracts"]["integrity"],
+            "sha512-NCRJth4K3OTrnN2frp84G4DkHtvdOay7JTbcXK8amhiF/4B8WiXVaB1i7VKICnfZ6CQlp9em5jrfvCZhqNxzmg=="
+        );
+        assert!(manifest["contracts"]["source"]
+            .as_str()
+            .unwrap()
+            .contains(manifest["source_commit"].as_str().unwrap()));
     }
 }
 
