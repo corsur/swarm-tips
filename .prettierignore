@@ -6,3 +6,4 @@ dist
 build
 test-ledger
 sdk/contracts/src/generated
+sdk/client/src/contracts/generated

@@ -33,7 +33,7 @@ import {
   assertLegalTransition,
 } from "./assertions";
 import { readWhenAdvanced, readWhenVisible } from "./retry-read";
-import type { TaskPayout } from "../../sdk/task-outcome-oracle";
+import type { TaskPayout } from "@swarm-tips/client/shillbot";
 
 // Switchboard On-Demand program id (owner of feed accounts) and the fixed dummy
 // feed pubkey the program's `initialize` records — shared with shillbot-bankrun.ts.

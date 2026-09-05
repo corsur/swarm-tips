@@ -3,4 +3,4 @@
 // cross-repo (coordination-app's Playwright/MCP harness imports it). This shim
 // keeps in-repo test imports (`./helpers/task-outcome-oracle`) working — mirrors
 // the `outcome-oracle` shim for the coordination game.
-export * from "../../sdk/task-outcome-oracle";
+export * from "@swarm-tips/client/shillbot";

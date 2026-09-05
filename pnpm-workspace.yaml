@@ -1,4 +1,5 @@
 packages:
+  - sdk/client
   - sdk/contracts
   - sdk/tx-client
   - services/mcp-server/scripts

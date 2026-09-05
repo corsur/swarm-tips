@@ -63,7 +63,7 @@ import {
   deriveTaskOutcome,
   TaskOutcomeKind,
   MAX_SCORE,
-} from "../../sdk/task-outcome-oracle";
+} from "@swarm-tips/client/shillbot";
 
 const API_BASE = process.env.SHILLBOT_API ?? "https://api.shillbot.org";
 const ESCROW = new BN(2_000_000); // 0.002 SOL

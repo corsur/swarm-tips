@@ -20,7 +20,7 @@ import {
   TaskOutcomeKind,
   TaskScenario,
   MAX_SCORE,
-} from "../sdk/task-outcome-oracle";
+} from "@swarm-tips/client/shillbot";
 
 const THRESHOLD = 200_000;
 const ESCROWS = [1_000_000_000n, 360_000_007n]; // round SOL + a non-round value

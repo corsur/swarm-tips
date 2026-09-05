@@ -790,7 +790,8 @@ mod tests {
     #[test]
     fn rust_builders_match_the_public_client_golden_vectors() {
         let golden: serde_json::Value =
-            serde_json::from_str(include_str!("../../../sdk/tx-client/test-vectors.json")).unwrap();
+            serde_json::from_str(include_str!("../../../sdk/client/test/transaction-vectors.json"))
+                .unwrap();
         let wallet = Pubkey::from_str(golden["wallet"].as_str().unwrap()).unwrap();
         let task = Pubkey::from_str(golden["task"].as_str().unwrap()).unwrap();
         let feed = Pubkey::from_str(golden["feed"].as_str().unwrap()).unwrap();

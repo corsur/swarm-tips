@@ -67,7 +67,7 @@ import {
   TaskPayout,
   TaskScenario,
   MAX_SCORE,
-} from "../../sdk/task-outcome-oracle";
+} from "@swarm-tips/client/shillbot";
 
 // Chain-parameterized. CAIP2 used to be hardcoded to eip155:84532 while RPC and
 // ESCROW were already env-driven, so pointing the runner at another chain

@@ -1,0 +1,104 @@
+{
+  "name": "@swarm-tips/client",
+  "version": "0.1.0",
+  "description": "Typed browser and Node.js clients for Swarm Tips, Shillbot, and Coordination Game",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./shillbot": {
+      "types": "./dist/shillbot/index.d.ts",
+      "import": "./dist/shillbot/index.js"
+    },
+    "./coordination-game": {
+      "types": "./dist/coordination-game/index.d.ts",
+      "import": "./dist/coordination-game/index.js"
+    },
+    "./evm": {
+      "types": "./dist/evm/index.d.ts",
+      "import": "./dist/evm/index.js"
+    },
+    "./evm/testing": {
+      "types": "./dist/evm/testing.d.ts",
+      "import": "./dist/evm/testing.js"
+    },
+    "./inbox": {
+      "types": "./dist/inbox/index.d.ts",
+      "import": "./dist/inbox/index.js"
+    },
+    "./vow": {
+      "types": "./dist/vow/index.d.ts",
+      "import": "./dist/vow/index.js"
+    },
+    "./idl/shillbot": "./dist/contracts/idl/shillbot.json",
+    "./idl/coordination-game": "./dist/contracts/idl/coordination_game.json",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "swarm-tx": "dist/cli/swarm-tx.js",
+    "vow-verify": "dist/cli/vow-verify.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SBOM.spdx.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "check:generated": "node scripts/sync-generated.mjs --check",
+    "sync:generated": "node scripts/sync-generated.mjs",
+    "sbom": "node scripts/generate-sbom.mjs",
+    "verify:packed": "node scripts/verify-packed.mjs",
+    "prepack": "pnpm build && pnpm sbom"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/corsur/swarm-tips.git",
+    "directory": "sdk/client"
+  },
+  "homepage": "https://github.com/corsur/swarm-tips/tree/main/sdk/client#readme",
+  "bugs": "https://github.com/corsur/swarm-tips/issues",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/web3.js": "^1.98.4",
+    "@switchboard-xyz/common": "^5.7.0",
+    "bs58": "^6.0.0",
+    "buffer": "^6.0.3",
+    "js-sha256": "^0.11.0"
+  },
+  "peerDependencies": {
+    "viem": "^2.52.2",
+    "wagmi": "^2.19.5"
+  },
+  "peerDependenciesMeta": {
+    "viem": {
+      "optional": true
+    },
+    "wagmi": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.25.9",
+    "typescript": "^5.7.3",
+    "viem": "^2.52.2",
+    "vitest": "^2.1.9",
+    "wagmi": "^2.19.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -2,13 +2,14 @@
   "license": "ISC",
   "scripts": {
     "lint:fix": "prettier \"**/*.ts\" -w",
-    "prelint": "pnpm --filter @swarm-tips/contracts build && pnpm --filter @swarm-tips/tx-client build",
+    "prelint": "pnpm --filter @swarm-tips/client lint && pnpm --filter @swarm-tips/client build && pnpm --filter @swarm-tips/contracts build && pnpm --filter @swarm-tips/tx-client build",
     "lint": "prettier \"**/*.ts\" --check && tsc --noEmit -p tsconfig.lint.json",
     "ts-node": "ts-node"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@solana/web3.js": "^1.98.4",
+    "@swarm-tips/client": "workspace:0.1.0",
     "@switchboard-xyz/common": "^5.7.0",
     "@switchboard-xyz/on-demand": "^3.9.0"
   },

@@ -3,7 +3,7 @@
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@solana/web3.js": "^1.98.4",
-    "@swarm-tips/tx-client": "workspace:^",
+    "@swarm-tips/client": "workspace:0.1.0",
     "@switchboard-xyz/common": "^5.7.0",
     "@switchboard-xyz/on-demand": "^3.9.0"
   }

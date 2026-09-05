@@ -12,6 +12,7 @@
     "node_modules",
     "target",
     ".anchor",
+    "sdk/client",
     "sdk/vow-verifier-ts",
     "tests/live"
   ]

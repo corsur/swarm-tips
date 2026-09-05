@@ -3,14 +3,14 @@
 // its violation. Run: npx ts-mocha -p ./tsconfig.json tests/harness/battery-sdk.unit.test.ts
 
 import { assert } from "chai";
-import { OutcomeKind } from "../../sdk/outcome-oracle";
+import { OutcomeKind } from "@swarm-tips/client/coordination-game";
 import {
   RealizedGame,
   assertConservation,
   assertPayoffMatchesChain,
   assertOutcomeAgrees,
   verifyRealizedGame,
-} from "../../sdk/battery";
+} from "@swarm-tips/client/coordination-game";
 
 const STAKE = 100n;
 

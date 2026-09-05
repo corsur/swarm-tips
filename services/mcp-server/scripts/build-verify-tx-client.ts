@@ -1,6 +1,6 @@
-/** Thin CLI wrapper around @swarm-tips/tx-client's canonical Switchboard builder. */
+/** Thin CLI wrapper around @swarm-tips/client's canonical Switchboard builder. */
 import { Connection, PublicKey } from "@solana/web3.js";
-import { buildSwitchboardCrankAndVerify } from "@swarm-tips/tx-client";
+import { buildSwitchboardCrankAndVerify } from "@swarm-tips/client/shillbot";
 
 function parseArgs(): Record<string, string> {
   const parsed: Record<string, string> = {};

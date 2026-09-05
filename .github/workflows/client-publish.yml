@@ -1,0 +1,62 @@
+name: Unified JavaScript Client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/client/**'
+      - 'target/idl/**'
+      - 'target/types/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/client-publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install npm with trusted-publishing support
+        run: npm install --global npm@^11.15.0
+      - run: pnpm install --frozen-lockfile
+      - name: Verify generated bindings, tests, types, and browser boundaries
+        run: |
+          pnpm --filter @swarm-tips/client check:generated
+          pnpm --filter @swarm-tips/client test
+          pnpm --filter @swarm-tips/client lint
+          if grep -R --line-number --include='*.ts' "from [\"']node:" sdk/client/src --exclude-dir=cli --exclude='*.test.ts'; then
+            echo 'Browser library source imports a Node built-in'
+            exit 1
+          fi
+      - name: Pack and verify the exact artifact
+        run: |
+          mkdir -p "$RUNNER_TEMP/swarm-client"
+          pnpm --filter @swarm-tips/client pack --pack-destination "$RUNNER_TEMP/swarm-client"
+          package_version="$(node --input-type=module -e "import pkg from './sdk/client/package.json' with { type: 'json' }; process.stdout.write(pkg.version)")"
+          package_tarball="$RUNNER_TEMP/swarm-client/swarm-tips-client-${package_version}.tgz"
+          pnpm --filter @swarm-tips/client verify:packed "$package_tarball"
+      - name: Publish immutable client with provenance
+        run: |
+          package_version="$(node --input-type=module -e "import pkg from './sdk/client/package.json' with { type: 'json' }; process.stdout.write(pkg.version)")"
+          package_tarball="$RUNNER_TEMP/swarm-client/swarm-tips-client-${package_version}.tgz"
+          if published_git_head="$(npm view "@swarm-tips/client@${package_version}" gitHead 2>/dev/null)"; then
+            if [ "$published_git_head" != "$GITHUB_SHA" ]; then
+              echo "@swarm-tips/client@${package_version} already belongs to ${published_git_head}, not ${GITHUB_SHA}"
+              exit 1
+            fi
+            echo "@swarm-tips/client@${package_version} already published from this commit"
+          else
+            npm publish "$package_tarball" --access public --provenance
+          fi

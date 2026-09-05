@@ -25,7 +25,7 @@ import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { McpClient } from "./mcp-client";
-import { computePayment } from "../../sdk/task-outcome-oracle";
+import { computePayment } from "@swarm-tips/client/shillbot";
 
 const MCP_URL = process.env.MCP_URL ?? "https://mcp.swarm.tips";
 // Devnet global defaults the harness + program initialize with.
