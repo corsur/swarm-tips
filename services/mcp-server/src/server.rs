@@ -4130,20 +4130,27 @@ const TX_CLIENT_GUIDE_URI: &str = "https://swarm.tips/docs/mcp/local-transaction
 const CLIENT_MANIFEST: &str = r#"{
   "schema": "swarm.client-manifest/v1",
   "name": "@swarm-tips/client",
-  "version": "0.1.1",
-  "registry": "https://www.npmjs.com/package/@swarm-tips/client/v/0.1.1",
-  "integrity": "sha512-VR9zx+obG7eNfPuCS49+fXYTtZjDVQeYc6aWb7p2FixFUltbrDoIZPEzVxuLTXe3JHswk7Nvfy/6mccemG+7sg==",
-  "shasum": "6e84c524a25f5c1986cc3073f3aff91abf9d7d30",
-  "source_commit": "725eb2bdaca74d8f20ee2983937b668321b48584",
-  "source": "https://github.com/corsur/swarm-tips/tree/725eb2bdaca74d8f20ee2983937b668321b48584/sdk/client",
-  "sbom": "https://unpkg.com/@swarm-tips/client@0.1.1/SBOM.spdx.json",
+  "version": "0.2.2",
+  "registry": "https://www.npmjs.com/package/@swarm-tips/client/v/0.2.2",
+  "tarball": "https://registry.npmjs.org/@swarm-tips/client/-/client-0.2.2.tgz",
+  "integrity": "sha512-7BcuuVSFrgMNKoBlmiJPyjTbYdnAfJO6wxkLNhvVww8XuhSlaAdHgzb0S0QOLDg+01BKOND0aDf8ntP5F04Z5g==",
+  "shasum": "58927c60d34a4c29329b4b3d753e1353d046f07a",
+  "provenance": "https://registry.npmjs.org/-/npm/v1/attestations/@swarm-tips%2fclient@0.2.2",
+  "source_commit": "53c0fca84b005f8fe5cb87809b91cf4dca6b06c4",
+  "source": "https://github.com/corsur/swarm-tips/tree/53c0fca84b005f8fe5cb87809b91cf4dca6b06c4/sdk/client",
+  "sbom": "https://unpkg.com/@swarm-tips/client@0.2.2/SBOM.spdx.json",
   "subpaths": {
     "shillbot": "@swarm-tips/client/shillbot",
+    "shillbot_api": "@swarm-tips/client/shillbot/api",
     "coordination_game": "@swarm-tips/client/coordination-game",
+    "coordination_game_solana": "@swarm-tips/client/coordination-game/solana",
+    "coordination_game_evm": "@swarm-tips/client/coordination-game/evm",
+    "coordination_game_api": "@swarm-tips/client/coordination-game/api",
     "evm": "@swarm-tips/client/evm",
     "evm_testing": "@swarm-tips/client/evm/testing",
     "inbox": "@swarm-tips/client/inbox",
-    "vow": "@swarm-tips/client/vow"
+    "vow": "@swarm-tips/client/vow",
+    "swarm": "@swarm-tips/client/swarm"
   },
   "idls": {
     "shillbot": "@swarm-tips/client/idl/shillbot",
@@ -5749,7 +5756,7 @@ fn shillbot_transaction_result(
     value["risk"] = serde_json::Value::String(inspection.risk.clone());
     value["local_client"] = serde_json::json!({
         "package": "@swarm-tips/client",
-        "version": "0.1.0",
+        "version": "0.2.2",
         "import": "@swarm-tips/client/shillbot",
         "resource_uri": CLIENT_MANIFEST_URI,
     });
@@ -5808,14 +5815,14 @@ mod structured_result_tests {
         );
         let manifest: serde_json::Value = serde_json::from_str(CLIENT_MANIFEST).unwrap();
         assert_eq!(manifest["name"], "@swarm-tips/client");
-        assert_eq!(manifest["version"], "0.1.1");
+        assert_eq!(manifest["version"], "0.2.2");
         assert!(manifest["integrity"]
             .as_str()
             .unwrap()
             .starts_with("sha512-"));
         assert_eq!(
             manifest["source_commit"],
-            "725eb2bdaca74d8f20ee2983937b668321b48584"
+            "53c0fca84b005f8fe5cb87809b91cf4dca6b06c4"
         );
         assert!(manifest["source"]
             .as_str()
@@ -5825,6 +5832,10 @@ mod structured_result_tests {
             .as_str()
             .unwrap()
             .ends_with("SBOM.spdx.json"));
+        assert!(manifest["provenance"]
+            .as_str()
+            .unwrap()
+            .contains("@swarm-tips%2fclient@0.2.2"));
         assert_eq!(
             manifest["subpaths"]["shillbot"],
             "@swarm-tips/client/shillbot"
@@ -5833,6 +5844,15 @@ mod structured_result_tests {
             manifest["idls"]["coordination_game"],
             "@swarm-tips/client/idl/coordination-game"
         );
+        assert_eq!(
+            manifest["subpaths"]["coordination_game_solana"],
+            "@swarm-tips/client/coordination-game/solana"
+        );
+        assert_eq!(
+            manifest["subpaths"]["shillbot_api"],
+            "@swarm-tips/client/shillbot/api"
+        );
+        assert_eq!(manifest["subpaths"]["swarm"], "@swarm-tips/client/swarm");
     }
 }
 
