@@ -1,4 +1,5 @@
-import { AnchorProvider, BN, Program } from "@coral-xyz/anchor";
+import { AnchorProvider, Program } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { Buffer } from "buffer";
 import { OracleJob } from "@switchboard-xyz/common/protos";
 import {
