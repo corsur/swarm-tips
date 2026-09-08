@@ -45,6 +45,7 @@ jobs:
     outputs:
       program: ${{ steps.filter.outputs.program }}
     steps:
+      - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -80,6 +81,7 @@ jobs:
           cache: 'pnpm'
 
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @swarm-tips/client build
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
 

@@ -6,7 +6,7 @@ import coordinationGameIdl from "./idl/coordination_game.json" with { type: "jso
 import shillbotIdl from "./idl/shillbot.json" with { type: "json" };
 
 const anchorRuntime =
-  (anchor as typeof anchor & { default?: typeof anchor }).default ?? anchor;
+  (Reflect.get(anchor, "default") as typeof anchor | undefined) ?? anchor;
 const { BN, BorshInstructionCoder } = anchorRuntime;
 
 export type { CoordinationGame } from "./generated/coordination_game.js";

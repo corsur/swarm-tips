@@ -11,8 +11,7 @@ on:
     paths:
       - 'tests/harness/**'
       - 'tests/helpers/outcome-oracle.ts'
-      - 'sdk/outcome-oracle.ts'
-      - 'sdk/battery.ts'
+      - 'sdk/client/src/coordination-game/**'
       - 'tests/lean-artifacts.guard.mjs'
       - 'tests/fixtures/lean/**'
       - 'research/lean-bounties/**'
@@ -21,8 +20,7 @@ on:
     paths:
       - 'tests/harness/**'
       - 'tests/helpers/outcome-oracle.ts'
-      - 'sdk/outcome-oracle.ts'
-      - 'sdk/battery.ts'
+      - 'sdk/client/src/coordination-game/**'
       - 'tests/lean-artifacts.guard.mjs'
       - 'tests/fixtures/lean/**'
       - 'research/lean-bounties/**'
@@ -39,8 +37,9 @@ jobs:
           node-version: '20'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @swarm-tips/client build
       - name: Lint harness sources
-        run: npx prettier "tests/harness/**/*.ts" "sdk/outcome-oracle.ts" "sdk/task-outcome-oracle.ts" "sdk/battery.ts" --check
+        run: npx prettier "tests/harness/**/*.ts" "sdk/client/src/coordination-game/*.ts" --check
       - name: Run harness unit tests (no validator)
         run: npx ts-mocha -p ./tsconfig.json --exit "tests/harness/*.unit.test.ts"
 

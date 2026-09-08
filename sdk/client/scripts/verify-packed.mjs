@@ -51,6 +51,10 @@ run("node", [
     imports
   )}.map((specifier) => import(specifier))); await import("@swarm-tips/client/idl/shillbot", { with: { type: "json" } }); await import("@swarm-tips/client/idl/coordination-game", { with: { type: "json" } });`,
 ]);
+run("node", [
+  "--eval",
+  `for (const specifier of ${JSON.stringify(imports)}) require(specifier);`,
+]);
 
 const browserImports = {
   root: "@swarm-tips/client",
