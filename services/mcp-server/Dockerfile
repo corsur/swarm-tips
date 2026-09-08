@@ -21,7 +21,7 @@ RUN cargo test --release -p mcp-server -p listings-scraper -p shillbot-chain
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 curl && rm -rf /var/lib/apt/lists/*
-# Install Node.js 22 LTS for the tx-client Switchboard SDK subprocess
+# Install Node.js 22 LTS for the unified-client Switchboard subprocess
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -31,17 +31,15 @@ COPY --from=test /app/target/release/mcp-server /usr/local/bin/mcp-server
 # listings-scraper is invoked as a subprocess by mcp-server's
 # fetch_moltlaunch (Cloudflare-blocked upstream needing JA3 impersonation).
 COPY --from=test /app/target/release/listings-scraper /usr/local/bin/listings-scraper
-# Install the generated contract bindings, shared tx client, and thin TS wrapper
-# as one workspace so the server uses the same package graph as tests/publishing.
+# Install the unified client and thin Switchboard wrapper as one workspace so
+# the server uses the same package graph as tests and publishing.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml /home/appuser/
-COPY sdk/contracts /home/appuser/sdk/contracts
-COPY sdk/tx-client /home/appuser/sdk/tx-client
+COPY sdk/client /home/appuser/sdk/client
 COPY services/mcp-server/scripts /home/appuser/services/mcp-server/scripts
 RUN cd /home/appuser && pnpm install --frozen-lockfile \
-    && pnpm --filter @swarm-tips/contracts build \
-    && pnpm --filter @swarm-tips/tx-client build \
+    && pnpm --filter @swarm-tips/client build \
     && chown -R appuser:appuser /home/appuser
-ENV BUILD_VERIFY_SCRIPT=/home/appuser/services/mcp-server/scripts/build-verify-tx-client.ts
+ENV BUILD_VERIFY_SCRIPT=/home/appuser/services/mcp-server/scripts/build-verify-client.ts
 USER appuser
 WORKDIR /home/appuser
 EXPOSE 8080

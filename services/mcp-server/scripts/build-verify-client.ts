@@ -44,7 +44,7 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   process.stderr.write(
-    `build-verify-tx failed: ${
+    `build-verify-client failed: ${
       error instanceof Error ? error.message : String(error)
     }\n`
   );

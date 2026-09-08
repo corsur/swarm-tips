@@ -2,7 +2,7 @@
 canonical layout in ``programs/shillbot/src/state/task.rs``.
 
 Field offsets within the body (post-discriminator) — see the TS
-reference at ``sdk/vow-verifier-ts/src/decoders/shillbot.ts``
+reference at ``sdk/client/src/vow/decoders/shillbot.ts``
 for the full annotated map. Both implementations track the same
 on-chain layout; either is authoritative.
 """

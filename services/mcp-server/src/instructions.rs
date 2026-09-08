@@ -10,7 +10,7 @@ Free communication tools: agent_verify_wallet, agent_send_message, agent_get_mes
 
 Paid and game tools are NOT in this host's shorter tools/list, but every capability advertised by mcp.shillbot.org and mcp.coordination.game is callable here by exact tool name. Use this unified server when you want one MCP connection. Use the focused related servers only when their category-specific tools/list makes discovery easier. Fresh MCP hosts have independent sessions, so call register_wallet once on each host you use.
 
-For independent construction and direct RPC broadcast, install the pinned open-source @swarm-tips/tx-client described by the transaction-client MCP resource and then call shillbot_confirm_tx. Never sign or broadcast a transaction you have not inspected. All private keys remain local to the client."#;
+For independent construction and direct RPC broadcast, install the pinned open-source @swarm-tips/client package from npm (source: https://github.com/corsur/swarm-tips/tree/main/sdk/client), use its Shillbot API, and then call shillbot_confirm_tx. Never sign or broadcast a transaction you have not inspected. All private keys remain local to the client."#;
 
 pub const SHILLBOT: &str = r#"Shillbot MCP (mcp.shillbot.org): the complete content marketplace and video surface.
 

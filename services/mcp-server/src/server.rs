@@ -1774,7 +1774,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_sponsor_tx",
-        description = "[EARN][STATE] Two-step gas sponsorship for a locally constructed claim or submit transaction. First omit unsigned_transaction to receive the sponsor fee payer and any required payout route (include content_id for submit). Build locally with @swarm-tips/tx-client, then call again with unsigned_transaction: the server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
+        description = "[EARN][STATE] Two-step gas sponsorship for a locally constructed claim or submit transaction. First omit unsigned_transaction to receive the sponsor fee payer and any required payout route (include content_id for submit). Build locally with @swarm-tips/client, then call again with unsigned_transaction: the server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
         annotations(destructive_hint = false, idempotent_hint = false)
     )]
     async fn shillbot_sponsor_tx(
@@ -4108,12 +4108,8 @@ impl ServerHandler for SwarmTipsMcp {
                 None,
             ));
         }
-        let (text, mime) = match request.uri.as_str() {
-            TX_CLIENT_MANIFEST_URI => (TX_CLIENT_MANIFEST, "application/json"),
-            TX_INTENT_SCHEMA_URI => (TX_INTENT_SCHEMA, "application/schema+json"),
-            TX_CLIENT_GUIDE_URI => (TX_CLIENT_GUIDE, "text/markdown"),
-            _ => return Err(McpError::invalid_params("unknown resource URI", None)),
-        };
+        let (text, mime) = resource_payload(request.uri.as_str())
+            .ok_or_else(|| McpError::invalid_params("unknown resource URI", None))?;
         Ok(ReadResourceResult::new(vec![ResourceContents::text(
             text,
             request.uri,
@@ -4126,38 +4122,44 @@ impl ServerHandler for SwarmTipsMcp {
     }
 }
 
-const TX_CLIENT_MANIFEST_URI: &str = "https://swarm.tips/.well-known/transaction-client.json";
+const CLIENT_MANIFEST_URI: &str = "https://swarm.tips/.well-known/client.json";
+const LEGACY_TX_CLIENT_MANIFEST_URI: &str =
+    "https://swarm.tips/.well-known/transaction-client.json";
 const TX_INTENT_SCHEMA_URI: &str = "https://swarm.tips/schemas/shillbot-transaction-intent-v1.json";
 const TX_CLIENT_GUIDE_URI: &str = "https://swarm.tips/docs/mcp/local-transactions";
-const TX_CLIENT_MANIFEST: &str = r#"{
-  "name": "@swarm-tips/tx-client",
-  "version": "0.1.2",
-  "registry": "https://www.npmjs.com/package/@swarm-tips/tx-client/v/0.1.2",
-  "integrity": "sha512-afAzWubL3x/cF6eldof2cYYEwCFLBr0zp0tI6O2WU9wDt1CRDE2GRX8U5pXUg6AnjUnwTwdCq8NEJl++Y4zHaA==",
-  "shasum": "b24949ef147c3b28d07aeba10c937302d6de44bb",
-  "source_commit": "f789358a6c8db3451ce17b743ac4635129347dd5",
-  "source": "https://github.com/corsur/swarm-tips/tree/f789358a6c8db3451ce17b743ac4635129347dd5/sdk/tx-client",
-  "sbom": "https://unpkg.com/@swarm-tips/tx-client@0.1.2/SBOM.spdx.json",
-  "contracts": {
-    "name": "@swarm-tips/contracts",
-    "version": "0.1.0",
-    "registry": "https://www.npmjs.com/package/@swarm-tips/contracts/v/0.1.0",
-    "integrity": "sha512-NCRJth4K3OTrnN2frp84G4DkHtvdOay7JTbcXK8amhiF/4B8WiXVaB1i7VKICnfZ6CQlp9em5jrfvCZhqNxzmg==",
-    "shasum": "e9f044bb857fb5ae706f1a4bbece3b15b7042181",
-    "source": "https://github.com/corsur/swarm-tips/tree/f789358a6c8db3451ce17b743ac4635129347dd5/sdk/contracts",
-    "sbom": "https://unpkg.com/@swarm-tips/contracts@0.1.0/SBOM.spdx.json"
+const CLIENT_MANIFEST: &str = r#"{
+  "schema": "swarm.client-manifest/v1",
+  "name": "@swarm-tips/client",
+  "version": "0.1.0",
+  "registry": "https://www.npmjs.com/package/@swarm-tips/client/v/0.1.0",
+  "integrity": "sha512-/XI/hZMKunIc4x6zzwoPwc/yyL+IVT/mXxpdCevPguFvWf8rB9kv9ghdiVfn/vuU8ULP4ogr5q44SjnxISAA9Q==",
+  "shasum": "21fb6f947b49ead4e858cb78e26d271ae5a1f9e3",
+  "source_commit": "08cfa644ad50c4e94cc0489ce85ccddcd4665115",
+  "source": "https://github.com/corsur/swarm-tips/tree/08cfa644ad50c4e94cc0489ce85ccddcd4665115/sdk/client",
+  "sbom": "https://unpkg.com/@swarm-tips/client@0.1.0/SBOM.spdx.json",
+  "subpaths": {
+    "shillbot": "@swarm-tips/client/shillbot",
+    "coordination_game": "@swarm-tips/client/coordination-game",
+    "evm": "@swarm-tips/client/evm",
+    "evm_testing": "@swarm-tips/client/evm/testing",
+    "inbox": "@swarm-tips/client/inbox",
+    "vow": "@swarm-tips/client/vow"
   },
-  "schema": "swarm.shillbot.transaction-intent/v1",
+  "idls": {
+    "shillbot": "@swarm-tips/client/idl/shillbot",
+    "coordination_game": "@swarm-tips/client/idl/coordination-game"
+  },
+  "transaction_intent_schema": "https://swarm.tips/schemas/shillbot-transaction-intent-v1.json",
   "security": "Construct and inspect locally; never send a private key to an MCP server."
 }"#;
 const TX_INTENT_SCHEMA: &str =
     include_str!("../../../docs/specs/shillbot-transaction-intent-v1.schema.json");
 const TX_CLIENT_GUIDE: &str = r#"# Local Shillbot transactions
 
-Install `@swarm-tips/tx-client` from public npm and inspect its source at
-https://github.com/corsur/swarm-tips/tree/main/sdk/tx-client.
-It depends on and re-exports the generated IDLs, Anchor types, program IDs,
-PDA helpers, and ABI-driven instruction encoder from `@swarm-tips/contracts`.
+Install `@swarm-tips/client` from public npm and inspect its source at
+https://github.com/corsur/swarm-tips/tree/main/sdk/client. Import Shillbot
+builders from `@swarm-tips/client/shillbot`; the same package also contains the
+canonical Shillbot and Coordination Game IDLs and generated types.
 
 Preferred flow: obtain the structured transaction intent, construct and inspect
 the transaction locally, sign with your local wallet, broadcast through your
@@ -4166,12 +4168,23 @@ inspect and sign the server-prepared `unsigned_tx`, then call `shillbot_submit_t
 Never provide a private key to Swarm Tips or execute source code supplied dynamically.
 "#;
 
+fn resource_payload(uri: &str) -> Option<(&'static str, &'static str)> {
+    match uri {
+        CLIENT_MANIFEST_URI | LEGACY_TX_CLIENT_MANIFEST_URI => {
+            Some((CLIENT_MANIFEST, "application/json"))
+        }
+        TX_INTENT_SCHEMA_URI => Some((TX_INTENT_SCHEMA, "application/schema+json")),
+        TX_CLIENT_GUIDE_URI => Some((TX_CLIENT_GUIDE, "text/markdown")),
+        _ => None,
+    }
+}
+
 fn transaction_resources() -> Vec<Resource> {
     [
         (
-            TX_CLIENT_MANIFEST_URI,
-            "transaction-client",
-            "Pinned open-source transaction client",
+            CLIENT_MANIFEST_URI,
+            "swarm-client",
+            "Pinned open-source unified Swarm client",
             "application/json",
         ),
         (
@@ -5075,7 +5088,7 @@ fn parse_curator_tier(
     Ok(result)
 }
 
-/// Resolve the tx-client Switchboard wrapper path. In Docker the script lives at
+/// Resolve the unified-client Switchboard wrapper path. In Docker the script lives at
 /// `~/scripts/`; locally it sits next to `Cargo.toml`. The `BUILD_VERIFY_SCRIPT`
 /// env var lets tests / one-offs override the resolution.
 fn resolve_build_verify_script_path() -> std::path::PathBuf {
@@ -5084,11 +5097,11 @@ fn resolve_build_verify_script_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("scripts")
-                .join("build-verify-tx-client.ts")
+                .join("build-verify-client.ts")
         })
 }
 
-/// Spawn the tx-client wrapper with the verification-data flags and return
+/// Spawn the unified-client wrapper with the verification-data flags and return
 /// the unsigned transaction (base64) the script prints to stdout. Surfaces
 /// spawn-failure, non-zero-exit, and empty-output as separate MCP errors so
 /// the agent gets actionable diagnostics.
@@ -5130,7 +5143,7 @@ async fn run_build_verify_tx(
         .output()
         .await
         .map_err(|e| {
-            tracing::error!(service = "mcp-server", error = %e, "failed to spawn tx-client verify wrapper");
+            tracing::error!(service = "mcp-server", error = %e, "failed to spawn unified-client verify wrapper");
             McpError::internal_error(
                 "verify-tx builder unavailable — details logged server-side".to_string(),
                 None,
@@ -5141,7 +5154,7 @@ async fn run_build_verify_tx(
         // Raw subprocess stderr stays in the server log; forwarding it to the
         // caller leaked file paths and internal stack frames to agents.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!(service = "mcp-server", stderr = %stderr, "tx-client verify wrapper failed");
+        tracing::error!(service = "mcp-server", stderr = %stderr, "unified-client verify wrapper failed");
         return Err(McpError::internal_error(
             "verify-tx build failed — details logged server-side; retry, and report the task_id if it persists".to_string(),
             None,
@@ -5735,19 +5748,16 @@ fn shillbot_transaction_result(
     })?;
     value["risk"] = serde_json::Value::String(inspection.risk.clone());
     value["local_client"] = serde_json::json!({
-        "package": "@swarm-tips/tx-client",
-        "version": "0.1.2",
-        "contracts": {
-            "package": "@swarm-tips/contracts",
-            "version": "0.1.0",
-        },
-        "resource_uri": TX_CLIENT_MANIFEST_URI,
+        "package": "@swarm-tips/client",
+        "version": "0.1.0",
+        "import": "@swarm-tips/client/shillbot",
+        "resource_uri": CLIENT_MANIFEST_URI,
     });
     let mut result = text_result(&value);
     result.content.push(Content::resource_link(
-        RawResource::new(TX_CLIENT_MANIFEST_URI, "transaction-client")
-            .with_title("Open-source Shillbot transaction client")
-            .with_description("Pinned npm and GitHub metadata for independent construction, inspection, and broadcasting")
+        RawResource::new(CLIENT_MANIFEST_URI, "swarm-client")
+            .with_title("Open-source Swarm client")
+            .with_description("Pinned npm and GitHub metadata for the unified client, including independent Shillbot transaction construction, inspection, and broadcasting")
             .with_mime_type("application/json"),
     ));
     Ok(result)
@@ -5755,7 +5765,10 @@ fn shillbot_transaction_result(
 
 #[cfg(test)]
 mod structured_result_tests {
-    use super::{text_result, transaction_resources, TX_CLIENT_MANIFEST, TX_CLIENT_MANIFEST_URI};
+    use super::{
+        resource_payload, text_result, transaction_resources, CLIENT_MANIFEST, CLIENT_MANIFEST_URI,
+        LEGACY_TX_CLIENT_MANIFEST_URI,
+    };
 
     #[test]
     fn objects_are_returned_as_standard_structured_content() {
@@ -5785,17 +5798,24 @@ mod structured_result_tests {
     fn local_transaction_resources_are_stable_and_public() {
         let resources = transaction_resources();
         assert_eq!(resources.len(), 3);
-        assert_eq!(resources[0].raw.uri, TX_CLIENT_MANIFEST_URI);
-        let manifest: serde_json::Value = serde_json::from_str(TX_CLIENT_MANIFEST).unwrap();
-        assert_eq!(manifest["name"], "@swarm-tips/tx-client");
-        assert_eq!(manifest["version"], "0.1.2");
+        assert_eq!(resources[0].raw.uri, CLIENT_MANIFEST_URI);
+        assert!(resources
+            .iter()
+            .all(|resource| resource.raw.uri != LEGACY_TX_CLIENT_MANIFEST_URI));
         assert_eq!(
-            manifest["integrity"],
-            "sha512-afAzWubL3x/cF6eldof2cYYEwCFLBr0zp0tI6O2WU9wDt1CRDE2GRX8U5pXUg6AnjUnwTwdCq8NEJl++Y4zHaA=="
+            resource_payload(LEGACY_TX_CLIENT_MANIFEST_URI),
+            Some((CLIENT_MANIFEST, "application/json"))
         );
+        let manifest: serde_json::Value = serde_json::from_str(CLIENT_MANIFEST).unwrap();
+        assert_eq!(manifest["name"], "@swarm-tips/client");
+        assert_eq!(manifest["version"], "0.1.0");
+        assert!(manifest["integrity"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha512-"));
         assert_eq!(
             manifest["source_commit"],
-            "f789358a6c8db3451ce17b743ac4635129347dd5"
+            "08cfa644ad50c4e94cc0489ce85ccddcd4665115"
         );
         assert!(manifest["source"]
             .as_str()
@@ -5805,16 +5825,14 @@ mod structured_result_tests {
             .as_str()
             .unwrap()
             .ends_with("SBOM.spdx.json"));
-        assert_eq!(manifest["contracts"]["name"], "@swarm-tips/contracts");
-        assert_eq!(manifest["contracts"]["version"], "0.1.0");
         assert_eq!(
-            manifest["contracts"]["integrity"],
-            "sha512-NCRJth4K3OTrnN2frp84G4DkHtvdOay7JTbcXK8amhiF/4B8WiXVaB1i7VKICnfZ6CQlp9em5jrfvCZhqNxzmg=="
+            manifest["subpaths"]["shillbot"],
+            "@swarm-tips/client/shillbot"
         );
-        assert!(manifest["contracts"]["source"]
-            .as_str()
-            .unwrap()
-            .contains(manifest["source_commit"].as_str().unwrap()));
+        assert_eq!(
+            manifest["idls"]["coordination_game"],
+            "@swarm-tips/client/idl/coordination-game"
+        );
     }
 }
 

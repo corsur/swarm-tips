@@ -1466,7 +1466,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN][STATE] Two-step gas sponsorship for a locally constructed claim or submit transaction. First omit unsigned_transaction to receive the sponsor fee payer and any required payout route (include content_id for submit). Build locally with @swarm-tips/tx-client, then call again with unsigned_transaction: the server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
+    "description": "[EARN][STATE] Two-step gas sponsorship for a locally constructed claim or submit transaction. First omit unsigned_transaction to receive the sponsor fee payer and any required payout route (include content_id for submit). Build locally with @swarm-tips/client, then call again with unsigned_transaction: the server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {

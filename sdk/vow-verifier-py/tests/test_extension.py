@@ -1,6 +1,6 @@
 """extension-registry ``Extension`` decoder tests.
 
-Mirrors ``sdk/vow-verifier-ts/__tests__/extension.test.ts``. The primary
+Mirrors ``sdk/client/src/vow/extension.test.ts``. The primary
 fixture is a REAL devnet Extension account (the permanent dogfood extension
 root CKsZ... -> agent B9H6..., PDA 4gAYnHAChB6PMroRa6Rv7C2MTkf86R2f6qqe6kbWwvSZ),
 captured verbatim as base64 — so this decodes a genuine on-chain record,

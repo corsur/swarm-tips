@@ -7,8 +7,6 @@ on:
       - 'sdk/client/**'
       - 'target/idl/**'
       - 'target/types/**'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
       - '.github/workflows/client-publish.yml'
   workflow_dispatch:
 
@@ -21,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -51,12 +51,18 @@ jobs:
         run: |
           package_version="$(node --input-type=module -e "import pkg from './sdk/client/package.json' with { type: 'json' }; process.stdout.write(pkg.version)")"
           package_tarball="$RUNNER_TEMP/swarm-client/swarm-tips-client-${package_version}.tgz"
-          if published_git_head="$(npm view "@swarm-tips/client@${package_version}" gitHead 2>/dev/null)"; then
-            if [ "$published_git_head" != "$GITHUB_SHA" ]; then
-              echo "@swarm-tips/client@${package_version} already belongs to ${published_git_head}, not ${GITHUB_SHA}"
+          if npm view "@swarm-tips/client@${package_version}" version >/dev/null 2>&1; then
+            attestation_url="$(npm view "@swarm-tips/client@${package_version}" dist.attestations.url)"
+            published_git_head="$(node --input-type=module -e "const document = await fetch(process.argv[1]).then((response) => response.json()); for (const attestation of document.attestations ?? []) { const statement = JSON.parse(Buffer.from(attestation.bundle?.dsseEnvelope?.payload ?? '', 'base64').toString('utf8')); const dependencies = statement.predicate?.buildDefinition?.resolvedDependencies ?? []; const commit = dependencies.find((dependency) => dependency.digest?.gitCommit)?.digest?.gitCommit; if (commit) { process.stdout.write(commit); break; } }" "$attestation_url")"
+            if [ -z "$published_git_head" ]; then
+              echo "Could not resolve the published source commit from npm provenance"
               exit 1
             fi
-            echo "@swarm-tips/client@${package_version} already published from this commit"
+            if ! git diff --quiet "$published_git_head" -- sdk/client; then
+              echo "@swarm-tips/client@${package_version} already exists from ${published_git_head}, but sdk/client has changed; bump the package version"
+              exit 1
+            fi
+            echo "@swarm-tips/client@${package_version} already published from unchanged source at ${published_git_head}"
           else
             npm publish "$package_tarball" --access public --provenance
           fi

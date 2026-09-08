@@ -97,8 +97,8 @@ jobs:
           anchor build -p extension-registry
           anchor build -p extension-credit
 
-      - name: Check committed public contract bindings
-        run: node sdk/contracts/scripts/sync-generated.mjs --check
+      - name: Check committed unified-client bindings
+        run: pnpm --filter @swarm-tips/client check:generated
 
       - run: pnpm run lint
 

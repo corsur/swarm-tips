@@ -8,7 +8,7 @@ on:
       - 'crates/game-api-client/**'
       - 'crates/game-chain/**'
       - 'crates/shillbot-chain/**'
-      - 'sdk/tx-client/**'
+      - 'sdk/client/**'
       - 'docs/specs/shillbot-transaction-intent-v1.schema.json'
       # The MCP server builds cross-chain calldata from these crates, so a
       # registry address change or chain-seam edit must redeploy it.
@@ -24,6 +24,7 @@ on:
       - 'crates/chain-registry/**'
       - 'crates/chain-core/**'
       - 'crates/evm-chain/**'
+      - 'sdk/client/**'
   workflow_dispatch:
 
 # Only the newest commit for a branch may deploy. Without this, a slower older

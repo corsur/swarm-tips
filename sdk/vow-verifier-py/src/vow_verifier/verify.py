@@ -1,6 +1,6 @@
 """VOW v1 verification protocol — Python reference.
 
-Mirrors ``sdk/vow-verifier-ts/src/verify.ts``. Steps split:
+Mirrors ``sdk/client/src/vow/verify.ts``. Steps split:
 
 * ``verify_v1_schema`` — pure (steps 1, 6).
 * ``verify_v1_on_chain`` — touches RPC (steps 2-5, 7).

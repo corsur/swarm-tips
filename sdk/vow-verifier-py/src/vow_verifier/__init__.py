@@ -1,7 +1,7 @@
 """VOW v1 reference verifier (Python).
 
 Public API mirrors the TypeScript reference at
-``sdk/vow-verifier-ts``. Spec lives at
+``sdk/client/src/vow``. Spec lives at
 ``docs/specs/vow-v1.md``.
 """
 

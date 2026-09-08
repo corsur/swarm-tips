@@ -101,7 +101,7 @@ jobs:
           anchor build -p extension-credit
 
       - name: Check committed public contract bindings
-        run: node sdk/contracts/scripts/sync-generated.mjs --check
+        run: pnpm --filter @swarm-tips/client check:generated
 
       - name: Lint coordination-game tests
         run: npx prettier "tests/coordination-game.ts" "tests/xchain-contested.ts" "tests/game-harness.ts" "tests/timeout-harness.ts" --check
@@ -146,8 +146,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'
     needs: test
     runs-on: ubuntu-latest
-    permissions:
-      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -170,7 +168,6 @@ jobs:
         with:
           node-version: '20'
           cache: 'pnpm'
-          registry-url: 'https://npm.pkg.github.com'
 
       - run: pnpm install --frozen-lockfile
 
@@ -270,67 +267,6 @@ jobs:
             --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi
         env:
           EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
-
-      - name: Publish SDK to GitHub Packages
-        run: |
-          cp target/types/coordination_game.ts sdk/coordination_game.ts
-          node -e "
-            const idl = require('./target/idl/coordination_game.json');
-            const fs = require('fs');
-            fs.appendFileSync('sdk/coordination_game.ts',
-              '\nexport const IDL: CoordinationGame = ' + JSON.stringify(idl, null, 2) + ' as unknown as CoordinationGame;\n'
-            );
-          "
-          cp target/types/shillbot.ts sdk/shillbot.ts
-          node -e "
-            const idl = require('./target/idl/shillbot.json');
-            const fs = require('fs');
-            fs.appendFileSync('sdk/shillbot.ts',
-              '\nexport const IDL: Shillbot = ' + JSON.stringify(idl, null, 2) + ' as unknown as Shillbot;\n'
-            );
-          "
-          # Compile TypeScript to JavaScript for Node.js consumers
-          cd sdk
-          npx tsc coordination_game.ts --outDir . --declaration --module nodenext --moduleResolution nodenext --target es2020 --esModuleInterop
-          # Use ${{ github.run_number }} for the patch version. The previous
-          # `git rev-list --count HEAD` formula always returned 1 because
-          # actions/checkout's default fetch-depth is 1 (shallow), so every
-          # push produced version 0.1.1 and the second publish onward hit
-          # `npm error 409 Cannot publish over existing version`. The first
-          # publish landed 2026-04-02; every CG run since has been red on
-          # this single step. github.run_number is monotonic across all runs
-          # of this workflow, guaranteed unique, no shallow-clone gotcha.
-          npm version 0.1.${{ github.run_number }} --no-git-tag-version
-          npm publish --tag latest
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
-
-      # Publishing was never the broken half. The frontend's lockfile pinned
-      # 0.1.1 — the FIRST publish, 2026-04-02 — and nothing moved it, so four
-      # months of program changes never reached the app: 22 instructions shipped
-      # against the program's 39. It caused no outage, which is exactly why it
-      # went unnoticed; the cost was a silently impossible feature. The IDL's
-      # `depositStake` has no `global_config` account, so the client cannot pass
-      # one, so the Solana stake cannot be raised to the $5 anchor. That was
-      # diagnosed for most of a day as a program-side constraint. It was a stale
-      # npm package.
-      #
-      # This closes the loop: coordination-app's sdk-bump.yml moves the frontend
-      # onto the version just published, gates it on tsc + vitest, and pushes,
-      # which triggers the frontend deploy.
-      - name: Propagate the SDK to coordination-app
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT_PACKAGES }}
-        run: |
-          set -euo pipefail
-          # Loud on failure, deliberately. A published-but-unpropagated SDK is
-          # the precise state that hid for four months, so it must not be a
-          # notice the reader scrolls past — the deploy above has already
-          # succeeded, and this red means "shipped, but the app has not moved".
-          gh api "repos/corsur/coordination-app/dispatches" \
-            -f event_type=sdk-published \
-            -f "client_payload[version]=0.1.${{ github.run_number }}" \
-            || { echo "::error::SDK 0.1.${{ github.run_number }} published but the coordination-app dispatch FAILED — the frontend is now behind the deployed program. Check that GH_PAT_PACKAGES still carries repo scope for corsur/coordination-app, then re-run sdk-bump.yml manually with that version."; exit 1; }
 
   deploy-mainnet:
     # Auto-upgrades mainnet on every merge to main, plus manual dispatch.

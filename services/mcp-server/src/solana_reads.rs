@@ -12,7 +12,7 @@
 //! wrong address that happened to host a different account type,
 //! length matching alone could let parsing proceed against garbage.
 //! The discriminator check (`sha256("account:<Name>")[0..8]`,
-//! mirroring `sdk/vow-verifier-ts/src/discriminator.ts`)
+//! mirroring `sdk/client/src/vow/discriminator.ts`)
 //! fails fast with a clear error instead. See
 //! `fetch_account_data`.
 

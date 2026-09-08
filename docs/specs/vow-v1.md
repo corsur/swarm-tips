@@ -3,7 +3,7 @@
 **Status:** RFC, draft 2 · 2026-07-10 (draft 1: 2026-05-02). v1 is
 wire-format-stable and Shillbot's emitter ships it live.
 **Editor:** swarm.tips DAO (`corsur/swarm-tips`)
-**Reference verifiers:** `sdk/vow-verifier-ts` and
+**Reference verifiers:** `sdk/client/src/vow` and
 `sdk/vow-verifier-py`.
 
 > **Naming history.** This standard was drafted as **AAS — Agent
@@ -253,7 +253,7 @@ A verifier claims VOW v1 conformance by:
    not fail).
 3. Returning structured verdicts with the failure-reason taxonomy in §4.
 
-The reference verifiers in `sdk/vow-verifier-ts` (TypeScript) and
+The reference verifiers in `sdk/client/src/vow` (TypeScript) and
 `sdk/vow-verifier-py` (Python) are non-normative implementations.
 If they disagree with this spec, please file an issue: either the
 spec is unclear (we'll clarify in a draft revision) or the verifier
@@ -329,5 +329,5 @@ paths name the repo explicitly.
   (`programs/shillbot/src/state/global.rs`). An earlier compile-time lock at
   `constants.rs::SWITCHBOARD_FEED` was reverted 2026-05-08; re-locking is a
   tracked follow-up.
-- Reference verifiers (shipped): `sdk/vow-verifier-ts` (npm
-  `@swarm-tips/vow-verifier`) and `sdk/vow-verifier-py` (PyPI `vow-verifier`)
+- Reference verifiers (shipped): `sdk/client/src/vow` (npm
+  `@swarm-tips/client/vow`) and `sdk/vow-verifier-py` (PyPI `vow-verifier`)
