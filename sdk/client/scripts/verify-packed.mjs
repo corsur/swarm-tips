@@ -38,11 +38,16 @@ run("npm", [
 const imports = [
   "@swarm-tips/client",
   "@swarm-tips/client/shillbot",
+  "@swarm-tips/client/shillbot/api",
   "@swarm-tips/client/coordination-game",
+  "@swarm-tips/client/coordination-game/solana",
+  "@swarm-tips/client/coordination-game/evm",
+  "@swarm-tips/client/coordination-game/api",
   "@swarm-tips/client/evm",
   "@swarm-tips/client/evm/testing",
   "@swarm-tips/client/inbox",
   "@swarm-tips/client/vow",
+  "@swarm-tips/client/swarm",
 ];
 run("node", [
   "--input-type=module",
@@ -60,10 +65,15 @@ const browserImports = {
   root: "@swarm-tips/client",
   shillbot: "@swarm-tips/client/shillbot",
   coordination: "@swarm-tips/client/coordination-game",
+  coordinationSolana: "@swarm-tips/client/coordination-game/solana",
+  coordinationEvm: "@swarm-tips/client/coordination-game/evm",
+  coordinationApi: "@swarm-tips/client/coordination-game/api",
   evm: "@swarm-tips/client/evm",
   evmTesting: "@swarm-tips/client/evm/testing",
   inbox: "@swarm-tips/client/inbox",
   vow: "@swarm-tips/client/vow",
+  shillbotApi: "@swarm-tips/client/shillbot/api",
+  swarm: "@swarm-tips/client/swarm",
 };
 mkdirSync(resolve(fixture, "browser"));
 for (const [name, specifier] of Object.entries(browserImports)) {
@@ -74,6 +84,7 @@ for (const [name, specifier] of Object.entries(browserImports)) {
     "--bundle",
     "--platform=browser",
     "--format=esm",
+    "--define:Buffer=undefined",
     `--outfile=${resolve(fixture, "browser", `${name}.js`)}`,
   ];
   run(resolve(fixture, "node_modules", ".bin", "esbuild"), args);

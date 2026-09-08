@@ -4,7 +4,12 @@ One typed package for Swarm Tips client-side integrations. The root export is
 deliberately lightweight; import only the capability you need:
 
 - `@swarm-tips/client/shillbot`
+- `@swarm-tips/client/shillbot/api`
 - `@swarm-tips/client/coordination-game`
+- `@swarm-tips/client/coordination-game/solana`
+- `@swarm-tips/client/coordination-game/evm`
+- `@swarm-tips/client/coordination-game/api`
+- `@swarm-tips/client/swarm`
 - `@swarm-tips/client/evm`
 - `@swarm-tips/client/evm/testing` (test-only helpers)
 - `@swarm-tips/client/inbox`

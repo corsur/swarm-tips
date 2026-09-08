@@ -1,6 +1,6 @@
 {
   "name": "@swarm-tips/client",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Typed browser and Node.js clients for Swarm Tips, Shillbot, and Coordination Game",
   "type": "module",
   "main": "dist/index.js",
@@ -17,10 +17,35 @@
       "import": "./dist/shillbot/index.js",
       "require": "./dist/shillbot/index.js"
     },
+    "./shillbot/api": {
+      "types": "./dist/shillbot/api.d.ts",
+      "import": "./dist/shillbot/api.js",
+      "require": "./dist/shillbot/api.js"
+    },
     "./coordination-game": {
       "types": "./dist/coordination-game/index.d.ts",
       "import": "./dist/coordination-game/index.js",
       "require": "./dist/coordination-game/index.js"
+    },
+    "./coordination-game/solana": {
+      "types": "./dist/coordination-game/solana.d.ts",
+      "import": "./dist/coordination-game/solana.js",
+      "require": "./dist/coordination-game/solana.js"
+    },
+    "./coordination-game/evm": {
+      "types": "./dist/coordination-game/evm/index.d.ts",
+      "import": "./dist/coordination-game/evm/index.js",
+      "require": "./dist/coordination-game/evm/index.js"
+    },
+    "./coordination-game/api": {
+      "types": "./dist/coordination-game/api.d.ts",
+      "import": "./dist/coordination-game/api.js",
+      "require": "./dist/coordination-game/api.js"
+    },
+    "./swarm": {
+      "types": "./dist/swarm/index.d.ts",
+      "import": "./dist/swarm/index.js",
+      "require": "./dist/swarm/index.js"
     },
     "./evm": {
       "types": "./dist/evm/index.d.ts",
