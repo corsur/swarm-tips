@@ -58,7 +58,7 @@ jobs:
               echo "Could not resolve the published source commit from npm provenance"
               exit 1
             fi
-            if ! git diff --quiet "$published_git_head" -- sdk/client; then
+            if ! git diff --quiet "$published_git_head" -- sdk/client ":(exclude)sdk/client/src/**/*.test.ts"; then
               echo "@swarm-tips/client@${package_version} already exists from ${published_git_head}, but sdk/client has changed; bump the package version"
               exit 1
             fi
