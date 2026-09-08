@@ -138,8 +138,17 @@ export function decodeTournamentStats(data: Uint8Array): {
   gameCount: number;
   prizeLamports: bigint;
 } {
-  const tournament = decodeTournament(data);
-  return { gameCount: Number(tournament.gameCount), prizeLamports: tournament.prizeLamports };
+  // Stats readers need only the two u64 fields through byte 80. Accept that
+  // prefix so lightweight RPC fixtures and partial account slices do not need
+  // the trailing `finalized` byte required by the full decoder.
+  if (data.length < 80) {
+    throw new RangeError(`Tournament stats data too short: ${data.length} bytes`);
+  }
+  const view = viewOf(data);
+  return {
+    prizeLamports: view.getBigUint64(64, true),
+    gameCount: Number(view.getBigUint64(72, true)),
+  };
 }
 
 export interface SolanaResumeGame {

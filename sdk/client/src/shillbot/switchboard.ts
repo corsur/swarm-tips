@@ -1,4 +1,4 @@
-import * as anchor from "@coral-xyz/anchor";
+import { AnchorProvider, BN, Program } from "@coral-xyz/anchor";
 import { Buffer } from "buffer";
 import { OracleJob } from "@switchboard-xyz/common/protos";
 import {
@@ -8,6 +8,7 @@ import {
   PublicKey,
   Secp256k1Program,
   SystemProgram,
+  type Transaction,
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
@@ -36,9 +37,6 @@ const SWITCHBOARD_PROGRAMS: Record<Network, PublicKey> = {
 
 const CROSSBAR_URL = "https://crossbar.switchboard.xyz";
 const SWITCHBOARD_GATEWAY_API_VERSION = "1.0.0";
-const anchorRuntime =
-  (anchor as typeof anchor & { default?: typeof anchor }).default ?? anchor;
-
 type SwitchboardFeedData = {
   feedHash: Uint8Array;
   queue: PublicKey;
@@ -215,14 +213,24 @@ export async function buildSwitchboardCrankAndVerify(
 ): Promise<VersionedTransaction> {
   const switchboardProgramId = SWITCHBOARD_PROGRAMS[request.network];
   const dummy = Keypair.generate();
-  const provider = new anchorRuntime.AnchorProvider(
+  const signDummy = async <T extends Transaction | VersionedTransaction>(transaction: T): Promise<T> => {
+    if ("partialSign" in transaction) transaction.partialSign(dummy);
+    else transaction.sign([dummy]);
+    return transaction;
+  };
+  const dummyWallet: ConstructorParameters<typeof AnchorProvider>[1] = {
+    publicKey: dummy.publicKey,
+    signTransaction: signDummy,
+    signAllTransactions: async (transactions) => Promise.all(transactions.map(signDummy)),
+  };
+  const provider = new AnchorProvider(
     request.connection,
-    new anchorRuntime.Wallet(dummy),
+    dummyWallet,
     { commitment: "confirmed" }
   );
-  const idl = await anchorRuntime.Program.fetchIdl(switchboardProgramId, provider);
+  const idl = await Program.fetchIdl(switchboardProgramId, provider);
   if (!idl) throw new Error("failed to fetch Switchboard IDL");
-  const program = new anchorRuntime.Program(idl, provider);
+  const program = new Program(idl, provider);
   const switchboardAccounts = program.account as unknown as {
     pullFeedAccountData: { fetch(pubkey: PublicKey): Promise<unknown> };
   };
@@ -277,9 +285,9 @@ export async function buildSwitchboardCrankAndVerify(
   );
   const submit = program.instruction.pullFeedSubmitResponseConsensus(
     {
-      slot: new anchorRuntime.BN(response.slot),
+      slot: new BN(response.slot),
       values: response.median_responses.map(
-        (median) => new anchorRuntime.BN(median.value)
+        (median) => new BN(median.value)
       ),
     },
     {

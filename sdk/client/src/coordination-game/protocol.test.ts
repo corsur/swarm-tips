@@ -3,6 +3,7 @@ import { Keypair } from "@solana/web3.js";
 import {
   decodeGlobalConfig,
   decodeTournament,
+  decodeTournamentStats,
   deriveSolanaResumeState,
   escrowPda,
   timeoutClaimableAtSlot,
@@ -46,5 +47,18 @@ describe("coordination-game protocol", () => {
     expect(timeoutClaimableAtSlot({ state: "active", activatedAtSlot: 10n, p1CommitSlot: 0n, p2CommitSlot: 0n, commitTimeoutSlots: 5n }, 15n)).toBe(true);
     expect(toGuessBit(1)).toBe(1);
     expect(() => toGuessBit(2)).toThrow(/Expected 0 or 1/);
+  });
+});
+
+describe("decodeTournamentStats", () => {
+  it("accepts the canonical 80-byte prefix without the full account tail", () => {
+    const bytes = new Uint8Array(80);
+    const view = new DataView(bytes.buffer);
+    view.setBigUint64(64, 1_375_000_000n, true);
+    view.setBigUint64(72, 79n, true);
+    expect(decodeTournamentStats(bytes)).toEqual({
+      prizeLamports: 1_375_000_000n,
+      gameCount: 79,
+    });
   });
 });

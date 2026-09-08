@@ -12,6 +12,8 @@ import {
   type WalletSignCallback,
 } from "./index.js";
 
+export type { Action } from "./index.js";
+
 export interface PreparedTransactionResponse {
   message?: string;
   task_id?: string;

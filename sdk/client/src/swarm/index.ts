@@ -116,7 +116,7 @@ export class SwarmClient {
   async toolCount(): Promise<number | null> {
     const headers = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
     try {
-      const init = await this.fetchImpl(`${this.baseUrl}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "swarm-client", version: "0.2.1" } } }) });
+      const init = await this.fetchImpl(`${this.baseUrl}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "swarm-client", version: "0.2.2" } } }) });
       if (!init.ok) return null;
       const session = init.headers.get("mcp-session-id");
       await init.text();
