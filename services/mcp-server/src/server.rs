@@ -4130,13 +4130,13 @@ const TX_CLIENT_GUIDE_URI: &str = "https://swarm.tips/docs/mcp/local-transaction
 const CLIENT_MANIFEST: &str = r#"{
   "schema": "swarm.client-manifest/v1",
   "name": "@swarm-tips/client",
-  "version": "0.1.0",
-  "registry": "https://www.npmjs.com/package/@swarm-tips/client/v/0.1.0",
-  "integrity": "sha512-/XI/hZMKunIc4x6zzwoPwc/yyL+IVT/mXxpdCevPguFvWf8rB9kv9ghdiVfn/vuU8ULP4ogr5q44SjnxISAA9Q==",
-  "shasum": "21fb6f947b49ead4e858cb78e26d271ae5a1f9e3",
-  "source_commit": "08cfa644ad50c4e94cc0489ce85ccddcd4665115",
-  "source": "https://github.com/corsur/swarm-tips/tree/08cfa644ad50c4e94cc0489ce85ccddcd4665115/sdk/client",
-  "sbom": "https://unpkg.com/@swarm-tips/client@0.1.0/SBOM.spdx.json",
+  "version": "0.1.1",
+  "registry": "https://www.npmjs.com/package/@swarm-tips/client/v/0.1.1",
+  "integrity": "sha512-VR9zx+obG7eNfPuCS49+fXYTtZjDVQeYc6aWb7p2FixFUltbrDoIZPEzVxuLTXe3JHswk7Nvfy/6mccemG+7sg==",
+  "shasum": "6e84c524a25f5c1986cc3073f3aff91abf9d7d30",
+  "source_commit": "725eb2bdaca74d8f20ee2983937b668321b48584",
+  "source": "https://github.com/corsur/swarm-tips/tree/725eb2bdaca74d8f20ee2983937b668321b48584/sdk/client",
+  "sbom": "https://unpkg.com/@swarm-tips/client@0.1.1/SBOM.spdx.json",
   "subpaths": {
     "shillbot": "@swarm-tips/client/shillbot",
     "coordination_game": "@swarm-tips/client/coordination-game",
@@ -5808,14 +5808,14 @@ mod structured_result_tests {
         );
         let manifest: serde_json::Value = serde_json::from_str(CLIENT_MANIFEST).unwrap();
         assert_eq!(manifest["name"], "@swarm-tips/client");
-        assert_eq!(manifest["version"], "0.1.0");
+        assert_eq!(manifest["version"], "0.1.1");
         assert!(manifest["integrity"]
             .as_str()
             .unwrap()
             .starts_with("sha512-"));
         assert_eq!(
             manifest["source_commit"],
-            "08cfa644ad50c4e94cc0489ce85ccddcd4665115"
+            "725eb2bdaca74d8f20ee2983937b668321b48584"
         );
         assert!(manifest["source"]
             .as_str()
