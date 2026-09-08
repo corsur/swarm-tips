@@ -16,11 +16,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'programs/extension-registry/**'
-      - 'programs/extension-credit/**'
-      - 'programs/shillbot/**'
-      - 'scripts/e2e/zero-funds-onboarding-devnet.ts'
-      - '.github/workflows/onboarding-e2e.yml'
+      - "programs/extension-registry/**"
+      - "programs/extension-credit/**"
+      - "programs/shillbot/**"
+      - "scripts/e2e/zero-funds-onboarding-devnet.ts"
+      - ".github/workflows/onboarding-e2e.yml"
   workflow_dispatch:
 
 concurrency:
@@ -60,9 +60,12 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'pnpm'
+          node-version: "20"
+          cache: "pnpm"
       - run: pnpm install --frozen-lockfile
+
+      - name: Build unified JavaScript client
+        run: pnpm --filter @swarm-tips/client build
 
       - name: Write root keypair (web-position root + fee payer)
         run: |
