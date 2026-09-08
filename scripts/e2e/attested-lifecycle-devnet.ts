@@ -42,7 +42,7 @@ import {
   deriveTaskOutcome,
   TaskOutcomeKind,
   MAX_SCORE,
-} from "../../sdk/task-outcome-oracle";
+} from "@swarm-tips/client/shillbot";
 
 const ESCROW = new BN(2_000_000); // 0.002 SOL
 const DEMO_WINDOW = 6; // seconds — shrunk global challenge window for the demo
