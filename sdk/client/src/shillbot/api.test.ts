@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import { buildCreate } from "./index.js";
-import { ShillbotApiClient, validatePreparedTransaction } from "./api.js";
+import { permittedPreparedProgramIds, ShillbotApiClient, validatePreparedTransaction } from "./api.js";
 
 describe("ShillbotApiClient", () => {
   it("injects auth and routes typed creator/earner endpoints", async () => {
@@ -11,6 +11,12 @@ describe("ShillbotApiClient", () => {
     const calls = fetch.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit]>;
     expect(calls[0][0]).toBe("https://shill.test/tasks/task%2Fa/approve?network=devnet");
     expect((calls[0][1].headers as Record<string, string>).Authorization).toBe("Bearer jwt");
+  });
+
+  it("allows only the network-specific Switchboard verification programs", () => {
+    expect(permittedPreparedProgramIds("verify", "devnet")).toContain("Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2");
+    expect(permittedPreparedProgramIds("verify", "devnet")).not.toContain("SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv");
+    expect(permittedPreparedProgramIds("claim", "devnet")).toEqual([]);
   });
 
   it("validates action, signer, task PDA, program set, and create amount before signing", () => {

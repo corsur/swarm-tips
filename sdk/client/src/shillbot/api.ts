@@ -1,5 +1,5 @@
 import { Buffer } from "buffer";
-import { ComputeBudgetProgram, Connection, PublicKey, SystemProgram, type BlockhashWithExpiryBlockHeight } from "@solana/web3.js";
+import { ComputeBudgetProgram, Connection, Secp256k1Program, SystemProgram, type BlockhashWithExpiryBlockHeight } from "@solana/web3.js";
 import { HttpClient, type HttpClientOptions } from "../http.js";
 import { SwarmClientError } from "../errors.js";
 import {
@@ -74,6 +74,20 @@ export interface PreparedTransactionExpectation {
   allowedProgramIds?: string[];
 }
 
+const SWITCHBOARD_PROGRAM_IDS = {
+  mainnet: "SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv",
+  devnet: "Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2",
+} as const;
+
+export function permittedPreparedProgramIds(
+  action: Action,
+  network: "mainnet" | "devnet",
+): string[] {
+  return action === "verify"
+    ? [SWITCHBOARD_PROGRAM_IDS[network], Secp256k1Program.programId.toBase58()]
+    : [];
+}
+
 function lifecycleName(action: Action): string {
   if (action === "create") return "create_task";
   if (action === "submit") return "submit_work";
@@ -116,6 +130,7 @@ export function validatePreparedTransaction(
     shillbotId,
     ComputeBudgetProgram.programId.toBase58(),
     SystemProgram.programId.toBase58(),
+    ...permittedPreparedProgramIds(expected.action, expected.network),
     ...(expected.allowedProgramIds ?? []),
   ]);
   const unrelated = inspected.instructions.find((instruction) => !alwaysAllowed.has(instruction.program_id));
@@ -140,7 +155,24 @@ export async function signBroadcastPreparedTransaction(input: {
   expected: PreparedTransactionExpectation;
   sign: WalletSignCallback;
   confirmation?: BlockhashWithExpiryBlockHeight;
+  timeoutMs?: number;
+  setTimeout?: typeof globalThis.setTimeout;
+  clearTimeout?: typeof globalThis.clearTimeout;
 }): Promise<string> {
   validatePreparedTransaction(input.transaction, input.expected);
-  return signAndBroadcast(input.connection, input.transaction, input.sign, input.confirmation);
+  const timeoutMs = input.timeoutMs ?? 60_000;
+  let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      signAndBroadcast(input.connection, input.transaction, input.sign, input.confirmation),
+      new Promise<never>((_, reject) => {
+        timeout = (input.setTimeout ?? globalThis.setTimeout)(
+          () => reject(new SwarmClientError({ code: "TIMEOUT", operation: "shillbot.signBroadcastPreparedTransaction", message: `Transaction did not confirm within ${timeoutMs}ms`, retryable: true })),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) (input.clearTimeout ?? globalThis.clearTimeout)(timeout);
+  }
 }

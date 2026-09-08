@@ -1,13 +1,14 @@
 import { AnchorProvider, BN, Program } from "@coral-xyz/anchor";
 import { Buffer } from "buffer";
+import bs58 from "bs58";
 import {
   Connection,
   Keypair,
   PublicKey,
   SystemProgram,
   Transaction,
+  TransactionInstruction,
   type Commitment,
-  type TransactionInstruction,
   type VersionedTransaction,
 } from "@solana/web3.js";
 import { COORDINATION_GAME_IDL, type CoordinationGame } from "../contracts/index.js";
@@ -22,6 +23,7 @@ import {
   playerProfilePda,
   playerSessionPda,
   tournamentPda,
+  u64LE,
   type GlobalConfigData,
   type TournamentData,
 } from "./protocol.js";
@@ -48,6 +50,16 @@ export interface CoordinationGameSolanaClientOptions {
 
 const SESSION_STORAGE_KEY = "coordination-session";
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+export const SESSION_FEE_HEADROOM_LAMPORTS = 10_000_000;
+
+export function sessionFundLamports(stakeLamports: bigint): number {
+  return Number(stakeLamports) + SESSION_FEE_HEADROOM_LAMPORTS;
+}
+
+export function sessionBalanceFloor(stakeLamports: bigint): number {
+  return Number(stakeLamports) + SESSION_FEE_HEADROOM_LAMPORTS / 2;
+}
 
 function walletForSession(session: Keypair): SolanaWalletSigner {
   return {
@@ -164,6 +176,53 @@ export class CoordinationGameSolanaClient {
   async buildCreatePlayerSessionInstruction(sessionPublicKey: PublicKey): Promise<TransactionInstruction> {
     const wallet = this.requireWallet();
     return this.program(wallet).methods.createPlayerSession().accountsPartial({ sessionKey: sessionPublicKey }).instruction();
+  }
+
+  async buildSessionSetupTransaction(input: {
+    sessionPublicKey: PublicKey;
+    lamports: number;
+    memoNonce?: string;
+  }): Promise<Transaction> {
+    const wallet = this.requireWallet();
+    const transaction = new Transaction().add(SystemProgram.transfer({
+      fromPubkey: wallet.publicKey,
+      toPubkey: input.sessionPublicKey,
+      lamports: input.lamports,
+    }));
+    if (input.memoNonce) {
+      transaction.add(new TransactionInstruction({
+        keys: [],
+        programId: MEMO_PROGRAM_ID,
+        data: Buffer.from(input.memoNonce, "utf8"),
+      }));
+    }
+    const authority = playerSessionPda(wallet.publicKey, input.sessionPublicKey)[0];
+    if ((await this.connection.getAccountInfo(authority)) === null) {
+      transaction.add(await this.buildCreatePlayerSessionInstruction(input.sessionPublicKey));
+    }
+    return transaction;
+  }
+
+  async waitForSignature(
+    signature: string,
+    options: { attempts?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+  ): Promise<void> {
+    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => globalThis.setTimeout(resolve, ms)));
+    const attempts = options.attempts ?? 6;
+    for (let index = 0; index < attempts; index += 1) {
+      await sleep(options.intervalMs ?? 1_500);
+      const status = await this.connection.getSignatureStatus(signature);
+      const confirmation = status.value?.confirmationStatus;
+      if (confirmation === "confirmed" || confirmation === "finalized") return;
+    }
+    throw new SwarmClientError({ code: "TIMEOUT", operation: "solana.waitForSignature", message: `transaction ${signature} did not confirm after ${attempts} polls`, retryable: true });
+  }
+
+  async fetchPlayerProfiles(tournamentId = this.tournamentId): Promise<Array<{ account: unknown }>> {
+    const profiles = await this.program().account.playerProfile.all([{
+      memcmp: { offset: 40, bytes: bs58.encode(u64LE(tournamentId)) },
+    }]);
+    return profiles as Array<{ account: unknown }>;
   }
 
   async depositStake(tournament: PublicKey, session?: Keypair | null): Promise<string> {
