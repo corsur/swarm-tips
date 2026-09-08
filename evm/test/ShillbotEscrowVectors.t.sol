@@ -6,7 +6,7 @@ import {PayoutReference} from "./helpers/PayoutReference.sol";
 
 /// @notice Cross-impl golden-vector parity for the Shillbot payout matrix.
 ///         Reads the SAME tests/fixtures/task-payout-vectors.json that the TS
-///         oracle (sdk/task-outcome-oracle.ts) generates and the Rust program
+///         oracle (@swarm-tips/client/shillbot) generates and the Rust program
 ///         test (scoring.rs::payout_vectors_match_compute_payment) verifies.
 ///
 ///         This re-derives payment/fee AND the full outcome distribution with

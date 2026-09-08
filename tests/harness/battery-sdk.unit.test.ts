@@ -1,4 +1,4 @@
-// Unit tests for the portable SDK battery (sdk/battery.ts) — pure, no chain.
+// Unit tests for the portable unified-client battery — pure, no chain.
 // Proves each path-independent check passes on a valid realized game and CATCHES
 // its violation. Run: npx ts-mocha -p ./tsconfig.json tests/harness/battery-sdk.unit.test.ts
 

@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn payout_vectors_match_compute_payment() {
         // The cross-language payout contract. The TS oracle
-        // (sdk/task-outcome-oracle.ts) generates this file; the Solidity mirror
+        // (@swarm-tips/client/shillbot) generates this file; the Solidity mirror
         // (evm/test/ShillbotEscrowVectors.t.sol) and this test read the SAME
         // bytes. If any implementation's payment/fee formula drifts, exactly one
         // side's test fails — they can never silently diverge. Regenerate
