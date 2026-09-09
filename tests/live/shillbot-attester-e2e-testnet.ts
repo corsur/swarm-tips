@@ -123,6 +123,7 @@ async function broadcast(conn: Connection, signedB64: string): Promise<string> {
 /** On-chain Task.state byte offset (layout pinned in shillbot-attester/solana.rs). */
 const TASK_STATE_OFFSET = 80;
 const STATE_SUBMITTED = 2;
+const STATE_VERIFIED = 3;
 
 /** The deployed attester reads Task accounts at FINALIZED commitment (Solana
  *  RpcClient default) and requires state Submitted(2). A freshly-submitted task
@@ -144,6 +145,23 @@ async function awaitFinalizedSubmitted(
   throw new Error(
     `${label} not finalized in Submitted state after ${MAX_ATTEMPTS} polls`
   );
+}
+
+/** Production invokes attestation asynchronously after the configured delay.
+ * The internal trigger is service-authenticated, so a manual client must judge
+ * success from the on-chain task rather than requiring that private endpoint. */
+async function awaitVerified(
+  conn: Connection,
+  key: PublicKey,
+  label: string
+): Promise<void> {
+  const MAX_ATTEMPTS = 160; // ~8min at 3s cadence: delay + cold-start headroom
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const acc = await conn.getAccountInfo(key, "confirmed");
+    if (acc !== null && acc.data[TASK_STATE_OFFSET] === STATE_VERIFIED) return;
+    await sleep(3000);
+  }
+  throw new Error(`${label} not Verified after ${MAX_ATTEMPTS} polls`);
 }
 
 /** build (orchestrator) → sign → broadcast → confirm (orchestrator). */
@@ -225,20 +243,20 @@ async function runLifecycle(
   console.log("  waiting for finalized Submitted state of the task...");
   await awaitFinalizedSubmitted(conn, taskKey, "submitted task");
 
-  // Trigger the DEPLOYED attester (public run-attest proxy → in-cluster pod).
-  const attest = await api("POST", `/internal/run-attest/${taskId}`, clientPk, {
-    task_id: taskId,
-  });
-  console.log(`  attester response: ${JSON.stringify(attest)}`);
-  const landedScore = Number(attest.score);
-  chk.check(
-    landedScore === expectedScore,
-    `attester landed score ${landedScore} (expected ${expectedScore})`
-  );
-  chk.check(
-    typeof attest.tx === "string" && (attest.tx as string).length > 0,
-    `verify_task_attested tx: ${attest.tx}`
-  );
+  // The internal trigger is intentionally protected in production. Attempting
+  // it keeps local/dev deployments fast, while a 401/timeout falls back to the
+  // same scheduled workflow real submissions use.
+  try {
+    await api("POST", `/internal/run-attest/${taskId}`, clientPk, {
+      task_id: taskId,
+    });
+  } catch (e) {
+    console.log(
+      `  run-attest client returned (tolerated): ${String(e).slice(0, 90)}`
+    );
+  }
+  console.log("  polling on-chain for Verified (production worker)...");
+  await awaitVerified(conn, taskKey, "attested task");
 
   // Assert the on-chain Task the pod just verified.
   const verified = await h.program.account.task.fetch(taskKey);
@@ -249,6 +267,11 @@ async function runLifecycle(
   chk.check(
     verified.verificationKind === 1,
     "verification_kind = 1 (DeterministicAttested)"
+  );
+  const landedScore = (verified.compositeScore as BN).toNumber();
+  chk.check(
+    landedScore === expectedScore,
+    `on-chain composite_score ${landedScore} (expected ${expectedScore})`
   );
 
   const g = await h.program.account.globalState.fetch(h.globalPda);
