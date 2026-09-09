@@ -7,3 +7,4 @@ export type { CoordinationGame } from "../contracts/index.js";
 export * from "./outcome-oracle.js";
 export * from "./battery.js";
 export * from "./protocol.js";
+export * from "./chains.js";
