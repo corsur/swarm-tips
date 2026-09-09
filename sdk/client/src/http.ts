@@ -41,9 +41,14 @@ export class HttpClient {
     const operation = `${init.method ?? "GET"} ${path}`;
     const token = init.token ?? this.getToken?.();
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
       ...(init.headers as Record<string, string> | undefined),
     };
+    // A Content-Type header on a bodyless GET turns an otherwise simple
+    // cross-origin read into a CORS preflight. Public browser reads should not
+    // require OPTIONS for a body that does not exist.
+    if (init.body !== undefined && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
     if (token) headers.Authorization = `Bearer ${token}`;
     let response: Response;
     try {
