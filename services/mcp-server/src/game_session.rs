@@ -2086,17 +2086,49 @@ impl GameSessionManager {
         &self,
         session: &Arc<Mutex<GameSession>>,
     ) -> Result<Option<RevealInputs>> {
-        let s = session.lock().await;
-        let game_id = s.game_id.context("no active game")?;
-        let tournament_id = s.tournament_id.context("tournament_id not set")?;
-        let preimage = s
-            .commit_preimage
-            .context("no commit preimage — call game_commit_guess first")?;
-        let reveal_hex = match &s.reveal_data {
-            None => return Ok(None),
-            Some(hex) => hex.clone(),
+        let (game_id, tournament_id, preimage, cached_reveal, jwt, session_id, network) = {
+            let s = session.lock().await;
+            (
+                s.game_id.context("no active game")?,
+                s.tournament_id.context("tournament_id not set")?,
+                s.commit_preimage
+                    .context("no commit preimage — call game_commit_guess first")?,
+                s.reveal_data.clone(),
+                s.jwt.clone(),
+                s.session_id.clone().unwrap_or_default(),
+                s.network.clone(),
+            )
         };
-        drop(s);
+        let reveal_hex = if let Some(hex) = cached_reveal {
+            hex
+        } else {
+            // Websocket delivery is an optimization, not the source of truth.
+            // A transient disconnect can miss the one-shot reveal_data event;
+            // poll the authenticated endpoint, which re-verifies both commits
+            // on-chain before releasing r_matchup.
+            if jwt.is_empty() || session_id.is_empty() {
+                return Ok(None);
+            }
+            let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
+            match api_client
+                .post_games_both_committed(&jwt, &session_id)
+                .await
+            {
+                Ok(response) => {
+                    session.lock().await.reveal_data = Some(response.r_matchup.clone());
+                    response.r_matchup
+                }
+                Err(game_api_client::GameApiError::Status { status, .. })
+                    if status == reqwest::StatusCode::BAD_REQUEST =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, %session_id, "reveal-data fallback poll failed");
+                    return Ok(None);
+                }
+            }
+        };
         // Postcondition: when we return Ok(Some), every input is present.
         let r_matchup = parse_r_matchup_hex(&reveal_hex)?;
         debug_assert_eq!(r_matchup.len(), 32, "r_matchup must be 32 bytes");

@@ -83,6 +83,13 @@ pub struct CosignResponse {
     pub signature: String,
 }
 
+/// Response from `POST /games/both-committed` once the chain confirms both
+/// commitments and the matchup nonce may be released.
+#[derive(Debug, Deserialize)]
+pub struct BothCommittedResponse {
+    pub r_matchup: String,
+}
+
 /// Request body for `POST /games/cosign`. Wire-shape mirror of game-api's
 /// `CosignRequest` (backend/game-api/src/games.rs) — the forgery guard there
 /// rejects any body it cannot deserialize, so a missing field here is a live
@@ -818,6 +825,37 @@ impl GameApiClient {
         Ok(())
     }
 
+    /// `POST /games/both-committed` — poll the authenticated reveal nonce.
+    ///
+    /// This is the durable fallback for clients that miss the one-shot
+    /// `reveal_data` websocket message. The server rechecks both on-chain
+    /// commitments before returning the nonce.
+    pub async fn post_games_both_committed(
+        &self,
+        token: &str,
+        session_id: &str,
+    ) -> Result<BothCommittedResponse, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            session_id: &'a str,
+        }
+
+        let url = self.url("/games/both-committed");
+        let resp = self
+            .inner
+            .post(&url)
+            .bearer_auth(token)
+            .json(&Body { session_id })
+            .send()
+            .await?;
+
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
     /// `POST /games/joined` — notify the backend that a player joined a game.
     pub async fn post_games_joined(
         &self,
@@ -1080,6 +1118,33 @@ mod tests {
         .unwrap();
         assert_eq!(body["session_id"], "sess-123");
         assert_eq!(body["message"], "bWVzc2FnZQ==");
+    }
+
+    #[tokio::test]
+    async fn both_committed_poll_is_authenticated_and_decodes_nonce() {
+        use wiremock::matchers::{body_json, header, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/games/both-committed"))
+            .and(query_param("network", "devnet"))
+            .and(header("authorization", "Bearer jwt-1"))
+            .and(body_json(serde_json::json!({ "session_id": "session-1" })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "r_matchup": "deadbeef" })),
+            )
+            .mount(&server)
+            .await;
+
+        let response = GameApiClient::new(&server.uri())
+            .unwrap()
+            .with_network(Some("devnet".to_string()))
+            .post_games_both_committed("jwt-1", "session-1")
+            .await
+            .unwrap();
+        assert_eq!(response.r_matchup, "deadbeef");
     }
 
     #[test]
