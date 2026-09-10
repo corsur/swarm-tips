@@ -50,6 +50,57 @@ export interface InboxMessage {
   direction?: "received" | "sent";
 }
 
+export interface MessageReference {
+  msg_id: string;
+  direction?: "received" | "sent";
+}
+
+export interface MessageEnvelope {
+  msg_id: string;
+  direction: "received" | "sent";
+  from_wallet: string;
+  sent_at: string;
+  /** Inbox messages do not expire. */
+  expires_at: null;
+  body_bytes: number;
+  intent: "game_invite" | "task_offer" | "task_clarification" | null;
+  /** Stable mailbox-local grouping label, not a threadId filter. */
+  thread_ref: string;
+  acknowledged: boolean | null;
+  /** Untrusted excerpt; absent unless explicitly requested. */
+  preview?: string;
+  preview_truncated?: boolean;
+}
+
+export interface InboxListOptions {
+  cursor?: string;
+  limit?: number;
+  threadId?: string;
+  minTrust?: number;
+  status?: "pending" | "all";
+  includeSent?: boolean;
+  preview?: boolean;
+}
+
+export interface InboxListPage {
+  messages: MessageEnvelope[];
+  count: number;
+  /** Continue even when messages is empty. */
+  next_cursor: string | null;
+  filtered_acknowledged: number;
+  filtered_muted: number;
+  filtered_below_min_trust: number;
+}
+
+export type OpenMessageResult =
+  | { msg_id: string; direction: "received" | "sent"; status: "opened"; message: InboxMessage & Omit<MessageEnvelope, "acknowledged"> }
+  | { msg_id: string; direction: "received" | "sent"; status: "unavailable" }
+  | { msg_id: string; direction: "received" | "sent"; status: "error"; error: "storage_error" };
+
+export type AckMessageResult =
+  | { msg_id: string; direction: "received"; status: "acknowledged" | "unavailable" }
+  | { msg_id: string; direction: "received"; status: "error"; error: "storage_error" };
+
 export interface MessagePage {
   messages: InboxMessage[];
   next_cursor: string | null;
@@ -265,6 +316,31 @@ export class InboxClient {
       messages: page.messages ?? [],
       next_cursor: page.next_cursor ?? null,
     };
+  }
+
+  /** Metadata first; listing never acknowledges. Old bulk status is independent. */
+  async listMessages(opts: InboxListOptions = {}): Promise<InboxListPage> {
+    if (opts.includeSent && opts.status !== "all") throw new InboxApiError(0, "includeSent requires status=all");
+    if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1 || opts.limit > 50)) throw new InboxApiError(0, "limit must be in 1..50");
+    if (opts.minTrust !== undefined && (!Number.isFinite(opts.minTrust) || opts.minTrust < 0 || opts.minTrust > 1)) throw new InboxApiError(0, "minTrust must be in [0,1]");
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries({cursor:opts.cursor, limit:opts.limit, thread_id:opts.threadId, min_trust:opts.minTrust, status:opts.status, include_sent:opts.includeSent, preview:opts.preview})) {
+      if (value !== undefined) query.set(key, String(value));
+    }
+    const suffix = query.toString();
+    return this.authed<InboxListPage>(`/internal/inbox/list${suffix ? `?${suffix}` : ""}`, {method:"GET"});
+  }
+
+  /** Load only selected bodies. This never acknowledges or follows message links. */
+  async openMessages(messages: MessageReference[]): Promise<{results: OpenMessageResult[]}> {
+    validateSelectedIds(messages.map(m => m.msg_id));
+    return this.authed("/internal/inbox/open", {method:"POST", body:JSON.stringify({messages})});
+  }
+
+  /** Mark only these received IDs handled/dismissed. Per-ID errors can be retried. */
+  async ackMessageIds(messageIds: string[]): Promise<{results: AckMessageResult[]}> {
+    validateSelectedIds(messageIds);
+    return this.authed("/internal/inbox/ack-ids", {method:"POST", body:JSON.stringify({message_ids:messageIds})});
   }
 
   /** Read one thread (e.g. `task:{task_id}` / `game:{id}`), newest first. Pass
@@ -501,4 +577,9 @@ export class InboxClient {
       console.debug("[inbox-client] session cache write failed", e);
     }
   }
+}
+
+function validateSelectedIds(ids: string[]): void {
+  if (ids.length < 1 || ids.length > 50) throw new InboxApiError(0, "select 1..50 message IDs");
+  if (ids.some(id => !/^\d{20}_[0-9a-fA-F]{8}$/.test(id))) throw new InboxApiError(0, "msg_id must be a server-issued message ID");
 }

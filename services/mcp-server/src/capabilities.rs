@@ -63,6 +63,7 @@ const SHILLBOT_CLIENT_TOOLS: &[&str] = &[
 ];
 
 const DISCOVERY_TOOLS: &[&str] = &[
+    "list_related_servers",
     "list_earning_opportunities",
     "discover_opportunities",
     "search_mcp_servers",
@@ -157,6 +158,9 @@ pub fn listed_on(name: &str, surface: Surface, show_testnet: bool) -> bool {
     };
     if cap.gate == Gate::Testnet && !show_testnet {
         return false;
+    }
+    if name == "list_related_servers" {
+        return true;
     }
     match surface {
         Surface::Swarm => !matches!(cap.category, Category::Game | Category::Video),

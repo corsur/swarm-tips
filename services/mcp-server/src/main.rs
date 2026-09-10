@@ -416,6 +416,18 @@ fn build_router(
         // visit to the bare domain is an empty 404.
         .route("/", axum::routing::get(root_page))
         .route("/related-servers", axum::routing::get(related_servers_page))
+        .route(
+            "/internal/inbox/list",
+            inbox_http::list_handler(Arc::clone(&inbox_http_state)),
+        )
+        .route(
+            "/internal/inbox/open",
+            inbox_http::open_handler(Arc::clone(&inbox_http_state)),
+        )
+        .route(
+            "/internal/inbox/ack-ids",
+            inbox_http::ack_ids_handler(Arc::clone(&inbox_http_state)),
+        )
         // Readiness / observability: the game-api + Solana RPC dependency check.
         // Wired to the readiness probe only — a failing dependency drains traffic,
         // it never kills the process.
@@ -705,21 +717,7 @@ async fn related_servers_page(headers: axum::http::HeaderMap) -> axum::Json<serd
         .and_then(|v| v.to_str().ok())
         .map(surfaces::Surface::from_host)
         .unwrap_or(surfaces::Surface::Swarm);
-    let related_servers: Vec<_> = surface
-        .related()
-        .map(|server| {
-            serde_json::json!({
-                "name": server.registry_name(),
-                "title": server.title(),
-                "description": server.description(),
-                "remotes": [{"type": "streamable-http", "url": server.mcp_url()}],
-            })
-        })
-        .collect();
-    axum::Json(serde_json::json!({
-        "server": surface.registry_name(),
-        "related_servers": related_servers,
-    }))
+    axum::Json(surfaces::related_directory(surface))
 }
 
 /// Ensure every `/mcp` response carries an `Mcp-Session-Id`. In stateless rmcp

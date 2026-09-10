@@ -9,6 +9,11 @@
 //! the cheap path around the limits (§6.3 "enforcement chokepoint").
 //!
 //! ## Flow
+//! Selective: list metadata -> open selected IDs -> acknowledge handled IDs.
+//! List/open leave receipts unchanged. Acknowledge upserts only selected receipts.
+//! All inbox messages, sent copies, and receipts are retained indefinitely.
+//! The legacy bulk watermark below is independent of selective pending state.
+//!
 //! ```text
 //!   agent_send_message                        agent_get_messages
 //!         │                                          │
@@ -36,7 +41,7 @@
 //!
 //! ## Collections
 //! - `mailboxes/{caip10}` — the doc itself is the mailbox meta (fast-path
-//!   read); subcollections `inbox_messages/{msg_id}` (TTL 30d) and
+//!   read); subcollections `inbox_messages/{msg_id}` (indefinite retention) and
 //!   `inbox_threads/{thread_id}`
 //! - `inbox_quotas/{caip10}:{YYYYMMDD}` — daily send/read counters (TTL 3d)
 //! - `inbox_wallet_verifications/{caip10}` — on-chain wallet-ownership proofs
@@ -45,6 +50,9 @@ use anyhow::Context;
 use firestore::{FirestoreDb, FirestoreQueryDirection, FirestoreTimestamp};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+mod selective;
+pub use selective::{AckMessageIdsArgs, ListMessagesArgs, OpenMessagesArgs};
 
 /// All inbox bounds in one place, restated in the tool descriptions.
 pub mod limits {
@@ -69,7 +77,6 @@ pub mod limits {
     pub const PAGE_MAX: u32 = 50;
     /// Max messages per thread (griefing bound).
     pub const THREAD_MESSAGE_CAP: i64 = 500;
-    pub const MESSAGE_TTL_DAYS: i64 = 30;
     pub const QUOTA_TTL_DAYS: i64 = 3;
     /// Bound on the muted-thread scan used for read-side filtering.
     pub const MUTED_THREADS_SCAN_CAP: u32 = 200;
@@ -91,7 +98,7 @@ pub mod limits {
     /// Bound on the per-post distinct-reporter list (doc-size bound; far
     /// above the auto-hide threshold, so hitting it changes nothing).
     pub const REPORTERS_TRACK_CAP: usize = 20;
-    /// Board post TTL (matches the message TTL).
+    /// Public board post TTL; inbox messages have no TTL.
     pub const POST_TTL_DAYS: i64 = 30;
     /// Webhook challenge-POST timeout and response-read cap (rule 3: the
     /// registrant's endpoint must not drive unbounded reads).
@@ -112,9 +119,7 @@ const INBOX_QUOTAS_COLLECTION: &str = "inbox_quotas";
 const INBOX_WALLET_VERIFICATIONS_COLLECTION: &str = "inbox_wallet_verifications";
 /// Sender-side mirror of delivered messages (the "outbox"), under the
 /// SENDER's mailbox parent. Field names deliberately identical to
-/// `inbox_messages` (`thread_id` ASC + `msg_id` DESC composite index and the
-/// `expires_at` TTL policy are Terraform'd in coordination-app/infra against
-/// exactly these names).
+/// `inbox_messages`; the thread_id/msg_id composite index is Terraform-managed.
 const INBOX_SENT_SUBCOLLECTION: &str = "inbox_sent";
 /// Topic boards: `topics/{topic_id}` meta + `topics/{topic_id}/posts/{post_id}`.
 /// The posts subcollection has an `expires_at` TTL policy but NO composite
@@ -213,8 +218,6 @@ pub struct InboxMessageDoc {
     /// data, never instructions — restated in every read surface.
     pub body: String,
     pub sent_at: FirestoreTimestamp,
-    /// TTL field (Terraform'd policy): sent_at + 30d.
-    pub expires_at: FirestoreTimestamp,
     /// True when the sender is an org-owned seed wallet (shillbot-worker,
     /// grok). Excluded from the day-30 organic kill-gate numerator.
     pub seed: bool,
@@ -889,22 +892,19 @@ pub fn merge_pages_desc(
 /// Filter a RAW merged page into the outbound shape. Inbound-only filters
 /// (muted threads, min_trust) skip `direction == "sent"` mirrors — mute and
 /// trust floors govern what OTHERS put in front of you, never your own
-/// words. Expiry applies to both (TTL deletion can lag ~24h).
+/// words. Inbox messages are retained indefinitely; legacy expiry fields are ignored.
 /// Returns `(messages, filtered_below_min_trust, filtered_muted)`.
 pub fn build_read_page_messages(
     raw: Vec<InboxMessageDoc>,
     muted: &std::collections::HashSet<String>,
     trust_scores: &std::collections::HashMap<String, f64>,
     min_trust: Option<f64>,
-    now: chrono::DateTime<chrono::Utc>,
+    _now: chrono::DateTime<chrono::Utc>,
 ) -> (Vec<MessageOut>, usize, usize) {
     let mut filtered_muted = 0usize;
     let mut filtered_trust = 0usize;
     let mut out = Vec::with_capacity(raw.len());
     for m in raw {
-        if m.expires_at.0 <= now {
-            continue;
-        }
         let inbound = m.direction != DIRECTION_SENT;
         if inbound && muted.contains(&m.thread_id) {
             filtered_muted = filtered_muted.saturating_add(1);
@@ -1201,7 +1201,7 @@ pub fn send_receipt_json(receipt: &SendReceipt) -> serde_json::Value {
         "msg_id": receipt.msg_id,
         "to_wallet": receipt.to,
         "thread_id": receipt.thread_id,
-        "expires_at": receipt.expires_at.to_rfc3339(),
+        "expires_at": receipt.expires_at.map(|t| t.to_rfc3339()),
         "sends_remaining_today": receipt.sends_remaining_today,
     })
 }
@@ -1515,6 +1515,7 @@ impl RejectionLogFields {
 /// `event = "agent_message_rejected"` (house rule: rejections must log).
 #[derive(Debug)]
 pub enum InboxRejection {
+    InvalidRequest(String),
     BodyTooLarge { bytes: usize },
     EmptyBody,
     InvalidRecipient(String),
@@ -1540,6 +1541,7 @@ pub enum InboxRejection {
 impl InboxRejection {
     pub fn reason(&self) -> &'static str {
         match self {
+            InboxRejection::InvalidRequest(_) => "invalid_request",
             InboxRejection::BodyTooLarge { .. } => "body_too_large",
             InboxRejection::EmptyBody => "empty_body",
             InboxRejection::InvalidRecipient(_) => "invalid_recipient",
@@ -1565,6 +1567,7 @@ impl InboxRejection {
 
     pub fn message(&self) -> String {
         match self {
+            InboxRejection::InvalidRequest(e) => e.clone(),
             InboxRejection::BodyTooLarge { bytes } => format!(
                 "body is {bytes} bytes; max {}",
                 limits::MAX_BODY_BYTES
@@ -1649,7 +1652,7 @@ pub struct SendReceipt {
     pub thread_id: String,
     pub intent: Option<String>,
     pub bytes: usize,
-    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub sends_remaining_today: u32,
 }
 
@@ -2037,9 +2040,7 @@ impl Inbox {
 
         // 2. The message itself.
         let msg_id = new_msg_id(now);
-        let expires_at = now
-            .checked_add_signed(chrono::Duration::days(limits::MESSAGE_TTL_DAYS))
-            .context("message expiry overflow")?;
+        let expires_at = None;
         let doc = InboxMessageDoc {
             schema: MESSAGE_SCHEMA.to_string(),
             msg_id: msg_id.clone(),
@@ -2049,7 +2050,6 @@ impl Inbox {
             intent: intent.clone(),
             body: req.body.clone(),
             sent_at: FirestoreTimestamp(now),
-            expires_at: FirestoreTimestamp(expires_at),
             seed: req.seed,
             direction: DIRECTION_RECEIVED.to_string(),
         };
@@ -2071,7 +2071,7 @@ impl Inbox {
             muted: false,
             reported: false,
             last_msg_at: Some(FirestoreTimestamp(now)),
-            expires_at: Some(FirestoreTimestamp(expires_at)),
+            expires_at: None,
         };
         self.db
             .fluent()
@@ -2146,7 +2146,7 @@ impl Inbox {
     }
 
     /// Mirror a delivered message into the SENDER's `inbox_sent`
-    /// subcollection (same msg_id / expires_at / body — only `direction`
+    /// subcollection (same msg_id / body — only `direction`
     /// differs), so thread views can show both directions. Best-effort by
     /// contract: WARN on failure, never fail the send.
     async fn write_sent_mirror(&self, from: &str, doc: &InboxMessageDoc) {
@@ -2565,7 +2565,7 @@ impl Inbox {
     // -- ack ----------------------------------------------------------------
 
     /// Advance the read watermark (monotonic) and reset the unread hint.
-    /// Never drain-on-read: messages age out via TTL, not via ack.
+    /// Messages are retained indefinitely; acknowledgment never deletes them.
     pub async fn ack_messages(&self, me: &str, up_to_cursor: &str) -> Result<String, InboxError> {
         assert!(!me.is_empty(), "reader must be resolved upstream");
         validate_id_token(up_to_cursor, "up_to_cursor").map_err(InboxRejection::InvalidCursor)?;
@@ -3130,7 +3130,6 @@ mod tests {
             intent: Some("task_clarification".to_string()),
             body: "when is the deadline?".to_string(),
             sent_at: ts("2026-08-24T00:00:00Z"),
-            expires_at: ts("2026-09-23T00:00:00Z"),
             seed: true,
             direction: DIRECTION_SENT.to_string(),
         };
@@ -3531,7 +3530,6 @@ mod tests {
         assert_eq!(limits::PAGE_DEFAULT, 20);
         assert_eq!(limits::PAGE_MAX, 50);
         assert_eq!(limits::THREAD_MESSAGE_CAP, 500);
-        assert_eq!(limits::MESSAGE_TTL_DAYS, 30);
         assert_eq!(limits::QUOTA_TTL_DAYS, 3);
         // W3 board dials (tunable, but a change must be deliberate).
         assert_eq!(limits::POSTS_PER_DAY_UNPROVEN, 0);
@@ -3583,11 +3581,12 @@ mod tests {
             thread_id: "task:abc".to_string(),
             intent: Some("task_offer".to_string()),
             bytes: 12,
-            expires_at: ts("2026-09-23T00:00:00Z").0,
+            expires_at: None,
             sends_remaining_today: 4,
         };
         let v = send_receipt_json(&receipt);
         assert_eq!(v["sent"], true);
+        assert!(v["expires_at"].is_null());
         assert_eq!(v["msg_id"], receipt.msg_id);
         assert_eq!(v["thread_id"], "task:abc");
         assert_eq!(v["sends_remaining_today"], 4);
@@ -3760,7 +3759,6 @@ mod tests {
             intent: None,
             body: "x".to_string(),
             sent_at: ts("2026-08-24T00:00:00Z"),
-            expires_at: ts("2126-01-01T00:00:00Z"), // far future: never expired
             seed: false,
             direction: direction.to_string(),
         }
@@ -3924,12 +3922,15 @@ mod tests {
     }
 
     #[test]
-    fn expiry_applies_to_both_directions() {
+    fn legacy_expiry_does_not_hide_either_inbox_direction() {
         let now = ts("2026-08-24T00:00:00Z").0;
-        let mut expired_sent = mk_msg(10, DIRECTION_SENT);
-        expired_sent.expires_at = ts("2026-08-23T00:00:00Z");
-        let mut expired_recv = mk_msg(9, DIRECTION_RECEIVED);
-        expired_recv.expires_at = ts("2026-08-23T00:00:00Z");
+        let legacy = |message: InboxMessageDoc| {
+            let mut value = serde_json::to_value(message).unwrap();
+            value["expires_at"] = "2026-08-23T00:00:00Z".into();
+            serde_json::from_value::<InboxMessageDoc>(value).unwrap()
+        };
+        let expired_sent = legacy(mk_msg(10, DIRECTION_SENT));
+        let expired_recv = legacy(mk_msg(9, DIRECTION_RECEIVED));
         let (out, _, _) = build_read_page_messages(
             vec![expired_sent, expired_recv, mk_msg(8, DIRECTION_RECEIVED)],
             &Default::default(),
@@ -3937,8 +3938,8 @@ mod tests {
             None,
             now,
         );
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].msg_id, "00000000000000000008_00000000");
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].msg_id, "00000000000000000010_00000000");
     }
 
     // -- W3: topics, moderation, post filtering -----------------------------

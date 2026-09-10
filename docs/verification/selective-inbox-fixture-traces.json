@@ -1,0 +1,192 @@
+{
+  "host": "scripts/verification/inbox-eval.py (inert Python fixture, staged MCP schema)",
+  "model": "Exact model identifier unavailable to fixture actors",
+  "cases": {
+    "fresh": {
+      "acknowledged": [
+        "00000000000000000001_1234abcd",
+        "00000000000000000003_1234abcd"
+      ],
+      "trace": [
+        {
+          "request": {
+            "tool": "initialize"
+          },
+          "denied": false,
+          "response_chars": 49796,
+          "milliseconds": 0.1915419998113066
+        },
+        {
+          "request": {
+            "tool": "agent_list_messages",
+            "arguments": {}
+          },
+          "denied": false,
+          "response_chars": 1826,
+          "milliseconds": 0.016708989278413355
+        },
+        {
+          "request": {
+            "tool": "agent_open_messages",
+            "arguments": {
+              "messages": [
+                {
+                  "msg_id": "00000000000000000001_1234abcd"
+                },
+                {
+                  "msg_id": "00000000000000000003_1234abcd"
+                }
+              ]
+            }
+          },
+          "denied": false,
+          "response_chars": 1443,
+          "milliseconds": 0.020457999198697507
+        },
+        {
+          "request": {
+            "tool": "agent_ack_message_ids",
+            "arguments": {
+              "message_ids": [
+                "00000000000000000001_1234abcd",
+                "00000000000000000003_1234abcd"
+              ]
+            }
+          },
+          "denied": false,
+          "response_chars": 155,
+          "milliseconds": 0.011999989510513842
+        }
+      ]
+    },
+    "preview": {
+      "acknowledged": [
+        "00000000000000000003_1234abcd"
+      ],
+      "trace": [
+        {
+          "request": {
+            "tool": "initialize"
+          },
+          "denied": false,
+          "response_chars": 49601,
+          "milliseconds": 0.2161250013159588
+        },
+        {
+          "request": {
+            "tool": "agent_list_messages",
+            "arguments": {
+              "preview": true,
+              "limit": 50
+            }
+          },
+          "denied": false,
+          "response_chars": 2321,
+          "milliseconds": 0.027667003450915217
+        },
+        {
+          "request": {
+            "tool": "agent_open_messages",
+            "arguments": {
+              "messages": [
+                {
+                  "msg_id": "00000000000000000001_1234abcd"
+                },
+                {
+                  "msg_id": "00000000000000000003_1234abcd"
+                }
+              ]
+            }
+          },
+          "denied": false,
+          "response_chars": 1235,
+          "milliseconds": 0.02083300205413252
+        },
+        {
+          "request": {
+            "tool": "agent_ack_message_ids",
+            "arguments": {
+              "message_ids": [
+                "00000000000000000003_1234abcd"
+              ]
+            }
+          },
+          "denied": false,
+          "response_chars": 84,
+          "milliseconds": 0.010749994544312358
+        }
+      ]
+    },
+    "related": {
+      "acknowledged": [],
+      "trace": [
+        {
+          "request": {
+            "tool": "initialize"
+          },
+          "denied": false,
+          "response_chars": 49601,
+          "milliseconds": 0.1861669879872352
+        },
+        {
+          "request": {
+            "tool": "initialize"
+          },
+          "denied": false,
+          "response_chars": 49601,
+          "milliseconds": 0.1892080035759136
+        },
+        {
+          "request": {
+            "tool": "list_related_servers",
+            "arguments": {}
+          },
+          "denied": false,
+          "response_chars": 341,
+          "milliseconds": 0.011999989510513842
+        }
+      ]
+    },
+    "ecosystem": {
+      "acknowledged": [],
+      "trace": [
+        {
+          "request": {
+            "tool": "initialize"
+          },
+          "denied": false,
+          "response_chars": 49601,
+          "milliseconds": 0.1865419908426702
+        },
+        {
+          "request": {
+            "tool": "initialize"
+          },
+          "denied": false,
+          "response_chars": 49601,
+          "milliseconds": 0.21149999520275742
+        },
+        {
+          "request": {
+            "tool": "list_related_servers",
+            "arguments": {}
+          },
+          "denied": false,
+          "response_chars": 341,
+          "milliseconds": 0.013833996490575373
+        },
+        {
+          "request": {
+            "tool": "search_mcp_servers",
+            "arguments": {
+              "query": "calendar"
+            }
+          },
+          "denied": false,
+          "response_chars": 136,
+          "milliseconds": 0.009750001481734216
+        }
+      ]
+    }
+  }
+}
