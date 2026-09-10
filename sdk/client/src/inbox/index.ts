@@ -10,6 +10,7 @@ export {
   type InboxListOptions,
   type InboxListPage,
   type OpenMessageResult,
+  type OpenedMessage,
   type AckMessageResult,
   type InboxSession,
   type MessagePage,

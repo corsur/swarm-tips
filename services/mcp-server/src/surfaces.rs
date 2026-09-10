@@ -79,6 +79,19 @@ impl Surface {
     }
 }
 
+/// The MCP directory and HTTP directory share this exact wire representation.
+pub fn related_directory(surface: Surface) -> serde_json::Value {
+    let related: Vec<_> = surface.related().map(|server| serde_json::json!({
+        "name":server.registry_name(), "title":server.title(), "description":server.description(),
+        "category":server.server_name(),
+        "remotes":[{"type":"streamable-http","url":server.mcp_url()}],
+        "session_setup":"Independent host session; register_wallet on each host used."
+    })).collect();
+    serde_json::json!({"server":surface.registry_name(), "current_endpoint":surface.mcp_url(),
+        "related_servers":related, "directory_kind":"first_party",
+        "guidance":"Use a focused endpoint to obtain its tool catalog if the current client cannot call unlisted tools. Connections are not automatic."})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,17 +125,4 @@ mod tests {
             assert!(surface.description().contains("exact name"));
         }
     }
-}
-
-/// The MCP directory and HTTP directory share this exact wire representation.
-pub fn related_directory(surface: Surface) -> serde_json::Value {
-    let related: Vec<_> = surface.related().map(|server| serde_json::json!({
-        "name":server.registry_name(), "title":server.title(), "description":server.description(),
-        "category":server.server_name(),
-        "remotes":[{"type":"streamable-http","url":server.mcp_url()}],
-        "session_setup":"Independent host session; register_wallet on each host used."
-    })).collect();
-    serde_json::json!({"server":surface.registry_name(), "current_endpoint":surface.mcp_url(),
-        "related_servers":related, "directory_kind":"first_party",
-        "guidance":"Use a focused endpoint to obtain its tool catalog if the current client cannot call unlisted tools. Connections are not automatic."})
 }

@@ -614,6 +614,17 @@ describe("selective inbox", () => {
     await c.createSession(WALLET, signer);
     return c;
   }
+  it("preserves recipient metadata and typed sent-message recipients", async () => {
+    const c = await ready();
+    const messages = [{msg_id:id,direction:"sent",to_wallet:"recipient",from_wallet:"sender"}, {msg_id:"legacy",to_wallet:null}];
+    mockFetch.mockResolvedValueOnce(jsonResponse(200,{messages,next_cursor:null}));
+    expect((await c.listMessages({status:"all",includeSent:true})).messages.map(m => m.to_wallet)).toEqual(["recipient",null]);
+    mockFetch.mockResolvedValueOnce(jsonResponse(200,{results:[{msg_id:id,direction:"sent",status:"opened",message:{...messages[0],body:"hello",thread_id:"untrusted"}}]}));
+    const result = (await c.openMessages([{msg_id:id,direction:"sent"}])).results[0];
+    if (result.status !== "opened") throw new Error("expected opened");
+    const recipient: string = result.message.to_wallet;
+    expect(recipient).toBe("recipient");
+  });
   it("defaults to metadata and preserves empty-page continuation", async () => {
     const c = await ready();
     const page = {messages:[],count:0,next_cursor:id,filtered_acknowledged:20,filtered_muted:0,filtered_below_min_trust:0};
