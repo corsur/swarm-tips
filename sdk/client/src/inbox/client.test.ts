@@ -606,3 +606,49 @@ describe("solanaNonceSigner", () => {
     expect(signMessage).toHaveBeenCalledWith(new TextEncoder().encode("abc"));
   });
 });
+
+describe("selective inbox", () => {
+  const id = "00000000000000000001_1234abcd";
+  async function ready() {
+    const c = client(fakeStorage({[CACHE_KEY]:JSON.stringify({session_id:"selected",tier:"session"})}));
+    await c.createSession(WALLET, signer);
+    return c;
+  }
+  it("defaults to metadata and preserves empty-page continuation", async () => {
+    const c = await ready();
+    const page = {messages:[],count:0,next_cursor:id,filtered_acknowledged:20,filtered_muted:0,filtered_below_min_trust:0};
+    mockFetch.mockResolvedValueOnce(jsonResponse(200,page));
+    expect(await c.listMessages()).toEqual(page);
+    expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/internal/inbox/list`);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+  it("maps optional preview, history and filters without changing existing APIs", async () => {
+    const c = await ready();
+    mockFetch.mockResolvedValueOnce(jsonResponse(200,{messages:[],next_cursor:null}));
+    await c.listMessages({status:"all",includeSent:true,preview:true,minTrust:0.2,threadId:"task:known",limit:5,cursor:id});
+    const u = new URL(mockFetch.mock.calls[0][0]);
+    expect(Object.fromEntries(u.searchParams)).toEqual({status:"all",include_sent:"true",preview:"true",min_trust:"0.2",thread_id:"task:known",limit:"5",cursor:id});
+  });
+  it("keeps opening separate from acknowledgement and preserves per-ID failures", async () => {
+    const c = await ready();
+    const opened = {results:[{msg_id:id,direction:"sent",status:"unavailable"}]};
+    mockFetch.mockResolvedValueOnce(jsonResponse(200,opened));
+    expect(await c.openMessages([{msg_id:id,direction:"sent"}])).toEqual(opened);
+    expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/internal/inbox/open`);
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({messages:[{msg_id:id,direction:"sent"}]});
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const partial = {results:[{msg_id:id,direction:"received",status:"error",error:"storage_error"}]};
+    mockFetch.mockResolvedValueOnce(jsonResponse(200,partial));
+    expect(await c.ackMessageIds([id])).toEqual(partial);
+    expect(mockFetch.mock.calls[1][0]).toBe(`${BASE}/internal/inbox/ack-ids`);
+  });
+  it("rejects bad input before performing network calls", async () => {
+    const c = await ready();
+    for (const ids of [[],["../other"],Array(51).fill(id)]) await expect(c.ackMessageIds(ids)).rejects.toThrow(InboxApiError);
+    await expect(c.openMessages([])).rejects.toThrow(InboxApiError);
+    await expect(c.listMessages({includeSent:true})).rejects.toThrow(InboxApiError);
+    await expect(c.listMessages({minTrust:NaN})).rejects.toThrow(InboxApiError);
+    await expect(c.listMessages({limit:51})).rejects.toThrow(InboxApiError);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});

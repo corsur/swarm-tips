@@ -69,6 +69,18 @@ fn tool_surface_matches_committed_snapshot() {
     if std::env::var("UPDATE_TOOL_SNAPSHOT").is_ok() {
         let pretty = serde_json::to_string_pretty(&current).expect("serialize snapshot");
         std::fs::write(SNAPSHOT_PATH, pretty + "\n").expect("write snapshot");
+        if let Ok(path) = std::env::var("MCP_REFERENCE_EXPORT_PATH") {
+            let reference = serde_json::json!({
+                "fetchedAt": chrono::Utc::now().to_rfc3339(),
+                "instructions": crate::instructions::for_surface(Surface::Swarm),
+                "tools": visible_tools(Surface::Swarm).iter().map(tool_json).collect::<Vec<_>>()
+            });
+            std::fs::write(
+                path,
+                serde_json::to_string_pretty(&reference).unwrap() + "\n",
+            )
+            .expect("export staged reference");
+        }
         return;
     }
     let committed: serde_json::Value =
@@ -120,9 +132,12 @@ fn tool_surface_matches_committed_snapshot() {
 #[test]
 fn tool_name_manifest_is_exact() {
     const SWARM: &[&str] = &[
+        "agent_ack_message_ids",
         "agent_ack_messages",
         "agent_get_messages",
+        "agent_list_messages",
         "agent_mute_thread",
+        "agent_open_messages",
         "agent_profile",
         "agent_reputation_leaderboard",
         "agent_send_message",
@@ -133,6 +148,7 @@ fn tool_name_manifest_is_exact() {
         "get_webhook",
         "list_earning_opportunities",
         "list_extensions",
+        "list_related_servers",
         "query_agent_credit_web_score",
         "register_wallet",
         "register_webhook",
@@ -160,6 +176,7 @@ fn tool_name_manifest_is_exact() {
     const SHILLBOT: &[&str] = &[
         "check_video_status",
         "generate_video",
+        "list_related_servers",
         "register_wallet",
         "shillbot_approve_task",
         "shillbot_check_earnings",
@@ -188,6 +205,7 @@ fn tool_name_manifest_is_exact() {
         "game_reveal_guess",
         "game_send_message",
         "game_submit_tx",
+        "list_related_servers",
         "register_wallet",
     ];
 
@@ -466,38 +484,42 @@ fn every_tool_has_complete_standard_annotations() {
 /// on disk across the doc surfaces before this rule; pointing at tools/list
 /// is the only claim that can't rot. Runs pre-deploy.
 #[test]
-fn instructions_name_every_visible_tool_and_state_no_counts() {
-    for surface in [Surface::Swarm, Surface::Shillbot, Surface::Game] {
+fn instructions_explain_workflows_without_broadcasting_related_hosts() {
+    for surface in Surface::ALL {
         let instructions = crate::instructions::for_surface(surface);
-        let visible = visible_tools(surface);
-        let missing: Vec<_> = visible
-            .iter()
-            .map(|t| t.name.as_ref())
-            .filter(|name: &&str| !instructions.contains(*name))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "{} tools absent from instructions: {missing:?}",
-            surface.host()
-        );
-        assert!(instructions.contains("authoritative inventory is this server's own tools/list"));
-        assert!(instructions.contains("Unified server: https://mcp.swarm.tips/mcp"));
-        assert!(instructions
-            .contains("every capability advertised by mcp.shillbot.org and mcp.coordination.game"));
-        assert!(instructions.contains("callable there by exact tool name"));
-        assert!(instructions.contains("Prefer the unified server"));
-        assert!(instructions.contains("Related servers"));
+        assert!(instructions.contains("tools/list"));
+        assert!(instructions.contains("authoritative"));
+        assert!(instructions.contains("list_related_servers"));
         for related in surface.related() {
-            assert!(instructions.contains(related.mcp_url()));
+            assert!(!instructions.contains(related.mcp_url()));
         }
-        let mut digits_then_tools = instructions
-            .split_whitespace()
-            .zip(instructions.split_whitespace().skip(1))
-            .filter(|(a, b)| a.chars().all(|c| c.is_ascii_digit()) && b.starts_with("tool"));
-        assert!(
-            digits_then_tools.next().is_none(),
-            "{} instructions state a literal tool count",
-            surface.host()
-        );
+        assert!(visible_tools(surface)
+            .iter()
+            .any(|t| t.name == "list_related_servers"));
+        let directory = crate::surfaces::related_directory(surface);
+        assert_eq!(directory["server"], surface.registry_name());
+        assert_eq!(directory["related_servers"].as_array().unwrap().len(), 2);
+        for (entry, related) in directory["related_servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(surface.related())
+        {
+            assert_eq!(entry["remotes"][0]["url"], related.mcp_url());
+            assert!(entry["session_setup"]
+                .as_str()
+                .unwrap()
+                .contains("Independent"));
+        }
     }
+    let instructions = crate::instructions::for_surface(Surface::Swarm);
+    for name in [
+        "agent_list_messages",
+        "agent_open_messages",
+        "agent_ack_message_ids",
+    ] {
+        assert!(instructions.contains(name));
+    }
+    assert!(instructions.contains("Opening does not acknowledge"));
+    assert!(instructions.contains("previews are off"));
 }

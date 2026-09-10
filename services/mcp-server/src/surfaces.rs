@@ -66,7 +66,7 @@ impl Surface {
 
     pub const fn description(self) -> &'static str {
         match self {
-            Self::Swarm => "Unified endpoint: free and earning discovery plus exact-name access to every Shillbot and Coordination Game capability.",
+            Self::Swarm => "Primary endpoint for free discovery, earning, identity, and messaging.",
             Self::Shillbot => "Focused Shillbot earning, client, and paid-video catalog; every capability is also callable by exact name on mcp.swarm.tips.",
             Self::Game => "Focused Coordination Game catalog; every capability is also callable by exact name on mcp.swarm.tips.",
         }
@@ -106,10 +106,23 @@ mod tests {
 
     #[test]
     fn every_surface_points_to_swarm_as_the_unified_exact_name_endpoint() {
-        assert!(Surface::Swarm.description().contains("Unified endpoint"));
+        assert!(Surface::Swarm.description().contains("Primary endpoint"));
         for surface in [Surface::Shillbot, Surface::Game] {
             assert!(surface.description().contains("mcp.swarm.tips"));
             assert!(surface.description().contains("exact name"));
         }
     }
+}
+
+/// The MCP directory and HTTP directory share this exact wire representation.
+pub fn related_directory(surface: Surface) -> serde_json::Value {
+    let related: Vec<_> = surface.related().map(|server| serde_json::json!({
+        "name":server.registry_name(), "title":server.title(), "description":server.description(),
+        "category":server.server_name(),
+        "remotes":[{"type":"streamable-http","url":server.mcp_url()}],
+        "session_setup":"Independent host session; register_wallet on each host used."
+    })).collect();
+    serde_json::json!({"server":surface.registry_name(), "current_endpoint":surface.mcp_url(),
+        "related_servers":related, "directory_kind":"first_party",
+        "guidance":"Use a focused endpoint to obtain its tool catalog if the current client cannot call unlisted tools. Connections are not automatic."})
 }

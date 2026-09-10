@@ -173,7 +173,7 @@ pub fn send_receipt_to_task(receipt: &SendReceipt) -> Value {
         "metadata": {
             "to_wallet": receipt.to,
             "intent": receipt.intent,
-            "expires_at": receipt.expires_at.to_rfc3339(),
+            "expires_at": receipt.expires_at.map(|t| t.to_rfc3339()),
             "sends_remaining_today": receipt.sends_remaining_today,
         },
     })
@@ -441,7 +441,7 @@ mod tests {
             thread_id: "dm:a|b".to_string(),
             intent: Some("task_offer".to_string()),
             bytes: 2,
-            expires_at: chrono::Utc::now(),
+            expires_at: None,
             sends_remaining_today: 41,
         };
         let task = send_receipt_to_task(&receipt);
@@ -451,6 +451,7 @@ mod tests {
         assert_eq!(task["status"]["state"], "completed");
         assert_eq!(task["metadata"]["to_wallet"], "solana:x:CKsZ");
         assert_eq!(task["metadata"]["sends_remaining_today"], 41);
+        assert!(task["metadata"]["expires_at"].is_null());
     }
 
     // -- tasks/get read mapping --------------------------------------------

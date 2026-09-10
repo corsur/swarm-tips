@@ -1209,6 +1209,126 @@ pub fn messages_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRout
     .options(|| async { preflight_response() })
 }
 
+fn parse_selective_query(q: &HashMap<String, String>) -> Result<inbox::ListMessagesArgs, String> {
+    let mut value = serde_json::Map::new();
+    for (key, text) in q {
+        let parsed = match key.as_str() {
+            "preview" | "include_sent" => {
+                serde_json::Value::Bool(parse_bool_param(Some(text.clone()), key)?)
+            }
+            "limit" => serde_json::json!(text
+                .parse::<u32>()
+                .map_err(|_| "limit must be an integer")?),
+            "min_trust" => serde_json::json!(parse_min_trust(Some(text.clone()))?),
+            _ => serde_json::Value::String(text.clone()),
+        };
+        value.insert(key.clone(), parsed);
+    }
+    serde_json::from_value(serde_json::Value::Object(value))
+        .map_err(|_| "invalid selective inbox query".into())
+}
+
+pub fn list_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    axum::routing::get(
+        move |headers: axum::http::HeaderMap, q: axum::extract::Query<HashMap<String, String>>| {
+            let state = state.clone();
+            async move {
+                let prov = provenance_from_headers(&headers);
+                let args = match parse_selective_query(&q) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return inbox_error_response(
+                            inbox::InboxRejection::InvalidRequest(e).into(),
+                            None,
+                            None,
+                            &prov,
+                        )
+                    }
+                };
+                if let Err(e) = args.validate() {
+                    return inbox_error_response(e, None, None, &prov);
+                }
+                let me = match require_verified_mailbox(&state, &headers).await {
+                    Ok(m) => m,
+                    Err(r) => return r,
+                };
+                match state.inbox.list_messages(&me, &args).await {
+                    Ok(v) => json_ok(v),
+                    Err(e) => inbox_error_response(e, None, None, &prov),
+                }
+            }
+        },
+    )
+    .options(|| async { preflight_response() })
+}
+
+pub fn open_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+        let state = state.clone();
+        async move {
+            let prov = provenance_from_headers(&headers);
+            let args = match serde_json::from_str::<inbox::OpenMessagesArgs>(&body) {
+                Ok(a) => a,
+                Err(_) => {
+                    return inbox_error_response(
+                        inbox::InboxRejection::InvalidRequest("invalid open request".into()).into(),
+                        None,
+                        None,
+                        &prov,
+                    )
+                }
+            };
+            if let Err(e) = args.validate() {
+                return inbox_error_response(e, None, None, &prov);
+            }
+            let me = match require_verified_mailbox(&state, &headers).await {
+                Ok(m) => m,
+                Err(r) => return r,
+            };
+            match state.inbox.open_messages(&me, args).await {
+                Ok(v) => json_ok(v),
+                Err(e) => inbox_error_response(e, None, None, &prov),
+            }
+        }
+    })
+    .options(|| async { preflight_response() })
+}
+
+pub fn ack_ids_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+        let state = state.clone();
+        async move {
+            let prov = provenance_from_headers(&headers);
+            let args = match serde_json::from_str::<inbox::AckMessageIdsArgs>(&body) {
+                Ok(a) => a,
+                Err(_) => {
+                    return inbox_error_response(
+                        inbox::InboxRejection::InvalidRequest(
+                            "invalid acknowledgment request".into(),
+                        )
+                        .into(),
+                        None,
+                        None,
+                        &prov,
+                    )
+                }
+            };
+            if let Err(e) = args.validate() {
+                return inbox_error_response(e, None, None, &prov);
+            }
+            let me = match require_verified_mailbox(&state, &headers).await {
+                Ok(m) => m,
+                Err(r) => return r,
+            };
+            match state.inbox.ack_message_ids(&me, args).await {
+                Ok(v) => json_ok(v),
+                Err(e) => inbox_error_response(e, None, None, &prov),
+            }
+        }
+    })
+    .options(|| async { preflight_response() })
+}
+
 pub fn ack_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
     axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
         let state = state.clone();
@@ -1785,5 +1905,33 @@ mod tests {
             .expect_err("must fail");
         let msg = err.to_string();
         assert!(msg.contains("401"), "carries status: {msg}");
+    }
+}
+
+#[cfg(test)]
+mod selective_query_tests {
+    use super::*;
+    #[test]
+    fn query_defaults_and_types_match_mcp() {
+        let a = parse_selective_query(&HashMap::new()).unwrap();
+        assert!(!a.preview && !a.include_sent);
+        assert!(a.validate().is_ok());
+        for (k, v) in [
+            ("status", "unread"),
+            ("preview", "1"),
+            ("include_sent", "yes"),
+            ("limit", "-1"),
+            ("min_trust", "NaN"),
+            ("owner", "other"),
+        ] {
+            assert!(parse_selective_query(&HashMap::from([(k.into(), v.into())])).is_err());
+        }
+        let a = parse_selective_query(&HashMap::from([
+            ("status".into(), "all".into()),
+            ("include_sent".into(), "true".into()),
+            ("preview".into(), "true".into()),
+        ]))
+        .unwrap();
+        assert!(a.preview && a.include_sent && a.validate().is_ok());
     }
 }
