@@ -91,3 +91,5 @@ It does not connect automatically. The same directory is available at
 appropriate focused endpoint. A server accepting exact-name calls does not mean
 every client supports invoking unlisted tools. Use `search_mcp_servers` for
 broader ecosystem discovery, not as the authoritative first-party directory.
+
+Recipient metadata is available as `to_wallet`, including on sent copies, without opening content. It is null for legacy records without a stored recipient. Opened messages include the original recipient; replies to sent messages should use that recipient rather than infer participants from thread text.

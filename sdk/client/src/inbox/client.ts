@@ -56,6 +56,8 @@ export interface MessageReference {
 }
 
 export interface MessageEnvelope {
+  /** Stored recipient; null for legacy metadata without a recipient. */
+  to_wallet: string | null;
   msg_id: string;
   direction: "received" | "sent";
   from_wallet: string;
@@ -92,8 +94,13 @@ export interface InboxListPage {
   filtered_below_min_trust: number;
 }
 
+export type OpenedMessage = InboxMessage & Omit<MessageEnvelope, "acknowledged" | "to_wallet"> & {
+  /** Actual recipient of this message, including sent mirror copies. */
+  to_wallet: string;
+};
+
 export type OpenMessageResult =
-  | { msg_id: string; direction: "received" | "sent"; status: "opened"; message: InboxMessage & Omit<MessageEnvelope, "acknowledged"> }
+  | { msg_id: string; direction: "received" | "sent"; status: "opened"; message: OpenedMessage }
   | { msg_id: string; direction: "received" | "sent"; status: "unavailable" }
   | { msg_id: string; direction: "received" | "sent"; status: "error"; error: "storage_error" };
 

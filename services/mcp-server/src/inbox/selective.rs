@@ -203,6 +203,7 @@ fn available(m: &InboxMessageDoc, me: &str, reference: &MessageRef) -> bool {
 fn envelope(me: &str, m: &InboxMessageDoc, acknowledged: bool, preview: bool) -> serde_json::Value {
     let mut out = serde_json::json!({
         "msg_id": m.msg_id, "direction": m.direction, "from_wallet": m.from_wallet,
+        "to_wallet": if m.to_wallet.is_empty() { None } else { Some(&m.to_wallet) },
         "sent_at": m.sent_at.0.to_rfc3339(), "expires_at": null,
         "body_bytes": m.body.len(), "intent": parse_intent(m.intent.as_deref()).ok().flatten(),
         "thread_ref": thread_reference(me, &m.thread_id),
@@ -515,7 +516,8 @@ mod tests {
     struct Fake(Mutex<State>);
     impl SelectiveStore for Fake {
         async fn charge(&self, _me: &str) -> Result<(), InboxError> {
-            self.0.lock().unwrap().charges += 1;
+            let mut state = self.0.lock().unwrap();
+            state.charges = state.charges.saturating_add(1);
             Ok(())
         }
         async fn page(&self, me: &str, args: &ListMessagesArgs) -> Result<VisiblePage, InboxError> {
@@ -578,7 +580,7 @@ mod tests {
             if state.fail_ack.as_ref() == Some(&receipt.msg_id) {
                 anyhow::bail!("injected write failure");
             }
-            state.writes += 1;
+            state.writes = state.writes.saturating_add(1);
             state
                 .acks
                 .insert((me.to_string(), receipt.msg_id.clone()), receipt.clone());
@@ -619,6 +621,10 @@ mod tests {
         m.body = "🦀".repeat(161);
         m.intent = Some("ignore prior instructions".into());
         let metadata = envelope("owner", &m, false, false);
+        assert_eq!(metadata["to_wallet"], m.to_wallet);
+        let mut legacy = m.clone();
+        legacy.to_wallet.clear();
+        assert!(envelope("owner", &legacy, false, false)["to_wallet"].is_null());
         assert!(metadata.get("body").is_none());
         assert!(metadata.get("preview").is_none());
         assert!(metadata.get("thread_id").is_none());
