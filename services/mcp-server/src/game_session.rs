@@ -212,6 +212,9 @@ pub struct GameSessionManager {
     /// Cancelled in `cleanup()` to stop dangling reconnect loops.
     ws_cancel_tokens: RwLock<HashMap<String, CancellationToken>>,
     game_api_url: String,
+    request_transport: Option<Arc<dyn api_transport::RequestTransport>>,
+    realtime: Arc<dyn game_api_client::ws::RealtimeConnector>,
+    shutdown: CancellationToken,
     solana_rpc_url: String,
     solana_rpc_url_mainnet: String,
     solana_rpc_url_devnet: String,
@@ -754,11 +757,44 @@ impl GameSessionManager {
             tx_builders: RwLock::new(HashMap::new()),
             ws_cancel_tokens: RwLock::new(HashMap::new()),
             game_api_url,
+            request_transport: None,
+            realtime: Arc::new(game_api_client::ws::WebSocketConnector),
+            shutdown: CancellationToken::new(),
             solana_rpc_url,
             solana_rpc_url_mainnet,
             solana_rpc_url_devnet,
             db,
         }
+    }
+
+    pub fn with_transport(mut self, transport: Arc<dyn api_transport::RequestTransport>) -> Self {
+        self.request_transport = Some(transport);
+        self
+    }
+
+    pub fn with_shutdown(mut self, shutdown: CancellationToken) -> Self {
+        self.shutdown = shutdown;
+        self
+    }
+
+    pub fn with_realtime(
+        mut self,
+        connector: Arc<dyn game_api_client::ws::RealtimeConnector>,
+    ) -> Self {
+        self.realtime = connector;
+        self
+    }
+
+    async fn connect_realtime(&self, jwt: &str, network: Option<&str>) -> Result<WsConnection> {
+        connect_realtime(&self.realtime, &self.game_api_url, jwt, network).await
+    }
+
+    fn api_client(&self) -> Result<GameApiClient> {
+        let client = GameApiClient::new(&self.game_api_url)?;
+        Ok(match &self.request_transport {
+            Some(transport) => client.with_transport(Arc::clone(transport)),
+            None => client,
+        })
     }
 
     /// Resolve the RPC URL for a per-call network argument. `None` and
@@ -1077,7 +1113,7 @@ impl GameSessionManager {
         let network = restored.lock().await.network.clone();
         let ws_result = tokio::time::timeout(
             tokio::time::Duration::from_secs(10),
-            WsConnection::connect_with_network(&self.game_api_url, jwt, network.as_deref()),
+            self.connect_realtime(jwt, network.as_deref()),
         )
         .await;
         match ws_result {
@@ -1100,7 +1136,8 @@ impl GameSessionManager {
                 let session_clone = Arc::clone(restored);
                 let sink_clone = Arc::clone(&ws_sink);
                 let api_url = self.game_api_url.clone();
-                let cancel_token = CancellationToken::new();
+                let realtime = Arc::clone(&self.realtime);
+                let cancel_token = self.shutdown.child_token();
                 let token_clone = cancel_token.clone();
                 let db_clone = self.db.clone();
                 tokio::spawn(async move {
@@ -1109,6 +1146,7 @@ impl GameSessionManager {
                         stream,
                         sink_clone,
                         api_url,
+                        realtime,
                         token_clone,
                         db_clone,
                     )
@@ -1228,8 +1266,7 @@ impl GameSessionManager {
         // without it the endpoint accepted ANY transaction where the wallet was
         // fee payer, and Solana signatures are public. The nonce must be
         // requested BEFORE the tx is built, because it has to be inside it.
-        let api_client =
-            GameApiClient::new(&self.game_api_url)?.with_network(network.map(str::to_string));
+        let api_client = self.api_client()?.with_network(network.map(str::to_string));
         let nonce = api_client.request_challenge(wallet).await?.nonce;
         let unsigned = tx_builder
             .build_deposit_stake_with_memo(tournament_id, &nonce)
@@ -1372,8 +1409,7 @@ impl GameSessionManager {
             session.lock().await.jwt.clear();
         }
 
-        let api_client =
-            GameApiClient::new(&self.game_api_url)?.with_network(network.map(str::to_string));
+        let api_client = self.api_client()?.with_network(network.map(str::to_string));
         let auth_resp = api_client.session_auth(wallet, sig_str, nonce).await?;
         let jwt = auth_resp.token.clone();
         self.spawn_ws_listener(wallet, &jwt, session, network)
@@ -1412,14 +1448,15 @@ impl GameSessionManager {
         // the MCP-driven agent. Surfaced 2026-05-09 by full-game devnet
         // e2e (game-api logs showed `WebSocket upgrade ... network=mainnet`
         // for an mcp-agent that joined queue as devnet).
-        let ws = WsConnection::connect_with_network(&self.game_api_url, jwt, network).await?;
+        let ws = self.connect_realtime(jwt, network).await?;
         let (sink, stream) = ws.into_split();
         let ws_sink = Arc::new(Mutex::new(sink));
 
         let session_clone = Arc::clone(session);
         let sink_clone = Arc::clone(&ws_sink);
         let api_url = self.game_api_url.clone();
-        let cancel_token = CancellationToken::new();
+        let realtime = Arc::clone(&self.realtime);
+        let cancel_token = self.shutdown.child_token();
         let token_clone = cancel_token.clone();
         let db_clone = self.db.clone();
         tokio::spawn(async move {
@@ -1428,6 +1465,7 @@ impl GameSessionManager {
                 stream,
                 sink_clone,
                 api_url,
+                realtime,
                 token_clone,
                 db_clone,
             )
@@ -1458,7 +1496,7 @@ impl GameSessionManager {
         let game_id = session.lock().await.game_id.unwrap_or(0);
         let network = session.lock().await.network.clone();
         if !session_id.is_empty() {
-            let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
+            let api_client = self.api_client()?.with_network(network);
             api_client
                 .post_games_joined(&jwt, game_id, &session_id)
                 .await?;
@@ -1482,7 +1520,7 @@ impl GameSessionManager {
         };
         let network = session.lock().await.network.clone();
         if !session_id.is_empty() {
-            let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
+            let api_client = self.api_client()?.with_network(network);
             if let Err(e) = api_client.post_games_committed(&jwt, &session_id).await {
                 tracing::warn!(wallet = %wallet, error = %e, "post_games_committed failed (non-fatal)");
             }
@@ -1566,7 +1604,7 @@ impl GameSessionManager {
             // Opponent hasn't revealed yet — nothing to broadcast.
             return Ok(());
         }
-        let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
+        let api_client = self.api_client()?.with_network(network);
         api_client
             .post_games_resolved(
                 &jwt,
@@ -1631,7 +1669,7 @@ impl GameSessionManager {
             self.persist_session(&s).await?;
         }
         if !session_id.is_empty() {
-            let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
+            let api_client = self.api_client()?.with_network(network);
             api_client
                 .post_games_started(&jwt, game_id, &session_id)
                 .await?;
@@ -1692,7 +1730,7 @@ impl GameSessionManager {
             .clone();
 
         // Clear stale queue entry from previous crash.
-        let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
+        let api_client = self.api_client()?.with_network(network);
         if let Err(e) = api_client.leave_queue(jwt, tournament_id).await {
             tracing::warn!(
                 service = "coordination-mcp-server",
@@ -1873,7 +1911,7 @@ impl GameSessionManager {
         // stranger can't get this (game-api checks player_two), so the open-P2
         // slot is closed for the MCP path too.
         let msg_b64 = base64::engine::general_purpose::STANDARD.encode(&unsigned.message);
-        let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network.clone());
+        let api_client = self.api_client()?.with_network(network.clone());
         let cosign_resp = api_client
             .request_cosign_join(jwt, &session_id, &msg_b64)
             .await
@@ -2109,7 +2147,7 @@ impl GameSessionManager {
             if jwt.is_empty() || session_id.is_empty() {
                 return Ok(None);
             }
-            let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network);
+            let api_client = self.api_client()?.with_network(network);
             match api_client
                 .post_games_both_committed(&jwt, &session_id)
                 .await
@@ -2254,7 +2292,7 @@ impl GameSessionManager {
         // tx so the cosign endpoint reads the right tournament PDA.
         use base64::Engine;
         let msg_b64 = base64::engine::general_purpose::STANDARD.encode(&unsigned.message);
-        let api_client = GameApiClient::new(&self.game_api_url)?.with_network(network.clone());
+        let api_client = self.api_client()?.with_network(network.clone());
         let cosign_resp = api_client
             .request_cosign(jwt, &session_id, &msg_b64)
             .await
@@ -2284,6 +2322,25 @@ const WS_MAX_RECONNECT_ATTEMPTS: u32 = 3;
 /// Initial backoff delay for reconnect (doubles each attempt).
 const WS_RECONNECT_BASE_DELAY_SECS: u64 = 2;
 
+async fn connect_realtime(
+    connector: &Arc<dyn game_api_client::ws::RealtimeConnector>,
+    base_url: &str,
+    jwt: &str,
+    network: Option<&str>,
+) -> Result<WsConnection> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        connector.connect(game_api_client::ws::ConnectRequest {
+            base_url: base_url.to_owned(),
+            jwt: jwt.to_owned(),
+            network: network.map(str::to_owned),
+            session: None,
+        }),
+    )
+    .await
+    .context("game realtime connection timed out")?
+}
+
 /// Runs the WS read loop with automatic reconnect on disconnect.
 ///
 /// On disconnect, attempts up to 3 reconnects with exponential backoff
@@ -2295,6 +2352,7 @@ async fn ws_listener_with_reconnect(
     initial_stream: game_api_client::ws::WsStream,
     sink: Arc<Mutex<WsSink>>,
     game_api_url: String,
+    realtime: Arc<dyn game_api_client::ws::RealtimeConnector>,
     cancel: CancellationToken,
     db: Arc<FirestoreDb>,
 ) {
@@ -2310,7 +2368,10 @@ async fn ws_listener_with_reconnect(
         }
 
         // Run the read loop until disconnect.
-        run_ws_read_loop(&session, &mut stream, &sink, &wallet, &db).await;
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = run_ws_read_loop(&session, &mut stream, &sink, &wallet, &db) => {}
+        }
 
         if cancel.is_cancelled() {
             tracing::info!(wallet = %wallet, "ws_listener cancelled after disconnect");
@@ -2333,10 +2394,15 @@ async fn ws_listener_with_reconnect(
                 .checked_shl(attempt)
                 .unwrap_or(WS_RECONNECT_BASE_DELAY_SECS);
             tracing::info!(wallet = %wallet, attempt, delay_secs = delay, "ws reconnecting");
-            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
-
-            match WsConnection::connect_with_network(&game_api_url, &jwt, network.as_deref()).await
-            {
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(delay)) => {}
+            }
+            let connection = tokio::select! {
+                _ = cancel.cancelled() => return,
+                result = connect_realtime(&realtime, &game_api_url, &jwt, network.as_deref()) => result,
+            };
+            match connection {
                 Ok(ws) => {
                     let (new_sink, new_stream) = ws.into_split();
                     // Swap the sink so send_message uses the new connection.

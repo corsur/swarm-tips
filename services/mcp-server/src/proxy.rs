@@ -66,7 +66,8 @@ async fn require_success(
 }
 
 pub struct OrchestratorProxy {
-    client: reqwest::Client,
+    client: api_transport::Client,
+    shorts_client: api_transport::Client,
     base_url: String,
     /// Base URL for the shorts/video service (shorts-api), which was split out
     /// of shillbot-api. mcp-server calls sibling services directly over their
@@ -278,7 +279,7 @@ impl OrchestratorProxy {
     /// then rejects with 411 Length Required. GKE's ingress tolerated it, which
     /// is why this only surfaced after the migration. This rationale was
     /// duplicated verbatim at four call sites; it lives here now.
-    fn bodyless_post(&self, url: &str, wallet_pubkey: &str) -> reqwest::RequestBuilder {
+    fn bodyless_post(&self, url: &str, wallet_pubkey: &str) -> api_transport::RequestBuilder {
         self.client
             .post(url)
             .bearer_auth(wallet_pubkey)
@@ -305,9 +306,8 @@ impl OrchestratorProxy {
         // triggered. 60s is generous enough for any orchestrator endpoint
         // we currently call without adding meaningful latency to the fast
         // paths (tasks list / claim / earnings — all <500ms).
-        // A builder failure would silently hand back a default Client with NO
-        // timeout, so every orchestrator call could hang forever — the opposite
-        // of what this construction is for. Log it rather than degrade quietly.
+        // The transport wrapper below enforces the same deadline even if the
+        // configured HTTP client cannot be built.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
@@ -315,16 +315,26 @@ impl OrchestratorProxy {
                 tracing::error!(
                     service = "mcp-server",
                     error = %e,
-                    "orchestrator HTTP client build failed — falling back to a client with NO timeout"
+                    "orchestrator HTTP client build failed; using the transport deadline"
                 );
                 reqwest::Client::default()
             });
 
+        let client = api_transport::Client::new(client, std::time::Duration::from_secs(60));
         Self {
+            shorts_client: client.clone(),
             client,
             base_url,
             shorts_base_url,
         }
+    }
+
+    pub fn with_transport(
+        mut self,
+        transport: std::sync::Arc<dyn api_transport::RequestTransport>,
+    ) -> Self {
+        self.client = self.client.with_transport(transport);
+        self
     }
 
     /// List available tasks from the orchestrator.
@@ -1136,7 +1146,7 @@ impl OrchestratorProxy {
         let endpoint = format!("{}/shorts/create-crypto", self.shorts_base_url);
         let body = build_create_short_body(prompt, url);
 
-        let mut req = self.client.post(&endpoint).json(&body);
+        let mut req = self.shorts_client.post(&endpoint).json(&body);
 
         if let Some(sig) = tx_signature {
             tracing::debug!(
@@ -1147,10 +1157,12 @@ impl OrchestratorProxy {
             req = req.header("Payment-Signature", sig);
         }
 
-        let response = req
-            .send()
-            .await
-            .map_err(|e| log_create_short_request_failure(&e, tx_signature))?;
+        let response = req.send().await.map_err(|e| match e {
+            api_transport::TransportError::Http(error) => {
+                log_create_short_request_failure(&error, tx_signature)
+            }
+            other => McpServiceError::OrchestratorError(other.to_string()),
+        })?;
 
         let status = response.status();
 
@@ -1189,7 +1201,7 @@ impl OrchestratorProxy {
 
         let url = format!("{}/shorts/{session_id}", self.shorts_base_url);
 
-        let response = self.client.get(&url).send().await.map_err(|e| {
+        let response = self.shorts_client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, session_id = %session_id, "orchestrator get_short_status failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
         })?;

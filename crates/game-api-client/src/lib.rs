@@ -12,6 +12,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum GameApiError {
+    #[error("module transport failed: {0}")]
+    Transport(#[from] api_transport::TransportError),
     #[error("HTTP request failed: {0}")]
     Request(#[from] reqwest::Error),
 
@@ -28,6 +30,13 @@ pub enum GameApiError {
 // ---------------------------------------------------------------------------
 // Response / request types
 // ---------------------------------------------------------------------------
+
+/// Admission status; independent of wallet authentication and game recovery.
+#[derive(Debug, Deserialize)]
+pub struct GameAvailability {
+    pub available: bool,
+    pub paused: bool,
+}
 
 /// Response from `POST /auth/challenge`.
 #[derive(Debug, Deserialize)]
@@ -182,12 +191,17 @@ pub struct XSolFundResponse {
 /// returns `transaction not found` from a mainnet tx-signature lookup.
 /// Surfaced 2026-05-09 by the human-vs-agent devnet E2E.
 pub struct GameApiClient {
-    inner: reqwest::Client,
+    inner: api_transport::Client,
     base_url: String,
     network: Option<String>,
 }
 
 impl GameApiClient {
+    pub async fn availability(&self) -> Result<GameAvailability, GameApiError> {
+        let response = self.inner.get(self.url("/availability")).send().await?;
+        Ok(Self::check_status(response).await?.json().await?)
+    }
+
     /// Create a new client pointing at `base_url` (e.g. `http://localhost:8080`).
     ///
     /// Trailing slashes are stripped from the base URL. The client defaults
@@ -202,10 +216,18 @@ impl GameApiClient {
             .map_err(GameApiError::ClientBuild)?;
 
         Ok(Self {
-            inner,
+            inner: api_transport::Client::new(inner, std::time::Duration::from_secs(10)),
             base_url: base_url.trim_end_matches('/').to_string(),
             network: None,
         })
+    }
+
+    pub fn with_transport(
+        mut self,
+        transport: std::sync::Arc<dyn api_transport::RequestTransport>,
+    ) -> Self {
+        self.inner = self.inner.with_transport(transport);
+        self
     }
 
     /// Attach a `?network=` query param to every outgoing request. `None`

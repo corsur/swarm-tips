@@ -1,0 +1,15 @@
+[package]
+name = "api-transport"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+http = "1"
+serde_json = { workspace = true }
+wiremock = "0.6"

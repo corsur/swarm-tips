@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::{future::Future, pin::Pin};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 /// Re-export `Message` so downstream crates don't need a direct `tokio-tungstenite` dep.
@@ -19,16 +20,46 @@ pub fn text_message(text: String) -> Message {
     Message::Text(text)
 }
 
-/// Type alias for the write half of a WebSocket connection.
-pub type WsSink = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    Message,
+/// A realtime connection can use a network socket or a bounded in-process
+/// channel. The typed message protocol and reconnect policy are shared.
+pub type WsSink =
+    Pin<Box<dyn futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Send>>;
+pub type WsStream = Pin<
+    Box<
+        dyn futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+            + Send,
+    >,
 >;
+pub type ConnectFuture = Pin<Box<dyn Future<Output = Result<WsConnection>> + Send>>;
 
-/// Type alias for the read half of a WebSocket connection.
-pub type WsStream = futures_util::stream::SplitStream<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
->;
+/// Credentials and routing hints are validated by the receiving game module
+/// for both transports; selecting a connector grants no session authority.
+pub struct ConnectRequest {
+    pub base_url: String,
+    pub jwt: String,
+    pub network: Option<String>,
+    pub session: Option<String>,
+}
+
+pub trait RealtimeConnector: Send + Sync {
+    fn connect(&self, request: ConnectRequest) -> ConnectFuture;
+}
+
+pub struct WebSocketConnector;
+
+impl RealtimeConnector for WebSocketConnector {
+    fn connect(&self, request: ConnectRequest) -> ConnectFuture {
+        Box::pin(async move {
+            WsConnection::connect_with_session(
+                &request.base_url,
+                &request.jwt,
+                request.network.as_deref(),
+                request.session.as_deref(),
+            )
+            .await
+        })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Message types
@@ -186,7 +217,34 @@ impl WsConnection {
             .await
             .context("WebSocket connect failed")?;
         let (sink, stream) = ws_stream.split();
-        Ok(Self { sink, stream })
+        Ok(Self {
+            sink: Box::pin(sink),
+            stream: Box::pin(stream),
+        })
+    }
+
+    /// Construct a connection from bounded channels supplied by the game
+    /// runtime after authenticating the caller. Channel closure is a disconnect.
+    pub fn from_channels(
+        sender: tokio::sync::mpsc::Sender<Message>,
+        receiver: tokio::sync::mpsc::Receiver<
+            Result<Message, tokio_tungstenite::tungstenite::Error>,
+        >,
+    ) -> Self {
+        let sink = futures_util::sink::unfold(sender, |sender, message| async move {
+            sender
+                .send(message)
+                .await
+                .map_err(|_| tokio_tungstenite::tungstenite::Error::ConnectionClosed)?;
+            Ok(sender)
+        });
+        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|message| (message, receiver))
+        });
+        Self {
+            sink: Box::pin(sink),
+            stream: Box::pin(stream),
+        }
     }
 
     /// Split the connection into independent sink and stream halves.
@@ -306,14 +364,7 @@ impl WsConnection {
 
     /// Block until the next incoming chat message.
     ///
-    /// DELIBERATELY UNBOUNDED, unlike the `wait_for_match_found` /
-    /// `wait_for_game_ready` / `wait_for_reveal_data` siblings, which carry
-    /// their own deadlines. A protocol step has a known upper bound; "the
-    /// opponent types something" does not, and the right window differs per
-    /// caller (opener delay vs turn budget vs batch window). Every caller
-    /// therefore wraps this in `tokio::time::timeout` — grok-agent does so at
-    /// all three of its call sites. Do NOT call it bare: without a caller-side
-    /// timeout it loops until the stream errors or closes.
+    /// Bounded to ten minutes. Callers may impose a shorter turn budget.
     pub async fn wait_for_chat(&mut self) -> Result<String> {
         // Bounded like every sibling wait_for_*. This was the only one looping
         // with no deadline: if the opponent never speaks, the caller blocked
@@ -543,5 +594,35 @@ mod tests {
     fn parse_invalid_json() {
         let msg = parse_server_message("not json");
         assert!(matches!(msg, ServerMessage::Unknown));
+    }
+    #[tokio::test]
+    async fn channel_connection_preserves_protocol_backpressure_and_disconnect() {
+        let (to_game, mut from_client) = tokio::sync::mpsc::channel(1);
+        let (to_client, from_game) = tokio::sync::mpsc::channel(1);
+        let capacity_probe = to_game.clone();
+        let mut connection = WsConnection::from_channels(to_game, from_game);
+        connection.send_chat("first").await.unwrap();
+        assert!(matches!(
+            capacity_probe.try_send(text_message("second".into())),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+        ));
+        drop(capacity_probe);
+        assert_eq!(
+            from_client.recv().await.unwrap(),
+            text_message(r#"{"type":"chat","text":"first"}"#.to_string())
+        );
+        to_client.send(Ok(Message::Ping(vec![1, 2]))).await.unwrap();
+        let reply = tokio::spawn(async move {
+            assert_eq!(from_client.recv().await.unwrap(), Message::Pong(vec![1, 2]));
+            to_client
+                .send(Ok(text_message(r#"{"type":"chat","text":"reply"}"#.into())))
+                .await
+                .unwrap();
+        });
+        assert!(
+            matches!(connection.recv_next().await.unwrap(), ServerMessage::Chat { text } if text == "reply")
+        );
+        reply.await.unwrap();
+        assert!(connection.recv_next().await.is_err());
     }
 }

@@ -416,6 +416,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "api-transport"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "ark-bn254"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2377,6 +2390,7 @@ name = "game-api-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "api-transport",
  "futures-util",
  "reqwest 0.12.28",
  "serde",
@@ -3442,6 +3456,7 @@ name = "mcp-server"
 version = "0.7.1"
 dependencies = [
  "anyhow",
+ "api-transport",
  "axum",
  "base64 0.22.1",
  "bincode",
