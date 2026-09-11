@@ -132,6 +132,7 @@ pub async fn initialize_with_dependencies(
     ));
 
     let game_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
+    let database_id = game_db.get_options().database_id.clone();
     let (rpc_url_mainnet, rpc_url_devnet) = load_per_network_rpcs(&cfg).await;
     let mut game_sessions = GameSessionManager::new(
         cfg.game_api_url.clone(),
@@ -254,6 +255,7 @@ pub async fn initialize_with_dependencies(
     );
 
     Ok(McpRuntime {
+        database_id,
         router,
         cancellation: ct,
         bind_addr: format!("{}:{}", cfg.host, cfg.port),
@@ -262,12 +264,17 @@ pub async fn initialize_with_dependencies(
 
 /// Independently owned MCP state and transport lifecycle for an embedding host.
 pub struct McpRuntime {
+    database_id: String,
     router: axum::Router,
     cancellation: tokio_util::sync::CancellationToken,
     bind_addr: String,
 }
 
 impl McpRuntime {
+    pub fn database_id(&self) -> &str {
+        &self.database_id
+    }
+
     pub fn router(&self) -> axum::Router {
         self.router.clone()
     }
@@ -360,8 +367,18 @@ fn log_startup(cfg: &StartupConfig) {
     );
 }
 
+async fn open_firestore_result(
+    project_id: &str,
+) -> Result<FirestoreDb, firestore::errors::FirestoreError> {
+    let mut options = firestore::FirestoreDbOptions::new(project_id.to_owned());
+    if let Ok(database_id) = std::env::var("FIRESTORE_DATABASE_ID") {
+        options = options.with_database_id(database_id);
+    }
+    FirestoreDb::with_options(options).await
+}
+
 async fn open_firestore(project_id: &str) -> FirestoreDb {
-    FirestoreDb::new(project_id)
+    open_firestore_result(project_id)
         .await
         .expect("Firestore client must initialize at startup")
 }
@@ -375,7 +392,7 @@ async fn build_discovery_state(
     gcp_project_id: &str,
     rpc_client: &reqwest::Client,
 ) -> Option<Arc<DiscoveryState>> {
-    let discovery_db = match FirestoreDb::new(gcp_project_id).await {
+    let discovery_db = match open_firestore_result(gcp_project_id).await {
         Ok(db) => Some(db),
         Err(e) => {
             tracing::error!(
