@@ -63,6 +63,8 @@ struct SourceBackoff {
 pub struct ListingsState {
     pub db: FirestoreDb,
     pub http_client: reqwest::Client,
+    shillbot_client: api_transport::Client,
+    shillbot_url: String,
     cache: Mutex<Option<ListingsCache>>,
     backoff: Mutex<SourceBackoff>,
 }
@@ -88,10 +90,27 @@ impl ListingsState {
         });
         Self {
             db,
+            shillbot_client: api_transport::Client::new(
+                http_client.clone(),
+                std::time::Duration::from_secs(30),
+            ),
+            shillbot_url: "https://api.shillbot.org".into(),
             http_client,
             cache: Mutex::new(None),
             backoff: Mutex::new(SourceBackoff::default()),
         }
+    }
+
+    pub fn with_shillbot(
+        mut self,
+        url: String,
+        transport: Option<Arc<dyn api_transport::RequestTransport>>,
+    ) -> Self {
+        self.shillbot_url = url;
+        if let Some(transport) = transport {
+            self.shillbot_client = self.shillbot_client.with_transport(transport);
+        }
+        self
     }
 }
 
@@ -344,7 +363,12 @@ async fn fetch_all_sources(state: &Arc<ListingsState>) -> Vec<sources::FetchResu
         set
     };
     vec![
-        fetch_if_not_skipped(&skipped, "shillbot", sources::fetch_shillbot(client)).await,
+        fetch_if_not_skipped(
+            &skipped,
+            "shillbot",
+            sources::fetch_shillbot(&state.shillbot_client, &state.shillbot_url),
+        )
+        .await,
         {
             random_sleep_ms(300, 800).await;
             fetch_if_not_skipped(&skipped, "botbounty", sources::fetch_botbounty(client)).await

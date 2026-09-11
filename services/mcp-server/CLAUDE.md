@@ -134,7 +134,19 @@ Game requests retain their typed `game-api-client` methods. `api-transport` keep
 request credentials, payloads, response status and deadlines identical for HTTP
 and injected adapters. The private adapter must dispatch through the owning
 module's authenticated application boundary; it may not bypass its validation
-or quotas. Shorts remain remote even when Shillbot task operations are embedded.
+or quotas. Shorts remain remote even when Shillbot task operations are embedded. First-party
+Shillbot listing refreshes use that same selected transport; external listing
+sources retain their own HTTP client.
+
+Both /health and /ready are cheap local checks. Readiness becomes unavailable
+when the MCP module begins shutdown; probes do not read the blockchain or wake a
+remote game service. Dependency failures remain visible in operation telemetry.
+
+Embedding images must also include the existing Node/tsx transaction-builder
+wrapper and its public SDK dependencies at the pinned public revision. That
+helper remains an unsigned-transaction builder, not a proof runner. Its execution
+is limited to one child, 60 seconds, and 64 KiB per output stream; request
+cancellation kills the child without replaying the operation.
 
 Realtime connections share message parsing and reconnection checks. Network mode
 uses WebSockets; the injectable connector supports bounded channels. Shutdown
