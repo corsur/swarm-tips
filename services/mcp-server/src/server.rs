@@ -5237,7 +5237,8 @@ async fn run_build_verify_tx(
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
 
-    let output = tokio::process::Command::new("tsx")
+    let mut command = tokio::process::Command::new("tsx");
+    command
         .current_dir(script_dir)
         .arg(&script_path)
         .arg("--task-id")
@@ -5255,10 +5256,13 @@ async fn run_build_verify_tx(
         .arg("--global-state")
         .arg(&vdata.global_state)
         .arg("--rpc")
-        .arg(rpc_url)
-        .output()
+        .arg(rpc_url);
+    let output = crate::bounded_builder_output(command, std::time::Duration::from_secs(60))
         .await
         .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                return McpError::internal_error("transaction builder busy; retry later".to_string(), None);
+            }
             tracing::error!(service = "mcp-server", error = %e, "failed to spawn unified-client verify wrapper");
             McpError::internal_error(
                 "verify-tx builder unavailable — details logged server-side".to_string(),
@@ -5267,10 +5271,8 @@ async fn run_build_verify_tx(
         })?;
 
     if !output.status.success() {
-        // Raw subprocess stderr stays in the server log; forwarding it to the
-        // caller leaked file paths and internal stack frames to agents.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!(service = "mcp-server", stderr = %stderr, "unified-client verify wrapper failed");
+        // Subprocess errors can contain RPC credentials or supplied content.
+        tracing::error!(service = "mcp-server", status = ?output.status.code(), "unified-client verify wrapper failed");
         return Err(McpError::internal_error(
             "verify-tx build failed — details logged server-side; retry, and report the task_id if it persists".to_string(),
             None,

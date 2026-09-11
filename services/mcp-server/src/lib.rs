@@ -904,15 +904,6 @@ async fn build_verify_tx_handler(
         return (StatusCode::BAD_REQUEST, "missing required fields").into_response();
     }
 
-    static BUILDER_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
-    let Ok(_permit) = BUILDER_SLOTS.try_acquire() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [("Retry-After", "1")],
-            "transaction builder busy",
-        )
-            .into_response();
-    };
     let script_path = std::env::var("BUILD_VERIFY_SCRIPT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
@@ -969,24 +960,35 @@ async fn build_verify_tx_handler(
             )
                 .into_response()
         }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("Retry-After", "1"), ("Access-Control-Allow-Origin", "*")],
+            "transaction builder busy",
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!(service = "mcp-server", error = %e, "spawn failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 cors_headers,
-                format!("spawn: {e}"),
+                "transaction builder unavailable",
             )
                 .into_response()
         }
     }
 }
 
+static BUILDER_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
 /// Bound subprocess memory and lifetime. Dropping a cancelled request kills
 /// the child; failures are never retried after uncertain completion.
-async fn bounded_builder_output(
+pub(crate) async fn bounded_builder_output(
     mut command: tokio::process::Command,
     deadline: std::time::Duration,
 ) -> std::io::Result<std::process::Output> {
+    let _permit = BUILDER_SLOTS.try_acquire().map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::WouldBlock, "transaction builder busy")
+    })?;
     use tokio::io::AsyncReadExt;
     async fn read(mut stream: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
         let mut bytes = Vec::new();
@@ -1052,6 +1054,16 @@ mod readiness_tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        // Every caller (HTTP and MCP) acquires inside the shared function.
+        // Busy rejection happens before spawning even a nonexistent executable.
+        let _held = super::BUILDER_SLOTS.acquire().await.unwrap();
+        let error = super::bounded_builder_output(
+            tokio::process::Command::new("must-not-be-spawned"),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
     }
 
     #[tokio::test]
