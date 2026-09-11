@@ -118,10 +118,13 @@ pub async fn initialize_with_dependencies(
         .build()
         .context("reqwest client must build")?;
 
-    let listings_state = Arc::new(ListingsState::new(
-        open_firestore(&cfg.gcp_project_id).await,
-        rpc_client.clone(),
-    ));
+    let listings_state = Arc::new(
+        ListingsState::new(
+            open_firestore(&cfg.gcp_project_id).await,
+            rpc_client.clone(),
+        )
+        .with_shillbot(cfg.orchestrator_url.clone(), dependencies.shillbot.clone()),
+    );
     let discovery_state = build_discovery_state(&cfg.gcp_project_id, &rpc_client).await;
 
     let traffic_stats_state = Arc::new(traffic_stats::TrafficStatsState::new(
@@ -252,6 +255,7 @@ pub async fn initialize_with_dependencies(
         rpc_url_devnet,
         inbox_http_state,
         services,
+        ct.clone(),
     );
 
     Ok(McpRuntime {
@@ -482,6 +486,7 @@ fn build_router(
     rpc_url_devnet: String,
     inbox_http_state: Arc<inbox_http::InboxHttpState>,
     mcp_services: McpServices,
+    shutdown: tokio_util::sync::CancellationToken,
 ) -> axum::Router {
     let mainnet_for_verify = rpc_url_mainnet.clone();
     let devnet_for_verify = rpc_url_devnet.clone();
@@ -519,12 +524,11 @@ fn build_router(
             "/internal/inbox/ack-ids",
             inbox_http::ack_ids_handler(Arc::clone(&inbox_http_state)),
         )
-        // Readiness / observability: the game-api + Solana RPC dependency check.
-        // Wired to the readiness probe only — a failing dependency drains traffic,
-        // it never kills the process.
+        // Initialization has finished before the router is exposed. Readiness
+        // observes this module's lifecycle, without dependency calls per probe.
         .route(
             "/ready",
-            axum::routing::get(build_readiness_handler(rpc_url_mainnet.clone())),
+            axum::routing::get(build_readiness_handler(shutdown)),
         )
         .route(
             "/internal/scaling-metric",
@@ -862,70 +866,16 @@ async fn track_inflight(
 /// the ENTIRE tool surface offline to guard the handful of game tools, which
 /// surface game-api errors per-call anyway (2026-07-24 outage: stuck NotReady
 /// rollout).
-/// Wired to the readiness probe and `/ready` ONLY, never liveness: a failing
-/// dependency should drain traffic from this pod, never kill the (healthy) process.
-///
-/// `health_rpc_url` is the RESOLVED mainnet RPC the service actually serves with
-/// (Secret Manager, via `load_solana_rpc_url`) — not a re-read of `SOLANA_RPC_URL`,
-/// which would let readiness gate on a different endpoint than the one in use.
+/// Cheap module readiness. Operational dependency checks belong to explicit
+/// diagnostics and request error telemetry, never routine readiness probes.
 fn build_readiness_handler(
-    health_rpc_url: String,
-) -> impl Fn() -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = (axum::http::StatusCode, &'static str)> + Send + 'static>,
-> + Clone
-       + Send
-       + 'static {
-    let health_game_url = load_env_or("GAME_API_URL", "http://game-api:8080");
-    let started_at = std::time::Instant::now();
+    shutdown: tokio_util::sync::CancellationToken,
+) -> impl Fn() -> std::future::Ready<(axum::http::StatusCode, &'static str)> + Clone {
     move || {
-        let rpc_url = health_rpc_url.clone();
-        let game_url = health_game_url.clone();
-        Box::pin(async move {
-            // 60s grace period for Autopilot WI token warmup
-            if started_at.elapsed() < std::time::Duration::from_secs(60) {
-                return (axum::http::StatusCode::OK, "ok (startup grace)");
-            }
-
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(2))
-                .build()
-                .unwrap_or_default();
-
-            let game_ok = client
-                .get(format!("{game_url}/health"))
-                .send()
-                .await
-                .map(|r| r.status().is_success())
-                .unwrap_or(false);
-
-            let rpc_ok = client
-                .post(&rpc_url)
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getHealth"
-                }))
-                .send()
-                .await
-                .map(|r| r.status().is_success())
-                .unwrap_or(false);
-
-            if !game_ok {
-                tracing::warn!(
-                    service = "mcp-server",
-                    game_api = %game_url,
-                    "game-api unreachable from readiness probe (expected while scaled to zero)"
-                );
-            }
-
-            if rpc_ok {
-                (axum::http::StatusCode::OK, "ok")
-            } else {
-                (
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    "solana rpc unreachable",
-                )
-            }
+        std::future::ready(if shutdown.is_cancelled() {
+            (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
+        } else {
+            (axum::http::StatusCode::OK, "ok")
         })
     }
 }
@@ -954,6 +904,15 @@ async fn build_verify_tx_handler(
         return (StatusCode::BAD_REQUEST, "missing required fields").into_response();
     }
 
+    static BUILDER_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    let Ok(_permit) = BUILDER_SLOTS.try_acquire() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("Retry-After", "1")],
+            "transaction builder busy",
+        )
+            .into_response();
+    };
     let script_path = std::env::var("BUILD_VERIFY_SCRIPT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
@@ -966,7 +925,8 @@ async fn build_verify_tx_handler(
         .unwrap_or_else(|| std::path::Path::new("."));
 
     let network_str = body["network"].as_str().unwrap_or("mainnet");
-    let output = tokio::process::Command::new("tsx")
+    let mut command = tokio::process::Command::new("tsx");
+    command
         .current_dir(script_dir)
         .arg(&script_path)
         .arg("--task-id")
@@ -986,9 +946,8 @@ async fn build_verify_tx_handler(
         .arg("--rpc")
         .arg(rpc_url)
         .arg("--network")
-        .arg(network_str)
-        .output()
-        .await;
+        .arg(network_str);
+    let output = bounded_builder_output(command, std::time::Duration::from_secs(60)).await;
 
     let cors_headers = [("Access-Control-Allow-Origin", "*")];
 
@@ -1002,12 +961,11 @@ async fn build_verify_tx_handler(
                 .into_response()
         }
         Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            tracing::error!(service = "mcp-server", stderr = %stderr, "build-verify-tx failed");
+            tracing::error!(service = "mcp-server", status = ?out.status.code(), "build-verify-tx failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 cors_headers,
-                format!("build-verify-tx: {stderr}"),
+                "transaction builder failed",
             )
                 .into_response()
         }
@@ -1020,5 +978,91 @@ async fn build_verify_tx_handler(
             )
                 .into_response()
         }
+    }
+}
+
+/// Bound subprocess memory and lifetime. Dropping a cancelled request kills
+/// the child; failures are never retried after uncertain completion.
+async fn bounded_builder_output(
+    mut command: tokio::process::Command,
+    deadline: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    use tokio::io::AsyncReadExt;
+    async fn read(mut stream: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        (&mut stream).take(65_537).read_to_end(&mut bytes).await?;
+        if bytes.len() > 65_536 {
+            return Err(std::io::Error::other(
+                "transaction builder output exceeds limit",
+            ));
+        }
+        Ok(bytes)
+    }
+    let mut child = command
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("stderr unavailable"))?;
+    let (status, stdout, stderr) = tokio::time::timeout(deadline, async {
+        tokio::try_join!(child.wait(), read(stdout), read(stderr))
+    })
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "transaction builder deadline exceeded",
+        )
+    })??;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn transaction_builder_output_and_lifetime_are_bounded() {
+        use std::time::Duration;
+        let mut good = tokio::process::Command::new("sh");
+        good.args(["-c", "printf synthetic-transaction"]);
+        let output = super::bounded_builder_output(good, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"synthetic-transaction");
+        let mut large = tokio::process::Command::new("sh");
+        large.args(["-c", "printf '%070000d' 0"]);
+        assert!(super::bounded_builder_output(large, Duration::from_secs(2))
+            .await
+            .is_err());
+        let mut slow = tokio::process::Command::new("sh");
+        slow.args(["-c", "exec sleep 30"]);
+        let error = super::bounded_builder_output(slow, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn readiness_follows_module_shutdown_without_network_dependencies() {
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let handler = super::build_readiness_handler(shutdown.clone());
+        assert_eq!(handler().await.0, axum::http::StatusCode::OK);
+        shutdown.cancel();
+        assert_eq!(
+            handler().await.0,
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }

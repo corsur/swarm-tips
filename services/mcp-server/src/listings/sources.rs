@@ -23,9 +23,10 @@ pub struct FetchResult {
 ///
 /// The per-source warn on failure moves from a static literal to a dynamic
 /// field, which is structurally equivalent in Cloud Logging.
-async fn timed_fetch<F>(source: &str, fut: F) -> FetchResult
+async fn timed_fetch<F, E>(source: &str, fut: F) -> FetchResult
 where
-    F: std::future::Future<Output = Result<(Vec<RawListing>, u16), reqwest::Error>>,
+    F: std::future::Future<Output = Result<(Vec<RawListing>, u16), E>>,
+    E: std::fmt::Display,
 {
     let start = Instant::now();
     let result = fut.await;
@@ -164,7 +165,7 @@ fn parse_botbounty(b: &serde_json::Value) -> Option<RawListing> {
 /// landing page promises agent earning opportunities, and the DAO's own
 /// marketplace is the most agent-native one we have. Without this source the
 /// frontend never auto-picked up new Shillbot campaigns.
-pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
+pub async fn fetch_shillbot(client: &api_transport::Client, base_url: &str) -> FetchResult {
     timed_fetch("shillbot", async {
         // Orchestrator's /tasks defaults to ~10 results without ?limit.
         // First-party Shillbot is our highest-trust source — pull everything
@@ -174,14 +175,17 @@ pub async fn fetch_shillbot(client: &reqwest::Client) -> FetchResult {
         // 2026-05-11 when
         // 9 of 15 mainnet tasks were silently truncated from swarm.tips.
         let res = client
-            .get("https://api.shillbot.org/tasks?limit=200")
+            .get(format!(
+                "{}/tasks?limit=200",
+                base_url.trim_end_matches('/')
+            ))
             .send()
             .await?;
 
         let status = res.status().as_u16();
         if !res.status().is_success() {
             tracing::warn!(source = "shillbot", status, "non-success response");
-            return Ok::<(Vec<RawListing>, u16), reqwest::Error>((vec![], status));
+            return Ok::<(Vec<RawListing>, u16), api_transport::TransportError>((vec![], status));
         }
 
         let data: serde_json::Value = res.json().await?;
@@ -656,6 +660,58 @@ fn parse_naive_datetime(val: Option<&serde_json::Value>) -> Option<DateTime<Utc>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SelectedTransport {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        fail: bool,
+    }
+
+    impl api_transport::RequestTransport for SelectedTransport {
+        fn execute(&self, request: reqwest::Request) -> api_transport::TransportFuture {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let fail = self.fail;
+            Box::pin(async move {
+                assert_eq!(
+                    request.url().as_str(),
+                    "https://shillbot.invalid/tasks?limit=200"
+                );
+                if fail {
+                    return Err(api_transport::TransportError::Unavailable(
+                        "synthetic failure".into(),
+                    ));
+                }
+                Ok(http::Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(br#"{"tasks":[]}"#.to_vec())
+                    .unwrap()
+                    .into())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn first_party_listing_uses_selected_transport_without_network_fallback() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        for fail in [false, true] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let client = api_transport::Client::new(
+                reqwest::Client::new(),
+                std::time::Duration::from_secs(1),
+            )
+            .with_transport(Arc::new(SelectedTransport {
+                calls: Arc::clone(&calls),
+                fail,
+            }));
+            let result = fetch_shillbot(&client, "https://shillbot.invalid").await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(result.health.status_code, if fail { 0 } else { 200 });
+            assert_eq!(result.health.error.is_some(), fail);
+        }
+    }
 
     #[test]
     fn parse_0xwork_open_task() {
