@@ -117,14 +117,8 @@ impl ListingsState {
 /// Construct the reqwest client used for *external* listing scrapes. Carries
 /// a Chrome-on-Mac User-Agent plus the full bundle of `Sec-Fetch-*`,
 /// `Accept`, `Accept-Language`, `Accept-Encoding`, and `DNT` headers a real
-/// browser would send. Header shape is one of two stealth layers — the other
-/// is the pinned NAT egress IP (see `coordination-app/infra/networking.tf`),
-/// which lets us control per-IP reputation directly. Doesn't defeat JA3
-/// fingerprinting on its own; sources that need a real browser TLS handshake
-/// (currently moltlaunch behind Cloudflare) shell out to the
-/// `listings-scraper` sibling binary, which links BoringSSL via rquest in
-/// its own process to keep the symbol footprint isolated from this crate's
-/// solana-sdk → openssl-sys link graph.
+/// browser would send. The retired Moltlaunch source no longer invokes a TLS
+/// scraper subprocess; active sources use this bounded HTTP client.
 fn build_scrape_client() -> reqwest::Result<reqwest::Client> {
     let mut headers = reqwest::header::HeaderMap::new();
     let h = |v: &'static str| reqwest::header::HeaderValue::from_static(v);
