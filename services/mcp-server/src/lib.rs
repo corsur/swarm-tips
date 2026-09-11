@@ -85,9 +85,33 @@ struct StartupConfig {
     port: u16,
 }
 
+/// Module transports are selected once at startup. Omitted adapters retain
+/// standalone HTTP behavior; a selected adapter never falls back after a write.
+#[derive(Default)]
+pub struct McpDependencies {
+    pub game: Option<Arc<dyn api_transport::RequestTransport>>,
+    pub shillbot: Option<Arc<dyn api_transport::RequestTransport>>,
+    pub realtime: Option<Arc<dyn game_api_client::ws::RealtimeConnector>>,
+}
+
+fn game_proxy(url: &str, dependencies: &McpDependencies) -> anyhow::Result<GameApiProxy> {
+    let proxy = GameApiProxy::new(url.to_owned())?;
+    Ok(match &dependencies.game {
+        Some(transport) => proxy.with_transport(Arc::clone(transport)),
+        None => proxy,
+    })
+}
+
 pub async fn initialize() -> anyhow::Result<McpRuntime> {
+    initialize_with_dependencies(McpDependencies::default()).await
+}
+
+pub async fn initialize_with_dependencies(
+    dependencies: McpDependencies,
+) -> anyhow::Result<McpRuntime> {
     let cfg = load_startup_config().await?;
     log_startup(&cfg);
+    let ct = tokio_util::sync::CancellationToken::new();
 
     let rpc_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -109,13 +133,20 @@ pub async fn initialize() -> anyhow::Result<McpRuntime> {
 
     let game_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
     let (rpc_url_mainnet, rpc_url_devnet) = load_per_network_rpcs(&cfg).await;
-    let game_sessions = Arc::new(GameSessionManager::new(
+    let mut game_sessions = GameSessionManager::new(
         cfg.game_api_url.clone(),
         cfg.solana_rpc_url.clone(),
         rpc_url_mainnet.clone(),
         rpc_url_devnet.clone(),
         Arc::clone(&game_db),
-    ));
+    );
+    if let Some(transport) = &dependencies.game {
+        game_sessions = game_sessions.with_transport(Arc::clone(transport));
+    }
+    if let Some(connector) = &dependencies.realtime {
+        game_sessions = game_sessions.with_realtime(Arc::clone(connector));
+    }
+    let game_sessions = Arc::new(game_sessions.with_shutdown(ct.child_token()));
     let session_binding = Arc::new(McpSessionBinding::new(Arc::clone(&game_db)));
     // Durable webhook delivery (W4): send_message triggers the
     // agent-webhook-delivery workflow. No project id (local dev) → None, and
@@ -160,18 +191,20 @@ pub async fn initialize() -> anyhow::Result<McpRuntime> {
     // session-binding + inbox handles the MCP tools use, with its own
     // game-api adapter for the auth-challenge passthrough.
     let inbox_http_state = Arc::new(inbox_http::InboxHttpState {
-        game_api: GameApiProxy::new(cfg.game_api_url.clone())?,
+        game_api: game_proxy(&cfg.game_api_url, &dependencies)?,
         session_binding: Arc::clone(&session_binding),
         inbox: Arc::clone(&inbox_state),
         inbox_seed_wallets: inbox_seed_wallets.clone(),
     });
 
+    let mut orchestrator =
+        OrchestratorProxy::new(cfg.orchestrator_url.clone(), cfg.shorts_api_url.clone());
+    if let Some(transport) = &dependencies.shillbot {
+        orchestrator = orchestrator.with_transport(Arc::clone(transport));
+    }
     let shared = Arc::new(SharedState {
-        orchestrator: OrchestratorProxy::new(
-            cfg.orchestrator_url.clone(),
-            cfg.shorts_api_url.clone(),
-        ),
-        game_api: GameApiProxy::new(cfg.game_api_url.clone())?,
+        orchestrator,
+        game_api: game_proxy(&cfg.game_api_url, &dependencies)?,
         solana_rpc_url: cfg.solana_rpc_url.clone(),
         solana_rpc_url_mainnet: rpc_url_mainnet.clone(),
         solana_rpc_url_devnet: rpc_url_devnet.clone(),
@@ -185,7 +218,6 @@ pub async fn initialize() -> anyhow::Result<McpRuntime> {
         show_testnet_tools,
     });
 
-    let ct = tokio_util::sync::CancellationToken::new();
     // Stateless transport: the rmcp session is otherwise pod-local (in-memory
     // LocalSessionManager), so with KEDA min-2 a multi-step agent flow that
     // round-robins to the other pod 404s "Session not found". In stateless mode

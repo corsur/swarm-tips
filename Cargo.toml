@@ -7,6 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+api-transport = { path = "crates/api-transport" }
 reputation-indexer = { path = "crates/reputation-indexer" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

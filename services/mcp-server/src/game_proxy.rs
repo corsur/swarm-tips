@@ -12,11 +12,31 @@ pub struct GameApiProxy {
 }
 
 impl GameApiProxy {
+    pub async fn ensure_available(&self) -> Result<(), McpServiceError> {
+        let status = self
+            .client
+            .availability()
+            .await
+            .map_err(map_game_api_error)?;
+        if status.paused || !status.available {
+            return Err(McpServiceError::OrchestratorError("New games are temporarily paused. Existing games can still finish; try again later.".into()));
+        }
+        Ok(())
+    }
+
     pub fn new(base_url: String) -> anyhow::Result<Self> {
         let client = game_api_client::GameApiClient::new(&base_url)
             .map_err(|e| anyhow::anyhow!("game-api client build failed: {e}"))?;
 
         Ok(Self { client })
+    }
+
+    pub fn with_transport(
+        mut self,
+        transport: std::sync::Arc<dyn api_transport::RequestTransport>,
+    ) -> Self {
+        self.client = self.client.with_transport(transport);
+        self
     }
 
     /// Request an auth challenge nonce for a Solana wallet. Phase 1 of the

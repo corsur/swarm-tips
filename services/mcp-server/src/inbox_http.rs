@@ -427,7 +427,9 @@ fn client_ip_from_headers(headers: &axum::http::HeaderMap) -> String {
 /// in PR #6 — replaces the `SenderProvenance::unknown()` the twins used to log.
 fn provenance_from_headers(headers: &axum::http::HeaderMap) -> inbox::SenderProvenance {
     inbox::SenderProvenance {
-        client_ip: client_ip_from_headers(headers),
+        client_ip: api_transport::current_caller()
+            .map(|caller| caller.peer.ip().to_string())
+            .unwrap_or_else(|| client_ip_from_headers(headers)),
         user_agent: headers
             .get(axum::http::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())

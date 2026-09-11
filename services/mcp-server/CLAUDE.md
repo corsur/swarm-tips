@@ -111,20 +111,37 @@ This is the architectural payoff of the unified-list-tools strategic shift: new 
 ## Architecture
 
 ```
-External AI Agent (Claude Code, any MCP client)
-        │
-        │  Streamable HTTP (POST/GET https://mcp.swarm.tips/mcp)
+External AI agent / inbox browser
+        │ Streamable HTTP / inbox HTTP
         ▼
-   MCP Server (rmcp 1.3, axum, Streamable HTTP transport)
-   ├── route by tool name:
-   │   ├── game_*: proxy to game-api (https://api.coordination.game)
-   │   └── shillbot tools: proxy to orchestrator or construct Solana tx
-   │
-   ▼
-   Return MCP tool result to agent
+   MCP library router (same public catalogs and authorization)
+        ├── game client ── selected request transport ── game API router
+        ├── task proxy ─── selected request transport ── Shillbot API router
+        ├── game events ── selected realtime connector ─ game relay
+        └── video requests ── HTTP ── separate shorts API
+
+Standalone executable: HTTP + WebSocket adapters
+Private composition:   injected request + realtime adapters
 ```
 
-Domains: `mcp.swarm.tips` (free + earn), `mcp.shillbot.org` (complete Shillbot + video), `mcp.coordination.game` (complete game). They share one Cloud Run deployment but are not aliases at the MCP protocol layer. Each initialization response names the other two under `Related servers`, and each bare host exposes the same reciprocal directory at `/related-servers`.
+`src/lib.rs` owns initialization and the router. The thin standalone executable
+calls `run_standalone`; embedding calls `initialize_with_dependencies` and mounts
+`McpRuntime::router()`. Each dependency is selected once at startup. A failed or
+timed-out request never falls back to another transport, because a write may
+already have committed. The public workspace does not depend on private source.
+
+Game requests retain their typed `game-api-client` methods. `api-transport` keeps
+request credentials, payloads, response status and deadlines identical for HTTP
+and injected adapters. The private adapter must dispatch through the owning
+module's authenticated application boundary; it may not bypass its validation
+or quotas. Shorts remain remote even when Shillbot task operations are embedded.
+
+Realtime connections share message parsing and reconnection checks. Network mode
+uses WebSockets; the injectable connector supports bounded channels. Shutdown
+cancels active reads, reconnect backoff and connection attempts. This seam does
+not make game chat horizontally scalable or introduce shared chat storage.
+
+Domains: `mcp.swarm.tips` (free + earn), `mcp.shillbot.org` (complete Shillbot + video), `mcp.coordination.game` (complete game). They share one Cloud Run deployment but are not aliases at the MCP protocol layer. Each initialization response points to `list_related_servers`; that tool and the bare-host `/related-servers` endpoint share the reciprocal directory.
 
 ---
 

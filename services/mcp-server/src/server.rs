@@ -38,7 +38,11 @@ const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
 /// `X-Forwarded-For`. `None` when the header is absent or empty. Abuse/
 /// provenance telemetry only — logged to Cloud Logging, never persisted.
 fn client_ip_from_parts(parts: Option<&http::request::Parts>) -> Option<String> {
-    let raw = parts?
+    let parts = parts?;
+    if let Some(caller) = parts.extensions.get::<api_transport::Caller>() {
+        return Some(caller.peer.ip().to_string());
+    }
+    let raw = parts
         .headers
         .get(X_FORWARDED_FOR_HEADER)
         .and_then(|v| v.to_str().ok())?;
@@ -4137,6 +4141,16 @@ impl ServerHandler for SwarmTipsMcp {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        if matches!(
+            request.name.as_ref(),
+            "game_find_match" | "game_find_evm_match" | "xchain_find_match"
+        ) {
+            self.state
+                .game_api
+                .ensure_available()
+                .await
+                .map_err(|error| rmcp::ErrorData::internal_error(error.to_string(), None))?;
+        }
         if !crate::capabilities::listed_on(
             request.name.as_ref(),
             self.surface,
@@ -4149,8 +4163,16 @@ impl ServerHandler for SwarmTipsMcp {
                 "calling an unlisted tool by exact name for backwards compatibility"
             );
         }
+        let caller = context
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<api_transport::Caller>())
+            .cloned();
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        self.tool_router.call(tcc).await
+        match caller {
+            Some(caller) => api_transport::with_caller(caller, self.tool_router.call(tcc)).await,
+            None => self.tool_router.call(tcc).await,
+        }
     }
 
     async fn list_tools(
