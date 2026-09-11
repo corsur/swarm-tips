@@ -291,13 +291,29 @@ pub async fn run_standalone() -> anyhow::Result<()> {
     tracing::info!(service = "mcp-server", addr = %runtime.bind_addr, "MCP server ready");
     axum::serve(listener, runtime.router())
         .with_graceful_shutdown(async move {
-            if let Err(error) = tokio::signal::ctrl_c().await {
-                tracing::warn!(%error, "shutdown signal handler failed");
-            }
+            shutdown_signal().await;
             runtime.begin_shutdown();
         })
         .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let terminate = async {
+        #[cfg(unix)]
+        {
+            let mut signal =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("SIGTERM handler must initialize");
+            signal.recv().await;
+        }
+        #[cfg(not(unix))]
+        std::future::pending::<()>().await;
+    };
+    tokio::select! {
+        _ = terminate => {},
+        result = tokio::signal::ctrl_c() => { result.expect("SIGINT handler must initialize"); }
+    }
 }
 
 fn init_tracing() {
