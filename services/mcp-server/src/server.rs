@@ -89,6 +89,34 @@ mod provenance_tests {
     }
 
     #[test]
+    fn task_guidance_preserves_network_and_approval_policy() {
+        let mut task: crate::proxy::TaskSummary = serde_json::from_value(serde_json::json!({
+            "task_id": "c:t", "state": "claimed", "requires_approval": false
+        }))
+        .unwrap();
+        assert_eq!(
+            super::task_next_action(&task, "", Some("devnet"))["args"]["network"],
+            "devnet"
+        );
+        task.state = "submitted".into();
+        assert_eq!(
+            super::task_next_action(&task, "", Some("devnet"))["wait_for"],
+            "verification"
+        );
+        task.requires_approval = Some(true);
+        assert_eq!(
+            super::task_next_action(&task, "", None)["wait_for"],
+            "client_review"
+        );
+        task.state = "approved".into();
+        task.platform = Some(10);
+        assert_eq!(
+            super::task_next_action(&task, "", Some("devnet"))["wait_for"],
+            "proof_attestation"
+        );
+    }
+
+    #[test]
     fn client_ip_takes_leftmost_forwarded_hop() {
         // Single hop: the value itself.
         let p = parts_with_xff("203.0.113.7");
@@ -1129,7 +1157,7 @@ impl SwarmTipsMcp {
         );
         let mut result = serde_json::to_value(&task)
             .map_err(|error| invalid_input(&format!("could not serialize task: {error}")))?;
-        if task.state == "submitted" {
+        if task.state == "submitted" && task.requires_approval == Some(true) {
             result["decline_policy"] = serde_json::Value::String(
                 "Declining is not a transaction: do not approve. Permissionless expiry returns escrow to the campaign client after the verification timeout.".into(),
             );
@@ -1188,7 +1216,8 @@ impl SwarmTipsMcp {
             .create_campaign(crate::proxy::CreateCampaignParams {
                 wallet_pubkey: &wallet_pubkey,
                 brief,
-                budget_lamports: args.amount_lamports,
+                // Funding confirmation adds the actual escrow to the campaign budget.
+                budget_lamports: 0,
                 platform,
                 requires_approval: args.requires_approval.unwrap_or(false),
                 statement_lean: args.statement_lean.as_deref(),
@@ -1945,7 +1974,7 @@ impl SwarmTipsMcp {
         tracing::info!(
             task_id_arg = ?args.task_id,
             task_pda_arg = ?args.task_pda,
-            composite_score = attestation.composite_score,
+            composite_score = %attestation.composite_score,
             "shillbot_get_attestation: VOW v1 attestation returned"
         );
 
@@ -1979,24 +2008,12 @@ impl SwarmTipsMcp {
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        // The orchestrator's TaskResponse exposes `agent` (the claimer's
-        // wallet, null until claimed) and the campaign reference, but not
-        // the campaign's client wallet directly on the task. The proxy's
-        // `TaskSummary` doesn't carry the client either; we treat
-        // role-disambiguation as best-effort. AGENT-role hint is
-        // unambiguous (the wallet equals task.agent); CLIENT-role hint is
-        // surfaced when state == Submitted (the only state where the
-        // client's next action matters), and we let the client confirm
-        // their role themselves.
-        let role = match task.state.as_str() {
-            "submitted" => "client_or_agent",
-            _ => {
-                // We don't have task.agent in the TaskSummary. Default to
-                // "agent" — most callers are the claimer; CLIENT-role
-                // callers in any non-Submitted state have nothing to do
-                // anyway.
-                "agent"
-            }
+        let role = if task.client.as_deref() == Some(wallet_pubkey.as_str()) {
+            "client"
+        } else if task.agent.as_deref() == Some(wallet_pubkey.as_str()) {
+            "agent"
+        } else {
+            "observer"
         };
 
         // Compute the verification-timeout deadline from `submitted_at`,
@@ -2014,11 +2031,7 @@ impl SwarmTipsMcp {
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_default();
 
-        let next = next_action_for_task_state(
-            task.state.as_str(),
-            normalize_task_id(&args.task_id),
-            &escrow_expires_iso,
-        );
+        let next = task_next_action(&task, &escrow_expires_iso, network);
 
         tracing::info!(
             task_id = %args.task_id,
@@ -5391,6 +5404,39 @@ fn compute_expire_task_deadline(
     result
 }
 
+/// Add campaign-aware guidance and retain the selected network in executable hints.
+fn task_next_action(
+    task: &crate::proxy::TaskSummary,
+    expires: &str,
+    network: Option<&str>,
+) -> serde_json::Value {
+    let mut next = if task.state == "submitted" && task.requires_approval != Some(true) {
+        serde_json::json!({
+            "next_action": "wait",
+            "wait_for": if task.requires_approval == Some(false) { "verification" } else { "approval_policy_unknown" },
+            "hint": "Read task details for verification progress. Do not assume client approval is required when requires_approval is false or unknown. A workflow finishing does not establish that the task was paid.",
+        })
+    } else if task.state == "approved" && task.platform == Some(10) {
+        serde_json::json!({
+            "next_action": "wait",
+            "wait_for": "proof_attestation",
+            "hint": "Client approved. The proof attester checks the submitted proof and the settlement workflow follows. Read task details for check_detail and payment_amount; failed or held verification may need intervention.",
+        })
+    } else {
+        next_action_for_task_state(&task.state, &task.task_id, expires)
+    };
+    if let Some(args) = next
+        .get_mut("args")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        args.insert(
+            "network".into(),
+            serde_json::json!(network.unwrap_or("mainnet")),
+        );
+    }
+    next
+}
+
 /// Build the "next action" hint block for `shillbot_complete_task` based on
 /// the task's current state. Extracted so the handler stays under the 60-line
 /// rule and so the per-state logic is easy to scan.
@@ -5443,11 +5489,11 @@ fn next_action_for_task_state(
             "wait_for": "challenge_window",
             "next_tool": "shillbot_finalize_task",
             "args": { "task_id": task_id },
-            "hint": "Verified. A short, governance-set challenge window must elapse before finalize (seconds on mainnet today, not hours) — it's usually already passed by the time you're reading this. Call shillbot_finalize_task + shillbot_submit_tx with action=\"finalize\" to release the payment from escrow; if it's still too early you'll get a clear error, just retry shortly. Permissionless crank: you finalize your own payout, paying only ~0.00001 SOL gas to collect it — nobody finalizes it for you, so don't submit-and-forget.",
+            "hint": "Verified. A short, governance-set challenge window must elapse before finalize (seconds on mainnet today, not hours) — it's usually already passed by the time you're reading this. Call shillbot_finalize_task + shillbot_submit_tx with action=\"finalize\" to release the payment from escrow; if it's still too early you'll get a clear error, just retry shortly. The settlement workflow normally finalizes automatically; this permissionless action is a recovery option. Check the current state before signing.",
         }),
         "finalized" => serde_json::json!({
             "next_action": "done",
-            "hint": "Payment has been released from escrow. Call shillbot_check_earnings to confirm. Optionally call shillbot_get_attestation BEFORE the on-chain account closes if you want a portable VOW attestation — note the capture window (spec docs/specs/vow-v1.md §6).",
+            "hint": "Task settlement is complete. Inspect payment_amount: zero means no agent payout. Earnings summaries may lag settlement. Optionally call shillbot_get_attestation BEFORE the on-chain account closes if you want a portable VOW attestation — note the capture window (spec docs/specs/vow-v1.md §6).",
         }),
         "disputed" => serde_json::json!({
             "next_action": "wait",
