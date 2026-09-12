@@ -87,6 +87,16 @@ pub struct OrchestratorProxy {
 /// the upstream doesn't fail the whole response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskSummary {
+    #[serde(default)]
+    pub statement_lean: Option<String>,
+    #[serde(default)]
+    pub lean_policy: Option<u32>,
+    #[serde(default)]
+    pub check_detail: Option<String>,
+    #[serde(default)]
+    pub requires_approval: Option<bool>,
+    #[serde(default)]
+    pub chain: Option<String>,
     pub task_id: String,
     #[serde(default)]
     pub campaign_id: Option<String>,
@@ -202,20 +212,24 @@ pub struct AttestationResponse {
     pub version: String,
     pub network: String,
     pub program_id: String,
-    pub task_pda: String,
-    pub task_id: u64,
+    pub account: String,
+    pub account_kind: String,
+    // VOW v1 decimal strings preserve u64 values above JavaScript's safe integer range.
+    pub task_id: String,
     pub client: String,
     pub agent: String,
     pub state: String,
     pub platform: u8,
-    pub composite_score: u64,
-    pub score_max: u64,
+    pub composite_score: String,
+    pub score_max: String,
     pub verified_at: String,
     pub verification_hash: String,
     pub content_hash: String,
     pub content_id_hash: String,
-    pub switchboard_feed: String,
-    pub verifier_instructions: String,
+    pub oracle_feed: Option<String>,
+    pub extensions: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verifier_instructions: Option<String>,
 }
 
 /// Verification data needed to build a bundled crank+verify transaction.
@@ -1595,12 +1609,15 @@ mod tests {
         #[tokio::test]
         async fn get_task_details_forwards_devnet_query() {
             let server = MockServer::start().await;
+            let mut body = minimal_task_json("c:t", "open");
+            body["statement_lean"] = serde_json::json!("def statementProp : Prop := True\n");
+            body["lean_policy"] = serde_json::json!(2);
+            body["requires_approval"] = serde_json::json!(false);
+            body["check_detail"] = serde_json::json!("verified proof");
             Mock::given(method("GET"))
                 .and(path("/tasks/c:t"))
                 .and(query_param("network", "devnet"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(minimal_task_json("c:t", "open")),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_json(body.clone()))
                 .expect(1)
                 .mount(&server)
                 .await;
@@ -1611,6 +1628,15 @@ mod tests {
                 .await
                 .expect("ok");
             assert_eq!(task.task_id, "c:t");
+            let result = serde_json::to_value(task).unwrap();
+            for field in [
+                "statement_lean",
+                "lean_policy",
+                "requires_approval",
+                "check_detail",
+            ] {
+                assert_eq!(result[field], body[field]);
+            }
         }
 
         #[tokio::test]
@@ -2071,19 +2097,21 @@ mod tests {
                 "version": "vow/v1",
                 "network": "devnet",
                 "program_id": "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
-                "task_pda": "TaskPda111",
-                "task_id": 42,
+                "account": "TaskPda111",
+                "account_kind": "Task",
+                "task_id": "2590886815712535641",
                 "client": "ClientWallet1",
                 "agent": "AgentWallet1",
                 "state": "verified",
                 "platform": 0,
-                "composite_score": 910_000,
-                "score_max": 1_000_000,
+                "composite_score": "910000",
+                "score_max": "1000000",
                 "verified_at": "2026-07-15T00:00:00Z",
                 "verification_hash": "vh",
                 "content_hash": "ch",
                 "content_id_hash": "cih",
-                "switchboard_feed": "Feed111",
+                "oracle_feed": null,
+                "extensions": { "future_field": "preserved" },
                 "verifier_instructions": "instructions",
             })
         }
@@ -2242,9 +2270,11 @@ mod tests {
                 .await
                 .expect("ok");
             assert_eq!(att.version, "vow/v1");
-            assert_eq!(att.task_id, 42);
+            assert_eq!(att.task_id, "2590886815712535641");
             assert_eq!(att.agent, "AgentWallet1");
-            assert_eq!(att.composite_score, 910_000);
+            assert_eq!(att.composite_score, "910000");
+            let roundtrip = serde_json::to_value(&att).expect("serialize");
+            assert_eq!(roundtrip, full_attestation_json());
         }
 
         #[tokio::test]
@@ -2253,7 +2283,10 @@ mod tests {
             const PDA: &str = "GtBz1WcJs5tKMLQWaZdd3osYsGzK59onCvbNVPMaQSLU";
             let server = MockServer::start().await;
             let mut body = full_attestation_json();
-            body["task_pda"] = serde_json::json!(PDA);
+            body["account"] = serde_json::json!(PDA);
+            body.as_object_mut()
+                .unwrap()
+                .remove("verifier_instructions");
             Mock::given(method("GET"))
                 .and(path(format!("/tasks/by-pda/{PDA}/attestation")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(body))
@@ -2265,7 +2298,8 @@ mod tests {
                 .get_attestation_by_pda(PDA, None)
                 .await
                 .expect("ok");
-            assert_eq!(att.task_pda, PDA);
+            assert_eq!(att.account, PDA);
+            assert!(att.verifier_instructions.is_none());
         }
 
         #[tokio::test]
