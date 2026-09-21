@@ -168,7 +168,7 @@ pub fn listed_on(name: &str, surface: Surface, show_testnet: bool) -> bool {
             matches!(
                 cap.category,
                 Category::ShillbotEarn | Category::ShillbotClient | Category::Video
-            ) || name == "register_wallet"
+            ) || matches!(name, "register_wallet" | "agent_verify_wallet")
         }
         Surface::Game => cap.category == Category::Game || name == "register_wallet",
     }

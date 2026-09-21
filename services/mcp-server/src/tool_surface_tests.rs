@@ -174,6 +174,7 @@ fn tool_name_manifest_is_exact() {
         "topic_report",
     ];
     const SHILLBOT: &[&str] = &[
+        "agent_verify_wallet",
         "check_video_status",
         "generate_video",
         "list_related_servers",
