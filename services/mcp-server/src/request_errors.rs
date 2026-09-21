@@ -95,6 +95,13 @@ pub(crate) fn decorate(mut error: ErrorData, ctx: &ErrorContext) -> ErrorData {
     } else if error.message == "include_sent requires status=all" {
         next = "Set status=all with include_sent=true to browse sent history; use include_sent=false for the pending inbox.";
     }
+    // Some MCP clients display only Error.message, not Error.data. Keep the
+    // recovery action and reference usable on those clients too.
+    error.message = format!(
+        "{} Next step: {next} Reference: {}",
+        error.message, ctx.request_id
+    )
+    .into();
     let mut data = match error.data.take() {
         Some(Value::Object(data)) => data,
         _ => serde_json::Map::new(),
@@ -179,6 +186,8 @@ mod tests {
         let wire = serde_json::to_string(&error).unwrap();
         assert!(!wire.contains("secret-body"));
         assert!(wire.contains("msg_id"));
+        assert!(error.message.contains("msg_id"));
+        assert!(error.message.contains(&ctx.request_id));
         assert_eq!(error.data.as_ref().unwrap()["request_id"], ctx.request_id);
         assert_eq!(error.data.unwrap()["error_code"], "invalid_arguments");
     }

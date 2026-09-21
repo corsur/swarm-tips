@@ -109,7 +109,14 @@ fn json_error(status: StatusCode, reason: &str, message: &str) -> axum::response
     if reason == "unproven_sender" || reason == "missing_session" {
         next_step = "Obtain a nonce with POST /internal/inbox/session using wallet, sign it locally, then POST wallet, nonce and signature to that endpoint. Send the returned session_id as X-Inbox-Session. Never send a private key.";
     }
-    let mut body = serde_json::json!({ "error": message, "reason": reason, "error_code": reason, "retry": retry, "next_step": next_step });
+    let readable = match &context {
+        Some(ctx) => format!(
+            "{message} Next step: {next_step} Reference: {}",
+            ctx.request_id
+        ),
+        None => format!("{message} Next step: {next_step}"),
+    };
+    let mut body = serde_json::json!({ "error": readable, "reason": reason, "error_code": reason, "retry": retry, "next_step": next_step });
     if let Some(ctx) = &context {
         body["request_id"] = serde_json::json!(ctx.request_id);
         body["operation"] = serde_json::json!(ctx.operation);
@@ -1499,6 +1506,11 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["reason"], "internal");
         assert_eq!(body["retry"], "reconcile_first");
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("Do not automatically repeat"));
+        assert!(body["error"].as_str().unwrap().contains(&ctx.request_id));
         assert_eq!(body["request_id"], ctx.request_id);
         assert_eq!(body["operation"], "agent_send_message");
         let response = crate::request_errors::CONTEXT
