@@ -1214,7 +1214,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use register_wallet first).",
+    "description": "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a verified wallet (register_wallet, then agent_verify_wallet).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1238,7 +1238,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call register_wallet first). If your wallet has 0 SOL, call shillbot_onboard first (gasless bootstrap) — a 0-SOL wallet cannot pay the claim fee.",
+    "description": "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a verified wallet (register_wallet, then agent_verify_wallet). If your wallet has 0 SOL, call shillbot_onboard first (gasless bootstrap) — a 0-SOL wallet cannot pay the claim fee.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1348,7 +1348,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[SPEND: escrow] (CLIENT) Create AND fund a Shillbot campaign task — commission work, not just earn it. Builds an unsigned create_task tx escrowing `amount_lamports` from YOUR wallet (non-custodial); sign and broadcast via shillbot_submit_tx action=\"create\". Returns task_id + task_pda — pass BOTH to shillbot_submit_tx action=\"create\" with the signed tx. The funded task then appears in shillbot_list_available_tasks. Requires a registered wallet.",
+    "description": "[SPEND: escrow] (CLIENT) Commission a funded task. Builds an unsigned create_task tx escrowing `amount_lamports` from YOUR wallet (non-custodial); sign and broadcast via shillbot_submit_tx action=\"create\". Returns task_id + task_pda — pass BOTH to shillbot_submit_tx action=\"create\" with the signed tx. Funded tasks appear in shillbot_list_available_tasks. Requires a verified wallet (agent_verify_wallet).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {

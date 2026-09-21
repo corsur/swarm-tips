@@ -1170,7 +1170,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_create_campaign",
-        description = "[SPEND: escrow] (CLIENT) Create AND fund a Shillbot campaign task — commission work, not just earn it. Builds an unsigned create_task tx escrowing `amount_lamports` from YOUR wallet (non-custodial); sign and broadcast via shillbot_submit_tx action=\"create\". Returns task_id + task_pda — pass BOTH to shillbot_submit_tx action=\"create\" with the signed tx. The funded task then appears in shillbot_list_available_tasks. Requires a registered wallet.",
+        description = "[SPEND: escrow] (CLIENT) Commission a funded task. Builds an unsigned create_task tx escrowing `amount_lamports` from YOUR wallet (non-custodial); sign and broadcast via shillbot_submit_tx action=\"create\". Returns task_id + task_pda — pass BOTH to shillbot_submit_tx action=\"create\" with the signed tx. Funded tasks appear in shillbot_list_available_tasks. Requires a verified wallet (agent_verify_wallet).",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_create_campaign(
@@ -1191,10 +1191,7 @@ impl SwarmTipsMcp {
             return Err(invalid_input("amount_lamports must be positive"));
         }
         let network = parse_network_arg(args.network.as_deref())?;
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
         // Default platform 5 (game-play): the deterministically verifiable one, so a
         // programmatic first campaign can actually be completed + settled end-to-end.
@@ -1210,9 +1207,7 @@ impl SwarmTipsMcp {
 
         // Two orchestrator hops: create the campaign record, then build the funding
         // (create_task) tx. The escrow is the client's own money — non-custodial.
-        let campaign_id = self
-            .state
-            .orchestrator
+        let campaign_id = orchestrator
             .create_campaign(crate::proxy::CreateCampaignParams {
                 wallet_pubkey: &wallet_pubkey,
                 brief,
@@ -1227,9 +1222,7 @@ impl SwarmTipsMcp {
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
-        let funded = self
-            .state
-            .orchestrator
+        let funded = orchestrator
             .fund_campaign(&campaign_id, &wallet_pubkey, args.amount_lamports, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -1285,14 +1278,9 @@ impl SwarmTipsMcp {
     ) -> Result<CallToolResult, McpError> {
         let network = parse_network_arg(args.network.as_deref())?;
 
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
-        let response = self
-            .state
-            .orchestrator
+        let response = orchestrator
             .onboard_agent(&wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -1308,7 +1296,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_claim_task",
-        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a registered wallet (call register_wallet first). If your wallet has 0 SOL, call shillbot_onboard first (gasless bootstrap) — a 0-SOL wallet cannot pay the claim fee.",
+        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a verified wallet (register_wallet, then agent_verify_wallet). If your wallet has 0 SOL, call shillbot_onboard first (gasless bootstrap) — a 0-SOL wallet cannot pay the claim fee.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_claim_task(
@@ -1321,14 +1309,9 @@ impl SwarmTipsMcp {
         }
         let network = parse_network_arg(args.network.as_deref())?;
 
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
-        let response = self
-            .state
-            .orchestrator
+        let response = orchestrator
             .claim_task(normalize_task_id(&args.task_id), &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -1388,14 +1371,9 @@ impl SwarmTipsMcp {
         }
         let network = parse_network_arg(args.network.as_deref())?;
 
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
-        let response = self
-            .state
-            .orchestrator
+        let response = orchestrator
             .submit_task(
                 normalize_task_id(&args.task_id),
                 &wallet_pubkey,
@@ -1459,15 +1437,10 @@ impl SwarmTipsMcp {
         }
         let network = parse_network_arg(args.network.as_deref())?;
 
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
         // Get verification data from orchestrator
-        let vdata = self
-            .state
-            .orchestrator
+        let vdata = orchestrator
             .get_verification_data(normalize_task_id(&args.task_id), &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -1517,14 +1490,9 @@ impl SwarmTipsMcp {
         }
         let network = parse_network_arg(args.network.as_deref())?;
 
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
-        let response = self
-            .state
-            .orchestrator
+        let response = orchestrator
             .build_finalize(normalize_task_id(&args.task_id), &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -1573,14 +1541,9 @@ impl SwarmTipsMcp {
         }
         let network = parse_network_arg(args.network.as_deref())?;
 
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
-        let response = self
-            .state
-            .orchestrator
+        let response = orchestrator
             .approve_task(normalize_task_id(&args.task_id), &wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -1632,14 +1595,9 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let network = parse_network_arg(args.network.as_deref())?;
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
-        let response = self
-            .state
-            .orchestrator
+        let response = orchestrator
             .list_pending_approval(&wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -1679,17 +1637,12 @@ impl SwarmTipsMcp {
         let action = parse_confirm_action(&args.action)?;
         let network = parse_network_arg(args.network.as_deref())?;
 
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
         // Provenance is intentionally irrelevant: independently constructed
         // transactions are welcome, but their semantics must match the task
         // and claimed lifecycle action before we spend RPC quota broadcasting.
-        let task = self
-            .state
-            .orchestrator
+        let task = orchestrator
             .get_task_details(normalize_task_id(&args.task_id), network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -1738,9 +1691,7 @@ impl SwarmTipsMcp {
             "shillbot_submit_tx: tx broadcast"
         );
 
-        let confirm = self
-            .state
-            .orchestrator
+        let confirm = orchestrator
             .confirm_task(
                 normalize_task_id(&args.task_id),
                 &wallet_pubkey,
@@ -1777,13 +1728,8 @@ impl SwarmTipsMcp {
         }
         let action = parse_confirm_action(&args.action)?;
         let network = parse_network_arg(args.network.as_deref())?;
-        let wallet = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
-        let confirm = self
-            .state
-            .orchestrator
+        let (wallet, orchestrator) = self.authenticated_shillbot(&parts).await?;
+        let confirm = orchestrator
             .confirm_task(
                 normalize_task_id(&args.task_id),
                 &wallet,
@@ -1820,19 +1766,14 @@ impl SwarmTipsMcp {
             return Err(invalid_input("sponsorship is limited to claim and submit"));
         }
         let network = parse_network_arg(args.network.as_deref())?;
-        let wallet = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet, orchestrator) = self.authenticated_shillbot(&parts).await?;
         if args.unsigned_transaction.is_none() {
             if args.action == "submit" && args.content_id.as_deref().is_none_or(str::is_empty) {
                 return Err(invalid_input(
                     "content_id is required when requesting a submit sponsorship template",
                 ));
             }
-            let response = self
-                .state
-                .orchestrator
+            let response = orchestrator
                 .sponsorship_template(
                     normalize_task_id(&args.task_id),
                     &wallet,
@@ -1876,9 +1817,7 @@ impl SwarmTipsMcp {
             );
         }
         let unsigned_transaction = args.unsigned_transaction.as_deref().unwrap_or_default();
-        let response = self
-            .state
-            .orchestrator
+        let response = orchestrator
             .sponsor_transaction(
                 normalize_task_id(&args.task_id),
                 &wallet,
@@ -1895,9 +1834,7 @@ impl SwarmTipsMcp {
             .task_pda
             .as_deref()
             .ok_or_else(|| invalid_input("sponsor response omitted task PDA"))?;
-        let task = self
-            .state
-            .orchestrator
+        let task = orchestrator
             .get_task_details(normalize_task_id(&args.task_id), network)
             .await
             .map_err(|error| to_mcp_error(&error))?;
@@ -1996,14 +1933,9 @@ impl SwarmTipsMcp {
         }
         let network = parse_network_arg(args.network.as_deref())?;
 
-        let wallet_pubkey = self
-            .resolve_wallet(Some(&parts))
-            .await
-            .ok_or_else(|| invalid_input("authentication required: call register_wallet first"))?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
-        let task = self
-            .state
-            .orchestrator
+        let task = orchestrator
             .get_task_details(normalize_task_id(&args.task_id), network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -2053,7 +1985,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_check_earnings",
-        description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a registered wallet (use register_wallet first).",
+        description = "[READ] Check your Shillbot earnings summary: total earned, pending payments, claimed tasks, completed tasks. Requires a verified wallet (register_wallet, then agent_verify_wallet).",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_check_earnings(
@@ -2062,13 +1994,9 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let network = parse_network_arg(args.network.as_deref())?;
-        let wallet_pubkey = self.resolve_wallet(Some(&parts)).await.ok_or_else(|| {
-            invalid_input("authentication required: connect your Solana wallet first")
-        })?;
+        let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
-        let result = self
-            .state
-            .orchestrator
+        let result = orchestrator
             .get_earnings(&wallet_pubkey, network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -2677,12 +2605,13 @@ impl SwarmTipsMcp {
                 "EVM wallet registered for cross-chain game"
             );
             let outcome = match proof {
-                Some((method, proof_sig)) => {
+                Some((method, proof_sig, access_token)) => {
                     self.finalize_wallet_verification(
                         Some(&parts),
                         &account_id,
                         method,
                         &proof_sig,
+                        &access_token,
                         "register_wallet",
                     )
                     .await?;
@@ -2731,12 +2660,13 @@ impl SwarmTipsMcp {
         );
 
         let outcome = match proof {
-            Some((method, proof_sig)) => {
+            Some((method, proof_sig, access_token)) => {
                 self.finalize_wallet_verification(
                     Some(&parts),
                     &wallet,
                     method,
                     &proof_sig,
+                    &access_token,
                     "register_wallet",
                 )
                 .await?;
@@ -3656,7 +3586,7 @@ impl SwarmTipsMcp {
             return self.issue_verify_challenge(&bound).await;
         }
         let native = native_wallet_address(&bound);
-        let (method, proof_sig) = self
+        let (method, proof_sig, access_token) = self
             .verify_wallet_proof(
                 native,
                 args.nonce.as_deref(),
@@ -3672,6 +3602,7 @@ impl SwarmTipsMcp {
             &bound,
             method,
             &proof_sig,
+            &access_token,
             "agent_verify_wallet",
         )
         .await?;
@@ -4650,9 +4581,24 @@ impl SwarmTipsMcp {
         }
     }
 
+    async fn authenticated_shillbot(
+        &self,
+        parts: &http::request::Parts,
+    ) -> Result<(String, OrchestratorProxy), McpError> {
+        let session_id = session_id_from_parts(Some(parts))
+            .ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
+        let (wallet, token) = self.state.session_binding.resolve_access_token(&session_id).await
+            .map_err(|_| McpError::internal_error("Could not load your signed wallet session. Retry this request.", None))?
+            .ok_or_else(|| invalid_input("Verify wallet ownership with agent_verify_wallet before using private Shillbot tools. Registration alone is not authentication."))?;
+        Ok((
+            native_wallet_address(&wallet).to_owned(),
+            self.state.orchestrator.authenticated(token),
+        ))
+    }
+
     /// Verify an ownership proof for `wallet` via game-api's auth endpoints.
     /// Returns `Ok(None)` when no proof args were supplied, or
-    /// `Ok(Some((method, proof_sig)))` on a PASSING proof. A failing proof is
+    /// `Ok(Some((method, proof_sig, access_token)))` on a PASSING proof. A failing proof is
     /// an error — callers must not bind or mark anything on Err.
     async fn verify_wallet_proof(
         &self,
@@ -4660,7 +4606,7 @@ impl SwarmTipsMcp {
         nonce: Option<&str>,
         signature: Option<&str>,
         tx_signature: Option<&str>,
-    ) -> Result<Option<(&'static str, String)>, McpError> {
+    ) -> Result<Option<(&'static str, String, String)>, McpError> {
         let signature = signature.filter(|s| !s.is_empty());
         let tx_signature = tx_signature.filter(|s| !s.is_empty());
         if nonce.is_none() && signature.is_none() && tx_signature.is_none() {
@@ -4679,7 +4625,7 @@ impl SwarmTipsMcp {
             } else {
                 self.state.game_api.auth_verify(wallet, nonce, sig).await
             }
-            .map(|_| ("signed_nonce", sig.to_string())),
+            .map(|response| ("signed_nonce", sig.to_string(), response.token)),
             (None, Some(tx)) => {
                 if wallet.starts_with("0x") {
                     return Err(invalid_input(
@@ -4690,7 +4636,7 @@ impl SwarmTipsMcp {
                     .game_api
                     .auth_session(wallet, tx, nonce)
                     .await
-                    .map(|_| ("memo_tx", tx.to_string()))
+                    .map(|response| ("memo_tx", tx.to_string(), response.token))
             }
             _ => {
                 return Err(invalid_input(
@@ -4737,6 +4683,7 @@ impl SwarmTipsMcp {
         bound_wallet: &str,
         method: &'static str,
         proof_sig: &str,
+        access_token: &str,
         via: &'static str,
     ) -> Result<(), McpError> {
         // Precondition: only called after verify_wallet_proof passed.
@@ -4748,7 +4695,7 @@ impl SwarmTipsMcp {
             session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
         self.state
             .session_binding
-            .mark_verified(&session_id, bound_wallet)
+            .mark_verified_with_token(&session_id, bound_wallet, Some(access_token))
             .await
             .map_err(|e| {
                 McpError::internal_error(
@@ -6065,13 +6012,19 @@ mod tests {
     fn list_tools_filter_selects_each_product_surface() {
         let all = SwarmTipsMcp::tool_router().list_all();
         assert_eq!(all.len(), 70, "declared tool count");
+        assert!(
+            filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, false)
+                .iter()
+                .any(|tool| tool.name == "agent_verify_wallet"),
+            "the focused catalog must expose its required signed-session workflow"
+        );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Swarm, false).len(),
             40
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, false).len(),
-            20
+            21
         );
         assert_eq!(
             filter_tools_for_surface(all, crate::surfaces::Surface::Game, false).len(),
@@ -6088,7 +6041,7 @@ mod tests {
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, true).len(),
-            20
+            21
         );
         assert_eq!(
             filter_tools_for_surface(all, crate::surfaces::Surface::Game, true).len(),

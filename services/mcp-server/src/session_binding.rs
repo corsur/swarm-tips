@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 const MCP_HTTP_SESSIONS_COLLECTION: &str = "mcp_http_sessions";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct McpHttpSessionDoc {
     pub session_id: String,
     pub wallet: String,
@@ -49,6 +49,9 @@ pub struct McpHttpSessionDoc {
     /// before this field existed still deserialize.
     #[serde(default)]
     pub verified_at: Option<firestore::FirestoreTimestamp>,
+    /// Opaque signed Game API session. Never serialize into tool responses or logs.
+    #[serde(default)]
+    access_token: Option<String>,
 }
 
 pub struct McpSessionBinding {
@@ -79,6 +82,7 @@ impl McpSessionBinding {
             // doc, so any prior verification for a different wallet dies here.
             verified_wallet: None,
             verified_at: None,
+            access_token: None,
         };
 
         if let Err(e) = self
@@ -151,9 +155,78 @@ impl McpSessionBinding {
     /// Errors propagate — a verification the caller believes happened but
     /// didn't persist would silently deny every later inbox call.
     pub async fn mark_verified(&self, session_id: &str, wallet: &str) -> Result<()> {
-        assert!(!session_id.is_empty(), "session_id must not be empty");
-        assert!(!wallet.is_empty(), "wallet must not be empty");
+        self.mark_verified_with_token(session_id, wallet, None)
+            .await
+    }
 
+    pub async fn mark_verified_with_token(
+        &self,
+        session_id: &str,
+        wallet: &str,
+        token: Option<&str>,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !session_id.is_empty() && !wallet.is_empty(),
+            "missing session identity"
+        );
+        self.db
+            .run_transaction_with_options(
+                |tx_db, tx| {
+                    let session_id = session_id.to_owned();
+                    let wallet = wallet.to_owned();
+                    let token = token.map(str::to_owned);
+                    Box::pin(async move {
+                        let doc: Option<McpHttpSessionDoc> = tx_db
+                            .fluent()
+                            .select()
+                            .by_id_in(MCP_HTTP_SESSIONS_COLLECTION)
+                            .obj()
+                            .one(&session_id)
+                            .await
+                            .map_err(backoff::Error::Permanent)?;
+                        let Some(mut doc) = doc.filter(|doc| doc.wallet == wallet) else {
+                            return Err(backoff::Error::Permanent(
+                                firestore::errors::FirestoreError::DataConflictError(
+                                    firestore::errors::FirestoreDataConflictError::new(
+                                        firestore::errors::FirestoreErrorPublicGenericDetails::new(
+                                            "session_changed".into(),
+                                        ),
+                                        "session binding changed during verification".into(),
+                                    ),
+                                ),
+                            ));
+                        };
+                        let now = firestore::FirestoreTimestamp(chrono::Utc::now());
+                        doc.verified_wallet = Some(wallet);
+                        doc.verified_at = Some(now.clone());
+                        doc.last_seen_at = now;
+                        if let Some(token) = token {
+                            doc.access_token = Some(token);
+                        }
+                        tx_db
+                            .fluent()
+                            .update()
+                            .in_col(MCP_HTTP_SESSIONS_COLLECTION)
+                            .document_id(session_id)
+                            .object(&doc)
+                            .add_to_transaction(tx)
+                            .map_err(backoff::Error::Permanent)?;
+                        Ok(())
+                    })
+                },
+                firestore::FirestoreTransactionOptions::new()
+                    .with_max_elapsed_time(chrono::Duration::seconds(15)),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Returns only a token tied to this session's current proven wallet.
+    pub async fn resolve_access_token(&self, session_id: &str) -> Result<Option<(String, String)>> {
+        anyhow::ensure!(
+            !session_id.is_empty() && !session_id.contains('/'),
+            "invalid session identifier"
+        );
         let doc: Option<McpHttpSessionDoc> = self
             .db
             .fluent()
@@ -162,28 +235,14 @@ impl McpSessionBinding {
             .obj()
             .one(session_id)
             .await?;
-        let mut doc = doc.ok_or_else(|| {
-            anyhow::anyhow!("no session binding to verify — call register_wallet first")
-        })?;
-        anyhow::ensure!(
-            doc.wallet == wallet,
-            "session binding changed wallet mid-verification (bound {}, verifying {wallet})",
-            doc.wallet
-        );
-
-        let now = chrono::Utc::now();
-        doc.verified_wallet = Some(wallet.to_string());
-        doc.verified_at = Some(firestore::FirestoreTimestamp(now));
-        doc.last_seen_at = firestore::FirestoreTimestamp(now);
-        self.db
-            .fluent()
-            .update()
-            .in_col(MCP_HTTP_SESSIONS_COLLECTION)
-            .document_id(session_id)
-            .object(&doc)
-            .execute::<McpHttpSessionDoc>()
-            .await?;
-        Ok(())
+        Ok(doc.and_then(|doc| {
+            if doc.verified_wallet.as_deref() != Some(&doc.wallet) {
+                return None;
+            }
+            doc.access_token
+                .filter(|token| !token.is_empty())
+                .map(|token| (doc.wallet, token))
+        }))
     }
 
     /// The wallet this session has PROVEN, or `None` if the session is
@@ -235,6 +294,7 @@ mod tests {
             last_seen_at: now.clone(),
             verified_wallet: Some("CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY".to_string()),
             verified_at: Some(now),
+            access_token: None,
         };
         let json = serde_json::to_string(&doc).expect("must serialize");
         let parsed: McpHttpSessionDoc = serde_json::from_str(&json).expect("must deserialize");

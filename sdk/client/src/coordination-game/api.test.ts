@@ -42,3 +42,15 @@ describe("CoordinationGameWebSocketClient", () => {
     client.close();
   });
 });
+
+// Signed nonce authentication is shared by Shillbot and Game clients.
+it("submits the ownership proof without using a wallet address as bearer", async () => {
+  const requests: Array<{url: string, init?: RequestInit}> = [];
+  const api = new CoordinationGameApiClient({ baseUrl: "https://identity.example", fetch: async (input, init) => {
+    requests.push({url: String(input), init});
+    return new Response(JSON.stringify({token:"signed-session"}));
+  }});
+  expect(await api.authVerify({ wallet:"wallet", nonce:"nonce", signature:"signature" })).toEqual({token:"signed-session"});
+  expect(requests[0]?.url).toBe("https://identity.example/auth/verify");
+  expect(new Headers(requests[0]?.init?.headers).has("Authorization")).toBe(false);
+});
