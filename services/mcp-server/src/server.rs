@@ -6012,13 +6012,19 @@ mod tests {
     fn list_tools_filter_selects_each_product_surface() {
         let all = SwarmTipsMcp::tool_router().list_all();
         assert_eq!(all.len(), 70, "declared tool count");
+        assert!(
+            filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, false)
+                .iter()
+                .any(|tool| tool.name == "agent_verify_wallet"),
+            "the focused catalog must expose its required signed-session workflow"
+        );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Swarm, false).len(),
             40
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, false).len(),
-            20
+            21
         );
         assert_eq!(
             filter_tools_for_surface(all, crate::surfaces::Surface::Game, false).len(),
@@ -6035,7 +6041,7 @@ mod tests {
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, true).len(),
-            20
+            21
         );
         assert_eq!(
             filter_tools_for_surface(all, crate::surfaces::Surface::Game, true).len(),
