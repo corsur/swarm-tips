@@ -1476,9 +1476,22 @@ impl RejectionLogFields {
     /// Emit the line. Matches on recipient/topic so an absent field is truly
     /// omitted from the log line rather than recorded as an empty value.
     fn emit(&self) {
+        let context = crate::request_errors::current();
+        let operation = context
+            .as_ref()
+            .map(|c| c.operation.as_str())
+            .unwrap_or("unscoped");
+        let request_id = context
+            .as_ref()
+            .map(|c| c.request_id.as_str())
+            .unwrap_or("");
+        let transport = context.as_ref().map(|c| c.transport).unwrap_or("unknown");
         match (self.to.as_deref(), self.topic_id.as_deref()) {
             (Some(to), _) => tracing::warn!(
                 event = "agent_message_rejected",
+                operation,
+                request_id,
+                transport,
                 reason = %self.reason,
                 to,
                 client_ip = %self.client_ip,
@@ -1488,6 +1501,9 @@ impl RejectionLogFields {
             ),
             (None, Some(topic_id)) => tracing::warn!(
                 event = "agent_message_rejected",
+                operation,
+                request_id,
+                transport,
                 reason = %self.reason,
                 topic_id,
                 client_ip = %self.client_ip,
@@ -1497,6 +1513,9 @@ impl RejectionLogFields {
             ),
             (None, None) => tracing::warn!(
                 event = "agent_message_rejected",
+                operation,
+                request_id,
+                transport,
                 reason = %self.reason,
                 client_ip = %self.client_ip,
                 user_agent = %self.user_agent,

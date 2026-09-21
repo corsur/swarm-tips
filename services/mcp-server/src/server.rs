@@ -4154,38 +4154,73 @@ impl ServerHandler for SwarmTipsMcp {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        if matches!(
-            request.name.as_ref(),
-            "game_find_match" | "game_find_evm_match" | "xchain_find_match"
-        ) {
-            self.state
-                .game_api
-                .ensure_available()
-                .await
-                .map_err(|error| rmcp::ErrorData::internal_error(error.to_string(), None))?;
+        let tool = self.tool_router.get(request.name.as_ref());
+        // Unknown names and arguments may contain private content. Log only
+        // names from our catalog, and use a server-generated correlation ID.
+        let operation = tool.map(|t| t.name.as_ref()).unwrap_or("unknown_tool");
+        let read_only = tool.is_some_and(|t| {
+            t.annotations
+                .as_ref()
+                .and_then(|a| a.read_only_hint)
+                .unwrap_or(false)
+                || t.description
+                    .as_deref()
+                    .is_some_and(|d| d.starts_with("[READ]"))
+        });
+        let error_context = crate::request_errors::ErrorContext::new(operation, "mcp", read_only);
+        if tool.is_none() {
+            return Err(crate::request_errors::decorate(
+                McpError::invalid_params(
+                    "Unknown tool. Call tools/list on this endpoint.",
+                    Some(serde_json::json!({"reason":"unknown_tool"})),
+                ),
+                &error_context,
+            ));
         }
-        if !crate::capabilities::listed_on(
-            request.name.as_ref(),
-            self.surface,
-            self.state.show_testnet_tools,
-        ) {
-            tracing::warn!(
-                event = "legacy_cross_surface_tool_call",
-                surface = self.surface.host(),
-                tool = %request.name,
-                "calling an unlisted tool by exact name for backwards compatibility"
-            );
-        }
-        let caller = context
-            .extensions
-            .get::<http::request::Parts>()
-            .and_then(|parts| parts.extensions.get::<api_transport::Caller>())
-            .cloned();
-        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        match caller {
-            Some(caller) => api_transport::with_caller(caller, self.tool_router.call(tcc)).await,
-            None => self.tool_router.call(tcc).await,
-        }
+        use tracing::Instrument;
+        let span = tracing::info_span!("mcp_request", operation = %error_context.operation, request_id = %error_context.request_id);
+        let result = crate::request_errors::CONTEXT
+            .scope(error_context.clone(), async {
+                if matches!(
+                    request.name.as_ref(),
+                    "game_find_match" | "game_find_evm_match" | "xchain_find_match"
+                ) {
+                    self.state
+                        .game_api
+                        .ensure_available()
+                        .await
+                        .map_err(|error| {
+                            rmcp::ErrorData::internal_error(error.to_string(), None)
+                        })?;
+                }
+                if !crate::capabilities::listed_on(
+                    request.name.as_ref(),
+                    self.surface,
+                    self.state.show_testnet_tools,
+                ) {
+                    tracing::warn!(
+                        event = "legacy_cross_surface_tool_call",
+                        surface = self.surface.host(),
+                        tool = %request.name,
+                        "calling an unlisted tool by exact name for backwards compatibility"
+                    );
+                }
+                let caller = context
+                    .extensions
+                    .get::<http::request::Parts>()
+                    .and_then(|parts| parts.extensions.get::<api_transport::Caller>())
+                    .cloned();
+                let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+                match caller {
+                    Some(caller) => {
+                        api_transport::with_caller(caller, self.tool_router.call(tcc)).await
+                    }
+                    None => self.tool_router.call(tcc).await,
+                }
+            })
+            .instrument(span)
+            .await;
+        result.map_err(|error| crate::request_errors::decorate(error, &error_context))
     }
 
     async fn list_tools(
@@ -4225,13 +4260,20 @@ impl ServerHandler for SwarmTipsMcp {
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         if self.surface != crate::surfaces::Surface::Swarm {
-            return Err(McpError::invalid_params(
-                "resource is not available on this host",
-                None,
-            ));
+            return Err(crate::request_errors::decorate(McpError::invalid_params(
+                "Resources are available on https://mcp.swarm.tips/mcp. Initialize a session there and call resources/list.",
+                Some(serde_json::json!({"reason":"unknown_resource"})),
+            ), &crate::request_errors::ErrorContext::new("resources/read", "mcp", true)));
         }
-        let (text, mime) = resource_payload(request.uri.as_str())
-            .ok_or_else(|| McpError::invalid_params("unknown resource URI", None))?;
+        let (text, mime) = resource_payload(request.uri.as_str()).ok_or_else(|| {
+            crate::request_errors::decorate(
+                McpError::invalid_params(
+                    "Unknown resource URI. Call resources/list and use a returned URI exactly.",
+                    Some(serde_json::json!({"reason":"unknown_resource"})),
+                ),
+                &crate::request_errors::ErrorContext::new("resources/read", "mcp", true),
+            )
+        })?;
         Ok(ReadResourceResult::new(vec![ResourceContents::text(
             text,
             request.uri,

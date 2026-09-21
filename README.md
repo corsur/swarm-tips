@@ -278,3 +278,28 @@ Full code standards are documented in [CLAUDE.md](./CLAUDE.md). Key rules:
 - `init` by default; `init_if_needed` only for the narrow signer-pays-own-PDA exceptions listed in [CLAUDE.md](./CLAUDE.md)
 - Events emitted for every state transition
 - Named error variants for every failure mode
+
+### Request errors and recovery
+
+MCP tool errors preserve their JSON-RPC error codes and existing `data.reason`,
+with additive `error_code`, `operation`, `request_id`, `retry`, and `next_step`
+fields. Inbox HTTP errors retain `error` and `reason`, and return the same
+recovery fields plus an `X-Request-Id` header. Use the server-generated reference
+when reporting a failure; do not send wallet secrets or private message bodies.
+
+- `after_correction`: follow the correction before repeating the request. For
+  selected messages, pass `messages: [{msg_id: "ID_FROM_LIST", direction: "received"}]`,
+  not a list of strings. Sent history requires `status: "all"`.
+- `safe_read`: retry the read with backoff.
+- `reconcile_first`: completion is uncertain. Inspect task/game state and any
+  transaction signature before repeating a write or signing a replacement.
+
+Unknown tools point to `tools/list` and `list_related_servers`; unknown resources
+point to `resources/list` on the Swarm endpoint. Each endpoint needs its own session.
+
+Operators can filter `event="request_failed"` by `operation`, `error_code`,
+`transport`, and `request_id`. Argument failures are recorded before tool dispatch;
+HTTP extractor failures carry the reference in a response header. New diagnostic
+fields do not log arguments, message content, wallet addresses, or session IDs.
+The legacy `agent_message_rejected` event covers several inbox operations: use
+its new `operation` field rather than counting every rejection as a failed send.
