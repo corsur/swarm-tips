@@ -73,6 +73,7 @@ export class CoordinationGameApiClient {
   }
 
   authChallenge(body: ChallengeRequest) { return this.http.post<ChallengeResponse>("/auth/challenge", body); }
+  authVerify(body: VerifyRequest) { return this.http.post<VerifyResponse>("/auth/verify", body); }
   authSession(body: SessionAuthRequest) { return this.http.post<SessionAuthResponse>("/auth/session", body); }
   evmAuthChallenge(body: ChallengeRequest) { return this.http.post<ChallengeResponse>("/auth/evm/challenge", body); }
   evmAuthVerify(body: VerifyRequest) { return this.http.post<VerifyResponse>("/auth/evm/verify", body); }

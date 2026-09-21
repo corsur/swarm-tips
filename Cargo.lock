@@ -3458,6 +3458,7 @@ dependencies = [
  "anyhow",
  "api-transport",
  "axum",
+ "backoff",
  "base64 0.22.1",
  "bincode",
  "bm25",

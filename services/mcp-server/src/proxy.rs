@@ -65,7 +65,9 @@ async fn require_success(
     )))
 }
 
+#[derive(Clone)]
 pub struct OrchestratorProxy {
+    access_token: String,
     client: api_transport::Client,
     shorts_client: api_transport::Client,
     base_url: String,
@@ -285,6 +287,13 @@ pub struct ConfirmTaskResponse {
 }
 
 impl OrchestratorProxy {
+    /// A request-scoped clone; credentials never mutate the shared proxy.
+    pub fn authenticated(&self, token: String) -> Self {
+        let mut proxy = self.clone();
+        proxy.access_token = token;
+        proxy
+    }
+
     /// POST with a bearer token and no body.
     ///
     /// The explicit `Content-Length: 0` is load-bearing: reqwest omits the
@@ -293,10 +302,10 @@ impl OrchestratorProxy {
     /// then rejects with 411 Length Required. GKE's ingress tolerated it, which
     /// is why this only surfaced after the migration. This rationale was
     /// duplicated verbatim at four call sites; it lives here now.
-    fn bodyless_post(&self, url: &str, wallet_pubkey: &str) -> api_transport::RequestBuilder {
+    fn bodyless_post(&self, url: &str) -> api_transport::RequestBuilder {
         self.client
             .post(url)
-            .bearer_auth(wallet_pubkey)
+            .bearer_auth(&self.access_token)
             .header(reqwest::header::CONTENT_LENGTH, 0)
     }
 
@@ -336,6 +345,7 @@ impl OrchestratorProxy {
 
         let client = api_transport::Client::new(client, std::time::Duration::from_secs(60));
         Self {
+            access_token: String::new(),
             shorts_client: client.clone(),
             client,
             base_url,
@@ -465,7 +475,7 @@ impl OrchestratorProxy {
         let response = self
             .client
             .get(&url)
-            .bearer_auth(wallet_pubkey)
+            .bearer_auth(&self.access_token)
             .send()
             .await
             .map_err(|e| {
@@ -542,7 +552,7 @@ impl OrchestratorProxy {
         let response = self
             .client
             .post(&url)
-            .bearer_auth(wallet_pubkey)
+            .bearer_auth(&self.access_token)
             .json(&body)
             .send()
             .await
@@ -599,7 +609,7 @@ impl OrchestratorProxy {
         let response = self
             .client
             .post(&url)
-            .bearer_auth(wallet_pubkey)
+            .bearer_auth(&self.access_token)
             .json(&body)
             .send()
             .await
@@ -639,7 +649,7 @@ impl OrchestratorProxy {
         let qs = network_query_suffix(network);
         let url = format!("{}/agent/onboard{qs}", self.base_url);
         let response = self
-            .bodyless_post(&url, wallet_pubkey)
+            .bodyless_post(&url)
             .send()
             .await
             .map_err(|e| {
@@ -671,7 +681,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/claim{qs}", self.base_url);
-        let response = self.bodyless_post(&url, wallet_pubkey)
+        let response = self.bodyless_post(&url)
             .send()
             .await
             .map_err(|e| {
@@ -726,7 +736,7 @@ impl OrchestratorProxy {
         let response = self
             .client
             .post(&url)
-            .bearer_auth(wallet_pubkey)
+            .bearer_auth(&self.access_token)
             .json(&body)
             .send()
             .await
@@ -775,7 +785,7 @@ impl OrchestratorProxy {
         let response = self
             .client
             .post(&url)
-            .bearer_auth(wallet_pubkey)
+            .bearer_auth(&self.access_token)
             .json(&serde_json::json!({
                 "action": action,
                 "unsigned_transaction": unsigned_transaction,
@@ -819,7 +829,7 @@ impl OrchestratorProxy {
         });
         let response = if action == "claim" {
             let url = format!("{}/tasks/{task_id}/claim{qs}", self.base_url);
-            self.bodyless_post(&url, wallet_pubkey).send().await
+            self.bodyless_post(&url).send().await
         } else {
             let content_id = content_id
                 .filter(|value| !value.is_empty())
@@ -831,7 +841,7 @@ impl OrchestratorProxy {
             let url = format!("{}/tasks/{task_id}/submit{qs}", self.base_url);
             self.client
                 .post(&url)
-                .bearer_auth(wallet_pubkey)
+                .bearer_auth(&self.access_token)
                 .json(&serde_json::json!({ "content_id": content_id }))
                 .send()
                 .await
@@ -849,7 +859,7 @@ impl OrchestratorProxy {
     pub async fn get_verification_data(
         &self,
         task_id: &str,
-        wallet_pubkey: &str,
+        _wallet_pubkey: &str,
         network: Option<&str>,
     ) -> Result<VerificationDataResponse, McpServiceError> {
         if task_id.is_empty() {
@@ -860,7 +870,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/build-verify{qs}", self.base_url);
-        let response = self.bodyless_post(&url, wallet_pubkey)
+        let response = self.bodyless_post(&url)
             .send()
             .await
             .map_err(|e| {
@@ -886,7 +896,7 @@ impl OrchestratorProxy {
     pub async fn build_finalize(
         &self,
         task_id: &str,
-        wallet_pubkey: &str,
+        _wallet_pubkey: &str,
         network: Option<&str>,
     ) -> Result<TransactionResponse, McpServiceError> {
         if task_id.is_empty() {
@@ -897,7 +907,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/build-finalize{qs}", self.base_url);
-        let response = self.bodyless_post(&url, wallet_pubkey)
+        let response = self.bodyless_post(&url)
             .send()
             .await
             .map_err(|e| {
@@ -942,7 +952,7 @@ impl OrchestratorProxy {
 
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{task_id}/approve{qs}", self.base_url);
-        let response = self.bodyless_post(&url, wallet_pubkey)
+        let response = self.bodyless_post(&url)
             .send()
             .await
             .map_err(|e| {
@@ -1058,7 +1068,7 @@ impl OrchestratorProxy {
         let response = self
             .client
             .get(&url)
-            .bearer_auth(wallet_pubkey)
+            .bearer_auth(&self.access_token)
             .send()
             .await
             .map_err(|e| {
@@ -1124,7 +1134,7 @@ impl OrchestratorProxy {
         let response = self
             .client
             .post(&url)
-            .bearer_auth(wallet_pubkey)
+            .bearer_auth(&self.access_token)
             .json(&body)
             .send()
             .await
@@ -1564,7 +1574,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let result = proxy
                 .list_tasks(None, None, Some("devnet"))
                 .await
@@ -1592,7 +1603,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             // Verify the request URL had no `network` param. Wiremock
             // doesn't expose a "missing param" matcher cleanly, so we
             // pull the request log and assert it directly.
@@ -1622,7 +1634,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let task = proxy
                 .get_task_details("c:t", Some("devnet"))
                 .await
@@ -1645,13 +1658,14 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/tasks/c:t/claim"))
                 .and(query_param("network", "devnet"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
                 .expect(1)
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .claim_task("c:t", "wallet1", Some("devnet"))
                 .await
@@ -1666,13 +1680,14 @@ mod tests {
                 .and(path("/tasks/c:t/claim"))
                 .and(query_param("network", "devnet"))
                 .and(query_param("sponsor", "true"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
                 .expect(1)
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .sponsorship_template("c:t", "wallet1", "claim", None, Some("devnet"))
                 .await
@@ -1687,7 +1702,7 @@ mod tests {
                 .and(path("/tasks/c:t/submit"))
                 .and(query_param("network", "devnet"))
                 .and(query_param("sponsor", "true"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .and(body_partial_json(
                     serde_json::json!({ "content_id": "post:123" }),
                 ))
@@ -1696,7 +1711,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .sponsorship_template("c:t", "wallet1", "submit", Some("post:123"), Some("devnet"))
                 .await
@@ -1710,7 +1726,7 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/campaigns"))
                 .and(query_param("network", "devnet"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(
                     ResponseTemplate::new(200)
                         .set_body_json(serde_json::json!({ "campaign_id": "camp1" })),
@@ -1719,7 +1735,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let brief = serde_json::json!({
                 "topic": "t", "brand_voice": "v", "cta": "c", "utm_link": "u"
             });
@@ -1745,7 +1762,7 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/campaigns/camp1/fund"))
                 .and(query_param("network", "devnet"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(
                     ResponseTemplate::new(200).set_body_json(minimal_tx_json("camp1:task1")),
                 )
@@ -1753,7 +1770,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .fund_campaign("camp1", "wallet1", 20_000_000, Some("devnet"))
                 .await
@@ -1768,7 +1786,7 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/agent/onboard"))
                 .and(query_param("network", "mainnet"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "signature": "sig123",
                     "message": "Onboarded: ... Claim tasks with ?network=mainnet&sponsor=true.",
@@ -1777,7 +1795,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .onboard_agent("wallet1", Some("mainnet"))
                 .await
@@ -1788,7 +1807,8 @@ mod tests {
         #[tokio::test]
         async fn onboard_agent_rejects_empty_wallet_without_calling() {
             let server = MockServer::start().await;
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let err = proxy
                 .onboard_agent("", Some("mainnet"))
                 .await
@@ -1800,7 +1820,8 @@ mod tests {
         async fn fund_campaign_rejects_zero_amount_without_calling() {
             // amount 0 must be rejected at the boundary — no HTTP call made.
             let server = MockServer::start().await;
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let err = proxy
                 .fund_campaign("camp1", "wallet1", 0, Some("devnet"))
                 .await
@@ -1819,7 +1840,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .submit_task("c:t", "wallet1", "yt-abc", Some("devnet"))
                 .await
@@ -1845,7 +1867,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .get_verification_data("c:t", "wallet1", Some("devnet"))
                 .await
@@ -1865,7 +1888,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .build_finalize("c:t", "wallet1", Some("devnet"))
                 .await
@@ -1883,7 +1907,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .approve_task("c:t", "wallet1", Some("devnet"))
                 .await
@@ -1904,7 +1929,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .list_pending_approval("wallet1", Some("devnet"))
                 .await
@@ -1927,7 +1953,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .confirm_task(
                     "c:t",
@@ -1961,7 +1988,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .confirm_task(
                     "c:t",
@@ -1991,7 +2019,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .get_earnings("wallet1", Some("devnet"))
                 .await
@@ -2044,7 +2073,8 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .claim_task("c:t", "wallet1", Some("devnet"))
                 .await
@@ -2090,6 +2120,7 @@ mod tests {
 
         fn proxy_for(server: &MockServer) -> OrchestratorProxy {
             OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into())
         }
 
         fn full_attestation_json() -> serde_json::Value {
