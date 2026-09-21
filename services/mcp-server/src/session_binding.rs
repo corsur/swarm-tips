@@ -170,49 +170,53 @@ impl McpSessionBinding {
             "missing session identity"
         );
         self.db
-            .run_transaction(|tx_db, tx| {
-                let session_id = session_id.to_owned();
-                let wallet = wallet.to_owned();
-                let token = token.map(str::to_owned);
-                Box::pin(async move {
-                    let doc: Option<McpHttpSessionDoc> = tx_db
-                        .fluent()
-                        .select()
-                        .by_id_in(MCP_HTTP_SESSIONS_COLLECTION)
-                        .obj()
-                        .one(&session_id)
-                        .await
-                        .map_err(backoff::Error::transient)?;
-                    let Some(mut doc) = doc.filter(|doc| doc.wallet == wallet) else {
-                        return Err(backoff::Error::Permanent(
-                            firestore::errors::FirestoreError::DataConflictError(
-                                firestore::errors::FirestoreDataConflictError::new(
-                                    firestore::errors::FirestoreErrorPublicGenericDetails::new(
-                                        "session_changed".into(),
+            .run_transaction_with_options(
+                |tx_db, tx| {
+                    let session_id = session_id.to_owned();
+                    let wallet = wallet.to_owned();
+                    let token = token.map(str::to_owned);
+                    Box::pin(async move {
+                        let doc: Option<McpHttpSessionDoc> = tx_db
+                            .fluent()
+                            .select()
+                            .by_id_in(MCP_HTTP_SESSIONS_COLLECTION)
+                            .obj()
+                            .one(&session_id)
+                            .await
+                            .map_err(backoff::Error::Permanent)?;
+                        let Some(mut doc) = doc.filter(|doc| doc.wallet == wallet) else {
+                            return Err(backoff::Error::Permanent(
+                                firestore::errors::FirestoreError::DataConflictError(
+                                    firestore::errors::FirestoreDataConflictError::new(
+                                        firestore::errors::FirestoreErrorPublicGenericDetails::new(
+                                            "session_changed".into(),
+                                        ),
+                                        "session binding changed during verification".into(),
                                     ),
-                                    "session binding changed during verification".into(),
                                 ),
-                            ),
-                        ));
-                    };
-                    let now = firestore::FirestoreTimestamp(chrono::Utc::now());
-                    doc.verified_wallet = Some(wallet);
-                    doc.verified_at = Some(now.clone());
-                    doc.last_seen_at = now;
-                    if let Some(token) = token {
-                        doc.access_token = Some(token);
-                    }
-                    tx_db
-                        .fluent()
-                        .update()
-                        .in_col(MCP_HTTP_SESSIONS_COLLECTION)
-                        .document_id(session_id)
-                        .object(&doc)
-                        .add_to_transaction(tx)
-                        .map_err(backoff::Error::Permanent)?;
-                    Ok(())
-                })
-            })
+                            ));
+                        };
+                        let now = firestore::FirestoreTimestamp(chrono::Utc::now());
+                        doc.verified_wallet = Some(wallet);
+                        doc.verified_at = Some(now.clone());
+                        doc.last_seen_at = now;
+                        if let Some(token) = token {
+                            doc.access_token = Some(token);
+                        }
+                        tx_db
+                            .fluent()
+                            .update()
+                            .in_col(MCP_HTTP_SESSIONS_COLLECTION)
+                            .document_id(session_id)
+                            .object(&doc)
+                            .add_to_transaction(tx)
+                            .map_err(backoff::Error::Permanent)?;
+                        Ok(())
+                    })
+                },
+                firestore::FirestoreTransactionOptions::new()
+                    .with_max_elapsed_time(chrono::Duration::seconds(15)),
+            )
             .await?;
         Ok(())
     }
