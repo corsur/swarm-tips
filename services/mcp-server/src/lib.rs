@@ -19,6 +19,7 @@ mod listings;
 mod matrix_tests;
 mod proxy;
 mod reputation;
+mod request_errors;
 mod server;
 mod session_binding;
 mod solana_reads;

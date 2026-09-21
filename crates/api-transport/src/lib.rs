@@ -30,11 +30,21 @@ pub type TransportFuture =
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
     #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     #[error("module request timed out; completion is unknown")]
     Timeout,
     #[error("module transport unavailable: {0}")]
     Unavailable(String),
+}
+
+impl From<reqwest::Error> for TransportError {
+    fn from(error: reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else {
+            Self::Http(error)
+        }
+    }
 }
 
 pub trait RequestTransport: Send + Sync {
@@ -123,6 +133,26 @@ impl RequestBuilder {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn http_deadline_reports_the_same_timeout_without_replaying() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            observed.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        });
+        let client = Client::new(reqwest::Client::new(), Duration::from_millis(100));
+        assert!(matches!(
+            client.post(url).send().await,
+            Err(TransportError::Timeout)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
 
     struct Capture {
         calls: Arc<AtomicUsize>,

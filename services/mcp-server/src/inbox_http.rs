@@ -51,7 +51,7 @@ pub const INBOX_SESSION_HEADER: &str = "x-inbox-session";
 /// CORS for browser requests from coordination.game / shillbot.org /
 /// swarm.tips — same wildcard-origin policy as `/internal/listings`, plus the
 /// custom session header.
-const INBOX_CORS_HEADERS: [(&str, &str); 4] = [
+const INBOX_CORS_HEADERS: [(&str, &str); 5] = [
     ("Access-Control-Allow-Origin", "*"),
     ("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"),
     (
@@ -59,6 +59,7 @@ const INBOX_CORS_HEADERS: [(&str, &str); 4] = [
         "content-type, x-inbox-session",
     ),
     ("Access-Control-Max-Age", "3600"),
+    ("Access-Control-Expose-Headers", "x-request-id"),
 ];
 
 /// Everything the REST twins touch. Constructed once in `main.rs` from the
@@ -92,12 +93,35 @@ fn json_ok(value: serde_json::Value) -> axum::response::Response {
 /// Error responses carry the same stable `reason` tokens the MCP surface
 /// logs, so frontends can branch without string-matching prose.
 fn json_error(status: StatusCode, reason: &str, message: &str) -> axum::response::Response {
-    (
-        status,
-        INBOX_CORS_HEADERS,
-        axum::Json(serde_json::json!({ "error": message, "reason": reason })),
-    )
-        .into_response()
+    let context = crate::request_errors::current();
+    let (retry, mut next_step) =
+        crate::request_errors::recovery(reason, context.as_ref().is_some_and(|c| c.read_only));
+    if context
+        .as_ref()
+        .is_some_and(|c| c.operation == "agent_open_messages")
+        && reason == "invalid_request"
+    {
+        next_step = crate::request_errors::OPEN_EXAMPLE;
+    } else if message == "include_sent requires status=all" {
+        next_step =
+            "Set status=all with include_sent=true, or include_sent=false for pending messages.";
+    }
+    if reason == "unproven_sender" || reason == "missing_session" {
+        next_step = "Obtain a nonce with POST /internal/inbox/session using wallet, sign it locally, then POST wallet, nonce and signature to that endpoint. Send the returned session_id as X-Inbox-Session. Never send a private key.";
+    }
+    let mut body = serde_json::json!({ "error": message, "reason": reason, "error_code": reason, "retry": retry, "next_step": next_step });
+    if let Some(ctx) = &context {
+        body["request_id"] = serde_json::json!(ctx.request_id);
+        body["operation"] = serde_json::json!(ctx.operation);
+        ctx.failure(reason, "handler");
+    }
+    let mut response = (status, INBOX_CORS_HEADERS, axum::Json(body)).into_response();
+    if let Some(ctx) = context {
+        if let Ok(value) = http::HeaderValue::from_str(&ctx.request_id) {
+            response.headers_mut().insert("x-request-id", value);
+        }
+    }
+    response
 }
 
 fn missing_session_response() -> axum::response::Response {
@@ -1199,6 +1223,9 @@ pub fn session_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRoute
         async move { handle_session(&state, &body).await }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 pub fn messages_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
@@ -1209,6 +1236,9 @@ pub fn messages_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRout
         },
     )
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 fn parse_selective_query(q: &HashMap<String, String>) -> Result<inbox::ListMessagesArgs, String> {
@@ -1262,6 +1292,9 @@ pub fn list_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
         },
     )
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 pub fn open_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
@@ -1294,6 +1327,9 @@ pub fn open_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
         }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 pub fn ack_ids_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
@@ -1329,6 +1365,9 @@ pub fn ack_ids_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRoute
         }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 pub fn ack_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
@@ -1337,6 +1376,9 @@ pub fn ack_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
         async move { handle_ack(&state, &headers, &body).await }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 pub fn send_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
@@ -1345,6 +1387,9 @@ pub fn send_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
         async move { handle_send(&state, &headers, &body).await }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 pub fn topics_publish_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
@@ -1353,6 +1398,9 @@ pub fn topics_publish_handler(state: Arc<InboxHttpState>) -> axum::routing::Meth
         async move { handle_topic_publish(&state, &headers, &body).await }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 pub fn topics_read_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
@@ -1361,6 +1409,9 @@ pub fn topics_read_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodR
         async move { handle_topic_read(&state, &q).await }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 pub fn topics_report_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
@@ -1369,6 +1420,9 @@ pub fn topics_report_handler(state: Arc<InboxHttpState>) -> axum::routing::Metho
         async move { handle_topic_report(&state, &headers, &body).await }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 /// One route, three methods: POST registers (body {url}), GET reads,
@@ -1389,6 +1443,9 @@ pub fn webhook_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRoute
         async move { handle_webhook_delete(&state, &headers).await }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 /// The delivery workflow's outcome callback (see handle_delivery_result for
@@ -1407,6 +1464,9 @@ pub fn a2a_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
         async move { handle_a2a(&state, &headers, &body).await }
     })
     .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1416,6 +1476,48 @@ pub fn a2a_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn http_error_guidance_preserves_reason_and_correlates_header_with_body() {
+        let ctx = crate::request_errors::ErrorContext::new("agent_send_message", "http", false);
+        let response = crate::request_errors::CONTEXT
+            .scope(ctx.clone(), async {
+                super::json_error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "storage failure",
+                )
+            })
+            .await;
+        assert_eq!(response.headers()["x-request-id"], ctx.request_id);
+        assert_eq!(
+            response.headers()["access-control-expose-headers"],
+            "x-request-id"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["reason"], "internal");
+        assert_eq!(body["retry"], "reconcile_first");
+        assert_eq!(body["request_id"], ctx.request_id);
+        assert_eq!(body["operation"], "agent_send_message");
+        let response = crate::request_errors::CONTEXT
+            .scope(ctx, async { super::missing_session_response() })
+            .await;
+        let bytes = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("POST /internal/inbox/session"));
+        assert!(!body["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("register_wallet"));
+    }
+
     use super::*;
     use serde_json::json;
     use wiremock::matchers::{body_partial_json, method, path};
