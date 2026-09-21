@@ -19,6 +19,7 @@ mod listings;
 mod matrix_tests;
 mod proxy;
 mod reputation;
+mod reputation_lookup;
 mod request_errors;
 mod server;
 mod session_binding;
@@ -643,36 +644,11 @@ fn build_router(
             // the EigenTrust settlement-graph record (Firestore, mainnet
             // settlements — network-independent).
             "/internal/agent-reputation",
-            axum::routing::get({
-                let mainnet = rpc_url_mainnet.clone();
-                let devnet = rpc_url_devnet.clone();
-                let rep_db = Arc::clone(&reputation_db);
-                move |q: axum::extract::Query<std::collections::HashMap<String, String>>| {
-                    let mainnet = mainnet.clone();
-                    let devnet = devnet.clone();
-                    let rep_db = Arc::clone(&rep_db);
-                    async move {
-                        let wallet = q.get("wallet").cloned().unwrap_or_default();
-                        let net = q.get("network").map(String::as_str).unwrap_or("mainnet");
-                        let rpc = if net == "mainnet" { &mainnet } else { &devnet };
-                        let client = reqwest::Client::new();
-                        let (web_position, extensions_received) =
-                            crate::web_position::agent_web_position(&client, rpc, &wallet).await;
-                        let eigentrust = reputation::get_agent_reputation(&rep_db, &wallet).await;
-                        (
-                            [("Access-Control-Allow-Origin", "*")],
-                            axum::Json(serde_json::json!({
-                                "wallet": wallet,
-                                "web_position": web_position,
-                                "extensions_received": extensions_received,
-                                "has_standing": web_position.is_some()
-                                    && extensions_received >= 1,
-                                "eigentrust": eigentrust,
-                            })),
-                        )
-                    }
-                }
-            }),
+            reputation_lookup::handler(
+                Arc::clone(&reputation_db),
+                rpc_url_mainnet.clone(),
+                rpc_url_devnet.clone(),
+            ),
         );
 
     if let Some(state) = discovery_state {

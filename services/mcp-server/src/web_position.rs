@@ -140,21 +140,27 @@ pub async fn agent_web_position(
     rpc_url: &str,
     agent: &str,
 ) -> (Option<f64>, u64) {
-    let extensions = match crate::solana_reads::read_all_extensions(client, rpc_url).await {
-        Ok(e) => e,
-        Err(e) => {
-            // (None, 0) is also the healthy "agent has no vouches" answer, so a
-            // silent return reported an RPC outage as a legitimate empty result.
-            tracing::warn!(agent = %agent, error = %e, "extension read failed — reporting no web position");
-            return (None, 0);
+    match try_agent_web_position(client, rpc_url, agent).await {
+        Ok(position) => position,
+        Err(error) => {
+            tracing::warn!(%error,"optional credit-web signal unavailable");
+            (None, 0)
         }
-    };
+    }
+}
+
+pub async fn try_agent_web_position(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    agent: &str,
+) -> anyhow::Result<(Option<f64>, u64)> {
+    let extensions = crate::solana_reads::read_all_extensions(client, rpc_url).await?;
     if extensions.is_empty() {
-        return (None, 0);
+        return Ok((None, 0));
     }
     let received = extensions.iter().filter(|e| e.recipient == agent).count() as u64;
     if received == 0 {
-        return (None, 0);
+        return Ok((None, 0));
     }
     let edges: Vec<ExtensionEdge> = extensions
         .into_iter()
@@ -167,7 +173,7 @@ pub async fn agent_web_position(
     let position = compute_web_positions(&edges, WEB_POSITION_ROOT)
         .get(agent)
         .copied();
-    (position, received)
+    Ok((position, received))
 }
 
 #[cfg(test)]
