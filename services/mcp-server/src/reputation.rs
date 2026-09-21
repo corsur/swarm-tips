@@ -127,18 +127,24 @@ pub async fn rebuild(
 
 /// Read one wallet's computed reputation. `None` = wallet not in the
 /// settlement graph yet (a normal state, not an error).
-pub async fn get_agent_reputation(db: &FirestoreDb, wallet: &str) -> Option<AgentReputation> {
-    match db
-        .fluent()
+pub async fn try_get_agent_reputation(
+    db: &FirestoreDb,
+    wallet: &str,
+) -> anyhow::Result<Option<AgentReputation>> {
+    db.fluent()
         .select()
         .by_id_in(AGENT_REPUTATION_COLLECTION)
         .obj::<AgentReputation>()
         .one(wallet)
         .await
-    {
-        Ok(doc) => doc,
-        Err(e) => {
-            tracing::warn!(wallet, error = %e, "agent_reputation read failed");
+        .map_err(|e| anyhow::anyhow!("reputation storage unavailable: {e}"))
+}
+
+pub async fn get_agent_reputation(db: &FirestoreDb, wallet: &str) -> Option<AgentReputation> {
+    match try_get_agent_reputation(db, wallet).await {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::warn!(%error, "optional reputation signal unavailable");
             None
         }
     }
@@ -195,7 +201,7 @@ pub fn leaderboard_handler(db: Arc<FirestoreDb>) -> axum::routing::MethodRouter 
                         (
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                             [("Access-Control-Allow-Origin", "*")],
-                            format!("{{\"error\": \"{e}\"}}"),
+                            axum::Json(serde_json::json!({"error": "reputation rebuild failed; retry later"})),
                         )
                             .into_response()
                     }
@@ -208,6 +214,14 @@ pub fn leaderboard_handler(db: Arc<FirestoreDb>) -> axum::routing::MethodRouter 
 #[derive(Debug, serde::Deserialize, Default)]
 struct RebuildRequest {
     anchors: Option<Vec<String>>,
+}
+
+fn rebuild_status(summary: &RebuildSummary) -> axum::http::StatusCode {
+    if summary.firestore_write_errors == 0 {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 /// POST /internal/reputation/rebuild → RebuildSummary.
@@ -250,12 +264,12 @@ pub fn rebuild_handler(
                     .into_response();
                 }
                 match rebuild(&db, &anchors).await {
-                    Ok(summary) => axum::Json(summary).into_response(),
+                    Ok(summary) => (rebuild_status(&summary), axum::Json(summary)).into_response(),
                     Err(e) => {
                         tracing::error!(error = %e, "reputation rebuild failed");
                         (
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("{{\"error\": \"{e}\"}}"),
+                            axum::Json(serde_json::json!({"error": "reputation rebuild failed; retry later"})),
                         )
                             .into_response()
                     }
@@ -268,6 +282,27 @@ pub fn rebuild_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_rebuild_writes_require_retry() {
+        let mut summary = RebuildSummary {
+            edges: 1,
+            duplicate_edges_dropped: 0,
+            agents: 2,
+            converged: true,
+            iterations: 1,
+            firestore_writes: 1,
+            firestore_write_errors: 1,
+            elapsed_ms: 1,
+        };
+        assert_eq!(
+            rebuild_status(&summary),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        summary.firestore_write_errors = 0;
+        summary.firestore_writes = 2;
+        assert_eq!(rebuild_status(&summary), axum::http::StatusCode::OK);
+    }
 
     #[test]
     fn resolve_anchors_prefers_body() {
