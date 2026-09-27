@@ -13,6 +13,8 @@ axioms = "\n".join(f'#print axioms {module["theorem_name"]}' for module in modul
 (root / "PromotionAudit.lean").write_text(
     "/- SPDX-License-Identifier: Apache-2.0 -/\n" + imports + "\n" + axioms + "\n"
 )
-root_module = root / "SwarmProofs.lean"
-(root / "SwarmProofs.lean.original").write_bytes(root_module.read_bytes())
-root_module.write_text(root_module.read_text() + "\nimport PromotionAudit\n")
+lakefile = root / "lakefile.toml"
+(root / "lakefile.toml.original").write_bytes(lakefile.read_bytes())
+lakefile.write_text(
+    lakefile.read_text() + '\n[[lean_lib]]\nname = "PromotionAudit"\n'
+)

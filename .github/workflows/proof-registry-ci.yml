@@ -27,6 +27,7 @@ jobs:
         with:
           lake-package-directory: proofs/SwarmProofs
           build: true
+          build-args: SwarmProofs PromotionAudit
           test: false
           nanoda: true
           nanoda-allow-sorry: false
@@ -38,7 +39,7 @@ jobs:
       - name: Restore non-umbrella public package root
         if: always()
         run: |
-          mv proofs/SwarmProofs/SwarmProofs.lean.original proofs/SwarmProofs/SwarmProofs.lean
+          mv proofs/SwarmProofs/lakefile.toml.original proofs/SwarmProofs/lakefile.toml
           rm -f proofs/SwarmProofs/PromotionAudit.lean
       - name: Reject generated drift
         run: git diff --exit-code
