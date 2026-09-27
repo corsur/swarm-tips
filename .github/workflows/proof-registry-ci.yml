@@ -12,6 +12,8 @@ on:
     paths:
       - "proofs/SwarmProofs/**"
       - "crates/proof-registry/**"
+      - "scripts/*proof*"
+      - ".github/workflows/proof-registry-*.yml"
 
 jobs:
   verify:
