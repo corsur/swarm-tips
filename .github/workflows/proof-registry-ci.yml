@@ -3,6 +3,7 @@ name: Proof registry checks
 on:
   pull_request:
     paths:
+      - "Cargo.toml"
       - "proofs/SwarmProofs/**"
       - "crates/proof-registry/**"
       - "scripts/*proof*"
@@ -10,6 +11,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "Cargo.toml"
       - "proofs/SwarmProofs/**"
       - "crates/proof-registry/**"
       - "scripts/*proof*"
