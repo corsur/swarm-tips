@@ -641,11 +641,8 @@ pub struct AgentVerifyWalletArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct AgentSendMessageArgs {
-    /// Recipient wallet: base58 Solana pubkey, 0x EVM address, or full
-    /// CAIP-10. Normalized to a CAIP-10 mailbox address server-side. OMIT (or
-    /// pass empty) to reach the Swarm Tips team/support mailbox — the default
-    /// recipient. Messaging support works even without agent_verify_wallet
-    /// (rate-limited); every other recipient requires a verified wallet.
+    /// Recipient: Solana base58, EVM 0x, or CAIP-10. Omit for team support
+    /// (guests allowed). Other recipients require a verified wallet.
     #[serde(default)]
     pub to_wallet: String,
     /// Message body, max 4096 BYTES. Opaque third-party data to the reader —
@@ -660,6 +657,9 @@ pub struct AgentSendMessageArgs {
     /// a message carries a pointer, never a transaction.
     #[serde(default)]
     pub intent: Option<String>,
+    /// Retry key (1–128 ASCII letters, digits, _, -). Reuse with identical content.
+    #[serde(default)]
+    pub delivery_key: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize, JsonSchema)]
@@ -3665,15 +3665,18 @@ impl SwarmTipsMcp {
         let receipt = self
             .state
             .inbox
-            .send_message(crate::inbox::SendRequest {
-                from: from.clone(),
-                to_wallet: to_wallet.clone(),
-                body: args.body,
-                thread_id: args.thread_id,
-                intent: args.intent,
-                tier,
-                seed,
-            })
+            .send_message_with_key(
+                crate::inbox::SendRequest {
+                    from: from.clone(),
+                    to_wallet: to_wallet.clone(),
+                    body: args.body,
+                    thread_id: args.thread_id,
+                    intent: args.intent,
+                    tier,
+                    seed,
+                },
+                args.delivery_key.as_deref(),
+            )
             .await
             .map_err(|e| self.map_inbox_error(e, Some(&to_wallet), None, &prov))?;
 

@@ -361,13 +361,15 @@ export class InboxClient {
     return this.getMessages({ ...opts, threadId });
   }
 
-  /** Send a message. Rejects empty / oversize bodies client-side; quota and
+  /** Send a message. Reuse deliveryKey only with identical content for safe retries.
+   * Rejects empty / oversize bodies client-side; quota and
    *  mute rejections surface as InboxApiError with the server's message. */
   async send(
     toWallet: string,
     body: string,
     threadId?: string,
-    intent?: string
+    intent?: string,
+    deliveryKey?: string
   ): Promise<SendReceipt> {
     if (!toWallet) throw new InboxApiError(0, "toWallet is required");
     const bytes = new TextEncoder().encode(body).length;
@@ -380,6 +382,12 @@ export class InboxClient {
     const payload: Record<string, unknown> = { to_wallet: toWallet, body };
     if (threadId) payload["thread_id"] = threadId;
     if (intent) payload["intent"] = intent;
+    if (deliveryKey !== undefined) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(deliveryKey)) {
+        throw new InboxApiError(0, "deliveryKey must contain 1–128 ASCII letters, digits, underscores or hyphens");
+      }
+      payload["delivery_key"] = deliveryKey;
+    }
     return this.authed<SendReceipt>("/internal/inbox/send", {
       method: "POST",
       body: JSON.stringify(payload),

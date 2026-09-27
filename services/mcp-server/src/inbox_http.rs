@@ -226,6 +226,7 @@ fn parse_session_request(raw: &str) -> Result<SessionRequest, String> {
 
 #[derive(Debug)]
 struct SendBody {
+    delivery_key: Option<String>,
     to_wallet: String,
     body: String,
     thread_id: Option<String>,
@@ -236,10 +237,14 @@ struct SendBody {
 /// enforced by `inbox::send_message` so both surfaces reject identically.
 fn parse_send_request(raw: &str) -> Result<SendBody, String> {
     let obj = parse_json_object(raw)?;
-    known_fields_only(&obj, &["to_wallet", "body", "thread_id", "intent"])?;
+    known_fields_only(
+        &obj,
+        &["to_wallet", "body", "thread_id", "intent", "delivery_key"],
+    )?;
     let to_wallet = string_field(&obj, "to_wallet", true)?.ok_or("to_wallet is required")?;
     let body = string_field(&obj, "body", true)?.ok_or("body is required")?;
     Ok(SendBody {
+        delivery_key: string_field(&obj, "delivery_key", false)?,
         to_wallet,
         body,
         thread_id: string_field(&obj, "thread_id", false)?,
@@ -800,15 +805,18 @@ async fn handle_send(
     let tier = state.inbox.resolve_sender_tier(&me, true).await;
     match state
         .inbox
-        .send_message(inbox::SendRequest {
-            from: me.clone(),
-            to_wallet: body.to_wallet,
-            body: body.body,
-            thread_id: body.thread_id,
-            intent: body.intent,
-            tier,
-            seed,
-        })
+        .send_message_with_key(
+            inbox::SendRequest {
+                from: me.clone(),
+                to_wallet: body.to_wallet,
+                body: body.body,
+                thread_id: body.thread_id,
+                intent: body.intent,
+                tier,
+                seed,
+            },
+            body.delivery_key.as_deref(),
+        )
         .await
     {
         Ok(receipt) => {
