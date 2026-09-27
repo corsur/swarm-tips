@@ -4,6 +4,10 @@ members = [
     "crates/*",
     "services/*",
 ]
+exclude = [
+    "proofs/SwarmProofs/_lean4export",
+    "proofs/SwarmProofs/_nanoda_lib",
+]
 resolver = "2"
 
 [workspace.dependencies]
