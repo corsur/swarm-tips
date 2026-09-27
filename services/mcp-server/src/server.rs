@@ -89,6 +89,26 @@ mod provenance_tests {
     }
 
     #[test]
+    fn website_guidance_requires_authoritative_instructions() {
+        let mut task: crate::proxy::TaskSummary = serde_json::from_value(serde_json::json!({
+            "task_id": "c:t", "state": "claimed", "platform": 9
+        }))
+        .unwrap();
+        assert_eq!(
+            super::task_next_action(&task, "", Some("devnet"))["wait_for"],
+            "website_instructions"
+        );
+        task.website_instructions = Some(crate::proxy::WebsiteInstructions {
+            status: "ready".into(),
+            html: Some("<footer>exact</footer>".into()),
+            guidance: "Publish first".into(),
+        });
+        let next = super::task_next_action(&task, "", Some("devnet"));
+        assert_eq!(next["next_action"], "publish_content");
+        assert_eq!(next["args"]["network"], "devnet");
+    }
+
+    #[test]
     fn task_guidance_preserves_network_and_approval_policy() {
         let mut task: crate::proxy::TaskSummary = serde_json::from_value(serde_json::json!({
             "task_id": "c:t", "state": "claimed", "requires_approval": false
@@ -1131,7 +1151,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_get_task_details",
-        description = "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Use this before calling shillbot_claim_task.",
+        description = "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Read before claiming; after a website claim, fetch task_nonce and copyable website_instructions.html.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_get_task_details(
@@ -1976,6 +1996,8 @@ impl SwarmTipsMcp {
         let result = serde_json::json!({
             "task_id": normalize_task_id(&args.task_id),
             "current_state": task.state,
+            "task_nonce": task.task_nonce,
+            "website_instructions": task.website_instructions,
             "role": role,
             "wallet": wallet_pubkey,
             "next": next,
@@ -5402,7 +5424,28 @@ fn task_next_action(
     expires: &str,
     network: Option<&str>,
 ) -> serde_json::Value {
-    let mut next = if task.state == "submitted" && task.requires_approval != Some(true) {
+    let mut next = if task.state == "claimed" && task.platform == Some(9) {
+        if task
+            .website_instructions
+            .as_ref()
+            .is_some_and(|instructions| instructions.status == "ready")
+        {
+            serde_json::json!({
+                "next_action": "publish_content",
+                "next_tool": "shillbot_submit_work",
+                "args": { "task_id": task.task_id, "content_id": "<full HTTPS URL of your published page>" },
+                "hint": "Use website_instructions.html and the exact task_nonce supplied here. Publish the visible footer on a page you control, then submit its full URL. Keep it live through verification seven days after submission. Do not submit before publishing.",
+            })
+        } else {
+            serde_json::json!({
+                "next_action": "wait",
+                "wait_for": "website_instructions",
+                "next_tool": "shillbot_get_task_details",
+                "args": { "task_id": task.task_id },
+                "hint": "Exact website instructions are not ready. Refresh task details; do not invent a nonce, decode accounts manually, or submit a placeholder.",
+            })
+        }
+    } else if task.state == "submitted" && task.requires_approval != Some(true) {
         serde_json::json!({
             "next_action": "wait",
             "wait_for": if task.requires_approval == Some(false) { "verification" } else { "approval_policy_unknown" },

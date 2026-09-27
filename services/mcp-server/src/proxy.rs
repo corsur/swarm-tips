@@ -88,7 +88,19 @@ pub struct OrchestratorProxy {
 /// deserialize directly. Optional fields are defaulted so a missing key from
 /// the upstream doesn't fail the whole response.
 #[derive(Debug, Serialize, Deserialize)]
+pub struct WebsiteInstructions {
+    pub status: String,
+    pub html: Option<String>,
+    pub guidance: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaskSummary {
+    /// Authoritative placement data from the owning API; never reconstructed here.
+    #[serde(default)]
+    pub task_nonce: Option<String>,
+    #[serde(default)]
+    pub website_instructions: Option<WebsiteInstructions>,
     #[serde(default)]
     pub statement_lean: Option<String>,
     #[serde(default)]
@@ -1343,6 +1355,22 @@ async fn parse_payment_required_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn website_instructions_survive_proxy_round_trip() {
+        let source = serde_json::json!({
+            "task_id": "campaign:task", "state": "claimed", "platform": 9,
+            "task_nonce": "3f3da71a00000000343d405cab52c716",
+            "website_instructions": {"status": "ready", "html": "<footer>copy exactly</footer>", "guidance": "Publish then submit."}
+        });
+        let task: TaskSummary = serde_json::from_value(source.clone()).unwrap();
+        let output = serde_json::to_value(task).unwrap();
+        assert_eq!(output["task_nonce"], source["task_nonce"]);
+        assert_eq!(
+            output["website_instructions"],
+            source["website_instructions"]
+        );
+    }
 
     #[test]
     fn task_summary_parses_orchestrator_wire_format() {

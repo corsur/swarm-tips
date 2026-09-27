@@ -1518,7 +1518,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Use this before calling shillbot_claim_task.",
+    "description": "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Read before claiming; after a website claim, fetch task_nonce and copyable website_instructions.html.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
