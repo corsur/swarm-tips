@@ -51,6 +51,7 @@ use firestore::{FirestoreDb, FirestoreQueryDirection, FirestoreTimestamp};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+mod delivery;
 mod selective;
 pub use selective::{AckMessageIdsArgs, ListMessagesArgs, OpenMessagesArgs};
 
@@ -152,8 +153,7 @@ const SUPPORT_WALLET: &str = "5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu";
 /// `web_position::WEB_POSITION_ROOT`).
 const SUPPORT_WALLET_ROOT: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
 
-/// The header the responder service verifies: `sha256=<hex HMAC-SHA256>` over
-/// the EXACT request body bytes, keyed by the shared `inbox-responder-secret`.
+/// The header for the signed immediate support trigger.
 const RESPONDER_SIGNATURE_HEADER: &str = "X-Swarm-Responder-Signature";
 
 /// The structured intents a message may carry (decision.md §6.1). Money
@@ -1665,6 +1665,7 @@ pub struct SendRequest {
     pub seed: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendReceipt {
     pub msg_id: String,
     pub to: String,
@@ -1993,6 +1994,18 @@ impl Inbox {
     // -- send ---------------------------------------------------------------
 
     pub async fn send_message(&self, req: SendRequest) -> Result<SendReceipt, InboxError> {
+        self.send_message_with_key(req, None).await
+    }
+
+    /// A sender-scoped delivery key makes retries safe after uncertain responses.
+    pub async fn send_message_with_key(
+        &self,
+        req: SendRequest,
+        key: Option<&str>,
+    ) -> Result<SendReceipt, InboxError> {
+        if let Some(key) = key {
+            delivery::validate_key(key)?;
+        }
         // -- CHECKS (all of them, before any write) --
         assert!(!req.from.is_empty(), "sender must be resolved upstream");
         if req.body.is_empty() {
@@ -2021,6 +2034,9 @@ impl Inbox {
             None => pairwise_thread_id(&req.from, &to),
         };
 
+        if let Some(key) = key {
+            return self.send_keyed(req, to, thread_id, intent, key).await;
+        }
         let now = chrono::Utc::now();
         let day = quota_day(now);
         let quota = self.read_quota(&req.from, &day).await?;

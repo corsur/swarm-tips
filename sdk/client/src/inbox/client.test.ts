@@ -343,7 +343,8 @@ describe("send", () => {
       "DestWallet",
       "hello",
       "task:t-1",
-      "task_clarification"
+      "task_clarification",
+      "test-retry-key"
     );
 
     expect(receipt.msg_id).toBe("05_x");
@@ -354,6 +355,7 @@ describe("send", () => {
       body: "hello",
       thread_id: "task:t-1",
       intent: "task_clarification",
+      delivery_key: "test-retry-key",
     });
   });
 
@@ -364,6 +366,7 @@ describe("send", () => {
     await expect(c.send("DestWallet", "€".repeat(1400))).rejects.toThrow(
       /body/
     );
+    await expect(c.send("DestWallet", "hi", undefined, undefined, "bad/key")).rejects.toThrow(/deliveryKey/);
     expect(mockFetch).toHaveBeenCalledTimes(2); // mint only
   });
 
