@@ -75,6 +75,15 @@ pub const LEAN_POLICY_V3_ID: [u8; 32] = [
     0x09, 0xdd, 0x93, 0x52, 0x86, 0x3d, 0xcd, 0x04, 0x72, 0x80, 0x72, 0x59, 0x87, 0x28, 0x09, 0xa3,
 ];
 
+/// keccak256 of the exact bytes of `policies/lean-attester-policy-v4.json`.
+/// V4 binds a canonical challenge manifest (statement, reusable dependency
+/// closure, environment, and Apache-2.0 reuse terms) into the existing
+/// on-chain 32-byte commitment without changing either program layout.
+pub const LEAN_POLICY_V4_ID: [u8; 32] = [
+    0xd6, 0xa0, 0x0c, 0xfb, 0x26, 0x1c, 0x71, 0x36, 0xc7, 0x4c, 0x6f, 0x29, 0xd5, 0x3a, 0x2c, 0xfc,
+    0xdb, 0xbc, 0xa1, 0x2d, 0x52, 0x0c, 0x63, 0xc2, 0x5b, 0x09, 0xb9, 0x05, 0x69, 0xf2, 0x05, 0x33,
+];
+
 /// How a task's verification is adjudicated. The numeric values are part
 /// of the cross-chain wire format AND the on-chain `Task.verification_kind`
 /// byte — append-only, never reorder.
@@ -289,6 +298,18 @@ mod tests {
             LEAN_POLICY_V3_ID,
             "v3 policy manifest bytes changed — a policy change is a NEW policy \
              version with a new id, never a mutation of an existing one"
+        );
+    }
+
+    #[cfg(feature = "keccak")]
+    #[test]
+    fn lean_policy_v4_id_pins_the_manifest_bytes() {
+        use crate::cert_schema::keccak256;
+        let manifest = include_bytes!("../../../policies/lean-attester-policy-v4.json");
+        assert_eq!(
+            keccak256(manifest),
+            LEAN_POLICY_V4_ID,
+            "v4 policy manifest bytes changed — published policy bytes are immutable"
         );
     }
 

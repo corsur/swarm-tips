@@ -1,0 +1,60 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "SwarmProofs-0.1.0",
+  "documentNamespace": "https://swarm.tips/spdx/SwarmProofs/0.1.0/2dbb38af494fbd820a4920b5ed36fb78",
+  "creationInfo": {
+    "created": "2026-09-26T00:00:00Z",
+    "creators": ["Organization: Swarm Tips", "Tool: proof-registry-0.1.0"]
+  },
+  "packages": [
+    {
+      "name": "SwarmProofs",
+      "SPDXID": "SPDXRef-Package-SwarmProofs",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "https://github.com/corsur/swarm-tips/tree/main/proofs/SwarmProofs",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright 2026 Swarm Tips contributors"
+    },
+    {
+      "name": "Zeta23",
+      "SPDXID": "SPDXRef-Package-Zeta23",
+      "versionInfo": "v1.0@3635e74826a4c1fcece7d1cd2b6fa75e43a00510",
+      "downloadLocation": "git+https://github.com/anthropics/formal-math@3635e74826a4c1fcece7d1cd2b6fa75e43a00510",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright 2026 Anthropic, PBC"
+    },
+    {
+      "name": "Mathlib",
+      "SPDXID": "SPDXRef-Package-Mathlib",
+      "versionInfo": "51e6992efd06126df61a496bebf8f49482a4e129",
+      "downloadLocation": "git+https://github.com/leanprover-community/mathlib4@51e6992efd06126df61a496bebf8f49482a4e129",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-SwarmProofs"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-SwarmProofs",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Zeta23"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Zeta23",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Mathlib"
+    }
+  ]
+}

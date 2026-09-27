@@ -3477,6 +3477,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "http",
+ "proof-registry",
  "rand 0.8.5",
  "reputation-indexer",
  "reqwest 0.12.28",
@@ -4017,6 +4018,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "proof-registry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

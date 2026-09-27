@@ -23,6 +23,7 @@ game-api-client = { path = "crates/game-api-client" }
 game-chain = { path = "crates/game-chain" }
 chain-registry = { path = "crates/chain-registry" }
 chain-core = { path = "crates/chain-core" }
+proof-registry = { path = "crates/proof-registry" }
 evm-chain = { path = "crates/evm-chain" }
 
 [profile.release]

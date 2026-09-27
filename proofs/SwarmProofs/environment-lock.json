@@ -1,0 +1,18 @@
+{
+  "schema": "swarm.lean-environment/v1",
+  "name": "lean-4.33-zeta23-v1",
+  "toolchain": "leanprover/lean4:v4.33.0-rc2",
+  "mathlib_revision": "51e6992efd06126df61a496bebf8f49482a4e129",
+  "policy_version": 4,
+  "registry_schema": "swarm.lean-proof-registry/v1",
+  "allowed_import_roots": ["Mathlib", "Zeta23", "SwarmProofs"],
+  "external_packages": [
+    {
+      "name": "Zeta23",
+      "repository": "https://github.com/anthropics/formal-math",
+      "revision": "3635e74826a4c1fcece7d1cd2b6fa75e43a00510",
+      "subdirectory": "zeta23",
+      "license": "Apache-2.0"
+    }
+  ]
+}

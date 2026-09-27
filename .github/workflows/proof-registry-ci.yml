@@ -1,0 +1,44 @@
+name: Proof registry checks
+
+on:
+  pull_request:
+    paths:
+      - "proofs/SwarmProofs/**"
+      - "crates/proof-registry/**"
+      - "scripts/*proof*"
+      - ".github/workflows/proof-registry-*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "proofs/SwarmProofs/**"
+      - "crates/proof-registry/**"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate canonical registry
+        run: cargo run -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
+      - name: Prepare ephemeral audit umbrella
+        run: python3 scripts/prepare-proof-promotion-audit.py
+      - name: Clean build and independent kernel acceptance
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: proofs/SwarmProofs
+          build: true
+          test: false
+          nanoda: true
+          nanoda-allow-sorry: false
+      - name: Audit exported declaration axioms
+        run: |
+          cd proofs/SwarmProofs
+          lake env lean PromotionAudit.lean 2>&1 | tee /tmp/swarm-proof-axioms.txt
+          python3 ../../scripts/check-proof-axiom-audit.py /tmp/swarm-proof-axioms.txt registry.json
+      - name: Restore non-umbrella public package root
+        if: always()
+        run: |
+          mv proofs/SwarmProofs/SwarmProofs.lean.original proofs/SwarmProofs/SwarmProofs.lean
+          rm -f proofs/SwarmProofs/PromotionAudit.lean
+      - name: Reject generated drift
+        run: git diff --exit-code

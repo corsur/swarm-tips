@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swarm.tips/schemas/lean-challenge-v4.json",
+  "title": "Swarm Lean v4 challenge manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "statement_sha256",
+    "policy_version",
+    "environment_id",
+    "dependency_bundle_id",
+    "reuse_license",
+    "reusable"
+  ],
+  "properties": {
+    "schema": { "const": "swarm.lean-challenge/v1" },
+    "statement_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "policy_version": { "const": 4 },
+    "environment_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "dependency_bundle_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "reuse_license": { "const": "Apache-2.0" },
+    "reusable": { "type": "boolean" }
+  }
+}

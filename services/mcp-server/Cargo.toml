@@ -41,6 +41,7 @@ game-chain = { workspace = true }
 shillbot-chain = { path = "../../crates/shillbot-chain" }
 chain-registry = { workspace = true }
 chain-core = { workspace = true, features = ["keccak"] }
+proof-registry = { workspace = true }
 evm-chain = { workspace = true }
 eigentrust = { path = "../eigentrust" }
 reputation-indexer = { workspace = true }
