@@ -142,6 +142,8 @@ pub struct EnvironmentRecord {
 pub enum RegistryError {
     #[error("canonical proof-registry JSON does not permit floating-point numbers")]
     FloatingPoint,
+    #[error("canonical proof-registry JSON permits safe integers only")]
+    UnsafeInteger,
     #[error("serialization failed: {0}")]
     Serialization(String),
     #[error("invalid sha256 identifier `{0}`")]
@@ -156,6 +158,98 @@ pub enum RegistryError {
     EnvironmentMismatch(String),
     #[error("dependency closure exceeds a registry limit")]
     ClosureLimit,
+    #[error("invalid proof registry: {0}")]
+    InvalidRegistry(String),
+}
+
+/// Validate every identity and reference before a registry is trusted by an
+/// API, attester, runner, publisher, or discovery surface.
+pub fn validate_registry(registry: &RegistryManifest) -> Result<(), RegistryError> {
+    if registry.schema != SCHEMA_VERSION {
+        return Err(RegistryError::InvalidRegistry(
+            "unexpected registry schema".into(),
+        ));
+    }
+    let mut environments = BTreeSet::new();
+    for environment in &registry.environments {
+        if environment.lock.schema != "swarm.lean-environment/v1"
+            || environment.lock.registry_schema != SCHEMA_VERSION
+            || environment.lock.policy_version != 4
+            || environment_id(&environment.lock)? != environment.environment_id
+            || !environments.insert(environment.environment_id.as_str())
+        {
+            return Err(RegistryError::InvalidRegistry(format!(
+                "invalid or duplicate environment {}",
+                environment.environment_id
+            )));
+        }
+    }
+
+    let mut modules = BTreeMap::new();
+    for module in &registry.modules {
+        validate_id(&module.module_id)?;
+        let mut canonical_dependencies = module.direct_dependencies.clone();
+        canonical_dependencies.sort();
+        canonical_dependencies.dedup();
+        if module.schema != SCHEMA_VERSION
+            || module_id(module)? != module.module_id
+            || generated_module_name(&module.module_id)? != module.module_name
+            || module.license != APACHE_2_0
+            || !module.verification.lean_kernel
+            || !module.verification.axiom_audit
+            || !module.verification.independent_kernel
+            || module.verification.axioms.iter().any(|axiom| {
+                !["propext", "Classical.choice", "Quot.sound"].contains(&axiom.as_str())
+            })
+            || module.direct_dependencies.len() > MAX_DIRECT_DEPENDENCIES
+            || module.direct_dependencies != canonical_dependencies
+            || module.source_bytes == 0
+            || module.source_sha256.len() != 64
+            || !module
+                .source_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || !environments.contains(module.environment_id.as_str())
+            || modules.insert(module.module_id.as_str(), module).is_some()
+        {
+            return Err(RegistryError::InvalidRegistry(format!(
+                "invalid or duplicate module {}",
+                module.module_id
+            )));
+        }
+    }
+
+    for module in &registry.modules {
+        resolve_historical_bundle(
+            registry,
+            &module.environment_id,
+            std::slice::from_ref(&module.module_id),
+        )?;
+        for dependency in &module.direct_dependencies {
+            let target = modules.get(dependency.as_str()).ok_or_else(|| {
+                RegistryError::InvalidRegistry(format!("unknown dependency {dependency}"))
+            })?;
+            if target.environment_id != module.environment_id {
+                return Err(RegistryError::EnvironmentMismatch(dependency.clone()));
+            }
+        }
+        if let Some(replacement) = module.replacement.as_ref() {
+            validate_id(replacement)?;
+            if !modules.contains_key(replacement.as_str()) || replacement == &module.module_id {
+                return Err(RegistryError::InvalidRegistry(format!(
+                    "invalid replacement {replacement}"
+                )));
+            }
+        }
+    }
+    for (alias, module_id) in &registry.aliases {
+        if alias.trim().is_empty() || !modules.contains_key(module_id.as_str()) {
+            return Err(RegistryError::InvalidRegistry(format!(
+                "invalid alias {alias}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// RFC-8785-style canonical JSON for the proof-registry schema.
@@ -166,31 +260,61 @@ pub enum RegistryError {
 pub fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, RegistryError> {
     let value = serde_json::to_value(value)
         .map_err(|error| RegistryError::Serialization(error.to_string()))?;
-    let canonical = canonical_value(value)?;
-    serde_json::to_vec(&canonical).map_err(|error| RegistryError::Serialization(error.to_string()))
+    let mut output = String::new();
+    write_canonical(&value, &mut output)?;
+    Ok(output.into_bytes())
 }
 
-fn canonical_value(value: Value) -> Result<Value, RegistryError> {
+fn write_canonical(value: &Value, output: &mut String) -> Result<(), RegistryError> {
     match value {
         Value::Object(map) => {
-            let mut sorted = BTreeMap::new();
-            for (key, value) in map {
-                sorted.insert(key, canonical_value(value)?);
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
+            output.push('{');
+            for (index, (key, child)) in entries.into_iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                output.push_str(
+                    &serde_json::to_string(key)
+                        .map_err(|e| RegistryError::Serialization(e.to_string()))?,
+                );
+                output.push(':');
+                write_canonical(child, output)?;
             }
-            let mut canonical = serde_json::Map::new();
-            for (key, value) in sorted {
-                canonical.insert(key, value);
-            }
-            Ok(Value::Object(canonical))
+            output.push('}');
         }
-        Value::Array(values) => values
-            .into_iter()
-            .map(canonical_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::Array),
-        Value::Number(number) if number.is_f64() => Err(RegistryError::FloatingPoint),
-        other => Ok(other),
+        Value::Array(values) => {
+            output.push('[');
+            for (index, child) in values.iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                write_canonical(child, output)?;
+            }
+            output.push(']');
+        }
+        Value::Number(number) => {
+            if number.is_f64() {
+                return Err(RegistryError::FloatingPoint);
+            }
+            const MAX_SAFE: u64 = 9_007_199_254_740_991;
+            let safe = number
+                .as_i64()
+                .map(|n| n.unsigned_abs() <= MAX_SAFE)
+                .or_else(|| number.as_u64().map(|n| n <= MAX_SAFE))
+                .unwrap_or(false);
+            if !safe {
+                return Err(RegistryError::UnsafeInteger);
+            }
+            output.push_str(&number.to_string());
+        }
+        other => output.push_str(
+            &serde_json::to_string(other)
+                .map_err(|e| RegistryError::Serialization(e.to_string()))?,
+        ),
     }
+    Ok(())
 }
 
 pub fn sha256_id<T: Serialize>(value: &T) -> Result<String, RegistryError> {
@@ -228,11 +352,11 @@ pub fn module_id(manifest: &ProofModuleManifest) -> Result<String, RegistryError
         originating_network: &'a str,
         author_wallet: &'a str,
         license: &'a str,
-        verification: &'a ModuleVerification,
     }
     // Catalog fields are deliberately excluded. The generated import and
     // source URL are derived after the ID exists; status/replacement/title/
-    // summary may change without mutating the immutable proof identity.
+    // summary and verification evidence may change without mutating the
+    // immutable proof identity.
     sha256_id(&Identity {
         schema: &manifest.schema,
         theorem_name: &manifest.theorem_name,
@@ -245,7 +369,6 @@ pub fn module_id(manifest: &ProofModuleManifest) -> Result<String, RegistryError
         originating_network: &manifest.originating_network,
         author_wallet: &manifest.author_wallet,
         license: &manifest.license,
-        verification: &manifest.verification,
     })
 }
 
@@ -338,7 +461,11 @@ fn validate_id(value: &str) -> Result<&str, RegistryError> {
     let Some(hex) = value.strip_prefix(MODULE_ID_PREFIX) else {
         return Err(RegistryError::InvalidIdentifier(value.to_string()));
     };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
         return Err(RegistryError::InvalidIdentifier(value.to_string()));
     }
     Ok(hex)
@@ -520,6 +647,62 @@ mod tests {
         format!("sha256:{}", ch.to_string().repeat(64))
     }
 
+    fn environment_lock() -> EnvironmentLock {
+        EnvironmentLock {
+            schema: "swarm.lean-environment/v1".into(),
+            name: "test".into(),
+            toolchain: "leanprover/lean4:v4.33.0-rc2".into(),
+            mathlib_revision: "1".repeat(40),
+            policy_version: 4,
+            registry_schema: SCHEMA_VERSION.into(),
+            allowed_import_roots: vec!["Mathlib".into(), "SwarmProofs".into()],
+            external_packages: Vec::new(),
+        }
+    }
+
+    fn valid_registry() -> RegistryManifest {
+        let lock = environment_lock();
+        let environment = environment_id(&lock).unwrap();
+        let mut item = module(&id('a'), &[], ModuleStatus::Active);
+        item.environment_id = environment.clone();
+        item.module_id = module_id(&item).unwrap();
+        item.module_name = generated_module_name(&item.module_id).unwrap();
+        RegistryManifest {
+            schema: SCHEMA_VERSION.into(),
+            environments: vec![EnvironmentRecord {
+                environment_id: environment,
+                lock,
+            }],
+            modules: vec![item],
+            aliases: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn shared_canonical_vectors_and_integer_limits() {
+        let vectors: Value = serde_json::from_str(include_str!(
+            "../../../proofs/SwarmProofs/canonical-vectors.json"
+        ))
+        .unwrap();
+        for vector in vectors.as_array().unwrap() {
+            assert_eq!(
+                String::from_utf8(canonical_json(&vector["input"]).unwrap()).unwrap(),
+                vector["canonical"].as_str().unwrap()
+            );
+        }
+        for number in [
+            serde_json::json!(9_007_199_254_740_992_u64),
+            serde_json::json!(-9_007_199_254_740_992_i64),
+            serde_json::json!(u64::MAX),
+        ] {
+            assert_eq!(canonical_json(&number), Err(RegistryError::UnsafeInteger));
+        }
+        assert_eq!(
+            canonical_json(&serde_json::json!(1.5)),
+            Err(RegistryError::FloatingPoint)
+        );
+    }
+
     #[test]
     fn canonical_json_sorts_nested_keys() {
         let value = serde_json::json!({"z": 1, "a": {"y": 2, "b": 3}});
@@ -640,7 +823,7 @@ mod tests {
         let identity = module_id(&first).unwrap();
         assert_eq!(
             identity,
-            "sha256:1cdf626e34d63032b103c053e5c0fdfbd2441ff0520201d66d26ade4f8da81f5"
+            "sha256:cd039f443a3237dcafa04d0ee2135f62590f7b8fc0ae65f6c729177df5473f80"
         );
         first.module_id = identity.clone();
         first.module_name = generated_module_name(&identity).unwrap();
@@ -649,6 +832,8 @@ mod tests {
         first.replacement = Some(id('b'));
         first.title = "new title".into();
         first.summary = "new summary".into();
+        first.verification.axioms.push("propext".into());
+        first.verification.independent_kernel = false;
         assert_eq!(module_id(&first).unwrap(), identity);
     }
 
@@ -688,5 +873,25 @@ mod tests {
         assert!(generated
             .theorem_signature
             .starts_with("theorem SwarmProofs."));
+    }
+
+    #[test]
+    fn registry_validation_rejects_forged_identity_and_dangling_alias() {
+        let registry = valid_registry();
+        validate_registry(&registry).unwrap();
+
+        let mut forged = registry.clone();
+        forged.modules[0].source_sha256 = "b".repeat(64);
+        assert!(matches!(
+            validate_registry(&forged),
+            Err(RegistryError::InvalidRegistry(_))
+        ));
+
+        let mut dangling = registry;
+        dangling.aliases.insert("latest".into(), id('f'));
+        assert!(matches!(
+            validate_registry(&dangling),
+            Err(RegistryError::InvalidRegistry(_))
+        ));
     }
 }

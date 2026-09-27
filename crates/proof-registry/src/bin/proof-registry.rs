@@ -46,52 +46,15 @@ fn write_registry(
 
 fn validate(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let registry = read_registry(path)?;
-    if registry.schema != SCHEMA_VERSION {
-        return Err("unexpected registry schema".into());
-    }
-    for environment in &registry.environments {
-        if proof_registry::environment_id(&environment.lock)? != environment.environment_id {
-            return Err(format!("environment id mismatch: {}", environment.environment_id).into());
-        }
-    }
+    proof_registry::validate_registry(&registry)?;
     for module in &registry.modules {
-        let mut canonical_dependencies = module.direct_dependencies.clone();
-        canonical_dependencies.sort();
-        canonical_dependencies.dedup();
-        if module_id(module)? != module.module_id
-            || generated_module_name(&module.module_id)? != module.module_name
-            || module.license != APACHE_2_0
-            || !module.verification.lean_kernel
-            || !module.verification.axiom_audit
-            || !module.verification.independent_kernel
-            || module.direct_dependencies != canonical_dependencies
-            || module
-                .verification
-                .axioms
-                .iter()
-                .any(|axiom| !ALLOWED_AXIOMS.contains(&axiom.as_str()))
+        if module
+            .verification
+            .axioms
+            .iter()
+            .any(|axiom| !ALLOWED_AXIOMS.contains(&axiom.as_str()))
         {
             return Err(format!("invalid module manifest: {}", module.module_id).into());
-        }
-        if let Some(replacement) = module.replacement.as_ref() {
-            generated_module_name(replacement)?;
-            if !registry
-                .modules
-                .iter()
-                .any(|candidate| &candidate.module_id == replacement)
-            {
-                return Err(format!("unknown replacement: {replacement}").into());
-            }
-        }
-        for dependency in &module.direct_dependencies {
-            let target = registry
-                .modules
-                .iter()
-                .find(|candidate| &candidate.module_id == dependency)
-                .ok_or_else(|| format!("unknown dependency: {dependency}"))?;
-            if target.environment_id != module.environment_id {
-                return Err(format!("dependency environment mismatch: {dependency}").into());
-            }
         }
     }
     println!("validated {} module(s)", registry.modules.len());
@@ -107,6 +70,10 @@ fn prepare(
     let candidate: PromotionCandidate = serde_json::from_slice(&std::fs::read(candidate_path)?)?;
     if candidate.schema != "swarm.lean-promotion-candidate/v1"
         || candidate.status != "verified_pending_finalization"
+        || candidate.task_id.is_empty()
+        || candidate.campaign_id.is_empty()
+        || candidate.network.is_empty()
+        || candidate.author_wallet.is_empty()
         || sha256_hex(candidate.proof_source.as_bytes()) != candidate.artifact_sha256
         || sha256_hex(candidate.statement.as_bytes()) != candidate.challenge.statement_sha256
         || candidate.challenge.schema != proof_registry::CHALLENGE_SCHEMA_VERSION
@@ -191,9 +158,16 @@ fn prepare(
         .iter()
         .find(|existing| existing.module_id == manifest.module_id)
     {
-        if existing != &manifest {
+        if proof_registry::module_id(existing)? != manifest.module_id {
             return Err("module id collision with different manifest".into());
         }
+        let existing_path =
+            package_root.join(format!("{}.lean", existing.module_name.replace('.', "/")));
+        if std::fs::read(&existing_path)? != generated.source.as_bytes() {
+            return Err("existing immutable module bytes differ".into());
+        }
+        // Retrying must not reactivate a yanked module or overwrite later audit
+        // evidence and reviewed catalog edits.
         println!("{}", manifest.module_id);
         return Ok(());
     }
@@ -361,6 +335,20 @@ mod tests {
         .unwrap();
         assert_eq!(std::fs::read(&registry_path).unwrap(), after_first);
         assert_eq!(read_registry(&registry_path).unwrap().modules.len(), 1);
+
+        let promoted_id = read_registry(&registry_path).unwrap().modules[0]
+            .module_id
+            .clone();
+        yank(&registry_path, &promoted_id, "revoked", None).unwrap();
+        let after_yank = std::fs::read(&registry_path).unwrap();
+        prepare(
+            &candidate_path,
+            &registry_path,
+            &root,
+            "https://storage.googleapis.com/example",
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&registry_path).unwrap(), after_yank);
 
         let mut tampered = candidate;
         tampered.proof_source.push_str("\n-- altered");

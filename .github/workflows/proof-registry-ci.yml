@@ -1,10 +1,16 @@
 name: Proof registry checks
 
 on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
   pull_request:
     paths:
       - "Cargo.toml"
       - "proofs/SwarmProofs/**"
+      - "proofs/fixtures/**"
       - "crates/proof-registry/**"
       - "scripts/*proof*"
       - ".github/workflows/proof-registry-*.yml"
@@ -13,28 +19,59 @@ on:
     paths:
       - "Cargo.toml"
       - "proofs/SwarmProofs/**"
+      - "proofs/fixtures/**"
       - "crates/proof-registry/**"
       - "scripts/*proof*"
       - ".github/workflows/proof-registry-*.yml"
+
+permissions:
+  contents: read
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
       - name: Validate canonical registry
         run: cargo run -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
       - name: Prepare ephemeral audit umbrella
         run: python3 scripts/prepare-proof-promotion-audit.py
-      - name: Clean build and independent kernel acceptance
+      - name: Install pinned Lean environment
         uses: leanprover/lean-action@v1
         with:
           lake-package-directory: proofs/SwarmProofs
-          build: true
-          build-args: SwarmProofs PromotionAudit
+          build: false
           test: false
-          nanoda: true
-          nanoda-allow-sorry: false
+      - name: Build pinned trusted environment only
+        working-directory: proofs/SwarmProofs
+        run: lake build Zeta23
+      - name: Parse source policy before compiling promoted modules
+        run: |
+          bash scripts/test-proof-source-policy.sh
+          python3 -B scripts/check-proof-sources.py
+      - name: Build promoted modules
+        working-directory: proofs/SwarmProofs
+        run: lake build SwarmProofs PromotionAudit
+      - name: Export and independently check promoted declarations
+        run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs PromotionAudit
+      - name: Reject omitted helpers, forbidden axioms, and namespace escapes
+        run: |
+          python3 -B scripts/test-proof-export-coverage.py
+          python3 -B scripts/test-proof-publication.py
+          bash scripts/test-proof-declaration-inventory.sh
+      - name: Independently check reusable definition and private helper fixture
+        run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs Reusable proofs/SwarmProofs/.lake/fixture-audit
+      - name: Retain declaration coverage evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-declaration-coverage-${{ inputs.source_sha || github.sha }}
+          path: |
+            proofs/SwarmProofs/.lake/proof-audit/
+            proofs/SwarmProofs/.lake/fixture-audit/
+          if-no-files-found: error
       - name: Audit exported declaration axioms
         run: |
           cd proofs/SwarmProofs
