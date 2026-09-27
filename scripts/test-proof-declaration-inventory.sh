@@ -4,9 +4,9 @@ script_root="$(cd "$(dirname "$0")" && pwd)"
 package_root="$(cd "$script_root/../proofs/SwarmProofs" && pwd)"
 cd "$package_root"
 mkdir -p .lake/build/lib/lean
-for fixture in Reusable ForbiddenAxiom ForbiddenSorry ForbiddenNamespace ForbiddenUnsafe; do
+for fixture in Reusable ForbiddenAxiom ForbiddenSorry ForbiddenNamespace ForbiddenQualifiedNamespace ForbiddenUnsafe; do
   lake env lean -R ../fixtures -o ".lake/build/lib/lean/$fixture.olean" "../fixtures/$fixture.lean"
-  if lake env lean --run "$script_root/proof-declaration-inventory.lean" "$fixture" > ".lake/$fixture.inventory.json" 2> ".lake/$fixture.audit-error.txt"; then
+  if lake env lean --run "$script_root/proof-declaration-inventory.lean" "$fixture" SwarmProofs.Generated.Fixture > ".lake/$fixture.inventory.json" 2> ".lake/$fixture.audit-error.txt"; then
     if [[ "$fixture" != Reusable ]]; then
       echo "ERROR: forbidden fixture accepted: $fixture" >&2
       exit 1
@@ -18,7 +18,7 @@ for fixture in Reusable ForbiddenAxiom ForbiddenSorry ForbiddenNamespace Forbidd
     case "$fixture" in
       ForbiddenAxiom) expected="new axiom" ;;
       ForbiddenSorry) expected="unapproved axiom: sorryAx" ;;
-      ForbiddenNamespace) expected="escaped generated namespace" ;;
+      ForbiddenNamespace|ForbiddenQualifiedNamespace) expected="escaped generated namespace" ;;
       ForbiddenUnsafe) expected="unsafe/partial declaration" ;;
     esac
     grep -F "$expected" ".lake/$fixture.audit-error.txt"

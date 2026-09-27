@@ -23,7 +23,10 @@ git -C "$work_root/nanoda" checkout --quiet "$nanoda_revision"
 
 export_file="$work_root/export.txt"
 inventory_file="$report_root/declarations.json"
-(cd "$package_root" && lake env lean --run "$script_root/proof-declaration-inventory.lean" "$module_name" > "$inventory_file")
+fixture_namespace="${4:-}"
+inventory_args=("$module_name")
+if [[ -n "$fixture_namespace" ]]; then inventory_args+=("$fixture_namespace"); fi
+(cd "$package_root" && lake env lean --run "$script_root/proof-declaration-inventory.lean" "${inventory_args[@]}" > "$inventory_file")
 # Use every declaration owned by every promoted module, including private and
 # generated helpers. The exporter recursively emits their logical dependencies.
 python3 - "$package_root" "$work_root/lean4export/.lake/build/bin/lean4export" "$module_name" "$inventory_file" "$export_file" <<'PY'

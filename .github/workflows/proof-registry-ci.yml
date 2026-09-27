@@ -63,7 +63,7 @@ jobs:
           python3 -B scripts/test-proof-publication.py
           bash scripts/test-proof-declaration-inventory.sh
       - name: Independently check reusable definition and private helper fixture
-        run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs Reusable proofs/SwarmProofs/.lake/fixture-audit
+        run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs Reusable proofs/SwarmProofs/.lake/fixture-audit SwarmProofs.Generated.Fixture
       - name: Retain declaration coverage evidence
         uses: actions/upload-artifact@v4
         with:

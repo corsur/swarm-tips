@@ -25,7 +25,21 @@ def auditDependencies (env : Environment) (roots : Array Name) : IO Unit := do
 /-- Inventory by defining module, not public name or declared entry theorem.
 This deliberately includes private constants and generated helpers. -/
 def main (args : List String) : IO Unit := do
-  let [moduleText] := args | throw <| IO.userError "expected audit module"
+  let moduleText :: extra := args | throw <| IO.userError "expected audit module and optional fixture namespace"
+  if extra.length > 1 then throw <| IO.userError "too many audit arguments"
+  let registry ← match Json.parse (← IO.FS.readFile "registry.json") with
+    | .ok value => pure value
+    | .error error => throw <| IO.userError error
+  let modules ← match registry.getObjValAs? (Array Json) "modules" with
+    | .ok value => pure value
+    | .error error => throw <| IO.userError error
+  let mut namespaces : NameMap Name := {}
+  for entry in modules do
+    let .ok owner := entry.getObjValAs? String "module_name" | throw <| IO.userError "missing module name"
+    let .ok theoremName := entry.getObjValAs? String "theorem_name" | throw <| IO.userError "missing theorem name"
+    namespaces := namespaces.insert owner.toName theoremName.toName.getPrefix
+  if let [fixtureNamespace] := extra then
+    namespaces := namespaces.insert moduleText.toName fixtureNamespace.toName
   initSearchPath (← findSysroot)
   let moduleName := moduleText.toName
   let env ← importModules #[{ module := moduleName }] {}
@@ -37,7 +51,9 @@ def main (args : List String) : IO Unit := do
     unless owner == moduleName || (`SwarmProofs.Generated).isPrefixOf owner do continue
     if info.isUnsafe || info.isPartial then throw <| IO.userError s!"unsafe/partial declaration: {name}"
     if let .axiomInfo _ := info then throw <| IO.userError s!"new axiom: {name}"
-    unless (`SwarmProofs.Generated).isPrefixOf (privateToUserName name) do
+    let some expectedNamespace := namespaces.find? owner
+      | throw <| IO.userError s!"declaration belongs to unregistered audit module: {owner}"
+    unless (`SwarmProofs.Generated).isPrefixOf expectedNamespace && expectedNamespace.isPrefixOf (privateToUserName name) do
       throw <| IO.userError s!"declaration escaped generated namespace: {name}"
     roots := roots.push name
     declarations := declarations.push <| Json.mkObj [
