@@ -64,6 +64,8 @@ jobs:
           bash scripts/test-proof-declaration-inventory.sh
       - name: Independently check reusable definition and private helper fixture
         run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs Reusable proofs/SwarmProofs/.lake/fixture-audit SwarmProofs.Generated.Fixture
+      - name: Independently check a second module using the first definition and theorem
+        run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs ReusableConsumer proofs/SwarmProofs/.lake/consumer-audit SwarmProofs.Generated.Consumer
       - name: Retain declaration coverage evidence
         uses: actions/upload-artifact@v4
         with:
@@ -71,6 +73,7 @@ jobs:
           path: |
             proofs/SwarmProofs/.lake/proof-audit/
             proofs/SwarmProofs/.lake/fixture-audit/
+            proofs/SwarmProofs/.lake/consumer-audit/
           if-no-files-found: error
       - name: Audit exported declaration axioms
         run: |

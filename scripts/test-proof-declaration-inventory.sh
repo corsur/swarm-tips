@@ -24,3 +24,5 @@ for fixture in Reusable ForbiddenAxiom ForbiddenSorry ForbiddenNamespace Forbidd
     grep -F "$expected" ".lake/$fixture.audit-error.txt"
   fi
 done
+lake env lean -R ../fixtures -o .lake/build/lib/lean/ReusableConsumer.olean ../fixtures/ReusableConsumer.lean
+lake env lean --run "$script_root/proof-declaration-inventory.lean" ReusableConsumer SwarmProofs.Generated.Consumer > .lake/ReusableConsumer.inventory.json
