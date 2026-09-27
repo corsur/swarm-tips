@@ -15,6 +15,9 @@ on:
       - 'tests/fixtures/task-payout-vectors.json'
       - 'tsconfig.json'
       - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'sdk/client/**'
       - 'Anchor.toml'
       - '.github/workflows/shillbot-program.yml'
   pull_request:
@@ -26,16 +29,20 @@ on:
       - 'tests/fixtures/task-payout-vectors.json'
       - 'tsconfig.json'
       - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'sdk/client/**'
       - 'Anchor.toml'
       - '.github/workflows/shillbot-program.yml'
   workflow_dispatch:
     inputs:
       target:
-        description: 'Deploy target cluster (mainnet requires explicitly selecting it)'
+        description: 'Verify only, or explicitly deploy to a cluster after tests pass'
         required: true
-        default: devnet
+        default: test
         type: choice
         options:
+          - test
           - devnet
           - mainnet
 
