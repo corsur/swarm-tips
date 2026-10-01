@@ -15,6 +15,7 @@ import {
   generateMatchupCommit,
   escrowPda,
   ensureConfigInitialized,
+  sharedTreasury,
 } from "./common.ts";
 
 describe("session-key delegation", () => {
@@ -26,7 +27,7 @@ describe("session-key delegation", () => {
   const player1 = Keypair.generate();
   const player2 = Keypair.generate();
   const matchmaker = provider.wallet;
-  const treasury = Keypair.generate();
+  const treasury = sharedTreasury;
 
   let gameCounterPda: PublicKey;
   let globalConfigPda: PublicKey;

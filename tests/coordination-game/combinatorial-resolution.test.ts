@@ -21,6 +21,7 @@ import {
   createGameOnChain,
   joinGameOnChain,
   ensureConfigInitialized,
+  sharedTreasury,
 } from "./common.ts";
 
 describe("payoff matrix — combinatorial on-chain resolution", () => {
@@ -31,7 +32,7 @@ describe("payoff matrix — combinatorial on-chain resolution", () => {
 
   const player1 = Keypair.generate();
   const player2 = Keypair.generate();
-  const treasury = Keypair.generate();
+  const treasury = sharedTreasury;
 
   let gameCounterPda: PublicKey;
   let globalConfigPda: PublicKey;
@@ -317,7 +318,7 @@ describe("payoff matrix — combinatorial on-chain resolution", () => {
     );
     const now = Math.floor(Date.now() / 1000);
     await program.methods
-      .createTournament(expiredId, new BN(now - 60), new BN(now - 1))
+      .createTournament(expiredId, new BN(now + 3600), new BN(now + 7200))
       .accountsPartial({
         tournament: expiredTournamentPda,
         authority: provider.wallet.publicKey,

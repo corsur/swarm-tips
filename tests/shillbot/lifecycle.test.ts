@@ -42,12 +42,8 @@ describe("shillbot - lifecycle", () => {
   let globalPda: PublicKey;
 
   before(async () => {
-    globalPda = await ensureShillbotInitialized(
-      program,
-      provider,
-      authority,
-      treasury
-    );
+    const [pda] = globalStatePda(program.programId);
+    globalPda = pda;
 
     for (const kp of [agent, challenger, treasury]) {
       await airdrop(provider.connection, kp.publicKey, 5 * LAMPORTS_PER_SOL);
@@ -60,24 +56,33 @@ describe("shillbot - lifecycle", () => {
   });
   describe("initialize", () => {
     it("creates GlobalState with authority, fee, and threshold", async () => {
-      await program.methods
-        .initialize(
-          PROTOCOL_FEE_BPS,
-          QUALITY_THRESHOLD,
-          new BN(0),
-          // Use the authority pubkey as the configured "Switchboard feed"
-          // for these tests. The verify_task tests further down pass
-          // authority.publicKey when they want a valid feed and an
-          // `imposter.publicKey` when they want the rejection path.
-          authority.publicKey
-        )
-        .accountsPartial({
-          globalState: globalPda,
-          authority: authority.publicKey,
-          treasury: treasury.publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
+      try {
+        await program.methods
+          .initialize(
+            PROTOCOL_FEE_BPS,
+            QUALITY_THRESHOLD,
+            new BN(0),
+            // Use the authority pubkey as the configured "Switchboard feed"
+            // for these tests. The verify_task tests further down pass
+            // authority.publicKey when they want a valid feed and an
+            // `imposter.publicKey` when they want the rejection path.
+            authority.publicKey
+          )
+          .accountsPartial({
+            globalState: globalPda,
+            authority: authority.publicKey,
+            treasury: treasury.publicKey,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      } catch (e: any) {
+        if (
+          !e.toString().includes("already in use") &&
+          !e.toString().includes("custom program error: 0x0")
+        ) {
+          throw e;
+        }
+      }
 
       const global = await program.account.globalState.fetch(globalPda);
       assert.equal(global.taskCounter.toString(), "0");

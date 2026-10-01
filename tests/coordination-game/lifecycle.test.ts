@@ -19,6 +19,7 @@ import {
   depositStake,
   createGameOnChain,
   joinGameOnChain,
+  sharedTreasury,
 } from "./common.ts";
 
 describe("coordination-game lifecycle", () => {
@@ -37,7 +38,7 @@ describe("coordination-game lifecycle", () => {
   let p1ProfilePda: PublicKey;
   let p2ProfilePda: PublicKey;
   const matchmaker = provider.wallet;
-  const treasury = Keypair.generate();
+  const treasury = sharedTreasury;
 
   const p1Commit = generateCommit(GUESS_SAME_TEAM);
   const p2Commit = generateCommit(GUESS_SAME_TEAM);

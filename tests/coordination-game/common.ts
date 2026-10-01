@@ -169,12 +169,19 @@ export async function joinGameOnChain(
   return profilePda;
 }
 
+/** Global shared treasury keypair for all coordination-game test submodules. */
+export const sharedTreasury = Keypair.generate();
+
 /** Ensure globalConfig and gameCounter are initialized (idempotent helper). */
 export async function ensureConfigInitialized(
   program: Program<CoordinationGame>,
   provider: anchor.AnchorProvider,
-  treasury: PublicKey
-): Promise<{ gameCounterPda: PublicKey; globalConfigPda: PublicKey }> {
+  treasury?: PublicKey
+): Promise<{
+  gameCounterPda: PublicKey;
+  globalConfigPda: PublicKey;
+  treasury: PublicKey;
+}> {
   const [gameCounterPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("game_counter")],
     program.programId
@@ -197,8 +204,10 @@ export async function ensureConfigInitialized(
       .rpc();
   }
 
+  let finalTreasury = treasury ?? sharedTreasury.publicKey;
   try {
-    await program.account.globalConfig.fetch(globalConfigPda);
+    const config = await program.account.globalConfig.fetch(globalConfigPda);
+    finalTreasury = config.treasury;
   } catch {
     await program.methods
       .initializeConfig(5000)
@@ -206,11 +215,11 @@ export async function ensureConfigInitialized(
         globalConfig: globalConfigPda,
         authority: provider.wallet.publicKey,
         matchmaker: provider.wallet.publicKey,
-        treasury,
+        treasury: finalTreasury,
         systemProgram: SystemProgram.programId,
       })
       .rpc();
   }
 
-  return { gameCounterPda, globalConfigPda };
+  return { gameCounterPda, globalConfigPda, treasury: finalTreasury };
 }
