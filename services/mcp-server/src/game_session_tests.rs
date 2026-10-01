@@ -1,4 +1,5 @@
-    // P1's game_id is PREDICTED (read_next_game_id) before create_game lands.
+use super::*;
+// P1's game_id is PREDICTED (read_next_game_id) before create_game lands.
     // A concurrent create can take that id: live 2026-08-14, a T1003 game stole
     // the e2e's predicted id, so game-api told P2 to join a game whose
     // tournament (1003) differed from its own (1099) — join_game failed with
@@ -126,8 +127,6 @@
         assert_eq!(memo_nonce_from_signed_tx(&[0xff, 0x00, 0x13]), None);
         assert_eq!(memo_nonce_from_signed_tx(&[]), None);
     }
-
-    use super::*;
 
     #[test]
     fn session_state_transitions() {

@@ -1,4 +1,20 @@
-    use super::*;
+use super::*;
+
+    #[test]
+    fn website_instructions_survive_proxy_round_trip() {
+        let source = serde_json::json!({
+            "task_id": "campaign:task", "state": "claimed", "platform": 9,
+            "task_nonce": "3f3da71a00000000343d405cab52c716",
+            "website_instructions": {"status": "ready", "html": "<footer>copy exactly</footer>", "guidance": "Publish then submit."}
+        });
+        let task: TaskSummary = serde_json::from_value(source.clone()).unwrap();
+        let output = serde_json::to_value(task).unwrap();
+        assert_eq!(output["task_nonce"], source["task_nonce"]);
+        assert_eq!(
+            output["website_instructions"],
+            source["website_instructions"]
+        );
+    }
 
     #[test]
     fn task_summary_parses_orchestrator_wire_format() {
@@ -230,7 +246,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let result = proxy
                 .list_tasks(None, None, Some("devnet"))
                 .await
@@ -258,7 +275,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             // Verify the request URL had no `network` param. Wiremock
             // doesn't expose a "missing param" matcher cleanly, so we
             // pull the request log and assert it directly.
@@ -275,22 +293,35 @@
         #[tokio::test]
         async fn get_task_details_forwards_devnet_query() {
             let server = MockServer::start().await;
+            let mut body = minimal_task_json("c:t", "open");
+            body["statement_lean"] = serde_json::json!("def statementProp : Prop := True\n");
+            body["lean_policy"] = serde_json::json!(2);
+            body["requires_approval"] = serde_json::json!(false);
+            body["check_detail"] = serde_json::json!("verified proof");
             Mock::given(method("GET"))
                 .and(path("/tasks/c:t"))
                 .and(query_param("network", "devnet"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(minimal_task_json("c:t", "open")),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_json(body.clone()))
                 .expect(1)
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let task = proxy
                 .get_task_details("c:t", Some("devnet"))
                 .await
                 .expect("ok");
             assert_eq!(task.task_id, "c:t");
+            let result = serde_json::to_value(task).unwrap();
+            for field in [
+                "statement_lean",
+                "lean_policy",
+                "requires_approval",
+                "check_detail",
+            ] {
+                assert_eq!(result[field], body[field]);
+            }
         }
 
         #[tokio::test]
@@ -299,13 +330,14 @@
             Mock::given(method("POST"))
                 .and(path("/tasks/c:t/claim"))
                 .and(query_param("network", "devnet"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
                 .expect(1)
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .claim_task("c:t", "wallet1", Some("devnet"))
                 .await
@@ -320,13 +352,14 @@
                 .and(path("/tasks/c:t/claim"))
                 .and(query_param("network", "devnet"))
                 .and(query_param("sponsor", "true"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
                 .expect(1)
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .sponsorship_template("c:t", "wallet1", "claim", None, Some("devnet"))
                 .await
@@ -341,7 +374,7 @@
                 .and(path("/tasks/c:t/submit"))
                 .and(query_param("network", "devnet"))
                 .and(query_param("sponsor", "true"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .and(body_partial_json(
                     serde_json::json!({ "content_id": "post:123" }),
                 ))
@@ -350,7 +383,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .sponsorship_template("c:t", "wallet1", "submit", Some("post:123"), Some("devnet"))
                 .await
@@ -364,7 +398,7 @@
             Mock::given(method("POST"))
                 .and(path("/campaigns"))
                 .and(query_param("network", "devnet"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(
                     ResponseTemplate::new(200)
                         .set_body_json(serde_json::json!({ "campaign_id": "camp1" })),
@@ -373,7 +407,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let brief = serde_json::json!({
                 "topic": "t", "brand_voice": "v", "cta": "c", "utm_link": "u"
             });
@@ -399,7 +434,7 @@
             Mock::given(method("POST"))
                 .and(path("/campaigns/camp1/fund"))
                 .and(query_param("network", "devnet"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(
                     ResponseTemplate::new(200).set_body_json(minimal_tx_json("camp1:task1")),
                 )
@@ -407,7 +442,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .fund_campaign("camp1", "wallet1", 20_000_000, Some("devnet"))
                 .await
@@ -422,7 +458,7 @@
             Mock::given(method("POST"))
                 .and(path("/agent/onboard"))
                 .and(query_param("network", "mainnet"))
-                .and(header("authorization", "Bearer wallet1"))
+                .and(header("authorization", "Bearer test-signed-session"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "signature": "sig123",
                     "message": "Onboarded: ... Claim tasks with ?network=mainnet&sponsor=true.",
@@ -431,7 +467,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .onboard_agent("wallet1", Some("mainnet"))
                 .await
@@ -442,7 +479,8 @@
         #[tokio::test]
         async fn onboard_agent_rejects_empty_wallet_without_calling() {
             let server = MockServer::start().await;
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let err = proxy
                 .onboard_agent("", Some("mainnet"))
                 .await
@@ -454,7 +492,8 @@
         async fn fund_campaign_rejects_zero_amount_without_calling() {
             // amount 0 must be rejected at the boundary — no HTTP call made.
             let server = MockServer::start().await;
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let err = proxy
                 .fund_campaign("camp1", "wallet1", 0, Some("devnet"))
                 .await
@@ -473,7 +512,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .submit_task("c:t", "wallet1", "yt-abc", Some("devnet"))
                 .await
@@ -499,7 +539,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .get_verification_data("c:t", "wallet1", Some("devnet"))
                 .await
@@ -519,7 +560,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .build_finalize("c:t", "wallet1", Some("devnet"))
                 .await
@@ -537,7 +579,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .approve_task("c:t", "wallet1", Some("devnet"))
                 .await
@@ -558,7 +601,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             let resp = proxy
                 .list_pending_approval("wallet1", Some("devnet"))
                 .await
@@ -581,7 +625,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .confirm_task(
                     "c:t",
@@ -615,7 +660,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .confirm_task(
                     "c:t",
@@ -645,7 +691,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .get_earnings("wallet1", Some("devnet"))
                 .await
@@ -698,7 +745,8 @@
                 .mount(&server)
                 .await;
 
-            let proxy = OrchestratorProxy::new(server.uri(), server.uri());
+            let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into());
             proxy
                 .claim_task("c:t", "wallet1", Some("devnet"))
                 .await
@@ -744,6 +792,7 @@
 
         fn proxy_for(server: &MockServer) -> OrchestratorProxy {
             OrchestratorProxy::new(server.uri(), server.uri())
+                .authenticated("test-signed-session".into())
         }
 
         fn full_attestation_json() -> serde_json::Value {
@@ -751,19 +800,21 @@
                 "version": "vow/v1",
                 "network": "devnet",
                 "program_id": "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
-                "task_pda": "TaskPda111",
-                "task_id": 42,
+                "account": "TaskPda111",
+                "account_kind": "Task",
+                "task_id": "2590886815712535641",
                 "client": "ClientWallet1",
                 "agent": "AgentWallet1",
                 "state": "verified",
                 "platform": 0,
-                "composite_score": 910_000,
-                "score_max": 1_000_000,
+                "composite_score": "910000",
+                "score_max": "1000000",
                 "verified_at": "2026-07-15T00:00:00Z",
                 "verification_hash": "vh",
                 "content_hash": "ch",
                 "content_id_hash": "cih",
-                "switchboard_feed": "Feed111",
+                "oracle_feed": null,
+                "extensions": { "future_field": "preserved" },
                 "verifier_instructions": "instructions",
             })
         }
@@ -922,9 +973,11 @@
                 .await
                 .expect("ok");
             assert_eq!(att.version, "vow/v1");
-            assert_eq!(att.task_id, 42);
+            assert_eq!(att.task_id, "2590886815712535641");
             assert_eq!(att.agent, "AgentWallet1");
-            assert_eq!(att.composite_score, 910_000);
+            assert_eq!(att.composite_score, "910000");
+            let roundtrip = serde_json::to_value(&att).expect("serialize");
+            assert_eq!(roundtrip, full_attestation_json());
         }
 
         #[tokio::test]
@@ -933,7 +986,10 @@
             const PDA: &str = "GtBz1WcJs5tKMLQWaZdd3osYsGzK59onCvbNVPMaQSLU";
             let server = MockServer::start().await;
             let mut body = full_attestation_json();
-            body["task_pda"] = serde_json::json!(PDA);
+            body["account"] = serde_json::json!(PDA);
+            body.as_object_mut()
+                .unwrap()
+                .remove("verifier_instructions");
             Mock::given(method("GET"))
                 .and(path(format!("/tasks/by-pda/{PDA}/attestation")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(body))
@@ -945,7 +1001,8 @@
                 .get_attestation_by_pda(PDA, None)
                 .await
                 .expect("ok");
-            assert_eq!(att.task_pda, PDA);
+            assert_eq!(att.account, PDA);
+            assert!(att.verifier_instructions.is_none());
         }
 
         #[tokio::test]
@@ -986,20 +1043,4 @@
                 McpServiceError::InvalidInput(_)
             ));
         }
-    }
-
-    #[test]
-    fn website_instructions_survive_proxy_round_trip() {
-        let source = serde_json::json!({
-            "task_id": "campaign:task", "state": "claimed", "platform": 9,
-            "task_nonce": "3f3da71a00000000343d405cab52c716",
-            "website_instructions": {"status": "ready", "html": "<footer>copy exactly</footer>", "guidance": "Publish then submit."}
-        });
-        let task: TaskSummary = serde_json::from_value(source.clone()).unwrap();
-        let output = serde_json::to_value(task).unwrap();
-        assert_eq!(output["task_nonce"], source["task_nonce"]);
-        assert_eq!(
-            output["website_instructions"],
-            source["website_instructions"]
-        );
     }

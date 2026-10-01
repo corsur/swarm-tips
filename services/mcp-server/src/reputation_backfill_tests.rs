@@ -1,4 +1,4 @@
-    use super::*;
+use super::*;
     use base64::Engine as _;
 
     fn encode_event(name: &str, body: &[u8]) -> String {

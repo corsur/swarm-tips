@@ -1,4 +1,4 @@
-    use super::*;
+use super::*;
 
     // An arbitrary NON-support Solana wallet (wrapped-SOL mint pubkey — a
     // well-known valid 32-byte base58 that is neither support wallet). It was
@@ -31,7 +31,6 @@
             intent: Some("task_clarification".to_string()),
             body: "when is the deadline?".to_string(),
             sent_at: ts("2026-08-24T00:00:00Z"),
-            expires_at: ts("2026-09-23T00:00:00Z"),
             seed: true,
             direction: DIRECTION_SENT.to_string(),
         };
@@ -432,7 +431,6 @@
         assert_eq!(limits::PAGE_DEFAULT, 20);
         assert_eq!(limits::PAGE_MAX, 50);
         assert_eq!(limits::THREAD_MESSAGE_CAP, 500);
-        assert_eq!(limits::MESSAGE_TTL_DAYS, 30);
         assert_eq!(limits::QUOTA_TTL_DAYS, 3);
         // W3 board dials (tunable, but a change must be deliberate).
         assert_eq!(limits::POSTS_PER_DAY_UNPROVEN, 0);
@@ -484,11 +482,12 @@
             thread_id: "task:abc".to_string(),
             intent: Some("task_offer".to_string()),
             bytes: 12,
-            expires_at: ts("2026-09-23T00:00:00Z").0,
+            expires_at: None,
             sends_remaining_today: 4,
         };
         let v = send_receipt_json(&receipt);
         assert_eq!(v["sent"], true);
+        assert!(v["expires_at"].is_null());
         assert_eq!(v["msg_id"], receipt.msg_id);
         assert_eq!(v["thread_id"], "task:abc");
         assert_eq!(v["sends_remaining_today"], 4);
@@ -661,7 +660,6 @@
             intent: None,
             body: "x".to_string(),
             sent_at: ts("2026-08-24T00:00:00Z"),
-            expires_at: ts("2126-01-01T00:00:00Z"), // far future: never expired
             seed: false,
             direction: direction.to_string(),
         }
@@ -825,12 +823,15 @@
     }
 
     #[test]
-    fn expiry_applies_to_both_directions() {
+    fn legacy_expiry_does_not_hide_either_inbox_direction() {
         let now = ts("2026-08-24T00:00:00Z").0;
-        let mut expired_sent = mk_msg(10, DIRECTION_SENT);
-        expired_sent.expires_at = ts("2026-08-23T00:00:00Z");
-        let mut expired_recv = mk_msg(9, DIRECTION_RECEIVED);
-        expired_recv.expires_at = ts("2026-08-23T00:00:00Z");
+        let legacy = |message: InboxMessageDoc| {
+            let mut value = serde_json::to_value(message).unwrap();
+            value["expires_at"] = "2026-08-23T00:00:00Z".into();
+            serde_json::from_value::<InboxMessageDoc>(value).unwrap()
+        };
+        let expired_sent = legacy(mk_msg(10, DIRECTION_SENT));
+        let expired_recv = legacy(mk_msg(9, DIRECTION_RECEIVED));
         let (out, _, _) = build_read_page_messages(
             vec![expired_sent, expired_recv, mk_msg(8, DIRECTION_RECEIVED)],
             &Default::default(),
@@ -838,8 +839,8 @@
             None,
             now,
         );
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].msg_id, "00000000000000000008_00000000");
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].msg_id, "00000000000000000010_00000000");
     }
 
     // -- W3: topics, moderation, post filtering -----------------------------
@@ -1525,27 +1526,4 @@
             v.get("challenge_token").is_none(),
             "the challenge token is not re-exposed"
         );
-    }
-
-    #[test]
-    fn legacy_expiry_does_not_hide_either_inbox_direction() {
-        let now = ts("2026-08-24T00:00:00Z").0;
-        let legacy = |message: InboxMessageDoc| {
-            let mut value = serde_json::to_value(message).unwrap();
-            value["expires_at"] = "2026-08-23T00:00:00Z".into();
-            serde_json::from_value::<InboxMessageDoc>(value).unwrap()
-        };
-        let expired_sent = legacy(mk_msg(10, DIRECTION_SENT));
-        let expired_recv = legacy(mk_msg(9, DIRECTION_RECEIVED));
-        let (out, _, _) = build_read_page_messages(
-            vec![expired_sent, expired_recv, mk_msg(8, DIRECTION_RECEIVED)],
-            &Default::default(),
-            &Default::default(),
-            None,
-            now,
-        );
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0].id, "m10");
-        assert_eq!(out[1].id, "m9");
-        assert_eq!(out[2].id, "m8");
     }
