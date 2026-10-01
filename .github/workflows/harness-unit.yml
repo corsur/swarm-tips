@@ -10,6 +10,7 @@ on:
     branches: [main]
     paths:
       - 'tests/harness/**'
+      - 'tests/unit/**'
       - 'tests/helpers/outcome-oracle.ts'
       - 'sdk/client/src/coordination-game/**'
       - 'tests/lean-artifacts.guard.mjs'
@@ -19,6 +20,7 @@ on:
   pull_request:
     paths:
       - 'tests/harness/**'
+      - 'tests/unit/**'
       - 'tests/helpers/outcome-oracle.ts'
       - 'sdk/client/src/coordination-game/**'
       - 'tests/lean-artifacts.guard.mjs'
@@ -41,7 +43,7 @@ jobs:
       - name: Lint harness sources
         run: npx prettier "tests/harness/**/*.ts" "sdk/client/src/coordination-game/*.ts" --check
       - name: Run harness unit tests (no validator)
-        run: npx ts-mocha -p ./tsconfig.json --exit "tests/harness/*.unit.test.ts"
+        run: npx ts-mocha -p ./tsconfig.json --exit "tests/unit/*.unit.test.ts"
 
       # A bounty artifact that redeclares the campaign statement fails
       # elaboration, scores 0 and refunds the client while the task still

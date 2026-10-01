@@ -192,6 +192,17 @@ const ABI = parseAbi([
   "function challengeBondMultiplier() view returns (uint8)",
   "function bondSlashTreasuryBps() view returns (uint16)",
   "event TaskCreated(uint64 indexed taskId, address indexed client, uint128 escrowWei, uint64 deadline, uint8 verificationKind)",
+  "error InvalidStatus()",
+  "error BadSignature()",
+  "error BadConfig()",
+  "error BadKind()",
+  "error BadEscrow()",
+  "error BadCommitment()",
+  "error BadScore()",
+  "error BadBond()",
+  "error NotParticipant()",
+  "error DeadlinePassed()",
+  "error DeadlineNotReached()",
 ]);
 
 interface Descriptor {
@@ -466,26 +477,6 @@ async function createTaskViaEvent(
   return taskId;
 }
 
-// Poll getTask(taskId).state until it reaches `expected` (or time out), so a
-// state-guarded next step doesn't estimateGas against a lagging replica and
-// revert InvalidStatus (0xf525e320).
-async function waitTaskState(
-  env: Env,
-  taskId: bigint,
-  expected: number,
-  timeoutMs = 45_000
-): Promise<number> {
-  const deadline = Date.now() + timeoutMs;
-  let last = -1;
-  for (let i = 0; i < 90; i++) {
-    last = (await getTask(env, taskId)).state;
-    if (last === expected) return last;
-    if (Date.now() >= deadline) break;
-    await sleep(1_000);
-  }
-  return last;
-}
-
 async function getTask(env: Env, taskId: bigint) {
   return (await env.pub.readContract({
     address: ESCROW,
@@ -503,6 +494,29 @@ async function getTask(env: Env, taskId: bigint) {
     challengeDeadline: bigint;
     deadline: bigint;
   };
+}
+
+type TaskInfo = Awaited<ReturnType<typeof getTask>>;
+
+// Poll getTask(taskId).state until it reaches `expected` (or time out), so a
+// state-guarded next step doesn't estimateGas against a lagging replica and
+// revert InvalidStatus (0xf525e320).
+async function waitTaskState(
+  env: Env,
+  taskId: bigint,
+  expected: number,
+  timeoutMs = 45_000
+): Promise<TaskInfo> {
+  const deadline = Date.now() + timeoutMs;
+  let task = await getTask(env, taskId);
+  if (task.state === expected) return task;
+  for (let i = 0; i < 90; i++) {
+    await sleep(1_000);
+    task = await getTask(env, taskId);
+    if (task.state === expected) return task;
+    if (Date.now() >= deadline) break;
+  }
+  return task;
 }
 
 async function withdrawable(env: Env, addr: Address): Promise<bigint> {
@@ -653,9 +667,8 @@ async function toVerified(
     "verifyTaskAttested",
     [taskId, BigInt(cell.score), sig]
   );
-  await waitTaskState(env, taskId, 3);
+  const v = await waitTaskState(env, taskId, 3);
 
-  const v = await getTask(env, taskId);
   const pinned = computePayment(
     cell.score,
     env.cfg.qualityThreshold,
@@ -677,23 +690,43 @@ async function toVerified(
   return { taskId, challengeDeadline: v.challengeDeadline };
 }
 
-async function runChallengeCell(env: Env, cell: Cell): Promise<void> {
-  console.log(`\n=== ${cell.name} ===`);
-  const { taskId } = await toVerified(env, cell);
+async function runChallengeCell(
+  env: Env,
+  cell: Cell,
+  isRetry = false
+): Promise<void> {
+  console.log(
+    `\n=== ${cell.name}${isRetry ? " (retry on DeadlinePassed)" : ""} ===`
+  );
   const expected = expectedByAddress(
     env.roles,
     deriveTaskOutcome(scenarioFor(env.cfg, cell))
   );
-
   const bond = ESCROW_WEI * BigInt(env.cfg.challengeBondMultiplier);
-  env.txlog[`${cell.name}/challenge`] = await writeAndWait(
-    env,
-    env.challengerW,
-    env.roles.challenger,
-    "challengeTask",
-    [taskId],
-    bond
-  );
+  const { taskId } = await toVerified(env, cell);
+
+  try {
+    env.txlog[`${cell.name}/challenge`] = await writeAndWait(
+      env,
+      env.challengerW,
+      env.roles.challenger,
+      "challengeTask",
+      [taskId],
+      bond
+    );
+  } catch (err: unknown) {
+    const errStr = String(err);
+    if (
+      !isRetry &&
+      (errStr.includes("DeadlinePassed") || errStr.includes("0x70f65caa"))
+    ) {
+      console.warn(
+        `    challenge window expired (DeadlinePassed); retrying ${cell.name} once with fresh task...`
+      );
+      return runChallengeCell(env, cell, true);
+    }
+    throw err;
+  }
   await waitTaskState(env, taskId, 5); // Disputed — before resolveChallenge
 
   const before = await snapshot(env);

@@ -6,7 +6,7 @@
 // Run: npx ts-mocha -p ./tsconfig.json tests/harness/battery.unit.test.ts
 
 import { assert } from "chai";
-import { Ledger, Transcript } from "./ledger";
+import { Ledger, Transcript } from "../harness/ledger";
 import {
   StateView,
   assertConservation,
@@ -19,7 +19,7 @@ import {
   assertNonDecreasing,
   assertStrictlyIncreasing,
   TransitionGraph,
-} from "./assertions";
+} from "../harness/assertions";
 import { OutcomeKind } from "../helpers/outcome-oracle";
 
 /** In-memory StateView for testing the battery without a runtime. */
