@@ -7,7 +7,7 @@
 // lagging" — only a settled read (fields populated) or a deadline can.
 
 import { assert } from "chai";
-import { leanVerdict } from "./lean-verdict";
+import { leanVerdict } from "../harness/lean-verdict";
 
 describe("harness/lean-verdict", () => {
   it("accepted: terminal state with positive payment", () => {

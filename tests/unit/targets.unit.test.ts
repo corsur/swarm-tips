@@ -10,9 +10,9 @@ import {
   evmGamePhase,
   evmGameView,
   evmPhaseView,
-} from "./evm-target";
-import { backendPhase, backendPhaseView } from "./backend-target";
-import { assertCrossLayer, assertMetamorphic } from "./assertions";
+} from "../harness/evm-target";
+import { backendPhase, backendPhaseView } from "../harness/backend-target";
+import { assertCrossLayer, assertMetamorphic } from "../harness/assertions";
 import { OutcomeKind } from "../helpers/outcome-oracle";
 
 async function expectRejects(p: Promise<unknown>, ctx: string): Promise<void> {

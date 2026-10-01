@@ -10,7 +10,7 @@
 // be zero-cost there (no delay when the first read is already fresh).
 
 import { assert } from "chai";
-import { readWhenVisible, readWhenAdvanced } from "./retry-read";
+import { readWhenVisible, readWhenAdvanced } from "../harness/retry-read";
 
 /** Reader that throws `missing` times, then yields values in order. */
 function flakyReader<T>(missing: number, values: T[]): () => Promise<T> {

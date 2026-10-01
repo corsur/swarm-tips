@@ -4,6 +4,9 @@
     "lint:fix": "prettier \"**/*.ts\" -w",
     "prelint": "pnpm --filter @swarm-tips/client lint && pnpm --filter @swarm-tips/client build",
     "lint": "prettier \"**/*.ts\" --check && tsc --noEmit -p tsconfig.lint.json",
+    "test": "pnpm run test:matrix",
+    "test:matrix": "npx ts-mocha -p ./tsconfig.json -t 1000000 --exit \"tests/shillbot-matrix.ts\" \"tests/game-matrix.ts\" \"tests/timeout-harness.ts\" \"tests/xchain-contested.ts\"",
+    "test:unit": "npx ts-mocha -p ./tsconfig.json -t 1000000 \"tests/rpc-endpoints.test.ts\" \"tests/evm-send-retry.test.ts\" \"tests/unit/*.unit.test.ts\"",
     "ts-node": "ts-node"
   },
   "dependencies": {
