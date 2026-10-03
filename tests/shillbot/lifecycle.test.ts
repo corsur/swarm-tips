@@ -151,7 +151,7 @@ describe("shillbot - lifecycle", () => {
       assert.equal(task.claimBuffer.toString(), claimBuffer.toString());
 
       // Nonce should not be all zeros
-      const nonce = Array.from(task.taskNonce as any);
+      const nonce = Array.from<number>(task.taskNonce as any);
       const allZeros = nonce.every((b: number) => b === 0);
       // Note: on local validator the slothash data might produce zeros,
       // but the structure should be populated

@@ -75,7 +75,7 @@ export async function startBankrun(): Promise<BankrunHandle> {
           lamports: Number(lamports),
         })
       );
-      await provider.sendAndConfirm(tx);
+      await provider.sendAndConfirm!(tx);
     },
   };
 

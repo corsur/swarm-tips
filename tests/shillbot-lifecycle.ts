@@ -167,7 +167,7 @@ async function fundAccount(
       lamports,
     })
   );
-  await provider.sendAndConfirm(tx);
+  await provider.sendAndConfirm!(tx);
 }
 
 // ---------------------------------------------------------------------------

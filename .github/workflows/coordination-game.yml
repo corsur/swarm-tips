@@ -126,7 +126,7 @@ jobs:
       # --exit: bankrun's native context keeps libuv's event loop alive, so
       # mocha hangs after the tests pass unless forced to exit.
       - name: Run harness bankrun tests
-        run: npx ts-mocha -p ./tsconfig.json -t 1000000 --exit "tests/xchain-contested.ts" "tests/game-harness.ts" "tests/timeout-harness.ts"
+        run: pnpm vitest run "tests/xchain-contested.ts" "tests/game-harness.ts" "tests/timeout-harness.ts"
 
       - name: Start local validator
         run: |
@@ -144,7 +144,7 @@ jobs:
         # validator — the contested path runs under bankrun above. It was
         # previously wired into no workflow (orphaned), so the happy-path
         # settle had zero CI coverage.
-        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/coordination-game.ts" "tests/xchain.ts"
+        run: pnpm vitest run "tests/coordination-game.ts" "tests/xchain.ts"
         env:
           ANCHOR_PROVIDER_URL: http://localhost:8899
           ANCHOR_WALLET: /home/runner/.config/solana/id.json

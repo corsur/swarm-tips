@@ -248,7 +248,7 @@ describe("shillbot-attested (bankrun)", () => {
           lamports: 100 * LAMPORTS_PER_SOL,
         })
       );
-      await provider.sendAndConfirm(tx);
+      await provider.sendAndConfirm!(tx);
     }
     await program.methods
       .initialize(
@@ -409,7 +409,7 @@ describe("shillbot-attested (bankrun)", () => {
           lamports: LAMPORTS_PER_SOL,
         })
       );
-      await provider.sendAndConfirm(tx);
+      await provider.sendAndConfirm!(tx);
 
       await program.methods
         .updateOracleAuthority(newAttester.publicKey)

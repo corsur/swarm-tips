@@ -89,7 +89,7 @@ export async function startShillbotBankrun(): Promise<ShillbotBankrunHandle> {
           lamports: Number(lamports),
         })
       );
-      await provider.sendAndConfirm(tx);
+      await provider.sendAndConfirm!(tx);
     },
   };
 

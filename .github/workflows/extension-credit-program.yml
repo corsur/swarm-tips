@@ -77,7 +77,7 @@ jobs:
           solana airdrop 100
 
       - name: Run extension-credit tests
-        run: npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/extension-credit.ts"
+        run: pnpm vitest run "tests/extension-credit.ts"
         env:
           ANCHOR_PROVIDER_URL: http://localhost:8899
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
