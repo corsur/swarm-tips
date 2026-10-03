@@ -32,10 +32,9 @@ describe("payoff matrix — combinatorial on-chain resolution", () => {
 
   const player1 = Keypair.generate();
   const player2 = Keypair.generate();
-  const treasury = sharedTreasury;
-
   let gameCounterPda: PublicKey;
   let globalConfigPda: PublicKey;
+  let treasuryKey = sharedTreasury.publicKey;
 
   const STAKE_L = BigInt(STAKE.toString());
   const TREASURY_SPLIT_BPS = 5000;
@@ -53,10 +52,11 @@ describe("payoff matrix — combinatorial on-chain resolution", () => {
     const inited = await ensureConfigInitialized(
       program,
       provider,
-      treasury.publicKey
+      treasuryKey
     );
     gameCounterPda = inited.gameCounterPda;
     globalConfigPda = inited.globalConfigPda;
+    treasuryKey = inited.treasury;
   });
 
   async function playToResolution(opts: {
@@ -142,7 +142,7 @@ describe("payoff matrix — combinatorial on-chain resolution", () => {
       playerOneWallet: player1.publicKey,
       playerTwoWallet: player2.publicKey,
       globalConfig: globalConfigPda,
-      treasury: treasury.publicKey,
+      treasury: treasuryKey,
       systemProgram: SystemProgram.programId,
     };
     await program.methods

@@ -27,7 +27,7 @@ describe("session-key delegation", () => {
   const player1 = Keypair.generate();
   const player2 = Keypair.generate();
   const matchmaker = provider.wallet;
-  const treasury = sharedTreasury;
+  let treasuryKey = sharedTreasury.publicKey;
 
   let gameCounterPda: PublicKey;
   let globalConfigPda: PublicKey;
@@ -71,10 +71,11 @@ describe("session-key delegation", () => {
     const inited = await ensureConfigInitialized(
       program,
       provider,
-      treasury.publicKey
+      treasuryKey
     );
     gameCounterPda = inited.gameCounterPda;
     globalConfigPda = inited.globalConfigPda;
+    treasuryKey = inited.treasury;
 
     const now = Math.floor(Date.now() / 1000);
     const startTime = new BN(now - 60);
@@ -448,7 +449,7 @@ describe("session-key delegation", () => {
         p2Profile: p2ProfilePdaSession,
         tournament: sessionTournamentPda,
         globalConfig: globalConfigPda,
-        treasury: treasury.publicKey,
+        treasury: treasuryKey,
         playerOneWallet: player1.publicKey,
         playerTwoWallet: player2.publicKey,
       })
@@ -466,7 +467,7 @@ describe("session-key delegation", () => {
         p2Profile: p2ProfilePdaSession,
         tournament: sessionTournamentPda,
         globalConfig: globalConfigPda,
-        treasury: treasury.publicKey,
+        treasury: treasuryKey,
         playerOneWallet: player1.publicKey,
         playerTwoWallet: player2.publicKey,
       })
