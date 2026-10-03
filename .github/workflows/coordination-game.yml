@@ -144,7 +144,9 @@ jobs:
         # validator — the contested path runs under bankrun above. It was
         # previously wired into no workflow (orphaned), so the happy-path
         # settle had zero CI coverage.
-        run: pnpm vitest run "tests/coordination-game.ts" "tests/xchain.ts"
+        run: |
+          pnpm vitest run "tests/coordination-game.ts"
+          pnpm vitest run "tests/xchain.ts"
         env:
           ANCHOR_PROVIDER_URL: http://localhost:8899
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
