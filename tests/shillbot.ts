@@ -4,8 +4,8 @@
 // admin, and concurrent limit sub-suites.
 // ---------------------------------------------------------------------------
 
-require("./shillbot/lifecycle.test.ts");
-require("./shillbot/disputes.test.ts");
-require("./shillbot/session-delegates.test.ts");
-require("./shillbot/admin-and-governance.test.ts");
-require("./shillbot/concurrent-limits.test.ts");
+import "./shillbot/lifecycle.test.ts";
+import "./shillbot/disputes.test.ts";
+import "./shillbot/session-delegates.test.ts";
+import "./shillbot/admin-and-governance.test.ts";
+import "./shillbot/concurrent-limits.test.ts";
