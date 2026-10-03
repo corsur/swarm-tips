@@ -43,7 +43,7 @@ jobs:
       - name: Lint harness sources
         run: npx prettier "tests/harness/**/*.ts" "sdk/client/src/coordination-game/*.ts" --check
       - name: Run harness unit tests (no validator)
-        run: pnpm vitest run "tests/unit/*.unit.test.ts"
+        run: pnpm vitest run tests/unit
 
       # A bounty artifact that redeclares the campaign statement fails
       # elaboration, scores 0 and refunds the client while the task still
