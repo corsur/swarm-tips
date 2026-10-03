@@ -104,9 +104,9 @@
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
-    "@solana/web3.js": "^1.98.4",
-    "@switchboard-xyz/common": "^5.7.0",
-    "bn.js": "^5.2.2",
+    "@solana/web3.js": "^1.99.0",
+    "@switchboard-xyz/common": "^5.8.5",
+    "bn.js": "^5.2.5",
     "bs58": "^6.0.0",
     "buffer": "^6.0.3",
     "js-sha256": "^0.11.0"
@@ -124,11 +124,12 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "esbuild": "^0.25.9",
-    "typescript": "^5.7.3",
-    "viem": "^2.52.2",
-    "vitest": "^2.1.9",
+    "@types/node": "^22.19.15",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "viem": "^2.57.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3",
     "wagmi": "^2.19.5"
   },
   "engines": {
