@@ -26,33 +26,49 @@ pub fn mark_default(ctx: Context<MarkDefault>) -> Result<()> {
         ExtensionCreditError::InvalidRecipient
     );
 
-    // Effects: record recoupment, capped at the principal. On default the backer
-    // sweeps ALL routed earnings (even beyond the advance) as a penalty, but
-    // `recouped_lamports` is the principal-recoupment counter and must never
-    // exceed `advance_lamports` — otherwise the `total_recouped` it feeds into
-    // the event over-reports. The true swept amount is `swept_to_backer` below.
+    let outstanding = ctx.accounts.advance.outstanding()?;
+    require!(
+        outstanding > 0,
+        ExtensionCreditError::AlreadyFullyRecouped
+    );
+
+    // Effects: record recoupment, capped at the principal outstanding.
+    // Backer sweeps up to outstanding debt; any excess belongs to the recipient.
+    let to_backer = available.min(outstanding);
+    let to_recipient = available
+        .checked_sub(to_backer)
+        .ok_or(ExtensionCreditError::ArithmeticOverflow)?;
+
     let total_recouped = {
         let advance = &mut ctx.accounts.advance;
         advance.recouped_lamports = advance
             .recouped_lamports
-            .saturating_add(available)
+            .saturating_add(to_backer)
             .min(advance.advance_lamports);
         advance.recouped_lamports
     };
 
-    // Interactions: sweep earnings to the backer; rent returns via `close`.
-    if available > 0 {
+    // Interactions: sweep backer's recoupment to backer, remainder to recipient;
+    // rent returns to backer via `close`.
+    if to_backer > 0 {
         transfer_lamports(
             &advance_ai,
             &ctx.accounts.backer.to_account_info(),
-            available,
+            to_backer,
+        )?;
+    }
+    if to_recipient > 0 {
+        transfer_lamports(
+            &advance_ai,
+            &ctx.accounts.recipient.to_account_info(),
+            to_recipient,
         )?;
     }
 
     emit!(AdvanceDefaulted {
         backer,
         recipient,
-        swept_to_backer: available,
+        swept_to_backer: to_backer,
         total_recouped,
         advance_lamports,
     });
