@@ -84,10 +84,17 @@ function getRpcUrl(isMainnet: boolean): string {
 
 function mintJwt(wallet: string, secret: string): string {
   if (!secret) return wallet;
-  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const header = Buffer.from(
+    JSON.stringify({ alg: "HS256", typ: "JWT" })
+  ).toString("base64url");
   const now = Math.floor(Date.now() / 1000);
-  const payload = Buffer.from(JSON.stringify({ wallet, exp: now + 86400 })).toString("base64url");
-  const sig = crypto.createHmac("sha256", secret).update(`${header}.${payload}`).digest("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({ wallet, exp: now + 86400 })
+  ).toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", secret)
+    .update(`${header}.${payload}`)
+    .digest("base64url");
   return `${header}.${payload}.${sig}`;
 }
 
@@ -154,7 +161,10 @@ export function loadCatalog(): CatalogEntry[] {
   return entries;
 }
 
-async function existingTopics(bearer: string, network: string): Promise<Set<string>> {
+async function existingTopics(
+  bearer: string,
+  network: string
+): Promise<Set<string>> {
   const list = (await api(
     "GET",
     `/campaigns?network=${network}`,
@@ -185,7 +195,9 @@ async function main(): Promise<void> {
   console.log(`network: ${network}`);
   console.log(`RPC:     ${rpcUrl.replace(/api-key=[^&]+/, "api-key=***")}`);
   console.log(`API:     ${API_BASE}`);
-  console.log(`wallet:  ${clientPk} (${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL)`);
+  console.log(
+    `wallet:  ${clientPk} (${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL)`
+  );
 
   let catalog = loadCatalog();
   const taskArg = process.argv.find((a) => a.startsWith("--tasks="));
@@ -193,7 +205,10 @@ async function main(): Promise<void> {
 
   if (taskArg) {
     const allowed = new Set(
-      taskArg.replace("--tasks=", "").split(",").map((s) => s.trim())
+      taskArg
+        .replace("--tasks=", "")
+        .split(",")
+        .map((s) => s.trim())
     );
     catalog = catalog.filter((e) => allowed.has(e.name));
   } else if (isNewOnly) {
@@ -210,7 +225,11 @@ async function main(): Promise<void> {
   const minLamports = Number(ESCROW.toString()) * (catalog.length + 2);
   if (bal < minLamports) {
     throw new Error(
-      `Insufficient balance on ${network}: have ${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL, need ${(minLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`
+      `Insufficient balance on ${network}: have ${(
+        bal / LAMPORTS_PER_SOL
+      ).toFixed(4)} SOL, need ${(minLamports / LAMPORTS_PER_SOL).toFixed(
+        4
+      )} SOL`
     );
   }
 
@@ -247,10 +266,7 @@ async function main(): Promise<void> {
       { amount_lamports: Number(ESCROW.toString()) }
     );
     const unsigned = fund.transaction as string;
-    const sig = await broadcast(
-      conn,
-      signBase64(unsigned, authority)
-    );
+    const sig = await broadcast(conn, signBase64(unsigned, authority));
     await api(
       "POST",
       `/tasks/${fund.task_id}/confirm?network=${network}`,
