@@ -141,9 +141,9 @@ fn validate_update(
         (shared::MIN_PROTOCOL_FEE_BPS..=shared::MAX_PROTOCOL_FEE_BPS).contains(&protocol_fee_bps),
         ShillbotError::ProtocolFeeBoundsExceeded
     );
-    // Quality threshold within bounds
+    // Quality threshold within bounds (strictly less than MAX_SCORE so score_range > 0)
     require!(
-        quality_threshold <= shared::MAX_SCORE,
+        quality_threshold < shared::MAX_SCORE,
         ShillbotError::QualityThresholdBoundsExceeded
     );
     // Timing parameters must be strictly positive

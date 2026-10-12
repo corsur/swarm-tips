@@ -21,19 +21,22 @@
  */
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
+import { execSync } from "child_process";
 import { BN } from "@coral-xyz/anchor";
 import {
   Connection,
   Keypair,
+  LAMPORTS_PER_SOL,
   Transaction,
   VersionedTransaction,
 } from "@solana/web3.js";
-import { connectDevnet, ensureFunded } from "./devnet-harness";
+import { loadKeypair } from "./devnet-harness";
 import { LEAN_PROOF_PLATFORM } from "../../tests/harness/shillbot-steps";
 
 const API_BASE = process.env.SHILLBOT_API ?? "https://api.shillbot.org";
 // Small standing escrow per bounty (~0.002 SOL). Open problems and solvables use
-// the same escrow on devnet; the point is a visible board entry, not a prize.
+// the same escrow on devnet and mainnet; the point is a visible board entry, not a prize.
 const ESCROW = new BN(2_000_000);
 const CATALOG_DIR = path.join(
   __dirname,
@@ -44,6 +47,49 @@ const CATALOG_DIR = path.join(
   "lean",
   "catalog"
 );
+
+function getSecret(name: string): string {
+  try {
+    return execSync(
+      `gcloud secrets versions access latest --secret=${name} --project=coordination-game-prod`,
+      { stdio: ["ignore", "pipe", "ignore"] }
+    )
+      .toString()
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
+function getJwtSecret(): string {
+  return process.env.JWT_SECRET || getSecret("jwt-secret");
+}
+
+function getRpcUrl(isMainnet: boolean): string {
+  if (isMainnet) {
+    return (
+      process.env.SOLANA_RPC_URL ??
+      process.env.MAINNET_RPC ??
+      getSecret("solana-rpc-url-mainnet") ??
+      "https://api.mainnet-beta.solana.com"
+    );
+  }
+  return (
+    process.env.DEVNET_RPC ??
+    process.env.SOLANA_RPC_URL ??
+    getSecret("solana-rpc-url-devnet") ??
+    "https://api.devnet.solana.com"
+  );
+}
+
+function mintJwt(wallet: string, secret: string): string {
+  if (!secret) return wallet;
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const payload = Buffer.from(JSON.stringify({ wallet, exp: now + 86400 })).toString("base64url");
+  const sig = crypto.createHmac("sha256", secret).update(`${header}.${payload}`).digest("base64url");
+  return `${header}.${payload}.${sig}`;
+}
 
 async function api(
   method: string,
@@ -86,13 +132,13 @@ async function broadcast(conn: Connection, signedB64: string): Promise<string> {
   return sig;
 }
 
-interface CatalogEntry {
+export interface CatalogEntry {
   name: string;
   kind: "open" | "solvable";
   statement: string;
 }
 
-function loadCatalog(): CatalogEntry[] {
+export function loadCatalog(): CatalogEntry[] {
   const entries: CatalogEntry[] = [];
   for (const kind of ["solvable", "open"] as const) {
     const dir = path.join(CATALOG_DIR, kind);
@@ -108,34 +154,67 @@ function loadCatalog(): CatalogEntry[] {
   return entries;
 }
 
-async function existingTopics(clientPk: string): Promise<Set<string>> {
+async function existingTopics(bearer: string, network: string): Promise<Set<string>> {
   const list = (await api(
     "GET",
-    `/campaigns?network=devnet`,
-    clientPk
+    `/campaigns?network=${network}`,
+    bearer
   )) as unknown as Array<{ brief?: { topic?: string } }>;
   const topics = new Set<string>();
-  for (const c of Array.isArray(list) ? list : []) {
+  const items = Array.isArray(list) ? list : (list as any)?.campaigns ?? [];
+  for (const c of items) {
     if (c.brief?.topic) topics.add(c.brief.topic);
   }
   return topics;
 }
 
 async function main(): Promise<void> {
-  const h = connectDevnet();
-  const clientPk = h.authority.publicKey.toBase58();
-  console.log(`API:    ${API_BASE}`);
-  console.log(`client: ${clientPk}`);
+  const isMainnet =
+    process.argv.includes("--mainnet") ||
+    process.env.SOLANA_NETWORK === "mainnet";
+  const network = isMainnet ? "mainnet" : "devnet";
+  const rpcUrl = getRpcUrl(isMainnet);
+  const conn = new Connection(rpcUrl, "confirmed");
 
-  const catalog = loadCatalog();
+  const authority = loadKeypair("id.json");
+  const clientPk = authority.publicKey.toBase58();
+  const jwtSecret = getJwtSecret();
+  const bearer = mintJwt(clientPk, jwtSecret);
+
+  const bal = await conn.getBalance(authority.publicKey, "confirmed");
+  console.log(`network: ${network}`);
+  console.log(`RPC:     ${rpcUrl.replace(/api-key=[^&]+/, "api-key=***")}`);
+  console.log(`API:     ${API_BASE}`);
+  console.log(`wallet:  ${clientPk} (${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL)`);
+
+  let catalog = loadCatalog();
+  const taskArg = process.argv.find((a) => a.startsWith("--tasks="));
+  const isNewOnly = process.argv.includes("--new");
+
+  if (taskArg) {
+    const allowed = new Set(
+      taskArg.replace("--tasks=", "").split(",").map((s) => s.trim())
+    );
+    catalog = catalog.filter((e) => allowed.has(e.name));
+  } else if (isNewOnly) {
+    const newSet = new Set([
+      "weil-gram-cubic-correlation",
+      "weil-gram-quartic-correlation",
+      "matrix-cubic",
+      "matrix-quartic",
+    ]);
+    catalog = catalog.filter((e) => newSet.has(e.name));
+  }
+
   console.log(`catalog: ${catalog.length} statements`);
-  await ensureFunded(
-    h,
-    h.authority.publicKey,
-    Number(ESCROW.toString()) * (catalog.length + 2)
-  );
+  const minLamports = Number(ESCROW.toString()) * (catalog.length + 2);
+  if (bal < minLamports) {
+    throw new Error(
+      `Insufficient balance on ${network}: have ${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL, need ${(minLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`
+    );
+  }
 
-  const already = await existingTopics(clientPk);
+  const already = await existingTopics(bearer, network);
   let created = 0;
   let skipped = 0;
 
@@ -146,7 +225,7 @@ async function main(): Promise<void> {
       skipped++;
       continue;
     }
-    const camp = await api("POST", `/campaigns?network=devnet`, clientPk, {
+    const camp = await api("POST", `/campaigns?network=${network}`, bearer, {
       brief: {
         topic,
         brand_voice: "rigorous",
@@ -163,19 +242,19 @@ async function main(): Promise<void> {
     // Fund one task so the bounty is claimable + visible on the board.
     const fund = await api(
       "POST",
-      `/campaigns/${campaignId}/fund?network=devnet`,
-      clientPk,
+      `/campaigns/${campaignId}/fund?network=${network}`,
+      bearer,
       { amount_lamports: Number(ESCROW.toString()) }
     );
     const unsigned = fund.transaction as string;
     const sig = await broadcast(
-      h.connection,
-      signBase64(unsigned, h.authority)
+      conn,
+      signBase64(unsigned, authority)
     );
     await api(
       "POST",
-      `/tasks/${fund.task_id}/confirm?network=devnet`,
-      clientPk,
+      `/tasks/${fund.task_id}/confirm?network=${network}`,
+      bearer,
       {
         tx_signature: sig,
         action: "create",
@@ -183,7 +262,7 @@ async function main(): Promise<void> {
       }
     );
     console.log(
-      `  seeded ${entry.kind}/${entry.name} -> campaign ${campaignId} task ${fund.task_id}`
+      `  [${network}] seeded ${entry.kind}/${entry.name} -> campaign ${campaignId} task ${fund.task_id}`
     );
     created++;
   }
@@ -191,7 +270,13 @@ async function main(): Promise<void> {
   console.log(`\nseed complete: ${created} created, ${skipped} skipped`);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+const isDirectRun =
+  process.argv[1]?.endsWith("seed-lean-catalog.ts") ||
+  process.argv[1]?.endsWith("seed-lean-catalog");
+
+if (isDirectRun) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
