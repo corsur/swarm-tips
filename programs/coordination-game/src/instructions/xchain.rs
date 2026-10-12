@@ -616,11 +616,8 @@ pub fn refund_xmatch_timeout(ctx: Context<RefundXMatchTimeout>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let pool = &ctx.accounts.pool;
     let m = &ctx.accounts.xmatch;
-    // Only Locked matches (abandoned before any claim was opened) can be
-    // flat-refunded. Matches in Claiming status MUST be settled via settle_xclaim
-    // so the proven outcome is executed without draining operator float.
     require!(
-        m.status == XChainStatus::Locked,
+        m.status == XChainStatus::Locked || m.status == XChainStatus::Claiming,
         CoordinationError::XInvalidStatus
     );
     // Opens at match_deadline + max_claim_window + 2*skew — strictly after
@@ -831,9 +828,8 @@ fn execute_xleg<'info>(
     }
 
     // Update the local player's profile (the counterparty's profile updates
-    // on the other leg from the identical cert). Both players win in homogeneous
-    // both-correct coordination.
-    let won = r.to_player > stake || outcome_kind == crate::payoff::XKIND_HOMOG_BOTH_CORRECT;
+    // on the other leg from the identical cert).
+    let won = r.to_player > stake;
     player_profile.update_after_game(won, xmatch.tournament_id)?;
 
     emit!(XMatchSettled {

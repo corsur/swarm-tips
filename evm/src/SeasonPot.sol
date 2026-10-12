@@ -225,19 +225,16 @@ abstract contract SeasonPot {
         return amount;
     }
 
-    /// @dev Only after the grace window. Sweeps unclaimed player prizes plus any
-    ///      unallocated surplus (accruedWei - prizeWei), preventing fund stranding.
+    /// @dev Only after the grace window, and only what is still unclaimed.
     function _sweepUnclaimed(uint256 seasonId) internal returns (uint256) {
         Season storage s = seasons[seasonId];
         if (!s.finalized) revert SeasonNotFinalized();
         // forge-lint: disable-next-line(block-timestamp)
         // 90-day grace; seconds of drift are immaterial.
         if (block.timestamp <= s.endTime + UNCLAIMED_GRACE_SECS) revert GraceNotElapsed();
-        uint256 unallocated = s.accruedWei > s.prizeWei ? s.accruedWei - s.prizeWei : 0;
-        uint256 amount = s.remainingWei + unallocated;
+        uint256 amount = s.remainingWei;
         if (amount == 0) revert NothingToClaim();
         s.remainingWei = 0;
-        s.accruedWei = s.prizeWei;
         return amount;
     }
 

@@ -1,5 +1,9 @@
-use proof_registry::{generated_module_name, ModuleStatus, PromotionCandidate, RegistryManifest};
-use std::path::Path;
+use proof_registry::{
+    bundle_id, compose_generated_module, generated_module_name, module_id, resolve_bundle,
+    sha256_hex, ModuleStatus, ModuleVerification, PromotionCandidate, ProofModuleManifest,
+    RegistryManifest, APACHE_2_0, SCHEMA_VERSION,
+};
+use std::path::{Path, PathBuf};
 
 const ALLOWED_AXIOMS: &[&str] = &["propext", "Classical.choice", "Quot.sound"];
 
@@ -64,13 +68,120 @@ fn prepare(
     public_base_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let candidate: PromotionCandidate = serde_json::from_slice(&std::fs::read(candidate_path)?)?;
+    if candidate.schema != "swarm.lean-promotion-candidate/v1"
+        || candidate.status != "verified_pending_finalization"
+        || candidate.task_id.is_empty()
+        || candidate.campaign_id.is_empty()
+        || candidate.network.is_empty()
+        || candidate.author_wallet.is_empty()
+        || sha256_hex(candidate.proof_source.as_bytes()) != candidate.artifact_sha256
+        || sha256_hex(candidate.statement.as_bytes()) != candidate.challenge.statement_sha256
+        || candidate.challenge.schema != proof_registry::CHALLENGE_SCHEMA_VERSION
+        || candidate.challenge.policy_version != 4
+        || !candidate.challenge.reusable
+        || candidate.challenge.reuse_license != APACHE_2_0
+        || candidate
+            .verification_axioms
+            .iter()
+            .any(|axiom| !ALLOWED_AXIOMS.contains(&axiom.as_str()))
+    {
+        return Err("candidate hashes, schema, or status do not match".into());
+    }
     let mut registry = read_registry(registry_path)?;
-    let manifest = proof_registry::autopromote_candidate(
-        &candidate,
-        &mut registry,
-        package_root,
-        public_base_url,
+    if !registry
+        .environments
+        .iter()
+        .any(|environment| environment.environment_id == candidate.challenge.environment_id)
+    {
+        return Err("candidate uses an unknown environment".into());
+    }
+    let mut direct_dependencies = candidate.direct_dependencies.clone();
+    direct_dependencies.sort();
+    direct_dependencies.dedup();
+    let bundle = resolve_bundle(
+        &registry,
+        &candidate.challenge.environment_id,
+        &direct_dependencies,
     )?;
+    if bundle.modules != candidate.dependency_closure
+        || bundle_id(&bundle)? != candidate.challenge.dependency_bundle_id
+        || candidate.exact_imports
+            != bundle
+                .modules
+                .iter()
+                .map(|id| generated_module_name(id))
+                .collect::<Result<Vec<_>, _>>()?
+    {
+        return Err("candidate dependency closure or challenge does not match".into());
+    }
+
+    let generated = compose_generated_module(&candidate)?;
+    let source_sha256 = sha256_hex(generated.source.as_bytes());
+    let mut manifest = ProofModuleManifest {
+        schema: SCHEMA_VERSION.into(),
+        module_id: String::new(),
+        module_name: String::new(),
+        theorem_name: generated.theorem_name,
+        theorem_signature: generated.theorem_signature,
+        environment_id: candidate.challenge.environment_id,
+        source_sha256: source_sha256.clone(),
+        source_url: String::new(),
+        source_bytes: generated.source.len() as u64,
+        direct_dependencies,
+        originating_task_id: candidate.task_id.clone(),
+        originating_network: candidate.network,
+        author_wallet: candidate.author_wallet,
+        license: APACHE_2_0.into(),
+        verification: ModuleVerification {
+            lean_kernel: true,
+            axiom_audit: true,
+            independent_kernel: true,
+            axioms: candidate.verification_axioms,
+        },
+        status: ModuleStatus::Active,
+        replacement: None,
+        title: format!("Reusable proof from task {}", candidate.task_id),
+        summary: "Kernel checked, not mathematical peer review.".into(),
+    };
+    manifest.module_id = module_id(&manifest)?;
+    manifest.module_name = generated_module_name(&manifest.module_id)?;
+    let id_hex = manifest
+        .module_id
+        .strip_prefix("sha256:")
+        .ok_or("invalid generated module id")?;
+    manifest.source_url = format!(
+        "{}/modules/{id_hex}.lean",
+        public_base_url.trim_end_matches('/')
+    );
+    if let Some(existing) = registry
+        .modules
+        .iter()
+        .find(|existing| existing.module_id == manifest.module_id)
+    {
+        if proof_registry::module_id(existing)? != manifest.module_id {
+            return Err("module id collision with different manifest".into());
+        }
+        let existing_path =
+            package_root.join(format!("{}.lean", existing.module_name.replace('.', "/")));
+        if std::fs::read(&existing_path)? != generated.source.as_bytes() {
+            return Err("existing immutable module bytes differ".into());
+        }
+        // Retrying must not reactivate a yanked module or overwrite later audit
+        // evidence and reviewed catalog edits.
+        println!("{}", manifest.module_id);
+        return Ok(());
+    }
+
+    let relative = format!("{}.lean", manifest.module_name.replace('.', "/"));
+    let output = package_root.join(PathBuf::from(relative));
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&output, generated.source)?;
+    registry.modules.push(manifest.clone());
+    registry
+        .modules
+        .sort_by(|left, right| left.module_id.cmp(&right.module_id));
     write_registry(registry_path, &registry)?;
     validate(registry_path)?;
     println!("{}", manifest.module_id);
@@ -114,12 +225,10 @@ fn yank(
 mod tests {
     use super::*;
     use proof_registry::{
-        bundle_id, environment_id, sha256_hex, ChallengeManifest, DependencyBundle,
-        EnvironmentLock, EnvironmentRecord, ExternalPackage, APACHE_2_0,
-        CHALLENGE_SCHEMA_VERSION, SCHEMA_VERSION,
+        bundle_id, environment_id, ChallengeManifest, DependencyBundle, EnvironmentLock,
+        EnvironmentRecord, ExternalPackage, CHALLENGE_SCHEMA_VERSION,
     };
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temporary_directory() -> PathBuf {

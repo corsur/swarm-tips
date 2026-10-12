@@ -67,7 +67,7 @@ fn validate_initialize_inputs(
         ShillbotError::ProtocolFeeBoundsExceeded
     );
     require!(
-        quality_threshold < shared::MAX_SCORE,
+        quality_threshold <= shared::MAX_SCORE,
         ShillbotError::QualityThresholdBoundsExceeded
     );
     require!(

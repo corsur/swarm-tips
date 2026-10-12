@@ -43,14 +43,10 @@ Reviewed Zeta23 commit `3635e74826a4c1fcece7d1cd2b6fa75e43a00510`.
 | conditional-consequences | Trace/spectral/rank/zero-multiplicity consequences of named correlation hypotheses | Promoted interfaces |
 | open-bound / counterexample | Separate exact proposition and its formal negation | Fixed interfaces and consequences |
 
-The generic challenge files define immutable candidate statements:
-- `CubicStatement.lean`: Generic entrywise trace-of-cube identity `tr(G³)`.
-- `QuarticStatement.lean`: Generic entrywise trace-of-fourth-power identity `tr(G⁴)`.
-- `WeilCorrelationStatement.lean`: Open higher-degree trace moment bound and quadruple prime-logarithm correlation at `λ = 1`.
-- `tests/fixtures/lean/catalog/open/weil-gram-cubic-correlation.lean`: Standing catalog open bounty for cubic correlation.
-- `tests/fixtures/lean/catalog/open/weil-gram-quartic-correlation.lean`: Standing catalog open bounty for quartic correlation.
-
-Their final campaign commitments bind their exact bytes, environment, and dependency bundle. Budget assignment, campaign IDs, and acceptance examples remain recorded after rollout gates pass.
+The generic challenge files define immutable candidate statements but are not
+published registry modules. Their final campaign commitments will bind their
+exact bytes, environment and dependency bundle. Budget assignment, campaign IDs,
+and acceptance examples remain to be recorded after the rollout gates pass.
 
 Each result is **kernel checked, not mathematical peer review**. No entry claims
 that an open higher-correlation estimate has been established.

@@ -20,9 +20,6 @@ pub enum ExtensionCreditError {
     #[msg("Advance is not fully recouped yet")]
     NotFullyRecouped,
 
-    #[msg("Advance is already fully recouped")]
-    AlreadyFullyRecouped,
-
     #[msg("Vault still holds undistributed earnings — crank route_and_recoup first")]
     VaultNotDrained,
 

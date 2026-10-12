@@ -27,8 +27,6 @@ fn session_id_from_parts(parts: Option<&http::request::Parts>) -> Option<String>
         .headers
         .get(MCP_SESSION_ID_HEADER)
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
 }
 

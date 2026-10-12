@@ -8,14 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: &str = "swarm.lean-proof-registry/v1";
 pub const CHALLENGE_SCHEMA_VERSION: &str = "swarm.lean-challenge/v1";
 pub const MODULE_ID_PREFIX: &str = "sha256:";
 pub const APACHE_2_0: &str = "Apache-2.0";
 pub const GENERATED_MODULE_PREFIX: &str = "SwarmProofs.Generated.H";
-pub const ALLOWED_AXIOMS: &[&str] = &["propext", "Classical.choice", "Quot.sound"];
 pub const MAX_DIRECT_DEPENDENCIES: usize = 16;
 pub const MAX_TRANSITIVE_DEPENDENCIES: usize = 128;
 pub const MAX_DEPENDENCY_DEPTH: usize = 16;
@@ -459,150 +457,6 @@ pub fn compose_generated_module(
     })
 }
 
-/// Automatically promote a verified promotion candidate into a target registry.
-///
-/// Validates the candidate's hashes, schemas, and axioms, resolves its dependency closure,
-/// generates the namespaced Lean module file, inserts the manifest into the registry,
-/// sorts the registry modules deterministically, and validates the entire registry.
-///
-/// Idempotent: if the module is already present with identical identity, the existing
-/// record is returned without re-activating yanked/revoked modules.
-pub fn autopromote_candidate(
-    candidate: &PromotionCandidate,
-    registry: &mut RegistryManifest,
-    package_root: &Path,
-    public_base_url: &str,
-) -> Result<ProofModuleManifest, RegistryError> {
-    if candidate.schema != "swarm.lean-promotion-candidate/v1"
-        || candidate.status != "verified_pending_finalization"
-        || candidate.task_id.is_empty()
-        || candidate.campaign_id.is_empty()
-        || candidate.network.is_empty()
-        || candidate.author_wallet.is_empty()
-        || sha256_hex(candidate.proof_source.as_bytes()) != candidate.artifact_sha256
-        || sha256_hex(candidate.statement.as_bytes()) != candidate.challenge.statement_sha256
-        || candidate.challenge.schema != CHALLENGE_SCHEMA_VERSION
-        || candidate.challenge.policy_version != 4
-        || !candidate.challenge.reusable
-        || candidate.challenge.reuse_license != APACHE_2_0
-        || candidate
-            .verification_axioms
-            .iter()
-            .any(|axiom| !ALLOWED_AXIOMS.contains(&axiom.as_str()))
-    {
-        return Err(RegistryError::InvalidRegistry(
-            "candidate hashes, schema, status, or unallowed axioms do not match".into(),
-        ));
-    }
-    if !registry
-        .environments
-        .iter()
-        .any(|environment| environment.environment_id == candidate.challenge.environment_id)
-    {
-        return Err(RegistryError::EnvironmentMismatch(
-            candidate.challenge.environment_id.clone(),
-        ));
-    }
-    let mut direct_dependencies = candidate.direct_dependencies.clone();
-    direct_dependencies.sort();
-    direct_dependencies.dedup();
-    let bundle = resolve_bundle(
-        registry,
-        &candidate.challenge.environment_id,
-        &direct_dependencies,
-    )?;
-    if bundle.modules != candidate.dependency_closure
-        || bundle_id(&bundle)? != candidate.challenge.dependency_bundle_id
-        || candidate.exact_imports
-            != bundle
-                .modules
-                .iter()
-                .map(|id| generated_module_name(id))
-                .collect::<Result<Vec<_>, _>>()?
-    {
-        return Err(RegistryError::InvalidRegistry(
-            "candidate dependency closure or challenge does not match".into(),
-        ));
-    }
-
-    let generated = compose_generated_module(candidate)?;
-    let source_sha256 = sha256_hex(generated.source.as_bytes());
-    let mut manifest = ProofModuleManifest {
-        schema: SCHEMA_VERSION.into(),
-        module_id: String::new(),
-        module_name: String::new(),
-        theorem_name: generated.theorem_name,
-        theorem_signature: generated.theorem_signature,
-        environment_id: candidate.challenge.environment_id.clone(),
-        source_sha256,
-        source_url: String::new(),
-        source_bytes: generated.source.len() as u64,
-        direct_dependencies,
-        originating_task_id: candidate.task_id.clone(),
-        originating_network: candidate.network.clone(),
-        author_wallet: candidate.author_wallet.clone(),
-        license: APACHE_2_0.into(),
-        verification: ModuleVerification {
-            lean_kernel: true,
-            axiom_audit: true,
-            independent_kernel: true,
-            axioms: candidate.verification_axioms.clone(),
-        },
-        status: ModuleStatus::Active,
-        replacement: None,
-        title: format!("Reusable proof from task {}", candidate.task_id),
-        summary: "Kernel checked, not mathematical peer review.".into(),
-    };
-    manifest.module_id = module_id(&manifest)?;
-    manifest.module_name = generated_module_name(&manifest.module_id)?;
-    let id_hex = manifest
-        .module_id
-        .strip_prefix("sha256:")
-        .ok_or_else(|| RegistryError::InvalidIdentifier(manifest.module_id.clone()))?;
-    manifest.source_url = format!(
-        "{}/modules/{id_hex}.lean",
-        public_base_url.trim_end_matches('/')
-    );
-
-    if let Some(existing) = registry
-        .modules
-        .iter()
-        .find(|existing| existing.module_id == manifest.module_id)
-    {
-        if module_id(existing)? != manifest.module_id {
-            return Err(RegistryError::InvalidRegistry(
-                "module id collision with different manifest".into(),
-            ));
-        }
-        let existing_path =
-            package_root.join(format!("{}.lean", existing.module_name.replace('.', "/")));
-        if let Ok(bytes) = std::fs::read(&existing_path) {
-            if bytes != generated.source.as_bytes() {
-                return Err(RegistryError::InvalidRegistry(
-                    "existing immutable module bytes differ".into(),
-                ));
-            }
-        }
-        return Ok(existing.clone());
-    }
-
-    let relative = format!("{}.lean", manifest.module_name.replace('.', "/"));
-    let output = package_root.join(PathBuf::from(relative));
-    if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| RegistryError::Serialization(e.to_string()))?;
-    }
-    std::fs::write(&output, &generated.source)
-        .map_err(|e| RegistryError::Serialization(e.to_string()))?;
-
-    registry.modules.push(manifest.clone());
-    registry
-        .modules
-        .sort_by(|left, right| left.module_id.cmp(&right.module_id));
-    validate_registry(registry)?;
-    Ok(manifest)
-}
-
 fn validate_id(value: &str) -> Result<&str, RegistryError> {
     let Some(hex) = value.strip_prefix(MODULE_ID_PREFIX) else {
         return Err(RegistryError::InvalidIdentifier(value.to_string()));
@@ -827,7 +681,7 @@ mod tests {
     #[test]
     fn shared_canonical_vectors_and_integer_limits() {
         let vectors: Value = serde_json::from_str(include_str!(
-            "../canonical-vectors.json"
+            "../../../proofs/SwarmProofs/canonical-vectors.json"
         ))
         .unwrap();
         for vector in vectors.as_array().unwrap() {
@@ -1039,65 +893,5 @@ mod tests {
             validate_registry(&dangling),
             Err(RegistryError::InvalidRegistry(_))
         ));
-    }
-
-    #[test]
-    fn autopromote_and_revocation_lifecycle_test() {
-        let mut registry = valid_registry();
-        let env_id = registry.environments[0].environment_id.clone();
-        let statement = "def statementProp : Prop := True";
-        let proof = "-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := trivial";
-        let bundle = DependencyBundle {
-            schema: SCHEMA_VERSION.into(),
-            environment_id: env_id.clone(),
-            modules: Vec::new(),
-        };
-        let candidate = PromotionCandidate {
-            schema: "swarm.lean-promotion-candidate/v1".into(),
-            task_id: "task-auto-1".into(),
-            campaign_id: "camp-auto-1".into(),
-            network: "devnet".into(),
-            author_wallet: "wallet123".into(),
-            artifact_sha256: sha256_hex(proof.as_bytes()),
-            statement: statement.into(),
-            proof_source: proof.into(),
-            challenge: ChallengeManifest {
-                schema: CHALLENGE_SCHEMA_VERSION.into(),
-                statement_sha256: sha256_hex(statement.as_bytes()),
-                policy_version: 4,
-                environment_id: env_id.clone(),
-                dependency_bundle_id: bundle_id(&bundle).unwrap(),
-                reuse_license: APACHE_2_0.into(),
-                reusable: true,
-            },
-            direct_dependencies: Vec::new(),
-            dependency_closure: Vec::new(),
-            exact_imports: Vec::new(),
-            verification_axioms: vec!["propext".into()],
-            status: "verified_pending_finalization".into(),
-        };
-        let tmp = std::env::temp_dir().join(format!("autopromote-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        let manifest = autopromote_candidate(&candidate, &mut registry, &tmp, "https://proofs.swarm.tips").unwrap();
-        assert!(manifest.module_id.starts_with("sha256:"));
-        assert_eq!(manifest.status, ModuleStatus::Active);
-
-        // Next task can resolve bundle containing this module:
-        let resolved = resolve_bundle(&registry, &env_id, &[manifest.module_id.clone()]).unwrap();
-        assert_eq!(resolved.modules, vec![manifest.module_id.clone()]);
-
-        // Revocation (two-way door):
-        let target = registry.modules.iter_mut().find(|m| m.module_id == manifest.module_id).unwrap();
-        target.status = ModuleStatus::Revoked;
-
-        // Future resolution of the revoked module MUST fail closed:
-        assert!(matches!(
-            resolve_bundle(&registry, &env_id, &[manifest.module_id.clone()]),
-            Err(RegistryError::InactiveModule(_))
-        ));
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
