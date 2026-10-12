@@ -298,9 +298,20 @@ jobs:
     environment: mainnet
     needs: [test, changes]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation for the premium RPC secret read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      # Premium mainnet RPC lives in GCP Secret Manager (`solana-rpc-url-mainnet`)
+      # — single source of truth, same as shillbot-program.yml.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
@@ -330,8 +341,64 @@ jobs:
         # XCertMismatch. See MAINNET_DEPLOY.md.
         run: anchor build -p coordination-game -- --features mainnet
 
+      - name: Read premium mainnet RPC
+        # Fail loudly — never fall back to the rate-limited public endpoint.
+        run: |
+          MAINNET_RPC="$(gcloud secrets versions access latest --secret=solana-rpc-url-mainnet)"
+          if [ -z "$MAINNET_RPC" ]; then
+            echo "::error::could not read solana-rpc-url-mainnet from Secret Manager" >&2
+            exit 1
+          fi
+          echo "::add-mask::$MAINNET_RPC"
+          echo "MAINNET_RPC=$MAINNET_RPC" >> "$GITHUB_ENV"
+
+      - name: Close orphaned buffer accounts
+        run: solana program close --buffers --url "$MAINNET_RPC" --keypair ~/.config/solana/id.json || true
+
+      - name: Extend programdata if the new build is larger
+        # Root cause of the 2026-10-12 04:52Z failure: the new .so (928 KB) was
+        # larger than mainnet programdata (866 KB), so the deploy's first tx had
+        # to grow the account and failed simulation. Extend explicitly (with
+        # 10% headroom) as its own step so it is idempotent and visible.
+        run: |
+          set -euo pipefail
+          PROG=2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P
+          NEW=$(stat -c %s target/deploy/coordination_game.so)
+          CUR=$(solana program show "$PROG" --url "$MAINNET_RPC" --output json | jq -r .dataLen)
+          echo "new .so=$NEW bytes, programdata=$CUR bytes"
+          if [ "$NEW" -gt "$CUR" ]; then
+            ADD=$(( NEW - CUR + NEW / 10 ))
+            echo "extending programdata by $ADD bytes"
+            solana program extend "$PROG" "$ADD" --url "$MAINNET_RPC" \
+              --keypair ~/.config/solana/id.json
+          fi
+
       - name: Deploy coordination game to mainnet
-        run: anchor deploy -p coordination_game --provider.cluster mainnet
+        # `solana program deploy` (in-place upgrade) against the PREMIUM RPC,
+        # not `anchor deploy --provider.cluster mainnet`. On 2026-10-12 04:52Z
+        # anchor deploy against public api.mainnet-beta failed its first
+        # transaction ("Account allocation failed: -32002 simulation failed"),
+        # leaving mainnet out of sync with main. Same failure class as the
+        # shillbot a685cdf incident; same fix.
+        run: |
+          solana program deploy \
+            --url "$MAINNET_RPC" \
+            --upgrade-authority ~/.config/solana/id.json \
+            --program-id 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P \
+            target/deploy/coordination_game.so
+
+      - name: Close buffers left by a failed deploy
+        if: failure()
+        run: solana program close --buffers --url "$MAINNET_RPC" --keypair ~/.config/solana/id.json || true
+
+      - name: Upgrade on-chain IDL (best effort)
+        # Off-chain consumers use the SDK's bundled IDL; bytecode is load-bearing.
+        run: |
+          anchor idl upgrade --provider.cluster "$MAINNET_RPC" \
+            --provider.wallet ~/.config/solana/id.json \
+            --filepath target/idl/coordination_game.json \
+            2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P || \
+          echo "::warning::coordination_game IDL upgrade failed; bytecode deployed"
       # A struct change is not live until its migration has run. Doing this in a
       # SEPARATE workflow is what broke mainnet on 2026-08-03: the deploy fired
       # on merge, the migration had no trigger, and the new program sat against
@@ -357,7 +424,7 @@ jobs:
       - name: Migrate + reconcile GlobalConfig
         env:
           ANCHOR_WALLET: /home/runner/.config/solana/id.json
-          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL_MAINNET }}
+          SOLANA_RPC_URL: ${{ env.MAINNET_RPC }}
         run: |
           set -euo pipefail
           # `pnpm dlx`, matching deploy-devnet: tsx is NOT a dependency of this
