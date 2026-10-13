@@ -9,6 +9,38 @@ pub use game_api_client::QueueJoinResponse;
 /// not through this proxy.
 pub struct GameApiProxy {
     client: game_api_client::GameApiClient,
+    /// game-api's `jwt-secret`. When set, `/internal/*` calls carry a
+    /// short-lived token for the MCP-verified wallet, which game-api requires
+    /// once `INTERNAL_AUTH_REQUIRED` is enforced. `None` keeps the legacy
+    /// unauthenticated call (accepted only while enforcement is off).
+    internal_jwt_secret: Option<String>,
+}
+
+/// Lifetime of a minted internal token: one request, generous clock skew.
+const INTERNAL_TOKEN_TTL_SECS: u64 = 300;
+
+/// HS256 JWT `{wallet, exp}` — byte-compatible with game-api's
+/// `module_transport::wallet::{mint, verify}` claim shape.
+fn mint_internal_token(wallet: &str, secret: &str) -> Option<String> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use hmac::Mac as _;
+    if wallet.is_empty() || secret.is_empty() {
+        return None;
+    }
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs()
+        .checked_add(INTERNAL_TOKEN_TTL_SECS)?;
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let claims = URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&serde_json::json!({ "wallet": wallet, "exp": exp })).ok()?);
+    let signing_input = format!("{header}.{claims}");
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(signing_input.as_bytes());
+    let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    Some(format!("{signing_input}.{sig}"))
 }
 
 impl GameApiProxy {
@@ -28,7 +60,21 @@ impl GameApiProxy {
         let client = game_api_client::GameApiClient::new(&base_url)
             .map_err(|e| anyhow::anyhow!("game-api client build failed: {e}"))?;
 
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            internal_jwt_secret: None,
+        })
+    }
+
+    pub fn with_internal_jwt_secret(mut self, secret: Option<String>) -> Self {
+        self.internal_jwt_secret = secret.filter(|s| !s.is_empty());
+        self
+    }
+
+    fn internal_bearer(&self, wallet: &str) -> Option<String> {
+        self.internal_jwt_secret
+            .as_deref()
+            .and_then(|secret| mint_internal_token(wallet, secret))
     }
 
     pub fn with_transport(
@@ -144,8 +190,9 @@ impl GameApiProxy {
             session_key,
             tournament_id,
         };
+        let bearer = self.internal_bearer(wallet);
         self.client
-            .xqueue_join(&request)
+            .xqueue_join_as(&request, bearer.as_deref())
             .await
             .map_err(map_game_api_error)
     }
@@ -192,8 +239,9 @@ impl GameApiProxy {
             is_ai: true,
             is_internal: false,
         };
+        let bearer = self.internal_bearer(wallet);
         self.client
-            .evmgame_join(&request)
+            .evmgame_join_as(&request, bearer.as_deref())
             .await
             .map_err(map_game_api_error)
     }
@@ -203,8 +251,9 @@ impl GameApiProxy {
         &self,
         wallet: &str,
     ) -> Result<game_api_client::XQueueResponse, McpServiceError> {
+        let bearer = self.internal_bearer(wallet);
         self.client
-            .evmgame_status(wallet)
+            .evmgame_status_as(wallet, bearer.as_deref())
             .await
             .map_err(map_game_api_error)
     }
@@ -794,5 +843,56 @@ mod tests {
         let p = GameApiProxy::new(uri).expect("builds");
         let err = p.xqueue_status("w").await.expect_err("must fail");
         assert!(matches!(err, McpServiceError::GameApiError(_)));
+    }
+
+    #[test]
+    fn internal_token_is_hs256_wallet_claims_with_short_expiry() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+        use hmac::Mac as _;
+        let token = mint_internal_token("0xabc", "s3cret").expect("mints");
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        let header: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0]).unwrap()).unwrap();
+        assert_eq!(header["alg"], "HS256");
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        assert_eq!(claims["wallet"], "0xabc");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let exp = claims["exp"].as_u64().unwrap();
+        assert!(exp > now && exp <= now + INTERNAL_TOKEN_TTL_SECS);
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(b"s3cret").unwrap();
+        mac.update(format!("{}.{}", parts[0], parts[1]).as_bytes());
+        mac.verify_slice(&URL_SAFE_NO_PAD.decode(parts[2]).unwrap())
+            .expect("signature verifies with the shared secret");
+        assert!(mint_internal_token("", "s3cret").is_none());
+        assert!(mint_internal_token("0xabc", "").is_none());
+    }
+
+    #[tokio::test]
+    async fn internal_calls_carry_wallet_token_when_secret_configured() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/internal/evmgame/status"))
+            .and(wiremock::matchers::header_exists("authorization"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":"waiting"})))
+            .mount(&server)
+            .await;
+        let with_secret = GameApiProxy::new(server.uri())
+            .unwrap()
+            .with_internal_jwt_secret(Some("s3cret".into()));
+        with_secret
+            .evmgame_status("0xabc")
+            .await
+            .expect("bearer sent");
+        let without = GameApiProxy::new(server.uri()).unwrap();
+        assert!(
+            without.evmgame_status("0xabc").await.is_err(),
+            "no bearer without a secret"
+        );
     }
 }

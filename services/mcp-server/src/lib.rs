@@ -96,8 +96,12 @@ pub struct McpDependencies {
     pub realtime: Option<Arc<dyn game_api_client::ws::RealtimeConnector>>,
 }
 
-fn game_proxy(url: &str, dependencies: &McpDependencies) -> anyhow::Result<GameApiProxy> {
-    let proxy = GameApiProxy::new(url.to_owned())?;
+fn game_proxy(
+    url: &str,
+    dependencies: &McpDependencies,
+    internal_jwt_secret: Option<String>,
+) -> anyhow::Result<GameApiProxy> {
+    let proxy = GameApiProxy::new(url.to_owned())?.with_internal_jwt_secret(internal_jwt_secret);
     Ok(match &dependencies.game {
         Some(transport) => proxy.with_transport(Arc::clone(transport)),
         None => proxy,
@@ -193,11 +197,19 @@ pub async fn initialize_with_dependencies(
         "true" | "1"
     );
 
+    // game-api's session secret: lets /internal/* calls carry a short-lived
+    // token for the MCP-verified wallet (required once game-api enforces
+    // INTERNAL_AUTH_REQUIRED). Optional so local/standalone runs still start.
+    let game_jwt_secret = config::load_optional_secret(&cfg.gcp_project_id, "jwt-secret").await;
+    if game_jwt_secret.is_none() {
+        tracing::warn!("jwt-secret unavailable — game-api /internal/* calls go unauthenticated");
+    }
+
     // Browser REST twins for the agent inbox (/internal/inbox/*): the SAME
     // session-binding + inbox handles the MCP tools use, with its own
     // game-api adapter for the auth-challenge passthrough.
     let inbox_http_state = Arc::new(inbox_http::InboxHttpState {
-        game_api: game_proxy(&cfg.game_api_url, &dependencies)?,
+        game_api: game_proxy(&cfg.game_api_url, &dependencies, game_jwt_secret.clone())?,
         session_binding: Arc::clone(&session_binding),
         inbox: Arc::clone(&inbox_state),
         inbox_seed_wallets: inbox_seed_wallets.clone(),
@@ -210,7 +222,7 @@ pub async fn initialize_with_dependencies(
     }
     let shared = Arc::new(SharedState {
         orchestrator,
-        game_api: game_proxy(&cfg.game_api_url, &dependencies)?,
+        game_api: game_proxy(&cfg.game_api_url, &dependencies, game_jwt_secret.clone())?,
         solana_rpc_url: cfg.solana_rpc_url.clone(),
         solana_rpc_url_mainnet: rpc_url_mainnet.clone(),
         solana_rpc_url_devnet: rpc_url_devnet.clone(),

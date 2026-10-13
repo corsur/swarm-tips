@@ -190,6 +190,17 @@ pub struct XSolFundResponse {
 /// which breaks devnet flows: a deposit_stake tx broadcast on devnet
 /// returns `transaction not found` from a mainnet tx-signature lookup.
 /// Surfaced 2026-05-09 by the human-vs-agent devnet E2E.
+/// Attach `Authorization: Bearer` only when a token is supplied.
+fn with_bearer(
+    builder: api_transport::RequestBuilder,
+    bearer: Option<&str>,
+) -> api_transport::RequestBuilder {
+    match bearer {
+        Some(token) => builder.bearer_auth(token),
+        None => builder,
+    }
+}
+
 pub struct GameApiClient {
     inner: api_transport::Client,
     base_url: String,
@@ -462,9 +473,21 @@ impl GameApiClient {
         &self,
         request: &XQueueJoinRequest<'_>,
     ) -> Result<XQueueResponse, GameApiError> {
+        self.xqueue_join_as(request, None).await
+    }
+
+    /// `xqueue_join` carrying a wallet-scoped bearer token, which game-api's
+    /// `/internal/*` auth requires once `INTERNAL_AUTH_REQUIRED` is enforced.
+    pub async fn xqueue_join_as(
+        &self,
+        request: &XQueueJoinRequest<'_>,
+        bearer: Option<&str>,
+    ) -> Result<XQueueResponse, GameApiError> {
         // Internal endpoints take no `?network=` param — address it directly.
         let url = format!("{}/internal/xqueue/join", self.base_url);
-        let resp = self.inner.post(&url).json(request).send().await?;
+        let resp = with_bearer(self.inner.post(&url).json(request), bearer)
+            .send()
+            .await?;
         Self::check_status(resp)
             .await?
             .json()
@@ -523,8 +546,19 @@ impl GameApiClient {
         &self,
         request: &EvmGameJoinRequest<'_>,
     ) -> Result<XQueueResponse, GameApiError> {
+        self.evmgame_join_as(request, None).await
+    }
+
+    /// `evmgame_join` carrying a wallet-scoped bearer token (see `xqueue_join_as`).
+    pub async fn evmgame_join_as(
+        &self,
+        request: &EvmGameJoinRequest<'_>,
+        bearer: Option<&str>,
+    ) -> Result<XQueueResponse, GameApiError> {
         let url = format!("{}/internal/evmgame/join", self.base_url);
-        let resp = self.inner.post(&url).json(request).send().await?;
+        let resp = with_bearer(self.inner.post(&url).json(request), bearer)
+            .send()
+            .await?;
         Self::check_status(resp)
             .await?
             .json()
@@ -535,11 +569,17 @@ impl GameApiClient {
     /// `GET /internal/evmgame/status?wallet=…` — poll for a same-chain EVM match
     /// by wallet (the player who was already waiting retrieves their calls).
     pub async fn evmgame_status(&self, wallet: &str) -> Result<XQueueResponse, GameApiError> {
+        self.evmgame_status_as(wallet, None).await
+    }
+
+    /// `evmgame_status` carrying a wallet-scoped bearer token (see `xqueue_join_as`).
+    pub async fn evmgame_status_as(
+        &self,
+        wallet: &str,
+        bearer: Option<&str>,
+    ) -> Result<XQueueResponse, GameApiError> {
         let url = format!("{}/internal/evmgame/status", self.base_url);
-        let resp = self
-            .inner
-            .get(&url)
-            .query(&[("wallet", wallet)])
+        let resp = with_bearer(self.inner.get(&url).query(&[("wallet", wallet)]), bearer)
             .send()
             .await?;
         Self::check_status(resp)
@@ -1167,6 +1207,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.r_matchup, "deadbeef");
+    }
+
+    #[tokio::test]
+    async fn internal_evm_calls_carry_bearer_only_when_given() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let waiting =
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"status":"waiting"}));
+        Mock::given(method("POST"))
+            .and(path("/internal/evmgame/join"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(waiting.clone())
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/internal/evmgame/status"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(waiting.clone())
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/join"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(waiting)
+            .mount(&server)
+            .await;
+
+        let client = GameApiClient::new(&server.uri()).unwrap();
+        let join = EvmGameJoinRequest {
+            wallet: "0xP",
+            chain: "eip155:84532",
+            tournament_id: 1,
+            is_ai: true,
+            is_internal: false,
+        };
+        let xjoin = XQueueJoinRequest {
+            wallet: "W",
+            chain: "solana:x",
+            session_key: "k",
+            tournament_id: 1,
+        };
+        client.evmgame_join_as(&join, Some("tok")).await.unwrap();
+        client.evmgame_status_as("0xP", Some("tok")).await.unwrap();
+        client.xqueue_join_as(&xjoin, Some("tok")).await.unwrap();
+        // Without a token the request has no Authorization header, so the
+        // bearer-matching mocks don't match and wiremock returns 404.
+        assert!(client.evmgame_join(&join).await.is_err());
     }
 
     #[test]
