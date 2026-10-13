@@ -1,0 +1,14 @@
+# Contracts CI auto-deploys to MAINNET.
+#
+# Pipeline for every entry: push to main -> tests (bankrun / local validator /
+# forge) -> devnet (or Base Sepolia) deploy -> mainnet deploy. All automatic.
+# A mainnet deploy job runs scripts/check-mainnet-allowlist.sh first and fails
+# if its contract is not listed here. To add a contract: add a line.
+solana:
+  coordination_game: 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P # coordination-game.yml
+  shillbot: 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi # shillbot-program.yml
+  extension_credit: Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh # extension-credit-program.yml
+  extension_registry: H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j # extension-registry-program.yml
+evm:
+  coordination_game_v4_base: V4_PROXY_BASE # eip155:8453, auto-upgrade-evm-testnet.yml (mainnet job)
+  coordination_game_v4_ethereum: V4_PROXY_ETHEREUM # eip155:1

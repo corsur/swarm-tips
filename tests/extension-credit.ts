@@ -173,6 +173,96 @@ describe("extension-credit", () => {
     );
   });
 
+  it("mark_default caps the backer at the outstanding principal; the excess goes to the recipient", async () => {
+    const recipient = Keypair.generate();
+    const [advance] = advancePda(
+      backer,
+      recipient.publicKey,
+      program.programId
+    );
+    const rentFloor =
+      await provider.connection.getMinimumBalanceForRentExemption(
+        ADVANCE_SPACE
+      );
+    await program.methods
+      .openAdvance(ADVANCE)
+      .accountsPartial({
+        advance,
+        backer,
+        recipient: recipient.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc({ commitment: "confirmed" });
+
+    // Earnings exceed the advance — a backer front-running route_and_recoup
+    // with mark_default must NOT be able to seize the recipient's surplus.
+    await airdrop(advance, 3_000_000);
+    const available = (await bal(advance)) - rentFloor;
+    const toBacker = Math.min(available, ADVANCE.toNumber());
+    const toRecipient = available - toBacker;
+    assert.isAbove(toRecipient, 0, "test setup: earnings exceed the advance");
+
+    const backerBefore = await bal(backer);
+    const recipientBefore = await bal(recipient.publicKey);
+    const sig = await program.methods
+      .markDefault()
+      .accountsPartial({ advance, backer, recipient: recipient.publicKey })
+      .rpc({ commitment: "confirmed" });
+    const fee = await feeOf(sig);
+
+    assert.isNull(await provider.connection.getAccountInfo(advance));
+    assert.equal(
+      (await bal(recipient.publicKey)) - recipientBefore,
+      toRecipient,
+      "recipient receives exactly the excess over the principal"
+    );
+    assert.closeTo(
+      (await bal(backer)) - backerBefore + fee,
+      toBacker + rentFloor,
+      100,
+      "backer receives at most the outstanding principal + rent"
+    );
+  });
+
+  it("mark_default is rejected once the advance is fully recouped (use close_advance)", async () => {
+    const recipient = Keypair.generate();
+    const [advance] = advancePda(
+      backer,
+      recipient.publicKey,
+      program.programId
+    );
+    await program.methods
+      .openAdvance(ADVANCE)
+      .accountsPartial({
+        advance,
+        backer,
+        recipient: recipient.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc({ commitment: "confirmed" });
+    await airdrop(advance, ADVANCE.toNumber());
+    await program.methods
+      .routeAndRecoup()
+      .accountsPartial({ advance, backer, recipient: recipient.publicKey })
+      .rpc({ commitment: "confirmed" });
+
+    try {
+      await program.methods
+        .markDefault()
+        .accountsPartial({ advance, backer, recipient: recipient.publicKey })
+        .rpc({ commitment: "confirmed" });
+      assert.fail("expected AlreadyFullyRecouped");
+    } catch (e) {
+      if ((e as Error)?.name === "AssertionError") throw e;
+      assert.include(`${e}`, "AlreadyFullyRecouped");
+    }
+    await program.methods
+      .closeAdvance()
+      .accountsPartial({ advance, backer, recipient: recipient.publicKey })
+      .rpc({ commitment: "confirmed" });
+    assert.isNull(await provider.connection.getAccountInfo(advance));
+  });
+
   it("rejects an advance below the minimum", async () => {
     const recipient = Keypair.generate();
     const [advance] = advancePda(

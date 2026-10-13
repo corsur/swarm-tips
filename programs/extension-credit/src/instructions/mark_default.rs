@@ -5,9 +5,11 @@ use crate::events::AdvanceDefaulted;
 use crate::state::Advance;
 use crate::transfers::transfer_lamports;
 
-/// Backer marks a default: sweep any routed earnings to itself as partial
-/// recoupment, then close (the backer eats the unrecouped remainder; the rent
-/// returns to the backer). CEI: read → record (effect) → sweep (interaction) →
+/// Backer marks a default: sweep routed earnings to itself up to the
+/// outstanding principal, pay any excess to the recipient, then close (the
+/// backer eats the unrecouped remainder; the rent returns to the backer).
+/// Rejected once fully recouped — use close_advance. Capping the sweep stops a
+/// backer from front-running route_and_recoup to seize the recipient's surplus. CEI: read → record (effect) → sweep (interaction) →
 /// close at exit.
 pub fn mark_default(ctx: Context<MarkDefault>) -> Result<()> {
     let advance_ai = ctx.accounts.advance.to_account_info();
@@ -26,33 +28,46 @@ pub fn mark_default(ctx: Context<MarkDefault>) -> Result<()> {
         ExtensionCreditError::InvalidRecipient
     );
 
-    // Effects: record recoupment, capped at the principal. On default the backer
-    // sweeps ALL routed earnings (even beyond the advance) as a penalty, but
-    // `recouped_lamports` is the principal-recoupment counter and must never
-    // exceed `advance_lamports` — otherwise the `total_recouped` it feeds into
-    // the event over-reports. The true swept amount is `swept_to_backer` below.
+    let outstanding = ctx.accounts.advance.outstanding()?;
+    require!(outstanding > 0, ExtensionCreditError::AlreadyFullyRecouped);
+
+    // Effects: record recoupment, capped at the principal outstanding.
+    // Backer sweeps up to outstanding debt; any excess belongs to the recipient.
+    let to_backer = available.min(outstanding);
+    let to_recipient = available
+        .checked_sub(to_backer)
+        .ok_or(ExtensionCreditError::ArithmeticOverflow)?;
+
     let total_recouped = {
         let advance = &mut ctx.accounts.advance;
         advance.recouped_lamports = advance
             .recouped_lamports
-            .saturating_add(available)
+            .saturating_add(to_backer)
             .min(advance.advance_lamports);
         advance.recouped_lamports
     };
 
-    // Interactions: sweep earnings to the backer; rent returns via `close`.
-    if available > 0 {
+    // Interactions: sweep backer's recoupment to backer, remainder to recipient;
+    // rent returns to backer via `close`.
+    if to_backer > 0 {
         transfer_lamports(
             &advance_ai,
             &ctx.accounts.backer.to_account_info(),
-            available,
+            to_backer,
+        )?;
+    }
+    if to_recipient > 0 {
+        transfer_lamports(
+            &advance_ai,
+            &ctx.accounts.recipient.to_account_info(),
+            to_recipient,
         )?;
     }
 
     emit!(AdvanceDefaulted {
         backer,
         recipient,
-        swept_to_backer: available,
+        swept_to_backer: to_backer,
         total_recouped,
         advance_lamports,
     });
@@ -71,5 +86,7 @@ pub struct MarkDefault<'info> {
     #[account(mut)]
     pub backer: Signer<'info>,
     /// CHECK: used to derive the PDA seed; bound to advance.recipient.
+    /// Writable: receives any routed earnings beyond the outstanding principal.
+    #[account(mut)]
     pub recipient: UncheckedAccount<'info>,
 }

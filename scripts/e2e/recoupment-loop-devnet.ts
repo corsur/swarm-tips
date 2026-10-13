@@ -293,18 +293,38 @@ async function main(): Promise<void> {
     existingAdvance.owner.equals(credit.programId) &&
     existingAdvance.lamports > 0
   ) {
-    console.log(
-      "  [cleanup] pre-existing advance found — mark_default to clear it"
-    );
-    await credit.methods
-      .markDefault()
-      .accountsPartial({
-        advance,
-        backer: root.publicKey,
-        recipient: agent.publicKey,
-      })
-      .signers([root])
-      .rpc({ commitment: "confirmed" });
+    const acct = await credit.account.advance.fetch(advance);
+    const fullyRecouped = acct.recoupedLamports.gte(acct.advanceLamports);
+    const accts = {
+      advance,
+      backer: root.publicKey,
+      recipient: agent.publicKey,
+    };
+    if (fullyRecouped) {
+      // mark_default rejects a fully-recouped advance (AlreadyFullyRecouped):
+      // distribute anything routed, then close normally.
+      console.log(
+        "  [cleanup] pre-existing fully-recouped advance — route + close"
+      );
+      await credit.methods
+        .routeAndRecoup()
+        .accountsPartial(accts)
+        .rpc({ commitment: "confirmed" });
+      await credit.methods
+        .closeAdvance()
+        .accountsPartial(accts)
+        .signers([root])
+        .rpc({ commitment: "confirmed" });
+    } else {
+      console.log(
+        "  [cleanup] pre-existing advance found — mark_default to clear it"
+      );
+      await credit.methods
+        .markDefault()
+        .accountsPartial(accts)
+        .signers([root])
+        .rpc({ commitment: "confirmed" });
+    }
     await waitAccountsClosed(connection, [advance]);
   }
 

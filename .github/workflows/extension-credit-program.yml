@@ -30,6 +30,19 @@ on:
           - mainnet
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      program: ${{ steps.filter.outputs.program }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            program:
+              - 'programs/extension-credit/**'
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -87,8 +100,14 @@ jobs:
         run: pkill -f solana-test-validator || true
 
   deploy-devnet:
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'
-    needs: test
+    # Staged pipeline: test -> devnet -> mainnet, automatic on push to main when
+    # the program changed (mainnet allowlist: .github/mainnet-auto-deploy.yml).
+    if: >-
+      needs.test.result == 'success' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        needs.changes.outputs.program == 'true') ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'))
+    needs: [test, changes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,6 +134,9 @@ jobs:
       - name: Build program
         run: anchor build -p extension-credit
 
+      - name: Extend programdata if the new build is larger
+        run: bash scripts/ensure-programdata-len.sh Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh target/deploy/extension_credit.so https://api.devnet.solana.com
+
       - name: Deploy to devnet
         # `--program-id <keypair>` (not a bare pubkey): the program moved to a new
         # address (the original devnet key was never CI-managed and is gone), so
@@ -134,15 +156,24 @@ jobs:
     # mainnet job: reads the PREMIUM RPC from GCP Secret Manager via Workload
     # Identity and FAILS LOUD if the read/deploy fails — never falls back to
     # the flaky public api.mainnet-beta (the a685cdf silent-failure class).
+    # Now automatic on push (after devnet succeeds), plus manual dispatch.
     if: >-
-      github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'
-    needs: test
+      always() &&
+      needs.test.result == 'success' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        needs.changes.outputs.program == 'true' &&
+        needs.deploy-devnet.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'))
+    environment: mainnet
+    needs: [test, changes, deploy-devnet]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write # Workload Identity Federation for the GCP secret read below
     steps:
       - uses: actions/checkout@v4
+      - name: Mainnet allowlist guard
+        run: bash scripts/check-mainnet-allowlist.sh Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: google-github-actions/auth@v2
@@ -174,15 +205,35 @@ jobs:
       - name: Close orphaned buffer accounts
         run: solana program close --buffers --url mainnet-beta --keypair ~/.config/solana/id.json || true
 
-      - name: Deploy extension-credit to mainnet
+      - name: Read premium mainnet RPC
         run: |
           MAINNET_RPC="$(gcloud secrets versions access latest --secret=solana-rpc-url-mainnet)"
           if [ -z "$MAINNET_RPC" ]; then
             echo "::error::could not read solana-rpc-url-mainnet from Secret Manager" >&2
             exit 1
           fi
+          echo "::add-mask::$MAINNET_RPC"
+          echo "MAINNET_RPC=$MAINNET_RPC" >> "$GITHUB_ENV"
+
+      - name: Extend programdata if the new build is larger
+        run: bash scripts/ensure-programdata-len.sh Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh target/deploy/extension_credit.so "$MAINNET_RPC"
+
+      - name: Deploy extension-credit to mainnet
+        run: |
           solana program deploy \
             --url "$MAINNET_RPC" \
             --upgrade-authority ~/.config/solana/id.json \
             --program-id target/deploy/extension_credit-keypair.json \
             target/deploy/extension_credit.so
+
+      - name: Close buffers left by a failed deploy
+        if: failure()
+        run: solana program close --buffers --url "$MAINNET_RPC" --keypair ~/.config/solana/id.json || true
+
+      - name: Verify upgrade authority (mainnet)
+        run: |
+          bash scripts/check-upgrade-authority.sh \
+            --cluster mainnet-beta \
+            --program-id Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh
+        env:
+          EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
