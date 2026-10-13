@@ -26,16 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm, not npm: the root package.json has `workspace:*` deps that npm
+      # rejects (EUNSUPPORTEDPROTOCOL) — that broke this check on 2026-10-12.
+      # pnpm version comes from package.json `packageManager`.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-
-      # Read-only preflight deps. --legacy-peer-deps because the repo's root
-      # package.json pins a dev anchor-bankrun whose anchor ^0.30 peer conflicts
-      # with the anchor ^0.32 we want — harmless here (bankrun is unused). The
-      # IDL (target/idl/shillbot.json) is committed, so no build is needed.
+          cache: 'pnpm'
       - name: Install preflight deps
-        run: npm install --no-save --legacy-peer-deps @coral-xyz/anchor@^0.32.1 @solana/web3.js@^1.98.4 tsx
+        run: pnpm install --frozen-lockfile
 
       - name: Run mainnet preflight (no spend, no secrets)
-        run: npx tsx scripts/ops/mainnet-smoke.ts
+        run: pnpm dlx tsx scripts/ops/mainnet-smoke.ts
