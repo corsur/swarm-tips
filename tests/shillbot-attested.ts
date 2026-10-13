@@ -491,7 +491,7 @@ describe("shillbot-attested (bankrun)", () => {
   });
 
   describe("quality-threshold guard", () => {
-    it("fails loud when quality_threshold == MAX_SCORE", async () => {
+    it("update_params rejects quality_threshold == MAX_SCORE", async () => {
       const setParams = (threshold: BN) =>
         program.methods
           .updateParams(
@@ -520,15 +520,15 @@ describe("shillbot-attested (bankrun)", () => {
           .signers([authority])
           .rpc();
 
-      await setParams(new BN(MAX_SCORE));
+      // update_params now rejects threshold >= MAX_SCORE, so the state the
+      // verify-time QualityThresholdTooHighForBinary guard protects against
+      // is unreachable; that guard remains as defense in depth.
+      await expectError(
+        setParams(new BN(MAX_SCORE)),
+        /QualityThresholdBoundsExceeded/
+      );
       const { taskPda, taskId } = await createTask();
       await claimAndSubmit(taskPda);
-      await expectError(
-        verifyAttested(taskPda, taskId, MAX_SCORE, authority),
-        /QualityThresholdTooHighForBinary/
-      );
-      await setParams(QUALITY_THRESHOLD);
-      // Verifies fine once the parameter is sane again.
       await verifyAttested(taskPda, taskId, MAX_SCORE, authority);
     });
   });
