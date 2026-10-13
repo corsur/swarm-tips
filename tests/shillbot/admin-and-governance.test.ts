@@ -256,6 +256,37 @@ describe("shillbot - admin-and-governance", () => {
         assert.include(e.toString(), "QualityThresholdBoundsExceeded");
       }
     });
+
+    it("rejects threshold == MAX_SCORE (score_range must stay > 0)", async () => {
+      try {
+        await program.methods
+          .updateParams(
+            PROTOCOL_FEE_BPS,
+            new BN(MAX_SCORE),
+            new BN(86_400),
+            new BN(1_209_600),
+            new BN(604_800),
+            new BN(86_400),
+            5,
+            2,
+            5_000,
+            false,
+            0,
+            new BN(3600),
+            10,
+            new BN(604_800) // dispute_resolution_window_seconds (7d)
+          )
+          .accountsPartial({
+            globalState: globalPda,
+            authority: authority.publicKey,
+          })
+          .rpc();
+        assert.fail("Expected QualityThresholdBoundsExceeded error");
+      } catch (e: any) {
+        if (e?.name === "AssertionError") throw e;
+        assert.include(e.toString(), "QualityThresholdBoundsExceeded");
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------
