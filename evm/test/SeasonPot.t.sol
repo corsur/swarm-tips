@@ -239,6 +239,29 @@ contract SeasonPotTest is Test {
         pot.sweep(1);
     }
 
+    /// Audit fix: accrued-but-never-promised wei (accruedWei - prizeWei) was
+    /// stranded forever — sweep only ever took remainingWei. It now takes both,
+    /// exactly once.
+    function test_sweepAlsoRecoversUnallocatedSurplus_once() public {
+        pot.startSeason(1);
+        _play(alice, 5);
+        bytes32 leafA = pot.leafFor(alice, 1 ether);
+        vm.warp(block.timestamp + 366 days);
+        pot.accrue(5 ether); // accrued 5
+        pot.finalizeSeason(1, _tree(leafA, leafA), 3 ether); // promised 3 → 2 unallocated
+
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leafA;
+        vm.prank(alice);
+        pot.claim(1, 1 ether, proof); // remaining 2
+
+        vm.warp(block.timestamp + 91 days);
+        assertEq(pot.sweep(1), 4 ether, "unclaimed remainder (2) + unallocated surplus (2)");
+
+        vm.expectRevert(SeasonPot.NothingToClaim.selector);
+        pot.sweep(1);
+    }
+
     // ----- cross-language merkle format -------------------------------------
 
     /// The leaf AND node format must match what the Solana-format finalizer
