@@ -21,11 +21,11 @@ RUN cargo test --release -p mcp-server -p listings-scraper -p shillbot-chain
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 curl && rm -rf /var/lib/apt/lists/*
-# Install Node.js 22 LTS for the unified-client Switchboard subprocess
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+# Install current Node.js LTS for the unified-client Switchboard subprocess
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
-RUN npm install -g tsx pnpm@10.32.1
+RUN npm install -g tsx
 RUN useradd -r -m -s /bin/false appuser
 COPY --from=test /app/target/release/mcp-server /usr/local/bin/mcp-server
 # listings-scraper is invoked as a subprocess by mcp-server's
@@ -36,7 +36,9 @@ COPY --from=test /app/target/release/listings-scraper /usr/local/bin/listings-sc
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml /home/appuser/
 COPY sdk/client /home/appuser/sdk/client
 COPY services/mcp-server/scripts /home/appuser/services/mcp-server/scripts
-RUN cd /home/appuser && pnpm install --frozen-lockfile \
+# pnpm version comes from package.json's packageManager (single source).
+RUN cd /home/appuser && npm install -g "$(node -p "require('./package.json').packageManager")" \
+    && pnpm install --frozen-lockfile \
     && pnpm --filter @swarm-tips/client build \
     && chown -R appuser:appuser /home/appuser
 ENV BUILD_VERIFY_SCRIPT=/home/appuser/services/mcp-server/scripts/build-verify-client.ts

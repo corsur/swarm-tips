@@ -1,3 +1,9 @@
 packages:
   - sdk/client
   - services/mcp-server/scripts
+allowBuilds:
+  bufferutil: false
+  esbuild: false
+  keccak: false
+  protobufjs: false
+  utf-8-validate: false
