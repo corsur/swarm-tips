@@ -1,0 +1,9 @@
+{
+  "schema": "swarm.lean-challenge/v1",
+  "statement_sha256": "f94f44770ee01f0dc0f8259780f046f904af326468924e0440ce8a9776cd85be",
+  "policy_version": 4,
+  "environment_id": "sha256:2dbb38af494fbd820a4920b5ed36fb7834ab6e3c551f77f535a6f0a73fdb2a43",
+  "dependency_bundle_id": "sha256:7c10f82832723ec89984192332f1483c83853dd15e300da71e8c03b6389bc79a",
+  "reuse_license": "Apache-2.0",
+  "reusable": true
+}
