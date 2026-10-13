@@ -25,6 +25,8 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { leanVerdict } from "../harness/lean-verdict";
 import { homedir } from "os";
+import { createPrivateKey, sign as cryptoSign } from "node:crypto";
+import { utils } from "@coral-xyz/anchor";
 import {
   Connection,
   Keypair,
@@ -37,7 +39,12 @@ import {
 } from "@solana/web3.js";
 
 const API_BASE = process.env.SHILLBOT_API ?? "https://api.shillbot.org";
-const RPC = process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
+const RPC =
+  process.env.SOLANA_RPC_URL ??
+  process.env.DEVNET_RPC ??
+  process.env.E2E_SOLANA_RPC_URL ??
+  process.env.RPC_URL ??
+  "https://api.devnet.solana.com";
 const WORKER_WALLET = "GCEdpAHSE5s4NNgBY77TRfvdKmpLjPc16QNHj9uZbThU";
 const LEANPROOF_PLATFORM = 10;
 // Default is trivially-true (ladder `by trivial` solves it). Override with a
@@ -106,6 +113,43 @@ function loadOrCreateClient(): Keypair {
   return kp;
 }
 
+function signEd25519Nonce(secretKey: Uint8Array, nonce: string): string {
+  const secret = Buffer.from(secretKey).subarray(0, 32);
+  const derPrivPrefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  const privKey = createPrivateKey({
+    key: Buffer.concat([derPrivPrefix, secret]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const sig = cryptoSign(null, Buffer.from(nonce, "utf8"), privKey);
+  return utils.bytes.bs58.encode(sig);
+}
+
+const tokenCache = new Map<string, string>();
+async function getAuthToken(wallet: Keypair): Promise<string> {
+  const pubkey = wallet.publicKey.toBase58();
+  if (tokenCache.has(pubkey)) return tokenCache.get(pubkey)!;
+
+  const challengeRes = await fetch("https://api.coordination.game/auth/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wallet: pubkey }),
+  });
+  if (!challengeRes.ok) throw new Error(`auth challenge failed: ${await challengeRes.text()}`);
+  const { nonce } = (await challengeRes.json()) as { nonce: string };
+
+  const signature = signEd25519Nonce(wallet.secretKey, nonce);
+  const verifyRes = await fetch("https://api.coordination.game/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wallet: pubkey, nonce, signature }),
+  });
+  if (!verifyRes.ok) throw new Error(`auth verify failed: ${await verifyRes.text()}`);
+  const { token } = (await verifyRes.json()) as { token: string };
+  tokenCache.set(pubkey, token);
+  return token;
+}
+
 async function main(): Promise<void> {
   const conn = new Connection(RPC, "confirmed");
   const funder = Keypair.fromSecretKey(
@@ -115,6 +159,7 @@ async function main(): Promise<void> {
   );
   const client = loadOrCreateClient();
   const clientPk = client.publicKey.toBase58();
+  const clientToken = await getAuthToken(client);
   console.log(`external client: ${clientPk}`);
   console.log(`worker wallet:   ${WORKER_WALLET}`);
 
@@ -137,7 +182,7 @@ async function main(): Promise<void> {
   }
 
   // 1) LeanProof campaign (statement_lean set) as the external client.
-  const camp = await api("POST", `/campaigns?network=devnet`, clientPk, {
+  const camp = await api("POST", `/campaigns?network=devnet`, clientToken, {
     brief: {
       topic: "autonomous worker lean-proof e2e",
       brand_voice: "precise",
@@ -156,7 +201,7 @@ async function main(): Promise<void> {
   const fund = await api(
     "POST",
     `/campaigns/${campaignId}/fund?network=devnet`,
-    clientPk,
+    clientToken,
     {
       amount_lamports: BUDGET_LAMPORTS,
     }
@@ -167,7 +212,7 @@ async function main(): Promise<void> {
     conn,
     signBase64(fund.transaction as string, client)
   );
-  await api("POST", `/tasks/${taskId}/confirm?network=devnet`, clientPk, {
+  await api("POST", `/tasks/${taskId}/confirm?network=devnet`, clientToken, {
     tx_signature: sig,
     action: "create",
     ...(taskPda ? { task_pda: taskPda } : {}),
@@ -181,7 +226,7 @@ async function main(): Promise<void> {
   let last = "";
   let task: Record<string, unknown> = {};
   while (Date.now() < deadline) {
-    task = await api("GET", `/tasks/${taskId}?network=devnet`, clientPk);
+    task = await api("GET", `/tasks/${taskId}?network=devnet`, clientToken);
     const state = String(task.state ?? "?");
     if (state !== last) {
       console.log(
@@ -240,7 +285,7 @@ async function main(): Promise<void> {
   const verifyDeadline = Date.now() + 8 * 60 * 1000;
   let verdict = leanVerdict(task as never);
   while (Date.now() < verifyDeadline && verdict !== "accepted") {
-    task = await api("GET", `/tasks/${taskId}?network=devnet`, clientPk);
+    task = await api("GET", `/tasks/${taskId}?network=devnet`, clientToken);
     const s = String(task.state ?? "?");
     if (s !== last) {
       console.log(`  state -> ${s}`);

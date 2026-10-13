@@ -36,7 +36,8 @@
  *       --secret=solana-rpc-url-devnet --project coordination-game-prod)" \
  *   npx tsx tests/live/shillbot-attester-v2-e2e-testnet.ts   (exit 0 = pass)
  */
-import { BN } from "@coral-xyz/anchor";
+import { createPrivateKey, sign as cryptoSign } from "node:crypto";
+import { BN, utils } from "@coral-xyz/anchor";
 import {
   Connection,
   Keypair,
@@ -85,6 +86,43 @@ const PASS_PROOF_URL = process.env.PASS_PROOF_URL ?? `${RAW_BASE}/v2-pass.lean`;
 const FAIL_PROOF_URL = process.env.FAIL_PROOF_URL ?? `${RAW_BASE}/v2-fail.lean`;
 
 // --- REST + signing helpers -------------------------------------------------
+
+function signEd25519Nonce(secretKey: Uint8Array, nonce: string): string {
+  const secret = Buffer.from(secretKey).subarray(0, 32);
+  const derPrivPrefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  const privKey = createPrivateKey({
+    key: Buffer.concat([derPrivPrefix, secret]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const sig = cryptoSign(null, Buffer.from(nonce, "utf8"), privKey);
+  return utils.bytes.bs58.encode(sig);
+}
+
+const tokenCache = new Map<string, string>();
+async function getAuthToken(wallet: Keypair): Promise<string> {
+  const pubkey = wallet.publicKey.toBase58();
+  if (tokenCache.has(pubkey)) return tokenCache.get(pubkey)!;
+
+  const challengeRes = await fetch("https://api.coordination.game/auth/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wallet: pubkey }),
+  });
+  if (!challengeRes.ok) throw new Error(`auth challenge failed: ${await challengeRes.text()}`);
+  const { nonce } = (await challengeRes.json()) as { nonce: string };
+
+  const signature = signEd25519Nonce(wallet.secretKey, nonce);
+  const verifyRes = await fetch("https://api.coordination.game/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wallet: pubkey, nonce, signature }),
+  });
+  if (!verifyRes.ok) throw new Error(`auth verify failed: ${await verifyRes.text()}`);
+  const { token } = (await verifyRes.json()) as { token: string };
+  tokenCache.set(pubkey, token);
+  return token;
+}
 
 async function api(
   method: string,
@@ -207,13 +245,13 @@ async function runLifecycle(
 ): Promise<void> {
   console.log(`\n=== ${label} ===`);
   const conn = h.connection;
-  const clientPk = h.authority.publicKey.toBase58();
-  const agentPk = h.agent.publicKey.toBase58();
+  const clientToken = await getAuthToken(h.authority);
+  const agentToken = await getAuthToken(h.agent);
 
   const fund = await api(
     "POST",
     `/campaigns/${campaignId}/fund?network=devnet`,
-    clientPk,
+    clientToken,
     { amount_lamports: Number(ESCROW.toString()) }
   );
   const taskId = fund.task_id as string;
@@ -221,7 +259,7 @@ async function runLifecycle(
   console.log(`  task_id=${taskId} task_pda=${taskPda}`);
   await buildSignConfirm(
     conn,
-    clientPk,
+    clientToken,
     h.authority,
     fund,
     taskId,
@@ -232,17 +270,17 @@ async function runLifecycle(
   const claim = await api(
     "POST",
     `/tasks/${taskId}/claim?network=devnet`,
-    agentPk
+    agentToken
   );
-  await buildSignConfirm(conn, agentPk, h.agent, claim, taskId, "claim");
+  await buildSignConfirm(conn, agentToken, h.agent, claim, taskId, "claim");
 
   const submit = await api(
     "POST",
     `/tasks/${taskId}/submit?network=devnet`,
-    agentPk,
+    agentToken,
     { content_id: proofUrl }
   );
-  await buildSignConfirm(conn, agentPk, h.agent, submit, taskId, "submit");
+  await buildSignConfirm(conn, agentToken, h.agent, submit, taskId, "submit");
   console.log(`  submitted content_id=${proofUrl}`);
 
   const taskKey = new PublicKey(taskPda);
@@ -336,10 +374,11 @@ async function main(): Promise<void> {
   await ensureFunded(h, h.agent.publicKey, 10_000_000);
 
   // One v2 (mathlib) LeanProof campaign — lean_policy = 2.
+  const clientToken = await getAuthToken(h.authority);
   const camp = await api(
     "POST",
     `/campaigns?network=devnet`,
-    h.authority.publicKey.toBase58(),
+    clientToken,
     {
       brief: {
         topic: "lean attester mathlib (policy v2) verification e2e",
@@ -360,7 +399,7 @@ async function main(): Promise<void> {
   const doc = await api(
     "GET",
     `/campaigns/${campaignId}?network=devnet`,
-    h.authority.publicKey.toBase58()
+    clientToken
   );
   chk.check(
     String(doc.policy_id ?? "").toLowerCase() === LEAN_POLICY_V2_ID,

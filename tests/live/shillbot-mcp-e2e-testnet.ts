@@ -20,6 +20,8 @@
  * NOT CI (real devnet, spends SOL, mutates marketplace state). Run manually:
  *   MCP_URL=https://mcp.swarm.tips npx tsx tests/live/shillbot-mcp-e2e-testnet.ts
  */
+import { createPrivateKey, sign as cryptoSign } from "node:crypto";
+import { utils } from "@coral-xyz/anchor";
 import { Keypair, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { readFileSync } from "fs";
 import { homedir } from "os";
@@ -67,6 +69,18 @@ function signBase64(unsigned: string, signer: Keypair): string {
     tx.partialSign(signer);
     return tx.serialize({ requireAllSignatures: false }).toString("base64");
   }
+}
+
+function signEd25519Nonce(secretKey: Uint8Array, nonce: string): string {
+  const secret = Buffer.from(secretKey).subarray(0, 32);
+  const derPrivPrefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  const privKey = createPrivateKey({
+    key: Buffer.concat([derPrivPrefix, secret]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const sig = cryptoSign(null, Buffer.from(nonce, "utf8"), privKey);
+  return utils.bytes.bs58.encode(sig);
 }
 
 interface TaskListItem {
@@ -118,8 +132,20 @@ async function main(): Promise<void> {
   check(true, "MCP session established over /mcp");
 
   // --- read path (always runs) ---
-  const reg = await mcp.call("register_wallet", { pubkey: wallet });
+  const reg = (await mcp.call("register_wallet", { pubkey: wallet })) as any;
   check(reg.status === "registered", "register_wallet: wallet registered");
+
+  // Authenticate session for private tools
+  let nonce = typeof reg.verify_nonce === "string" ? reg.verify_nonce : null;
+  if (!nonce) {
+    const challenge = (await mcp.call("agent_verify_wallet", {})) as any;
+    nonce = typeof challenge.nonce === "string" ? challenge.nonce : null;
+  }
+  if (nonce) {
+    const signature = signEd25519Nonce(agent.secretKey, nonce);
+    await mcp.call("agent_verify_wallet", { nonce, signature });
+    check(true, "agent_verify_wallet: wallet verified");
+  }
 
   const listed = (await mcp.call("shillbot_list_available_tasks", {
     network: "devnet",
