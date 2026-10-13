@@ -430,7 +430,7 @@ async function writeAndWait(
       ...(value !== undefined ? { value } : {}),
     })
   );
-  await env.pub.waitForTransactionReceipt({ hash });
+  await env.pub.waitForTransactionReceipt({ hash, timeout: 180_000, retryCount: 5 });
   return hash;
 }
 
@@ -457,7 +457,7 @@ async function createTaskViaEvent(
       value: ESCROW_WEI,
     })
   );
-  const rcpt = await env.pub.waitForTransactionReceipt({ hash });
+  const rcpt = await env.pub.waitForTransactionReceipt({ hash, timeout: 180_000, retryCount: 5 });
   env.txlog[`${cellName}/create`] = hash;
   const created = parseEventLogs({
     abi: ABI,
