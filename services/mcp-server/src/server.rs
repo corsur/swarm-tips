@@ -27,6 +27,8 @@ fn session_id_from_parts(parts: Option<&http::request::Parts>) -> Option<String>
         .headers
         .get(MCP_SESSION_ID_HEADER)
         .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
 }
 
@@ -72,6 +74,35 @@ fn provenance_from_parts(parts: Option<&http::request::Parts>) -> crate::inbox::
         client_ip: client_ip_from_parts(parts).unwrap_or_default(),
         user_agent: user_agent_from_parts(parts).unwrap_or_default(),
         session_id: session_id_from_parts(parts).unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod session_id_tests {
+    use super::{session_id_from_parts, MCP_SESSION_ID_HEADER};
+
+    fn parts_with(value: &str) -> http::request::Parts {
+        let (parts, ()) = http::Request::builder()
+            .header(MCP_SESSION_ID_HEADER, value)
+            .body(())
+            .expect("request builds")
+            .into_parts();
+        parts
+    }
+
+    #[test]
+    fn blank_or_whitespace_session_id_is_absent() {
+        assert_eq!(session_id_from_parts(Some(&parts_with(""))), None);
+        assert_eq!(session_id_from_parts(Some(&parts_with("   "))), None);
+        assert_eq!(session_id_from_parts(None), None);
+    }
+
+    #[test]
+    fn session_id_is_trimmed() {
+        assert_eq!(
+            session_id_from_parts(Some(&parts_with("  abc-123 "))),
+            Some("abc-123".to_string())
+        );
     }
 }
 

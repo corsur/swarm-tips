@@ -69,8 +69,12 @@ impl McpSessionBinding {
     /// when an agent calls `game_register_wallet` with a different pubkey
     /// in the same MCP session, which is a legitimate operation).
     pub async fn bind(&self, session_id: &str, wallet: &str) -> Result<()> {
-        assert!(!session_id.is_empty(), "session_id must not be empty");
-        assert!(!wallet.is_empty(), "wallet must not be empty");
+        if session_id.trim().is_empty() {
+            anyhow::bail!("session_id must not be empty");
+        }
+        if wallet.trim().is_empty() {
+            anyhow::bail!("wallet must not be empty");
+        }
 
         let now = chrono::Utc::now();
         let doc = McpHttpSessionDoc {
