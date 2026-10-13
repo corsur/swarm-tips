@@ -8,6 +8,7 @@ on:
       - 'tests/extension-registry.ts'
       - 'tsconfig.json'
       - 'package.json'
+      - 'pnpm-lock.yaml'
       - 'Anchor.toml'
       - '.github/workflows/extension-registry-program.yml'
   pull_request:
@@ -16,20 +17,48 @@ on:
       - 'tests/extension-registry.ts'
       - 'tsconfig.json'
       - 'package.json'
+      - 'pnpm-lock.yaml'
       - 'Anchor.toml'
       - '.github/workflows/extension-registry-program.yml'
   workflow_dispatch:
     inputs:
       target:
-        description: 'Deploy target cluster (mainnet requires explicitly selecting it)'
+        description: 'Verify only, or explicitly deploy to a cluster after tests pass'
         required: true
-        default: devnet
+        default: test
         type: choice
         options:
+          - test
           - devnet
           - mainnet
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # gh run list in deploy-base-sha.sh
+    outputs:
+      program: ${{ steps.filter.outputs.program }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Diff against the last fully successful push run (scripts/deploy-base-sha.sh).
+      - name: Diff base
+        id: base
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(bash scripts/deploy-base-sha.sh "$GITHUB_WORKFLOW" '${{ github.event.before }}')" >> "$GITHUB_OUTPUT"
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          base: ${{ steps.base.outputs.sha }}
+          filters: |
+            program:
+              - 'programs/extension-registry/**'
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -87,9 +116,18 @@ jobs:
         run: pkill -f solana-test-validator || true
 
   deploy-devnet:
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'
-    needs: test
+    # Staged pipeline: test -> devnet -> mainnet, automatic on push to main when
+    # the program changed (mainnet allowlist: .github/mainnet-auto-deploy.yml).
+    if: >-
+      needs.test.result == 'success' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        needs.changes.outputs.program == 'true') ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'))
+    needs: [test, changes]
     runs-on: ubuntu-latest
+    concurrency:
+      group: extension-registry-deploy-devnet
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -115,6 +153,12 @@ jobs:
       - name: Build program
         run: anchor build -p extension-registry
 
+      - name: Close orphaned buffer accounts
+        run: solana program close --buffers --url devnet --keypair ~/.config/solana/id.json || true
+
+      - name: Extend programdata if the new build is larger
+        run: bash scripts/ensure-programdata-len.sh H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j target/deploy/extension_registry.so https://api.devnet.solana.com
+
       - name: Deploy to devnet
         run: |
           solana program deploy \
@@ -123,17 +167,48 @@ jobs:
             --program-id H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j \
             target/deploy/extension_registry.so
 
+      - name: Close buffers left by a failed deploy
+        if: failure()
+        run: solana program close --buffers --url devnet --keypair ~/.config/solana/id.json || true
+
+      - name: Verify upgrade authority (devnet)
+        run: |
+          bash scripts/check-upgrade-authority.sh \
+            --cluster devnet \
+            --program-id H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j
+        env:
+          EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
+
   deploy-mainnet:
-    # Manual only — never auto-deploy to mainnet on push (real SOL churn +
-    # unreviewed-change risk). See MAINNET_DEPLOY.md.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'
+    # Automatic on push after devnet succeeds (allowlisted), plus dispatch.
+    # Premium RPC from GCP Secret Manager; fails loud, never the public RPC.
+    if: >-
+      always() &&
+      needs.test.result == 'success' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        needs.changes.outputs.program == 'true' &&
+        needs.deploy-devnet.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'))
     environment: mainnet
-    needs: test
+    needs: [test, changes, deploy-devnet]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation for the GCP secret read below
+    concurrency:
+      group: extension-registry-deploy-mainnet
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+      - name: Mainnet allowlist guard
+        run: bash scripts/check-mainnet-allowlist.sh H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
@@ -164,20 +239,38 @@ jobs:
       - name: Build program
         run: anchor build -p extension-registry
 
-      - name: Deploy to mainnet
-        # --program-id takes the KEYPAIR file: an initial deploy must sign
-        # with the program keypair (pubkey-only works only for upgrades).
+      - name: Read premium mainnet RPC
+        run: |
+          MAINNET_RPC="$(gcloud secrets versions access latest --secret=solana-rpc-url-mainnet)"
+          if [ -z "$MAINNET_RPC" ]; then
+            echo "::error::could not read solana-rpc-url-mainnet from Secret Manager" >&2
+            exit 1
+          fi
+          echo "::add-mask::$MAINNET_RPC"
+          echo "MAINNET_RPC=$MAINNET_RPC" >> "$GITHUB_ENV"
+
+      - name: Close orphaned buffer accounts
+        run: solana program close --buffers --url "$MAINNET_RPC" --keypair ~/.config/solana/id.json || true
+
+      - name: Extend programdata if the new build is larger
+        run: bash scripts/ensure-programdata-len.sh H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j target/deploy/extension_registry.so "$MAINNET_RPC"
+
+      - name: Deploy extension-registry to mainnet
         run: |
           solana program deploy \
-            --url https://api.mainnet-beta.solana.com \
+            --url "$MAINNET_RPC" \
             --upgrade-authority ~/.config/solana/id.json \
-            --program-id target/deploy/extension_registry-keypair.json \
+            --program-id H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j \
             target/deploy/extension_registry.so
 
+      - name: Close buffers left by a failed deploy
+        if: failure()
+        run: solana program close --buffers --url "$MAINNET_RPC" --keypair ~/.config/solana/id.json || true
+
       - name: Initialize GlobalState (idempotent)
-        run: npx tsx scripts/init-extension-registry.ts
+        run: pnpm dlx tsx scripts/init-extension-registry.ts
         env:
-          RPC_URL: https://api.mainnet-beta.solana.com
+          RPC_URL: ${{ env.MAINNET_RPC }}
 
       - name: Verify upgrade authority (mainnet)
         run: |

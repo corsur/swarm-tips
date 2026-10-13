@@ -55,13 +55,28 @@ on:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # gh run list in deploy-base-sha.sh
     outputs:
       program: ${{ steps.filter.outputs.program }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Diff against the last fully successful push run, not the previous
+      # push, so a program change whose pipeline failed still deploys once
+      # a later commit goes green (see scripts/deploy-base-sha.sh).
+      - name: Diff base
+        id: base
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(bash scripts/deploy-base-sha.sh "$GITHUB_WORKFLOW" '${{ github.event.before }}')" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          base: ${{ steps.base.outputs.sha }}
           filters: |
             program:
               - 'programs/coordination-game/**'
@@ -166,6 +181,10 @@ jobs:
        (github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'))
     needs: [test, changes]
     runs-on: ubuntu-latest
+    # Serialize deploys to a cluster; never cancel one mid-upload.
+    concurrency:
+      group: coordination-game-deploy-devnet
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -200,12 +219,11 @@ jobs:
         run: |
           mkdir -p target/deploy
           echo '${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}' > target/deploy/coordination_game-keypair.json
-          echo '${{ secrets.SHILLBOT_PROGRAM_KEYPAIR }}' > target/deploy/shillbot-keypair.json
 
-      - name: Build programs
-        run: |
-          anchor build -p coordination-game
-          anchor build -p shillbot
+      # Shillbot is deployed only by shillbot-program.yml. Deploying it here too
+      # raced that pipeline and could put a stale shillbot back on devnet.
+      - name: Build coordination game
+        run: anchor build -p coordination-game
 
       - name: Close orphaned buffer accounts
         run: solana program close --buffers --url devnet --keypair ~/.config/solana/id.json || true
@@ -213,14 +231,11 @@ jobs:
       - name: Close IDL accounts (required when IDL size increases)
         run: |
           anchor idl close --provider.cluster devnet 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P || true
-          anchor idl close --provider.cluster devnet 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi || true
 
-      - name: Extend programdata if the new builds are larger
-        run: |
-          bash scripts/ensure-programdata-len.sh 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P target/deploy/coordination_game.so https://api.devnet.solana.com
-          bash scripts/ensure-programdata-len.sh 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi target/deploy/shillbot.so https://api.devnet.solana.com
+      - name: Extend programdata if the new build is larger
+        run: bash scripts/ensure-programdata-len.sh 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P target/deploy/coordination_game.so https://api.devnet.solana.com
 
-      - name: Deploy both programs to devnet
+      - name: Deploy coordination game to devnet
         # Use `solana program deploy` directly instead of `anchor deploy`.
         # The latter bundles bytecode upload with an idl upgrade that fails
         # on devnet with 0xbc4 / AccountNotInitialized when the on-chain IDL
@@ -237,11 +252,6 @@ jobs:
             --upgrade-authority ~/.config/solana/id.json \
             --program-id 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P \
             target/deploy/coordination_game.so
-          solana program deploy \
-            --url https://api.devnet.solana.com \
-            --upgrade-authority ~/.config/solana/id.json \
-            --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi \
-            target/deploy/shillbot.so
 
       # Same reason as the mainnet job: a struct change is not live until its
       # migration has run, and separating them is what broke mainnet. Idempotent.
@@ -269,13 +279,6 @@ jobs:
             --filepath target/idl/coordination_game.json \
             2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P) || \
           echo "coordination_game IDL update failed; bytecode is the load-bearing step"
-          (anchor idl init --provider.cluster devnet \
-            --filepath target/idl/shillbot.json \
-            2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi || \
-           anchor idl upgrade --provider.cluster devnet \
-            --filepath target/idl/shillbot.json \
-            2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi) || \
-          echo "shillbot IDL update failed; bytecode is the load-bearing step"
 
       - name: Verify program parity across mainnet and devnet
         # Catches the same drift that caused this CI fix in the first place.
@@ -287,9 +290,6 @@ jobs:
           bash scripts/check-upgrade-authority.sh \
             --cluster devnet \
             --program-id 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P
-          bash scripts/check-upgrade-authority.sh \
-            --cluster devnet \
-            --program-id 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi
         env:
           EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
 
@@ -316,8 +316,13 @@ jobs:
     permissions:
       contents: read
       id-token: write # Workload Identity Federation for the premium RPC secret read
+    concurrency:
+      group: coordination-game-deploy-mainnet
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+      - name: Mainnet allowlist guard
+        run: bash scripts/check-mainnet-allowlist.sh 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P
       - uses: dtolnay/rust-toolchain@stable
 
       # Premium mainnet RPC lives in GCP Secret Manager (`solana-rpc-url-mainnet`)

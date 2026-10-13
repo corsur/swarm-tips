@@ -1,27 +1,24 @@
 name: Auto-upgrade EVM Testnet
 
-# Ship a CoordinationGameV4 logic change to Base Sepolia automatically, so the
-# testnet contract is never behind main.
+# Ship a CoordinationGameV4 logic change automatically: Base Sepolia first,
+# then the allowlisted MAINNET proxies (Base, then Ethereum), so no deployed
+# proxy is ever behind main. The workflow name and file are kept for history.
 #
-# WHY THIS IS SAFE HERE AND NOT FOR A FRESH DEPLOY. `_deploy-evm.yml` is
-# manual-only because deploying a NEW contract mints a new address, orphans the
-# prior state, and forces every consumer (chain-registry, game-api, mcp-server,
-# the frontend, the e2e harness) to be re-pointed. An UPGRADE is the opposite:
-# `upgradeToAndCall` keeps the SAME ERC1967 proxy address, touches no storage,
-# and re-points nothing. There is nothing left for a human to decide, and a
-# human deciding it is precisely how the harness spent a run reading v3 while
-# the app played v4.
+# WHY THIS IS SAFE HERE AND NOT FOR A FRESH DEPLOY. `_deploy-evm.yml` fresh
+# deploys stay manual because a NEW contract mints a new address, orphans the
+# prior state, and forces every consumer to be re-pointed. An UPGRADE is the
+# opposite: `upgradeToAndCall(impl, "")` keeps the SAME ERC1967 proxy address,
+# touches no storage (layout pinned by CoordinationGameV4Layout.t.sol), and
+# re-points nothing.
 #
-# MAINNET IS STILL MANUAL, and deliberately so: this workflow passes no mainnet
-# secret, so nothing here can reach a contract holding real funds. Mainnet
-# upgrades go through deploy-evm-mainnet.yml, which now offers
-# `coordinationv4-upgrade` and resolves V4_PROXY_BASE / V4_PROXY_ETHEREUM per
-# network — a human still has to dispatch it and type DEPLOY-MAINNET.
+# MAINNET (upgrade-mainnet): runs only after the Base Sepolia upgrade
+# succeeded, only for proxies listed in .github/mainnet-auto-deploy.yml, with a
+# keyed RPC from GCP Secret Manager. Each network: chain-id check, owner ==
+# deployer check, simulated upgrade on the live state, broadcast, then verify
+# the ERC1967 implementation slot moved and owner/currentSeasonId are unchanged.
 #
 # GATED ON TESTS. It triggers on the EVM Contracts run COMPLETING SUCCESSFULLY,
-# not on the push, so a red forge suite can never reach the chain. Chaining on
-# `workflow_run` rather than duplicating the test steps keeps one definition of
-# "the contracts are good".
+# not on the push, so a red forge suite can never reach the chain.
 
 on:
   workflow_run:
@@ -35,6 +32,9 @@ on:
 jobs:
   guard:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # gh run list in deploy-base-sha.sh
     # `workflow_run` fires on failure and cancellation too. Without this, a red
     # forge suite would still broadcast an upgrade.
     if: >-
@@ -51,11 +51,13 @@ jobs:
           # then describe the wrong pair, and this workflow exists to stop a
           # human reading one version while the chain runs another.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-          # Need the parent commit to diff against; a shallow clone has no base.
-          fetch-depth: 2
+          # Full history: the diff base is the last successful run's head.
+          fetch-depth: 0
 
       - name: Did the upgradeable contract's own sources change?
         id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -67,7 +69,10 @@ jobs:
           # changes, none of which alter deployed bytecode. Broadcasting an
           # upgrade for those spends gas to install identical logic and adds a
           # pointless proxy event, so scope to what actually compiles into V4.
-          if git diff --name-only HEAD^ HEAD \
+          # Diff against the last fully successful run (not HEAD^) so a change
+          # whose upgrade failed is retried by the next green commit.
+          BASE="$(bash scripts/deploy-base-sha.sh auto-upgrade-evm-testnet.yml HEAD^ workflow_run)"
+          if git diff --name-only "$BASE" HEAD \
              | grep -Eq '^evm/(src/CoordinationGameV4\.sol|src/base/|src/CertLib\.sol|src/SeasonPot\.sol|script/UpgradeCoordinationGameV4\.s\.sol)'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
@@ -84,5 +89,100 @@ jobs:
       network: base_sepolia
     secrets:
       EVM_TESTNET_DEPLOYER: ${{ secrets.EVM_TESTNET_DEPLOYER }}
-      # Mainnet secrets deliberately NOT passed — this entry point is
-      # testnet-only, same rule as deploy-evm-testnet.yml.
+      # Mainnet secrets are NOT passed to the testnet leg.
+
+  upgrade-mainnet:
+    # Base Sepolia succeeded on the same commit -> upgrade the mainnet proxies,
+    # Base first, then Ethereum (max-parallel 1, fail-fast).
+    needs: [guard, upgrade]
+    if: needs.guard.outputs.changed == 'true' && needs.upgrade.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation for the RPC secret read
+    concurrency:
+      group: evm-mainnet-upgrade-${{ matrix.network }}
+      cancel-in-progress: false
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        include:
+          - network: base
+            proxy_var: V4_PROXY_BASE
+            rpc_secret: base-mainnet-rpc-url
+            chain_id: '8453'
+          - network: ethereum
+            proxy_var: V4_PROXY_ETHEREUM
+            rpc_secret: eth-mainnet-rpc-url
+            chain_id: '1'
+    defaults:
+      run:
+        working-directory: evm
+    env:
+      V4_PROXY: ${{ vars[matrix.proxy_var] }}
+      # Same funded owner key as the testnet leg (see deploy-evm-mainnet.yml);
+      # a dedicated EVM_MAINNET_DEPLOYER wins if one is ever configured.
+      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+      IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          submodules: recursive
+
+      - name: Mainnet allowlist guard
+        run: bash ../scripts/check-mainnet-allowlist.sh ${{ matrix.proxy_var }}
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Read keyed RPC and check chain id
+        run: |
+          set -euo pipefail
+          RPC="$(gcloud secrets versions access latest --secret=${{ matrix.rpc_secret }})"
+          test -n "$RPC" || { echo "::error::${{ matrix.rpc_secret }} is empty"; exit 1; }
+          echo "::add-mask::$RPC"
+          echo "RPC=$RPC" >> "$GITHUB_ENV"
+          got="$(cast chain-id --rpc-url "$RPC")"
+          test "$got" = "${{ matrix.chain_id }}" || { echo "::error::chain id $got != ${{ matrix.chain_id }}"; exit 1; }
+
+      - name: Pre-flight (proxy, owner, snapshot)
+        run: |
+          set -euo pipefail
+          test -n "$V4_PROXY" || { echo "::error::${{ matrix.proxy_var }} repo variable is unset"; exit 1; }
+          test "$(cast codesize "$V4_PROXY" --rpc-url "$RPC")" -gt 0 || { echo "::error::no code at $V4_PROXY"; exit 1; }
+          DEPLOYER="$(cast wallet address --private-key "$DEPLOYER_PK")"
+          OWNER="$(cast call "$V4_PROXY" 'owner()(address)' --rpc-url "$RPC")"
+          [ "${OWNER,,}" = "${DEPLOYER,,}" ] || { echo "::error::proxy owner $OWNER != deployer $DEPLOYER"; exit 1; }
+          echo "OWNER_BEFORE=$OWNER" >> "$GITHUB_ENV"
+          echo "IMPL_BEFORE=$(cast storage "$V4_PROXY" "$IMPL_SLOT" --rpc-url "$RPC")" >> "$GITHUB_ENV"
+          echo "SEASON_BEFORE=$(cast call "$V4_PROXY" 'currentSeasonId()(uint256)' --rpc-url "$RPC")" >> "$GITHUB_ENV"
+          echo "deployer balance: $(cast balance "$DEPLOYER" --ether --rpc-url "$RPC") ETH"
+
+      - name: Simulate upgrade against live state (no broadcast)
+        run: forge script script/UpgradeCoordinationGameV4.s.sol --rpc-url "$RPC" --private-key "$DEPLOYER_PK"
+
+      - name: Broadcast upgrade
+        run: forge script script/UpgradeCoordinationGameV4.s.sol --rpc-url "$RPC" --private-key "$DEPLOYER_PK" --broadcast --slow
+
+      - name: Verify implementation moved and state is intact
+        run: |
+          set -euo pipefail
+          IMPL_AFTER="$(cast storage "$V4_PROXY" "$IMPL_SLOT" --rpc-url "$RPC")"
+          [ "$IMPL_AFTER" != "$IMPL_BEFORE" ] || { echo "::error::implementation slot unchanged"; exit 1; }
+          IMPL_ADDR="0x${IMPL_AFTER:26}"
+          test "$(cast codesize "$IMPL_ADDR" --rpc-url "$RPC")" -gt 0 || { echo "::error::no code at new impl $IMPL_ADDR"; exit 1; }
+          OWNER="$(cast call "$V4_PROXY" 'owner()(address)' --rpc-url "$RPC")"
+          [ "$OWNER" = "$OWNER_BEFORE" ] || { echo "::error::owner changed: $OWNER_BEFORE -> $OWNER"; exit 1; }
+          SEASON="$(cast call "$V4_PROXY" 'currentSeasonId()(uint256)' --rpc-url "$RPC")"
+          [ "$SEASON" = "$SEASON_BEFORE" ] || { echo "::error::currentSeasonId changed: $SEASON_BEFORE -> $SEASON"; exit 1; }
+          echo "${{ matrix.network }}: $V4_PROXY implementation ${IMPL_BEFORE:26} -> ${IMPL_AFTER:26}"

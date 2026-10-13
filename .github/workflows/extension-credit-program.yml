@@ -32,13 +32,28 @@ on:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # gh run list in deploy-base-sha.sh
     outputs:
       program: ${{ steps.filter.outputs.program }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Diff against the last fully successful push run, not the previous
+      # push, so a program change whose pipeline failed still deploys once
+      # a later commit goes green (see scripts/deploy-base-sha.sh).
+      - name: Diff base
+        id: base
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(bash scripts/deploy-base-sha.sh "$GITHUB_WORKFLOW" '${{ github.event.before }}')" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          base: ${{ steps.base.outputs.sha }}
           filters: |
             program:
               - 'programs/extension-credit/**'
@@ -109,6 +124,9 @@ jobs:
        (github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'))
     needs: [test, changes]
     runs-on: ubuntu-latest
+    concurrency:
+      group: extension-credit-deploy-devnet
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -170,6 +188,9 @@ jobs:
     permissions:
       contents: read
       id-token: write # Workload Identity Federation for the GCP secret read below
+    concurrency:
+      group: extension-credit-deploy-mainnet
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - name: Mainnet allowlist guard
@@ -202,9 +223,6 @@ jobs:
       - name: Build program
         run: anchor build -p extension-credit
 
-      - name: Close orphaned buffer accounts
-        run: solana program close --buffers --url mainnet-beta --keypair ~/.config/solana/id.json || true
-
       - name: Read premium mainnet RPC
         run: |
           MAINNET_RPC="$(gcloud secrets versions access latest --secret=solana-rpc-url-mainnet)"
@@ -214,6 +232,9 @@ jobs:
           fi
           echo "::add-mask::$MAINNET_RPC"
           echo "MAINNET_RPC=$MAINNET_RPC" >> "$GITHUB_ENV"
+
+      - name: Close orphaned buffer accounts
+        run: solana program close --buffers --url "$MAINNET_RPC" --keypair ~/.config/solana/id.json || true
 
       - name: Extend programdata if the new build is larger
         run: bash scripts/ensure-programdata-len.sh Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh target/deploy/extension_credit.so "$MAINNET_RPC"

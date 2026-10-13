@@ -10,5 +10,5 @@ solana:
   extension_credit: Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh # extension-credit-program.yml
   extension_registry: H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j # extension-registry-program.yml
 evm:
-  coordination_game_v4_base: V4_PROXY_BASE # eip155:8453, auto-upgrade-evm-testnet.yml (mainnet job)
-  coordination_game_v4_ethereum: V4_PROXY_ETHEREUM # eip155:1
+  coordination_game_v4_base: V4_PROXY_BASE # eip155:8453, auto-upgrade-evm-testnet.yml upgrade-mainnet
+  coordination_game_v4_ethereum: V4_PROXY_ETHEREUM # eip155:1, auto-upgrade-evm-testnet.yml upgrade-mainnet
