@@ -31,7 +31,7 @@ jobs:
       run:
         working-directory: evm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -56,7 +56,7 @@ jobs:
     # committed file still matches Rust — together they pin both encoders.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Verify cert vectors are current
@@ -73,7 +73,7 @@ jobs:
     # scaffolded mainnet entries (contract = None) are skipped until their deploy.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Foundry (cast)

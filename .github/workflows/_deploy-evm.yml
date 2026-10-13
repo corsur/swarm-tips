@@ -64,7 +64,7 @@ jobs:
       EVM_MAINNET_DEPLOYER: ${{ secrets.EVM_MAINNET_DEPLOYER }}
       EVM_MAINNET_RPC_URL: ${{ secrets.EVM_MAINNET_RPC_URL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 

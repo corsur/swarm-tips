@@ -41,7 +41,7 @@ jobs:
     outputs:
       program: ${{ steps.filter.outputs.program }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # Diff against the last fully successful push run (scripts/deploy-base-sha.sh).
@@ -51,7 +51,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: echo "sha=$(bash scripts/deploy-base-sha.sh "$GITHUB_WORKFLOW" '${{ github.event.before }}')" >> "$GITHUB_OUTPUT"
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           base: ${{ steps.base.outputs.sha }}
@@ -62,7 +62,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -71,17 +71,17 @@ jobs:
 
       - name: Install Solana CLI
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/v4.2.2/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v4.3.0/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
       - name: Install Anchor CLI
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: lts/*
           cache: 'pnpm'
 
       - run: pnpm install --frozen-lockfile
@@ -129,7 +129,7 @@ jobs:
       group: extension-registry-deploy-devnet
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -138,7 +138,7 @@ jobs:
 
       - name: Install Solana CLI
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/v4.2.2/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v4.3.0/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
       - name: Install Anchor CLI
@@ -199,33 +199,33 @@ jobs:
       group: extension-registry-deploy-mainnet
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Mainnet allowlist guard
         run: bash scripts/check-mainnet-allowlist.sh H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
 
       - name: Install Solana CLI
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/v4.2.2/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v4.3.0/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
       - name: Install Anchor CLI
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: lts/*
           cache: 'pnpm'
 
       - run: pnpm install --frozen-lockfile

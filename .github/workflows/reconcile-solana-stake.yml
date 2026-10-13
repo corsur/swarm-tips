@@ -66,12 +66,12 @@ jobs:
         cluster: ${{ fromJSON(github.event_name == 'push' && '["devnet","mainnet"]' || format('["{0}"]', github.event.inputs.cluster)) }}
     environment: ${{ (matrix.cluster == 'mainnet') && 'mainnet' || 'testnet' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: lts/*
           cache: 'pnpm' 
 
       # The IDL is a build artifact under target/ and is GITIGNORED, so it does

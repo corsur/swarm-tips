@@ -31,7 +31,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
@@ -67,7 +67,7 @@ jobs:
       - name: Independently check a second module using the first definition and theorem
         run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs ReusableConsumer proofs/SwarmProofs/.lake/consumer-audit SwarmProofs.Generated.Consumer
       - name: Retain declaration coverage evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: proof-declaration-coverage-${{ inputs.source_sha || github.sha }}
           path: |

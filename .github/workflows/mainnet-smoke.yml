@@ -24,15 +24,15 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # pnpm, not npm: the root package.json has `workspace:*` deps that npm
       # rejects (EUNSUPPORTEDPROTOCOL) — that broke this check on 2026-10-12.
       # pnpm version comes from package.json `packageManager`.
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: lts/*
           cache: 'pnpm'
       - name: Install preflight deps
         run: pnpm install --frozen-lockfile
