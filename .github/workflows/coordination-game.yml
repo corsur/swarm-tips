@@ -156,10 +156,15 @@ jobs:
         run: pkill -f solana-test-validator || true
 
   deploy-devnet:
-    # workflow_dispatch with target=devnet (the default). Never on push.
-    # Manual only — conserve the rate-limited devnet faucet. See MAINNET_DEPLOY.md.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'
-    needs: test
+    # Staged pipeline: test (bankrun + local validator) -> devnet -> mainnet.
+    # Runs automatically on push to main when the program changed (same shape
+    # as shillbot-program.yml), or on dispatch with target=devnet.
+    if: >-
+      needs.test.result == 'success' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        needs.changes.outputs.program == 'true') ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'devnet'))
+    needs: [test, changes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -209,6 +214,11 @@ jobs:
         run: |
           anchor idl close --provider.cluster devnet 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P || true
           anchor idl close --provider.cluster devnet 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi || true
+
+      - name: Extend programdata if the new builds are larger
+        run: |
+          bash scripts/ensure-programdata-len.sh 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P target/deploy/coordination_game.so https://api.devnet.solana.com
+          bash scripts/ensure-programdata-len.sh 2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi target/deploy/shillbot.so https://api.devnet.solana.com
 
       - name: Deploy both programs to devnet
         # Use `solana program deploy` directly instead of `anchor deploy`.
@@ -289,14 +299,19 @@ jobs:
     # `solana program deploy` against an existing program ID replaces the
     # bytecode in place, preserving the program address and every PDA's state.
     # A merge therefore upgrades; it never orphans accounts or funds.
-    # Gated on `needs: test`, so a red test suite blocks the upgrade.
+    # Gated on `needs: test` AND a successful devnet deploy on the push path,
+    # so a red test suite or a broken devnet deploy blocks the upgrade.
+    # `always()` lets the job evaluate when deploy-devnet is SKIPPED (the
+    # dispatch target=mainnet path).
     if: >-
+      always() &&
       needs.test.result == 'success' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-        needs.changes.outputs.program == 'true') ||
+        needs.changes.outputs.program == 'true' &&
+        needs.deploy-devnet.result == 'success') ||
        (github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'))
     environment: mainnet
-    needs: [test, changes]
+    needs: [test, changes, deploy-devnet]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -356,22 +371,8 @@ jobs:
         run: solana program close --buffers --url "$MAINNET_RPC" --keypair ~/.config/solana/id.json || true
 
       - name: Extend programdata if the new build is larger
-        # Root cause of the 2026-10-12 04:52Z failure: the new .so (928 KB) was
-        # larger than mainnet programdata (866 KB), so the deploy's first tx had
-        # to grow the account and failed simulation. Extend explicitly (with
-        # 10% headroom) as its own step so it is idempotent and visible.
-        run: |
-          set -euo pipefail
-          PROG=2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P
-          NEW=$(stat -c %s target/deploy/coordination_game.so)
-          CUR=$(solana program show "$PROG" --url "$MAINNET_RPC" --output json | jq -r .dataLen)
-          echo "new .so=$NEW bytes, programdata=$CUR bytes"
-          if [ "$NEW" -gt "$CUR" ]; then
-            ADD=$(( NEW - CUR + NEW / 10 ))
-            echo "extending programdata by $ADD bytes"
-            solana program extend "$PROG" "$ADD" --url "$MAINNET_RPC" \
-              --keypair ~/.config/solana/id.json
-          fi
+        # Root cause of the 2026-10-12 04:52Z failure — see the script header.
+        run: bash scripts/ensure-programdata-len.sh 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P target/deploy/coordination_game.so "$MAINNET_RPC"
 
       - name: Deploy coordination game to mainnet
         # `solana program deploy` (in-place upgrade) against the PREMIUM RPC,

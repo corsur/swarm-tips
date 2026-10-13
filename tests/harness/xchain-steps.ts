@@ -6,7 +6,12 @@
 // (cert build+sign, PDA derivation, status reads, claim-window math).
 
 import { BN } from "@coral-xyz/anchor";
-import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import {
+  ComputeBudgetProgram,
+  Keypair,
+  PublicKey,
+  SystemProgram,
+} from "@solana/web3.js";
 import {
   CertLeg,
   MatchLiveCert,
@@ -36,11 +41,14 @@ export const EVM_CHAIN_TAG = keccak256(
 /** Allowed cross-chain match status transitions. Terminal statuses map to []. */
 export const XCHAIN_GRAPH: TransitionGraph = {
   Funded: ["Locked", "Refunded"],
-  Locked: ["Claiming", "Settled"],
+  // Claiming is deliberately NOT refundable by timeout: a match with an open
+  // claim must settle through settle_xclaim (audit fix, mainnet 2026-10-12).
+  Locked: ["Claiming", "Settled", "RefundedTimeout"],
   Claiming: ["Claiming", "ClaimSettled"], // self-loop = supersede
   ClaimSettled: [],
   Settled: [],
   Refunded: [],
+  RefundedTimeout: [],
 };
 
 /** The three secp256k1 session keys a cross-chain match is co-signed by. */
@@ -429,4 +437,45 @@ export async function settleXclaim(
     await b.rpc();
   }
   assertLegalTransition(XCHAIN_GRAPH, "Claiming", "ClaimSettled");
+}
+
+/** Earliest unix time refund_xmatch_timeout accepts:
+ *  match_deadline + max_claim_window + 2*skew (strictly after). */
+export async function refundTimeoutOpensAt(
+  ctx: XchainCtx,
+  m: LockedMatch
+): Promise<number> {
+  const xm = await ctx.rt.program.account.xChainMatch.fetch(m.xmatchPda);
+  const pool = await ctx.rt.program.account.xPayoutPool.fetch(ctx.poolPda);
+  return (
+    Number(xm.matchDeadline) +
+    Number(pool.maxClaimWindowSecs) +
+    2 * Number(pool.skewMarginSecs)
+  );
+}
+
+/** refund_xmatch_timeout: Locked -> RefundedTimeout (flat stake refund). */
+export async function refundXmatchTimeout(
+  ctx: XchainCtx,
+  m: LockedMatch,
+  opts: { attempt?: number } = {}
+): Promise<void> {
+  const xm = await ctx.rt.program.account.xChainMatch.fetch(m.xmatchPda);
+  const from = xchainStatusLabel(xm.status as Record<string, unknown>);
+  await ctx.rt.program.methods
+    .refundXmatchTimeout()
+    .accountsPartial({
+      xmatch: m.xmatchPda,
+      pool: ctx.poolPda,
+      player: xm.player,
+    })
+    // Distinct `attempt` values make retries byte-distinct so bankrun does not
+    // dedupe a post-warp retry against an earlier (rejected) identical tx.
+    .preInstructions([
+      ComputeBudgetProgram.setComputeUnitLimit({
+        units: 200_000 + (opts.attempt ?? 0),
+      }),
+    ])
+    .rpc();
+  assertLegalTransition(XCHAIN_GRAPH, from, "RefundedTimeout");
 }

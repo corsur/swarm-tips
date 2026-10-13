@@ -33,6 +33,8 @@ import {
   openXclaim,
   supersedeXclaim,
   settleXclaim,
+  refundXmatchTimeout,
+  refundTimeoutOpensAt,
   xmatchView,
   readXmatch,
   checkpointOracleInput,
@@ -224,6 +226,134 @@ describe("coordination-game cross-chain contested (bankrun, harness)", () => {
     assert.equal(
       (await readXmatch(ctx, m.xmatchPda)).statusLabel,
       "ClaimSettled"
+    );
+  });
+
+  // ── Audit fix (live on mainnet since 2026-10-12, slot 455917471) ──────────
+
+  it("refund_xmatch_timeout: rejected once a claim is open (Claiming must settle via settle_xclaim)", async () => {
+    const m = await lockMatch(ctx, {
+      seed: "audit-claiming-no-timeout-refund",
+      matchupCommitment: keccak256(enc("commit-audit-1")),
+      player,
+    });
+    const cp = step1Checkpoint(m);
+    await openXclaim(ctx, m, cp);
+    assert.equal((await readXmatch(ctx, m.xmatchPda)).statusLabel, "Claiming");
+
+    // Even after the timeout-refund window opens, Claiming is not refundable.
+    await ctx.rt.warpTo((await refundTimeoutOpensAt(ctx, m)) + 1);
+    let err: unknown;
+    try {
+      await refundXmatchTimeout(ctx, m);
+    } catch (e) {
+      err = e;
+    }
+    assert.isDefined(err, "timeout refund of a Claiming match must revert");
+    assert.match(String(err), /XInvalidStatus/);
+    assert.equal((await readXmatch(ctx, m.xmatchPda)).statusLabel, "Claiming");
+
+    // The funds are still recoverable: settle_xclaim is permissionless.
+    const led = await ledgerAround(m);
+    const l = await led.open();
+    await settleXclaim(ctx, m, { cranker });
+    await led.close(l);
+    assertConservation(l);
+    assert.equal(
+      l.delta("player").toString(),
+      WIN_PAYOUT.toString(),
+      "settle pays the proven outcome"
+    );
+    assert.equal(
+      (await readXmatch(ctx, m.xmatchPda)).statusLabel,
+      "ClaimSettled"
+    );
+  });
+
+  it("refund_xmatch_timeout: a Locked (never-claimed) match refunds the stake after the window", async () => {
+    const m = await lockMatch(ctx, {
+      seed: "audit-locked-timeout-refund",
+      matchupCommitment: keccak256(enc("commit-audit-2")),
+      player,
+    });
+    const opensAt = await refundTimeoutOpensAt(ctx, m);
+
+    // Before the window: rejected.
+    let early = false;
+    try {
+      await refundXmatchTimeout(ctx, m);
+    } catch {
+      early = true;
+    }
+    assert.isTrue(early, "timeout refund before the window must revert");
+
+    await ctx.rt.warpTo(opensAt + 1);
+    const led = await ledgerAround(m);
+    const l = await led.open();
+    await refundXmatchTimeout(ctx, m, { attempt: 1 });
+    await led.close(l);
+    assertConservation(l);
+    assert.equal(
+      l.delta("player").toString(),
+      STAKE.toString(),
+      "flat stake refund"
+    );
+    assert.equal(
+      (await readXmatch(ctx, m.xmatchPda)).statusLabel,
+      "RefundedTimeout"
+    );
+  });
+
+  it("homogeneous both-correct: KeepStake still counts as a win on the player profile", async () => {
+    const rMatchup = new Uint8Array(32); // low bit 0 → matchup_type 0 (same team)
+    const m = await lockMatch(ctx, {
+      seed: "audit-homog-both-correct",
+      matchupCommitment: sha256(rMatchup),
+      player,
+    });
+    const winsBefore = BigInt(
+      (
+        await ctx.rt.program.account.playerProfile.fetch(m.playerProfilePda)
+      ).wins.toString()
+    );
+    const cp: Checkpoint = {
+      matchLiveDigest: m.liveDigest,
+      stepCount: 4,
+      p1Commit: keccak256(enc("p1c-h")),
+      p2Commit: keccak256(enc("p2c-h")),
+      p1Guess: 0, // correct
+      p2Guess: 0, // correct
+      firstCommitter: 1,
+      matchupType: 0,
+      transcriptHash: keccak256(enc("t4-h")),
+      rMatchup,
+    };
+    await openXclaim(ctx, m, cp);
+    await assertOracleOutcome(
+      xmatchView(ctx, m.xmatchPda),
+      checkpointOracleInput(cp)
+    );
+
+    await ctx.rt.warpTo(m.windowEnd + 1);
+    const led = await ledgerAround(m);
+    const l = await led.open();
+    await settleXclaim(ctx, m, { cranker });
+    await led.close(l);
+    assertConservation(l);
+    assert.equal(
+      l.delta("player").toString(),
+      STAKE.toString(),
+      "KeepStake returns exactly the stake"
+    );
+    const winsAfter = BigInt(
+      (
+        await ctx.rt.program.account.playerProfile.fetch(m.playerProfilePda)
+      ).wins.toString()
+    );
+    assert.equal(
+      (winsAfter - winsBefore).toString(),
+      "1",
+      "both-correct counts as a win"
     );
   });
 });
