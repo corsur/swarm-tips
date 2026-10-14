@@ -24,6 +24,9 @@ on:
         required: true
         default: base_sepolia
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     uses: ./.github/workflows/_deploy-evm.yml

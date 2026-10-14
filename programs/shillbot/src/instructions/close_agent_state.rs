@@ -5,7 +5,9 @@ use crate::events::AgentStateClosed;
 use crate::state::AgentState;
 
 /// Allows an agent to close their AgentState PDA and reclaim rent (~0.001 SOL).
-/// Only permitted when the agent has no active claims (claimed_count == 0).
+/// Only permitted when the agent has no active claims (`claimed_count == 0`)
+/// and no negative reputation record (`total_challenges_lost == 0` and
+/// `total_completed == total_tasks_claimed`), preventing reputation-wipe cycles.
 pub fn close_agent_state(ctx: Context<CloseAgentState>) -> Result<()> {
     let agent_state = &ctx.accounts.agent_state;
 
@@ -19,6 +21,13 @@ pub fn close_agent_state(ctx: Context<CloseAgentState>) -> Result<()> {
     require!(
         agent_state.claimed_count == 0,
         ShillbotError::AgentStateHasActiveClaims
+    );
+
+    // Checks: cannot close AgentState to erase lost challenges or abandoned claims (SC-MED-04)
+    require!(
+        agent_state.total_challenges_lost == 0
+            && agent_state.total_completed == agent_state.total_tasks_claimed,
+        ShillbotError::InvalidTaskState
     );
 
     // Effects: account closed by Anchor `close` constraint

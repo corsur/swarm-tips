@@ -53,4 +53,10 @@ pub mod extension_credit {
     pub fn mark_default(ctx: Context<MarkDefault>) -> Result<()> {
         instructions::mark_default::mark_default(ctx)
     }
+
+    /// Permissionless recovery crank: sweeps any late-arriving routed earnings
+    /// sitting on a closed Advance PDA directly to `recipient`.
+    pub fn sweep_closed_advance(ctx: Context<SweepClosedAdvance>) -> Result<()> {
+        instructions::sweep_closed_advance::sweep_closed_advance(ctx)
+    }
 }

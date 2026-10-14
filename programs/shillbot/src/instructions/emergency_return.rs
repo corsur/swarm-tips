@@ -2,20 +2,13 @@ use anchor_lang::prelude::*;
 
 use crate::errors::ShillbotError;
 use crate::events::EmergencyReturn;
-use crate::state::{GlobalState, Task, TaskState};
+use crate::state::{AgentState, GlobalState, Task, TaskState};
 use crate::MAX_EMERGENCY_RETURN_ACCOUNTS;
 
 /// Authority only. Returns escrow for Open/Claimed tasks.
-/// Accepts task accounts as remaining_accounts.
-///
-/// KNOWN LIMITATION: For Claimed tasks, the agent's AgentState.claimed_count is
-/// NOT decremented here. Emergency return is a rare admin operation, and handling
-/// the agent_state accounts in remaining_accounts alongside task/client pairs
-/// adds significant complexity (triples would be needed: task, client, agent_state).
-/// The practical impact is minimal: the agent's claimed_count may be higher than
-/// actual, which is conservative (prevents over-claiming, not under-claiming).
-/// If an agent is affected, they can wait for the AgentState to be corrected
-/// by subsequent submit_work or expire_task calls on their other tasks.
+/// Accepts `[task_account, client_account, ...]` pairs as `remaining_accounts`,
+/// optionally followed by `AgentState` PDAs for any `Claimed` tasks so their
+/// `claimed_count` is decremented in the same transaction (SC-MED-01).
 pub fn emergency_return(ctx: Context<EmergencyReturnAccounts>) -> Result<()> {
     let global = &ctx.accounts.global_state;
 
@@ -31,36 +24,54 @@ pub fn emergency_return(ctx: Context<EmergencyReturnAccounts>) -> Result<()> {
         ShillbotError::InvalidAccountPairs
     );
 
-    // Process each task account in remaining_accounts.
-    // We expect pairs: [task_account, client_account, task_account, client_account, ...]
+    // Split trailing AgentState accounts from the leading [task, client] pairs.
     let accounts = ctx.remaining_accounts;
-    let pair_count = accounts
+    let mut pair_end = accounts.len();
+    while pair_end > 0 {
+        let candidate = &accounts[pair_end.saturating_sub(1)];
+        let is_agent_state = if candidate.owner == ctx.program_id {
+            let data = candidate.try_borrow_data()?;
+            data.len() >= 8 && &data[..8] == AgentState::DISCRIMINATOR
+        } else {
+            false
+        };
+        if is_agent_state {
+            pair_end = pair_end.saturating_sub(1);
+        } else {
+            break;
+        }
+    }
+
+    let pair_accounts = &accounts[..pair_end];
+    require!(
+        pair_accounts.len().is_multiple_of(2),
+        ShillbotError::InvalidAccountPairs
+    );
+    let pair_count = pair_accounts
         .len()
         .checked_div(2)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-    require!(
-        accounts.len().is_multiple_of(2),
-        ShillbotError::InvalidAccountPairs
-    );
 
     let mut task_ids: Vec<u64> = Vec::with_capacity(pair_count);
 
     let mut i: usize = 0;
-    // Bounded: pair_count <= 10 (20/2)
     while i < pair_count {
         let idx = i.checked_mul(2).ok_or(ShillbotError::ArithmeticOverflow)?;
-        let task_info = &accounts[idx];
+        let task_info = &pair_accounts[idx];
         let client_idx = idx
             .checked_add(1)
             .ok_or(ShillbotError::ArithmeticOverflow)?;
-        let client_info = &accounts[client_idx];
+        let client_info = &pair_accounts[client_idx];
 
         require!(
             task_info.owner == ctx.program_id,
             ShillbotError::InvalidTaskState
         );
 
-        if let Some(task_id) = process_emergency_task(task_info, client_info, i)? {
+        if let Some((task_id, claimed_agent)) = process_emergency_task(task_info, client_info, i)? {
+            if let Some(agent_pubkey) = claimed_agent {
+                decrement_agent_claimed_count(accounts, ctx.program_id, &agent_pubkey)?;
+            }
             task_ids.push(task_id);
         }
 
@@ -73,12 +84,13 @@ pub fn emergency_return(ctx: Context<EmergencyReturnAccounts>) -> Result<()> {
 }
 
 /// Validate, close, and return escrow for a single task account.
-/// Returns the task_id if processed, None if the account was skipped.
+/// Returns `(task_id, Some(agent))` if a `Claimed` task was processed,
+/// `(task_id, None)` if an `Open` task was processed, or `None` if skipped.
 fn process_emergency_task(
     task_info: &AccountInfo,
     client_info: &AccountInfo,
     pair_index: usize,
-) -> Result<Option<u64>> {
+) -> Result<Option<(u64, Option<Pubkey>)>> {
     let data = task_info.try_borrow_data()?;
 
     if data.len() < Task::SPACE {
@@ -118,6 +130,11 @@ fn process_emergency_task(
     );
 
     let task_id = task.task_id;
+    let claimed_agent = if task.state == TaskState::Claimed {
+        Some(task.agent)
+    } else {
+        None
+    };
     drop(data);
 
     // Close task: transfer ALL lamports to client, zero account data
@@ -133,7 +150,40 @@ fn process_emergency_task(
     task_info.assign(&anchor_lang::system_program::ID);
     task_info.try_borrow_mut_data()?.fill(0);
 
-    Ok(Some(task_id))
+    Ok(Some((task_id, claimed_agent)))
+}
+
+/// Decrements `AgentState.claimed_count` when a `Claimed` task is emergency-returned
+/// and the corresponding `AgentState` account is present in `remaining_accounts`.
+fn decrement_agent_claimed_count(
+    remaining_accounts: &[AccountInfo],
+    program_id: &Pubkey,
+    expected_agent: &Pubkey,
+) -> Result<()> {
+    for acc in remaining_accounts {
+        if acc.owner != program_id {
+            continue;
+        }
+        let mut data = acc.try_borrow_mut_data()?;
+        if data.len() < 8 || &data[..8] != AgentState::DISCRIMINATOR {
+            continue;
+        }
+        let mut agent_state = match AgentState::try_deserialize(&mut &data[..]) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if agent_state.agent != *expected_agent {
+            continue;
+        }
+        agent_state.claimed_count = agent_state.claimed_count.saturating_sub(1);
+        agent_state.try_serialize(&mut &mut data[..])?;
+        return Ok(());
+    }
+    msg!(
+        "emergency_return: AgentState for {} not provided in remaining_accounts; claimed_count unchanged",
+        expected_agent
+    );
+    Ok(())
 }
 
 #[derive(Accounts)]

@@ -28,6 +28,9 @@ on:
       - 'research/lean-bounties/**'
       - '.github/workflows/harness-unit.yml'
 
+permissions:
+  contents: read
+
 jobs:
   unit:
     runs-on: ubuntu-latest

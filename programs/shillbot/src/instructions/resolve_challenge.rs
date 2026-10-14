@@ -10,6 +10,7 @@ use crate::transfers::transfer_lamports;
 /// If agent won: payment to agent, bond slashed (portion to agent, portion to treasury),
 /// remainder escrow to client.
 pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
     let task = &ctx.accounts.task;
     let challenge = &ctx.accounts.challenge;
     let global = &ctx.accounts.global_state;
@@ -26,6 +27,23 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
         challenge.task_id == task.task_id,
         ShillbotError::InvalidTaskState
     );
+    if global.dispute_resolution_window_seconds > 0 {
+        let resolution_deadline = challenge
+            .created_at
+            .checked_add(global.dispute_resolution_window_seconds)
+            .ok_or(ShillbotError::ArithmeticOverflow)?;
+        require!(
+            now <= resolution_deadline,
+            ShillbotError::ChallengeWindowClosed
+        );
+    }
+    if !challenger_won {
+        crate::instructions::finalize_task::validate_payout_recipient(
+            &ctx.accounts.agent,
+            task,
+            ctx.remaining_accounts,
+        )?;
+    }
     let bond = challenge.bond_lamports;
     let escrow = task.escrow_lamports;
     let bond_slash_treasury_bps = global.bond_slash_treasury_bps;
@@ -33,6 +51,7 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
     let task_id = task.task_id;
     let payment = task.payment_amount;
     let fee = task.fee_amount;
+    let composite_score = task.composite_score;
     // Effects: mark resolved.
     let challenge = &mut ctx.accounts.challenge;
     challenge.resolved = true;
@@ -47,6 +66,15 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
         bump_agent_challenges_lost(ctx.remaining_accounts, ctx.program_id, &task_agent)?;
         0
     } else {
+        if payment > 0 {
+            crate::instructions::finalize_task::update_agent_stats(
+                ctx.remaining_accounts,
+                ctx.program_id,
+                &task_agent,
+                payment,
+                composite_score,
+            )?;
+        }
         agent_won_branch(
             &task_info,
             &challenge_info,
@@ -248,13 +276,11 @@ pub struct ResolveChallenge<'info> {
     pub authority: Signer<'info>,
     /// CHECK: Payment recipient on the agent-won branch (C2 — extension-credit
     /// routing, mirroring `finalize_task`). Equals `task.agent` when
-    /// `task.payout_to` is unset; otherwise it must be `task.payout_to` (the
-    /// credit vault). Without this, a won challenge would pay the agent wallet
-    /// directly and bypass recoupment. Reputation/`total_challenges_lost` keys
-    /// off `task.agent` independently, so routing never moves on-chain stats.
+    /// `task.payout_to` is unset (or when `task.payout_to` is closed, proven
+    /// via `remaining_accounts`); otherwise it must be `task.payout_to`.
     #[account(
         mut,
-        constraint = agent.key() == if task.payout_to == Pubkey::default() { task.agent } else { task.payout_to } @ ShillbotError::NotTaskAgent,
+        constraint = agent.key() == task.agent || (task.payout_to != Pubkey::default() && agent.key() == task.payout_to) @ ShillbotError::NotTaskAgent,
     )]
     pub agent: AccountInfo<'info>,
     /// CHECK: Validated as task.client.

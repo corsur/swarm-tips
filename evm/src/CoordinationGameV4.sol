@@ -273,6 +273,7 @@ contract CoordinationGameV4 is
         payable
         whenNotPaused
     {
+        if (seasons[currentSeasonId].finalized) revert SeasonAlreadyFinalized();
         Game storage g = games[gameId];
         if (g.status != Status.None) revert InvalidStatus();
         if (matchupCommitment == bytes32(0)) revert BadCommitment();

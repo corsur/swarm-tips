@@ -753,7 +753,7 @@ pub fn backfill_handler(
                     tracing::error!(error = %e, "trust_edges backfill failed");
                     (
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("{{\"error\": \"{e}\"}}"),
+                        axum::Json(serde_json::json!({ "error": e.to_string() })),
                     )
                         .into_response()
                 }

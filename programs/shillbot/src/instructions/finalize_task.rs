@@ -24,6 +24,7 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
         clock.unix_timestamp > task.challenge_deadline,
         ShillbotError::ChallengeWindowOpen
     );
+    validate_payout_recipient(&ctx.accounts.agent, task, ctx.remaining_accounts)?;
     let payment_amount = task.payment_amount;
     let fee_amount = task.fee_amount;
     let total_out = payment_amount
@@ -70,14 +71,43 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
     Ok(())
 }
 
-/// If an AgentState account is passed as the first remaining_account, increment
+/// Validates that `agent` is the legitimate payout recipient (`task.agent` when
+/// `task.payout_to` is unset, `task.payout_to` when active, or `task.agent` as
+/// a safe fallback when `task.payout_to` is proven closed/uninitialized via
+/// `remaining_accounts`, preventing `InsufficientFundsForRent` or stranded
+/// payouts on a closed credit Advance PDA — NEW-HIGH-02).
+pub(crate) fn validate_payout_recipient(
+    agent: &AccountInfo,
+    task: &Task,
+    remaining_accounts: &[AccountInfo],
+) -> Result<()> {
+    if task.payout_to == Pubkey::default() {
+        require!(agent.key() == task.agent, ShillbotError::NotTaskAgent);
+        return Ok(());
+    }
+    if agent.key() == task.payout_to {
+        return Ok(());
+    }
+    if agent.key() == task.agent {
+        let payout_vault_closed = remaining_accounts.iter().any(|acc| {
+            acc.key() == task.payout_to
+                && acc.owner == &anchor_lang::system_program::ID
+                && acc.data_is_empty()
+        });
+        require!(payout_vault_closed, ShillbotError::NotTaskAgent);
+        return Ok(());
+    }
+    Err(error!(ShillbotError::NotTaskAgent))
+}
+
+/// If an AgentState account is passed in `remaining_accounts`, increment
 /// `total_completed`, `total_earned`, and `total_score_sum`. This is optional
 /// — callers that don't care about agent stats can omit it.
 ///
 /// Each silent-skip path emits a `msg!` with the reason so the off-chain
 /// indexer can detect "the orchestrator forgot to pass AgentState" cases —
 /// pre-fix, those failures were invisible in logs.
-fn update_agent_stats(
+pub(crate) fn update_agent_stats(
     remaining_accounts: &[AccountInfo],
     program_id: &Pubkey,
     expected_agent: &Pubkey,
@@ -88,52 +118,39 @@ fn update_agent_stats(
         msg!("update_agent_stats: skipped — no remaining_accounts passed (caller did not include AgentState)");
         return Ok(());
     }
-    let agent_state_info = &remaining_accounts[0];
-
-    if agent_state_info.owner != program_id {
-        msg!(
-            "update_agent_stats: skipped — remaining_accounts[0] owner {} != program_id {}",
-            agent_state_info.owner,
-            program_id
-        );
-        return Ok(());
-    }
-
-    let mut data = agent_state_info.try_borrow_mut_data()?;
-    let mut agent_state = match AgentState::try_deserialize(&mut &data[..]) {
-        Ok(s) => s,
-        Err(_) => {
-            msg!(
-                "update_agent_stats: skipped — AgentState deserialize failed for {}",
-                agent_state_info.key()
-            );
-            return Ok(());
+    for agent_state_info in remaining_accounts {
+        if agent_state_info.owner != program_id {
+            continue;
         }
-    };
+        let mut data = agent_state_info.try_borrow_mut_data()?;
+        let mut agent_state = match AgentState::try_deserialize(&mut &data[..]) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if agent_state.agent != *expected_agent {
+            continue;
+        }
 
-    if agent_state.agent != *expected_agent {
-        msg!(
-            "update_agent_stats: skipped — AgentState.agent {} != expected_agent {}",
-            agent_state.agent,
-            expected_agent
-        );
+        agent_state.total_completed = agent_state
+            .total_completed
+            .checked_add(1)
+            .ok_or(ShillbotError::ArithmeticOverflow)?;
+        agent_state.total_earned = agent_state
+            .total_earned
+            .checked_add(payment_amount)
+            .ok_or(ShillbotError::ArithmeticOverflow)?;
+        agent_state.total_score_sum = agent_state
+            .total_score_sum
+            .checked_add(composite_score)
+            .ok_or(ShillbotError::ArithmeticOverflow)?;
+
+        agent_state.try_serialize(&mut &mut data[..])?;
         return Ok(());
     }
-
-    agent_state.total_completed = agent_state
-        .total_completed
-        .checked_add(1)
-        .ok_or(ShillbotError::ArithmeticOverflow)?;
-    agent_state.total_earned = agent_state
-        .total_earned
-        .checked_add(payment_amount)
-        .ok_or(ShillbotError::ArithmeticOverflow)?;
-    agent_state.total_score_sum = agent_state
-        .total_score_sum
-        .checked_add(composite_score)
-        .ok_or(ShillbotError::ArithmeticOverflow)?;
-
-    agent_state.try_serialize(&mut &mut data[..])?;
+    msg!(
+        "update_agent_stats: skipped — no matching AgentState for {} in remaining_accounts",
+        expected_agent
+    );
     Ok(())
 }
 
@@ -190,13 +207,13 @@ pub struct FinalizeTask<'info> {
     )]
     pub global_state: Account<'info, GlobalState>,
     /// CHECK: Payment recipient (C2 — extension-credit routing). Equals
-    /// `task.agent` when `task.payout_to` is unset (zero); otherwise it must be
-    /// `task.payout_to` (e.g. an extension-credit splitter vault). Reputation
-    /// still accrues to `task.agent` (see `update_agent_stats`), so routing the
-    /// payout never moves the agent's on-chain stats.
+    /// `task.agent` when `task.payout_to` is unset (zero) or when the routed
+    /// `task.payout_to` vault is closed (proven via `remaining_accounts`);
+    /// otherwise it must be `task.payout_to`. Reputation still accrues to
+    /// `task.agent` (see `update_agent_stats`).
     #[account(
         mut,
-        constraint = agent.key() == if task.payout_to == Pubkey::default() { task.agent } else { task.payout_to } @ ShillbotError::NotTaskAgent,
+        constraint = agent.key() == task.agent || (task.payout_to != Pubkey::default() && agent.key() == task.payout_to) @ ShillbotError::NotTaskAgent,
     )]
     pub agent: AccountInfo<'info>,
     /// CHECK: Validated as task.client.

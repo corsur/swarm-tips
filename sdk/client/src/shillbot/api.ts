@@ -121,8 +121,9 @@ export function validatePreparedTransaction(
     throw new SwarmClientError({ code: "TRANSACTION_MISMATCH", operation: "shillbot.validatePreparedTransaction", message: "Fee payer differs from expectation" });
   }
   const shillbotId = SHILLBOT_PROGRAM_ID.toBase58();
-  const lifecycle = inspected.instructions.filter((instruction) => instruction.program_id === shillbotId && matchesDiscriminator(instruction.data_base64, expected.action));
-  if (lifecycle.length !== 1) {
+  const shillbotIxs = inspected.instructions.filter((instruction) => instruction.program_id === shillbotId);
+  const lifecycle = shillbotIxs.filter((instruction) => matchesDiscriminator(instruction.data_base64, expected.action));
+  if (lifecycle.length !== 1 || shillbotIxs.length !== 1) {
     throw new SwarmClientError({ code: "TRANSACTION_MISMATCH", operation: "shillbot.validatePreparedTransaction", message: "Expected exactly one matching Shillbot lifecycle instruction" });
   }
   if (expected.taskPda && !lifecycle[0].accounts.includes(expected.taskPda)) {
@@ -131,7 +132,6 @@ export function validatePreparedTransaction(
   const alwaysAllowed = new Set([
     shillbotId,
     ComputeBudgetProgram.programId.toBase58(),
-    SystemProgram.programId.toBase58(),
     ...permittedPreparedProgramIds(expected.action, expected.network),
     ...(expected.allowedProgramIds ?? []),
   ]);

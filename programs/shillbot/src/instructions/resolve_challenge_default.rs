@@ -22,11 +22,18 @@ pub fn resolve_challenge_default(ctx: Context<ResolveChallengeDefault>) -> Resul
     let global = &ctx.accounts.global_state;
     // Checks
     validate_default_resolution(task, challenge, global, now)?;
+    crate::instructions::finalize_task::validate_payout_recipient(
+        &ctx.accounts.agent,
+        task,
+        ctx.remaining_accounts,
+    )?;
     let bond = challenge.bond_lamports;
     let escrow = task.escrow_lamports;
     let task_id = task.task_id;
+    let task_agent = task.agent;
     let payment = task.payment_amount;
     let fee = task.fee_amount;
+    let composite_score = task.composite_score;
     // Postcondition precheck: conservation over the escrow.
     let total_out = payment
         .checked_add(fee)
@@ -38,6 +45,15 @@ pub fn resolve_challenge_default(ctx: Context<ResolveChallengeDefault>) -> Resul
     challenge.challenger_won = false;
     let task = &mut ctx.accounts.task;
     task.state = TaskState::Resolved;
+    if payment > 0 {
+        crate::instructions::finalize_task::update_agent_stats(
+            ctx.remaining_accounts,
+            ctx.program_id,
+            &task_agent,
+            payment,
+            composite_score,
+        )?;
+    }
     // Interactions: pinned payment + fee + remainder, bond back un-slashed.
     distribute_default_resolution(&ctx, payment, fee, escrow, bond)?;
     emit!(ChallengeDefaultResolved {
@@ -151,10 +167,11 @@ pub struct ResolveChallengeDefault<'info> {
     )]
     pub global_state: Account<'info, GlobalState>,
     /// CHECK: Payment recipient — `task.agent`, or `task.payout_to` when the
-    /// C2 routing override is set (same rule as finalize/resolve_challenge).
+    /// C2 routing override is set (with fallback to `task.agent` if `payout_to`
+    /// is closed, proven via `remaining_accounts`).
     #[account(
         mut,
-        constraint = agent.key() == if task.payout_to == Pubkey::default() { task.agent } else { task.payout_to } @ ShillbotError::NotTaskAgent,
+        constraint = agent.key() == task.agent || (task.payout_to != Pubkey::default() && agent.key() == task.payout_to) @ ShillbotError::NotTaskAgent,
     )]
     pub agent: AccountInfo<'info>,
     /// CHECK: Validated as task.client.

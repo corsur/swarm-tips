@@ -24,6 +24,9 @@ on:
       - '.github/workflows/evm-ci.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   forge:
     runs-on: ubuntu-latest

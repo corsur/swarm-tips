@@ -36,3 +36,11 @@ pub struct AdvanceDefaulted {
     pub total_recouped: u64,
     pub advance_lamports: u64,
 }
+
+/// Emitted when stray earnings on a closed Advance PDA are swept to the recipient.
+#[event]
+pub struct ClosedAdvanceSwept {
+    pub backer: Pubkey,
+    pub recipient: Pubkey,
+    pub amount: u64,
+}

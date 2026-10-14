@@ -745,7 +745,7 @@ pub fn listings_handler(state: Arc<ListingsState>) -> axum::routing::MethodRoute
                     (
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                         LISTINGS_CORS_HEADERS,
-                        format!("{{\"error\": \"{e}\"}}"),
+                        axum::Json(serde_json::json!({ "error": e.to_string() })),
                     )
                         .into_response()
                 }

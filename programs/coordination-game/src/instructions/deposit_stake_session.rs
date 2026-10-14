@@ -24,11 +24,17 @@ pub fn deposit_stake_session(ctx: Context<DepositStakeSession>) -> Result<()> {
     let player_key = ctx.accounts.player.key();
     let tournament_id = ctx.accounts.tournament.tournament_id;
     // Idempotent: if escrow is already valid for this game, no-op (avoids
-    // re-transferring lamports). Otherwise (re-)init the escrow fields.
+    // re-transferring lamports). Otherwise (re-)init the escrow fields and
+    // transfer/refund only the delta against any unconsumed balance.
     if escrow_already_active(&ctx.accounts.escrow, &player_key, stake)? {
         msg!("deposit_stake_session: escrow already active, no-op");
         return Ok(());
     }
+    let prior_unconsumed = if !ctx.accounts.escrow.consumed && ctx.accounts.escrow.amount > 0 {
+        ctx.accounts.escrow.amount
+    } else {
+        0
+    };
     init_escrow_fields(
         &mut ctx.accounts.escrow,
         player_key,
@@ -36,18 +42,31 @@ pub fn deposit_stake_session(ctx: Context<DepositStakeSession>) -> Result<()> {
         ctx.bumps.escrow,
         stake,
     )?;
-    // Interactions: transfer stake from session signer to escrow PDA. The
-    // signer was pre-funded by the player at session-setup time.
-    anchor_lang::system_program::transfer(
-        CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            anchor_lang::system_program::Transfer {
-                from: ctx.accounts.session_signer.to_account_info(),
-                to: ctx.accounts.escrow.to_account_info(),
-            },
-        ),
-        stake,
-    )?;
+    // Interactions: transfer delta from session signer to escrow PDA (or refund excess).
+    if stake > prior_unconsumed {
+        let top_up = stake
+            .checked_sub(prior_unconsumed)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+        anchor_lang::system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.session_signer.to_account_info(),
+                    to: ctx.accounts.escrow.to_account_info(),
+                },
+            ),
+            top_up,
+        )?;
+    } else if prior_unconsumed > stake {
+        let excess = prior_unconsumed
+            .checked_sub(stake)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+        crate::instructions::utils::transfer_lamports(
+            &ctx.accounts.escrow.to_account_info(),
+            &ctx.accounts.session_signer.to_account_info(),
+            excess,
+        )?;
+    }
     emit!(StakeDeposited {
         player: player_key,
         tournament_id,

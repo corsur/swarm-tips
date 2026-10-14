@@ -817,7 +817,11 @@ async fn ensure_mcp_session_id(
 ) -> axum::response::Response {
     let header = axum::http::HeaderName::from_static("mcp-session-id");
     let is_mcp = req.uri().path().starts_with("/mcp");
-    let client_id = req.headers().get(&header).cloned();
+    let client_id = req
+        .headers()
+        .get(&header)
+        .filter(|v| !v.as_bytes().iter().all(|b| b.is_ascii_whitespace()))
+        .cloned();
     let mut resp = next.run(req).await;
     if is_mcp && !resp.headers().contains_key(&header) {
         let value = client_id

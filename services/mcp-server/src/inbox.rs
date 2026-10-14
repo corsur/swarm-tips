@@ -1789,9 +1789,13 @@ impl Inbox {
         responder_url: String,
         responder_secret: Option<String>,
     ) -> Self {
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             db,
-            http: reqwest::Client::new(),
+            http,
             workflows,
             self_url,
             responder_url,
@@ -2979,13 +2983,19 @@ impl Inbox {
             return Err(InboxRejection::WalletProofRequired.into());
         }
         let url = validate_webhook_url(raw_url).map_err(InboxRejection::InvalidWebhookUrl)?;
-        self.screen_resolved_addresses(&url)
+        let (host, verified_addrs) = self
+            .screen_resolved_addresses(&url)
             .await
             .map_err(InboxRejection::InvalidWebhookUrl)?;
+        let pinned_http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(&host, &verified_addrs)
+            .build()
+            .unwrap_or_else(|_| self.http.clone());
 
         let challenge_token = random_hex_32();
         let hmac_secret = random_hex_32();
-        perform_challenge_handshake(&self.http, url.as_str(), &challenge_token)
+        perform_challenge_handshake(&pinned_http, url.as_str(), &challenge_token)
             .await
             .map_err(InboxRejection::WebhookChallengeFailed)?;
 
@@ -3016,26 +3026,29 @@ impl Inbox {
         Ok(doc)
     }
 
-    /// Resolve the URL's host and screen every address (registration-time
-    /// DNS check; re-binding after registration is covered by the delivery
-    /// workflow's egress re-check).
-    async fn screen_resolved_addresses(&self, url: &url::Url) -> Result<(), String> {
-        let host = url.host_str().ok_or("url must have a host")?;
+    /// Resolve the URL's host, screen every address, and return the verified
+    /// socket addresses so the handshake client can pin them (closing the
+    /// TOCTOU DNS-rebinding window between check and POST).
+    async fn screen_resolved_addresses(
+        &self,
+        url: &url::Url,
+    ) -> Result<(String, Vec<std::net::SocketAddr>), String> {
+        let host = url.host_str().ok_or("url must have a host")?.to_string();
         let port = url.port_or_known_default().unwrap_or(443);
-        let addrs = tokio::net::lookup_host((host, port))
+        let addrs = tokio::net::lookup_host((host.as_str(), port))
             .await
             .map_err(|e| format!("host does not resolve: {e}"))?;
-        let mut resolved_any = false;
+        let mut verified = Vec::with_capacity(16);
         for addr in addrs.take(16) {
-            resolved_any = true;
             if ip_is_forbidden(addr.ip()) {
                 return Err(format!("host resolves to forbidden address {}", addr.ip()));
             }
+            verified.push(addr);
         }
-        if !resolved_any {
+        if verified.is_empty() {
             return Err("host resolved to no addresses".to_string());
         }
-        Ok(())
+        Ok((host, verified))
     }
 
     /// Delete the caller's webhook registration. Idempotent.

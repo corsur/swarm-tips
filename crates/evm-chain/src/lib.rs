@@ -69,6 +69,7 @@ sol! {
         uint8 firstCommitter;
         uint8 matchupType;
         bytes32 transcriptHash;
+        bytes32 rMatchup;
     }
 
     /// The subset of CrossChainGame the backend builds transactions for.
@@ -1195,6 +1196,43 @@ mod tests {
         assert_eq!(
             build_withdraw_parts(contract).data,
             build_withdraw(Address::from(contract)).data
+        );
+    }
+
+    #[test]
+    fn open_claim_and_settle_selector_parity_with_solidity_certlib() {
+        // Canonical Solidity ABI signatures for CertLib.MatchLiveCert (with Leg),
+        // CertLib.OutcomeCert, and CertLib.Checkpoint (10 fields including bytes32 rMatchup).
+        const LEG_TUPLE: &str = "(bytes32,bytes32,bytes32,address,uint128,uint128)";
+        let cert_tuple = format!(
+            "(bytes32,uint64,bytes32,{LEG_TUPLE},{LEG_TUPLE},uint64,uint32,uint64,uint32,uint8)"
+        );
+        let cp_tuple = "(bytes32,uint8,bytes32,bytes32,uint8,uint8,uint8,uint8,bytes32,bytes32)";
+        let oc_tuple = "(bytes32,bytes32,uint8,uint8,uint8,uint8,uint8,uint8,bytes32)";
+
+        let open_claim_sig = format!("openClaim({cert_tuple},{cp_tuple},bytes[3],bytes[2])");
+        let open_claim_expected =
+            &chain_core::cert_schema::keccak256(open_claim_sig.as_bytes())[..4];
+        assert_eq!(
+            &CrossChainGame::openClaimCall::SELECTOR[..],
+            open_claim_expected,
+            "openClaim selector must match 10-field CertLib.Checkpoint"
+        );
+
+        let settle_sig = format!("settle({cert_tuple},{oc_tuple},bytes[3],bytes[3])");
+        let settle_expected = &chain_core::cert_schema::keccak256(settle_sig.as_bytes())[..4];
+        assert_eq!(
+            &CrossChainGame::settleCall::SELECTOR[..],
+            settle_expected,
+            "settle selector must match CertLib.MatchLiveCert + OutcomeCert"
+        );
+
+        let lock_sig = format!("lockTranche({cert_tuple},bytes)");
+        let lock_expected = &chain_core::cert_schema::keccak256(lock_sig.as_bytes())[..4];
+        assert_eq!(
+            &CrossChainGame::lockTrancheCall::SELECTOR[..],
+            lock_expected,
+            "lockTranche selector must match CertLib.MatchLiveCert"
         );
     }
 }

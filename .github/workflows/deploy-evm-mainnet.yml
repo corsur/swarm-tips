@@ -38,17 +38,24 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
       - name: Verify confirmation phrase
+        env:
+          INPUT_CONFIRM: ${{ github.event.inputs.confirm }}
+          INPUT_CONTRACT: ${{ github.event.inputs.contract }}
+          INPUT_NETWORK: ${{ github.event.inputs.network }}
         run: |
-          if [ "${{ github.event.inputs.confirm }}" != "DEPLOY-MAINNET" ]; then
+          if [ "$INPUT_CONFIRM" != "DEPLOY-MAINNET" ]; then
             echo "::error::confirmation phrase mismatch — type exactly DEPLOY-MAINNET to proceed"
             exit 1
           fi
-          echo "Confirmed mainnet deploy: ${{ github.event.inputs.contract }} → ${{ github.event.inputs.network }}"
+          echo "Confirmed mainnet deploy: $INPUT_CONTRACT → $INPUT_NETWORK"
 
   deploy:
     needs: guard

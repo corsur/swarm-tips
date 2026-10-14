@@ -44,7 +44,8 @@ pub fn sweep_unclaimed_to_next(ctx: Context<SweepUnclaimedToNext>) -> Result<()>
     require!(sweepable > 0, CoordinationError::EmptyPrizePool);
     let src_id = ctx.accounts.src_tournament.tournament_id;
     let dest_id = ctx.accounts.dest_tournament.tournament_id;
-    // Effects: update dest accounting first (CEI ordering).
+    // Effects: update src and dest accounting first (CEI ordering).
+    ctx.accounts.src_tournament.prize_lamports = 0;
     ctx.accounts.dest_tournament.prize_lamports = ctx
         .accounts
         .dest_tournament

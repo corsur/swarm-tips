@@ -24,8 +24,9 @@ pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
 
     // Idempotent: if the escrow already has an unconsumed funded deposit at the
     // correct amount, no-op. If the amount doesn't match (e.g., stake was changed
-    // via program upgrade), fall through to re-deposit at the new amount.
-    if !escrow.consumed && escrow.amount > 0 {
+    // via re-peg), transfer or refund only the delta so the old lamports are
+    // never stranded in the escrow PDA.
+    let prior_unconsumed = if !escrow.consumed && escrow.amount > 0 {
         require!(
             escrow.player == ctx.accounts.player.key(),
             CoordinationError::InvalidGameState,
@@ -34,10 +35,11 @@ pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
             msg!("deposit_stake: escrow already active, no-op");
             return Ok(());
         }
-        // Stake amount changed — fall through to re-deposit at the new amount.
-        // The old lamports remain in the account; the new transfer tops it up.
-        msg!("deposit_stake: stake amount changed, re-depositing");
-    }
+        msg!("deposit_stake: stake amount changed, adjusting delta");
+        escrow.amount
+    } else {
+        0
+    };
     escrow.player = ctx.accounts.player.key();
     escrow.tournament_id = ctx.accounts.tournament.tournament_id;
     escrow.amount = stake;
@@ -51,17 +53,30 @@ pub fn deposit_stake(ctx: Context<DepositStake>) -> Result<()> {
     );
     require!(escrow.amount == stake, CoordinationError::StakeMismatch,);
 
-    // Transfer stake from player to escrow PDA
-    system_program::transfer(
-        CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            system_program::Transfer {
-                from: ctx.accounts.player.to_account_info(),
-                to: ctx.accounts.escrow.to_account_info(),
-            },
-        ),
-        stake,
-    )?;
+    if stake > prior_unconsumed {
+        let top_up = stake
+            .checked_sub(prior_unconsumed)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+        system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.player.to_account_info(),
+                    to: ctx.accounts.escrow.to_account_info(),
+                },
+            ),
+            top_up,
+        )?;
+    } else if prior_unconsumed > stake {
+        let excess = prior_unconsumed
+            .checked_sub(stake)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+        crate::instructions::utils::transfer_lamports(
+            &ctx.accounts.escrow.to_account_info(),
+            &ctx.accounts.player.to_account_info(),
+            excess,
+        )?;
+    }
 
     emit!(StakeDeposited {
         player: ctx.accounts.player.key(),

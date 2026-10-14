@@ -336,7 +336,8 @@ contract CrossChainGame is
         if (uint256(cert.quoteTimestamp) + cert.quoteMaxAgeSecs < block.timestamp) revert StaleQuote();
         // Only the operator signature is required — the lock precedes the
         // players' match-live session signatures.
-        _requireOperatorSig(cert.matchLiveDigest(), operatorSig);
+        bytes32 liveDigest = cert.matchLiveDigest();
+        _requireOperatorSig(liveDigest, operatorSig);
 
         uint128 trancheWei = leg.tranche;
         if (trancheWei > maxTrancheWei) revert TrancheTooLarge();
@@ -367,6 +368,10 @@ contract CrossChainGame is
         // the max can't DoS a valid openClaim/submitEquivocationProof by failing
         // the bound check at claim time.
         m.claimWindowEnd = _claimWindowEnd(m.matchDeadline, cert.claimWindowSecs);
+        // Snapshot the operator-signed cert digest (NEW-CRIT-01) so openClaim,
+        // supersedeClaim, and submitEquivocationProof cannot substitute a
+        // different unauthenticated cert while Status == Locked.
+        m.matchLiveDigest = liveDigest;
         m.status = Status.Locked;
         emit TrancheLocked(cert.matchId, trancheWei);
     }
@@ -390,6 +395,7 @@ contract CrossChainGame is
         if (m.status != Status.Locked) revert InvalidStatus();
 
         bytes32 liveDigest = _verifyMatchLive(m, cert, liveSigs);
+        if (liveDigest != m.matchLiveDigest) revert CertMismatch();
 
         // Outcome must bind the exact match-live cert and be terminal, or
         // be an operator-co-signed timeout outcome.
@@ -431,6 +437,7 @@ contract CrossChainGame is
         if (block.timestamp > windowEnd) revert DeadlinePassed();
 
         bytes32 liveDigest = _verifyMatchLive(m, cert, liveSigs);
+        if (liveDigest != m.matchLiveDigest) revert CertMismatch();
         if (cp.matchLiveDigest != liveDigest) revert CertMismatch();
         _verifyCheckpoint(cert, cp, cpSigs);
         _verifyMatchupBinding(cp, cert.matchupCommitment);
@@ -509,10 +516,12 @@ contract CrossChainGame is
         // Snapshotted at lock (M2), immune to a later setConfig.
         uint64 windowEnd = m.claimWindowEnd;
         if (block.timestamp > windowEnd) revert DeadlinePassed();
+        // Unconditionally bind to the operator-signed cert digest snapshotted
+        // at lockTranche (NEW-CRIT-01).
+        if (m.matchLiveDigest != liveDigest) revert CertMismatch();
         if (cpA.matchLiveDigest != liveDigest || cpB.matchLiveDigest != liveDigest) {
             revert CertMismatch();
         }
-        if (m.status == Status.Claiming && m.matchLiveDigest != liveDigest) revert CertMismatch();
 
         if (cpA.stepCount != cpB.stepCount) revert BadOutcome();
         bytes32 digestA = cpA.checkpointDigest();
@@ -532,8 +541,7 @@ contract CrossChainGame is
         }
 
         m.status = Status.Claiming;
-        m.matchLiveDigest = liveDigest;
-        // claimWindowEnd already snapshotted at lock (M2).
+        // claimWindowEnd and matchLiveDigest already snapshotted at lock (M2 / NEW-CRIT-01).
         // Verdict from flags only — order-independent, never read from the
         // current claim outcome.
         m.bestOutcomeKind = _equivocationOutcome(m.playerIsP1, m.localEquivocated, m.counterEquivocated);

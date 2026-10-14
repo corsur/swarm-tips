@@ -226,6 +226,12 @@ pub fn lock_xtranche(
         tranche_lamports <= ctx.accounts.pool.free_lamports,
         CoordinationError::XPoolInsufficient
     );
+    let window_end = claim_window_end(
+        ctx.accounts.xmatch.match_deadline,
+        cert.claim_window_secs,
+        &ctx.accounts.pool,
+    )?;
+    let live_digest = cert.digest();
 
     let pool = &mut ctx.accounts.pool;
     pool.free_lamports = pool
@@ -239,6 +245,9 @@ pub fn lock_xtranche(
     let m = &mut ctx.accounts.xmatch;
     m.tranche_lamports = tranche_lamports;
     m.locked_at = now;
+    m.claim_window_secs = cert.claim_window_secs;
+    m.claim_window_end = window_end;
+    m.match_live_digest = live_digest;
     m.status = XChainStatus::Locked;
     emit!(XTrancheLocked {
         match_id: m.match_id,
@@ -311,7 +320,9 @@ pub fn settle_xmatch(
         solana_chain_tag(),
     )?;
     require!(
-        outcome.match_live_digest == live_digest && outcome.match_id == cert.match_id,
+        live_digest == ctx.accounts.xmatch.match_live_digest
+            && outcome.match_live_digest == live_digest
+            && outcome.match_id == cert.match_id,
         CoordinationError::XCertMismatch
     );
     // Reject out-of-range kinds at the boundary: the cert digest normalizes
@@ -386,11 +397,7 @@ pub fn open_xclaim(
         ctx.accounts.xmatch.status == XChainStatus::Locked,
         CoordinationError::XInvalidStatus
     );
-    let window_end = claim_window_end(
-        ctx.accounts.xmatch.match_deadline,
-        cert.claim_window_secs,
-        &ctx.accounts.pool,
-    )?;
+    let window_end = ctx.accounts.xmatch.claim_window_end;
     require!(now <= window_end, CoordinationError::XDeadlinePassed);
 
     let live_digest = verify_match_live(
@@ -401,7 +408,7 @@ pub fn open_xclaim(
         solana_chain_tag(),
     )?;
     require!(
-        cp.match_live_digest == live_digest,
+        live_digest == ctx.accounts.xmatch.match_live_digest && cp.match_live_digest == live_digest,
         CoordinationError::XCertMismatch
     );
     verify_checkpoint(&cert, &cp, &cp_sigs)?;
@@ -414,7 +421,6 @@ pub fn open_xclaim(
     m.match_live_digest = live_digest;
     m.best_step_count = cp.step_count;
     m.best_outcome_kind = cp.derive_claim_outcome();
-    m.claim_window_end = window_end;
     emit!(XClaimOpened {
         match_id: m.match_id,
         claimed_outcome: m.best_outcome_kind,
@@ -485,19 +491,18 @@ pub fn submit_equivocation_proof(
         cert.match_deadline == u64::try_from(m.match_deadline).unwrap_or(0),
         CoordinationError::XCertMismatch
     );
-    let window_end =
-        claim_window_end(m.match_deadline, cert.claim_window_secs, &ctx.accounts.pool)?;
+    // Unconditionally bind `cert` to the operator-signed digest snapshotted at
+    // `lock_xtranche` and use the snapshotted `claim_window_end` (NEW-CRIT-01).
+    require!(
+        m.match_live_digest == live_digest,
+        CoordinationError::XCertMismatch
+    );
+    let window_end = m.claim_window_end;
     require!(now <= window_end, CoordinationError::XDeadlinePassed);
     require!(
         cp_a.match_live_digest == live_digest && cp_b.match_live_digest == live_digest,
         CoordinationError::XCertMismatch
     );
-    if m.status == XChainStatus::Claiming {
-        require!(
-            m.match_live_digest == live_digest,
-            CoordinationError::XCertMismatch
-        );
-    }
     require!(
         cp_a.step_count == cp_b.step_count,
         CoordinationError::XBadOutcome
@@ -522,8 +527,6 @@ pub fn submit_equivocation_proof(
         return Err(error!(CoordinationError::XBadSignature));
     }
     m.status = XChainStatus::Claiming;
-    m.match_live_digest = live_digest;
-    m.claim_window_end = window_end;
     m.best_outcome_kind =
         equivocation_outcome(local_is_p1, m.local_equivocated, m.counter_equivocated);
     m.best_step_count = u8::MAX; // equivocation verdict is final
@@ -624,11 +627,19 @@ pub fn refund_xmatch_timeout(ctx: Context<RefundXMatchTimeout>) -> Result<()> {
         CoordinationError::XInvalidStatus
     );
     // Opens at match_deadline + max_claim_window + 2*skew — strictly after
-    // any leg's settle window (claim_window_secs <= max_claim_window).
-    let opens_at = i128::from(m.match_deadline)
-        .checked_add(i128::from(pool.max_claim_window_secs))
-        .and_then(|v| v.checked_add(2i128.checked_mul(i128::from(pool.skew_margin_secs))?))
+    // any leg's settle window (claim_window_secs <= max_claim_window), and
+    // never before the snapshotted claim_window_end + 2*skew.
+    let skew_margin = 2i128
+        .checked_mul(i128::from(pool.skew_margin_secs))
         .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let pool_opens_at = i128::from(m.match_deadline)
+        .checked_add(i128::from(pool.max_claim_window_secs))
+        .and_then(|v| v.checked_add(skew_margin))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let snapshotted_opens_at = i128::from(m.claim_window_end)
+        .checked_add(skew_margin)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let opens_at = pool_opens_at.max(snapshotted_opens_at);
     require!(
         i128::from(now) > opens_at,
         CoordinationError::XDeadlineNotReached
@@ -831,9 +842,12 @@ fn execute_xleg<'info>(
     }
 
     // Update the local player's profile (the counterparty's profile updates
-    // on the other leg from the identical cert). Both players win in homogeneous
-    // both-correct coordination.
-    let won = r.to_player > stake || outcome_kind == crate::payoff::XKIND_HOMOG_BOTH_CORRECT;
+    // on the other leg from the identical cert). Delegate to shared
+    // `chain_core::game::outcome_to_wins` so homogeneous sole-correct outcomes
+    // (HalfBack) award a win identically across Solana, EVM, and cross-chain.
+    let (p1_won, p2_won) = chain_core::game::outcome_to_wins(outcome_kind)
+        .map_err(|_| error!(CoordinationError::XBadOutcome))?;
+    let won = if local_is_p1 { p1_won } else { p2_won };
     player_profile.update_after_game(won, xmatch.tournament_id)?;
 
     emit!(XMatchSettled {
@@ -933,11 +947,11 @@ pub struct LockXTranche<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(cert: MatchLiveCertArg)]
+#[instruction(cert_no_a: MatchLiveCertNoA)]
 pub struct SettleXMatch<'info> {
     #[account(
         mut,
-        seeds = [b"xmatch", cert.match_id.as_ref()],
+        seeds = [b"xmatch", cert_no_a.match_id.as_ref()],
         bump = xmatch.bump,
     )]
     pub xmatch: Account<'info, XChainMatch>,

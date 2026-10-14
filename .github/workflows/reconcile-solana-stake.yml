@@ -39,6 +39,9 @@ concurrency:
   group: reconcile-solana-stake
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   reconcile:
     # `push` was added as a trigger but never to this condition, so every

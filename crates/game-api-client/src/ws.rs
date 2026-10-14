@@ -126,18 +126,36 @@ pub struct WsConnection {
 /// - `&session=<s>` when `session` is `Some(non-empty)`, binding the
 ///   connection to an existing match session.
 fn build_ws_url(base_url: &str, jwt: &str, network: Option<&str>, session: Option<&str>) -> String {
+    fn encode_query_val(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b':' => {
+                    out.push(b as char);
+                }
+                _ => {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            }
+        }
+        out
+    }
     let ws_url = base_url
         .replacen("http://", "ws://", 1)
         .replacen("https://", "wss://", 1);
-    let mut url = format!("{}/ws?token={}", ws_url.trim_end_matches('/'), jwt);
+    let mut url = format!(
+        "{}/ws?token={}",
+        ws_url.trim_end_matches('/'),
+        encode_query_val(jwt)
+    );
     if let Some(n) = network {
         if !n.is_empty() {
-            url.push_str(&format!("&network={n}"));
+            url.push_str(&format!("&network={}", encode_query_val(n)));
         }
     }
     if let Some(s) = session {
         if !s.is_empty() {
-            url.push_str(&format!("&session={s}"));
+            url.push_str(&format!("&session={}", encode_query_val(s)));
         }
     }
     url
