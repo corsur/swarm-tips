@@ -94,12 +94,28 @@ function signBase64(unsigned: string, signer: Keypair): string {
 }
 
 async function broadcast(conn: Connection, signedB64: string): Promise<string> {
-  const sig = await conn.sendRawTransaction(Buffer.from(signedB64, "base64"), {
+  const raw = Buffer.from(signedB64, "base64");
+  const sig = await conn.sendRawTransaction(raw, {
     skipPreflight: false,
     maxRetries: 5,
   });
-  await conn.confirmTransaction(sig, "confirmed");
-  return sig;
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const { value } = await conn.getSignatureStatuses([sig]);
+    const st = value[0];
+    if (st?.err) {
+      throw new Error(`tx ${sig} failed on-chain: ${JSON.stringify(st.err)}`);
+    }
+    if (
+      st?.confirmationStatus === "confirmed" ||
+      st?.confirmationStatus === "finalized"
+    ) {
+      return sig;
+    }
+    await conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 2 }).catch(() => {});
+    await sleep(2000);
+  }
+  throw new Error(`tx ${sig} not confirmed within 90s`);
 }
 
 function loadOrCreateClient(): Keypair {
