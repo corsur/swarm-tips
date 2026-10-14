@@ -104,12 +104,16 @@ async function getAuthToken(wallet: Keypair): Promise<string> {
   const pubkey = wallet.publicKey.toBase58();
   if (tokenCache.has(pubkey)) return tokenCache.get(pubkey)!;
 
-  const challengeRes = await fetch("https://api.coordination.game/auth/challenge", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ wallet: pubkey }),
-  });
-  if (!challengeRes.ok) throw new Error(`auth challenge failed: ${await challengeRes.text()}`);
+  const challengeRes = await fetch(
+    "https://api.coordination.game/auth/challenge",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: pubkey }),
+    }
+  );
+  if (!challengeRes.ok)
+    throw new Error(`auth challenge failed: ${await challengeRes.text()}`);
   const { nonce } = (await challengeRes.json()) as { nonce: string };
 
   const signature = signEd25519Nonce(wallet.secretKey, nonce);
@@ -118,7 +122,8 @@ async function getAuthToken(wallet: Keypair): Promise<string> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ wallet: pubkey, nonce, signature }),
   });
-  if (!verifyRes.ok) throw new Error(`auth verify failed: ${await verifyRes.text()}`);
+  if (!verifyRes.ok)
+    throw new Error(`auth verify failed: ${await verifyRes.text()}`);
   const { token } = (await verifyRes.json()) as { token: string };
   tokenCache.set(pubkey, token);
   return token;
@@ -176,7 +181,9 @@ async function broadcast(conn: Connection, signedB64: string): Promise<string> {
     ) {
       return sig;
     }
-    await conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 2 }).catch(() => {});
+    await conn
+      .sendRawTransaction(raw, { skipPreflight: true, maxRetries: 2 })
+      .catch(() => {});
     await sleep(2000);
   }
   throw new Error(`tx ${sig} not confirmed within 90s`);
@@ -390,23 +397,18 @@ async function main(): Promise<void> {
 
   // One v2 (mathlib) LeanProof campaign — lean_policy = 2.
   const clientToken = await getAuthToken(h.authority);
-  const camp = await api(
-    "POST",
-    `/campaigns?network=devnet`,
-    clientToken,
-    {
-      brief: {
-        topic: "lean attester mathlib (policy v2) verification e2e",
-        brand_voice: "precise",
-        cta: "verify the mathlib proof",
-        utm_link: "https://swarm.tips",
-      },
-      budget_lamports: Number(ESCROW.toString()) * 4,
-      platform: LEAN_PROOF_PLATFORM,
-      statement_lean: STATEMENT,
-      lean_policy: 2,
-    }
-  );
+  const camp = await api("POST", `/campaigns?network=devnet`, clientToken, {
+    brief: {
+      topic: "lean attester mathlib (policy v2) verification e2e",
+      brand_voice: "precise",
+      cta: "verify the mathlib proof",
+      utm_link: "https://swarm.tips",
+    },
+    budget_lamports: Number(ESCROW.toString()) * 4,
+    platform: LEAN_PROOF_PLATFORM,
+    statement_lean: STATEMENT,
+    lean_policy: 2,
+  });
   const campaignId = camp.campaign_id as string;
   console.log(`campaign:         ${campaignId} (lean_policy=2)`);
 

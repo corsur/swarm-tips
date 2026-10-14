@@ -1,4 +1,5 @@
 import Mathlib.LinearAlgebra.Matrix.Trace
+import Mathlib.LinearAlgebra.Matrix.Symmetric
 import Mathlib.Data.Real.Basic
 
 open scoped BigOperators Matrix

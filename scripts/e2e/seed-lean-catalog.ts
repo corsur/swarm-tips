@@ -131,12 +131,36 @@ function signBase64(unsigned: string, signer: Keypair): string {
 }
 
 async function broadcast(conn: Connection, signedB64: string): Promise<string> {
-  const sig = await conn.sendRawTransaction(Buffer.from(signedB64, "base64"), {
+  const raw = Buffer.from(signedB64, "base64");
+  const sig = await conn.sendRawTransaction(raw, {
     skipPreflight: false,
     maxRetries: 5,
   });
-  await conn.confirmTransaction(sig, "confirmed");
-  return sig;
+  const deadline = Date.now() + 90_000;
+  let lastResend = Date.now();
+  while (Date.now() < deadline) {
+    const { value } = await conn.getSignatureStatuses([sig], {
+      searchTransactionHistory: true,
+    });
+    const st = value[0];
+    if (st?.err) {
+      throw new Error(`tx ${sig} failed on-chain: ${JSON.stringify(st.err)}`);
+    }
+    if (
+      st?.confirmationStatus === "confirmed" ||
+      st?.confirmationStatus === "finalized"
+    ) {
+      return sig;
+    }
+    if (Date.now() - lastResend > 4_000) {
+      lastResend = Date.now();
+      await conn
+        .sendRawTransaction(raw, { skipPreflight: true, maxRetries: 2 })
+        .catch(() => {});
+    }
+    await new Promise((r) => setTimeout(r, 1_500));
+  }
+  throw new Error(`Transaction ${sig} was not confirmed within 90.00 seconds`);
 }
 
 export interface CatalogEntry {
@@ -147,7 +171,7 @@ export interface CatalogEntry {
 
 export function loadCatalog(): CatalogEntry[] {
   const entries: CatalogEntry[] = [];
-  for (const kind of ["solvable", "open"] as const) {
+  for (const kind of ["open"] as const) {
     const dir = path.join(CATALOG_DIR, kind);
     for (const f of fs.readdirSync(dir).sort()) {
       if (!f.endsWith(".lean") || f.endsWith(".proof.lean")) continue;
@@ -161,6 +185,72 @@ export function loadCatalog(): CatalogEntry[] {
   return entries;
 }
 
+const DEFAULT_RUNNER_URL =
+  process.env.LEAN_RUNNER_URL ??
+  "https://shillbot-lean-runner-wjucctfqta-uc.a.run.app";
+
+function getRunnerIdToken(audience: string): string {
+  if (process.env.RUNNER_ID_TOKEN) return process.env.RUNNER_ID_TOKEN;
+  try {
+    return execSync(`gcloud auth print-identity-token`, {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
+async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
+  const token = getRunnerIdToken(DEFAULT_RUNNER_URL);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const t0 = Date.now();
+  const res = await fetch(`${DEFAULT_RUNNER_URL}/check`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      statement: entry.statement,
+      proof: "theorem proof : statementProp := by sorry",
+      statement_def: "statementProp",
+      entry_theorem: "proof",
+      axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
+      mode: "mathlib",
+      import_allowlist: ["Mathlib"],
+      max_build_secs: 600,
+      max_build_mem_mb: 8192,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `pre-seed runner check HTTP ${res.status} for ${
+        entry.name
+      }: ${await res.text()}`
+    );
+  }
+  const resp = (await res.json()) as {
+    verdict?: string;
+    detail?: string;
+  };
+  if (
+    resp.verdict !== "fail" ||
+    !String(resp.detail ?? "").includes("proof uses sorry")
+  ) {
+    throw new Error(
+      `pre-seed elaboration gate FAILED for ${entry.name}: expected verdict=fail("proof uses sorry"), got verdict=${resp.verdict} detail=${resp.detail}`
+    );
+  }
+  console.log(
+    `  [pre-seed check PASS] ${entry.name} elaborated cleanly (${
+      Date.now() - t0
+    }ms)`
+  );
+}
+
 async function existingTopics(
   bearer: string,
   network: string
@@ -169,10 +259,12 @@ async function existingTopics(
     "GET",
     `/campaigns?network=${network}`,
     bearer
-  )) as unknown as Array<{ brief?: { topic?: string } }>;
+  )) as unknown as Array<{ status?: string; brief?: { topic?: string } }>;
   const topics = new Set<string>();
   const items = Array.isArray(list) ? list : (list as any)?.campaigns ?? [];
   for (const c of items) {
+    const st = String(c.status ?? "").toLowerCase();
+    if (st === "cancelled" || st === "expired") continue;
     if (c.brief?.topic) topics.add(c.brief.topic);
   }
   return topics;
@@ -186,6 +278,13 @@ async function main(): Promise<void> {
   const rpcUrl = getRpcUrl(isMainnet);
   const conn = new Connection(rpcUrl, "confirmed");
 
+  const escrowArg = process.argv.find((a) =>
+    a.startsWith("--escrow-lamports=")
+  );
+  const escrowLamports = escrowArg
+    ? Number(escrowArg.replace("--escrow-lamports=", "").trim())
+    : Number(ESCROW.toString());
+
   const authority = loadKeypair("id.json");
   const clientPk = authority.publicKey.toBase58();
   const jwtSecret = getJwtSecret();
@@ -197,6 +296,11 @@ async function main(): Promise<void> {
   console.log(`API:     ${API_BASE}`);
   console.log(
     `wallet:  ${clientPk} (${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL)`
+  );
+  console.log(
+    `escrow:  ${escrowLamports} lamports (${(
+      escrowLamports / LAMPORTS_PER_SOL
+    ).toFixed(4)} SOL)`
   );
 
   let catalog = loadCatalog();
@@ -215,14 +319,12 @@ async function main(): Promise<void> {
     const newSet = new Set([
       "weil-gram-cubic-correlation",
       "weil-gram-quartic-correlation",
-      "matrix-cubic",
-      "matrix-quartic",
     ]);
     catalog = catalog.filter((e) => newSet.has(e.name));
   }
 
   console.log(`catalog: ${catalog.length} statements`);
-  const minLamports = Number(ESCROW.toString()) * (catalog.length + 2);
+  const minLamports = escrowLamports * catalog.length + 5_000_000;
   if (bal < minLamports) {
     throw new Error(
       `Insufficient balance on ${network}: have ${(
@@ -233,6 +335,7 @@ async function main(): Promise<void> {
     );
   }
 
+  const skipPrecheck = process.argv.includes("--skip-precheck");
   const already = await existingTopics(bearer, network);
   let created = 0;
   let skipped = 0;
@@ -244,6 +347,9 @@ async function main(): Promise<void> {
       skipped++;
       continue;
     }
+    if (!skipPrecheck) {
+      await verifyStatementElaborates(entry);
+    }
     const camp = await api("POST", `/campaigns?network=${network}`, bearer, {
       brief: {
         topic,
@@ -251,10 +357,10 @@ async function main(): Promise<void> {
         cta: `Prove: ${entry.name} (${entry.kind})`,
         utm_link: "https://swarm.tips",
       },
-      budget_lamports: Number(ESCROW.toString()) * 2,
+      budget_lamports: escrowLamports * 2,
       platform: LEAN_PROOF_PLATFORM,
       statement_lean: entry.statement,
-      lean_policy: 2,
+      lean_policy: 3,
     });
     const campaignId = camp.campaign_id as string;
 
@@ -263,7 +369,7 @@ async function main(): Promise<void> {
       "POST",
       `/campaigns/${campaignId}/fund?network=${network}`,
       bearer,
-      { amount_lamports: Number(ESCROW.toString()) }
+      { amount_lamports: escrowLamports }
     );
     const unsigned = fund.transaction as string;
     const sig = await broadcast(conn, signBase64(unsigned, authority));
@@ -278,7 +384,7 @@ async function main(): Promise<void> {
       }
     );
     console.log(
-      `  [${network}] seeded ${entry.kind}/${entry.name} -> campaign ${campaignId} task ${fund.task_id}`
+      `  [${network}] seeded ${entry.kind}/${entry.name} -> campaign ${campaignId} task ${fund.task_id} pda ${fund.task_pda} (tx ${sig})`
     );
     created++;
   }
