@@ -20,7 +20,13 @@ import { BN } from "@coral-xyz/anchor";
 import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { assert } from "chai";
 import { createHash } from "crypto";
-import { Checkpoint, newSessionSigner, keccak256 } from "./helpers/xchain-cert";
+import {
+  Checkpoint,
+  newSessionSigner,
+  keccak256,
+  matchLiveDigest,
+  signDigest,
+} from "./helpers/xchain-cert";
 import { startBankrun, BankrunHandle } from "./harness/bankrun";
 import { Ledger } from "./harness/ledger";
 import { assertConservation, assertOracleOutcome } from "./harness/assertions";
@@ -355,5 +361,42 @@ describe("coordination-game cross-chain contested (bankrun, harness)", () => {
       "1",
       "both-correct counts as a win"
     );
+  });
+
+  it("NEW-CRIT-01: open_xclaim rejects a forged MatchLiveCert with modified claimWindowSecs", async () => {
+    const m = await lockMatch(ctx, {
+      seed: "audit-forged-cert-claim-window",
+      matchupCommitment: keccak256(enc("commit-audit-forged")),
+      player,
+    });
+    const forgedCert = { ...m.cert, claimWindowSecs: 1 };
+    const forgedDigest = matchLiveDigest(forgedCert);
+    const forgedSigs = [
+      signDigest(ctx.bundle.local, forgedDigest),
+      signDigest(ctx.bundle.counter, forgedDigest),
+      signDigest(ctx.bundle.operator, forgedDigest),
+    ];
+    const forgedM: LockedMatch = {
+      ...m,
+      cert: forgedCert,
+      liveDigest: forgedDigest,
+      liveSigs: forgedSigs,
+    };
+    const cp: Checkpoint = {
+      ...step1Checkpoint(m),
+      matchLiveDigest: forgedDigest,
+    };
+    let err: unknown;
+    try {
+      await openXclaim(ctx, forgedM, cp);
+    } catch (e) {
+      err = e;
+    }
+    assert.isDefined(
+      err,
+      "forged MatchLiveCert must be rejected by open_xclaim"
+    );
+    assert.match(String(err), /XCertMismatch/);
+    assert.equal((await readXmatch(ctx, m.xmatchPda)).statusLabel, "Locked");
   });
 });

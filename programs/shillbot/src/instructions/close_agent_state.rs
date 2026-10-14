@@ -23,10 +23,9 @@ pub fn close_agent_state(ctx: Context<CloseAgentState>) -> Result<()> {
         ShillbotError::AgentStateHasActiveClaims
     );
 
-    // Checks: cannot close AgentState to erase lost challenges or abandoned claims (SC-MED-04)
+    // Checks: cannot close AgentState to erase lost challenges (SC-MED-04)
     require!(
-        agent_state.total_challenges_lost == 0
-            && agent_state.total_completed == agent_state.total_tasks_claimed,
+        agent_state.total_challenges_lost == 0,
         ShillbotError::InvalidTaskState
     );
 
