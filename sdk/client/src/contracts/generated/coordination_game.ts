@@ -3153,7 +3153,7 @@ export type CoordinationGame = {
               },
               {
                 "kind": "arg",
-                "path": "cert.match_id"
+                "path": "cert_no_a.match_id"
               }
             ]
           }

@@ -914,10 +914,10 @@ export type Shillbot = {
         {
           "name": "agent",
           "docs": [
-            "`task.agent` when `task.payout_to` is unset (zero); otherwise it must be",
-            "`task.payout_to` (e.g. an extension-credit splitter vault). Reputation",
-            "still accrues to `task.agent` (see `update_agent_stats`), so routing the",
-            "payout never moves the agent's on-chain stats."
+            "`task.agent` when `task.payout_to` is unset (zero) or when the routed",
+            "`task.payout_to` vault is closed (proven via `remaining_accounts`);",
+            "otherwise it must be `task.payout_to`. Reputation still accrues to",
+            "`task.agent` (see `update_agent_stats`)."
           ],
           "writable": true
         },
@@ -1241,10 +1241,8 @@ export type Shillbot = {
           "name": "agent",
           "docs": [
             "routing, mirroring `finalize_task`). Equals `task.agent` when",
-            "`task.payout_to` is unset; otherwise it must be `task.payout_to` (the",
-            "credit vault). Without this, a won challenge would pay the agent wallet",
-            "directly and bypass recoupment. Reputation/`total_challenges_lost` keys",
-            "off `task.agent` independently, so routing never moves on-chain stats."
+            "`task.payout_to` is unset (or when `task.payout_to` is closed, proven",
+            "via `remaining_accounts`); otherwise it must be `task.payout_to`."
           ],
           "writable": true
         },
@@ -1375,7 +1373,8 @@ export type Shillbot = {
         {
           "name": "agent",
           "docs": [
-            "C2 routing override is set (same rule as finalize/resolve_challenge)."
+            "C2 routing override is set (with fallback to `task.agent` if `payout_to`",
+            "is closed, proven via `remaining_accounts`)."
           ],
           "writable": true
         },
