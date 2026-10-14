@@ -17,6 +17,7 @@ on:
           - coordinationv4
           - coordinationv4-upgrade
           - crosschain
+          - crosschain-upgrade
           - shillbot
         default: coordination
       network:

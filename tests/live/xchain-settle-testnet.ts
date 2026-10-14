@@ -47,7 +47,7 @@ import {
 
 const RPC = process.env.RPC_URL ?? "https://sepolia.base.org";
 const CONTRACT = (process.env.CONTRACT ??
-  "0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4") as `0x${string}`;
+  "0x7Cc7667f4B71c8eb1D4d3fADE088BFD8d01290AB") as `0x${string}`;
 // Live-network, manual-only. The Anchor.toml test glob (tests/**/*.ts) and a
 // bare `anchor test` would otherwise sweep this in; skip unless the live
 // credentials are present so it never runs (or fails) in those contexts.
@@ -425,7 +425,7 @@ const randBytes32 = (): Uint8Array => {
       const out = cast([
         "call",
         CONTRACT,
-        "matches(bytes32)(uint8,address,address,address,bool,bool,bool,uint128,uint128,uint64,uint64,uint64,uint64,bytes32,uint8,uint8)",
+        "matches(bytes32)(uint8,address,address,address,bool,bool,bool,uint128,uint128,uint64,uint64,uint64,uint64,bytes32,uint8,uint8,bytes32)",
         id,
         "--rpc-url",
         RPC,

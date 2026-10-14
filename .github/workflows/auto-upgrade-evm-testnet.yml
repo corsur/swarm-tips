@@ -42,6 +42,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
+      xchain_changed: ${{ steps.diff.outputs.xchain_changed }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -62,13 +63,14 @@ jobs:
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "xchain_changed=true" >> "$GITHUB_OUTPUT"
             echo "manual dispatch — upgrading regardless of the diff"
             exit 0
           fi
           # EVM Contracts also runs for chain-registry, policy and fixture
           # changes, none of which alter deployed bytecode. Broadcasting an
           # upgrade for those spends gas to install identical logic and adds a
-          # pointless proxy event, so scope to what actually compiles into V4.
+          # pointless proxy event, so scope to what actually compiles into V4 / XChain.
           # Diff against the last fully successful run (not HEAD^) so a change
           # whose upgrade failed is retried by the next green commit.
           BASE="$(bash scripts/deploy-base-sha.sh auto-upgrade-evm-testnet.yml HEAD^ workflow_run)"
@@ -78,6 +80,13 @@ jobs:
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "no CoordinationGameV4 source change — skipping upgrade"
+          fi
+          if git diff --name-only "$BASE" HEAD \
+             | grep -Eq '^evm/(src/CrossChainGame\.sol|src/base/|src/CertLib\.sol|script/UpgradeCrossChainGame\.s\.sol)'; then
+            echo "xchain_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "xchain_changed=false" >> "$GITHUB_OUTPUT"
+            echo "no CrossChainGame source change — skipping upgrade"
           fi
 
   upgrade:
@@ -186,3 +195,105 @@ jobs:
           SEASON="$(cast call "$V4_PROXY" 'currentSeasonId()(uint256)' --rpc-url "$RPC")"
           [ "$SEASON" = "$SEASON_BEFORE" ] || { echo "::error::currentSeasonId changed: $SEASON_BEFORE -> $SEASON"; exit 1; }
           echo "${{ matrix.network }}: $V4_PROXY implementation ${IMPL_BEFORE:26} -> ${IMPL_AFTER:26}"
+
+  upgrade-xchain:
+    needs: guard
+    if: needs.guard.outputs.xchain_changed == 'true'
+    uses: ./.github/workflows/_deploy-evm.yml
+    with:
+      contract: crosschain-upgrade
+      network: base_sepolia
+    secrets:
+      EVM_TESTNET_DEPLOYER: ${{ secrets.EVM_TESTNET_DEPLOYER }}
+
+  upgrade-xchain-mainnet:
+    needs: [guard, upgrade-xchain]
+    if: needs.guard.outputs.xchain_changed == 'true' && needs.upgrade-xchain.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: evm-xchain-mainnet-upgrade-${{ matrix.network }}
+      cancel-in-progress: false
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        include:
+          - network: base
+            proxy_var: XCHAIN_PROXY_BASE
+            rpc_secret: base-mainnet-rpc-url
+            chain_id: '8453'
+          - network: ethereum
+            proxy_var: XCHAIN_PROXY_ETHEREUM
+            rpc_secret: eth-mainnet-rpc-url
+            chain_id: '1'
+    defaults:
+      run:
+        working-directory: evm
+    env:
+      XCHAIN_PROXY: ${{ vars[matrix.proxy_var] }}
+      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+      IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          submodules: recursive
+
+      - name: Mainnet allowlist guard
+        run: bash ../scripts/check-mainnet-allowlist.sh ${{ matrix.proxy_var }}
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Read keyed RPC and check chain id
+        run: |
+          set -euo pipefail
+          RPC="$(gcloud secrets versions access latest --secret=${{ matrix.rpc_secret }})"
+          test -n "$RPC" || { echo "::error::${{ matrix.rpc_secret }} is empty"; exit 1; }
+          echo "::add-mask::$RPC"
+          echo "RPC=$RPC" >> "$GITHUB_ENV"
+          got="$(cast chain-id --rpc-url "$RPC")"
+          test "$got" = "${{ matrix.chain_id }}" || { echo "::error::chain id $got != ${{ matrix.chain_id }}"; exit 1; }
+
+      - name: Pre-flight (proxy, owner, snapshot)
+        run: |
+          set -euo pipefail
+          test -n "$XCHAIN_PROXY" || { echo "::error::${{ matrix.proxy_var }} repo variable is unset"; exit 1; }
+          test "$(cast codesize "$XCHAIN_PROXY" --rpc-url "$RPC")" -gt 0 || { echo "::error::no code at $XCHAIN_PROXY"; exit 1; }
+          DEPLOYER="$(cast wallet address --private-key "$DEPLOYER_PK")"
+          OWNER="$(cast call "$XCHAIN_PROXY" 'owner()(address)' --rpc-url "$RPC")"
+          [ "${OWNER,,}" = "${DEPLOYER,,}" ] || { echo "::error::proxy owner $OWNER != deployer $DEPLOYER"; exit 1; }
+          echo "OWNER_BEFORE=$OWNER" >> "$GITHUB_ENV"
+          echo "IMPL_BEFORE=$(cast storage "$XCHAIN_PROXY" "$IMPL_SLOT" --rpc-url "$RPC")" >> "$GITHUB_ENV"
+          echo "STAKE_BEFORE=$(cast call "$XCHAIN_PROXY" 'stakeWei()(uint128)' --rpc-url "$RPC")" >> "$GITHUB_ENV"
+          echo "deployer balance: $(cast balance "$DEPLOYER" --ether --rpc-url "$RPC") ETH"
+
+      - name: Simulate upgrade against live state (no broadcast)
+        run: forge script script/UpgradeCrossChainGame.s.sol --rpc-url "$RPC" --private-key "$DEPLOYER_PK"
+
+      - name: Broadcast upgrade
+        run: forge script script/UpgradeCrossChainGame.s.sol --rpc-url "$RPC" --private-key "$DEPLOYER_PK" --broadcast --slow
+
+      - name: Verify implementation moved and state is intact
+        run: |
+          set -euo pipefail
+          IMPL_AFTER="$(cast storage "$XCHAIN_PROXY" "$IMPL_SLOT" --rpc-url "$RPC")"
+          [ "$IMPL_AFTER" != "$IMPL_BEFORE" ] || { echo "::error::implementation slot unchanged"; exit 1; }
+          IMPL_ADDR="0x${IMPL_AFTER:26}"
+          test "$(cast codesize "$IMPL_ADDR" --rpc-url "$RPC")" -gt 0 || { echo "::error::no code at new impl $IMPL_ADDR"; exit 1; }
+          OWNER="$(cast call "$XCHAIN_PROXY" 'owner()(address)' --rpc-url "$RPC")"
+          [ "$OWNER" = "$OWNER_BEFORE" ] || { echo "::error::owner changed: $OWNER_BEFORE -> $OWNER"; exit 1; }
+          STAKE="$(cast call "$XCHAIN_PROXY" 'stakeWei()(uint128)' --rpc-url "$RPC")"
+          [ "$STAKE" = "$STAKE_BEFORE" ] || { echo "::error::stakeWei changed: $STAKE_BEFORE -> $STAKE"; exit 1; }
+          echo "${{ matrix.network }}: $XCHAIN_PROXY implementation ${IMPL_BEFORE:26} -> ${IMPL_AFTER:26}"

@@ -63,7 +63,7 @@ const PROGRAM_ID = new PublicKey(
   "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P"
 );
 const CONTRACT = (process.env.CONTRACT ??
-  "0xd38b1fB07Bf64801bCBc3721937D6e2Ba6E5feb4") as `0x${string}`;
+  "0x7Cc7667f4B71c8eb1D4d3fADE088BFD8d01290AB") as `0x${string}`;
 const SOLANA_CHAIN_ID = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 const IDL_PATH =
   process.env.IDL_PATH ??
@@ -130,7 +130,7 @@ async function evmStatus(id: `0x${string}`): Promise<number> {
   const out = cast([
     "call",
     CONTRACT,
-    "matches(bytes32)(uint8,address,address,address,bool,bool,bool,uint128,uint128,uint64,uint64,uint64,uint64,bytes32,uint8,uint8)",
+    "matches(bytes32)(uint8,address,address,address,bool,bool,bool,uint128,uint128,uint64,uint64,uint64,uint64,bytes32,uint8,uint8,bytes32)",
     id,
     "--rpc-url",
     EVM_RPC,

@@ -12,3 +12,5 @@ solana:
 evm:
   coordination_game_v4_base: V4_PROXY_BASE # eip155:8453, auto-upgrade-evm-testnet.yml upgrade-mainnet
   coordination_game_v4_ethereum: V4_PROXY_ETHEREUM # eip155:1, auto-upgrade-evm-testnet.yml upgrade-mainnet
+  crosschain_game_base: XCHAIN_PROXY_BASE # eip155:8453, auto-upgrade-evm-testnet.yml upgrade-xchain-mainnet
+  crosschain_game_ethereum: XCHAIN_PROXY_ETHEREUM # eip155:1, auto-upgrade-evm-testnet.yml upgrade-xchain-mainnet

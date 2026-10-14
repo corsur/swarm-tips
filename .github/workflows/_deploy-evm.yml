@@ -214,6 +214,27 @@ jobs:
             --private-key "$DEPLOYER_PK" \
             --broadcast
 
+      - name: Upgrade CrossChainGame (implementation only)
+        if: inputs.contract == 'crosschain-upgrade'
+        env:
+          XCHAIN_PROXY_BASE_SEPOLIA: ${{ vars.XCHAIN_PROXY_BASE_SEPOLIA }}
+          XCHAIN_PROXY_BASE: ${{ vars.XCHAIN_PROXY_BASE }}
+          XCHAIN_PROXY_ETHEREUM: ${{ vars.XCHAIN_PROXY_ETHEREUM }}
+        run: |
+          case "$INPUT_NETWORK" in
+            base_sepolia) XCHAIN_PROXY="$XCHAIN_PROXY_BASE_SEPOLIA"; VAR=XCHAIN_PROXY_BASE_SEPOLIA ;;
+            base)         XCHAIN_PROXY="$XCHAIN_PROXY_BASE";         VAR=XCHAIN_PROXY_BASE ;;
+            ethereum)     XCHAIN_PROXY="$XCHAIN_PROXY_ETHEREUM";     VAR=XCHAIN_PROXY_ETHEREUM ;;
+            *) echo "::error::no XCHAIN proxy variable mapped for network '$INPUT_NETWORK'"; exit 1 ;;
+          esac
+          export XCHAIN_PROXY
+          test -n "$XCHAIN_PROXY" || { echo "$VAR repo variable is unset"; exit 1; }
+          echo "upgrading CrossChainGame proxy $XCHAIN_PROXY on $INPUT_NETWORK"
+          forge script script/UpgradeCrossChainGame.s.sol \
+            --rpc-url "$RPC_TARGET" \
+            --private-key "$DEPLOYER_PK" \
+            --broadcast
+
       - name: Deploy ShillbotEscrow
         if: inputs.contract == 'shillbot'
         env:
