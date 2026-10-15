@@ -46,9 +46,10 @@ Reviewed Zeta23 commit `3635e74826a4c1fcece7d1cd2b6fa75e43a00510`.
 The generic challenge files define immutable candidate statements:
 - `CubicStatement.lean`: Generic entrywise trace-of-cube identity `tr(G³)`.
 - `QuarticStatement.lean`: Generic entrywise trace-of-fourth-power identity `tr(G⁴)`.
-- `WeilCorrelationStatement.lean`: Open higher-degree trace moment bound and quadruple prime-logarithm correlation at `λ = 1`.
-- `tests/fixtures/lean/catalog/open/weil-gram-cubic-correlation.lean`: Standing catalog open bounty for cubic correlation.
-- `tests/fixtures/lean/catalog/open/weil-gram-quartic-correlation.lean`: Standing catalog open bounty for quartic correlation.
+- `WeilCorrelationStatement.lean`: Open higher-degree trace moment bound and quadruple prime-logarithm correlation at `λ = 1` (with uniform outer existential quantifier `∃ C ≥ 0, ∀ P, T`).
+- `tests/fixtures/lean/catalog/open/weil-gram-cubic-correlation.lean`: Standing Millennium RH catalog open bounty for uniform cubic prime-logarithm Gram correlation (`∃ C ≥ 0, ∀ N ≥ 2`).
+- `tests/fixtures/lean/catalog/open/weil-gram-quartic-correlation.lean`: Standing Millennium RH catalog open bounty for uniform quartic GUE prime-logarithm Gram correlation (`∃ C ≥ 0, ∀ N ≥ 2`).
+- `tests/fixtures/lean/catalog/open/weil-gram-spectral-floor.lean`: Standing Millennium RH catalog open bounty for uniform sub-Hilbert-Schmidt Rayleigh-quotient control (`θ < 1/2`) on the zero-mean subspace of `weilPrimeGram N`.
 
 Their final campaign commitments bind their exact bytes, environment, and dependency bundle. Budget assignment, campaign IDs, and acceptance examples remain recorded after rollout gates pass.
 

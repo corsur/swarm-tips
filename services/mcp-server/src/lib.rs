@@ -635,6 +635,10 @@ fn build_router(
             reputation::rebuild_handler(reputation_db.clone(), internal_api_key.clone()),
         )
         .route(
+            "/internal/reputation/record-bounty",
+            reputation::record_bounty_handler(reputation_db.clone(), internal_api_key.clone()),
+        )
+        .route(
             "/internal/reputation/backfill",
             reputation::backfill_handler(
                 Arc::clone(&reputation_db),

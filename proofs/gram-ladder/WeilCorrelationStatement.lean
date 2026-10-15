@@ -9,16 +9,16 @@ open scoped BigOperators Matrix
     P.lam = 1 (matching local mean zero spacing 2π/log T), the fourth trace
     moment tr(G⁴) expands into quadruple products of prime logarithms
     ∑_{p₁,p₂,p₃,p₄} Λ(p₁)Λ(p₂)Λ(p₃)Λ(p₄)/(p₁p₂p₃p₄)^½.
-    
-    This statement formalizes the open bound on the off-diagonal quadruple
-    correlation, asserting that tr(G⁴) satisfies the GUE Gaussian-pairing
-    asymptotic on par with Montgomery's 4-point correlation conjecture. -/
+
+    This statement formalizes the uniform open bound (∃ C ≥ 0 outside ∀ P, T)
+    on the off-diagonal quadruple correlation, asserting that tr(G⁴) satisfies
+    the GUE Gaussian-pairing asymptotic on par with Montgomery's 4-point
+    correlation conjecture. -/
 def statementProp : Prop :=
-  ∀ (P : Zeta23.Defs.Params) (hValid : P.Valid) (hLam : P.lam = 1),
-    let G := Zeta23.Defs.Params.Gentry P
-    let d := P.d
-    ∀ (n : ℕ) (hn : n = d),
-      ∃ (C : ℝ), 0 ≤ C ∧
-        |Matrix.trace ((G : Matrix (Fin d) (Fin d) ℂ) ^ 4) -
-          2 * (Matrix.trace ((G : Matrix (Fin d) (Fin d) ℂ) ^ 2)) ^ 2| ≤
-          C * Matrix.trace ((G : Matrix (Fin d) (Fin d) ℂ) ^ 2)
+  ∃ (C : ℝ), 0 ≤ C ∧
+    ∀ (P : Zeta23.Defs.Params) (_hValid : P.Valid) (_hLam : P.lam = 1)
+      (T : ℝ) (_hT : P.T0 ≤ T),
+      let n := P.M + 1
+      let G : Matrix (Fin n) (Fin n) ℝ := fun i j => P.Gentry T i.val j.val
+      |Matrix.trace (G ^ 4) - 2 * (Matrix.trace (G ^ 2)) ^ 2| ≤
+        C * Matrix.trace (G ^ 2)

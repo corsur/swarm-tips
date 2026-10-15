@@ -163,9 +163,16 @@ async function broadcast(conn: Connection, signedB64: string): Promise<string> {
   throw new Error(`Transaction ${sig} was not confirmed within 90.00 seconds`);
 }
 
+export const MILLENNIUM_TASKS = new Set([
+  "weil-gram-cubic-correlation",
+  "weil-gram-quartic-correlation",
+  "weil-gram-spectral-floor",
+]);
+
 export interface CatalogEntry {
   name: string;
   kind: "open" | "solvable";
+  program: "millennium-rh-weil-gram" | "general";
   statement: string;
 }
 
@@ -175,14 +182,38 @@ export function loadCatalog(): CatalogEntry[] {
     const dir = path.join(CATALOG_DIR, kind);
     for (const f of fs.readdirSync(dir).sort()) {
       if (!f.endsWith(".lean") || f.endsWith(".proof.lean")) continue;
+      const name = f.replace(/\.lean$/, "");
       entries.push({
-        name: f.replace(/\.lean$/, ""),
+        name,
         kind,
+        program: MILLENNIUM_TASKS.has(name)
+          ? "millennium-rh-weil-gram"
+          : "general",
         statement: fs.readFileSync(path.join(dir, f), "utf8").trimEnd(),
       });
     }
   }
   return entries;
+}
+
+/**
+ * Static quantifier-order audit: rejects any open problem where an existential
+ * bounding constant `∃ (C : ℝ)` or `∃ C` is placed INSIDE a universal matrix/dimension
+ * quantifier `∀ (n` / `∀ (N` / `∀ (G` (the exact bug exploited by 2qu3Do... via C = |x| / tr(G^2)).
+ */
+export function assertOuterExistentialQuantifierOrder(
+  entry: CatalogEntry
+): void {
+  const propIdx = entry.statement.indexOf("def statementProp");
+  const body =
+    propIdx >= 0 ? entry.statement.slice(propIdx) : entry.statement;
+  const forallMatch = body.search(/∀\s*\(\s*[nNGP]\b/);
+  const existsCMatch = body.search(/∃\s*\(?\s*C\s*:/);
+  if (forallMatch >= 0 && existsCMatch > forallMatch) {
+    throw new Error(
+      `[ANTI-VACUITY GATE FAILED] ${entry.name}: existential constant '∃ C' appears AFTER universal quantifier '∀' in statementProp. Move '∃ (C : ℝ), 0 ≤ C ∧' outside '∀' so C cannot be chosen pointwise!`
+    );
+  }
 }
 
 const DEFAULT_RUNNER_URL =
@@ -203,6 +234,8 @@ function getRunnerIdToken(audience: string): string {
 }
 
 async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
+  assertOuterExistentialQuantifierOrder(entry);
+
   const token = getRunnerIdToken(DEFAULT_RUNNER_URL);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -215,14 +248,14 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
     headers,
     body: JSON.stringify({
       statement: entry.statement,
-      proof: "theorem proof : statementProp := by sorry",
+      proof: "theorem solution : statementProp := sorry",
       statement_def: "statementProp",
-      entry_theorem: "proof",
+      entry_theorem: "solution",
       axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
       mode: "mathlib",
       import_allowlist: ["Mathlib"],
-      max_build_secs: 600,
-      max_build_mem_mb: 8192,
+      max_build_secs: 120,
+      max_build_mem_mb: 16384,
     }),
   });
   if (!res.ok) {
@@ -244,28 +277,73 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
       `pre-seed elaboration gate FAILED for ${entry.name}: expected verdict=fail("proof uses sorry"), got verdict=${resp.verdict} detail=${resp.detail}`
     );
   }
+
+  // Canary 1: 6Riwz... zero-constant / positivity vacuity probe
+  // Canary 2: 2qu3Do... pointwise ratio (C = |x| / tr(G^2)) shortcut probe
+  const canaryProbes = [
+    {
+      label: "zero-constant-vacuity",
+      proof:
+        "import Mathlib.Tactic.Positivity\ntheorem solution : statementProp := by\n  refine ⟨0, le_rfl, fun N _ => ?_⟩\n  positivity",
+    },
+    {
+      label: "pointwise-ratio-shortcut",
+      proof:
+        "theorem solution : statementProp := by\n  intro N hN\n  refine ⟨0, le_rfl, ?_⟩\n  exact le_rfl",
+    },
+  ];
+
+  for (const canary of canaryProbes) {
+    const cRes = await fetch(`${DEFAULT_RUNNER_URL}/check`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        statement: entry.statement,
+        proof: canary.proof,
+        statement_def: "statementProp",
+        entry_theorem: "solution",
+        axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
+        mode: "mathlib",
+        import_allowlist: ["Mathlib"],
+        max_build_secs: 90,
+        max_build_mem_mb: 16384,
+      }),
+    });
+    if (!cRes.ok) {
+      throw new Error(
+        `pre-seed canary check HTTP ${cRes.status} for ${entry.name} (${canary.label})`
+      );
+    }
+    const cJson = (await cRes.json()) as { verdict?: string; detail?: string };
+    if (cJson.verdict === "pass") {
+      throw new Error(
+        `[ANTI-VACUITY GATE FAILED] ${entry.name} was solved trivially by canary '${canary.label}'! Refusing to seed.`
+      );
+    }
+  }
+
   console.log(
-    `  [pre-seed check PASS] ${entry.name} elaborated cleanly (${
+    `  [pre-seed check PASS] ${entry.name} elaborated cleanly & rejected vacuity/ratio canaries (${
       Date.now() - t0
     }ms)`
   );
 }
 
-async function existingTopics(
+async function existingOpenTopics(
   bearer: string,
   network: string
 ): Promise<Set<string>> {
-  const list = (await api(
+  const res = (await api(
     "GET",
-    `/campaigns?network=${network}`,
+    `/tasks?network=${network}&limit=100`,
     bearer
-  )) as unknown as Array<{ status?: string; brief?: { topic?: string } }>;
+  )) as { tasks?: Array<{ state?: string; campaign_topic?: string }> };
   const topics = new Set<string>();
-  const items = Array.isArray(list) ? list : (list as any)?.campaigns ?? [];
-  for (const c of items) {
-    const st = String(c.status ?? "").toLowerCase();
-    if (st === "cancelled" || st === "expired") continue;
-    if (c.brief?.topic) topics.add(c.brief.topic);
+  for (const t of res.tasks ?? []) {
+    const st = String(t.state ?? "").toLowerCase();
+    if (st === "open" && t.campaign_topic) {
+      topics.add(t.campaign_topic);
+    }
   }
   return topics;
 }
@@ -274,7 +352,44 @@ async function main(): Promise<void> {
   const isMainnet =
     process.argv.includes("--mainnet") ||
     process.env.SOLANA_NETWORK === "mainnet";
+  const checkOnly = process.argv.includes("--check-only");
   const network = isMainnet ? "mainnet" : "devnet";
+
+  let catalog = loadCatalog();
+  const taskArg = process.argv.find((a) => a.startsWith("--tasks="));
+  const isMillenniumOnly =
+    process.argv.includes("--millennium") ||
+    process.argv.includes("--new") ||
+    (isMainnet && !process.argv.includes("--all-open"));
+
+  if (taskArg) {
+    const allowed = new Set(
+      taskArg
+        .replace("--tasks=", "")
+        .split(",")
+        .map((s) => s.trim())
+    );
+    catalog = catalog.filter((e) => allowed.has(e.name));
+  } else if (isMillenniumOnly) {
+    catalog = catalog.filter((e) => e.program === "millennium-rh-weil-gram");
+  }
+
+  console.log(
+    `catalog: ${catalog.length} statements (${catalog
+      .map((e) => e.name)
+      .join(", ")})`
+  );
+
+  if (checkOnly) {
+    for (const entry of catalog) {
+      await verifyStatementElaborates(entry);
+    }
+    console.log(
+      `\n[check-only PASS] All ${catalog.length} statements passed elaboration & anti-vacuity gate.`
+    );
+    return;
+  }
+
   const rpcUrl = getRpcUrl(isMainnet);
   const conn = new Connection(rpcUrl, "confirmed");
 
@@ -303,27 +418,6 @@ async function main(): Promise<void> {
     ).toFixed(4)} SOL)`
   );
 
-  let catalog = loadCatalog();
-  const taskArg = process.argv.find((a) => a.startsWith("--tasks="));
-  const isNewOnly = process.argv.includes("--new");
-
-  if (taskArg) {
-    const allowed = new Set(
-      taskArg
-        .replace("--tasks=", "")
-        .split(",")
-        .map((s) => s.trim())
-    );
-    catalog = catalog.filter((e) => allowed.has(e.name));
-  } else if (isNewOnly) {
-    const newSet = new Set([
-      "weil-gram-cubic-correlation",
-      "weil-gram-quartic-correlation",
-    ]);
-    catalog = catalog.filter((e) => newSet.has(e.name));
-  }
-
-  console.log(`catalog: ${catalog.length} statements`);
   const minLamports = escrowLamports * catalog.length + 5_000_000;
   if (bal < minLamports) {
     throw new Error(
@@ -336,14 +430,17 @@ async function main(): Promise<void> {
   }
 
   const skipPrecheck = process.argv.includes("--skip-precheck");
-  const already = await existingTopics(bearer, network);
+  const forceReseed = process.argv.includes("--force");
+  const already = forceReseed
+    ? new Set<string>()
+    : await existingOpenTopics(bearer, network);
   let created = 0;
   let skipped = 0;
 
   for (const entry of catalog) {
     const topic = `catalog:${entry.name}`;
     if (already.has(topic)) {
-      console.log(`  skip (exists): ${topic}`);
+      console.log(`  skip (open task exists): ${topic}`);
       skipped++;
       continue;
     }

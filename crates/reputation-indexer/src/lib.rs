@@ -42,16 +42,18 @@ pub struct TrustEdgeDoc {
     /// Settlement tx signature — the doc id, repeated in the body so the
     /// indexer can dedupe defensively.
     pub tx_sig: String,
-    /// Paying counterparty (client wallet).
+    /// Paying counterparty (client wallet or reputation anchor).
     pub from: String,
-    /// Paid worker (agent wallet).
+    /// Paid worker or bug-bounty recipient (agent wallet).
     pub to: String,
-    /// Outcome quality in [0, 1]: composite_score / score_max at
-    /// finalize; 0.0 for a settlement the agent lost (challenge).
+    /// Outcome quality in [0, 5.0]: composite_score / score_max at
+    /// finalize (in [0, 1]); 0.0 for a settlement the agent lost (challenge);
+    /// or `(amount_usd * 2.0).clamp(0.1, 5.0)` for a verified `"bug_bounty"`.
     pub weight: f64,
-    /// On-chain task id the settlement belongs to.
+    /// On-chain task id the settlement belongs to (0 for standalone bug bounties).
+    #[serde(default)]
     pub task_id: u64,
-    /// "shillbot_finalize" | "challenge_resolved".
+    /// "shillbot_finalize" | "challenge_resolved" | "bug_bounty".
     pub source: String,
     /// CAIP-2 chain id the settlement happened on (e.g.
     /// "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp").
@@ -83,6 +85,9 @@ pub struct AgentReputation {
     pub settlements_received: u32,
     /// Settlements where this wallet paid (outgoing edges).
     pub settlements_paid: u32,
+    /// Verified bug bounties awarded to this wallet (`source == "bug_bounty"`).
+    #[serde(default)]
+    pub bug_bounties_received: u32,
     /// Distinct counterparties across both directions — the Sybil-relevant
     /// diversity signal.
     pub counterparty_count: u32,
@@ -105,6 +110,76 @@ pub struct ReputationBuild {
     pub duplicate_edges_dropped: usize,
     pub converged: bool,
     pub iterations: usize,
+}
+
+/// Maximum weight permitted on a single trust edge (allows up to 5.0 for
+/// high-severity anchor-verified bug bounties while keeping standard task
+/// settlements in [0, 1]).
+pub const MAX_EDGE_WEIGHT: f64 = 5.0;
+
+/// Widest-path monotonicity cap from pre-trusted anchors: no non-anchor peer
+/// may outrank the bottleneck trust score along any positive-weight path
+/// connecting it to `pre_trusted`.
+///
+/// Mirrors `web_position::cap_at_entry_points`:
+/// - Peers in `pre_trusted` are uncapped (`cap = ∞`).
+/// - Direct positive-weight recipients of a `pre_trusted` peer receive `inflow = ∞`
+///   (uncapped relative to the anchor, since anchors carry the α pre-trust seed).
+/// - Downstream hops `u -> v` (where `u ∉ pre_trusted`) receive
+///   `inflow = min(cap(u), score(u))`, preventing a mutual-vouch Sybil ring behind
+///   a single settled task or bounty from trapping random-walk mass and outranking
+///   its own entry point `u`.
+/// - Detached rings with no positive-weight path from `pre_trusted` cap at `0.0`.
+pub fn cap_at_anchors(
+    scores: &mut HashMap<String, f64>,
+    edges: &[eigentrust::TrustEdge],
+    pre_trusted: &HashSet<String>,
+) {
+    let mut caps: HashMap<String, f64> = scores
+        .keys()
+        .map(|k| {
+            let init = if pre_trusted.contains(k) {
+                f64::INFINITY
+            } else {
+                0.0
+            };
+            (k.clone(), init)
+        })
+        .collect();
+
+    for _ in 0..=scores.len() {
+        let mut changed = false;
+        for e in edges {
+            if e.weight <= 0.0 || e.from == e.to || pre_trusted.contains(&e.to) {
+                continue;
+            }
+            let inflow = if pre_trusted.contains(&e.from) {
+                f64::INFINITY
+            } else {
+                let from_cap = caps.get(&e.from).copied().unwrap_or(0.0);
+                let from_score = scores.get(&e.from).copied().unwrap_or(0.0);
+                from_cap.min(from_score)
+            };
+            let entry = caps.entry(e.to.clone()).or_insert(0.0);
+            if inflow > *entry {
+                *entry = inflow;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for (peer, score) in scores.iter_mut() {
+        if pre_trusted.contains(peer) {
+            continue;
+        }
+        let cap = caps.get(peer).copied().unwrap_or(0.0);
+        if *score > cap {
+            *score = cap;
+        }
+    }
 }
 
 /// Build per-agent reputation from settlement edge docs.
@@ -136,15 +211,17 @@ pub fn build_reputation(
         .map(|d| eigentrust::TrustEdge {
             from: d.from.clone(),
             to: d.to.clone(),
-            weight: d.weight.clamp(0.0, 1.0),
+            weight: d.weight.clamp(0.0, MAX_EDGE_WEIGHT),
         })
         .collect();
 
-    let result = eigentrust::compute_eigentrust(&edges, pre_trusted, config)?;
+    let mut result = eigentrust::compute_eigentrust(&edges, pre_trusted, config)?;
+    cap_at_anchors(&mut result.scores, &edges, pre_trusted);
 
     // Per-agent edge stats.
     let mut received: HashMap<&str, u32> = HashMap::new();
     let mut paid: HashMap<&str, u32> = HashMap::new();
+    let mut bounties: HashMap<&str, u32> = HashMap::new();
     let mut counterparties: HashMap<&str, HashSet<&str>> = HashMap::new();
     let mut newest_edge: HashMap<&str, chrono::DateTime<chrono::Utc>> = HashMap::new();
     for d in &unique {
@@ -162,6 +239,10 @@ pub fn build_reputation(
         *r = r.saturating_add(1);
         let p = paid.entry(d.from.as_str()).or_default();
         *p = p.saturating_add(1);
+        if d.source == "bug_bounty" {
+            let b = bounties.entry(d.to.as_str()).or_default();
+            *b = b.saturating_add(1);
+        }
         counterparties
             .entry(d.to.as_str())
             .or_default()
@@ -184,6 +265,7 @@ pub fn build_reputation(
             rank_normalized: 1.0 - (i as f64) / n,
             settlements_received: received.get(wallet.as_str()).copied().unwrap_or(0),
             settlements_paid: paid.get(wallet.as_str()).copied().unwrap_or(0),
+            bug_bounties_received: bounties.get(wallet.as_str()).copied().unwrap_or(0),
             counterparty_count: counterparties
                 .get(wallet.as_str())
                 .map(|s| s.len() as u32)
@@ -549,6 +631,72 @@ mod tests {
             assert!(
                 rank_of("honest") < rank_of("x") && rank_of("honest") < rank_of("y"),
                 "weight {weight}: detached ring outranked the anchored agent"
+            );
+        }
+    }
+
+    #[test]
+    fn bug_bounty_edges_track_count_and_boost_rank() {
+        let mut bounty_edge = edge("bug_bounty_solana_tx1", "anchor", "whitehat", 2.5);
+        bounty_edge.source = "bug_bounty".to_string();
+        bounty_edge.task_id = 0;
+
+        let regular_edge = edge("task_tx2", "anchor", "worker", 1.0);
+        let build = build_reputation(
+            &[bounty_edge, regular_edge],
+            &pre(&["anchor"]),
+            &EigenTrustConfig::default(),
+            chrono::Utc::now(),
+        )
+        .expect("build");
+
+        let wh = build
+            .agents
+            .iter()
+            .find(|a| a.wallet == "whitehat")
+            .unwrap();
+        let wk = build.agents.iter().find(|a| a.wallet == "worker").unwrap();
+        assert_eq!(wh.bug_bounties_received, 1);
+        assert_eq!(wk.bug_bounties_received, 0);
+        assert!(
+            wh.eigentrust_score > wk.eigentrust_score,
+            "higher-weight bug_bounty edge must outrank single 1.0 task edge"
+        );
+    }
+
+    #[test]
+    fn cap_at_anchors_prevents_downstream_sybil_ring_amplification() {
+        // anchor -> entry_agent -> sybil_a <-> sybil_b
+        // Without cap_at_anchors, sybil_a <-> sybil_b traps random-walk mass
+        // and outranks entry_agent. With cap_at_anchors, neither sybil may
+        // exceed entry_agent's score.
+        let docs = vec![
+            edge("t1", "anchor", "entry_agent", 1.0),
+            edge("t2", "entry_agent", "sybil_a", 1.0),
+            edge("s1", "sybil_a", "sybil_b", 1.0),
+            edge("s2", "sybil_b", "sybil_a", 1.0),
+        ];
+        let build = build_reputation(
+            &docs,
+            &pre(&["anchor"]),
+            &EigenTrustConfig::default(),
+            chrono::Utc::now(),
+        )
+        .expect("build");
+        let score_of = |w: &str| {
+            build
+                .agents
+                .iter()
+                .find(|a| a.wallet == w)
+                .map(|a| a.eigentrust_score)
+                .unwrap_or(0.0)
+        };
+        let entry_score = score_of("entry_agent");
+        for sybil in ["sybil_a", "sybil_b"] {
+            assert!(
+                score_of(sybil) <= entry_score,
+                "{sybil} ({}) must not outrank its entry point ({entry_score})",
+                score_of(sybil)
             );
         }
     }
