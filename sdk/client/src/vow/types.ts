@@ -80,6 +80,7 @@ export interface DecodedAccount {
   verification_hash: string;
   content_hash: string;
   content_id_hash: string;
+  platform?: number;
 }
 
 /**
@@ -127,4 +128,5 @@ export interface ProtocolHandler {
   decode: AccountDecoder;
   resolveState: StateResolver;
   validStates: ValidStates;
+  programId?: string;
 }

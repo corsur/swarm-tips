@@ -302,23 +302,47 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         );
     }
 
-    /// @notice Authorize `sessionKey` to act for the signing wallet in
-    ///         commit/reveal/timeout. The wallet signs `sessionAuthDigest`
-    ///         off-chain; anyone (typically the session key) submits it.
-    function authorizeSession(address player, address sessionKey, uint64 expiry, bytes calldata playerSig) external {
-        if (sessionKey == address(0) || expiry <= block.timestamp) revert BadSession();
-        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(sessionAuthDigest(player, sessionKey, expiry));
-        if (ECDSA.recover(digest, playerSig) != player) revert BadSignature();
+    /// sessionKey => player wallet that currently owns it.
+    mapping(address => address) public sessionOwner;
+
+    function _bindSessionKey(address player, address sessionKey, uint64 expiry) private {
+        if (sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp) revert BadSession();
+        address currentOwner = sessionOwner[sessionKey];
+        if (
+            currentOwner != address(0) && currentOwner != player && sessions[currentOwner].sessionKey == sessionKey
+                && block.timestamp < sessions[currentOwner].expiry
+        ) {
+            revert BadSession();
+        }
+        address prevKey = sessions[player].sessionKey;
+        if (prevKey != address(0) && sessionOwner[prevKey] == player) {
+            delete sessionOwner[prevKey];
+        }
         sessions[player] = SessionAuth(sessionKey, expiry);
+        sessionOwner[sessionKey] = player;
         unchecked {
             sessionNonce[player]++;
         }
         emit SessionAuthorized(player, sessionKey, expiry);
     }
 
+    /// @notice Authorize `sessionKey` to act for the signing wallet in
+    ///         commit/reveal/timeout. The wallet signs `sessionAuthDigest`
+    ///         off-chain; anyone (typically the session key) submits it.
+    function authorizeSession(address player, address sessionKey, uint64 expiry, bytes calldata playerSig) external {
+        if (sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp) revert BadSession();
+        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(sessionAuthDigest(player, sessionKey, expiry));
+        if (ECDSA.recover(digest, playerSig) != player) revert BadSignature();
+        _bindSessionKey(player, sessionKey, expiry);
+    }
+
     /// @notice Revoke the caller's session immediately (and invalidate any
     ///         pending authorization signatures by bumping the nonce).
     function revokeSession() external {
+        address prevKey = sessions[msg.sender].sessionKey;
+        if (prevKey != address(0) && sessionOwner[prevKey] == msg.sender) {
+            delete sessionOwner[prevKey];
+        }
         delete sessions[msg.sender];
         unchecked {
             sessionNonce[msg.sender]++;
@@ -337,12 +361,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     ///         CEI + nonReentrant — session state is written before the ETH is
     ///         forwarded to the session EOA.
     function openSession(address sessionKey, uint64 expiry) external payable nonReentrant {
-        if (sessionKey == address(0) || expiry <= block.timestamp) revert BadSession();
-        sessions[msg.sender] = SessionAuth(sessionKey, expiry);
-        unchecked {
-            sessionNonce[msg.sender]++;
-        }
-        emit SessionAuthorized(msg.sender, sessionKey, expiry);
+        _bindSessionKey(msg.sender, sessionKey, expiry);
         if (msg.value > 0) {
             (bool ok,) = payable(sessionKey).call{value: msg.value}("");
             require(ok, "gas fund failed");
@@ -358,8 +377,13 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     }
 
     /// @dev Resolve which player `msg.sender` acts for (directly or via session).
-    ///      Reverts NotParticipant if it acts for neither. Returns isP1.
+    ///      Direct wallet callers always take precedence over session delegates
+    ///      so a counterparty can never hijack a wallet's seat by registering the
+    ///      wallet address as a session key. Reverts NotParticipant if it acts
+    ///      for neither. Returns isP1.
     function _actingSeat(Game storage g) private view returns (bool isP1) {
+        if (msg.sender == g.player1) return true;
+        if (msg.sender == g.player2) return false;
         if (_actsFor(msg.sender, g.player1)) return true;
         if (_actsFor(msg.sender, g.player2)) return false;
         revert NotParticipant();

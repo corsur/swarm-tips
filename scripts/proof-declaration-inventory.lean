@@ -55,6 +55,11 @@ def main (args : List String) : IO Unit := do
       | throw <| IO.userError s!"declaration belongs to unregistered audit module: {owner}"
     unless (`SwarmProofs.Generated).isPrefixOf expectedNamespace && expectedNamespace.isPrefixOf (privateToUserName name) do
       throw <| IO.userError s!"declaration escaped generated namespace: {name}"
+    if name == expectedNamespace ++ `proof then
+      let targetProp := expectedNamespace ++ `statementProp
+      if env.contains targetProp then
+        unless info.type == .const targetProp [] do
+          throw <| IO.userError s!"proof theorem type {info.type} does not match bare {targetProp} (unexpected binders or type mismatch)"
     roots := roots.push name
     declarations := declarations.push <| Json.mkObj [
       ("name", toJson name.toString),

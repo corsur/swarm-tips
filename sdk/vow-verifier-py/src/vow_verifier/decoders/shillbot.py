@@ -32,6 +32,7 @@ def decode_shillbot_task(data: bytes, account_kind: str) -> DecodedAccount:
     client = base58.b58encode(data[8:40]).decode("ascii")
     agent = base58.b58encode(data[40:72]).decode("ascii")
     state = data[72]
+    platform = data[73]
     content_hash = data[82:114].hex()
     content_id_hash = data[114:146].hex()
     composite_score = struct.unpack_from("<Q", data, 162)[0]
@@ -48,6 +49,7 @@ def decode_shillbot_task(data: bytes, account_kind: str) -> DecodedAccount:
         verification_hash=verification_hash,
         content_hash=content_hash,
         content_id_hash=content_id_hash,
+        platform=platform,
     )
 
 
@@ -78,8 +80,11 @@ def shillbot_valid_states(account_kind: str):
     return ("verified",)
 
 
+SHILLBOT_PROGRAM_ID = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
+
 SHILLBOT_PROTOCOL = ProtocolHandler(
     decode=decode_shillbot_task,
     resolve_state=resolve_shillbot_state,
     valid_states=shillbot_valid_states,
+    program_id=SHILLBOT_PROGRAM_ID,
 )

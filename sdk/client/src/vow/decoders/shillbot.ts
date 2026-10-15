@@ -69,10 +69,7 @@ export const decodeShillbotTask: AccountDecoder = (data, accountKind) => {
   const client = new PublicKey(data.slice(8, 40)).toBase58();
   const agent = new PublicKey(data.slice(40, 72)).toBase58();
   const state = data[72];
-  // platform is at offset 73 but unused by the verifier (the wire
-  // format carries it directly; verifier's field-equality check
-  // covers it via the v1 §4 step 5 platform comparison done by the
-  // caller, not here).
+  const platform = data[73];
   const content_hash = bytesToHex(data.slice(82, 114));
   const content_id_hash = bytesToHex(data.slice(114, 146));
   const composite_score = view.getBigUint64(162, true);
@@ -84,6 +81,7 @@ export const decodeShillbotTask: AccountDecoder = (data, accountKind) => {
     client,
     agent,
     state,
+    platform,
     composite_score,
     verified_at,
     verification_hash,
@@ -130,11 +128,14 @@ export const shillbotValidStates = (accountKind: string): readonly string[] => {
   return ["verified"];
 };
 
+export const SHILLBOT_VOW_PROGRAM_ID = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi";
+
 /** Convenience bundle for callers that just want the canonical Shillbot triple. */
 export const shillbotProtocol: ProtocolHandler = {
   decode: decodeShillbotTask,
   resolveState: resolveShillbotState,
   validStates: shillbotValidStates,
+  programId: SHILLBOT_VOW_PROGRAM_ID,
 };
 
 function bytesToHex(b: Uint8Array): string {

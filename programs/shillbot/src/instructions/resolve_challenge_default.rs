@@ -78,7 +78,9 @@ fn validate_default_resolution(
         ShillbotError::InvalidTaskState
     );
     require!(
-        challenge.task_id == task.task_id,
+        challenge.task_id == task.task_id
+            && !challenge.resolved
+            && challenge._reserved == task.client.to_bytes(),
         ShillbotError::InvalidTaskState
     );
     let window = global.dispute_resolution_window_seconds;

@@ -398,25 +398,57 @@ pub fn compose_generated_module(
             "promotion candidate violates the reusable policy".into(),
         ));
     }
-    let forbidden = [
+    let forbidden_shared = [
         "axiom ",
         "sorry",
+        "admit",
         "unsafe ",
+        "partial ",
+        "opaque ",
         "extern ",
+        "implemented_by",
+        "csimp",
         "macro ",
+        "macro_rules",
         "syntax ",
         "elab ",
+        "elab_rules",
         "command_elab",
+        "term_elab",
+        "notation ",
+        "infix",
+        "prefix ",
+        "postfix ",
+        "attribute ",
+        "variable ",
+        "variable(",
+        "variable[",
+        "variable{",
+        "run_tac",
+        "run_elab",
+        "by_elab",
+        "native_decide",
         "#eval",
         "#check",
+        "#print",
+        "#reduce",
+        "#synth",
         "namespace ",
         "section ",
     ];
+    let proof_only_forbidden = ["local ", "scoped ", "open ", "export "];
     let combined = format!("{}\n{}", candidate.statement, candidate.proof_source);
-    if forbidden.iter().any(|token| combined.contains(token))
-        || combined
-            .lines()
-            .any(|line| line.trim_start().starts_with("end "))
+    if forbidden_shared.iter().any(|token| combined.contains(token))
+        || proof_only_forbidden
+            .iter()
+            .any(|token| candidate.proof_source.contains(token))
+        || combined.lines().any(|line| {
+            let trimmed = line.trim_start();
+            trimmed == "section"
+                || trimmed == "end"
+                || trimmed.starts_with("end ")
+                || trimmed.starts_with("end\t")
+        })
     {
         return Err(RegistryError::Serialization(
             "promotion source contains a forbidden declaration or command".into(),
@@ -434,12 +466,16 @@ pub fn compose_generated_module(
             )));
         }
     }
-    let strip_imports = |source: &str| {
-        source
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("import "))
-            .collect::<Vec<_>>()
-            .join("\n")
+    let strip_imports = |source: &str| -> Result<String, RegistryError> {
+        let mut lines = Vec::new();
+        for line in source.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("import ") || trimmed.starts_with("import\t") {
+                continue;
+            }
+            lines.push(line);
+        }
+        Ok(lines.join("\n"))
     };
     let mut source = String::from(
         "/-\nCopyright 2026 Swarm Tips contributors\nSPDX-License-Identifier: Apache-2.0\n-/\n\nimport Mathlib\nimport Zeta23\n",
@@ -449,8 +485,8 @@ pub fn compose_generated_module(
     }
     source.push_str(&format!(
         "\nnamespace {namespace}\n\n{}\n\n{}\n\nend {namespace}\n",
-        strip_imports(&candidate.statement),
-        strip_imports(&candidate.proof_source)
+        strip_imports(&candidate.statement)?,
+        strip_imports(&candidate.proof_source)?
     ));
     Ok(GeneratedModule {
         source,

@@ -381,9 +381,10 @@ pub fn payout_to_base64(
                 "invalid or repeated payout-routing instruction".into(),
             ));
         }
-        recipient = Some(Pubkey::new_from_array(
-            ix.data[8..40].try_into().expect("length checked"),
-        ));
+        let pubkey_bytes: [u8; 32] = ix.data[8..40].try_into().map_err(|_| {
+            ValidationError::Rejected("invalid or repeated payout-routing instruction".into())
+        })?;
+        recipient = Some(Pubkey::new_from_array(pubkey_bytes));
     }
     Ok(recipient.map(|key| key.to_string()))
 }
@@ -402,7 +403,10 @@ pub fn validate_signed_base64(
 fn validate_compute_budget(data: &[u8]) -> Result<(), ValidationError> {
     match data.first().copied() {
         Some(2) if data.len() == 5 => {
-            let units = u32::from_le_bytes(data[1..5].try_into().expect("length checked"));
+            let unit_bytes: [u8; 4] = data[1..5].try_into().map_err(|_| {
+                ValidationError::Rejected("unsupported compute-budget instruction".into())
+            })?;
+            let units = u32::from_le_bytes(unit_bytes);
             if units == 0 || units > 1_400_000 {
                 return Err(ValidationError::Rejected(
                     "compute-unit limit is outside the accepted bound".into(),
@@ -410,7 +414,10 @@ fn validate_compute_budget(data: &[u8]) -> Result<(), ValidationError> {
             }
         }
         Some(3) if data.len() == 9 => {
-            let price = u64::from_le_bytes(data[1..9].try_into().expect("length checked"));
+            let price_bytes: [u8; 8] = data[1..9].try_into().map_err(|_| {
+                ValidationError::Rejected("unsupported compute-budget instruction".into())
+            })?;
+            let price = u64::from_le_bytes(price_bytes);
             if price > 100_000 {
                 return Err(ValidationError::Rejected(
                     "compute-unit price is outside the accepted bound".into(),
@@ -485,14 +492,16 @@ pub fn validate(
     let expected_disc = discriminator(expected.action.instruction_name());
     let set_payout_disc = discriminator("set_payout_to");
     let switchboard_submit_disc = discriminator("pull_feed_submit_response_consensus");
-    let compute_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).expect("valid constant");
-    let secp_program = Pubkey::from_str(SECP256K1_PROGRAM).expect("valid constant");
+    let compute_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM)
+        .map_err(|_| ValidationError::Transaction("invalid compute budget program id".into()))?;
+    let secp_program = Pubkey::from_str(SECP256K1_PROGRAM)
+        .map_err(|_| ValidationError::Transaction("invalid secp256k1 program id".into()))?;
     let switchboard_program = Pubkey::from_str(if expected.network == "devnet" {
         SWITCHBOARD_DEVNET
     } else {
         SWITCHBOARD_MAINNET
     })
-    .expect("valid constant");
+    .map_err(|_| ValidationError::Transaction("invalid switchboard program id".into()))?;
 
     let mut matched = None;
     let mut payout_routing = 0_usize;
@@ -513,7 +522,7 @@ pub fn validate(
                         "transaction repeats the lifecycle instruction".into(),
                     ));
                 }
-                matched = Some(ix);
+                matched = Some((position, ix));
             } else if expected.action == Action::Claim && disc == set_payout_disc {
                 if matched.is_none() {
                     return Err(ValidationError::Rejected(
@@ -584,7 +593,7 @@ pub fn validate(
         }
     }
 
-    let lifecycle = matched.ok_or_else(|| {
+    let (lifecycle_index, lifecycle) = matched.ok_or_else(|| {
         ValidationError::Rejected(format!(
             "missing {} instruction",
             expected.action.instruction_name()
@@ -601,10 +610,6 @@ pub fn validate(
                 "verify requires exactly one secp256k1 and one Switchboard instruction".into(),
             ));
         }
-        let lifecycle_index = instructions(&tx.message)
-            .iter()
-            .position(|candidate| std::ptr::eq(candidate, lifecycle))
-            .expect("matched instruction belongs to message");
         if secp_indices[0].saturating_add(1) != switchboard_indices[0]
             || switchboard_indices[0] >= lifecycle_index
         {
@@ -712,7 +717,7 @@ pub fn validate(
             let content_end = 4usize.checked_add(len).ok_or_else(|| {
                 ValidationError::Rejected("content id length overflows transaction data".into())
             })?;
-            if raw.get(4..content_end) != Some(content_id.as_bytes()) {
+            if raw.len() != content_end || raw.get(4..content_end) != Some(content_id.as_bytes()) {
                 return Err(ValidationError::Rejected(
                     "content id differs from intent".into(),
                 ));
@@ -762,10 +767,7 @@ pub fn validate(
         },
         task_pda: task.to_string(),
         instruction_count: instructions(&tx.message).len(),
-        instruction_index: instructions(&tx.message)
-            .iter()
-            .position(|candidate| std::ptr::eq(candidate, lifecycle))
-            .expect("matched instruction belongs to message"),
+        instruction_index: lifecycle_index,
         intent_digest: hex::encode(digest),
         risk: match expected.action {
             Action::Create => "spend",

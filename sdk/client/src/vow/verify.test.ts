@@ -433,6 +433,26 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     }
   });
 
+  it("returns field_mismatch:platform when wire platform differs", async () => {
+    const verdict = await verifyV1(
+      happyAttestation({ platform: 1 }),
+      shillbotProtocol,
+      happyMockRpc()
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:platform");
+    }
+  });
+
+  it("rejects impossible calendar dates like Feb 31 in verified_at", () => {
+    expect(
+      checkSchema(
+        fixtureAttestation({ verified_at: "2026-02-31T12:00:00Z" })
+      )
+    ).toBe("schema_invalid:verified_at");
+  });
+
   it("returns field_mismatch:verified_at when wire timestamp drifts > 1 second", async () => {
     // Wire claims 5 seconds AFTER the on-chain value; tolerance is ±1.
     const drifted = new Date((HAPPY_VERIFIED_AT_SECS + 5) * 1000)

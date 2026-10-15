@@ -82,7 +82,12 @@ pub fn sign_digest_eth(secret_key: &[u8; 32], digest: &[u8; 32]) -> Result<[u8; 
 /// program's `secp256k1_recover` and the EVM `ecrecover` perform. The
 /// backend uses this to verify players' co-signatures before submitting.
 pub fn recover_address(digest: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 20], CosignError> {
-    let recid = RecoveryId::from_byte(sig[64]).ok_or(CosignError::BadSignature)?;
+    let v = if sig[64] == 27 || sig[64] == 28 {
+        sig[64] - 27
+    } else {
+        sig[64]
+    };
+    let recid = RecoveryId::from_byte(v).ok_or(CosignError::BadSignature)?;
     let signature = Signature::from_slice(&sig[..64]).map_err(|_| CosignError::BadSignature)?;
     // Reject high-s (malleable) signatures: normalize_s() returns Some only when
     // the input s was in the upper half order. The EVM leg already rejects these

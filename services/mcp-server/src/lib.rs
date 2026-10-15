@@ -644,7 +644,7 @@ fn build_router(
                 Arc::clone(&reputation_db),
                 reqwest::Client::new(),
                 rpc_url_mainnet.clone(),
-                internal_api_key,
+                internal_api_key.clone(),
             ),
         )
         .route(
@@ -684,15 +684,15 @@ fn build_router(
             )
             .route(
                 "/internal/mcp/refresh",
-                discovery::refresh_handler(state.clone()),
+                discovery::refresh_handler(state.clone(), internal_api_key.clone()),
             )
             .route(
                 "/internal/mcp/llm-classify",
-                discovery::llm_classify_handler(state.clone()),
+                discovery::llm_classify_handler(state.clone(), internal_api_key.clone()),
             )
             .route(
                 "/internal/mcp/deep-analyze",
-                discovery::deep_analyze_handler(state),
+                discovery::deep_analyze_handler(state, internal_api_key),
             );
     }
 

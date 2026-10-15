@@ -24,7 +24,9 @@ export class HttpClient {
       operation: "http.constructor",
       message: "A fetch implementation is required",
     });
-    this.fetchImpl = candidate.bind(globalThis);
+    this.fetchImpl = options.fetch
+      ? (input, init) => options.fetch!(input, init)
+      : candidate.bind(globalThis);
     this.getToken = options.getToken;
   }
 

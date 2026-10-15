@@ -752,12 +752,31 @@ pub fn search_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter
     )
 }
 
+fn bearer_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>) -> bool {
+    let provided = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+    matches!((expected_key, provided), (Some(exp), Some(got)) if !exp.is_empty() && got == exp)
+}
+
 /// POST /internal/mcp/refresh → trigger a fresh pull + classify cycle.
-/// Returns the RefreshSummary as JSON.
-pub fn refresh_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {
-    axum::routing::post(move || {
+/// Returns the RefreshSummary as JSON. Gated on the shared internal Bearer key.
+pub fn refresh_handler(
+    state: Arc<DiscoveryState>,
+    expected_key: Option<String>,
+) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap| {
         let state = state.clone();
+        let expected_key = expected_key.clone();
         async move {
+            if !bearer_authorized(&headers, expected_key.as_deref()) {
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "{\"error\": \"unauthorized\"}".to_string(),
+                )
+                    .into_response();
+            }
             match refresh_discovery(&state).await {
                 Ok(summary) => axum::Json(summary).into_response(),
                 Err(e) => {
@@ -793,10 +812,21 @@ pub fn primitives_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRo
 /// the top earning candidates. Capped at `deep_analysis::MAX_SERVERS_PER_CYCLE`.
 /// Returns a `DeepAnalysisSummary`. This is a relatively expensive call (one
 /// HTTP round-trip per npm/GitHub lookup × 50 servers); expect ~60-120s.
-pub fn deep_analyze_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {
-    axum::routing::post(move || {
+pub fn deep_analyze_handler(
+    state: Arc<DiscoveryState>,
+    expected_key: Option<String>,
+) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap| {
         let state = state.clone();
+        let expected_key = expected_key.clone();
         async move {
+            if !bearer_authorized(&headers, expected_key.as_deref()) {
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "{\"error\": \"unauthorized\"}".to_string(),
+                )
+                    .into_response();
+            }
             match deep_analysis::run_layer3_pass(&state).await {
                 Ok(summary) => axum::Json(summary).into_response(),
                 Err(e) => {
@@ -817,10 +847,21 @@ pub fn deep_analyze_handler(state: Arc<DiscoveryState>) -> axum::routing::Method
 /// not set at startup. Awaits the full pass and returns a Layer2Summary.
 /// Caller should expect this to take ~5-10 minutes for a full cap-bounded
 /// cycle, so prefer triggering via background workflow.
-pub fn llm_classify_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {
-    axum::routing::post(move || {
+pub fn llm_classify_handler(
+    state: Arc<DiscoveryState>,
+    expected_key: Option<String>,
+) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap| {
         let state = state.clone();
+        let expected_key = expected_key.clone();
         async move {
+            if !bearer_authorized(&headers, expected_key.as_deref()) {
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "{\"error\": \"unauthorized\"}".to_string(),
+                )
+                    .into_response();
+            }
             if state.llm.is_none() {
                 return (
                     axum::http::StatusCode::SERVICE_UNAVAILABLE,

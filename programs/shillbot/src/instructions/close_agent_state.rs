@@ -6,8 +6,8 @@ use crate::state::AgentState;
 
 /// Allows an agent to close their AgentState PDA and reclaim rent (~0.001 SOL).
 /// Only permitted when the agent has no active claims (`claimed_count == 0`)
-/// and no negative reputation record (`total_challenges_lost == 0` and
-/// `total_completed == total_tasks_claimed`), preventing reputation-wipe cycles.
+/// and no lost challenges (`total_challenges_lost == 0`), preventing
+/// reputation-wipe cycles.
 pub fn close_agent_state(ctx: Context<CloseAgentState>) -> Result<()> {
     let agent_state = &ctx.accounts.agent_state;
 

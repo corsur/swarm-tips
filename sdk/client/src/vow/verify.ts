@@ -93,6 +93,9 @@ export async function verifyV1OnChain(
   if (accountInfo.owner.toBase58() !== a.program_id) {
     return "owner_mismatch";
   }
+  if (protocol.programId !== undefined && accountInfo.owner.toBase58() !== protocol.programId) {
+    return "owner_mismatch";
+  }
 
   // Step 4 — Anchor discriminator check.
   if (data.length < 8) {
@@ -125,6 +128,9 @@ export async function verifyV1OnChain(
   }
   if (decoded.agent !== a.agent) {
     return "field_mismatch:agent";
+  }
+  if (decoded.platform !== undefined && decoded.platform !== a.platform) {
+    return "field_mismatch:platform";
   }
   if (decoded.composite_score.toString() !== a.composite_score) {
     return "field_mismatch:composite_score";

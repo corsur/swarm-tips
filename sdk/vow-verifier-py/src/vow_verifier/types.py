@@ -49,6 +49,7 @@ class DecodedAccount:
     verification_hash: str
     content_hash: str
     content_id_hash: str
+    platform: Optional[int] = None
 
 
 # Pluggable per-protocol decoders. ``data`` is the account body AFTER the
@@ -65,6 +66,7 @@ class ProtocolHandler:
     decode: AccountDecoder
     resolve_state: StateResolver
     valid_states: ValidStates
+    program_id: Optional[str] = None
 
 
 # Verdict shape. ``failure_reason`` is a string from the closed taxonomy

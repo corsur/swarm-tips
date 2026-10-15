@@ -24,7 +24,9 @@ pub fn resolve_challenge(ctx: Context<ResolveChallenge>, challenger_won: bool) -
         ShillbotError::NotAuthority
     );
     require!(
-        challenge.task_id == task.task_id,
+        challenge.task_id == task.task_id
+            && !challenge.resolved
+            && challenge._reserved == task.client.to_bytes(),
         ShillbotError::InvalidTaskState
     );
     if global.dispute_resolution_window_seconds > 0 {

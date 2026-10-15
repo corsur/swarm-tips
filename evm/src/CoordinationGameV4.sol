@@ -273,7 +273,9 @@ contract CoordinationGameV4 is
         payable
         whenNotPaused
     {
-        if (seasons[currentSeasonId].finalized) revert SeasonAlreadyFinalized();
+        if (seasons[currentSeasonId].finalized || block.timestamp >= seasons[currentSeasonId].endTime) {
+            revert SeasonAlreadyFinalized();
+        }
         Game storage g = games[gameId];
         if (g.status != Status.None) revert InvalidStatus();
         if (matchupCommitment == bytes32(0)) revert BadCommitment();
@@ -350,7 +352,7 @@ contract CoordinationGameV4 is
     /// @notice The digest a wallet signs (EIP-191 personal_sign) to authorize
     ///         `sessionKey` until `expiry`. Domain-bound to this chain+contract
     ///         and nonce-bound so it can't be replayed after a later authorize or
-    ///         revoke bumps the nonce.
+    //          revoke bumps the nonce.
     function sessionAuthDigest(address player, address sessionKey, uint64 expiry) public view returns (bytes32) {
         return keccak256(
             abi.encode(block.chainid, address(this), "COORD_SESSION", player, sessionKey, expiry, sessionNonce[player])
@@ -361,19 +363,19 @@ contract CoordinationGameV4 is
     ///         commit/reveal/timeout. The wallet signs `sessionAuthDigest`
     ///         off-chain; anyone (typically the session key) submits it.
     function authorizeSession(address player, address sessionKey, uint64 expiry, bytes calldata playerSig) external {
-        if (sessionKey == address(0) || expiry <= block.timestamp) revert BadSession();
+        if (sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp) revert BadSession();
         bytes32 digest = MessageHashUtils.toEthSignedMessageHash(sessionAuthDigest(player, sessionKey, expiry));
         if (ECDSA.recover(digest, playerSig) != player) revert BadSignature();
-        sessions[player] = SessionAuth(sessionKey, expiry);
-        unchecked {
-            sessionNonce[player]++;
-        }
-        emit SessionAuthorized(player, sessionKey, expiry);
+        _registerSessionFor(player, sessionKey, expiry);
     }
 
     /// @notice Revoke the caller's session immediately (and invalidate any
     ///         pending authorization signatures by bumping the nonce).
     function revokeSession() external {
+        address prevKey = sessions[msg.sender].sessionKey;
+        if (prevKey != address(0) && sessionOwner[prevKey] == msg.sender) {
+            delete sessionOwner[prevKey];
+        }
         delete sessions[msg.sender];
         unchecked {
             sessionNonce[msg.sender]++;
@@ -441,12 +443,28 @@ contract CoordinationGameV4 is
     /// @dev Record `sessionKey` as `msg.sender`'s delegate. Shared by both entry
     ///      points so the authorization, nonce bump and event have ONE definition.
     function _registerSession(address sessionKey, uint64 expiry) private {
-        if (sessionKey == address(0) || expiry <= block.timestamp) revert BadSession();
-        sessions[msg.sender] = SessionAuth(sessionKey, expiry);
-        unchecked {
-            sessionNonce[msg.sender]++;
+        _registerSessionFor(msg.sender, sessionKey, expiry);
+    }
+
+    function _registerSessionFor(address player, address sessionKey, uint64 expiry) private {
+        if (sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp) revert BadSession();
+        address currentOwner = sessionOwner[sessionKey];
+        if (
+            currentOwner != address(0) && currentOwner != player && sessions[currentOwner].sessionKey == sessionKey
+                && block.timestamp < sessions[currentOwner].expiry
+        ) {
+            revert BadSession();
         }
-        emit SessionAuthorized(msg.sender, sessionKey, expiry);
+        address prevKey = sessions[player].sessionKey;
+        if (prevKey != address(0) && sessionOwner[prevKey] == player) {
+            delete sessionOwner[prevKey];
+        }
+        sessions[player] = SessionAuth(sessionKey, expiry);
+        sessionOwner[sessionKey] = player;
+        unchecked {
+            sessionNonce[player]++;
+        }
+        emit SessionAuthorized(player, sessionKey, expiry);
     }
 
     /// @dev Forward gas to the session EOA. No-op at zero so a session may be
@@ -486,7 +504,7 @@ contract CoordinationGameV4 is
     /// @dev Take `amount` of stake for `player`, from `msg.value` or from the
     ///      escrow balance. DUAL-MODE deliberately: this is a live contract, and
     ///      a client that still sends the stake inline must keep working across
-    ///      the upgrade, which also lets the frontend migrate on its own clock.
+    //       the upgrade, which also lets the frontend migrate on its own clock.
     ///
     ///      A partial `msg.value` is REJECTED rather than topped up from the
     ///      balance. Mixing the two sources would make the amount actually taken
@@ -511,8 +529,13 @@ contract CoordinationGameV4 is
     }
 
     /// @dev Resolve which player `msg.sender` acts for (directly or via session).
-    ///      Reverts NotParticipant if it acts for neither. Returns isP1.
+    ///      Direct wallet callers always take precedence over session delegates
+    ///      so a counterparty can never hijack a wallet's seat by registering the
+    ///      wallet address as a session key. Reverts NotParticipant if it acts
+    ///      for neither. Returns isP1.
     function _actingSeat(Game storage g) private view returns (bool isP1) {
+        if (msg.sender == g.player1) return true;
+        if (msg.sender == g.player2) return false;
         if (_actsFor(msg.sender, g.player1)) return true;
         if (_actsFor(msg.sender, g.player2)) return false;
         revert NotParticipant();
@@ -750,4 +773,7 @@ contract CoordinationGameV4 is
     function unpause() external onlyOwner {
         _unpause();
     }
+
+    /// sessionKey => player wallet that currently owns it (appended at end of v4 storage).
+    mapping(address => address) public sessionOwner;
 }

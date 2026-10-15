@@ -75,8 +75,10 @@ def verify_v1_on_chain(
         return "account_closed"
     owner_b58, data = account
 
-    # Step 3 — owner check.
+    # Step 3 — owner check (including pinned protocol program_id when configured).
     if owner_b58 != a["program_id"]:
+        return "owner_mismatch"
+    if protocol.program_id is not None and owner_b58 != protocol.program_id:
         return "owner_mismatch"
 
     # Step 4 — Anchor discriminator check.
@@ -87,7 +89,10 @@ def verify_v1_on_chain(
         return "discriminator_mismatch"
 
     # Step 5 — field equality.
-    decoded = protocol.decode(data[8:], a["account_kind"])
+    try:
+        decoded = protocol.decode(data[8:], a["account_kind"])
+    except ValueError as exc:
+        return f"schema_invalid:{exc}"
 
     if str(decoded.task_id) != a["task_id"]:
         return "field_mismatch:task_id"
@@ -95,6 +100,8 @@ def verify_v1_on_chain(
         return "field_mismatch:client"
     if decoded.agent != a["agent"]:
         return "field_mismatch:agent"
+    if decoded.platform is not None and decoded.platform != a["platform"]:
+        return "field_mismatch:platform"
     if str(decoded.composite_score) != a["composite_score"]:
         return "field_mismatch:composite_score"
     if decoded.verification_hash != a["verification_hash"]:

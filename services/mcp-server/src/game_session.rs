@@ -112,6 +112,8 @@ pub struct PersistedGameSession {
     pub commit_preimage_hex: Option<String>,
     pub game_ready: Option<u64>,
     pub reveal_data: Option<String>,
+    #[serde(default)]
+    pub network: Option<String>,
     pub updated_at: firestore::FirestoreTimestamp,
 }
 
@@ -493,6 +495,7 @@ fn build_persisted_doc(session: &GameSession) -> PersistedGameSession {
         commit_preimage_hex: session.commit_preimage.map(hex::encode),
         game_ready: session.game_ready,
         reveal_data: session.reveal_data.clone(),
+        network: session.network.clone(),
         updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
     }
 }
@@ -723,10 +726,7 @@ fn build_restored_session(
         commit_preimage: preimage,
         game_ready: persisted.game_ready,
         reveal_data: persisted.reveal_data.clone(),
-        // Restored sessions don't carry a network — the next per-call tool
-        // (find_match) will set it. Mainnet-default is correct for
-        // restored sessions in production where most traffic is mainnet.
-        network: None,
+        network: persisted.network.clone(),
     }
 }
 
@@ -1035,12 +1035,20 @@ impl GameSessionManager {
         // game is definitively over: clean up and register fresh.
         if let Some(game_id) = persisted.game_id {
             let (game_key, _) = game_chain::pda::game_pda(game_id);
+            let check_builder = if let Ok(pubkey) = wallet.parse() {
+                self.tx_builder_for_network(pubkey, persisted.network.as_deref())
+            } else {
+                self.tx_builder_for_network(
+                    solana_sdk::pubkey::Pubkey::default(),
+                    persisted.network.as_deref(),
+                )
+            };
             // Distinguish "account does not exist" (definitively closed) from an
             // RPC error (transient). Only a confirmed None clears the session — a
             // network blip must not delete a live game's session.
-            match tx_builder
+            match check_builder
                 .rpc()
-                .get_account_with_commitment(&game_key, tx_builder.rpc().commitment())
+                .get_account_with_commitment(&game_key, check_builder.rpc().commitment())
                 .await
             {
                 Ok(resp) if resp.value.is_none() => {
@@ -1604,6 +1612,15 @@ impl GameSessionManager {
             // Opponent hasn't revealed yet — nothing to broadcast.
             return Ok(());
         }
+        let (p1_return, p2_return) = chain_core::game::derive_kind(
+            game.matchup_type,
+            game.p1_guess,
+            game.p2_guess,
+            game.first_committer,
+        )
+        .and_then(|kind| chain_core::game::amounts_for_kind(kind, game.stake_lamports))
+        .map(|payout| (payout.p1, payout.p2))
+        .unwrap_or((0, 0));
         let api_client = self.api_client()?.with_network(network);
         api_client
             .post_games_resolved(
@@ -1611,8 +1628,8 @@ impl GameSessionManager {
                 game_id,
                 game.p1_guess,
                 game.p2_guess,
-                0,
-                0,
+                p1_return,
+                p2_return,
                 game.matchup_type,
                 game.first_committer,
                 None,

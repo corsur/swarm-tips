@@ -84,6 +84,7 @@ fn init_challenge_state(
     challenge.created_at = now;
     challenge.resolved = false;
     challenge.challenger_won = false;
+    challenge._reserved = task.client.to_bytes();
     challenge.bump = bump;
     task.state = TaskState::Disputed;
 }

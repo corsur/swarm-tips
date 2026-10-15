@@ -7,12 +7,13 @@ open Lean
 partial def auditSyntax (stx : Syntax) : IO Unit := do
   let forbiddenKinds := #[
     ``Parser.Command.axiom, ``Parser.Term.attributes,
-    ``Parser.Command.deriving]
+    ``Parser.Command.deriving, ``Parser.Command.variable]
   if forbiddenKinds.contains stx.getKind then
     throw <| IO.userError s!"forbidden syntax: {stx.getKind}"
   if let .atom _ token := stx then
-    if #["unsafe", "partial", "meta", "sorry", "admit", "run_tac", "run_elab",
-      "by_elab", "native_decide", "extern", "implemented_by", "deriving"].contains token.trimAscii.toString then
+    if #["unsafe", "partial", "opaque", "meta", "sorry", "admit", "run_tac", "run_elab",
+      "by_elab", "native_decide", "extern", "implemented_by", "csimp", "deriving",
+      "notation", "macro", "macro_rules", "elab", "elab_rules", "syntax"].contains token.trimAscii.toString then
       throw <| IO.userError s!"forbidden syntax token: {token}"
   for child in stx.getArgs do auditSyntax child
 
@@ -59,7 +60,7 @@ unsafe def main (args : List String) : IO Unit := do
     else
       unless inNamespace && !closed do throw <| IO.userError "declaration outside generated namespace"
       unless #[``Parser.Command.declaration, ``Parser.Command.open,
-        ``Parser.Command.variable, ``Parser.Command.universe].contains command.getKind do
+        ``Parser.Command.universe].contains command.getKind do
         throw <| IO.userError s!"forbidden command: {command.getKind}"
   unless closed && !inNamespace do throw <| IO.userError "missing generated namespace boundary"
   IO.println "parsed promotion source policy passed"

@@ -401,10 +401,27 @@ export interface TransactionInspection {
   }>;
 }
 
+const COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111";
+const SECP256K1_PROGRAM_ID = "KeccakSecp256k11111111111111111111111111111";
+const SWITCHBOARD_PROGRAM_IDS: Record<Network, string> = {
+  mainnet: "SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv",
+  devnet: "Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2",
+};
+
 export function inspectTransaction(encoded: string): TransactionInspection {
   const bytes = Buffer.from(encoded, "base64");
+  let tx: VersionedTransaction | undefined;
   try {
-    const tx = VersionedTransaction.deserialize(bytes);
+    tx = VersionedTransaction.deserialize(bytes);
+  } catch {
+    tx = undefined;
+  }
+  if (tx) {
+    if (tx.message.addressTableLookups.length > 0) {
+      throw new Error(
+        "address lookup tables are not allowed in Shillbot lifecycle transactions"
+      );
+    }
     const keys = tx.message.staticAccountKeys;
     return {
       version: tx.version === "legacy" ? "legacy" : "v0",
@@ -418,24 +435,23 @@ export function inspectTransaction(encoded: string): TransactionInspection {
         data_base64: Buffer.from(ix.data).toString("base64"),
       })),
     };
-  } catch {
-    const tx = Transaction.from(bytes);
-    const message = tx.compileMessage();
-    return {
-      version: "legacy",
-      fee_payer: message.accountKeys[0].toBase58(),
-      signers: message.accountKeys
-        .slice(0, message.header.numRequiredSignatures)
-        .map((key) => key.toBase58()),
-      instructions: message.instructions.map((ix) => ({
-        program_id: message.accountKeys[ix.programIdIndex].toBase58(),
-        accounts: ix.accounts.map((index) =>
-          message.accountKeys[index].toBase58()
-        ),
-        data_base64: Buffer.from(bs58.decode(ix.data)).toString("base64"),
-      })),
-    };
   }
+  const legacyTx = Transaction.from(bytes);
+  const message = legacyTx.compileMessage();
+  return {
+    version: "legacy",
+    fee_payer: message.accountKeys[0].toBase58(),
+    signers: message.accountKeys
+      .slice(0, message.header.numRequiredSignatures)
+      .map((key) => key.toBase58()),
+    instructions: message.instructions.map((ix) => ({
+      program_id: message.accountKeys[ix.programIdIndex].toBase58(),
+      accounts: ix.accounts.map((index) =>
+        message.accountKeys[index].toBase58()
+      ),
+      data_base64: Buffer.from(bs58.decode(ix.data)).toString("base64"),
+    })),
+  };
 }
 
 export function verifyIntent(
@@ -451,12 +467,25 @@ export function verifyIntent(
     throw new Error("fee payer differs from intent");
   if (!inspected.signers.includes(intent.wallet))
     throw new Error("wallet is not a required signer");
+  const shillbotProgramId = SHILLBOT_PROGRAM_ID.toBase58();
+  const allowedPrograms = new Set<string>([
+    shillbotProgramId,
+    COMPUTE_BUDGET_PROGRAM_ID,
+    ...(intent.action === "verify"
+      ? [SWITCHBOARD_PROGRAM_IDS[intent.network], SECP256K1_PROGRAM_ID]
+      : []),
+  ]);
+  for (const ix of inspected.instructions) {
+    if (!allowedPrograms.has(ix.program_id)) {
+      throw new Error(`unexpected companion program ${ix.program_id}`);
+    }
+  }
   const expectedDiscriminator = shillbotInstructionDiscriminator(
     intent.action === "submit" ? "submit_work" : `${intent.action}_task`
   );
   const lifecycle = inspected.instructions.filter(
     (ix) =>
-      ix.program_id === SHILLBOT_PROGRAM_ID.toBase58() &&
+      ix.program_id === shillbotProgramId &&
       Buffer.from(ix.data_base64, "base64")
         .subarray(0, 8)
         .equals(expectedDiscriminator)
@@ -464,7 +493,7 @@ export function verifyIntent(
   if (lifecycle.length !== 1)
     throw new Error("expected exactly one Shillbot lifecycle instruction");
   const shillbotInstructions = inspected.instructions.filter(
-    (ix) => ix.program_id === SHILLBOT_PROGRAM_ID.toBase58()
+    (ix) => ix.program_id === shillbotProgramId
   );
   const payoutDiscriminator = shillbotInstructionDiscriminator("set_payout_to");
   const companions = shillbotInstructions.filter((ix) => ix !== lifecycle[0]);
@@ -501,6 +530,31 @@ export function verifyIntent(
   }
   if (lifecycle[0].accounts.join(",") !== intent.accounts.join(",")) {
     throw new Error("lifecycle accounts differ from intent");
+  }
+  if (
+    intent.action === "create" &&
+    intent.arguments.escrowLamports !== undefined
+  ) {
+    const data = Buffer.from(lifecycle[0].data_base64, "base64");
+    if (data.length < 24) throw new Error("create instruction data is truncated");
+    const view = new DataView(data.buffer, data.byteOffset + 16, 8);
+    if (view.getBigUint64(0, true) !== BigInt(String(intent.arguments.escrowLamports))) {
+      throw new Error("escrow amount differs from intent");
+    }
+  }
+  if (
+    intent.action === "submit" &&
+    typeof intent.arguments.contentId === "string"
+  ) {
+    const data = Buffer.from(lifecycle[0].data_base64, "base64");
+    if (data.length < 12) throw new Error("submit instruction data is truncated");
+    const len = data.readUInt32LE(8);
+    if (
+      data.length !== 12 + len ||
+      data.subarray(12, 12 + len).toString("utf8") !== intent.arguments.contentId
+    ) {
+      throw new Error("content id differs from intent");
+    }
   }
   return inspected;
 }

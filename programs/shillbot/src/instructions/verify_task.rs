@@ -29,6 +29,7 @@ pub fn verify_task(
     let task = &ctx.accounts.task;
     let global = &ctx.accounts.global_state;
     // Checks
+    require!(!global.paused, ShillbotError::ProtocolPaused);
     validate_verify_inputs(task, composite_score, verification_hash)?;
     validate_switchboard_feed(global, &ctx.accounts.switchboard_feed)?;
     validate_attestation_staleness(task, global, clock.unix_timestamp)?;
@@ -161,7 +162,8 @@ fn compute_payment_amounts(
 }
 
 /// Validate that the current timestamp falls within the acceptable staleness window
-/// around the expected attestation time (submitted_at + attestation_delay).
+/// starting at the expected attestation time (`submitted_at + attestation_delay`)
+/// through `expected_attestation_time + staleness_window_seconds`.
 ///
 /// Uses per-task override if nonzero, else global default for attestation delay.
 fn validate_attestation_staleness(task: &Task, global: &GlobalState, now: i64) -> Result<()> {
@@ -174,9 +176,7 @@ fn validate_attestation_staleness(task: &Task, global: &GlobalState, now: i64) -
         .submitted_at
         .checked_add(attestation_delay)
         .ok_or(ShillbotError::ArithmeticOverflow)?;
-    let earliest = expected_attestation_time
-        .checked_sub(global.staleness_window_seconds)
-        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    let earliest = expected_attestation_time;
     let latest = expected_attestation_time
         .checked_add(global.staleness_window_seconds)
         .ok_or(ShillbotError::ArithmeticOverflow)?;

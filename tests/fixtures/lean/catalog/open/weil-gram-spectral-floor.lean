@@ -14,20 +14,22 @@ noncomputable def weilVonMangoldt (m : ℕ) : ℝ :=
     Real.log (Nat.minFac m : ℝ)
   else 0
 
-/-- The concrete N × N Weil explicit-formula prime-logarithm Gram matrix at critical
-    zero-spacing bandwidth λ = 1, whose (i, j) entry is the prime-power von Mangoldt
-    Fourier-cosine correlation at shift (i - j) / log(N + 2). -/
+/-- The concrete N × N hollow dyadic Weil-Montgomery prime-harmonic Gram matrix at critical
+    uncertainty scale T = N², whose off-diagonal (i, j) entry is the centered von Mangoldt
+    (Λ(m) - 1) cosine correlation on the dyadic shell m ∈ [N + 1, 2N] at shift (i - j) · N. -/
 noncomputable def weilPrimeGram (N : ℕ) : Matrix (Fin N) (Fin N) ℝ :=
   fun i j =>
-    (1 / Real.log ((N : ℝ) + 2)) *
-      ∑ m ∈ Finset.Icc 1 N,
-        (weilVonMangoldt m / Real.sqrt (m : ℝ)) *
-          Real.cos (((i.val : ℝ) - (j.val : ℝ)) * Real.log (m : ℝ) / Real.log ((N : ℝ) + 2))
+    if i = j then 0
+    else
+      (1 / Real.log ((N : ℝ) + 2)) *
+        ∑ m ∈ Finset.Icc (N + 1) (2 * N),
+          ((weilVonMangoldt m - 1) / Real.sqrt (m : ℝ)) *
+            Real.cos (((i.val : ℝ) - (j.val : ℝ)) * (N : ℝ) * Real.log (m : ℝ))
 
 /-- Millennium Problem (Riemann Hypothesis — Weil-Gram Programme, Open Problem 3):
     Uniform sub-Hilbert-Schmidt Rayleigh-quotient bound on the zero-mean subspace of the
-    concrete Weil prime-logarithm Gram matrix (exponent 1/4 < 1/2, bridging the
-    Hilbert-Schmidt barrier toward the Weil positivity criterion). -/
+    hollow dyadic Weil-Montgomery Gram matrix at scale T = N² (exponent 1/4 < 1/2, strictly
+    beyond the unconditional Montgomery-Vaughan Large Sieve barrier). -/
 def statementProp : Prop :=
   ∃ (C : ℝ), 0 ≤ C ∧
     ∀ (N : ℕ), 2 ≤ N →

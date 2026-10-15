@@ -161,7 +161,7 @@ fn validate_create_task_inputs(
 
     require!(deadline > now, ShillbotError::DeadlineExpired);
     require!(submit_margin >= 0, ShillbotError::InvalidParameter);
-    require!(claim_buffer >= 0, ShillbotError::InvalidParameter);
+    require!(claim_buffer >= submit_margin, ShillbotError::InvalidParameter);
     require!(escrow_lamports > 0, ShillbotError::InvalidParameter);
 
     // Timing-override bounds: 0 means "use the global default", any nonzero

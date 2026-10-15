@@ -364,6 +364,7 @@ fn persisted_session_json_roundtrip() {
         commit_preimage_hex: Some(hex::encode([0xabu8; 32])),
         game_ready: Some(42),
         reveal_data: None,
+        network: None,
         updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
     };
     let json = serde_json::to_string(&doc).expect("serialize");
@@ -414,6 +415,7 @@ fn restore_rehydrates_match_found_so_another_instance_can_advance() {
         commit_preimage_hex: None,
         game_ready: None,
         reveal_data: None,
+        network: None,
         updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
     };
 
@@ -449,6 +451,7 @@ fn stale_instance_adopts_a_match_recorded_elsewhere() {
             commit_preimage_hex: None,
             game_ready: None,
             reveal_data: None,
+            network: None,
             updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
         },
         GameSessionState::Queued,
@@ -471,6 +474,7 @@ fn stale_instance_adopts_a_match_recorded_elsewhere() {
         commit_preimage_hex: None,
         game_ready: None,
         reveal_data: None,
+        network: None,
         updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
     };
 
@@ -498,6 +502,7 @@ fn adopt_is_a_no_op_without_a_recorded_match_or_when_already_matched() {
         commit_preimage_hex: None,
         game_ready: None,
         reveal_data: None,
+        network: None,
         updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
     };
 
@@ -549,6 +554,7 @@ fn unmatched_doc() -> PersistedGameSession {
         commit_preimage_hex: None,
         game_ready: None,
         reveal_data: None,
+        network: None,
         updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
     }
 }
@@ -713,6 +719,7 @@ fn restore_leaves_match_found_empty_when_no_match_was_recorded() {
         commit_preimage_hex: None,
         game_ready: None,
         reveal_data: None,
+        network: None,
         updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
     };
 

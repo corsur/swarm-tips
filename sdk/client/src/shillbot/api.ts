@@ -123,10 +123,22 @@ export function validatePreparedTransaction(
   const shillbotId = SHILLBOT_PROGRAM_ID.toBase58();
   const shillbotIxs = inspected.instructions.filter((instruction) => instruction.program_id === shillbotId);
   const lifecycle = shillbotIxs.filter((instruction) => matchesDiscriminator(instruction.data_base64, expected.action));
-  if (lifecycle.length !== 1 || shillbotIxs.length !== 1) {
+  const companions = shillbotIxs.filter((instruction) => instruction !== lifecycle[0]);
+  const payoutDisc = shillbotInstructionDiscriminator("set_payout_to");
+  const validCompanions =
+    companions.length === 0 ||
+    (expected.action === "claim" &&
+      companions.length === 1 &&
+      Buffer.from(companions[0].data_base64, "base64").subarray(0, 8).equals(payoutDisc) &&
+      inspected.instructions.indexOf(companions[0]) > inspected.instructions.indexOf(lifecycle[0]) &&
+      companions[0].accounts.length === 2 &&
+      (!expected.taskPda || companions[0].accounts[0] === expected.taskPda) &&
+      companions[0].accounts[1] === expected.wallet);
+  if (lifecycle.length !== 1 || !validCompanions) {
     throw new SwarmClientError({ code: "TRANSACTION_MISMATCH", operation: "shillbot.validatePreparedTransaction", message: "Expected exactly one matching Shillbot lifecycle instruction" });
   }
-  if (expected.taskPda && !lifecycle[0].accounts.includes(expected.taskPda)) {
+  const taskAccountIndex = expected.action === "create" ? 1 : 0;
+  if (expected.taskPda && lifecycle[0].accounts[taskAccountIndex] !== expected.taskPda) {
     throw new SwarmClientError({ code: "TRANSACTION_MISMATCH", operation: "shillbot.validatePreparedTransaction", message: "Task PDA differs from expectation" });
   }
   const alwaysAllowed = new Set([

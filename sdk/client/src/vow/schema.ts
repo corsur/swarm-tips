@@ -116,9 +116,11 @@ function isRfc3339NoFraction(v: unknown): boolean {
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|\+00:00)$/;
   if (!pattern.test(v)) return false;
   // Round-trip via Date to confirm the components describe a real
-  // moment (rejects e.g. "2026-13-32T25:61:99Z").
+  // moment (rejects e.g. "2026-13-32T25:61:99Z" and rollover dates like "2026-02-31T00:00:00Z").
   const ms = Date.parse(v);
-  return !Number.isNaN(ms);
+  if (Number.isNaN(ms)) return false;
+  const canonicalZ = v.replace(/\+00:00$/, "Z");
+  return new Date(ms).toISOString().replace(/\.\d+Z$/, "Z") === canonicalZ;
 }
 
 function isPlainObject(v: unknown): boolean {

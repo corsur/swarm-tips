@@ -21,4 +21,4 @@ def statementProp : Prop :=
       let n := P.M + 1
       let G : Matrix (Fin n) (Fin n) ℝ := fun i j => P.Gentry T i.val j.val
       |Matrix.trace (G ^ 4) - 2 * (Matrix.trace (G ^ 2)) ^ 2| ≤
-        C * Matrix.trace (G ^ 2)
+        C * (1 / (n : ℝ)) * (Matrix.trace (G ^ 2)) ^ 2

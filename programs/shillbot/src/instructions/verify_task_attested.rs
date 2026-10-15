@@ -69,6 +69,7 @@ fn validate_attested_inputs(
     score: u64,
     verification_hash: [u8; 32],
 ) -> Result<()> {
+    require!(!global.paused, ShillbotError::ProtocolPaused);
     let required_state = if task.requires_approval == 1 {
         TaskState::Approved
     } else {

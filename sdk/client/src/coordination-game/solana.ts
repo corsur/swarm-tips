@@ -54,11 +54,19 @@ const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfc
 export const SESSION_FEE_HEADROOM_LAMPORTS = 10_000_000;
 
 export function sessionFundLamports(stakeLamports: bigint): number {
-  return Number(stakeLamports) + SESSION_FEE_HEADROOM_LAMPORTS;
+  const total = stakeLamports + BigInt(SESSION_FEE_HEADROOM_LAMPORTS);
+  if (total > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new SwarmClientError({ code: "INVALID_ARGUMENT", operation: "solana.sessionFundLamports", message: "stakeLamports exceeds safe integer range" });
+  }
+  return Number(total);
 }
 
 export function sessionBalanceFloor(stakeLamports: bigint): number {
-  return Number(stakeLamports) + SESSION_FEE_HEADROOM_LAMPORTS / 2;
+  const total = stakeLamports + BigInt(SESSION_FEE_HEADROOM_LAMPORTS / 2);
+  if (total > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new SwarmClientError({ code: "INVALID_ARGUMENT", operation: "solana.sessionBalanceFloor", message: "stakeLamports exceeds safe integer range" });
+  }
+  return Number(total);
 }
 
 function walletForSession(session: Keypair): SolanaWalletSigner {
@@ -212,6 +220,13 @@ export class CoordinationGameSolanaClient {
     for (let index = 0; index < attempts; index += 1) {
       await sleep(options.intervalMs ?? 1_500);
       const status = await this.connection.getSignatureStatus(signature);
+      if (status.value?.err) {
+        throw new SwarmClientError({
+          code: "CHAIN_ERROR",
+          operation: "solana.waitForSignature",
+          message: `transaction ${signature} failed on-chain: ${JSON.stringify(status.value.err)}`,
+        });
+      }
       const confirmation = status.value?.confirmationStatus;
       if (confirmation === "confirmed" || confirmation === "finalized") return;
     }
