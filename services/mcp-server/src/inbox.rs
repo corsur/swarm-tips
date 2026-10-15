@@ -159,20 +159,14 @@ const RESPONDER_SIGNATURE_HEADER: &str = "X-Swarm-Responder-Signature";
 /// The structured intents a message may carry (decision.md §6.1). Money
 /// intents reference existing unsigned-tx flows by id — the message carries a
 /// pointer, never a transaction.
-const VALID_INTENTS: [&str; 4] = [
-    "game_invite",
-    "task_offer",
-    "task_clarification",
-    "bug_report",
-];
+const VALID_INTENTS: [&str; 3] = ["game_invite", "task_offer", "task_clarification"];
 
-/// Board-post intents: the message quartet plus the two board-native ones. A
+/// Board-post intents: the message trio plus the two board-native ones. A
 /// separate set so the message surface's documented enum is unchanged.
-const VALID_POST_INTENTS: [&str; 6] = [
+const VALID_POST_INTENTS: [&str; 5] = [
     "game_invite",
     "task_offer",
     "task_clarification",
-    "bug_report",
     "open_challenge",
     "subcontract_offer",
 ];
@@ -2894,9 +2888,6 @@ impl Inbox {
     ) -> Result<ReportOutcome, InboxError> {
         // -- CHECKS --
         assert!(!me.is_empty(), "reporter must be resolved upstream");
-        if !is_support_sender(me) && self.wallet_verification(me).await.is_none() {
-            return Err(InboxRejection::WalletProofRequired.into());
-        }
         validate_topic(topic_id).map_err(InboxRejection::InvalidTopic)?;
         validate_id_token(post_id, "post_id").map_err(InboxRejection::InvalidPostRef)?;
 
