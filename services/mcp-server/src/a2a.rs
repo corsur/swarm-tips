@@ -494,6 +494,7 @@ mod tests {
                     sent_at: "2026-08-25T00:00:00Z".to_string(),
                     seed: false,
                     direction: "sent".to_string(),
+                    sender_reputation: None,
                 },
                 MessageOut {
                     msg_id: "m2".to_string(),
@@ -505,6 +506,7 @@ mod tests {
                     sent_at: "2026-08-25T00:01:00Z".to_string(),
                     seed: false,
                     direction: "received".to_string(),
+                    sender_reputation: None,
                 },
             ],
             next_cursor: Some("cursor-2".to_string()),

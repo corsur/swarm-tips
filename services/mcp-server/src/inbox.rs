@@ -151,18 +151,26 @@ const SUPPORT_WALLET: &str = "5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu";
 /// (`support_wallet_raw`) — this constant is never a from-identity and is not
 /// env-overridable (it is a fixed on-chain address, mirrored by
 /// `web_position::WEB_POSITION_ROOT`).
-const SUPPORT_WALLET_ROOT: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+pub const SUPPORT_WALLET_ROOT: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
 
 /// The header for the signed immediate support trigger.
 const RESPONDER_SIGNATURE_HEADER: &str = "X-Swarm-Responder-Signature";
 
 /// The structured intents a message may carry (decision.md §6.1). Money
 /// intents reference existing unsigned-tx flows by id — the message carries a
-/// pointer, never a transaction.
-const VALID_INTENTS: [&str; 3] = ["game_invite", "task_offer", "task_clarification"];
+/// pointer, never a transaction. `bug_report` is quarantined to 1:1 support
+/// mailbox sends from `WalletVerified`+ senders (never valid on public boards).
+const VALID_INTENTS: [&str; 4] = [
+    "game_invite",
+    "task_offer",
+    "task_clarification",
+    "bug_report",
+];
 
 /// Board-post intents: the message trio plus the two board-native ones. A
 /// separate set so the message surface's documented enum is unchanged.
+/// Deliberately excludes `bug_report` so 0-day disclosures can never be posted
+/// to a public topic board.
 const VALID_POST_INTENTS: [&str; 5] = [
     "game_invite",
     "task_offer",
@@ -678,6 +686,49 @@ pub fn parse_post_intent(raw: Option<&str>) -> Result<Option<String>, String> {
     }
 }
 
+/// Quarantine rules for `intent = "bug_report"` on 1:1 messages:
+/// 1. Must be addressed to a recognized support mailbox (`is_support_mailbox(to)`),
+///    so agents cannot spoof `"bug_report"` system alerts to phish other agents.
+/// 2. Requires a wallet-verified sender (`WalletVerified` or `Reputable`) —
+///    blocks unauthenticated/session-only AI-slop bursts while keeping $0-gas
+///    access via `agent_verify_wallet` (ed25519/EIP-191 or SPL-Memo proof).
+pub fn validate_bug_report_send(
+    intent: Option<&str>,
+    to_is_support: bool,
+    tier: SenderTier,
+) -> Result<(), InboxRejection> {
+    if intent != Some("bug_report") {
+        return Ok(());
+    }
+    if !to_is_support {
+        return Err(InboxRejection::InvalidIntent(
+            "intent \"bug_report\" may only be sent to the support mailbox".to_string(),
+        ));
+    }
+    if !matches!(
+        tier,
+        SenderTier::SessionVerified | SenderTier::WalletVerified | SenderTier::Reputable
+    ) {
+        return Err(InboxRejection::InvalidIntent(
+            "intent \"bug_report\" requires a verified wallet: call agent_verify_wallet first"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// By default (`bug_report_responder_enabled == false`), `bug_report` disclosures
+/// are quarantined in the support mailbox and NOT forwarded to the general Q&A
+/// auto-responder (preventing prompt-injection or 0-day echo leaks). Setting
+/// `BUG_REPORT_RESPONDER_ENABLED=true` enables forwarding when an isolated
+/// autonomous bug-triage/fix agent is attached.
+pub fn should_notify_support_responder(
+    intent: Option<&str>,
+    bug_report_responder_enabled: bool,
+) -> bool {
+    intent != Some("bug_report") || bug_report_responder_enabled
+}
+
 /// v1 topic gate: only the two seeded topics exist; anything else is
 /// rejected (no arbitrary topic creation).
 pub fn validate_topic(topic_id: &str) -> Result<(), String> {
@@ -932,6 +983,7 @@ pub fn build_read_page_messages(
             sent_at: m.sent_at.0.to_rfc3339(),
             seed: m.seed,
             direction: m.direction,
+            sender_reputation: None,
         });
     }
     (out, filtered_trust, filtered_muted)
@@ -979,6 +1031,7 @@ pub fn build_post_page(
             reported_count: p.reported_count,
             created_at: p.created_at.0.to_rfc3339(),
             seed: p.seed,
+            sender_reputation: None,
         });
     }
     (out, filtered_hidden, filtered_trust)
@@ -1676,6 +1729,39 @@ pub struct SendReceipt {
     pub sends_remaining_today: u32,
 }
 
+/// Read-side reputation summary attached to every inbox message and topic-board
+/// post envelope so recipient agents can triage by EigenTrust standing and
+/// verified bug-bounty history before opening untrusted message bodies.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SenderReputationSummary {
+    pub tier: String,
+    pub trust_score: f64,
+    pub rank: Option<u32>,
+    pub settlements_received: u32,
+    pub bug_bounties_received: u32,
+}
+
+impl SenderReputationSummary {
+    pub fn from_reputation(rep: Option<&reputation_indexer::AgentReputation>) -> Self {
+        match rep {
+            Some(r) => Self {
+                tier: "reputable".to_string(),
+                trust_score: r.rank_normalized,
+                rank: Some(r.rank),
+                settlements_received: r.settlements_received,
+                bug_bounties_received: r.bug_bounties_received,
+            },
+            None => Self {
+                tier: "unindexed".to_string(),
+                trust_score: 0.0,
+                rank: None,
+                settlements_received: 0,
+                bug_bounties_received: 0,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct MessageOut {
     pub msg_id: String,
@@ -1688,6 +1774,8 @@ pub struct MessageOut {
     pub seed: bool,
     /// "received" | "sent" — "sent" appears only under `include_sent`.
     pub direction: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender_reputation: Option<SenderReputationSummary>,
 }
 
 pub struct ReadPage {
@@ -1732,6 +1820,8 @@ pub struct PostOut {
     pub reported_count: u32,
     pub created_at: String,
     pub seed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender_reputation: Option<SenderReputationSummary>,
 }
 
 pub struct PostPage {
@@ -2030,6 +2120,7 @@ impl Inbox {
         }
         assert!(limit > 0, "a zero cap must have short-circuited above");
         let intent = parse_intent(req.intent.as_deref()).map_err(InboxRejection::InvalidIntent)?;
+        validate_bug_report_send(intent.as_deref(), is_support_mailbox(&to), req.tier)?;
         let thread_id = match req.thread_id.as_deref() {
             Some(t) => {
                 validate_thread_id(t).map_err(InboxRejection::InvalidThreadId)?;
@@ -2161,8 +2252,15 @@ impl Inbox {
         // FROM it — no self-reply loop) pings the bridge so it auto-answers.
         // Best-effort, same contract as the webhook trigger: WARN on failure,
         // never fail the send (the message is already in the mailbox).
-        self.notify_support_responder(&to, &req.from, &thread_id, &msg_id, &req.body)
-            .await;
+        self.notify_support_responder(
+            &to,
+            &req.from,
+            &thread_id,
+            &msg_id,
+            &req.body,
+            intent.as_deref(),
+        )
+        .await;
 
         let sends_remaining = u32::try_from(
             i64::from(limit)
@@ -2300,7 +2398,8 @@ impl Inbox {
     /// how the bridge already receives webhook deliveries directly.
     ///
     /// Guards: skips when `to` isn't the support mailbox, when `from` IS the
-    /// support wallet (no self-reply loop), and when url/secret aren't
+    /// support wallet (no self-reply loop), when `intent == Some("bug_report")`
+    /// unless `BUG_REPORT_RESPONDER_ENABLED=true`, and when url/secret aren't
     /// configured. Every failure WARNs and returns — the message is already
     /// delivered, so the reply is strictly best-effort.
     async fn notify_support_responder(
@@ -2310,7 +2409,19 @@ impl Inbox {
         thread_id: &str,
         msg_id: &str,
         body: &str,
+        intent: Option<&str>,
     ) {
+        let bug_responder_enabled = std::env::var("BUG_REPORT_RESPONDER_ENABLED")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        if !should_notify_support_responder(intent, bug_responder_enabled) {
+            tracing::info!(
+                event = "bug_report_quarantined",
+                from = %from,
+                msg_id = %msg_id,
+                "bug_report delivered to support mailbox; general auto-responder skipped"
+            );
+            return;
+        }
         let Some(post) = plan_support_responder(
             to,
             from,
@@ -2508,18 +2619,31 @@ impl Inbox {
             Default::default()
         };
 
-        let trust_scores = if min_trust.is_some() {
-            let senders = raw
-                .iter()
-                .filter(|m| m.direction != DIRECTION_SENT)
-                .map(|m| caip10_address(&m.from_wallet).to_string());
-            self.trust_scores_for(senders).await
-        } else {
-            Default::default()
-        };
+        let reputations = self
+            .reputations_for(
+                raw.iter()
+                    .filter(|m| m.direction != DIRECTION_SENT)
+                    .map(|m| caip10_address(&m.from_wallet).to_string()),
+            )
+            .await;
+        let trust_scores: std::collections::HashMap<String, f64> = reputations
+            .iter()
+            .map(|(k, v)| (k.clone(), v.trust_score))
+            .collect();
 
-        let (out, filtered_trust, filtered_muted) =
+        let (mut out, filtered_trust, filtered_muted) =
             build_read_page_messages(raw, &muted, &trust_scores, min_trust, now);
+        for msg in &mut out {
+            if msg.direction != DIRECTION_SENT {
+                let addr = caip10_address(&msg.from_wallet);
+                msg.sender_reputation = Some(
+                    reputations
+                        .get(addr)
+                        .cloned()
+                        .unwrap_or_else(|| SenderReputationSummary::from_reputation(None)),
+                );
+            }
+        }
 
         Ok(ReadPage {
             messages: out,
@@ -2562,24 +2686,36 @@ impl Inbox {
         Ok(raw)
     }
 
+    /// Resolve `SenderReputationSummary` in parallel for a set of native sender
+    /// addresses (deduped up front; bounded by `PAGE_MAX = 50`).
+    pub(crate) async fn reputations_for(
+        &self,
+        senders: impl Iterator<Item = String>,
+    ) -> std::collections::HashMap<String, SenderReputationSummary> {
+        let unique: std::collections::HashSet<String> =
+            senders.filter(|s| !s.is_empty()).collect();
+        let db = &self.db;
+        let fetched = futures_util::future::join_all(unique.into_iter().map(|sender| async move {
+            let rep = crate::reputation::get_agent_reputation(db, &sender).await;
+            let summary = SenderReputationSummary::from_reputation(rep.as_ref());
+            (sender, summary)
+        }))
+        .await;
+        fetched.into_iter().collect()
+    }
+
     /// Resolve EigenTrust rank-normalized scores for a set of native sender
     /// addresses (deduped; unknown senders score 0.0 downstream).
+    #[allow(dead_code)]
     async fn trust_scores_for(
         &self,
         senders: impl Iterator<Item = String>,
     ) -> std::collections::HashMap<String, f64> {
-        let mut scores: std::collections::HashMap<String, f64> = Default::default();
-        for sender in senders {
-            if scores.contains_key(&sender) {
-                continue;
-            }
-            let score = crate::reputation::get_agent_reputation(&self.db, &sender)
-                .await
-                .map(|r| r.rank_normalized)
-                .unwrap_or(0.0);
-            scores.insert(sender, score);
-        }
-        scores
+        self.reputations_for(senders)
+            .await
+            .into_iter()
+            .map(|(k, v)| (k, v.trust_score))
+            .collect()
     }
 
     async fn muted_thread_ids(
@@ -2855,16 +2991,24 @@ impl Inbox {
             None
         };
 
-        let trust_scores = if min_trust.is_some() {
-            let authors = raw
+        let authors: Vec<String> = raw
+            .iter()
+            .map(|p| caip10_address(&p.author_wallet).to_string())
+            .collect();
+        let reputations = self.reputations_for(authors.into_iter()).await;
+        let trust_scores: std::collections::HashMap<String, f64> = if min_trust.is_some() {
+            reputations
                 .iter()
-                .map(|p| caip10_address(&p.author_wallet).to_string());
-            self.trust_scores_for(authors).await
+                .map(|(w, r)| (w.clone(), r.trust_score))
+                .collect()
         } else {
             Default::default()
         };
-        let (posts, filtered_hidden, filtered_trust) =
+        let (mut posts, filtered_hidden, filtered_trust) =
             build_post_page(raw, &trust_scores, min_trust, chrono::Utc::now());
+        for p in &mut posts {
+            p.sender_reputation = reputations.get(caip10_address(&p.author_wallet)).cloned();
+        }
 
         Ok(PostPage {
             topic_id: topic_id.to_string(),

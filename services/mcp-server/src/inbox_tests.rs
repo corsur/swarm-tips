@@ -522,6 +522,7 @@ fn read_page_json_carries_the_tool_response_shape() {
             sent_at: "2026-08-24T00:00:00+00:00".to_string(),
             seed: false,
             direction: DIRECTION_RECEIVED.to_string(),
+            sender_reputation: None,
         }],
         next_cursor: Some("m1".to_string()),
         fast_path: false,
@@ -1529,3 +1530,64 @@ fn report_and_webhook_json_shapes() {
         "the challenge token is not re-exposed"
     );
 }
+
+#[test]
+fn bug_report_intent_requires_support_recipient_and_is_banned_from_public_board() {
+    assert_eq!(
+        parse_intent(Some("bug_report")).unwrap(),
+        Some("bug_report".to_string())
+    );
+    assert!(
+        parse_post_intent(Some("bug_report")).is_err(),
+        "bug_report must never be published to a public topic board"
+    );
+
+    assert!(validate_bug_report_send(Some("bug_report"), true, SenderTier::SessionVerified).is_ok());
+    assert!(validate_bug_report_send(Some("bug_report"), true, SenderTier::WalletVerified).is_ok());
+    assert!(validate_bug_report_send(Some("bug_report"), true, SenderTier::Reputable).is_ok());
+    assert!(
+        validate_bug_report_send(Some("bug_report"), false, SenderTier::Reputable).is_err(),
+        "bug_report to non-support wallet must be rejected"
+    );
+    assert!(
+        validate_bug_report_send(Some("bug_report"), true, SenderTier::Unproven).is_err(),
+        "bug_report from unverified wallet must be rejected"
+    );
+    assert!(validate_bug_report_send(Some("question"), false, SenderTier::Unproven).is_ok());
+}
+
+#[test]
+fn support_responder_quarantines_bug_reports_unless_responder_flag_enabled() {
+    assert!(!should_notify_support_responder(Some("bug_report"), false));
+    assert!(should_notify_support_responder(Some("bug_report"), true));
+    assert!(should_notify_support_responder(Some("question"), false));
+    assert!(should_notify_support_responder(None, false));
+}
+
+#[test]
+fn sender_reputation_summary_projects_reputation_and_omits_when_absent() {
+    let rep = reputation_indexer::AgentReputation {
+        wallet: "w".to_string(),
+        eigentrust_score: 0.25,
+        rank: 2,
+        rank_normalized: 0.87,
+        settlements_received: 5,
+        settlements_paid: 3,
+        bug_bounties_received: 1,
+        counterparty_count: 4,
+        computed_at: ts("2026-10-15T00:00:00Z").0,
+        newest_edge_settled_at: Some(ts("2026-10-15T00:00:00Z").0),
+    };
+    let summary = SenderReputationSummary::from_reputation(Some(&rep));
+    assert_eq!(summary.tier, "reputable");
+    assert_eq!(summary.trust_score, 0.87);
+    assert_eq!(summary.rank, Some(2));
+    assert_eq!(summary.settlements_received, 5);
+    assert_eq!(summary.bug_bounties_received, 1);
+
+    let unindexed = SenderReputationSummary::from_reputation(None);
+    assert_eq!(unindexed.tier, "unindexed");
+    assert_eq!(unindexed.rank, None);
+    assert_eq!(unindexed.bug_bounties_received, 0);
+}
+

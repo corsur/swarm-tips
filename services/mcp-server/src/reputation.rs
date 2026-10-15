@@ -24,7 +24,94 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 pub const TRUST_EDGES_COLLECTION: &str = "trust_edges";
+pub const BUG_BOUNTY_EDGES_COLLECTION: &str = "bug_bounty_edges";
 pub const AGENT_REPUTATION_COLLECTION: &str = "agent_reputation";
+
+/// Durable record of a maintainer-verified security/code bug bounty in
+/// Firestore `bug_bounty_edges/{doc_id}`. Merged into the EigenTrust edge
+/// list on every `rebuild` so verified researchers earn first-class
+/// graph standing anchored at the DAO/support root.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BugBountyEdgeDoc {
+    pub doc_id: String,
+    pub from: String,
+    pub to: String,
+    pub weight: f64,
+    pub severity: String,
+    pub patch_commit: String,
+    #[serde(default)]
+    pub report_id: Option<String>,
+    pub recorded_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl BugBountyEdgeDoc {
+    pub fn to_trust_edge(&self) -> TrustEdgeDoc {
+        TrustEdgeDoc {
+            tx_sig: self.doc_id.clone(),
+            from: self.from.clone(),
+            to: self.to.clone(),
+            weight: self.weight,
+            task_id: 0,
+            source: "bug_bounty".to_string(),
+            chain: SOLANA_MAINNET_CAIP2.to_string(),
+            settled_at: Some(self.recorded_at),
+        }
+    }
+}
+
+/// Deterministic document id for `(reporter_wallet, patch_commit)` so
+/// re-recording the same merged fix overwrites the same edge doc.
+pub fn bug_bounty_doc_id(reporter_wallet: &str, patch_commit: &str) -> String {
+    use sha2::{Digest, Sha256};
+    assert!(!reporter_wallet.is_empty(), "reporter_wallet validated upstream");
+    assert!(!patch_commit.is_empty(), "patch_commit validated upstream");
+    let mut hasher = Sha256::new();
+    hasher.update(b"swarm-bug-bounty-v1\0");
+    hasher.update((reporter_wallet.len() as u64).to_be_bytes());
+    hasher.update(reporter_wallet.as_bytes());
+    hasher.update((patch_commit.len() as u64).to_be_bytes());
+    hasher.update(patch_commit.as_bytes());
+    let hex = hex::encode(hasher.finalize());
+    format!("bounty_{}", &hex[..32])
+}
+
+/// Deterministically select the anchor wallet that issues a bug-bounty trust
+/// edge: prefer `SUPPORT_WALLET_ROOT` when present in `anchors`, otherwise
+/// pick the lexicographically smallest anchor (never `HashSet::iter().next()`).
+pub fn select_bounty_anchor(anchors: &HashSet<String>) -> Option<String> {
+    if anchors.contains(crate::inbox::SUPPORT_WALLET_ROOT) {
+        return Some(crate::inbox::SUPPORT_WALLET_ROOT.to_string());
+    }
+    anchors.iter().min().cloned()
+}
+
+/// Resolve a bug-bounty edge weight from a severity label (`low`, `medium`,
+/// `high`, `critical`) and/or an explicit weight override in `(0.0, MAX_EDGE_WEIGHT]`.
+pub fn resolve_bounty_weight(
+    severity: Option<&str>,
+    explicit_weight: Option<f64>,
+) -> Result<(String, f64), String> {
+    let sev = severity.unwrap_or("medium").trim().to_ascii_lowercase();
+    let default_weight = match sev.as_str() {
+        "low" => 1.0,
+        "medium" => 2.0,
+        "high" => 3.5,
+        "critical" => 5.0,
+        other => {
+            return Err(format!(
+                "severity must be one of [\"low\", \"medium\", \"high\", \"critical\"]; got {other:?}"
+            ))
+        }
+    };
+    let weight = explicit_weight.unwrap_or(default_weight);
+    if !weight.is_finite() || weight <= 0.0 || weight > reputation_indexer::MAX_EDGE_WEIGHT {
+        return Err(format!(
+            "weight must be finite and in (0.0, {}]",
+            reputation_indexer::MAX_EDGE_WEIGHT
+        ));
+    }
+    Ok((sev, weight))
+}
 
 /// Wire summary returned by the rebuild endpoint.
 #[derive(Debug, serde::Serialize)]
@@ -53,14 +140,15 @@ fn resolve_anchors(body_anchors: Option<Vec<String>>) -> HashSet<String> {
         .collect()
 }
 
-/// Load all trust edges, compute reputation, persist per-agent docs.
+/// Load all trust edges (settlements + verified bug bounties), compute
+/// reputation, persist per-agent docs.
 pub async fn rebuild(
     db: &FirestoreDb,
     anchors: &HashSet<String>,
 ) -> anyhow::Result<RebuildSummary> {
     let started = std::time::Instant::now();
 
-    let docs: Vec<TrustEdgeDoc> = db
+    let mut docs: Vec<TrustEdgeDoc> = db
         .fluent()
         .select()
         .from(TRUST_EDGES_COLLECTION)
@@ -68,6 +156,22 @@ pub async fn rebuild(
         .query()
         .await
         .map_err(|e| anyhow::anyhow!("load trust_edges: {e}"))?;
+
+    match db
+        .fluent()
+        .select()
+        .from(BUG_BOUNTY_EDGES_COLLECTION)
+        .obj::<BugBountyEdgeDoc>()
+        .query()
+        .await
+    {
+        Ok(bounties) => {
+            docs.extend(bounties.iter().map(BugBountyEdgeDoc::to_trust_edge));
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "bug_bounty_edges query failed during rebuild — continuing with settlement edges");
+        }
+    }
 
     let build = build_reputation(
         &docs,
@@ -216,6 +320,28 @@ struct RebuildRequest {
     anchors: Option<Vec<String>>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct RecordBountyRequest {
+    pub reporter_wallet: String,
+    pub patch_commit: String,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub weight: Option<f64>,
+    #[serde(default)]
+    pub report_id: Option<String>,
+    #[serde(default)]
+    pub anchors: Option<Vec<String>>,
+}
+
+fn bearer_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>) -> bool {
+    let provided = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+    matches!((expected_key, provided), (Some(exp), Some(got)) if !exp.is_empty() && got == exp)
+}
+
 fn rebuild_status(summary: &RebuildSummary) -> axum::http::StatusCode {
     if summary.firestore_write_errors == 0 {
         axum::http::StatusCode::OK
@@ -241,12 +367,7 @@ pub fn rebuild_handler(
             let db = Arc::clone(&db);
             let expected_key = expected_key.clone();
             async move {
-                let provided = headers
-                    .get(axum::http::header::AUTHORIZATION)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|h| h.strip_prefix("Bearer "));
-                let authorized = matches!((expected_key.as_deref(), provided), (Some(exp), Some(got)) if got == exp);
-                if !authorized {
+                if !bearer_authorized(&headers, expected_key.as_deref()) {
                     tracing::warn!("reputation rebuild rejected: missing or invalid internal key");
                     return (
                         axum::http::StatusCode::UNAUTHORIZED,
@@ -270,6 +391,115 @@ pub fn rebuild_handler(
                         (
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                             axum::Json(serde_json::json!({"error": "reputation rebuild failed; retry later"})),
+                        )
+                            .into_response()
+                    }
+                }
+            }
+        },
+    )
+}
+
+/// Validate a `RecordBountyRequest` into a ready-to-persist `BugBountyEdgeDoc`.
+fn build_bounty_edge_doc(
+    req: &RecordBountyRequest,
+    anchors: &HashSet<String>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<BugBountyEdgeDoc, (axum::http::StatusCode, String)> {
+    let mailbox = crate::inbox::mailbox_address(&req.reporter_wallet)
+        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, format!("invalid reporter_wallet: {e}")))?;
+    let reporter_native = crate::inbox::caip10_address(&mailbox).to_string();
+    let commit = req.patch_commit.trim();
+    if commit.len() < 7 || commit.len() > 128 || commit.contains('/') {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "patch_commit must be 7..=128 characters and must not contain '/'".to_string(),
+        ));
+    }
+    if let Some(report_id) = req.report_id.as_deref() {
+        crate::inbox::validate_id_token(report_id, "report_id")
+            .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e))?;
+    }
+    let (severity, weight) = resolve_bounty_weight(req.severity.as_deref(), req.weight)
+        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e))?;
+    let Some(anchor) = select_bounty_anchor(anchors) else {
+        return Err((
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "no anchors: pass {\"anchors\": [...]} or set REPUTATION_ANCHORS".to_string(),
+        ));
+    };
+    let doc_id = bug_bounty_doc_id(&reporter_native, commit);
+    Ok(BugBountyEdgeDoc {
+        doc_id,
+        from: anchor,
+        to: reporter_native,
+        weight,
+        severity,
+        patch_commit: commit.to_string(),
+        report_id: req.report_id.clone(),
+        recorded_at: now,
+    })
+}
+
+/// POST /internal/reputation/record-bounty → writes `bug_bounty_edges/{doc_id}`
+/// and immediately triggers `rebuild` so the researcher's EigenTrust score and
+/// `bug_bounties_received` counter update atomically from the caller's view.
+pub fn record_bounty_handler(
+    db: Arc<FirestoreDb>,
+    expected_key: Option<String>,
+) -> axum::routing::MethodRouter {
+    use axum::response::IntoResponse;
+    axum::routing::post(
+        move |headers: axum::http::HeaderMap, axum::Json(req): axum::Json<RecordBountyRequest>| {
+            let db = Arc::clone(&db);
+            let expected_key = expected_key.clone();
+            async move {
+                if !bearer_authorized(&headers, expected_key.as_deref()) {
+                    tracing::warn!("record_bounty rejected: missing or invalid internal key");
+                    return (
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        axum::Json(serde_json::json!({"error": "unauthorized"})),
+                    )
+                        .into_response();
+                }
+                let anchors = resolve_anchors(req.anchors.clone());
+                let doc = match build_bounty_edge_doc(&req, &anchors, chrono::Utc::now()) {
+                    Ok(d) => d,
+                    Err((status, msg)) => {
+                        return (status, axum::Json(serde_json::json!({"error": msg}))).into_response()
+                    }
+                };
+                if let Err(e) = db
+                    .fluent()
+                    .update()
+                    .in_col(BUG_BOUNTY_EDGES_COLLECTION)
+                    .document_id(&doc.doc_id)
+                    .object(&doc)
+                    .execute::<()>()
+                    .await
+                {
+                    tracing::error!(error = %e, doc_id = %doc.doc_id, "bug_bounty_edge write failed");
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(serde_json::json!({"error": "failed to persist bug bounty edge"})),
+                    )
+                        .into_response();
+                }
+                match rebuild(&db, &anchors).await {
+                    Ok(summary) => (
+                        rebuild_status(&summary),
+                        axum::Json(serde_json::json!({
+                            "recorded": true,
+                            "edge": doc,
+                            "rebuild": summary,
+                        })),
+                    )
+                        .into_response(),
+                    Err(e) => {
+                        tracing::error!(error = %e, "reputation rebuild after record-bounty failed");
+                        (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            axum::Json(serde_json::json!({"error": "bounty recorded, but rebuild failed"})),
                         )
                             .into_response()
                     }
@@ -316,6 +546,40 @@ mod tests {
         // (env var unset in tests)
         let got = resolve_anchors(None);
         assert!(got.is_empty() || !got.is_empty()); // env-dependent; just must not panic
+    }
+
+    #[test]
+    fn bounty_anchor_selection_and_doc_id_are_deterministic() {
+        let anchors: HashSet<String> = [
+            "zzzz_anchor".to_string(),
+            crate::inbox::SUPPORT_WALLET_ROOT.to_string(),
+            "aaaa_anchor".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            select_bounty_anchor(&anchors).as_deref(),
+            Some(crate::inbox::SUPPORT_WALLET_ROOT)
+        );
+        let non_root: HashSet<String> = ["zzzz".to_string(), "aaaa".to_string()].into_iter().collect();
+        assert_eq!(select_bounty_anchor(&non_root).as_deref(), Some("aaaa"));
+
+        let id1 = bug_bounty_doc_id("So11111111111111111111111111111111111111112", "abc1234");
+        let id2 = bug_bounty_doc_id("So11111111111111111111111111111111111111112", "abc1234");
+        let id3 = bug_bounty_doc_id("So11111111111111111111111111111111111111112", "def5678");
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn bounty_weight_resolution_enforces_severity_and_bounds() {
+        assert_eq!(resolve_bounty_weight(Some("low"), None).unwrap(), ("low".into(), 1.0));
+        assert_eq!(resolve_bounty_weight(None, None).unwrap(), ("medium".into(), 2.0));
+        assert_eq!(resolve_bounty_weight(Some("high"), None).unwrap(), ("high".into(), 3.5));
+        assert_eq!(resolve_bounty_weight(Some("critical"), None).unwrap(), ("critical".into(), 5.0));
+        assert!(resolve_bounty_weight(Some("extreme"), None).is_err());
+        assert!(resolve_bounty_weight(Some("low"), Some(0.0)).is_err());
+        assert!(resolve_bounty_weight(Some("low"), Some(5.1)).is_err());
     }
 }
 
@@ -735,18 +999,30 @@ async fn write_edge(
 }
 
 /// POST /internal/reputation/backfill → BackfillSummary. Idempotent; safe
-/// to re-run (doc ids are settlement signatures).
+/// to re-run (doc ids are settlement signatures). Gated on the shared internal
+/// Bearer key (fail-closed when unset) so an unauthenticated caller cannot
+/// trigger up to 20,000 Solana RPC getTransaction calls.
 pub fn backfill_handler(
     db: Arc<FirestoreDb>,
     http: reqwest::Client,
     rpc_url: String,
+    expected_key: Option<String>,
 ) -> axum::routing::MethodRouter {
     use axum::response::IntoResponse;
-    axum::routing::post(move || {
+    axum::routing::post(move |headers: axum::http::HeaderMap| {
         let db = Arc::clone(&db);
         let http = http.clone();
         let rpc_url = rpc_url.clone();
+        let expected_key = expected_key.clone();
         async move {
+            if !bearer_authorized(&headers, expected_key.as_deref()) {
+                tracing::warn!("reputation backfill rejected: missing or invalid internal key");
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    axum::Json(serde_json::json!({ "error": "unauthorized" })),
+                )
+                    .into_response();
+            }
             match backfill(&db, &http, &rpc_url).await {
                 Ok(summary) => axum::Json(summary).into_response(),
                 Err(e) => {

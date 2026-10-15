@@ -64,6 +64,11 @@ pub struct TrustEdgeDoc {
     pub settled_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Maximum weight a single trust edge may carry. Standard settlements lie in
+/// `[0.0, 1.0]`; verified security bug-bounty edges (`source == "bug_bounty"`)
+/// may scale up to `5.0` for critical patches.
+pub const MAX_EDGE_WEIGHT: f64 = 5.0;
+
 /// Computed reputation for one wallet — what the mcp-server writes to
 /// Firestore `agent_reputation/{wallet}` and `composite_trust` consumes
 /// as its EigenTrust input signal.
@@ -83,6 +88,9 @@ pub struct AgentReputation {
     pub settlements_received: u32,
     /// Settlements where this wallet paid (outgoing edges).
     pub settlements_paid: u32,
+    /// Verified security/code bug bounties credited to this wallet (`source == "bug_bounty"`).
+    #[serde(default)]
+    pub bug_bounties_received: u32,
     /// Distinct counterparties across both directions — the Sybil-relevant
     /// diversity signal.
     pub counterparty_count: u32,
@@ -136,7 +144,7 @@ pub fn build_reputation(
         .map(|d| eigentrust::TrustEdge {
             from: d.from.clone(),
             to: d.to.clone(),
-            weight: d.weight.clamp(0.0, 1.0),
+            weight: d.weight.clamp(0.0, MAX_EDGE_WEIGHT),
         })
         .collect();
 
@@ -145,6 +153,7 @@ pub fn build_reputation(
     // Per-agent edge stats.
     let mut received: HashMap<&str, u32> = HashMap::new();
     let mut paid: HashMap<&str, u32> = HashMap::new();
+    let mut bounties: HashMap<&str, u32> = HashMap::new();
     let mut counterparties: HashMap<&str, HashSet<&str>> = HashMap::new();
     let mut newest_edge: HashMap<&str, chrono::DateTime<chrono::Utc>> = HashMap::new();
     for d in &unique {
@@ -162,6 +171,10 @@ pub fn build_reputation(
         *r = r.saturating_add(1);
         let p = paid.entry(d.from.as_str()).or_default();
         *p = p.saturating_add(1);
+        if d.source == "bug_bounty" {
+            let b = bounties.entry(d.to.as_str()).or_default();
+            *b = b.saturating_add(1);
+        }
         counterparties
             .entry(d.to.as_str())
             .or_default()
@@ -184,6 +197,7 @@ pub fn build_reputation(
             rank_normalized: 1.0 - (i as f64) / n,
             settlements_received: received.get(wallet.as_str()).copied().unwrap_or(0),
             settlements_paid: paid.get(wallet.as_str()).copied().unwrap_or(0),
+            bug_bounties_received: bounties.get(wallet.as_str()).copied().unwrap_or(0),
             counterparty_count: counterparties
                 .get(wallet.as_str())
                 .map(|s| s.len() as u32)
@@ -551,5 +565,39 @@ mod tests {
                 "weight {weight}: detached ring outranked the anchored agent"
             );
         }
+    }
+
+    #[test]
+    fn bug_bounty_edges_increment_counter_and_scale_up_to_max_edge_weight() {
+        let mut bounty_edge = edge("bounty:commit123", "anchor", "researcher", 3.5);
+        bounty_edge.source = "bug_bounty".to_string();
+        let settlement_edge = edge("tx1", "anchor", "worker", 1.0);
+
+        let build = build_reputation(
+            &[bounty_edge, settlement_edge],
+            &pre(&["anchor"]),
+            &EigenTrustConfig::default(),
+            chrono::Utc::now(),
+        )
+        .expect("build succeeds");
+
+        let researcher = build
+            .agents
+            .iter()
+            .find(|a| a.wallet == "researcher")
+            .expect("researcher present");
+        let worker = build
+            .agents
+            .iter()
+            .find(|a| a.wallet == "worker")
+            .expect("worker present");
+
+        assert_eq!(researcher.bug_bounties_received, 1);
+        assert_eq!(researcher.settlements_received, 1);
+        assert_eq!(worker.bug_bounties_received, 0);
+        assert!(
+            researcher.eigentrust_score > worker.eigentrust_score,
+            "3.5-weight bug bounty edge must outscore 1.0-weight settlement edge from same anchor"
+        );
     }
 }

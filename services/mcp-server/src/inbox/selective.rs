@@ -335,7 +335,10 @@ impl Inbox {
         args: &ListMessagesArgs,
     ) -> Result<serde_json::Value, InboxError> {
         let start = std::time::Instant::now();
-        let result = list(self, me, args).await;
+        let mut result = list(self, me, args).await;
+        if let Ok(ref mut value) = result {
+            self.attach_list_sender_reputations(value).await;
+        }
         observe("list", start, args.preview, &result);
         result
     }
@@ -346,9 +349,71 @@ impl Inbox {
     ) -> Result<serde_json::Value, InboxError> {
         let refs = references(args)?;
         let start = std::time::Instant::now();
-        let result = selected(self, me, refs, false).await;
+        let mut result = selected(self, me, refs, false).await;
+        if let Ok(ref mut value) = result {
+            self.attach_opened_sender_reputations(value).await;
+        }
         observe("open", start, false, &result);
         result
+    }
+
+    async fn attach_list_sender_reputations(&self, value: &mut serde_json::Value) {
+        let Some(messages) = value["messages"].as_array_mut() else {
+            return;
+        };
+        let senders: Vec<String> = messages
+            .iter()
+            .filter(|m| m["direction"].as_str() != Some(DIRECTION_SENT))
+            .filter_map(|m| m["from_wallet"].as_str())
+            .map(|w| caip10_address(w).to_string())
+            .collect();
+        if senders.is_empty() {
+            return;
+        }
+        let reputations = self.reputations_for(senders.into_iter()).await;
+        for m in messages.iter_mut() {
+            if m["direction"].as_str() == Some(DIRECTION_SENT) {
+                continue;
+            }
+            if let Some(from) = m["from_wallet"].as_str() {
+                if let Some(rep) = reputations.get(caip10_address(from)) {
+                    if let Ok(summary) = serde_json::to_value(rep) {
+                        m["sender_reputation"] = summary;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn attach_opened_sender_reputations(&self, value: &mut serde_json::Value) {
+        let Some(results) = value["results"].as_array_mut() else {
+            return;
+        };
+        let senders: Vec<String> = results
+            .iter()
+            .filter(|r| r["status"].as_str() == Some("opened"))
+            .filter(|r| r["message"]["direction"].as_str() != Some(DIRECTION_SENT))
+            .filter_map(|r| r["message"]["from_wallet"].as_str())
+            .map(|w| caip10_address(w).to_string())
+            .collect();
+        if senders.is_empty() {
+            return;
+        }
+        let reputations = self.reputations_for(senders.into_iter()).await;
+        for r in results.iter_mut() {
+            if r["status"].as_str() != Some("opened")
+                || r["message"]["direction"].as_str() == Some(DIRECTION_SENT)
+            {
+                continue;
+            }
+            if let Some(from) = r["message"]["from_wallet"].as_str().map(str::to_string) {
+                if let Some(rep) = reputations.get(caip10_address(&from)) {
+                    if let Ok(summary) = serde_json::to_value(rep) {
+                        r["message"]["sender_reputation"] = summary;
+                    }
+                }
+            }
+        }
     }
     pub async fn ack_message_ids(
         &self,

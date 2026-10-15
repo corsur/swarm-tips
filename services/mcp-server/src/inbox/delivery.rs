@@ -296,8 +296,15 @@ impl Inbox {
         if fresh {
             self.notify_recipient_webhook(&to, &req.from, &thread_id, &receipt.msg_id, now)
                 .await;
-            self.notify_support_responder(&to, &req.from, &thread_id, &receipt.msg_id, &req.body)
-                .await;
+            self.notify_support_responder(
+                &to,
+                &req.from,
+                &thread_id,
+                &receipt.msg_id,
+                &req.body,
+                proposed.message.intent.as_deref(),
+            )
+            .await;
         }
         Ok(receipt)
     }
