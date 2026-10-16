@@ -27,7 +27,8 @@ noncomputable def weilPrimeGram (N : ℕ) : Matrix (Fin N) (Fin N) ℝ :=
             Real.cos (((i.val : ℝ) - (j.val : ℝ)) * (N : ℝ) * Real.log (m : ℝ))
 
 /-- Millennium Problem (Riemann Hypothesis — Weil-Gram Programme, Open Problem 1):
-    Uniform cubic trace cancellation on the hollow dyadic Weil-Montgomery Gram family.
+    Uniform cubic trace cancellation on the hollow dyadic Weil-Montgomery Gram family,
+    normalized by the prime-harmonic sparsity scale √(log(N + 2) / N).
     Because `∃ C` is quantified OUTSIDE `∀ N ≥ 2`, `C` is a single universal constant
     independent of dimension `N` and cannot be chosen pointwise as `|tr(G^3)| / ...`. -/
 def statementProp : Prop :=
@@ -35,4 +36,5 @@ def statementProp : Prop :=
     ∀ (N : ℕ), 2 ≤ N →
       let G := weilPrimeGram N
       |Matrix.trace (G * G * G)| ≤
-        C * (1 / Real.sqrt (N : ℝ)) * (Matrix.trace (G * G) * Real.sqrt (Matrix.trace (G * G)))
+        C * Real.sqrt (Real.log ((N : ℝ) + 2) / (N : ℝ)) *
+          (Matrix.trace (G * G) * Real.sqrt (Matrix.trace (G * G)))

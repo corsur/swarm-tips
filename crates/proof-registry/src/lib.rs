@@ -490,10 +490,37 @@ pub fn compose_generated_module(
         strip_imports(&candidate.statement)?,
         strip_imports(&candidate.proof_source)?
     ));
+    let declares_disproof = candidate.proof_source.lines().any(|line| {
+        let t = line.trim_start();
+        t.starts_with("theorem disproof")
+            || t.starts_with("lemma disproof")
+            || t.starts_with("def disproof")
+    });
+    let is_negated_proof = declares_disproof
+        || candidate.proof_source.lines().any(|line| {
+            let t = line.trim_start();
+            (t.starts_with("theorem proof")
+                || t.starts_with("lemma proof")
+                || t.starts_with("def proof"))
+                && (t.contains("¬")
+                    || t.contains("Not statementProp")
+                    || t.contains("statementProp → False")
+                    || t.contains("statementProp -> False"))
+        });
+    let entry_name = if declares_disproof {
+        "disproof"
+    } else {
+        "proof"
+    };
+    let theorem_signature = if is_negated_proof {
+        format!("theorem {namespace}.{entry_name} : ¬ {namespace}.statementProp")
+    } else {
+        format!("theorem {namespace}.{entry_name} : {namespace}.statementProp")
+    };
     Ok(GeneratedModule {
         source,
-        theorem_name: format!("{namespace}.proof"),
-        theorem_signature: format!("theorem {namespace}.proof : {namespace}.statementProp"),
+        theorem_name: format!("{namespace}.{entry_name}"),
+        theorem_signature,
     })
 }
 

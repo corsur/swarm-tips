@@ -280,6 +280,7 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
 
   // Canary 1: 6Riwz... zero-constant / positivity vacuity probe
   // Canary 2: 2qu3Do... pointwise ratio (C = |x| / tr(G^2)) shortcut probe
+  // Canary 3: disproof-vacuity (¬ statementProp via decide / norm_num / positivity)
   const canaryProbes = [
     {
       label: "zero-constant-vacuity",
@@ -290,6 +291,11 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
       label: "pointwise-ratio-shortcut",
       proof:
         "theorem solution : statementProp := by\n  intro N hN\n  refine ⟨0, le_rfl, ?_⟩\n  exact le_rfl",
+    },
+    {
+      label: "disproof-vacuity",
+      proof:
+        "import Mathlib.Tactic.NormNum\ntheorem solution : ¬ statementProp := by\n  intro h\n  norm_num at h",
     },
   ];
 

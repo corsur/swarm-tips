@@ -28,11 +28,12 @@ noncomputable def weilPrimeGram (N : ℕ) : Matrix (Fin N) (Fin N) ℝ :=
 
 /-- Millennium Problem (Riemann Hypothesis — Weil-Gram Programme, Open Problem 2):
     Uniform quartic cumulant / 4-point correlation bound on the hollow dyadic Weil-Montgomery
-    prime-harmonic Gram family (Montgomery-Odlyzko GUE 4-point cancellation).
+    prime-harmonic Gram family (Montgomery-Odlyzko GUE 4-point cancellation), normalized by
+    the prime-harmonic sparsity scale log(N + 2) / N.
     The universal constant `C` is quantified OUTSIDE `∀ N ≥ 2`. -/
 def statementProp : Prop :=
   ∃ (C : ℝ), 0 ≤ C ∧
     ∀ (N : ℕ), 2 ≤ N →
       let G := weilPrimeGram N
       |Matrix.trace (G * G * G * G) - (Matrix.trace (G * G)) ^ 2 / (N : ℝ)| ≤
-        C * (1 / (N : ℝ)) * (Matrix.trace (G * G)) ^ 2
+        C * (Real.log ((N : ℝ) + 2) / (N : ℝ)) * (Matrix.trace (G * G)) ^ 2

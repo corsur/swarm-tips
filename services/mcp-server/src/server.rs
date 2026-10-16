@@ -533,6 +533,7 @@ pub struct CreateCampaignArgs {
     /// LeanProof only: the `Statement.lean` source to prove.
     #[serde(default)]
     pub statement_lean: Option<String>,
+    // Note: policy 3 (mathlib-heavy 600s) is also supported.
     /// LeanProof only: policy 1 self-contained (default) or 2 mathlib.
     #[serde(default)]
     pub lean_policy: Option<u32>,
@@ -562,6 +563,8 @@ pub struct GetAttestationArgs {
 pub struct SubmitWorkArgs {
     /// The unique task identifier (format: `<campaign_id>:<task_uuid>`).
     pub task_id: String,
+    // For LeanProof (platform 10), an HTTPS URL to a `.lean` file defining
+    // either `theorem proof : statementProp` or `theorem proof/disproof : ¬ statementProp`.
     /// The content ID of the completed work (YouTube video ID, tweet ID,
     /// game session ID, etc.).
     pub content_id: String,
