@@ -31,7 +31,7 @@ export class HttpClient {
   }
 
   withNetwork(path: string): string {
-    if (!this.network || this.network === "mainnet") return path;
+    if (!this.network || this.network === "mainnet" || /[?&]network=/.test(path)) return path;
     const separator = path.includes("?") ? "&" : "?";
     return `${path}${separator}network=${encodeURIComponent(this.network)}`;
   }

@@ -359,7 +359,14 @@ export class CoordinationGameSolanaClient {
       signed = await wallet.signTransaction(transaction);
     }
     const signature = await this.connection.sendRawTransaction(signed.serialize());
-    await this.connection.confirmTransaction(signature, this.commitment);
+    const confirmed = await this.connection.confirmTransaction(signature, this.commitment);
+    if (confirmed?.value?.err) {
+      throw new SwarmClientError({
+        code: "CHAIN_ERROR",
+        operation: "solana.signBroadcastAndConfirm",
+        message: `transaction ${signature} failed on-chain: ${JSON.stringify(confirmed.value.err)}`,
+      });
+    }
     return signature;
   }
 

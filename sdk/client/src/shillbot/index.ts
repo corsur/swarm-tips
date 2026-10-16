@@ -585,13 +585,16 @@ export async function signAndBroadcast(
           verifySignatures: true,
         });
   const signature = await connection.sendRawTransaction(wire);
-  if (confirmation) {
-    await connection.confirmTransaction(
-      { signature, ...confirmation },
-      "confirmed"
+  const confirmed = confirmation
+    ? await connection.confirmTransaction(
+        { signature, ...confirmation },
+        "confirmed"
+      )
+    : await connection.confirmTransaction(signature, "confirmed");
+  if (confirmed?.value?.err) {
+    throw new Error(
+      `transaction ${signature} failed on-chain: ${JSON.stringify(confirmed.value.err)}`
     );
-  } else {
-    await connection.confirmTransaction(signature, "confirmed");
   }
   return signature;
 }
