@@ -16,7 +16,10 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
     // Checks
-    require!(!ctx.accounts.global_state.paused, ShillbotError::ProtocolPaused);
+    require!(
+        !ctx.accounts.global_state.paused,
+        ShillbotError::ProtocolPaused
+    );
     require!(
         task.state == TaskState::Verified,
         ShillbotError::InvalidTaskState

@@ -438,7 +438,9 @@ pub fn compose_generated_module(
     ];
     let proof_only_forbidden = ["local ", "scoped ", "open ", "export "];
     let combined = format!("{}\n{}", candidate.statement, candidate.proof_source);
-    if forbidden_shared.iter().any(|token| combined.contains(token))
+    if forbidden_shared
+        .iter()
+        .any(|token| combined.contains(token))
         || proof_only_forbidden
             .iter()
             .any(|token| candidate.proof_source.contains(token))

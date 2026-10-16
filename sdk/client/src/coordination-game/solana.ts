@@ -222,7 +222,7 @@ export class CoordinationGameSolanaClient {
       const status = await this.connection.getSignatureStatus(signature);
       if (status.value?.err) {
         throw new SwarmClientError({
-          code: "CHAIN_ERROR",
+          code: "TRANSACTION_FAILED",
           operation: "solana.waitForSignature",
           message: `transaction ${signature} failed on-chain: ${JSON.stringify(status.value.err)}`,
         });
@@ -362,7 +362,7 @@ export class CoordinationGameSolanaClient {
     const confirmed = await this.connection.confirmTransaction(signature, this.commitment);
     if (confirmed?.value?.err) {
       throw new SwarmClientError({
-        code: "CHAIN_ERROR",
+        code: "TRANSACTION_FAILED",
         operation: "solana.signBroadcastAndConfirm",
         message: `transaction ${signature} failed on-chain: ${JSON.stringify(confirmed.value.err)}`,
       });
