@@ -100,9 +100,12 @@ pub fn resolve_bounty_weight(
         "medium" => 2.0,
         "high" => 3.5,
         "critical" => 5.0,
-        other => return Err(format!(
-            "severity must be one of [\"low\", \"medium\", \"high\", \"critical\"]; got {other:?}"
-        )),
+        other => {
+            let msg = format!(
+                "severity must be one of [\"low\", \"medium\", \"high\", \"critical\"]; got {other:?}"
+            );
+            return Err(msg);
+        }
     };
     let weight = explicit_weight.unwrap_or(default_weight);
     if !weight.is_finite() || weight <= 0.0 || weight > reputation_indexer::MAX_EDGE_WEIGHT {
