@@ -272,12 +272,11 @@ async function main(): Promise<void> {
   );
 
   const bountyReporter = "2qu3Do8dcjinFv2grmfcptWzxLYrvZFPMXM2jKbLiRr2";
-  const bountyRep = (await (
-    await fetch(
-      `${MCP_URL}/internal/agent-reputation?wallet=${bountyReporter}&network=devnet`
-    )
-  ).json()) as {
-    has_standing: boolean;
+  const bountyTrust = (await mcpCall(sid, "agent_trust_score", {
+    wallet: bountyReporter,
+  })) as {
+    trust_score: number;
+    inputs_present: { eigentrust: boolean };
     eigentrust: {
       rank: number;
       settlements_received: number;
@@ -285,10 +284,30 @@ async function main(): Promise<void> {
     } | null;
   };
   check(
-    bountyRep.has_standing === true &&
-      bountyRep.eigentrust !== null &&
-      bountyRep.eigentrust.bug_bounties_received >= 1,
-    `bug-bounty reporter has EigenTrust standing (rank #${bountyRep.eigentrust?.rank}, bug_bounties_received=${bountyRep.eigentrust?.bug_bounties_received})`
+    bountyTrust.trust_score > 0 &&
+      bountyTrust.inputs_present.eigentrust === true &&
+      bountyTrust.eigentrust !== null &&
+      bountyTrust.eigentrust.bug_bounties_received >= 1,
+    `agent_trust_score surfaces bug-bounty EigenTrust standing (score=${bountyTrust.trust_score.toFixed(4)}, rank #${bountyTrust.eigentrust?.rank}, bug_bounties_received=${bountyTrust.eigentrust?.bug_bounties_received})`
+  );
+
+  const bountyRep = (await (
+    await fetch(
+      `${MCP_URL}/internal/agent-reputation?wallet=${bountyReporter}&network=devnet`
+    )
+  ).json()) as {
+    eigentrust: {
+      rank: number;
+      settlements_received: number;
+      bug_bounties_received: number;
+    } | null;
+  };
+  check(
+    bountyRep.eigentrust !== null &&
+      bountyRep.eigentrust.bug_bounties_received ===
+        bountyTrust.eigentrust?.bug_bounties_received &&
+      bountyRep.eigentrust.rank === bountyTrust.eigentrust?.rank,
+    `reputation endpoint matches agent_trust_score for bug-bounty reporter (bug_bounties_received=${bountyRep.eigentrust?.bug_bounties_received})`
   );
 
   console.log("\n[mcp] search_mcp_servers over the ingested catalog");
