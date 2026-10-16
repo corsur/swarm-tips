@@ -1542,7 +1542,9 @@ fn bug_report_intent_requires_support_recipient_and_is_banned_from_public_board(
         "bug_report must never be published to a public topic board"
     );
 
-    assert!(validate_bug_report_send(Some("bug_report"), true, SenderTier::SessionVerified).is_ok());
+    assert!(
+        validate_bug_report_send(Some("bug_report"), true, SenderTier::SessionVerified).is_ok()
+    );
     assert!(validate_bug_report_send(Some("bug_report"), true, SenderTier::WalletVerified).is_ok());
     assert!(validate_bug_report_send(Some("bug_report"), true, SenderTier::Reputable).is_ok());
     assert!(
@@ -1590,4 +1592,3 @@ fn sender_reputation_summary_projects_reputation_and_omits_when_absent() {
     assert_eq!(unindexed.rank, None);
     assert_eq!(unindexed.bug_bounties_received, 0);
 }
-

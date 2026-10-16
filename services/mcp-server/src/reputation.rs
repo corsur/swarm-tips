@@ -63,7 +63,10 @@ impl BugBountyEdgeDoc {
 /// re-recording the same merged fix overwrites the same edge doc.
 pub fn bug_bounty_doc_id(reporter_wallet: &str, patch_commit: &str) -> String {
     use sha2::{Digest, Sha256};
-    assert!(!reporter_wallet.is_empty(), "reporter_wallet validated upstream");
+    assert!(
+        !reporter_wallet.is_empty(),
+        "reporter_wallet validated upstream"
+    );
     assert!(!patch_commit.is_empty(), "patch_commit validated upstream");
     let mut hasher = Sha256::new();
     hasher.update(b"swarm-bug-bounty-v1\0");
@@ -97,11 +100,9 @@ pub fn resolve_bounty_weight(
         "medium" => 2.0,
         "high" => 3.5,
         "critical" => 5.0,
-        other => {
-            return Err(format!(
-                "severity must be one of [\"low\", \"medium\", \"high\", \"critical\"]; got {other:?}"
-            ))
-        }
+        other => return Err(format!(
+            "severity must be one of [\"low\", \"medium\", \"high\", \"critical\"]; got {other:?}"
+        )),
     };
     let weight = explicit_weight.unwrap_or(default_weight);
     if !weight.is_finite() || weight <= 0.0 || weight > reputation_indexer::MAX_EDGE_WEIGHT {
@@ -406,8 +407,12 @@ fn build_bounty_edge_doc(
     anchors: &HashSet<String>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<BugBountyEdgeDoc, (axum::http::StatusCode, String)> {
-    let mailbox = crate::inbox::mailbox_address(&req.reporter_wallet)
-        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, format!("invalid reporter_wallet: {e}")))?;
+    let mailbox = crate::inbox::mailbox_address(&req.reporter_wallet).map_err(|e| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("invalid reporter_wallet: {e}"),
+        )
+    })?;
     let reporter_native = crate::inbox::caip10_address(&mailbox).to_string();
     let commit = req.patch_commit.trim();
     if commit.len() < 7 || commit.len() > 128 || commit.contains('/') {
@@ -466,7 +471,8 @@ pub fn record_bounty_handler(
                 let doc = match build_bounty_edge_doc(&req, &anchors, chrono::Utc::now()) {
                     Ok(d) => d,
                     Err((status, msg)) => {
-                        return (status, axum::Json(serde_json::json!({"error": msg}))).into_response()
+                        return (status, axum::Json(serde_json::json!({"error": msg})))
+                            .into_response()
                     }
                 };
                 if let Err(e) = db
@@ -481,7 +487,9 @@ pub fn record_bounty_handler(
                     tracing::error!(error = %e, doc_id = %doc.doc_id, "bug_bounty_edge write failed");
                     return (
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        axum::Json(serde_json::json!({"error": "failed to persist bug bounty edge"})),
+                        axum::Json(
+                            serde_json::json!({"error": "failed to persist bug bounty edge"}),
+                        ),
                     )
                         .into_response();
                 }
@@ -499,7 +507,9 @@ pub fn record_bounty_handler(
                         tracing::error!(error = %e, "reputation rebuild after record-bounty failed");
                         (
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                            axum::Json(serde_json::json!({"error": "bounty recorded, but rebuild failed"})),
+                            axum::Json(
+                                serde_json::json!({"error": "bounty recorded, but rebuild failed"}),
+                            ),
                         )
                             .into_response()
                     }
@@ -561,7 +571,9 @@ mod tests {
             select_bounty_anchor(&anchors).as_deref(),
             Some(crate::inbox::SUPPORT_WALLET_ROOT)
         );
-        let non_root: HashSet<String> = ["zzzz".to_string(), "aaaa".to_string()].into_iter().collect();
+        let non_root: HashSet<String> = ["zzzz".to_string(), "aaaa".to_string()]
+            .into_iter()
+            .collect();
         assert_eq!(select_bounty_anchor(&non_root).as_deref(), Some("aaaa"));
 
         let id1 = bug_bounty_doc_id("So11111111111111111111111111111111111111112", "abc1234");
@@ -573,10 +585,22 @@ mod tests {
 
     #[test]
     fn bounty_weight_resolution_enforces_severity_and_bounds() {
-        assert_eq!(resolve_bounty_weight(Some("low"), None).unwrap(), ("low".into(), 1.0));
-        assert_eq!(resolve_bounty_weight(None, None).unwrap(), ("medium".into(), 2.0));
-        assert_eq!(resolve_bounty_weight(Some("high"), None).unwrap(), ("high".into(), 3.5));
-        assert_eq!(resolve_bounty_weight(Some("critical"), None).unwrap(), ("critical".into(), 5.0));
+        assert_eq!(
+            resolve_bounty_weight(Some("low"), None).unwrap(),
+            ("low".into(), 1.0)
+        );
+        assert_eq!(
+            resolve_bounty_weight(None, None).unwrap(),
+            ("medium".into(), 2.0)
+        );
+        assert_eq!(
+            resolve_bounty_weight(Some("high"), None).unwrap(),
+            ("high".into(), 3.5)
+        );
+        assert_eq!(
+            resolve_bounty_weight(Some("critical"), None).unwrap(),
+            ("critical".into(), 5.0)
+        );
         assert!(resolve_bounty_weight(Some("extreme"), None).is_err());
         assert!(resolve_bounty_weight(Some("low"), Some(0.0)).is_err());
         assert!(resolve_bounty_weight(Some("low"), Some(5.1)).is_err());

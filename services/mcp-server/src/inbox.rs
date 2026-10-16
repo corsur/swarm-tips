@@ -2692,8 +2692,7 @@ impl Inbox {
         &self,
         senders: impl Iterator<Item = String>,
     ) -> std::collections::HashMap<String, SenderReputationSummary> {
-        let unique: std::collections::HashSet<String> =
-            senders.filter(|s| !s.is_empty()).collect();
+        let unique: std::collections::HashSet<String> = senders.filter(|s| !s.is_empty()).collect();
         let db = &self.db;
         let fetched = futures_util::future::join_all(unique.into_iter().map(|sender| async move {
             let rep = crate::reputation::get_agent_reputation(db, &sender).await;
