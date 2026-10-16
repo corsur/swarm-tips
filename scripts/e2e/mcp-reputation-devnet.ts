@@ -235,7 +235,12 @@ async function main(): Promise<void> {
     limit: 10,
   })) as {
     count: number;
-    agents: { wallet: string; rank: number; settlements_received: number }[];
+    agents: {
+      wallet: string;
+      rank: number;
+      settlements_received: number;
+      bug_bounties_received?: number;
+    }[];
   };
   check(
     board.count >= 1,
@@ -248,14 +253,42 @@ async function main(): Promise<void> {
     board.agents[0]?.rank === 1 && ranksAscending,
     "leaderboard is best-rank-first"
   );
+  check(
+    board.agents.every((a) => typeof a.bug_bounties_received === "number") &&
+      board.agents.some((a) => (a.bug_bounties_received ?? 0) >= 1),
+    "leaderboard surfaces bug_bounties_received on EigenTrust records"
+  );
 
   const httpBoard = (await (
     await fetch(`${MCP_URL}/internal/reputation/leaderboard?limit=10`)
-  ).json()) as { count: number; agents: { wallet: string }[] };
+  ).json()) as {
+    count: number;
+    agents: { wallet: string; bug_bounties_received?: number }[];
+  };
   check(
     httpBoard.count === board.count &&
       httpBoard.agents[0]?.wallet === board.agents[0]?.wallet,
     "leaderboard endpoint matches the MCP tool (shared read)"
+  );
+
+  const bountyReporter = "2qu3Do8dcjinFv2grmfcptWzxLYrvZFPMXM2jKbLiRr2";
+  const bountyRep = (await (
+    await fetch(
+      `${MCP_URL}/internal/agent-reputation?wallet=${bountyReporter}&network=devnet`
+    )
+  ).json()) as {
+    has_standing: boolean;
+    eigentrust: {
+      rank: number;
+      settlements_received: number;
+      bug_bounties_received: number;
+    } | null;
+  };
+  check(
+    bountyRep.has_standing === true &&
+      bountyRep.eigentrust !== null &&
+      bountyRep.eigentrust.bug_bounties_received >= 1,
+    `bug-bounty reporter has EigenTrust standing (rank #${bountyRep.eigentrust?.rank}, bug_bounties_received=${bountyRep.eigentrust?.bug_bounties_received})`
   );
 
   console.log("\n[mcp] search_mcp_servers over the ingested catalog");

@@ -70,11 +70,16 @@ const API_BASE = process.env.SHILLBOT_API ?? "https://api.shillbot.org";
 const ESCROW = new BN(2_000_000); // 0.002 SOL
 const DEMO_WINDOW = 8; // seconds — shrunk global challenge window for the run
 const STATEMENT = "def statementProp : Prop := True";
+const FALSE_STATEMENT = "def statementProp : Prop := (2 + 2 : Nat) = 5";
 
 const RAW_BASE =
   "https://raw.githubusercontent.com/corsur/swarm-tips/main/tests/fixtures/lean";
 const PASS_PROOF_URL = process.env.PASS_PROOF_URL ?? `${RAW_BASE}/pass.lean`;
 const FAIL_PROOF_URL = process.env.FAIL_PROOF_URL ?? `${RAW_BASE}/fail.lean`;
+const DISPROOF_PASS_URL =
+  process.env.DISPROOF_PASS_URL ?? `${RAW_BASE}/disproof-pass.lean`;
+const DISPROOF_EM_FAIL_URL =
+  process.env.DISPROOF_EM_FAIL_URL ?? `${RAW_BASE}/disproof-em-fail.lean`;
 
 // --- REST + signing helpers -------------------------------------------------
 
@@ -307,7 +312,7 @@ async function runLifecycle(
   // it keeps local/dev deployments fast, while a 401/timeout falls back to the
   // same scheduled workflow real submissions use.
   try {
-    await api("POST", `/internal/run-attest/${taskId}`, clientPk, {
+    await api("POST", `/internal/run-attest/${taskId}`, clientToken, {
       task_id: taskId,
     });
   } catch (e) {
@@ -385,8 +390,7 @@ async function main(): Promise<void> {
   await ensureFunded(h, h.attester.publicKey, 30_000_000);
   await ensureFunded(h, h.agent.publicKey, 10_000_000);
 
-  // One LeanProof campaign — statement is identical for both cases; the
-  // pass/fail difference is entirely in the submitted proof artifact.
+  // Campaign 1 (true statement): tests positive proof pass + sorryAx rejection.
   const clientToken = await getAuthToken(h.authority);
   const camp = await api("POST", `/campaigns?network=devnet`, clientToken, {
     brief: {
@@ -400,7 +404,28 @@ async function main(): Promise<void> {
     statement_lean: STATEMENT,
   });
   const campaignId = camp.campaign_id as string;
-  console.log(`campaign:         ${campaignId}`);
+  console.log(`campaign (true):  ${campaignId}`);
+
+  // Campaign 2 (false statement): tests formal disproof (¬ statementProp) pass
+  // and excluded-middle vacuity (statementProp ∨ ¬ statementProp) rejection.
+  const falseCamp = await api(
+    "POST",
+    `/campaigns?network=devnet`,
+    clientToken,
+    {
+      brief: {
+        topic: "lean attester disproof & vacuity guard e2e",
+        brand_voice: "precise",
+        cta: "refute the false statement",
+        utm_link: "https://swarm.tips",
+      },
+      budget_lamports: Number(ESCROW.toString()) * 4,
+      platform: LEAN_PROOF_PLATFORM,
+      statement_lean: FALSE_STATEMENT,
+    }
+  );
+  const falseCampaignId = falseCamp.campaign_id as string;
+  console.log(`campaign (false): ${falseCampaignId}`);
 
   await withChallengeWindow(h, DEMO_WINDOW, async () => {
     await runLifecycle(
@@ -420,6 +445,24 @@ async function main(): Promise<void> {
       FAIL_PROOF_URL,
       0,
       "FAIL proof (by sorry) → score 0, client refunded"
+    );
+    await runLifecycle(
+      h,
+      ctx,
+      chk,
+      falseCampaignId,
+      DISPROOF_PASS_URL,
+      MAX_SCORE,
+      "DISPROOF PASS (theorem disproof : ¬ statementProp) → score MAX, agent paid"
+    );
+    await runLifecycle(
+      h,
+      ctx,
+      chk,
+      falseCampaignId,
+      DISPROOF_EM_FAIL_URL,
+      0,
+      "DISPROOF FAIL (Classical.em vacuity statementProp ∨ ¬ statementProp) → score 0, client refunded"
     );
   });
 
