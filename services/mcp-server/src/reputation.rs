@@ -144,14 +144,28 @@ fn resolve_anchors(body_anchors: Option<Vec<String>>) -> HashSet<String> {
         .collect()
 }
 
+/// Known Devnet/CI test harness wallets whose early July/August 2026 test
+/// settlements were written before CAIP-2 chain tagging distinguished Devnet
+/// from Mainnet.
+pub const KNOWN_DEVNET_WALLETS: &[&str] = &[
+    "D726hM8QL1BxnmszwW78cSbm51bptNBnapfotKsHjrtS",
+    "5nFDehrqPaLNL26xk9fGEEcNG7D9k5xRohqvPDRk8DJX",
+    "GCEdpAHSE5s4NNgBY77TRfvdKmpLjPc16QNHj9uZbThU",
+    "6wbszAa2RPr76RVdAupN6epd4hfP2BJhmN3JjNPSPAGX",
+];
+
 /// Returns true iff the settlement edge belongs to a Mainnet chain (Solana
 /// Mainnet, Ethereum Mainnet, or Base Mainnet) or is a verified bug_bounty
-/// edge, and is not a self-edge (`from == to`). Filters out Solana Devnet
-/// (`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1`), Base Sepolia (`eip155:84532`),
-/// and Sepolia (`eip155:11155111`) test edges so E2E test runs never pollute
-/// the production EigenTrust leaderboard.
+/// edge, is not a self-edge (`from == to`), and does not involve a known
+/// Devnet/CI test harness wallet.
 pub fn is_mainnet_trust_edge(edge: &TrustEdgeDoc) -> bool {
     if edge.from == edge.to {
+        return false;
+    }
+    if KNOWN_DEVNET_WALLETS
+        .iter()
+        .any(|w| edge.from == *w || edge.to == *w)
+    {
         return false;
     }
     if edge.source == "bug_bounty" {
@@ -711,9 +725,14 @@ mod tests {
 
         let self_edge = TrustEdgeDoc {
             to: mainnet_edge.from.clone(),
-            ..mainnet_edge
+            ..mainnet_edge.clone()
         };
         assert!(!is_mainnet_trust_edge(&self_edge));
+        let canary_edge = TrustEdgeDoc {
+            to: "D726hM8QL1BxnmszwW78cSbm51bptNBnapfotKsHjrtS".into(),
+            ..mainnet_edge
+        };
+        assert!(!is_mainnet_trust_edge(&canary_edge));
     }
 }
 
