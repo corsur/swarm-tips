@@ -144,8 +144,27 @@ fn resolve_anchors(body_anchors: Option<Vec<String>>) -> HashSet<String> {
         .collect()
 }
 
-/// Load all trust edges (settlements + verified bug bounties), compute
-/// reputation, persist per-agent docs.
+/// Returns true iff the settlement edge belongs to a Mainnet chain (Solana
+/// Mainnet, Ethereum Mainnet, or Base Mainnet) or is a verified bug_bounty
+/// edge, and is not a self-edge (`from == to`). Filters out Solana Devnet
+/// (`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1`), Base Sepolia (`eip155:84532`),
+/// and Sepolia (`eip155:11155111`) test edges so E2E test runs never pollute
+/// the production EigenTrust leaderboard.
+pub fn is_mainnet_trust_edge(edge: &TrustEdgeDoc) -> bool {
+    if edge.from == edge.to {
+        return false;
+    }
+    if edge.source == "bug_bounty" {
+        return true;
+    }
+    matches!(
+        edge.chain.as_str(),
+        SOLANA_MAINNET_CAIP2 | "eip155:1" | "eip155:8453" | "mainnet"
+    )
+}
+
+/// Load all Mainnet trust edges (settlements + verified bug bounties), compute
+/// reputation, persist per-agent docs, and prune stale Devnet/removed agent docs.
 pub async fn rebuild(
     db: &FirestoreDb,
     anchors: &HashSet<String>,
@@ -161,6 +180,10 @@ pub async fn rebuild(
         .await
         .map_err(|e| anyhow::anyhow!("load trust_edges: {e}"))?;
 
+    let raw_loaded = docs.len();
+    docs.retain(is_mainnet_trust_edge);
+    let non_mainnet_dropped = raw_loaded.saturating_sub(docs.len());
+
     match db
         .fluent()
         .select()
@@ -170,7 +193,12 @@ pub async fn rebuild(
         .await
     {
         Ok(bounties) => {
-            docs.extend(bounties.iter().map(BugBountyEdgeDoc::to_trust_edge));
+            docs.extend(
+                bounties
+                    .iter()
+                    .map(BugBountyEdgeDoc::to_trust_edge)
+                    .filter(is_mainnet_trust_edge),
+            );
         }
         Err(e) => {
             tracing::warn!(error = %e, "bug_bounty_edges query failed during rebuild — continuing with settlement edges");
@@ -184,6 +212,8 @@ pub async fn rebuild(
         chrono::Utc::now(),
     )
     .map_err(|e| anyhow::anyhow!("eigentrust build failed: {e}"))?;
+
+    let active_wallets: HashSet<&str> = build.agents.iter().map(|a| a.wallet.as_str()).collect();
 
     let mut writes = 0usize;
     let mut write_errors = 0usize;
@@ -211,6 +241,41 @@ pub async fn rebuild(
         "every agent doc accounted for"
     );
 
+    // Prune stale agent_reputation docs (e.g. historical Devnet E2E test wallets)
+    // that are not part of the active Mainnet graph so they don't linger in
+    // list_leaderboard with stale ranks.
+    let mut stale_pruned = 0usize;
+    if let Ok(existing_docs) = db
+        .fluent()
+        .select()
+        .from(AGENT_REPUTATION_COLLECTION)
+        .obj::<AgentReputation>()
+        .query()
+        .await
+    {
+        for existing in existing_docs {
+            if !active_wallets.contains(existing.wallet.as_str()) {
+                match db
+                    .fluent()
+                    .delete()
+                    .from(AGENT_REPUTATION_COLLECTION)
+                    .document_id(&existing.wallet)
+                    .execute()
+                    .await
+                {
+                    Ok(_) => stale_pruned = stale_pruned.saturating_add(1),
+                    Err(e) => {
+                        tracing::warn!(
+                            wallet = %existing.wallet,
+                            error = %e,
+                            "failed to prune stale agent_reputation doc"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     let summary = RebuildSummary {
         edges: build.edge_count,
         duplicate_edges_dropped: build.duplicate_edges_dropped,
@@ -223,6 +288,8 @@ pub async fn rebuild(
     };
     tracing::info!(
         edges = summary.edges,
+        non_mainnet_dropped,
+        stale_pruned,
         agents = summary.agents,
         converged = summary.converged,
         writes = summary.firestore_writes,
@@ -607,6 +674,46 @@ mod tests {
         assert!(resolve_bounty_weight(Some("extreme"), None).is_err());
         assert!(resolve_bounty_weight(Some("low"), Some(0.0)).is_err());
         assert!(resolve_bounty_weight(Some("low"), Some(5.1)).is_err());
+    }
+
+    #[test]
+    fn mainnet_trust_edge_filter_excludes_devnet_and_self_dealing() {
+        let mainnet_edge = TrustEdgeDoc {
+            tx_sig: "sig1".into(),
+            from: "So11111111111111111111111111111111111111112".into(),
+            to: "4f3b2a1c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c".into(),
+            weight: 1.0,
+            task_id: 1,
+            source: "shillbot".into(),
+            chain: SOLANA_MAINNET_CAIP2.into(),
+            settled_at: None,
+        };
+        assert!(is_mainnet_trust_edge(&mainnet_edge));
+
+        let devnet_edge = TrustEdgeDoc {
+            chain: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1".into(),
+            ..mainnet_edge.clone()
+        };
+        assert!(!is_mainnet_trust_edge(&devnet_edge));
+
+        let legacy_devnet_edge = TrustEdgeDoc {
+            chain: "devnet".into(),
+            ..mainnet_edge.clone()
+        };
+        assert!(!is_mainnet_trust_edge(&legacy_devnet_edge));
+
+        let bug_bounty_edge = TrustEdgeDoc {
+            source: "bug_bounty".into(),
+            chain: "bug_bounty".into(),
+            ..mainnet_edge.clone()
+        };
+        assert!(is_mainnet_trust_edge(&bug_bounty_edge));
+
+        let self_edge = TrustEdgeDoc {
+            to: mainnet_edge.from.clone(),
+            ..mainnet_edge
+        };
+        assert!(!is_mainnet_trust_edge(&self_edge));
     }
 }
 

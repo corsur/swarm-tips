@@ -101,6 +101,12 @@ pub struct TaskSummary {
     pub task_nonce: Option<String>,
     #[serde(default)]
     pub website_instructions: Option<WebsiteInstructions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referral_instructions: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gameplay_instructions: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lean_proof_instructions: Option<serde_json::Value>,
     #[serde(default)]
     pub statement_lean: Option<String>,
     #[serde(default)]

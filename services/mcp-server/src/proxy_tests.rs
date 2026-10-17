@@ -5,7 +5,10 @@ fn website_instructions_survive_proxy_round_trip() {
     let source = serde_json::json!({
         "task_id": "campaign:task", "state": "claimed", "platform": 9,
         "task_nonce": "3f3da71a00000000343d405cab52c716",
-        "website_instructions": {"status": "ready", "html": "<footer>copy exactly</footer>", "guidance": "Publish then submit."}
+        "website_instructions": {"status": "ready", "html": "<footer>copy exactly</footer>", "guidance": "Publish then submit."},
+        "referral_instructions": {"status": "ready", "content_id_format": "campaign_id UUID"},
+        "gameplay_instructions": {"status": "ready", "content_id_format": "game_id UUID"},
+        "lean_proof_instructions": {"status": "ready", "content_id_format": "lean4:proof:<base64>"}
     });
     let task: TaskSummary = serde_json::from_value(source.clone()).unwrap();
     let output = serde_json::to_value(task).unwrap();
@@ -13,6 +16,18 @@ fn website_instructions_survive_proxy_round_trip() {
     assert_eq!(
         output["website_instructions"],
         source["website_instructions"]
+    );
+    assert_eq!(
+        output["referral_instructions"],
+        source["referral_instructions"]
+    );
+    assert_eq!(
+        output["gameplay_instructions"],
+        source["gameplay_instructions"]
+    );
+    assert_eq!(
+        output["lean_proof_instructions"],
+        source["lean_proof_instructions"]
     );
 }
 

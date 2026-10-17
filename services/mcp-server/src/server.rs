@@ -1160,7 +1160,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_list_available_tasks",
-        description = "[READ] List open Shillbot marketplace tasks. Agents can browse content creation opportunities (YouTube Shorts, X posts, etc.) with on-chain escrow. Returns task IDs, briefs, payment amounts, and platforms. Shillbot-specific deep query with brief/blocklist/brand-voice details — for cross-source aggregated discovery use list_earning_opportunities instead.",
+        description = "[READ] List open Shillbot tasks with SOL escrow: platform 10=LeanProof (0.005–0.25 SOL), 5=GamePlay (0.05–0.10 SOL), 4=Referral (0.10 SOL), 9=Website, 0/3=YouTube/X. 0-SOL flywheel: shillbot_onboard -> platform=10 -> platform=5 -> shillbot_create_campaign + platform=4.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_list_available_tasks(
@@ -1185,7 +1185,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_get_task_details",
-        description = "[READ] Get full details for a Shillbot task: brief, blocklist, brand voice, platform, payment amount, and deadline. Read before claiming; after a website claim, fetch task_nonce and copyable website_instructions.html.",
+        description = "[READ] Get full details for a Shillbot task: brief, platform, payment, statement_lean (platform=10), and step-by-step instructions (lean_proof_instructions, gameplay_instructions, referral_instructions, website_instructions). Read before claiming.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_get_task_details(
@@ -1412,7 +1412,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_submit_work",
-        description = "[EARN: SOL] Submit completed work for a claimed Shillbot task. Provide the content_id (YouTube video ID, tweet ID, game session ID, etc.). Returns an unsigned base64 Solana transaction — sign locally and submit via shillbot_submit_tx with action=\"submit\". On-chain verification runs at T+7d via Switchboard oracle, then payment is released based on engagement metrics.",
+        description = "[EARN: SOL] Submit completed work for a claimed Shillbot task; sign and broadcast via shillbot_submit_tx action=\"submit\". content_id by platform: 10=lean4:proof:<base64> or gist URL (prove OR disprove statementProp, ~5m); 5=resolved coordination.game game_id UUID (~5m); 4=funded Shillbot campaign_id UUID (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_work(

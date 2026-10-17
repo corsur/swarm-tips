@@ -225,6 +225,7 @@ fn shillbot_platform_label(platform: i64) -> &'static str {
         4 => "referral",
         5 => "game-play",
         9 => "website",
+        10 => "lean-proof",
         _ => "other",
     }
 }
@@ -238,13 +239,13 @@ fn shillbot_platform_action(platform: i64) -> &'static str {
         4 => "Create a shillbot campaign.",
         5 => "Play a round of coordination.game.",
         9 => "Place a swarm.tips footer backlink on a site you control.",
+        10 => "Submit a Lean 4 proof or counterexample.",
         _ => "Complete a shillbot task.",
     }
 }
 
 fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
     let task_id = str_field(t, "task_id")?;
-    let topic = str_field(t, "campaign_topic").unwrap_or_else(|| "Shillbot task".to_string());
 
     // Drop tasks without an estimated payment — they're not actionable as
     // earning opportunities.
@@ -260,6 +261,11 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
     let platform_label = shillbot_platform_label(platform_int);
 
     let brief = t.get("brief");
+    let short_id: String = task_id.chars().take(8).collect();
+    let topic = str_field(t, "campaign_topic")
+        .or_else(|| brief.and_then(|b| str_field(b, "topic")))
+        .unwrap_or_else(|| format!("Shillbot {platform_label} task ({short_id})"));
+
     let cta = brief
         .and_then(|b| b.get("cta"))
         .and_then(|v| v.as_str())
@@ -276,11 +282,17 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
     // fronts rent, then claim/submit are sponsor-paid.
     let action = shillbot_platform_action(platform_int);
     let description = format!(
-        "{action} No SOL needed — start gaslessly via shillbot_onboard. {voice} CTA: {cta}"
+        "{action} No SOL needed — start gaslessly via shillbot_onboard. {voice} CTA: {cta} [task:{short_id}]"
     )
     .chars()
     .take(500)
     .collect::<String>();
+
+    let category = if platform_int == 10 {
+        "formal-proof".to_string()
+    } else {
+        "content".to_string()
+    };
 
     // The shillbot.org frontend only routes /tasks (the TaskBoard); there's
     // no per-task detail page. Linking to /tasks/{id} 404s. Send agents to
@@ -291,7 +303,7 @@ fn parse_shillbot_task(t: &serde_json::Value) -> Option<RawListing> {
         source_url: "https://shillbot.org/tasks".to_string(),
         title: topic,
         description,
-        category: "content".to_string(),
+        category,
         tags: vec!["solana".to_string(), platform_label.to_string()],
         reward_amount: format!("{sol_amount:.4}"),
         reward_token: "SOL".to_string(),
@@ -861,6 +873,7 @@ mod tests {
         assert_eq!(shillbot_platform_label(4), "referral");
         assert_eq!(shillbot_platform_label(5), "game-play");
         assert_eq!(shillbot_platform_label(9), "website");
+        assert_eq!(shillbot_platform_label(10), "lean-proof");
         assert_eq!(shillbot_platform_label(99), "other");
     }
 
@@ -871,7 +884,33 @@ mod tests {
         assert!(shillbot_platform_action(4).contains("campaign"));
         assert!(shillbot_platform_action(5).contains("coordination.game"));
         assert!(shillbot_platform_action(9).contains("swarm.tips"));
+        assert!(shillbot_platform_action(10).contains("Lean 4"));
         assert_eq!(shillbot_platform_action(99), "Complete a shillbot task.");
+    }
+
+    #[test]
+    fn parse_shillbot_task_falls_back_to_brief_topic_and_lean_proof_category() {
+        let json = serde_json::json!({
+            "task_id": "2c8d45f2-e33e-4733-bad0-010ab14309d3",
+            "campaign_id": "8e110214-2cb9-484e-a583-94a175d98095",
+            "campaign_topic": null,
+            "state": "open",
+            "platform": 10,
+            "created_at": "2026-04-16T00:00:00Z",
+            "estimated_payment_lamports": 250_000_000u64,
+            "brief": {
+                "topic": "Prove Weil-Gram PSD (m=0, N=2) [Strict v4]",
+                "brand_voice": "Formal mathematics in Lean 4.",
+                "cta": "Submit a machine-checked Lean 4 proof or counterexample",
+                "utm_link": "https://swarm.tips/bounties"
+            }
+        });
+        let listing = parse_shillbot_task(&json).expect("should parse");
+        assert_eq!(listing.title, "Prove Weil-Gram PSD (m=0, N=2) [Strict v4]");
+        assert_eq!(listing.category, "formal-proof");
+        assert!(listing.tags.contains(&"lean-proof".to_string()));
+        assert!(listing.description.contains("Lean 4"));
+        assert!(listing.description.contains("[task:2c8d45f2]"));
     }
 
     #[test]

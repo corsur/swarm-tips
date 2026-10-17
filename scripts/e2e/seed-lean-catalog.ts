@@ -169,27 +169,54 @@ export const MILLENNIUM_TASKS = new Set([
   "weil-gram-spectral-floor",
 ]);
 
+export const LADDER_TASKS = new Set([
+  "tier1-escrow-conservation",
+  "tier1-weil-trace-hollow-2x2",
+  "tier2-weil-gram-symmetry",
+  "tier2-weil-hollow-cubic-2x2",
+  "tier2-weil-cauchy-schwarz-quartic-2x2",
+  "tier2-eigentrust-convex-preservation",
+]);
+
 export interface CatalogEntry {
   name: string;
   kind: "open" | "solvable";
-  program: "millennium-rh-weil-gram" | "general";
+  program: "millennium-rh-weil-gram" | "lemma-ladder" | "general";
   statement: string;
+  companionProof?: string;
+  defaultEscrowLamports?: number;
 }
 
-export function loadCatalog(): CatalogEntry[] {
+export function loadCatalog(includeSolvable = false): CatalogEntry[] {
   const entries: CatalogEntry[] = [];
-  for (const kind of ["open"] as const) {
+  const kinds: Array<"open" | "solvable"> = includeSolvable
+    ? ["open", "solvable"]
+    : ["open"];
+  for (const kind of kinds) {
     const dir = path.join(CATALOG_DIR, kind);
     for (const f of fs.readdirSync(dir).sort()) {
       if (!f.endsWith(".lean") || f.endsWith(".proof.lean")) continue;
       const name = f.replace(/\.lean$/, "");
+      const proofPath = path.join(dir, `${name}.proof.lean`);
+      const companionProof = fs.existsSync(proofPath)
+        ? fs.readFileSync(proofPath, "utf8").trimEnd()
+        : undefined;
+      const defaultEscrowLamports = name.startsWith("tier1-")
+        ? 5_000_000
+        : name.startsWith("tier2-")
+          ? 15_000_000
+          : undefined;
       entries.push({
         name,
         kind,
         program: MILLENNIUM_TASKS.has(name)
           ? "millennium-rh-weil-gram"
-          : "general",
+          : LADDER_TASKS.has(name)
+            ? "lemma-ladder"
+            : "general",
         statement: fs.readFileSync(path.join(dir, f), "utf8").trimEnd(),
+        companionProof,
+        defaultEscrowLamports,
       });
     }
   }
@@ -278,14 +305,53 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
     );
   }
 
+  if (entry.kind === "solvable" && entry.companionProof) {
+    const pRes = await fetch(`${DEFAULT_RUNNER_URL}/check`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        statement: entry.statement,
+        proof: entry.companionProof,
+        statement_def: "statementProp",
+        entry_theorem: entry.companionProof.includes("theorem proof ")
+          ? "proof"
+          : "solution",
+        axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
+        mode: "mathlib",
+        import_allowlist: ["Mathlib"],
+        max_build_secs: 120,
+        max_build_mem_mb: 16384,
+      }),
+    });
+    if (!pRes.ok) {
+      throw new Error(
+        `companion proof check HTTP ${pRes.status} for ${entry.name}`
+      );
+    }
+    const pJson = (await pRes.json()) as { verdict?: string; detail?: string };
+    if (pJson.verdict !== "pass") {
+      throw new Error(
+        `companion proof FAILED for solvable entry ${entry.name}: verdict=${pJson.verdict} detail=${pJson.detail}`
+      );
+    }
+    console.log(
+      `  [pre-seed check PASS] solvable/${entry.name} elaborated & companion proof verified (${
+        Date.now() - t0
+      }ms)`
+    );
+    return;
+  }
+
+  // Bi-directional 4-canary vacuity & shortcut linter for open problems:
   // Canary 1: 6Riwz... zero-constant / positivity vacuity probe
   // Canary 2: 2qu3Do... pointwise ratio (C = |x| / tr(G^2)) shortcut probe
   // Canary 3: disproof-vacuity (¬ statementProp via decide / norm_num / positivity)
+  // Canary 4: empty-domain contradiction (hypotheses mutually contradictory via omega)
   const canaryProbes = [
     {
       label: "zero-constant-vacuity",
       proof:
-        "import Mathlib.Tactic.Positivity\ntheorem solution : statementProp := by\n  refine ⟨0, le_rfl, fun N _ => ?_⟩\n  positivity",
+        "theorem solution : statementProp := by\n  refine ⟨0, le_rfl, fun N _ => ?_⟩\n  simp",
     },
     {
       label: "pointwise-ratio-shortcut",
@@ -295,7 +361,12 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
     {
       label: "disproof-vacuity",
       proof:
-        "import Mathlib.Tactic.NormNum\ntheorem solution : ¬ statementProp := by\n  intro h\n  norm_num at h",
+        "theorem solution : ¬ statementProp := by\n  intro h\n  unfold statementProp at h\n  simp at h",
+    },
+    {
+      label: "empty-domain-contradiction",
+      proof:
+        "theorem solution : statementProp := by\n  unfold statementProp\n  intros\n  omega",
     },
   ];
 
@@ -329,7 +400,7 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
   }
 
   console.log(
-    `  [pre-seed check PASS] ${entry.name} elaborated cleanly & rejected vacuity/ratio canaries (${
+    `  [pre-seed check PASS] ${entry.name} elaborated cleanly & rejected all 4 vacuity/ratio canaries (${
       Date.now() - t0
     }ms)`
   );
@@ -359,14 +430,15 @@ async function main(): Promise<void> {
     process.argv.includes("--mainnet") ||
     process.env.SOLANA_NETWORK === "mainnet";
   const checkOnly = process.argv.includes("--check-only");
+  const isLadder = process.argv.includes("--ladder");
+  const taskArg = process.argv.find((a) => a.startsWith("--tasks="));
   const network = isMainnet ? "mainnet" : "devnet";
 
-  let catalog = loadCatalog();
-  const taskArg = process.argv.find((a) => a.startsWith("--tasks="));
+  let catalog = loadCatalog(isLadder || Boolean(taskArg));
   const isMillenniumOnly =
     process.argv.includes("--millennium") ||
     process.argv.includes("--new") ||
-    (isMainnet && !process.argv.includes("--all-open"));
+    (isMainnet && !process.argv.includes("--all-open") && !isLadder && !taskArg);
 
   if (taskArg) {
     const allowed = new Set(
@@ -376,6 +448,8 @@ async function main(): Promise<void> {
         .map((s) => s.trim())
     );
     catalog = catalog.filter((e) => allowed.has(e.name));
+  } else if (isLadder) {
+    catalog = catalog.filter((e) => e.program === "lemma-ladder");
   } else if (isMillenniumOnly) {
     catalog = catalog.filter((e) => e.program === "millennium-rh-weil-gram");
   }
@@ -424,7 +498,11 @@ async function main(): Promise<void> {
     ).toFixed(4)} SOL)`
   );
 
-  const minLamports = escrowLamports * catalog.length + 5_000_000;
+  const totalEscrowNeeded = catalog.reduce(
+    (acc, e) => acc + (escrowArg ? escrowLamports : e.defaultEscrowLamports ?? escrowLamports),
+    0
+  );
+  const minLamports = totalEscrowNeeded + 5_000_000;
   if (bal < minLamports) {
     throw new Error(
       `Insufficient balance on ${network}: have ${(
@@ -444,6 +522,9 @@ async function main(): Promise<void> {
   let skipped = 0;
 
   for (const entry of catalog) {
+    const entryEscrow = escrowArg
+      ? escrowLamports
+      : entry.defaultEscrowLamports ?? escrowLamports;
     const topic = `catalog:${entry.name}`;
     if (already.has(topic)) {
       console.log(`  skip (open task exists): ${topic}`);
@@ -460,7 +541,7 @@ async function main(): Promise<void> {
         cta: `Prove: ${entry.name} (${entry.kind})`,
         utm_link: "https://swarm.tips",
       },
-      budget_lamports: escrowLamports * 2,
+      budget_lamports: entryEscrow * 2,
       platform: LEAN_PROOF_PLATFORM,
       statement_lean: entry.statement,
       lean_policy: 3,
@@ -472,7 +553,7 @@ async function main(): Promise<void> {
       "POST",
       `/campaigns/${campaignId}/fund?network=${network}`,
       bearer,
-      { amount_lamports: escrowLamports }
+      { amount_lamports: entryEscrow }
     );
     const unsigned = fund.transaction as string;
     const sig = await broadcast(conn, signBase64(unsigned, authority));
@@ -487,7 +568,7 @@ async function main(): Promise<void> {
       }
     );
     console.log(
-      `  [${network}] seeded ${entry.kind}/${entry.name} -> campaign ${campaignId} task ${fund.task_id} pda ${fund.task_pda} (tx ${sig})`
+      `  [${network}] seeded ${entry.kind}/${entry.name} (${(entryEscrow / LAMPORTS_PER_SOL).toFixed(4)} SOL) -> campaign ${campaignId} task ${fund.task_id} pda ${fund.task_pda} (tx ${sig})`
     );
     created++;
   }

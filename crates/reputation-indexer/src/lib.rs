@@ -129,15 +129,22 @@ pub fn build_reputation(
     config: &EigenTrustConfig,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<ReputationBuild, EigenTrustError> {
-    // Dedupe by tx_sig (defensive; the Firestore doc id is the tx_sig).
+    // Dedupe by tx_sig (defensive; the Firestore doc id is the tx_sig) and
+    // drop self-dealing edges (from == to) so settling a task in one's own
+    // self-serve campaign cannot inflate EigenTrust or settlement counters.
     let mut seen: HashSet<&str> = HashSet::with_capacity(docs.len());
     let mut unique: Vec<&TrustEdgeDoc> = Vec::with_capacity(docs.len());
+    let mut duplicate_edges_dropped = 0usize;
     for d in docs {
-        if seen.insert(d.tx_sig.as_str()) {
-            unique.push(d);
+        if !seen.insert(d.tx_sig.as_str()) {
+            duplicate_edges_dropped = duplicate_edges_dropped.saturating_add(1);
+            continue;
         }
+        if d.from == d.to {
+            continue;
+        }
+        unique.push(d);
     }
-    let duplicate_edges_dropped = docs.len().saturating_sub(unique.len());
 
     let edges: Vec<eigentrust::TrustEdge> = unique
         .iter()
@@ -600,4 +607,34 @@ mod tests {
             "3.5-weight bug bounty edge must outscore 1.0-weight settlement edge from same anchor"
         );
     }
+
+    #[test]
+    fn self_dealing_edges_are_ignored() {
+        let docs = vec![
+            edge("tx_real", "anchor", "worker", 1.0),
+            edge("tx_self_1", "worker", "worker", 1.0),
+            edge("tx_self_2", "self_dealer", "self_dealer", 1.0),
+        ];
+        let build = build_reputation(
+            &docs,
+            &pre(&["anchor"]),
+            &EigenTrustConfig::default(),
+            chrono::Utc::now(),
+        )
+        .expect("build succeeds");
+        assert_eq!(build.edge_count, 1);
+        let worker = build
+            .agents
+            .iter()
+            .find(|a| a.wallet == "worker")
+            .expect("worker present");
+        assert_eq!(worker.settlements_received, 1);
+        assert_eq!(worker.settlements_paid, 0);
+        assert_eq!(worker.counterparty_count, 1);
+        assert!(
+            build.agents.iter().all(|a| a.wallet != "self_dealer"),
+            "self-only dealer must not enter the reputation graph"
+        );
+    }
 }
+
