@@ -167,6 +167,11 @@ export const MILLENNIUM_TASKS = new Set([
   "weil-gram-cubic-correlation",
   "weil-gram-quartic-correlation",
   "weil-gram-spectral-floor",
+  "millennium-rh-mertens-quasi",
+  "millennium-rh-lagarias-divisor",
+  "millennium-pnp-circuit-5n-barrier",
+  "millennium-bsd-congruent-squarefree",
+  "millennium-ns-dyadic-enstrophy-regularity",
 ]);
 
 export const LADDER_TASKS = new Set([
@@ -176,6 +181,9 @@ export const LADDER_TASKS = new Set([
   "tier2-weil-hollow-cubic-2x2",
   "tier2-weil-cauchy-schwarz-quartic-2x2",
   "tier2-eigentrust-convex-preservation",
+  "tier2-rh-mertens-base",
+  "tier2-bsd-congruent-elliptic-map",
+  "tier2-ns-dyadic-energy-conservation",
 ]);
 
 export interface CatalogEntry {
@@ -205,7 +213,9 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
         ? 5_000_000
         : name.startsWith("tier2-")
           ? 15_000_000
-          : undefined;
+          : name.startsWith("millennium-")
+            ? 50_000_000
+            : undefined;
       entries.push({
         name,
         kind,
