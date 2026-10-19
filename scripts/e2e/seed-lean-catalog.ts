@@ -172,6 +172,12 @@ export const MILLENNIUM_TASKS = new Set([
   "millennium-pnp-circuit-5n-barrier",
   "millennium-bsd-congruent-squarefree",
   "millennium-ns-dyadic-enstrophy-regularity",
+  "millennium-sub-ns-abel-helical-cancellation",
+  "millennium-sub-rh-mertens-hyperbola-fifth",
+  "millennium-sub-rh-lagarias-superabundant",
+  "millennium-sub-weil-gram-shifted-mobius-quartic",
+  "millennium-sub-bsd-split-prime-frobenius",
+  "millennium-sub-pnp-paley-rigidity",
 ]);
 
 export const LADDER_TASKS = new Set([
@@ -213,9 +219,11 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
         ? 5_000_000
         : name.startsWith("tier2-")
           ? 15_000_000
-          : name.startsWith("millennium-")
-            ? 50_000_000
-            : undefined;
+          : name.startsWith("millennium-sub-")
+            ? 30_000_000
+            : name.startsWith("millennium-")
+              ? 50_000_000
+              : undefined;
       entries.push({
         name,
         kind,
@@ -378,6 +386,11 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
       proof:
         "theorem solution : statementProp := by\n  unfold statementProp\n  intros\n  omega",
     },
+    {
+      label: "tactic-blast-triviality",
+      proof:
+        "theorem solution : statementProp := by\n  unfold statementProp\n  intros\n  first | omega | simp | decide",
+    },
   ];
 
   for (const canary of canaryProbes) {
@@ -410,7 +423,7 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
   }
 
   console.log(
-    `  [pre-seed check PASS] ${entry.name} elaborated cleanly & rejected all 4 vacuity/ratio canaries (${
+    `  [pre-seed check PASS] ${entry.name} elaborated cleanly & rejected all 5 vacuity/triviality canaries (${
       Date.now() - t0
     }ms)`
   );
@@ -509,7 +522,13 @@ async function main(): Promise<void> {
   );
 
   const totalEscrowNeeded = catalog.reduce(
-    (acc, e) => acc + (escrowArg ? escrowLamports : e.defaultEscrowLamports ?? escrowLamports),
+    (acc, e) =>
+      acc +
+      (escrowArg
+        ? escrowLamports
+        : isMainnet
+          ? e.defaultEscrowLamports ?? escrowLamports
+          : escrowLamports),
     0
   );
   const minLamports = totalEscrowNeeded + 5_000_000;
@@ -534,7 +553,9 @@ async function main(): Promise<void> {
   for (const entry of catalog) {
     const entryEscrow = escrowArg
       ? escrowLamports
-      : entry.defaultEscrowLamports ?? escrowLamports;
+      : isMainnet
+        ? entry.defaultEscrowLamports ?? escrowLamports
+        : escrowLamports;
     const topic = `catalog:${entry.name}`;
     if (already.has(topic)) {
       console.log(`  skip (open task exists): ${topic}`);
