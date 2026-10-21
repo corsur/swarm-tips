@@ -164,18 +164,11 @@ async function broadcast(conn: Connection, signedB64: string): Promise<string> {
 }
 
 export const MILLENNIUM_TASKS = new Set([
-  "weil-gram-cubic-correlation",
-  "weil-gram-quartic-correlation",
-  "weil-gram-spectral-floor",
-  "millennium-rh-mertens-quasi",
   "millennium-rh-lagarias-divisor",
-  "millennium-pnp-circuit-5n-barrier",
   "millennium-bsd-congruent-squarefree",
   "millennium-ns-dyadic-enstrophy-regularity",
   "millennium-sub-ns-abel-helical-cancellation",
-  "millennium-sub-rh-mertens-hyperbola-fifth",
   "millennium-sub-rh-lagarias-superabundant",
-  "millennium-sub-weil-gram-shifted-mobius-quartic",
   "millennium-sub-bsd-split-prime-frobenius",
   "millennium-sub-pnp-paley-rigidity",
 ]);
@@ -198,6 +191,7 @@ export interface CatalogEntry {
   program: "millennium-rh-weil-gram" | "lemma-ladder" | "general";
   statement: string;
   companionProof?: string;
+  sanityScriptPath?: string;
   defaultEscrowLamports?: number;
 }
 
@@ -212,8 +206,12 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
       if (!f.endsWith(".lean") || f.endsWith(".proof.lean")) continue;
       const name = f.replace(/\.lean$/, "");
       const proofPath = path.join(dir, `${name}.proof.lean`);
+      const sanityPath = path.join(dir, `${name}.sanity.ts`);
       const companionProof = fs.existsSync(proofPath)
         ? fs.readFileSync(proofPath, "utf8").trimEnd()
+        : undefined;
+      const sanityScriptPath = fs.existsSync(sanityPath)
+        ? sanityPath
         : undefined;
       const defaultEscrowLamports = name.startsWith("tier1-")
         ? 5_000_000
@@ -234,6 +232,7 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
             : "general",
         statement: fs.readFileSync(path.join(dir, f), "utf8").trimEnd(),
         companionProof,
+        sanityScriptPath,
         defaultEscrowLamports,
       });
     }
@@ -281,6 +280,10 @@ function getRunnerIdToken(audience: string): string {
 async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
   assertOuterExistentialQuantifierOrder(entry);
 
+  if (entry.sanityScriptPath) {
+    execSync(`npx tsx "${entry.sanityScriptPath}"`, { stdio: "inherit" });
+  }
+
   const token = getRunnerIdToken(DEFAULT_RUNNER_URL);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -293,9 +296,9 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
     headers,
     body: JSON.stringify({
       statement: entry.statement,
-      proof: "theorem solution : statementProp := sorry",
+      proof: "theorem proof : statementProp := sorry",
       statement_def: "statementProp",
-      entry_theorem: "solution",
+      entry_theorem: "proof",
       axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
       mode: "mathlib",
       import_allowlist: ["Mathlib"],
@@ -331,9 +334,7 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
         statement: entry.statement,
         proof: entry.companionProof,
         statement_def: "statementProp",
-        entry_theorem: entry.companionProof.includes("theorem proof ")
-          ? "proof"
-          : "solution",
+        entry_theorem: "proof",
         axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
         mode: "mathlib",
         import_allowlist: ["Mathlib"],
@@ -360,36 +361,35 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
     return;
   }
 
-  // Bi-directional 4-canary vacuity & shortcut linter for open problems:
-  // Canary 1: 6Riwz... zero-constant / positivity vacuity probe
-  // Canary 2: 2qu3Do... pointwise ratio (C = |x| / tr(G^2)) shortcut probe
-  // Canary 3: disproof-vacuity (¬ statementProp via decide / norm_num / positivity)
-  // Canary 4: empty-domain contradiction (hypotheses mutually contradictory via omega)
+  // M2 Pre-Seed Mathematical & Tactic Non-Triviality Gate (strictly for our own catalog tasks):
+  // Probes both `theorem proof : statementProp` and `theorem disproof : ¬ statementProp`
+  // against vacuity witnesses and standard 1-line tactics (rfl, decide, omega, norm_num,
+  // ring, linarith, positivity, nlinarith, aesop, tauto).
   const canaryProbes = [
     {
       label: "zero-constant-vacuity",
       proof:
-        "theorem solution : statementProp := by\n  refine ⟨0, le_rfl, fun N _ => ?_⟩\n  simp",
+        "theorem proof : statementProp := by\n  refine ⟨0, le_rfl, fun N _ => ?_⟩\n  simp",
     },
     {
       label: "pointwise-ratio-shortcut",
       proof:
-        "theorem solution : statementProp := by\n  intro N hN\n  refine ⟨0, le_rfl, ?_⟩\n  exact le_rfl",
+        "theorem proof : statementProp := by\n  intro N hN\n  refine ⟨0, le_rfl, ?_⟩\n  exact le_rfl",
     },
     {
-      label: "disproof-vacuity",
+      label: "positive-tactic-blast-triviality",
       proof:
-        "theorem solution : ¬ statementProp := by\n  intro h\n  unfold statementProp at h\n  simp at h",
+        "theorem proof : statementProp := by\n  unfold statementProp\n  intros\n  first | rfl | decide | omega | norm_num | ring | linarith | positivity | nlinarith | aesop | tauto | simp",
+    },
+    {
+      label: "negative-tactic-blast-disproof",
+      proof:
+        "theorem disproof : ¬ statementProp := by\n  intro h\n  unfold statementProp at h\n  first | exact False.elim (by omega) | norm_num at h | omega | simp at h | aesop",
     },
     {
       label: "empty-domain-contradiction",
       proof:
-        "theorem solution : statementProp := by\n  unfold statementProp\n  intros\n  omega",
-    },
-    {
-      label: "tactic-blast-triviality",
-      proof:
-        "theorem solution : statementProp := by\n  unfold statementProp\n  intros\n  first | omega | simp | decide",
+        "theorem proof : statementProp := by\n  unfold statementProp\n  intros\n  omega",
     },
   ];
 
@@ -401,7 +401,7 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
         statement: entry.statement,
         proof: canary.proof,
         statement_def: "statementProp",
-        entry_theorem: "solution",
+        entry_theorem: "proof",
         axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
         mode: "mathlib",
         import_allowlist: ["Mathlib"],
@@ -455,6 +455,10 @@ async function main(): Promise<void> {
   const checkOnly = process.argv.includes("--check-only");
   const isLadder = process.argv.includes("--ladder");
   const taskArg = process.argv.find((a) => a.startsWith("--tasks="));
+  const reservedForWalletArg = process.argv
+    .find((a) => a.startsWith("--reserved-for-wallet="))
+    ?.replace("--reserved-for-wallet=", "")
+    .trim();
   const network = isMainnet ? "mainnet" : "devnet";
 
   let catalog = loadCatalog(isLadder || Boolean(taskArg));
@@ -520,6 +524,9 @@ async function main(): Promise<void> {
       escrowLamports / LAMPORTS_PER_SOL
     ).toFixed(4)} SOL)`
   );
+  if (reservedForWalletArg) {
+    console.log(`reserved_for_wallet: ${reservedForWalletArg}`);
+  }
 
   const totalEscrowNeeded = catalog.reduce(
     (acc, e) =>
@@ -580,11 +587,15 @@ async function main(): Promise<void> {
     const campaignId = camp.campaign_id as string;
 
     // Fund one task so the bounty is claimable + visible on the board.
+    const fundBody: Record<string, unknown> = { amount_lamports: entryEscrow };
+    if (reservedForWalletArg) {
+      fundBody.reserved_for_wallet = reservedForWalletArg;
+    }
     const fund = await api(
       "POST",
       `/campaigns/${campaignId}/fund?network=${network}`,
       bearer,
-      { amount_lamports: entryEscrow }
+      fundBody
     );
     const unsigned = fund.transaction as string;
     const sig = await broadcast(conn, signBase64(unsigned, authority));

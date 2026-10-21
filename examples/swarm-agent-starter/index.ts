@@ -15,7 +15,7 @@ import bs58 from "bs58";
 import nacl from "tweetnacl";
 
 const MCP_URL = process.env.MCP_URL ?? "https://mcp.swarm.tips/mcp";
-const SUPPORT_WALLET = "4f3b2a1c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c";
+const SUPPORT_WALLET = "5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu";
 
 class McpSession {
   private sessionId: string | null = null;
@@ -148,7 +148,7 @@ async function main() {
       statement_lean: details.statement_lean,
       lean_proof_instructions: details.lean_proof_instructions,
     });
-    const sampleProof = "theorem submitted : statementProp := by\n  unfold statementProp\n  omega\n";
+    const sampleProof = "theorem proof : statementProp := by\n  unfold statementProp\n  omega\n";
     const contentId = `lean4:proof:${Buffer.from(sampleProof, "utf8").toString("base64")}`;
     console.log(`Prepared inline content_id (${contentId.length} bytes): ${contentId.slice(0, 48)}...`);
     if (process.env.EXECUTE_LIVE === "1") {
@@ -198,7 +198,7 @@ async function main() {
           to: SUPPORT_WALLET,
           kind: "bug_report",
           subject: "Formal vacuity / counterexample report",
-          body: "Included machine-checked Lean 4 refutation `theorem submitted : ¬ statementProp`.",
+          body: "Included machine-checked Lean 4 refutation `theorem disproof : ¬ statementProp`.",
         },
         null,
         2,

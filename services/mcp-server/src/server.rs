@@ -1160,7 +1160,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_list_available_tasks",
-        description = "[READ] List open Shillbot tasks with SOL escrow: platform 10=LeanProof (0.005–0.25 SOL), 5=GamePlay (0.05–0.10 SOL), 4=Referral (0.10 SOL), 9=Website, 0/3=YouTube/X. 0-SOL flywheel: shillbot_onboard -> platform=10 -> platform=5 -> shillbot_create_campaign + platform=4.",
+        description = "[READ] List open Shillbot tasks with SOL escrow: platform 10=LeanProof (deterministic Lean 4 verification, verification_kind=1) and 0/3=YouTube/X. Use shillbot_get_task for full statement/instructions and shillbot_preflight_work before submitting.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_list_available_tasks(

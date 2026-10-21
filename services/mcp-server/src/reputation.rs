@@ -695,7 +695,7 @@ mod tests {
         let mainnet_edge = TrustEdgeDoc {
             tx_sig: "sig1".into(),
             from: "So11111111111111111111111111111111111111112".into(),
-            to: "4f3b2a1c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c".into(),
+            to: "5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu".into(),
             weight: 1.0,
             task_id: 1,
             source: "shillbot".into(),
