@@ -636,8 +636,10 @@ pub fn validate(
                 ));
             }
             if let Some(feed) = expected_feed {
-                let oracle_key =
-                    keys.get(usize::from(oracle_index)).copied().ok_or_else(|| {
+                let oracle_key = keys
+                    .get(usize::from(oracle_index))
+                    .copied()
+                    .ok_or_else(|| {
                         ValidationError::Rejected("verify oracle account index is invalid".into())
                     })?;
                 if oracle_key != feed {

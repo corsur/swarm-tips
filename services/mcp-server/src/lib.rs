@@ -488,9 +488,7 @@ struct BuildVerifyState {
     rpc_url_devnet: String,
 }
 
-async fn load_oracle_keypair(
-    gcp_project_id: &str,
-) -> Option<Arc<solana_sdk::signature::Keypair>> {
+async fn load_oracle_keypair(gcp_project_id: &str) -> Option<Arc<solana_sdk::signature::Keypair>> {
     let raw = match config::load_optional_secret(gcp_project_id, "shillbot-attester-keypair").await
     {
         Some(secret) => Some(secret),

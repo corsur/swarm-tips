@@ -486,4 +486,3 @@ mod tests {
             .expect("co-signed verify tx passes shillbot-chain validation");
     }
 }
-
