@@ -31,13 +31,20 @@ pub fn verify_task(
     // Checks
     require!(!global.paused, ShillbotError::ProtocolPaused);
     validate_verify_inputs(task, composite_score, verification_hash)?;
-    validate_switchboard_feed(global, &ctx.accounts.switchboard_feed)?;
     validate_attestation_staleness(task, global, clock.unix_timestamp)?;
-    let feed_score = read_switchboard_score(&ctx.accounts.switchboard_feed, clock.slot)?;
-    require!(
-        feed_score == composite_score,
-        ShillbotError::SwitchboardScoreMismatch
-    );
+    if is_authorized_oracle_account(global, &ctx.accounts.switchboard_feed) {
+        require!(
+            ctx.accounts.switchboard_feed.is_signer,
+            ShillbotError::OracleAuthorityMismatch
+        );
+    } else {
+        validate_switchboard_feed(global, &ctx.accounts.switchboard_feed)?;
+        let feed_score = read_switchboard_score(&ctx.accounts.switchboard_feed, clock.slot)?;
+        require!(
+            feed_score == composite_score,
+            ShillbotError::SwitchboardScoreMismatch
+        );
+    }
     // Effects: payment+fee pinned at verification time so finalize/resolve
     // use the fee that was in effect now, not the current GlobalState fee.
     let (payment_amount, fee_amount) = compute_payment_amounts(task, global, composite_score)?;
@@ -121,6 +128,17 @@ pub(crate) fn commit_verify_state(
         .ok_or(ShillbotError::ArithmeticOverflow)?;
     task.state = TaskState::Verified;
     Ok(())
+}
+
+/// True when the oracle slot carries `GlobalState.oracle_authority` or
+/// `GlobalState.authority` (first-party co-signed verification replacing the
+/// deprecated Switchboard pull feed).
+fn is_authorized_oracle_account(global: &GlobalState, account: &AccountInfo) -> bool {
+    is_authorized_oracle_pubkey(global, &account.key())
+}
+
+fn is_authorized_oracle_pubkey(global: &GlobalState, key: &Pubkey) -> bool {
+    *key != Pubkey::default() && (*key == global.oracle_authority || *key == global.authority)
 }
 
 /// Verify the Switchboard feed account passed by the caller matches the
@@ -244,15 +262,18 @@ pub struct VerifyTask<'info> {
         bump = global_state.bump,
     )]
     pub global_state: Account<'info, GlobalState>,
-    /// The Switchboard pull feed account containing the oracle-attested composite score.
-    /// CHECK: Validated against `global_state.switchboard_feed` and parsed via
-    /// `PullFeedAccountData::parse()` which checks the account discriminator.
-    /// Account ownership is verified by Switchboard's `Owner` implementation.
+    /// The oracle authority signer (`GlobalState.oracle_authority` or
+    /// `GlobalState.authority`) or legacy Switchboard pull feed account.
+    /// CHECK: Validated as a required signer matching `global_state.oracle_authority`
+    /// / `global_state.authority`, or validated against `global_state.switchboard_feed`
+    /// and parsed via `PullFeedAccountData::parse()`.
     pub switchboard_feed: AccountInfo<'info>,
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// Regression guard for the 2026-05-01 → 2026-05-08 const-lockdown
     /// round-trip: the `SWITCHBOARD_FEED` compile-time const is fully
     /// retired. The 2026-05-01 lockdown shipped a placeholder pubkey
@@ -274,5 +295,42 @@ mod tests {
              GlobalState.switchboard_feed). Re-introducing the const is the \
              same trap that shipped the placeholder bug."
         );
+    }
+
+    #[test]
+    fn authorized_oracle_pubkey_recognizes_oracle_authority_and_authority() {
+        let authority = Pubkey::new_unique();
+        let oracle_authority = Pubkey::new_unique();
+        let feed = Pubkey::new_unique();
+        let stranger = Pubkey::new_unique();
+        let global = GlobalState {
+            task_counter: 0,
+            authority,
+            treasury: Pubkey::new_unique(),
+            protocol_fee_bps: 100,
+            quality_threshold: 200_000,
+            challenge_window_seconds: 86_400,
+            verification_timeout_seconds: 604_800,
+            attestation_delay_seconds: 300,
+            staleness_window_seconds: 604_800,
+            max_concurrent_claims: 5,
+            challenge_bond_multiplier_bps: 2,
+            bond_slash_treasury_bps: 5_000,
+            oracle_authority,
+            paused: false,
+            paused_platforms: 0,
+            switchboard_feed: feed,
+            min_escrow_lamports: 0,
+            rate_limit_window_seconds: 0,
+            max_tasks_per_rate_window: 0,
+            dispute_resolution_window_seconds: 0,
+            _reserved: [0; 4],
+            bump: 255,
+        };
+        assert!(is_authorized_oracle_pubkey(&global, &oracle_authority));
+        assert!(is_authorized_oracle_pubkey(&global, &authority));
+        assert!(!is_authorized_oracle_pubkey(&global, &feed));
+        assert!(!is_authorized_oracle_pubkey(&global, &stranger));
+        assert!(!is_authorized_oracle_pubkey(&global, &Pubkey::default()));
     }
 }

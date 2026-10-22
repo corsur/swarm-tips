@@ -121,6 +121,166 @@ pub async fn wait_for_signature_confirmed(
     )))
 }
 
+const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
+
+/// Parse a 64-byte Solana keypair JSON array (standard Solana CLI / Secret
+/// Manager format) into a `solana_sdk::signature::Keypair`.
+pub fn parse_keypair_json(raw: &str) -> Result<solana_sdk::signature::Keypair, McpServiceError> {
+    let bytes: Vec<u8> = serde_json::from_str(raw.trim()).map_err(|e| {
+        McpServiceError::TransactionError(format!("invalid keypair JSON array: {e}"))
+    })?;
+    solana_sdk::signature::Keypair::try_from(bytes.as_slice()).map_err(|e| {
+        McpServiceError::TransactionError(format!("invalid Solana keypair bytes: {e}"))
+    })
+}
+
+/// Fetch the latest confirmed blockhash from a Solana RPC endpoint.
+pub async fn fetch_latest_blockhash(
+    client: &reqwest::Client,
+    rpc_url: &str,
+) -> Result<solana_sdk::hash::Hash, McpServiceError> {
+    use std::str::FromStr;
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getLatestBlockhash",
+        "params": [{ "commitment": "confirmed" }],
+    });
+    let response = client
+        .post(rpc_url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| McpServiceError::SolanaRpcError(format!("getLatestBlockhash failed: {e}")))?;
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| McpServiceError::SolanaRpcError(format!("blockhash parse failed: {e}")))?;
+    if let Some(error) = json.get("error") {
+        return Err(McpServiceError::SolanaRpcError(format!(
+            "getLatestBlockhash error: {error}"
+        )));
+    }
+    let bh_str = json["result"]["value"]["blockhash"]
+        .as_str()
+        .ok_or_else(|| {
+            McpServiceError::SolanaRpcError("missing blockhash in RPC response".to_string())
+        })?;
+    solana_sdk::hash::Hash::from_str(bh_str)
+        .map_err(|e| McpServiceError::SolanaRpcError(format!("invalid blockhash string: {e}")))
+}
+
+/// Pure, deterministic builder for a v0 `verify_task` transaction co-signed by
+/// `oracle_keypair` with `payer` as the fee payer ($0 protocol gas).
+pub fn build_co_signed_verify_tx_with_blockhash(
+    payer: &str,
+    task_pda: &str,
+    composite_score: u64,
+    verification_hash_hex: &str,
+    oracle_keypair: &solana_sdk::signature::Keypair,
+    recent_blockhash: solana_sdk::hash::Hash,
+) -> Result<String, McpServiceError> {
+    use base64::Engine;
+    use solana_sdk::{
+        instruction::Instruction,
+        message::{v0, VersionedMessage},
+        pubkey::Pubkey,
+        signature::{Signature, Signer},
+        transaction::VersionedTransaction,
+    };
+    use std::str::FromStr;
+
+    let payer_pubkey = Pubkey::from_str(payer).map_err(|e| {
+        McpServiceError::InvalidInput(format!("payer is not a valid Solana pubkey: {e}"))
+    })?;
+    let task_pubkey = Pubkey::from_str(task_pda).map_err(|e| {
+        McpServiceError::InvalidInput(format!("task_pda is not a valid Solana pubkey: {e}"))
+    })?;
+    let hash_vec = hex::decode(verification_hash_hex.trim()).map_err(|e| {
+        McpServiceError::InvalidInput(format!("verification_hash is not valid hex: {e}"))
+    })?;
+    let verification_hash: [u8; 32] = hash_vec.try_into().map_err(|_| {
+        McpServiceError::InvalidInput("verification_hash must be 32 bytes (64 hex chars)".into())
+    })?;
+
+    let compute_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM_ID).map_err(|e| {
+        McpServiceError::TransactionError(format!("invalid compute budget program id: {e}"))
+    })?;
+    let cu_limit_ix = Instruction {
+        program_id: compute_program,
+        accounts: vec![],
+        data: [vec![2u8], 100_000u32.to_le_bytes().to_vec()].concat(),
+    };
+    let cu_price_ix = Instruction {
+        program_id: compute_program,
+        accounts: vec![],
+        data: [vec![3u8], 10_000u64.to_le_bytes().to_vec()].concat(),
+    };
+    let oracle_pubkey = oracle_keypair.pubkey();
+    let verify_ix = shillbot_chain::verify_task_co_signed_instruction(
+        task_pubkey,
+        oracle_pubkey,
+        composite_score,
+        verification_hash,
+    );
+
+    let v0_msg = v0::Message::try_compile(
+        &payer_pubkey,
+        &[cu_limit_ix, cu_price_ix, verify_ix],
+        &[],
+        recent_blockhash,
+    )
+    .map_err(|e| {
+        McpServiceError::TransactionError(format!("failed to compile v0 verify message: {e}"))
+    })?;
+    let message = VersionedMessage::V0(v0_msg);
+    let num_required = usize::from(message.header().num_required_signatures);
+    let keys = message.static_account_keys();
+    let oracle_slot = keys
+        .get(..num_required)
+        .and_then(|signers| signers.iter().position(|k| *k == oracle_pubkey))
+        .ok_or_else(|| {
+            McpServiceError::TransactionError(
+                "oracle_authority missing from compiled required signers".into(),
+            )
+        })?;
+    let mut signatures = vec![Signature::default(); num_required];
+    let msg_bytes = message.serialize();
+    if let Some(slot) = signatures.get_mut(oracle_slot) {
+        *slot = oracle_keypair.sign_message(&msg_bytes);
+    }
+
+    let vtx = VersionedTransaction {
+        signatures,
+        message,
+    };
+    let bytes = bincode::serialize(&vtx).map_err(|e| {
+        McpServiceError::TransactionError(format!("failed to serialize verify transaction: {e}"))
+    })?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// Fetch a fresh blockhash and build a co-signed `verify_task` transaction.
+pub async fn build_co_signed_verify_tx(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    payer: &str,
+    task_pda: &str,
+    composite_score: u64,
+    verification_hash_hex: &str,
+    oracle_keypair: &solana_sdk::signature::Keypair,
+) -> Result<String, McpServiceError> {
+    let blockhash = fetch_latest_blockhash(client, rpc_url).await?;
+    build_co_signed_verify_tx_with_blockhash(
+        payer,
+        task_pda,
+        composite_score,
+        verification_hash_hex,
+        oracle_keypair,
+        blockhash,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,4 +423,67 @@ mod tests {
             .expect_err("empty signature must be rejected");
         assert!(format!("{err}").contains("must not be empty"), "got: {err}");
     }
+
+    #[test]
+    fn build_co_signed_verify_tx_partially_signs_oracle_and_leaves_payer_slot_open() {
+        use base64::Engine;
+        use solana_sdk::hash::Hash;
+        use solana_sdk::pubkey::Pubkey;
+        use solana_sdk::signature::{Keypair, Signature, Signer};
+
+        let payer = Keypair::new();
+        let oracle = Keypair::new();
+        let task = Pubkey::new_unique();
+        let hash_hex = "ab".repeat(32);
+
+        let b64 = build_co_signed_verify_tx_with_blockhash(
+            &payer.pubkey().to_string(),
+            &task.to_string(),
+            950_000,
+            &hash_hex,
+            &oracle,
+            Hash::new_unique(),
+        )
+        .expect("co-signed verify tx builds");
+
+        let mut vtx = shillbot_chain::decode_base64(&b64).expect("decodes as VersionedTransaction");
+        assert_eq!(vtx.signatures.len(), 2, "payer + oracle_authority signers");
+        assert_eq!(
+            vtx.signatures[0],
+            Signature::default(),
+            "payer slot must remain unsigned for caller"
+        );
+        assert_ne!(
+            vtx.signatures[1],
+            Signature::default(),
+            "oracle_authority slot must be pre-signed"
+        );
+
+        // Once the caller signs slot 0, the full transaction verifies cleanly
+        // and passes shillbot_chain::validate_signed_base64.
+        let msg_bytes = vtx.message.serialize();
+        vtx.signatures[0] = payer.sign_message(&msg_bytes);
+        vtx.verify_and_hash_message()
+            .expect("both signatures verify over the v0 message");
+
+        let signed_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&vtx).expect("serializes"));
+        let req = shillbot_chain::ValidationRequest {
+            action: shillbot_chain::Action::Verify,
+            network: "devnet".to_string(),
+            wallet: payer.pubkey().to_string(),
+            task_pda: task.to_string(),
+            escrow_lamports: None,
+            content_id: None,
+            sponsor: None,
+            expected_accounts: None,
+            expected_data: None,
+            allowed_payout_to: None,
+            require_payout_routing: false,
+            switchboard_feed: Some(oracle.pubkey().to_string()),
+        };
+        shillbot_chain::validate_signed_base64(&signed_b64, &req)
+            .expect("co-signed verify tx passes shillbot-chain validation");
+    }
 }
+

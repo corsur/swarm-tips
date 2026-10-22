@@ -220,13 +220,14 @@ pub async fn initialize_with_dependencies(
     if let Some(transport) = &dependencies.shillbot {
         orchestrator = orchestrator.with_transport(Arc::clone(transport));
     }
+    let oracle_keypair = load_oracle_keypair(&cfg.gcp_project_id).await;
     let shared = Arc::new(SharedState {
-        orchestrator,
+        orchestrator: orchestrator.clone(),
         game_api: game_proxy(&cfg.game_api_url, &dependencies, game_jwt_secret.clone())?,
         solana_rpc_url: cfg.solana_rpc_url.clone(),
         solana_rpc_url_mainnet: rpc_url_mainnet.clone(),
         solana_rpc_url_devnet: rpc_url_devnet.clone(),
-        rpc_client,
+        rpc_client: rpc_client.clone(),
         game_sessions,
         session_binding,
         listings: Arc::clone(&listings_state),
@@ -234,6 +235,7 @@ pub async fn initialize_with_dependencies(
         inbox: inbox_state,
         inbox_seed_wallets,
         show_testnet_tools,
+        oracle_keypair: oracle_keypair.clone(),
     });
 
     // Stateless transport: the rmcp session is otherwise pod-local (in-memory
@@ -259,6 +261,15 @@ pub async fn initialize_with_dependencies(
     // EigenTrust-recompute trigger. None → the route rejects all callers.
     let internal_api_key =
         config::load_optional_secret(&cfg.gcp_project_id, "shillbot-api-key").await;
+    let verify_state = BuildVerifyState {
+        orchestrator,
+        jwt_secret: game_jwt_secret,
+        internal_api_key: internal_api_key.clone(),
+        oracle_keypair,
+        rpc_client,
+        rpc_url_mainnet: rpc_url_mainnet.clone(),
+        rpc_url_devnet: rpc_url_devnet.clone(),
+    };
     let router = build_router(
         listings_state,
         traffic_stats_state,
@@ -267,6 +278,7 @@ pub async fn initialize_with_dependencies(
         internal_api_key,
         rpc_url_mainnet,
         rpc_url_devnet,
+        verify_state,
         inbox_http_state,
         services,
         ct.clone(),
@@ -465,10 +477,64 @@ async fn build_discovery_state(
     })
 }
 
+#[derive(Clone)]
+struct BuildVerifyState {
+    oracle_keypair: Option<Arc<solana_sdk::signature::Keypair>>,
+    orchestrator: OrchestratorProxy,
+    jwt_secret: Option<String>,
+    internal_api_key: Option<String>,
+    rpc_client: reqwest::Client,
+    rpc_url_mainnet: String,
+    rpc_url_devnet: String,
+}
+
+async fn load_oracle_keypair(
+    gcp_project_id: &str,
+) -> Option<Arc<solana_sdk::signature::Keypair>> {
+    let raw = match config::load_optional_secret(gcp_project_id, "shillbot-attester-keypair").await
+    {
+        Some(secret) => Some(secret),
+        None => std::env::var("ORACLE_AUTHORITY_KEYPAIR_JSON")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                let path = std::env::var("ORACLE_AUTHORITY_KEYPAIR_PATH")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())?;
+                std::fs::read_to_string(path).ok()
+            }),
+    };
+    let Some(raw) = raw else {
+        tracing::warn!(
+            service = "mcp-server",
+            "shillbot-attester-keypair not found — falling back to legacy verify_task builder"
+        );
+        return None;
+    };
+    match solana_tx::parse_keypair_json(&raw) {
+        Ok(kp) => {
+            use solana_sdk::signer::Signer;
+            tracing::info!(
+                service = "mcp-server",
+                oracle_authority = %kp.pubkey(),
+                "loaded oracle_authority keypair for co-signed verify_task"
+            );
+            Some(Arc::new(kp))
+        }
+        Err(err) => {
+            tracing::error!(
+                service = "mcp-server",
+                error = %err,
+                "failed to parse oracle_authority keypair"
+            );
+            None
+        }
+    }
+}
+
 /// Per-network RPC URLs for `/internal/build-verify-tx`: the request body
 /// picks one (mainnet by default, devnet when `network: "devnet"` is set);
-/// without the right URL the Switchboard feed lookup hits the wrong
-/// cluster and fails.
+/// without the right URL the lookup hits the wrong cluster and fails.
 async fn load_per_network_rpcs(cfg: &StartupConfig) -> (String, String) {
     let mainnet = if cfg.network == "mainnet" {
         cfg.solana_rpc_url.clone()
@@ -498,12 +564,13 @@ fn build_router(
     internal_api_key: Option<String>,
     rpc_url_mainnet: String,
     rpc_url_devnet: String,
+    verify_state: BuildVerifyState,
     inbox_http_state: Arc<inbox_http::InboxHttpState>,
     mcp_services: McpServices,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> axum::Router {
-    let mainnet_for_verify = rpc_url_mainnet.clone();
-    let devnet_for_verify = rpc_url_devnet.clone();
+    let verify_state_get = verify_state.clone();
+    let verify_state_post = verify_state;
 
     // KEDA scaling signal: in-flight request count across the whole server
     // (including the /mcp agent transport). mcp-server was a single fixed
@@ -610,21 +677,22 @@ fn build_router(
         .route("/a2a", inbox_http::a2a_handler(inbox_http_state))
         .route(
             "/internal/build-verify-tx",
-            axum::routing::post(move |body: axum::Json<serde_json::Value>| {
-                let mainnet = mainnet_for_verify.clone();
-                let devnet = devnet_for_verify.clone();
-                async move {
-                    let net = body["network"].as_str().unwrap_or("mainnet");
-                    let rpc = if net == "devnet" { &devnet } else { &mainnet };
-                    build_verify_tx_handler(body, rpc).await
-                }
+            axum::routing::get(move || {
+                let state = verify_state_get.clone();
+                async move { build_verify_tx_ready_handler(state).await }
             })
+            .post(
+                move |headers: axum::http::HeaderMap, body: axum::Json<serde_json::Value>| {
+                    let state = verify_state_post.clone();
+                    async move { build_verify_tx_handler(headers, body, state).await }
+                },
+            )
             .options(|| async {
                 // CORS preflight for browser requests from shillbot.org
                 axum::http::Response::builder()
                     .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "content-type")
+                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "content-type, x-api-key")
                     .header("Access-Control-Max-Age", "3600")
                     .body(axum::body::Body::empty())
                     .unwrap()
@@ -878,13 +946,48 @@ fn build_readiness_handler(
     }
 }
 
+/// Readiness probe for `/internal/build-verify-tx` (GET): reports whether the
+/// first-party `oracle_authority` keypair is loaded and what its pubkey is.
+async fn build_verify_tx_ready_handler(state: BuildVerifyState) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use solana_sdk::signer::Signer;
+
+    let cors_headers = [("Access-Control-Allow-Origin", "*")];
+    match state.oracle_keypair.as_ref() {
+        Some(kp) => (
+            StatusCode::OK,
+            cors_headers,
+            axum::Json(serde_json::json!({
+                "ready": true,
+                "mode": "oracle_authority_cosign",
+                "oracle_authority": kp.pubkey().to_string(),
+            })),
+        )
+            .into_response(),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            cors_headers,
+            axum::Json(serde_json::json!({
+                "ready": false,
+                "mode": "unconfigured",
+                "oracle_authority": serde_json::Value::Null,
+            })),
+        )
+            .into_response(),
+    }
+}
+
 /// HTTP handler for `/internal/build-verify-tx`.
 ///
-/// Spawns the unified-client Switchboard wrapper server-side (no CORS issues with the
-/// Switchboard gateway) and returns the unsigned bundled tx.
+/// Builds and partially co-signs the `verify_task` transaction using
+/// `oracle_authority` after authenticating `(task_pda, score, hash)` against
+/// `shillbot-api` (or via internal API key). Falls back to the legacy
+/// `build-verify-client.ts` script only when `oracle_keypair` is absent.
 async fn build_verify_tx_handler(
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
-    rpc_url: &str,
+    state: BuildVerifyState,
 ) -> axum::response::Response {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
@@ -892,7 +995,8 @@ async fn build_verify_tx_handler(
     let get = |key: &str| body[key].as_str().unwrap_or("").to_string();
     let task_id = get("task_id");
     let payer = get("payer");
-    let score = body["score"].as_u64().unwrap_or(0).to_string();
+    let score_u64 = body["score"].as_u64().unwrap_or(0);
+    let score = score_u64.to_string();
     let hash = get("hash");
     let task_pda = get("task_pda");
     let feed = get("feed");
@@ -900,6 +1004,109 @@ async fn build_verify_tx_handler(
 
     if task_id.is_empty() || payer.is_empty() || task_pda.is_empty() {
         return (StatusCode::BAD_REQUEST, "missing required fields").into_response();
+    }
+
+    let network_str = body["network"].as_str().unwrap_or("mainnet");
+    let rpc_url = if network_str == "devnet" {
+        state.rpc_url_devnet.as_str()
+    } else {
+        state.rpc_url_mainnet.as_str()
+    };
+    let cors_headers = [("Access-Control-Allow-Origin", "*")];
+
+    if let Some(oracle_kp) = state.oracle_keypair.as_ref() {
+        let has_internal_key = state
+            .internal_api_key
+            .as_deref()
+            .filter(|k| !k.is_empty())
+            .zip(headers.get("x-api-key").and_then(|v| v.to_str().ok()))
+            .is_some_and(|(expected, provided)| expected == provided);
+
+        let (verified_task_pda, verified_score, verified_hash) = if has_internal_key {
+            (task_pda.clone(), score_u64, hash.clone())
+        } else {
+            let client = state
+                .jwt_secret
+                .as_deref()
+                .and_then(|sec| game_proxy::mint_internal_token(&payer, sec))
+                .map(|tok| state.orchestrator.authenticated(tok))
+                .unwrap_or_else(|| state.orchestrator.clone());
+            let net_opt = (network_str == "devnet").then_some("devnet");
+            let vdata = match client
+                .get_verification_data(&task_id, &payer, net_opt)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        service = "mcp-server",
+                        task_id = %task_id,
+                        error = %e,
+                        "build-verify-tx: failed to fetch authoritative verification data"
+                    );
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        cors_headers,
+                        "failed to validate verification data against shillbot-api",
+                    )
+                        .into_response();
+                }
+            };
+            if vdata.task_pda != task_pda {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    cors_headers,
+                    "task_pda does not match authoritative task state",
+                )
+                    .into_response();
+            }
+            if vdata.composite_score != score_u64
+                || !vdata.verification_hash.eq_ignore_ascii_case(&hash)
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    cors_headers,
+                    "score or hash does not match authoritative verification data",
+                )
+                    .into_response();
+            }
+            (
+                vdata.task_pda,
+                vdata.composite_score,
+                vdata.verification_hash,
+            )
+        };
+
+        return match solana_tx::build_co_signed_verify_tx(
+            &state.rpc_client,
+            rpc_url,
+            &payer,
+            &verified_task_pda,
+            verified_score,
+            &verified_hash,
+            oracle_kp,
+        )
+        .await
+        {
+            Ok(tx) => (
+                cors_headers,
+                axum::Json(serde_json::json!({ "transaction": tx })),
+            )
+                .into_response(),
+            Err(e) => {
+                tracing::error!(
+                    service = "mcp-server",
+                    error = %e,
+                    "co-signed build_verify_tx failed"
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    cors_headers,
+                    "transaction builder failed",
+                )
+                    .into_response()
+            }
+        };
     }
 
     let script_path = std::env::var("BUILD_VERIFY_SCRIPT")
@@ -913,7 +1120,6 @@ async fn build_verify_tx_handler(
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
 
-    let network_str = body["network"].as_str().unwrap_or("mainnet");
     let mut command = tokio::process::Command::new("tsx");
     command
         .current_dir(script_dir)
@@ -937,8 +1143,6 @@ async fn build_verify_tx_handler(
         .arg("--network")
         .arg(network_str);
     let output = bounded_builder_output(command, std::time::Duration::from_secs(60)).await;
-
-    let cors_headers = [("Access-Control-Allow-Origin", "*")];
 
     match output {
         Ok(out) if out.status.success() => {

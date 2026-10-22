@@ -421,6 +421,10 @@ pub struct SharedState {
     /// testnet-only tools in `HIDDEN_UNTIL_MAINNET` are omitted from
     /// `tools/list` while remaining callable by name.
     pub show_testnet_tools: bool,
+    /// First-party oracle authority keypair (`GlobalState.oracle_authority`)
+    /// used to co-sign `verify_task` transactions so callers pay only base
+    /// Solana fees without depending on the external Switchboard crossbar.
+    pub oracle_keypair: Option<Arc<solana_sdk::signature::Keypair>>,
 }
 
 /// The Swarm Tips MCP server — unified interface for all DAO verticals.
@@ -1160,7 +1164,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_list_available_tasks",
-        description = "[READ] List open Shillbot tasks with SOL escrow: platform 10=LeanProof (deterministic Lean 4 verification, verification_kind=1) and 0/3=YouTube/X. Use shillbot_get_task for full statement/instructions and shillbot_preflight_work before submitting.",
+        description = "[READ] List open Shillbot tasks with SOL escrow: platform 10=LeanProof (0.005–0.25 SOL), 5=GamePlay (0.05–0.10 SOL), 4=Referral (0.10 SOL), 9=Website, 0/3=YouTube/X. 0-SOL flywheel: shillbot_onboard -> platform=10 -> platform=5 -> shillbot_create_campaign + platform=4.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_list_available_tasks(
@@ -1503,14 +1507,34 @@ impl SwarmTipsMcp {
             .map_err(|e| to_mcp_error(&e))?;
 
         let rpc_url = self.rpc_url_for_network(network);
-        let unsigned_tx = run_build_verify_tx(
-            normalize_task_id(&args.task_id),
-            &wallet_pubkey,
-            &vdata,
-            rpc_url,
-        )
-        .await?;
+        let unsigned_tx = if let Some(oracle_kp) = self.state.oracle_keypair.as_deref() {
+            solana_tx::build_co_signed_verify_tx(
+                &self.state.rpc_client,
+                rpc_url,
+                &wallet_pubkey,
+                &vdata.task_pda,
+                vdata.composite_score,
+                &vdata.verification_hash,
+                oracle_kp,
+            )
+            .await
+            .map_err(|e| to_mcp_error(&e))?
+        } else {
+            run_build_verify_tx(
+                normalize_task_id(&args.task_id),
+                &wallet_pubkey,
+                &vdata,
+                rpc_url,
+            )
+            .await?
+        };
 
+        let expected_oracle = self
+            .state
+            .oracle_keypair
+            .as_ref()
+            .map(|kp| solana_sdk::signer::Signer::pubkey(kp.as_ref()).to_string())
+            .unwrap_or_else(|| vdata.switchboard_feed.clone());
         let result = serde_json::json!({
             "action": "verify",
             "task_id": vdata.task_id,
@@ -1527,7 +1551,7 @@ impl SwarmTipsMcp {
                 task_pda: &vdata.task_pda,
                 escrow_lamports: None,
                 content_id: None,
-                switchboard_feed: Some(vdata.switchboard_feed.clone()),
+                switchboard_feed: Some(expected_oracle),
             },
         )
     }
@@ -1729,7 +1753,14 @@ impl SwarmTipsMcp {
             expected_data: None,
             allowed_payout_to: None,
             require_payout_routing: false,
-            switchboard_feed: None,
+            switchboard_feed: (args.action == "verify")
+                .then(|| {
+                    self.state
+                        .oracle_keypair
+                        .as_ref()
+                        .map(|kp| solana_sdk::signer::Signer::pubkey(kp.as_ref()).to_string())
+                })
+                .flatten(),
         };
         let inspection =
             shillbot_chain::validate_signed_base64(&args.signed_transaction, &expected)

@@ -62,7 +62,11 @@ const BOND = new BN(1_000_000); // 0.001 SOL min bond per vouch
 // (~0.00089 SOL) — else the claim tx is rejected for leaving the agent below
 // rent exemption. Still all treasury-fronted; the agent brings $0.
 const ADVANCE = new BN(3_000_000);
-const ESCROW = new BN(500_000);
+// Escrow (0.005 SOL) comfortably exceeds the 0.003 SOL advance even after the
+// 5% protocol fee (payment = 4,750,000 lamports), so real settlement via
+// verify_task + finalize_task fully repays the advance and leaves a surplus.
+const ESCROW = new BN(5_000_000);
+const MAX_SCORE = new BN(1_000_000);
 
 let failures = 0;
 function check(cond: boolean, msg: string): void {
@@ -205,6 +209,7 @@ async function main(): Promise<void> {
     (await bal(agent.publicKey)) === ADVANCE.toNumber(),
     `agent received exactly the fronted advance (${ADVANCE.toNumber()}), still brought $0 of its own`
   );
+  const vaultAfterOpen = await bal(advancePda);
 
   // === 4. the DEPLOYED reputation system sees the vouch chain => standing ===
   console.log(
@@ -227,6 +232,7 @@ async function main(): Promise<void> {
     [Buffer.from("shillbot_global")],
     shillbot.programId
   );
+  const globalAccount = await shillbot.account.globalState.fetch(sbGlobal);
   const nonce = new BN(randomBytes(8));
   const [taskPda] = PublicKey.findProgramAddressSync(
     [
@@ -262,15 +268,15 @@ async function main(): Promise<void> {
     })
     .rpc({ commitment: "confirmed" });
 
-  // === 6. the $0 agent does a SPONSORED claim (onbAuth pays gas) ===
+  // === 6. the $0 agent does a SPONSORED claim + atomic set_payout_to(advancePda) ===
   console.log(
-    "[6] the agent does a sponsored claim — onbAuth pays gas, agent pays rent from the advance"
+    "[6] the agent does a sponsored claim + set_payout_to(advancePda) — onbAuth pays gas, agent pays rent from the advance"
   );
   const [agentState] = PublicKey.findProgramAddressSync(
     [Buffer.from("agent_state"), agent.publicKey.toBuffer()],
     shillbot.programId
   );
-  const tx: Transaction = await shillbot.methods
+  const claimIx = await shillbot.methods
     .claimTask()
     .accountsPartial({
       task: taskPda,
@@ -279,7 +285,15 @@ async function main(): Promise<void> {
       agent: agent.publicKey,
       systemProgram: SystemProgram.programId,
     })
-    .transaction();
+    .instruction();
+  const routeIx = await shillbot.methods
+    .setPayoutTo(advancePda)
+    .accountsPartial({
+      task: taskPda,
+      agent: agent.publicKey,
+    })
+    .instruction();
+  const tx = new Transaction().add(claimIx, routeIx);
   tx.feePayer = onbAuth.publicKey;
   tx.recentBlockhash = (
     await connection.getLatestBlockhash("confirmed")
@@ -295,7 +309,7 @@ async function main(): Promise<void> {
   });
   const fee = txInfo?.meta?.fee ?? 0;
 
-  const task = await shillbot.account.task.fetch(taskPda);
+  let task = await shillbot.account.task.fetch(taskPda);
   check(
     JSON.stringify(task.state) === JSON.stringify({ claimed: {} }),
     "task is Claimed"
@@ -303,6 +317,10 @@ async function main(): Promise<void> {
   check(
     task.agent.toString() === agent.publicKey.toBase58(),
     "task claimed by the onboarded agent"
+  );
+  check(
+    task.payoutTo.equals(advancePda),
+    "task.payout_to locked to advancePda in the claim tx"
   );
   check(
     onbBefore - (await bal(onbAuth.publicKey)) === fee,
@@ -314,26 +332,162 @@ async function main(): Promise<void> {
     `agent's only SOL ever was the fronted advance (now ${agentRemaining} after paying rent) — it brought $0`
   );
 
-  // === recover everything recoverable in-run ===
-  // Only the $0 agent's AgentState rent is irreducible: a Claimed task can't
-  // reset claimed_count, so close_agent_state can't run in the same pass — which
-  // keeps this a DEVNET-ONLY test. Everything else comes back: the task escrow +
-  // Task rent (emergency_return), both vouch bonds + rent (withdraw_extension),
-  // and the advance principal + PDA rent (recoup + close).
+  // === 7. SPONSORED submit_work (onbAuth pays gas, agent signs work authority) ===
   console.log(
-    "\n[recover] emergency_return + withdraw both vouches + recoup/close the advance"
+    "\n[7] the agent does a sponsored submit_work — decrements claimed_count to 0"
   );
-  const agentStateRent = await connection.getMinimumBalanceForRentExemption(
-    (await connection.getAccountInfo(agentState))?.data.length ?? 0
+  const submitIx = await shillbot.methods
+    .submitWork(Buffer.from("e2e-zero-funds-proof"))
+    .accountsPartial({
+      task: taskPda,
+      globalState: sbGlobal,
+      agentState,
+      agent: agent.publicKey,
+    })
+    .instruction();
+  const submitTx = new Transaction().add(submitIx);
+  submitTx.feePayer = onbAuth.publicKey;
+  submitTx.recentBlockhash = (
+    await connection.getLatestBlockhash("confirmed")
+  ).blockhash;
+  submitTx.partialSign(onbAuth);
+  submitTx.partialSign(agent);
+  const submitSig = await connection.sendRawTransaction(submitTx.serialize());
+  await connection.confirmTransaction(submitSig, "confirmed");
+  task = await shillbot.account.task.fetch(taskPda);
+  check(
+    JSON.stringify(task.state) === JSON.stringify({ submitted: {} }),
+    "task is Submitted"
   );
+
+  // === 8. Co-signed verify_task (caller = onbAuth pays gas, authority co-signs) ===
+  console.log(
+    "\n[8] first-party co-signed verify_task — caller (onbAuth) pays gas, authority co-signs"
+  );
+  const attDelay = globalAccount.attestationDelaySeconds.toNumber();
+  const nowBeforeVerify = Math.floor(Date.now() / 1000);
+  const earliestVerify = task.submittedAt.toNumber() + attDelay;
+  const waitVerifySecs = Math.max(1, earliestVerify - nowBeforeVerify + 2);
+  await new Promise((r) => setTimeout(r, waitVerifySecs * 1000));
+
+  const vhash = Array.from(
+    createHash("sha256").update("e2e-zero-funds-verify").digest()
+  );
+  const verifyIx = await shillbot.methods
+    .verifyTask(MAX_SCORE, vhash as never)
+    .accountsPartial({
+      task: taskPda,
+      globalState: sbGlobal,
+      switchboardFeed: root.publicKey,
+    })
+    .instruction();
+  // Mark the authority account as a required signer in the instruction so the
+  // runtime enforces the co-signature on-chain while onbAuth remains feePayer.
+  for (const k of verifyIx.keys) {
+    if (k.pubkey.equals(root.publicKey)) {
+      k.isSigner = true;
+    }
+  }
+  const verifyTx = new Transaction().add(verifyIx);
+  verifyTx.feePayer = onbAuth.publicKey;
+  verifyTx.recentBlockhash = (
+    await connection.getLatestBlockhash("confirmed")
+  ).blockhash;
+  verifyTx.partialSign(onbAuth);
+  verifyTx.partialSign(root);
+  const onbBeforeVerify = await bal(onbAuth.publicKey);
+  const rootBeforeVerify = await bal(root.publicKey);
+  const verifySig = await connection.sendRawTransaction(verifyTx.serialize());
+  await connection.confirmTransaction(verifySig, "confirmed");
+
+  task = await shillbot.account.task.fetch(taskPda);
+  check(
+    JSON.stringify(task.state) === JSON.stringify({ verified: {} }),
+    "task is Verified via first-party authority co-signing"
+  );
+  check(
+    (await bal(root.publicKey)) === rootBeforeVerify,
+    "oracle/authority paid 0 lamports of gas on verify_task (caller paid)"
+  );
+  check(
+    (await bal(onbAuth.publicKey)) < onbBeforeVerify,
+    "caller (onbAuth) paid the verify_task transaction fee"
+  );
+
+  // === 9. finalize_task after challenge window -> routes escrow to advancePda ===
+  console.log(
+    "\n[9] finalize_task after challenge window — routes payment into advancePda"
+  );
+  const challengeDeadline = task.challengeDeadline.toNumber();
+  let nowSec = Math.floor(Date.now() / 1000);
+  const waitFinalizeSecs = Math.max(1, challengeDeadline - nowSec + 2);
+  console.log(`  waiting ${waitFinalizeSecs}s for challenge window to close...`);
+  await new Promise((r) => setTimeout(r, waitFinalizeSecs * 1000));
+
   await shillbot.methods
-    .emergencyReturn()
-    .accountsPartial({ globalState: sbGlobal, authority: root.publicKey })
+    .finalizeTask()
+    .accountsPartial({
+      task: taskPda,
+      globalState: sbGlobal,
+      agent: advancePda,
+      client: root.publicKey,
+      treasury: globalAccount.treasury,
+    })
     .remainingAccounts([
-      { pubkey: taskPda, isWritable: true, isSigner: false },
-      { pubkey: root.publicKey, isWritable: true, isSigner: false },
+      { pubkey: agentState, isWritable: true, isSigner: false },
     ])
     .rpc({ commitment: "confirmed" });
+
+  const vaultAfterFinalize = await bal(advancePda);
+  const routedIn = vaultAfterFinalize - vaultAfterOpen;
+  check(
+    routedIn === task.paymentAmount.toNumber() && routedIn > ADVANCE.toNumber(),
+    `finalize_task routed real payment (${routedIn} lamports) into advancePda`
+  );
+
+  // === 10. route_and_recoup + close_advance + close_agent_state + withdraw vouches ===
+  console.log(
+    "\n[10] route_and_recoup repays onbAuth from real settlement + close all PDAs"
+  );
+  const agentBeforeRecoup = await bal(agent.publicKey);
+  const onbBeforeRecoup = await bal(onbAuth.publicKey);
+  await credit.methods
+    .routeAndRecoup()
+    .accountsPartial({
+      advance: advancePda,
+      backer: onbAuth.publicKey,
+      recipient: agent.publicKey,
+    })
+    .rpc({ commitment: "confirmed" });
+  const expectedSurplus = routedIn - ADVANCE.toNumber();
+  check(
+    (await bal( onbAuth.publicKey)) - onbBeforeRecoup === ADVANCE.toNumber(),
+    `onbAuth recouped full advance principal (${ADVANCE.toNumber()} lamports) from task payout`
+  );
+  check(
+    (await bal(agent.publicKey)) - agentBeforeRecoup === expectedSurplus,
+    `agent received surplus earnings (${expectedSurplus} lamports)`
+  );
+
+  await credit.methods
+    .closeAdvance()
+    .accountsPartial({
+      advance: advancePda,
+      backer: onbAuth.publicKey,
+      recipient: agent.publicKey,
+    })
+    .signers([onbAuth])
+    .rpc({ commitment: "confirmed" });
+
+  await shillbot.methods
+    .closeAgentState()
+    .accountsPartial({
+      agentState,
+      agent: agent.publicKey,
+    })
+    .signers([agent])
+    .rpc({ commitment: "confirmed" });
+
   await registry.methods
     .withdrawExtension()
     .accountsPartial({
@@ -351,53 +505,14 @@ async function main(): Promise<void> {
       recipient: onbAuth.publicKey,
     })
     .rpc({ commitment: "confirmed" });
-  // Recoup + close the advance: simulate exactly the outstanding so the backer
-  // (onbAuth) fully recoups and the PDA rent is reclaimed (circular). onbAuth is
-  // the transfer source, so it pays + signs this one directly.
-  const simTx = new Transaction().add(
-    SystemProgram.transfer({
-      fromPubkey: onbAuth.publicKey,
-      toPubkey: advancePda,
-      lamports: ADVANCE.toNumber(),
-    })
-  );
-  simTx.feePayer = onbAuth.publicKey;
-  simTx.recentBlockhash = (
-    await connection.getLatestBlockhash("confirmed")
-  ).blockhash;
-  simTx.sign(onbAuth);
-  await connection.confirmTransaction(
-    await connection.sendRawTransaction(simTx.serialize()),
-    "confirmed"
-  );
-  // route_and_recoup's backer is not a signer (split is recorded on the advance);
-  // the provider wallet (root) pays the fee.
-  await credit.methods
-    .routeAndRecoup()
-    .accountsPartial({
-      advance: advancePda,
-      backer: onbAuth.publicKey,
-      recipient: agent.publicKey,
-    })
-    .rpc({ commitment: "confirmed" });
-  await credit.methods
-    .closeAdvance()
-    .accountsPartial({
-      advance: advancePda,
-      backer: onbAuth.publicKey,
-      recipient: agent.publicKey,
-    })
-    .signers([onbAuth])
-    .rpc({ commitment: "confirmed" });
+
   check(
-    await waitAccountsClosed(connection, [taskPda, advancePda]),
-    "task + advance closed; escrow, both bonds, and advance rent recovered"
+    await waitAccountsClosed(connection, [taskPda, advancePda, agentState]),
+    "task, advance, and agentState PDAs all closed (100% of rent & escrow recovered)"
   );
 
   // === best-effort cleanup (drain the throwaway wallets) ===
-  console.log(
-    "\n[cleanup] sweep onbAuth + agent leftovers back to root (only the agent's AgentState rent stays locked)"
-  );
+  console.log("\n[cleanup] sweep onbAuth + agent back to root");
   for (const kp of [agent, onbAuth]) {
     try {
       const remaining = await bal(kp.publicKey);
@@ -426,13 +541,9 @@ async function main(): Promise<void> {
   }
   const rootNet = rootStart - (await bal(root.publicKey));
   console.log(
-    `[ledger] root net out ${rootNet} lamports — bonds, advance principal+rent, and task escrow+rent all recovered. ` +
-      `Irreducible residual: the $0 agent's AgentState rent ${agentStateRent} (devnet-only). Rest is gas.`
+    `[ledger] root net out ${rootNet} lamports — bonds, advance principal+rent, AgentState rent, and task escrow+rent all recovered. Only gas spent.`
   );
-  check(
-    rootNet <= agentStateRent + 400_000,
-    "no SOL lost beyond the AgentState residual + gas"
-  );
+  check(rootNet <= 500_000, "no SOL lost beyond gas");
 
   console.log(
     `\n${failures === 0 ? "PASS" : "FAIL"} — ${failures} failed check(s)`

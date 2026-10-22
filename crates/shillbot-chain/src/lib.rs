@@ -146,6 +146,27 @@ pub fn verify_task_instruction(
     }
 }
 
+pub fn verify_task_co_signed_instruction(
+    task: Pubkey,
+    oracle_authority: Pubkey,
+    composite_score: u64,
+    verification_hash: [u8; 32],
+) -> Instruction {
+    Instruction {
+        program_id: shillbot::ID,
+        accounts: vec![
+            AccountMeta::new(task, false),
+            AccountMeta::new_readonly(global_state_pda(), false),
+            AccountMeta::new_readonly(oracle_authority, true),
+        ],
+        data: shillbot::instruction::VerifyTask {
+            composite_score,
+            verification_hash,
+        }
+        .data(),
+    }
+}
+
 pub fn finalize_task_instruction(
     task: Pubkey,
     agent: Pubkey,
@@ -605,28 +626,50 @@ pub fn validate(
         ));
     }
     if expected.action == Action::Verify {
-        if secp_indices.len() != 1 || switchboard_indices.len() != 1 {
-            return Err(ValidationError::Rejected(
-                "verify requires exactly one secp256k1 and one Switchboard instruction".into(),
-            ));
-        }
-        if secp_indices[0].saturating_add(1) != switchboard_indices[0]
-            || switchboard_indices[0] >= lifecycle_index
-        {
-            return Err(ValidationError::Rejected(
-                "Switchboard verification instructions have an unsafe order".into(),
-            ));
-        }
-        if let Some(feed) = expected_feed {
-            let switchboard_ix = &instructions(&tx.message)[switchboard_indices[0]];
-            let includes_feed = switchboard_ix.accounts.iter().any(|index| {
-                keys.get(usize::from(*index))
-                    .is_some_and(|key| *key == feed)
-            });
-            if !includes_feed {
+        if secp_indices.is_empty() && switchboard_indices.is_empty() {
+            let oracle_index = lifecycle.accounts.get(2).copied().ok_or_else(|| {
+                ValidationError::Rejected("verify instruction has too few accounts".into())
+            })?;
+            if usize::from(oracle_index) >= required {
                 return Err(ValidationError::Rejected(
-                    "Switchboard instruction targets a different feed".into(),
+                    "verify oracle authority account must be a required signer".into(),
                 ));
+            }
+            if let Some(feed) = expected_feed {
+                let oracle_key =
+                    keys.get(usize::from(oracle_index)).copied().ok_or_else(|| {
+                        ValidationError::Rejected("verify oracle account index is invalid".into())
+                    })?;
+                if oracle_key != feed {
+                    return Err(ValidationError::Rejected(
+                        "verify oracle authority differs from expected authority".into(),
+                    ));
+                }
+            }
+        } else {
+            if secp_indices.len() != 1 || switchboard_indices.len() != 1 {
+                return Err(ValidationError::Rejected(
+                    "verify requires exactly one secp256k1 and one Switchboard instruction".into(),
+                ));
+            }
+            if secp_indices[0].saturating_add(1) != switchboard_indices[0]
+                || switchboard_indices[0] >= lifecycle_index
+            {
+                return Err(ValidationError::Rejected(
+                    "Switchboard verification instructions have an unsafe order".into(),
+                ));
+            }
+            if let Some(feed) = expected_feed {
+                let switchboard_ix = &instructions(&tx.message)[switchboard_indices[0]];
+                let includes_feed = switchboard_ix.accounts.iter().any(|index| {
+                    keys.get(usize::from(*index))
+                        .is_some_and(|key| *key == feed)
+                });
+                if !includes_feed {
+                    return Err(ValidationError::Rejected(
+                        "Switchboard instruction targets a different feed".into(),
+                    ));
+                }
             }
         }
     } else if !secp_indices.is_empty() || !switchboard_indices.is_empty() {
@@ -1172,5 +1215,36 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unsafe order"));
+    }
+
+    #[test]
+    fn verify_co_signed_binds_oracle_signer_score_and_hash() {
+        let payer = Keypair::new().pubkey();
+        let oracle = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let lifecycle = verify_task_co_signed_instruction(task, oracle, 900_000, [4; 32]);
+        let tx = transaction(vec![lifecycle.clone()], &payer);
+        let mut expected = exact_request(Action::Verify, payer, task, &lifecycle);
+        expected.switchboard_feed = Some(oracle.to_string());
+        let inspected = validate(&tx, &expected).unwrap();
+        assert_eq!(
+            inspected.required_signers,
+            vec![payer.to_string(), oracle.to_string()]
+        );
+
+        let mut wrong_oracle = expected.clone();
+        wrong_oracle.switchboard_feed = Some(Pubkey::new_unique().to_string());
+        assert!(validate(&tx, &wrong_oracle)
+            .unwrap_err()
+            .to_string()
+            .contains("differs from expected authority"));
+
+        let unsigned_oracle_ix = verify_task_instruction(task, oracle, 900_000, [4; 32]);
+        let unsigned_oracle_tx = transaction(vec![unsigned_oracle_ix.clone()], &payer);
+        let unsigned_expected = exact_request(Action::Verify, payer, task, &unsigned_oracle_ix);
+        assert!(validate(&unsigned_oracle_tx, &unsigned_expected)
+            .unwrap_err()
+            .to_string()
+            .contains("must be a required signer"));
     }
 }

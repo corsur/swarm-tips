@@ -143,10 +143,38 @@ async function mcpReachable(): Promise<boolean> {
     g.authority.toBase58()
   );
   c.check(
-    !g.switchboardFeed.equals(ZERO),
-    "Switchboard feed configured (oracle verify fails closed if unset)",
-    g.switchboardFeed.toBase58()
+    !g.oracleAuthority.equals(ZERO),
+    "GlobalState.oracle_authority configured",
+    g.oracleAuthority.toBase58()
   );
+  try {
+    const r = await fetch(`${MCP}/internal/build-verify-tx`, { method: "GET" });
+    if (r.ok) {
+      const j = (await r.json()) as {
+        ready?: boolean;
+        mode?: string;
+        oracle_authority?: string;
+      };
+      c.check(
+        j.ready === true &&
+          j.oracle_authority === g.oracleAuthority.toBase58(),
+        "GET /internal/build-verify-tx ready & matches GlobalState.oracle_authority",
+        `${j.mode ?? "unknown"} (${j.oracle_authority ?? "none"})`
+      );
+    } else {
+      c.check(
+        false,
+        "GET /internal/build-verify-tx ready & matches GlobalState.oracle_authority",
+        `HTTP ${r.status}`
+      );
+    }
+  } catch (err) {
+    c.check(
+      false,
+      "GET /internal/build-verify-tx ready & matches GlobalState.oracle_authority",
+      String(err)
+    );
+  }
   // The verify window is [submitted_at + delay ± staleness]. If staleness is
   // shorter than the verification timeout, verify CLOSES before the task expires
   // — an agent who doesn't verify in that window is locked out with escrow still
@@ -167,7 +195,7 @@ async function mcpReachable(): Promise<boolean> {
     `  · min_escrow_lamports = ${minEscrow} (${minEscrow / 1e9} SOL)`
   );
   console.log(
-    `  · attestation_delay = ${(g.attestationDelaySeconds as BN).toString()}s\n`
+    `  · attestation_delay = ${(g.attestationDelaySeconds as BN).toString()}s | challenge_window = ${(g.challengeWindowSeconds as BN).toString()}s\n`
   );
 
   console.log(
@@ -176,10 +204,10 @@ async function mcpReachable(): Promise<boolean> {
   const escrow = Math.max(minEscrow, 1_000_000); // >= min, ~0.001 SOL floor
   for (const p of PLATFORMS) {
     const paused = ((g.pausedPlatforms as number) & (1 << p.id)) !== 0;
-    console.log(
-      `  [${p.id}] ${p.name}: escrow ${escrow / 1e9} SOL | content = ${
-        p.content
-      }` + (paused ? "  ⚠ PLATFORM PAUSED" : "")
+    c.check(
+      !paused,
+      `[${p.id}] ${p.name} unpaused`,
+      `escrow ${escrow / 1e9} SOL | content = ${p.content}`
     );
     console.log(
       `        recovery: emergency_return (Open/Claimed) or expire_task returns escrow to client`

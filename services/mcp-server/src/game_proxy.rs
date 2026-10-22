@@ -21,7 +21,7 @@ const INTERNAL_TOKEN_TTL_SECS: u64 = 300;
 
 /// HS256 JWT `{wallet, exp}` — byte-compatible with game-api's
 /// `module_transport::wallet::{mint, verify}` claim shape.
-fn mint_internal_token(wallet: &str, secret: &str) -> Option<String> {
+pub(crate) fn mint_internal_token(wallet: &str, secret: &str) -> Option<String> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
     use hmac::Mac as _;
