@@ -6,7 +6,7 @@
  *  1. Non-custodial wallet registration, Ed25519 challenge verification, & 0-SOL gasless onboarding
  *  2. Platform 10 (LeanProof): claiming & submitting an inline `lean4:proof:<base64>` proof or disproof
  *  3. Platform 5  (GamePlay):  claiming & submitting a resolved `coordination.game` `game_id` UUID
- *  4. Platform 4  (Referral):  creating a funded 0.005 SOL campaign & submitting `campaign_id` to a 0.10 SOL referral bounty
+ *  4. Platform 4  (Referral):  creating a funded 0.005 SOL campaign & submitting `campaign_id` to a 0.015–0.10 SOL referral bounty
  *  5. Structured `bug_report` via `agent_send_message` for vacuity / counterexample disclosures
  */
 

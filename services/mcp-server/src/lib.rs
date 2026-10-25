@@ -131,7 +131,21 @@ pub async fn initialize_with_dependencies(
         )
         .with_shillbot(cfg.orchestrator_url.clone(), dependencies.shillbot.clone()),
     );
-    let discovery_state = build_discovery_state(&cfg.gcp_project_id, &rpc_client).await;
+    // Durable webhook delivery (W4) + search engine stale-while-revalidate (G7):
+    // send_message triggers agent-webhook-delivery; search triggers
+    // mcp-discovery-refresh when catalog_age_hours >= 24. No project id
+    // (local dev) -> None, and triggers degrade to log-and-skip.
+    let workflows = if cfg.gcp_project_id.is_empty() {
+        None
+    } else {
+        Some(Arc::new(workflows_trigger::WorkflowsTrigger::new(
+            cfg.gcp_project_id.clone(),
+            load_env_or("WORKFLOWS_LOCATION", "us-central1"),
+        )))
+    };
+
+    let discovery_state =
+        build_discovery_state(&cfg.gcp_project_id, &rpc_client, workflows.clone()).await;
 
     let traffic_stats_state = Arc::new(traffic_stats::TrafficStatsState::new(
         rpc_client.clone(),
@@ -158,17 +172,6 @@ pub async fn initialize_with_dependencies(
     }
     let game_sessions = Arc::new(game_sessions.with_shutdown(ct.child_token()));
     let session_binding = Arc::new(McpSessionBinding::new(Arc::clone(&game_db)));
-    // Durable webhook delivery (W4): send_message triggers the
-    // agent-webhook-delivery workflow. No project id (local dev) → None, and
-    // the trigger degrades to log-and-skip (agents fall back to polling).
-    let workflows = if cfg.gcp_project_id.is_empty() {
-        None
-    } else {
-        Some(Arc::new(workflows_trigger::WorkflowsTrigger::new(
-            cfg.gcp_project_id.clone(),
-            load_env_or("WORKFLOWS_LOCATION", "us-central1"),
-        )))
-    };
     // This service's public base URL, handed to the delivery workflow for
     // its POST /internal/webhooks/delivery-result callback. Empty → the
     // workflow skips callbacks (failure counters simply don't advance).
@@ -437,6 +440,7 @@ async fn open_firestore(project_id: &str) -> FirestoreDb {
 async fn build_discovery_state(
     gcp_project_id: &str,
     rpc_client: &reqwest::Client,
+    workflows: Option<Arc<workflows_trigger::WorkflowsTrigger>>,
 ) -> Option<Arc<DiscoveryState>> {
     let discovery_db = match open_firestore_result(gcp_project_id).await {
         Ok(db) => Some(db),
@@ -468,12 +472,10 @@ async fn build_discovery_state(
     }
 
     discovery_db.map(|db| {
-        Arc::new(DiscoveryState::new(
-            db,
-            rpc_client.clone(),
-            llm_classifier,
-            github_token,
-        ))
+        Arc::new(
+            DiscoveryState::new(db, rpc_client.clone(), llm_classifier, github_token)
+                .with_workflows(workflows),
+        )
     })
 }
 

@@ -1164,7 +1164,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_list_available_tasks",
-        description = "[READ] List open Shillbot tasks with SOL escrow: platform 10=LeanProof (0.005–0.25 SOL), 5=GamePlay (0.05–0.10 SOL), 4=Referral (0.10 SOL), 9=Website, 0/3=YouTube/X. 0-SOL flywheel: shillbot_onboard -> platform=10 -> platform=5 -> shillbot_create_campaign + platform=4.",
+        description = "[READ] List open Shillbot tasks with SOL escrow: platform 10=LeanProof (0.005–0.25 SOL), 5=GamePlay (0.012–0.10 SOL), 4=Referral (0.015–0.10 SOL), 9=Website (0.006–0.08 SOL), 0/3=YouTube/X. 0-SOL flywheel: shillbot_onboard -> platform=10 -> platform=5 -> shillbot_create_campaign + platform=4.",
         annotations(read_only_hint = true)
     )]
     async fn shillbot_list_available_tasks(
@@ -2573,6 +2573,12 @@ impl SwarmTipsMcp {
                 "search served from a stale catalog snapshot — refresh overdue"
             );
         }
+        let refresh_triggered = crate::discovery::maybe_trigger_background_refresh(
+            discovery,
+            catalog_age_hours,
+            index.catalog_refreshed_at,
+        )
+        .await;
 
         tracing::info!(
             event = "search_mcp_servers",
@@ -2582,6 +2588,7 @@ impl SwarmTipsMcp {
             category = args.category.as_deref().unwrap_or(""),
             currency = args.currency.as_deref().unwrap_or(""),
             tier = args.tier.as_deref().unwrap_or(""),
+            refresh_triggered,
             "search_mcp_servers served"
         );
 
@@ -2591,6 +2598,7 @@ impl SwarmTipsMcp {
             "corpus_size": index.corpus_size(),
             "catalog_age_hours": catalog_age_hours,
             "stale_catalog": stale_catalog,
+            "refresh_triggered": refresh_triggered,
             "ranking": "BM25 relevance gate × automated quality prior (source corroboration, GitHub stars, npm downloads, upstream quality, LLM confidence). No manual curation — see each hit's ranking_signals.",
             "provenance_definitions": {
                 "first-party": "Endpoint or repo hosted on a swarm.tips-operated domain — an automated fact, same operator as this MCP server.",

@@ -20,7 +20,10 @@ pub mod sources;
 
 use crate::discovery::llm_classify::{LlmClassifier, MAX_SERVERS_PER_CYCLE};
 use crate::discovery::merge::merge_and_classify;
-use crate::discovery::models::{EnrichedServer, MCP_SERVERS_COLLECTION};
+use crate::discovery::models::{
+    DiscoveryMetaDoc, EnrichedServer, MCP_DISCOVERY_META_COLLECTION, MCP_DISCOVERY_META_DOC_ID,
+    MCP_SERVERS_COLLECTION,
+};
 use crate::discovery::sources::{
     pull_awesome_mcp, pull_best_of_mcp, pull_official_registry, SOURCE_AWESOME_APPCYPHER,
     SOURCE_AWESOME_WONG2, SOURCE_BEST_OF_MCP,
@@ -30,14 +33,25 @@ use firestore::FirestoreDb;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Cached enriched index. Refreshed by the daily refresh handler; served by
-/// the earning-candidates endpoint. In-memory cache is fine — Firestore is
-/// the durable store, this is just a request-time accelerator.
+/// Google Workflow triggered when a search observes a catalog older than
+/// [`AUTO_REFRESH_STALE_HOURS`].
+pub const DISCOVERY_REFRESH_WORKFLOW: &str = "mcp-discovery-refresh";
+/// Staleness threshold (hours) after which a search call kicks off a
+/// background `mcp-discovery-refresh` workflow execution.
+pub const AUTO_REFRESH_STALE_HOURS: i64 = 24;
+/// Minimum cooldown (seconds) between auto-refresh triggers so concurrent
+/// searches while the refresh workflow runs (~30-60s) do not stampede.
+pub const AUTO_REFRESH_COOLDOWN_SECS: i64 = 3600;
+/// Internal header set by `combined-api` only after verifying a Google OIDC
+/// callback token on `/_internal/mcp/*` (and stripped from all public requests).
+pub const COMBINED_CALLBACK_VERIFIED_HEADER: &str = "x-combined-callback-verified";
+
+/// Cached enriched index. Refreshed by the daily/on-demand refresh handler;
+/// served by the earning-candidates endpoint. In-memory cache is fine —
+/// Firestore is the durable store, this is just a request-time accelerator.
 pub struct DiscoveryCache {
     pub servers: Vec<EnrichedServer>,
-    /// When the cache was last refreshed. Read at mod.rs:101 and surfaced to
-    /// callers for staleness reporting (see search.rs) — the "currently unused"
-    /// note and the dead_code allow it carried were both stale.
+    /// When the catalog was last refreshed from upstream sources.
     pub last_refreshed_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -59,6 +73,11 @@ pub struct DiscoveryState {
     /// fetches in `deep_analysis`. Loaded from `github-token` in GCP Secret
     /// Manager. None falls back to unauthenticated calls (60/hour/IP).
     pub github_token: Option<String>,
+    /// Optional Google Workflows trigger for stale-while-revalidate background
+    /// refresh when a search hits a catalog older than 24 hours.
+    pub workflows: Option<Arc<crate::workflows_trigger::WorkflowsTrigger>>,
+    /// In-memory cooldown watermark for auto-triggered refresh workflows.
+    pub last_refresh_triggered_at: Mutex<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 impl DiscoveryState {
@@ -75,7 +94,64 @@ impl DiscoveryState {
             search_index: Mutex::new(None),
             llm,
             github_token,
+            workflows: None,
+            last_refresh_triggered_at: Mutex::new(None),
         }
+    }
+
+    pub fn with_workflows(
+        mut self,
+        workflows: Option<Arc<crate::workflows_trigger::WorkflowsTrigger>>,
+    ) -> Self {
+        self.workflows = workflows;
+        self
+    }
+}
+
+/// Compute the true catalog refresh timestamp from loaded Firestore docs when
+/// `mcp_discovery_meta/state` is absent: uses `max(last_seen_at)` across all
+/// docs (falling back to `now` only if the collection is empty) so a Cloud Run
+/// cold start never resets a 90-day-old catalog's age to 0 hours.
+pub fn fallback_catalog_refreshed_at(
+    docs: &[EnrichedServer],
+    now: chrono::DateTime<chrono::Utc>,
+) -> chrono::DateTime<chrono::Utc> {
+    docs.iter().map(|d| d.last_seen_at).max().unwrap_or(now)
+}
+
+pub async fn load_discovery_meta(db: &FirestoreDb) -> Option<DiscoveryMetaDoc> {
+    db.fluent()
+        .select()
+        .by_id_in(MCP_DISCOVERY_META_COLLECTION)
+        .obj::<DiscoveryMetaDoc>()
+        .one(MCP_DISCOVERY_META_DOC_ID)
+        .await
+        .ok()
+        .flatten()
+}
+
+pub async fn save_discovery_meta(db: &FirestoreDb, meta: &DiscoveryMetaDoc) {
+    if let Err(e) = db
+        .fluent()
+        .update()
+        .in_col(MCP_DISCOVERY_META_COLLECTION)
+        .document_id(MCP_DISCOVERY_META_DOC_ID)
+        .object(meta)
+        .execute::<()>()
+        .await
+    {
+        tracing::warn!(error = %e, "failed to write mcp_discovery_meta/state");
+    }
+}
+
+async fn resolve_catalog_refreshed_at(
+    db: &FirestoreDb,
+    docs: &[EnrichedServer],
+) -> chrono::DateTime<chrono::Utc> {
+    let fallback = fallback_catalog_refreshed_at(docs, chrono::Utc::now());
+    match load_discovery_meta(db).await {
+        Some(meta) if meta.last_refreshed_at > fallback => meta.last_refreshed_at,
+        _ => fallback,
     }
 }
 
@@ -104,13 +180,13 @@ pub async fn get_or_build_search_index(
     let (servers, refreshed_at) = if servers.is_empty() {
         match load_from_firestore(&state.db).await {
             Ok(docs) if !docs.is_empty() => {
-                let now = chrono::Utc::now();
+                let refreshed_at = resolve_catalog_refreshed_at(&state.db, &docs).await;
                 let mut cache = state.cache.lock().await;
                 *cache = Some(DiscoveryCache {
                     servers: docs.clone(),
-                    last_refreshed_at: now,
+                    last_refreshed_at: refreshed_at,
                 });
-                (docs, now)
+                (docs, refreshed_at)
             }
             Ok(_) => return None,
             Err(e) => {
@@ -125,6 +201,7 @@ pub async fn get_or_build_search_index(
     let built = Arc::new(search::SearchIndex::build(servers, refreshed_at));
     tracing::info!(
         corpus = built.corpus_size(),
+        catalog_refreshed_at = %refreshed_at,
         "built BM25 search index over discovery catalog"
     );
     let mut idx = state.search_index.lock().await;
@@ -132,10 +209,132 @@ pub async fn get_or_build_search_index(
     Some(built)
 }
 
+/// Pure decision helper for stale-while-revalidate search auto-refresh.
+pub fn should_trigger_auto_refresh(
+    catalog_age_hours: i64,
+    now: chrono::DateTime<chrono::Utc>,
+    in_memory_last_triggered: Option<chrono::DateTime<chrono::Utc>>,
+    meta: Option<&DiscoveryMetaDoc>,
+) -> (bool, bool) {
+    if catalog_age_hours < AUTO_REFRESH_STALE_HOURS {
+        return (false, false);
+    }
+    if let Some(last) = in_memory_last_triggered {
+        if now.signed_duration_since(last).num_seconds() < AUTO_REFRESH_COOLDOWN_SECS {
+            return (false, false);
+        }
+    }
+    if let Some(m) = meta {
+        // Another instance already refreshed the catalog within the 24h window:
+        // do not trigger a workflow, and signal the caller to invalidate its
+        // stale in-memory cache so the next search reloads from Firestore.
+        if now.signed_duration_since(m.last_refreshed_at).num_hours() < AUTO_REFRESH_STALE_HOURS {
+            return (false, true);
+        }
+        if let Some(last_trig) = m.last_triggered_at {
+            if now.signed_duration_since(last_trig).num_seconds() < AUTO_REFRESH_COOLDOWN_SECS {
+                return (false, false);
+            }
+        }
+    }
+    (true, false)
+}
+
+/// Stale-while-revalidate: if a search just served a catalog older than
+/// [`AUTO_REFRESH_STALE_HOURS`], kick off `mcp-discovery-refresh` via Google
+/// Workflows at most once per cooldown window. Never blocks on the refresh
+/// itself (only starts the workflow execution).
+pub async fn maybe_trigger_background_refresh(
+    state: &Arc<DiscoveryState>,
+    catalog_age_hours: i64,
+    current_refreshed_at: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if catalog_age_hours < AUTO_REFRESH_STALE_HOURS {
+        return false;
+    }
+    let Some(workflows) = state.workflows.as_ref() else {
+        return false;
+    };
+    let now = chrono::Utc::now();
+    {
+        let guard = state.last_refresh_triggered_at.lock().await;
+        if let Some(last) = *guard {
+            if now.signed_duration_since(last).num_seconds() < AUTO_REFRESH_COOLDOWN_SECS {
+                return false;
+            }
+        }
+    }
+
+    let meta = load_discovery_meta(&state.db).await;
+    let (should_trigger, invalidate_local_cache) =
+        should_trigger_auto_refresh(catalog_age_hours, now, None, meta.as_ref());
+
+    if invalidate_local_cache {
+        let mut cache = state.cache.lock().await;
+        *cache = None;
+        drop(cache);
+        let mut idx = state.search_index.lock().await;
+        *idx = None;
+        tracing::info!(
+            "invalidated stale in-memory discovery cache after observing fresher Firestore meta"
+        );
+        return false;
+    }
+
+    if !should_trigger {
+        let mut guard = state.last_refresh_triggered_at.lock().await;
+        *guard = meta.and_then(|m| m.last_triggered_at).or(Some(now));
+        return false;
+    }
+
+    {
+        let mut guard = state.last_refresh_triggered_at.lock().await;
+        if let Some(last) = *guard {
+            if now.signed_duration_since(last).num_seconds() < AUTO_REFRESH_COOLDOWN_SECS {
+                return false;
+            }
+        }
+        *guard = Some(now);
+    }
+
+    let new_meta = DiscoveryMetaDoc {
+        last_refreshed_at: meta
+            .as_ref()
+            .map(|m| m.last_refreshed_at)
+            .unwrap_or(current_refreshed_at),
+        last_triggered_at: Some(now),
+        corpus_size: meta.as_ref().map(|m| m.corpus_size).unwrap_or(0),
+    };
+    save_discovery_meta(&state.db, &new_meta).await;
+
+    match workflows
+        .execute(DISCOVERY_REFRESH_WORKFLOW, &serde_json::json!({}))
+        .await
+    {
+        Ok(execution) => {
+            tracing::info!(
+                event = "discovery_auto_refresh_triggered",
+                catalog_age_hours,
+                execution = %execution,
+                "triggered background mcp-discovery-refresh workflow after stale search"
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                catalog_age_hours,
+                error = %e,
+                "failed to trigger background mcp-discovery-refresh workflow"
+            );
+            false
+        }
+    }
+}
+
 /// Refresh the discovery index: pull from all sources, merge + classify,
-/// write to Firestore, update cache. All four upstream sources (official
-/// registry, the wong2 and appcypher awesome-mcp-servers lists, best-of-mcp)
-/// are pulled in parallel.
+/// write new/changed docs to Firestore, update cache. All four upstream sources
+/// (official registry, the wong2 and appcypher awesome-mcp-servers lists,
+/// best-of-mcp) are pulled in parallel.
 ///
 /// Returns the count of merged servers and the count of earning candidates.
 pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSummary> {
@@ -163,7 +362,7 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
             }
         };
 
-    // Preserve Layer 2 + Layer 3 across refresh.
+    // Preserve first_seen_at + Layer 2 + Layer 3 across refresh.
     let (preserved_layer2, preserved_layer3) =
         preserve_layer_classifications(&existing_by_slug, &mut merged);
 
@@ -178,15 +377,24 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
     let total = merged.len();
     let earning_count = merged.iter().filter(|s| s.is_earning_candidate()).count();
 
-    // Persist to Firestore (one doc per server). Best-effort: log + continue
-    // on individual write failures, but the cache update happens regardless
-    // so the in-memory copy is always fresh.
-    let (written, write_errors) = persist_servers_to_firestore(&state.db, &merged).await;
+    // Persist only new or materially changed server docs to Firestore.
+    let (written, skipped_unchanged, write_errors) =
+        persist_servers_to_firestore(&state.db, &merged, &existing_by_slug).await;
+
+    let refreshed_at = chrono::Utc::now();
+    save_discovery_meta(
+        &state.db,
+        &DiscoveryMetaDoc {
+            last_refreshed_at: refreshed_at,
+            last_triggered_at: Some(refreshed_at),
+            corpus_size: total,
+        },
+    )
+    .await;
 
     // Update in-memory cache + rebuild the search index from the same
     // snapshot so search never serves a different corpus than the cache.
     {
-        let refreshed_at = chrono::Utc::now();
         let rebuilt = Arc::new(search::SearchIndex::build(merged.clone(), refreshed_at));
         let mut cache = state.cache.lock().await;
         *cache = Some(DiscoveryCache {
@@ -206,6 +414,7 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
         preserved_layer3,
         retained_unseen,
         written,
+        skipped_unchanged,
         write_errors,
         elapsed_ms,
         "refresh_discovery complete"
@@ -215,6 +424,7 @@ pub async fn refresh_discovery(state: &Arc<DiscoveryState>) -> Result<RefreshSum
         total,
         earning_count,
         firestore_writes: written,
+        firestore_skipped_unchanged: skipped_unchanged,
         firestore_write_errors: write_errors,
         elapsed_ms: elapsed_ms as u64,
     })
@@ -305,9 +515,10 @@ fn union_with_existing(
     retained_unseen
 }
 
-/// Patch newly-merged records with any pre-existing Layer 2 / Layer 3 LLM
-/// verdicts (loaded once by the caller) so a fresh refresh doesn't wipe out
-/// hours of LLM work. Returns `(preserved_layer2, preserved_layer3)`.
+/// Patch newly-merged records with any pre-existing `first_seen_at` and
+/// Layer 2 / Layer 3 LLM verdicts (loaded once by the caller) so a fresh
+/// refresh doesn't wipe out hours of LLM work or reset `first_seen_at`.
+/// Returns `(preserved_layer2, preserved_layer3)`.
 fn preserve_layer_classifications(
     existing_by_slug: &std::collections::HashMap<String, EnrichedServer>,
     merged: &mut [EnrichedServer],
@@ -316,6 +527,7 @@ fn preserve_layer_classifications(
     let mut preserved_layer3 = 0usize;
     for srv in merged.iter_mut() {
         if let Some(existing) = existing_by_slug.get(&srv.slug()) {
+            srv.first_seen_at = existing.first_seen_at;
             if srv.layer2_classification.is_none() && existing.layer2_classification.is_some() {
                 srv.layer2_classification = existing.layer2_classification.clone();
                 preserved_layer2 = preserved_layer2.saturating_add(1);
@@ -338,16 +550,45 @@ fn preserve_layer_classifications(
     (preserved_layer2, preserved_layer3)
 }
 
-/// Persist every server doc to Firestore. Returns `(written, errors)` —
-/// individual write failures are logged and counted but do not abort the
-/// caller (the in-memory cache always updates regardless).
+/// Filter `merged` down to servers that are either new (`!existing_by_slug.contains_key`)
+/// or materially changed (`srv.materially_changed_from(existing)`), returning
+/// `(to_write, skipped_unchanged)`.
+fn filter_changed_servers<'a>(
+    merged: &'a [EnrichedServer],
+    existing_by_slug: &std::collections::HashMap<String, EnrichedServer>,
+) -> (Vec<&'a EnrichedServer>, usize) {
+    let mut to_write = Vec::new();
+    let mut skipped_unchanged = 0usize;
+    for srv in merged {
+        let slug = srv.slug();
+        match existing_by_slug.get(&slug) {
+            Some(existing) if !srv.materially_changed_from(existing) => {
+                skipped_unchanged = skipped_unchanged.saturating_add(1);
+            }
+            _ => to_write.push(srv),
+        }
+    }
+    debug_assert_eq!(
+        to_write.len().saturating_add(skipped_unchanged),
+        merged.len(),
+        "every merged server must be either queued for write or skipped as unchanged"
+    );
+    (to_write, skipped_unchanged)
+}
+
+/// Persist only new or materially changed server docs to Firestore. Returns
+/// `(written, skipped_unchanged, errors)` — individual write failures are
+/// logged and counted but do not abort the caller (the in-memory cache always
+/// updates regardless).
 async fn persist_servers_to_firestore(
     db: &FirestoreDb,
     merged: &[EnrichedServer],
-) -> (usize, usize) {
+    existing_by_slug: &std::collections::HashMap<String, EnrichedServer>,
+) -> (usize, usize, usize) {
+    let (to_write, skipped_unchanged) = filter_changed_servers(merged, existing_by_slug);
     let mut written = 0usize;
     let mut write_errors = 0usize;
-    for srv in merged {
+    for srv in to_write {
         let slug = srv.slug();
         match db
             .fluent()
@@ -365,13 +606,15 @@ async fn persist_servers_to_firestore(
             }
         }
     }
-    // Postcondition: written + errors == merged.len() (every input was accounted for).
+    // Postcondition: written + skipped + errors == merged.len() (every input was accounted for).
     debug_assert_eq!(
-        written.saturating_add(write_errors),
+        written
+            .saturating_add(skipped_unchanged)
+            .saturating_add(write_errors),
         merged.len(),
-        "every server must be either written or counted as error"
+        "every server must be written, skipped as unchanged, or counted as error"
     );
-    (written, write_errors)
+    (written, skipped_unchanged, write_errors)
 }
 
 /// Result of a refresh — useful for the admin endpoint that triggers it.
@@ -380,6 +623,7 @@ pub struct RefreshSummary {
     pub total: usize,
     pub earning_count: usize,
     pub firestore_writes: usize,
+    pub firestore_skipped_unchanged: usize,
     pub firestore_write_errors: usize,
     pub elapsed_ms: u64,
 }
@@ -595,10 +839,11 @@ pub async fn get_primitives(state: &Arc<DiscoveryState>) -> Vec<EnrichedServer> 
 
     match load_from_firestore(&state.db).await {
         Ok(servers) => {
+            let refreshed_at = resolve_catalog_refreshed_at(&state.db, &servers).await;
             let mut cache = state.cache.lock().await;
             *cache = Some(DiscoveryCache {
                 servers: servers.clone(),
-                last_refreshed_at: chrono::Utc::now(),
+                last_refreshed_at: refreshed_at,
             });
             servers.into_iter().filter(|s| s.is_primitive()).collect()
         }
@@ -628,11 +873,12 @@ pub async fn get_earning_candidates(state: &Arc<DiscoveryState>) -> Vec<Enriched
     // Cache miss — try Firestore
     match load_from_firestore(&state.db).await {
         Ok(servers) => {
+            let refreshed_at = resolve_catalog_refreshed_at(&state.db, &servers).await;
             // Populate the cache for next time
             let mut cache = state.cache.lock().await;
             *cache = Some(DiscoveryCache {
                 servers: servers.clone(),
-                last_refreshed_at: chrono::Utc::now(),
+                last_refreshed_at: refreshed_at,
             });
             servers
                 .into_iter()
@@ -731,9 +977,17 @@ pub fn search_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter
                 let catalog_age_hours = chrono::Utc::now()
                     .signed_duration_since(index.catalog_refreshed_at)
                     .num_hours();
+                let refresh_triggered = maybe_trigger_background_refresh(
+                    &state,
+                    catalog_age_hours,
+                    index.catalog_refreshed_at,
+                )
+                .await;
                 tracing::info!(
                     count = hits.len(),
                     corpus = index.corpus_size(),
+                    catalog_age_hours,
+                    refresh_triggered,
                     query,
                     "served /internal/mcp/search"
                 );
@@ -744,6 +998,7 @@ pub fn search_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter
                         "returned": hits.len(),
                         "corpus_size": index.corpus_size(),
                         "catalog_age_hours": catalog_age_hours,
+                        "refresh_triggered": refresh_triggered,
                     })),
                 )
                     .into_response()
@@ -760,8 +1015,21 @@ fn bearer_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>
     matches!((expected_key, provided), (Some(exp), Some(got)) if !exp.is_empty() && got == exp)
 }
 
+fn refresh_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>) -> bool {
+    if headers
+        .get(COMBINED_CALLBACK_VERIFIED_HEADER)
+        .and_then(|v| v.to_str().ok())
+        == Some("1")
+    {
+        return true;
+    }
+    bearer_authorized(headers, expected_key)
+}
+
 /// POST /internal/mcp/refresh → trigger a fresh pull + classify cycle.
-/// Returns the RefreshSummary as JSON. Gated on the shared internal Bearer key.
+/// Returns the RefreshSummary as JSON. Gated on either the verified
+/// `combined-api` OIDC callback header (`/_internal/mcp/*`) or the shared
+/// internal Bearer key.
 pub fn refresh_handler(
     state: Arc<DiscoveryState>,
     expected_key: Option<String>,
@@ -770,7 +1038,7 @@ pub fn refresh_handler(
         let state = state.clone();
         let expected_key = expected_key.clone();
         async move {
-            if !bearer_authorized(&headers, expected_key.as_deref()) {
+            if !refresh_authorized(&headers, expected_key.as_deref()) {
                 return (
                     axum::http::StatusCode::UNAUTHORIZED,
                     "{\"error\": \"unauthorized\"}".to_string(),
@@ -956,5 +1224,118 @@ mod tests {
         let mut merged = vec![srv("a/1")];
         assert_eq!(union_with_existing(&mut merged, &existing), 0);
         assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn fallback_catalog_refreshed_at_uses_max_last_seen_not_now() {
+        let now = chrono::Utc::now();
+        let ninety_days_ago = now - chrono::Duration::days(90);
+        let hundred_days_ago = now - chrono::Duration::days(100);
+        let mut s1 = srv("a/1");
+        s1.last_seen_at = hundred_days_ago;
+        let mut s2 = srv("a/2");
+        s2.last_seen_at = ninety_days_ago;
+
+        let computed = fallback_catalog_refreshed_at(&[s1, s2], now);
+        assert_eq!(computed, ninety_days_ago);
+        assert_eq!(fallback_catalog_refreshed_at(&[], now), now);
+    }
+
+    #[test]
+    fn filter_changed_servers_skips_identical_and_writes_modified_or_new() {
+        let now = chrono::Utc::now();
+        let old = now - chrono::Duration::days(10);
+        let mut existing_a = srv("a/1");
+        existing_a.first_seen_at = old;
+        existing_a.last_seen_at = old;
+        let mut existing_b = srv("a/2");
+        existing_b.description = Some("old description".to_string());
+
+        let existing: std::collections::HashMap<String, EnrichedServer> = [existing_a, existing_b]
+            .into_iter()
+            .map(|s| (s.slug(), s))
+            .collect();
+
+        // a/1 has a new last_seen_at but identical material fields -> skipped.
+        let mut merged_a = srv("a/1");
+        merged_a.last_seen_at = now;
+        // a/2 has a new description -> written.
+        let mut merged_b = srv("a/2");
+        merged_b.description = Some("new description".to_string());
+        // a/3 is brand new -> written.
+        let merged_c = srv("a/3");
+
+        let merged = vec![merged_a, merged_b, merged_c];
+        let (to_write, skipped) = filter_changed_servers(&merged, &existing);
+        assert_eq!(skipped, 1);
+        assert_eq!(to_write.len(), 2);
+        assert_eq!(to_write[0].name, "a/2");
+        assert_eq!(to_write[1].name, "a/3");
+    }
+
+    #[test]
+    fn should_trigger_auto_refresh_respects_staleness_cooldown_and_fresher_meta() {
+        let now = chrono::Utc::now();
+        // Fresh catalog (< 24h) -> no trigger, no cache invalidation.
+        assert_eq!(
+            should_trigger_auto_refresh(12, now, None, None),
+            (false, false)
+        );
+
+        // Stale catalog (>= 24h), no prior trigger -> trigger!
+        assert_eq!(
+            should_trigger_auto_refresh(48, now, None, None),
+            (true, false)
+        );
+
+        // Stale catalog, but in-memory cooldown (< 1h ago) active -> skip.
+        let ten_min_ago = now - chrono::Duration::minutes(10);
+        assert_eq!(
+            should_trigger_auto_refresh(48, now, Some(ten_min_ago), None),
+            (false, false)
+        );
+
+        // Stale local index, but Firestore meta says another instance refreshed 2h ago ->
+        // do not trigger, and invalidate local cache!
+        let meta_fresh = DiscoveryMetaDoc {
+            last_refreshed_at: now - chrono::Duration::hours(2),
+            last_triggered_at: Some(now - chrono::Duration::hours(2)),
+            corpus_size: 17188,
+        };
+        assert_eq!(
+            should_trigger_auto_refresh(48, now, None, Some(&meta_fresh)),
+            (false, true)
+        );
+
+        // Stale local index, and Firestore meta says another instance triggered 15m ago -> skip.
+        let meta_triggered = DiscoveryMetaDoc {
+            last_refreshed_at: now - chrono::Duration::hours(48),
+            last_triggered_at: Some(now - chrono::Duration::minutes(15)),
+            corpus_size: 17188,
+        };
+        assert_eq!(
+            should_trigger_auto_refresh(48, now, None, Some(&meta_triggered)),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn refresh_authorized_accepts_verified_callback_header_or_bearer_key() {
+        let mut h = axum::http::HeaderMap::new();
+        assert!(!refresh_authorized(&h, Some("secret-key")));
+
+        h.insert(
+            COMBINED_CALLBACK_VERIFIED_HEADER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+        assert!(refresh_authorized(&h, None));
+
+        let mut h2 = axum::http::HeaderMap::new();
+        h2.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer secret-key"),
+        );
+        assert!(refresh_authorized(&h2, Some("secret-key")));
+        assert!(!refresh_authorized(&h2, Some("wrong-key")));
     }
 }

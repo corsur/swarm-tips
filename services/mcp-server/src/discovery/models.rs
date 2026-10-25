@@ -76,7 +76,7 @@ pub struct RawServer {
 }
 
 /// Layer 1 classification result for a server. Pure heuristics, no LLM.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer1Classification {
     pub category: Option<Category>,
     pub cash_flow_direction: Option<CashFlowDirection>,
@@ -92,7 +92,7 @@ pub struct Layer1Classification {
 /// One on-chain address pulled out of a server's GitHub README. Used as the
 /// hand-off to a future on-chain volume lookup pass — for now we just extract
 /// + store, no RPC calls yet.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExtractedAddress {
     /// "solana_program" or "evm_contract".
     pub kind: String,
@@ -104,7 +104,7 @@ pub struct ExtractedAddress {
 /// Layer 3 deep-analysis bundle — populated by `discovery::deep_analysis` for
 /// the top tier-1 earning candidates. Heaviest pass: hits GitHub + npm APIs.
 /// Only run on the top ~50 candidates per cycle, never on the whole index.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer3Analysis {
     /// On-chain addresses extracted from the README.
     pub extracted_addresses: Vec<ExtractedAddress>,
@@ -122,7 +122,7 @@ pub struct Layer3Analysis {
 /// Layer 2 classification — Grok-derived verdict on a server. Only populated
 /// for servers where Layer 1 was not confident (`confident = false`). Lives
 /// alongside the Layer 1 record on the same Firestore doc, never overwrites it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer2Classification {
     pub category: Option<Category>,
     pub cash_flow_direction: Option<CashFlowDirection>,
@@ -179,6 +179,27 @@ impl EnrichedServer {
         self.name.replace('/', "__")
     }
 
+    /// True when any content, source, or classification field differs from
+    /// `existing` (ignoring `first_seen_at` and `last_seen_at` timestamps).
+    /// Used by `persist_servers_to_firestore` so a refresh only writes new or
+    /// materially changed servers instead of rewriting all ~17k docs.
+    pub fn materially_changed_from(&self, existing: &Self) -> bool {
+        self.name != existing.name
+            || self.title != existing.title
+            || self.description != existing.description
+            || self.endpoint != existing.endpoint
+            || self.transport != existing.transport
+            || self.npm_package != existing.npm_package
+            || self.github_repo != existing.github_repo
+            || self.sources != existing.sources
+            || self.source_count != existing.source_count
+            || self.upstream_quality_score != existing.upstream_quality_score
+            || self.upstream_visitors_estimate != existing.upstream_visitors_estimate
+            || self.classification != existing.classification
+            || self.layer2_classification != existing.layer2_classification
+            || self.layer3_analysis != existing.layer3_analysis
+    }
+
     /// True if this server should appear in the earning-candidates list.
     /// Considers BOTH Layer 1 (always trusted) and Layer 2 (only if confidence >= 0.6).
     pub fn is_earning_candidate(&self) -> bool {
@@ -223,3 +244,17 @@ impl EnrichedServer {
 
 /// Firestore collection name for the merged server index.
 pub const MCP_SERVERS_COLLECTION: &str = "mcp_servers";
+
+/// Firestore collection + singleton document ID tracking catalog refresh and
+/// stale-while-revalidate trigger timestamps across Cloud Run cold starts.
+pub const MCP_DISCOVERY_META_COLLECTION: &str = "mcp_discovery_meta";
+pub const MCP_DISCOVERY_META_DOC_ID: &str = "state";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryMetaDoc {
+    pub last_refreshed_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_triggered_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub corpus_size: usize,
+}
