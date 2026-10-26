@@ -129,6 +129,34 @@ fn decode_0x<const N: usize>(s: &str) -> Result<[u8; N], String> {
         .map_err(|_| "wrong length".to_string())
 }
 
+fn verify_leg_b_against_registry(
+    chain_id: &str,
+    contract: [u8; 20],
+    stake_wei: Option<u128>,
+) -> Result<(), String> {
+    let entry = chain_registry::all()
+        .find(|e| e.chain_id == chain_id)
+        .ok_or_else(|| format!("unknown or unregistered chain '{chain_id}'"))?;
+    let expected_contract_str = entry
+        .game_contract
+        .ok_or_else(|| format!("chain '{chain_id}' has no deployed cross-chain game contract"))?;
+    let expected_contract = decode_0x::<20>(expected_contract_str)?;
+    if contract != expected_contract {
+        return Err(format!(
+            "leg_b.contract does not match chain_registry contract for {chain_id}"
+        ));
+    }
+    if let Some(stake) = stake_wei {
+        if stake != entry.stake_base_units {
+            return Err(format!(
+                "leg_b.stake_base_units ({stake}) does not match chain_registry stake ({}) for {chain_id}",
+                entry.stake_base_units
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Build the unsigned EVM `createMatch` call for the EVM player from a matched
 /// relay payload (`xchain_find_match`/`status` → `match`). The EVM leg is
 /// `leg_b`; the counterparty session key is the Solana leg's. `playerIsP1` is
@@ -144,6 +172,7 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
             .ok_or_else(|| format!("missing string field {k}"))
     };
 
+    let chain_id = str_at(leg_b, "chain")?;
     let match_id = decode_0x::<32>(&str_at(payload, "match_id")?)?;
     let contract = decode_0x::<20>(&str_at(leg_b, "contract")?)?;
     let session_key = decode_0x::<20>(&str_at(leg_b, "session_key")?)?;
@@ -151,6 +180,7 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
     let stake_wei: u128 = str_at(leg_b, "stake_base_units")?
         .parse()
         .map_err(|e| format!("bad stake: {e}"))?;
+    verify_leg_b_against_registry(&chain_id, contract, Some(stake_wei))?;
     let match_deadline = payload
         .get("match_deadline")
         .and_then(Value::as_u64)
@@ -186,7 +216,7 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
     );
     let (to, data, value) = call.to_hex_parts();
     Ok(json!({
-        "chain": str_at(leg_b, "chain")?,
+        "chain": chain_id,
         "to": to,
         "data": data,
         "value_wei": value,
@@ -252,7 +282,9 @@ pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
             .map_err(|_| "claim_window overflow".to_string())?,
         a_is_p1: u8::try_from(u64_at("a_is_p1")?).map_err(|_| "a_is_p1 overflow".to_string())?,
     };
+    let chain_id = str_at(leg_b, "chain")?;
     let contract = decode_0x::<20>(&str_at(leg_b, "contract")?)?;
+    verify_leg_b_against_registry(&chain_id, contract, Some(cert.leg_b.stake))?;
     let mut operator_sig = decode_0x::<65>(&str_at(payload, "operator_signature")?)?;
     // The relay stores signatures with v normalized to 0/1 (the form the
     // Solana program and game-api verify); the EVM contract's ECDSA.recover
@@ -267,7 +299,7 @@ pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
     let call = evm_chain::build_lock_tranche_parts(contract, cert, operator_sig);
     let (to, data, value) = call.to_hex_parts();
     Ok(json!({
-        "chain": str_at(leg_b, "chain")?,
+        "chain": chain_id,
         "to": to,
         "data": data,
         "value_wei": value,
@@ -285,6 +317,10 @@ pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
 /// cert). Returns the same client-ready shape as the fund builder.
 pub fn build_evm_refund_call(payload: &Value, kind: &str) -> Result<Value, String> {
     let leg_b = payload.get("leg_b").ok_or("payload missing leg_b")?;
+    let chain_id = leg_b
+        .get("chain")
+        .and_then(|x| x.as_str())
+        .ok_or("missing leg_b.chain")?;
     let contract_hex = leg_b
         .get("contract")
         .and_then(|x| x.as_str())
@@ -294,6 +330,7 @@ pub fn build_evm_refund_call(payload: &Value, kind: &str) -> Result<Value, Strin
         .and_then(|x| x.as_str())
         .ok_or("missing match_id")?;
     let contract = decode_0x::<20>(contract_hex)?;
+    verify_leg_b_against_registry(chain_id, contract, None)?;
     let match_id = decode_0x::<32>(match_id_hex)?;
 
     let call = match kind {
@@ -303,7 +340,7 @@ pub fn build_evm_refund_call(payload: &Value, kind: &str) -> Result<Value, Strin
     };
     let (to, data, value) = call.to_hex_parts();
     Ok(json!({
-        "chain": leg_b.get("chain").and_then(|x| x.as_str()).ok_or("missing leg_b.chain")?,
+        "chain": chain_id,
         "to": to,
         "data": data,
         "value_wei": value,
@@ -357,8 +394,27 @@ mod tests {
         // too long
     }
 
+    fn base_sepolia_contract_hex40() -> String {
+        chain_registry::all()
+            .find(|e| e.chain_id == "eip155:84532")
+            .and_then(|e| e.game_contract)
+            .expect("Base Sepolia contract registered")
+            .trim_start_matches("0x")
+            .to_lowercase()
+    }
+
+    fn base_sepolia_stake_str() -> String {
+        chain_registry::all()
+            .find(|e| e.chain_id == "eip155:84532")
+            .expect("Base Sepolia registered")
+            .stake_base_units
+            .to_string()
+    }
+
     /// A relay payload shaped like xchain::cert_relay_payload (leg_b = EVM).
     fn sample_create_match_payload() -> Value {
+        let c = base_sepolia_contract_hex40();
+        let stake = base_sepolia_stake_str();
         json!({
             "match_id": format!("0x{}", "aa".repeat(32)),
             "match_deadline": 1_765_007_200u64,
@@ -366,9 +422,9 @@ mod tests {
             "leg_a": { "session_key": format!("0x{}", "13".repeat(20)) },
             "leg_b": {
                 "chain": "eip155:84532",
-                "contract": format!("0x{}", format!("{:0>64}", "c2eb26078dd5b1957883e1a9d651a28ef1f62aff")),
+                "contract": format!("0x{:0>64}", c),
                 "session_key": format!("0x{}", "23".repeat(20)),
-                "stake_base_units": "10000000000000",
+                "stake_base_units": stake,
             },
             "create_match_operator_sig": format!("0x{}", "33".repeat(65)),
         })
@@ -379,10 +435,10 @@ mod tests {
         let payload = sample_create_match_payload();
         let call = build_evm_create_match_call(&payload).expect("valid payload");
         // value is the stake; to is the unpadded 20-byte contract.
-        assert_eq!(call["value_wei"], "10000000000000");
+        assert_eq!(call["value_wei"], base_sepolia_stake_str());
         assert_eq!(
             call["to"].as_str().unwrap().to_lowercase(),
-            "0xc2eb26078dd5b1957883e1a9d651a28ef1f62aff"
+            format!("0x{}", base_sepolia_contract_hex40())
         );
         // calldata: 0x + createMatch selector + 7 head words (6 static + operatorSig
         // offset) + the bytes tail (len + 65 padded to 96).
@@ -400,14 +456,16 @@ mod tests {
     }
 
     fn lock_test_payload() -> Value {
+        let c = base_sepolia_contract_hex40();
+        let stake = base_sepolia_stake_str();
         let leg = |sk: &str| {
             json!({
                 "chain": "eip155:84532",
                 "contract": format!("0x{}", "11".repeat(32)),
                 "player": format!("0x{}", "22".repeat(32)),
                 "session_key": format!("0x{}", sk.repeat(20)),
-                "stake_base_units": "10000000000000",
-                "tranche_base_units": "10000000000000",
+                "stake_base_units": stake,
+                "tranche_base_units": stake,
             })
         };
         json!({
@@ -423,11 +481,11 @@ mod tests {
             "leg_a": leg("13"),
             "leg_b": {
                 "chain": "eip155:84532",
-                "contract": format!("0x{}", format!("{:0>64}", "c2eb26078dd5b1957883e1a9d651a28ef1f62aff")),
+                "contract": format!("0x{:0>64}", c),
                 "player": format!("0x{}", "22".repeat(32)),
                 "session_key": format!("0x{}", "23".repeat(20)),
-                "stake_base_units": "10000000000000",
-                "tranche_base_units": "10000000000000",
+                "stake_base_units": stake,
+                "tranche_base_units": stake,
             },
         })
     }
@@ -440,7 +498,7 @@ mod tests {
         assert_eq!(call["value_wei"], "0");
         assert_eq!(
             call["to"].as_str().unwrap().to_lowercase(),
-            "0xc2eb26078dd5b1957883e1a9d651a28ef1f62aff"
+            format!("0x{}", base_sepolia_contract_hex40())
         );
         let data = call["data"].as_str().unwrap();
         assert!(data.starts_with("0x"));
@@ -497,18 +555,19 @@ mod tests {
 
     #[test]
     fn build_evm_refund_call_for_timeout_and_nocert() {
+        let c = base_sepolia_contract_hex40();
         let payload = json!({
             "match_id": format!("0x{}", "aa".repeat(32)),
             "leg_b": {
                 "chain": "eip155:84532",
-                "contract": format!("0x{}", format!("{:0>64}", "c2eb26078dd5b1957883e1a9d651a28ef1f62aff")),
+                "contract": format!("0x{:0>64}", c),
             },
         });
         let timeout = build_evm_refund_call(&payload, "timeout").expect("timeout refund");
         assert_eq!(timeout["value_wei"], "0");
         assert_eq!(
             timeout["to"].as_str().unwrap().to_lowercase(),
-            "0xc2eb26078dd5b1957883e1a9d651a28ef1f62aff"
+            format!("0x{}", c)
         );
         let nocert = build_evm_refund_call(&payload, "nocert").expect("nocert refund");
         // Different instruction → different calldata.
@@ -618,5 +677,18 @@ mod tests {
         payload.as_object_mut().unwrap().remove("a_is_p1");
         let err = build_evm_create_match_call(&payload).unwrap_err();
         assert!(err.contains("a_is_p1"), "{err}");
+    }
+
+    #[test]
+    fn create_match_rejects_tampered_contract_or_stake() {
+        let mut bad_contract = sample_create_match_payload();
+        bad_contract["leg_b"]["contract"] = json!(format!("0x{}", "11".repeat(20)));
+        let err = build_evm_create_match_call(&bad_contract).unwrap_err();
+        assert!(err.contains("chain_registry contract"), "{err}");
+
+        let mut bad_stake = sample_create_match_payload();
+        bad_stake["leg_b"]["stake_base_units"] = json!("999999999999999999");
+        let err = build_evm_create_match_call(&bad_stake).unwrap_err();
+        assert!(err.contains("chain_registry stake"), "{err}");
     }
 }

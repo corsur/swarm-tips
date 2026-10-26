@@ -130,11 +130,10 @@ pub struct RebuildSummary {
     pub elapsed_ms: u64,
 }
 
-/// Anchor set resolution: request body first, env fallback.
-fn resolve_anchors(body_anchors: Option<Vec<String>>) -> HashSet<String> {
-    if let Some(a) = body_anchors {
-        return a.into_iter().filter(|s| !s.is_empty()).collect();
-    }
+/// Anchor set resolution: strictly from `REPUTATION_ANCHORS` env var so a
+/// caller holding the shared internal Bearer token cannot inject arbitrary
+/// trust anchors via the request body.
+fn resolve_anchors(_body_anchors: Option<Vec<String>>) -> HashSet<String> {
     std::env::var("REPUTATION_ANCHORS")
         .unwrap_or_default()
         .split(',')
@@ -419,12 +418,26 @@ pub struct RecordBountyRequest {
     pub anchors: Option<Vec<String>>,
 }
 
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn bearer_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>) -> bool {
     let provided = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "));
-    matches!((expected_key, provided), (Some(exp), Some(got)) if !exp.is_empty() && got == exp)
+    matches!(
+        (expected_key, provided),
+        (Some(exp), Some(got)) if !exp.is_empty() && constant_time_eq(got.as_bytes(), exp.as_bytes())
+    )
 }
 
 fn rebuild_status(summary: &RebuildSummary) -> axum::http::StatusCode {
@@ -436,8 +449,7 @@ fn rebuild_status(summary: &RebuildSummary) -> axum::http::StatusCode {
 }
 
 /// POST /internal/reputation/rebuild → RebuildSummary.
-/// Body (optional): `{"anchors": ["wallet1", "wallet2"]}` — falls back to
-/// the REPUTATION_ANCHORS env var.
+/// Uses the `REPUTATION_ANCHORS` env var (caller-supplied anchors are ignored).
 ///
 /// Gated on the shared `shillbot-api-key` Bearer (the settlement-finalize path in
 /// shillbot-api sends it). Fail-closed: with no configured key the route rejects
@@ -464,7 +476,7 @@ pub fn rebuild_handler(
                 if anchors.is_empty() {
                     return (
                     axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-                    "{\"error\": \"no anchors: pass {\\\"anchors\\\": [...]} or set REPUTATION_ANCHORS\"}"
+                    "{\"error\": \"no anchors: set REPUTATION_ANCHORS\"}"
                         .to_string(),
                 )
                     .into_response();
@@ -629,15 +641,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_anchors_prefers_body() {
-        let got = resolve_anchors(Some(vec!["w1".into(), "".into(), "w2".into()]));
-        assert_eq!(got.len(), 2);
-        assert!(got.contains("w1") && got.contains("w2"));
+    fn resolve_anchors_ignores_untrusted_body_anchors() {
+        let got = resolve_anchors(Some(vec!["attacker_anchor".into()]));
+        assert!(!got.contains("attacker_anchor"));
     }
 
     #[test]
     fn resolve_anchors_empty_when_nothing_provided() {
-        // (env var unset in tests)
         let got = resolve_anchors(None);
         assert!(got.is_empty() || !got.is_empty()); // env-dependent; just must not panic
     }

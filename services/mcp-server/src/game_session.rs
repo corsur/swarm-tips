@@ -866,12 +866,23 @@ impl GameSessionManager {
     /// Persist a same-chain EVM guess preimage (write-through) so the reveal step
     /// can recover it after a pod restart. Keyed by wallet+game_id. Fatal on
     /// failure — like the Solana commit preimage, losing it strands the reveal.
+    /// Write-once per (wallet, game_id): if a preimage already exists with the
+    /// same guess bit, returns the existing preimage; if the guess bit differs,
+    /// rejects so an already-committed preimage is never clobbered.
     pub async fn store_evm_preimage(
         &self,
         wallet: &str,
         game_id: &str,
         preimage: [u8; 32],
-    ) -> Result<()> {
+    ) -> Result<[u8; 32]> {
+        if let Some(existing) = self.load_evm_preimage(wallet, game_id).await? {
+            if (existing[31] & 1) != (preimage[31] & 1) {
+                anyhow::bail!(
+                    "EVM commit preimage already recorded for this game with a different guess; call game_evm_reveal_guess or retry with your original guess"
+                );
+            }
+            return Ok(existing);
+        }
         let doc = EvmPreimageDoc {
             id: format!("{wallet}:{game_id}"),
             wallet: wallet.to_string(),
@@ -891,7 +902,7 @@ impl GameSessionManager {
                 tracing::error!(wallet = %wallet, game_id, error = %e, "CRITICAL: failed to persist EVM commit preimage");
                 anyhow::anyhow!("failed to persist EVM commit preimage — retry game_evm_commit_guess")
             })?;
-        Ok(())
+        Ok(preimage)
     }
 
     /// Load a same-chain EVM guess preimage for `wallet`+`game_id`, if stored.
@@ -968,7 +979,11 @@ impl GameSessionManager {
     /// resolved), it is restored — including the critical `commit_preimage`.
     ///
     /// Returns `(wallet_pubkey, balance_lamports)`.
-    pub async fn register_wallet(&self, pubkey_b58: &str) -> Result<(String, u64)> {
+    pub async fn register_wallet_with_verification(
+        &self,
+        pubkey_b58: &str,
+        wallet_verified: bool,
+    ) -> Result<(String, u64)> {
         // EVM (0x) wallets are routed to the cross-chain path in the
         // register_wallet handler before reaching here; this method only ever
         // sees Solana base58 pubkeys.
@@ -985,16 +1000,39 @@ impl GameSessionManager {
             .await
             .context("failed to check wallet balance")?;
 
-        // Check Firestore for an active session from a previous pod lifecycle.
-        if let Some(persisted) = self.load_persisted_session(&wallet).await? {
-            if let Some(restored_balance) = self
-                .try_restore_persisted_session(&wallet, persisted, tx_builder, balance)
+        // Never allow a re-registration to clobber an active in-memory session
+        // (e.g. an unverified caller registering a victim's pubkey mid-game).
+        let has_active_in_memory = if let Some(existing) = self.sessions.read().await.get(&wallet).cloned() {
+            let s = existing.lock().await;
+            !s.jwt.is_empty()
+                || s.commit_preimage.is_some()
+                || !matches!(
+                    s.state,
+                    GameSessionState::Connected | GameSessionState::Resolved
+                )
+        } else {
+            false
+        };
+        if has_active_in_memory {
+            self.tx_builders
+                .write()
                 .await
-            {
-                return Ok((wallet, restored_balance));
+                .entry(wallet.clone())
+                .or_insert(tx_builder);
+            return Ok((wallet, balance));
+        }
+
+        // Only restore persisted Firestore sessions (which carry JWT and
+        // commit_preimage) when the caller has proven wallet ownership.
+        if wallet_verified {
+            if let Some(persisted) = self.load_persisted_session(&wallet).await? {
+                if let Some(restored_balance) = self
+                    .try_restore_persisted_session(&wallet, persisted, tx_builder, balance)
+                    .await
+                {
+                    return Ok((wallet, restored_balance));
+                }
             }
-            // try_restore returned None → session was Resolved and the
-            // tx_builder was consumed; recreate it for the fresh-register path.
         }
 
         let tx_builder = GameTxBuilder::new(&self.solana_rpc_url, pubkey);
@@ -2005,14 +2043,27 @@ impl GameSessionManager {
             .context("no session for wallet")?
             .clone();
 
-        let game_id = {
+        let (game_id, existing_preimage) = {
             let s = session.lock().await;
-            s.game_id.context("no active game")?
+            (s.game_id.context("no active game")?, s.commit_preimage)
         };
 
-        // Generate commitment locally.
-        let (preimage, commitment) =
-            game_chain::commit::generate_commit_secret(guess).map_err(|e| anyhow::anyhow!(e))?;
+        // Preserve an already-generated commitment preimage for this game so a
+        // retry (or duplicate call) cannot clobber the preimage needed for reveal.
+        let (preimage, commitment) = if let Some(existing) = existing_preimage {
+            let existing_guess = existing[31] & 1;
+            anyhow::ensure!(
+                existing_guess == guess,
+                "commit_preimage already recorded for this game with a different guess; call game_reveal_guess or retry with your original guess"
+            );
+            let digest: [u8; 32] = {
+                use sha2::Digest;
+                sha2::Sha256::digest(existing).into()
+            };
+            (existing, digest)
+        } else {
+            game_chain::commit::generate_commit_secret(guess).map_err(|e| anyhow::anyhow!(e))?
+        };
 
         // Use the session's pinned network (set in build_find_match_tx)
         // so the blockhash on the unsigned commit_guess tx is fresh on

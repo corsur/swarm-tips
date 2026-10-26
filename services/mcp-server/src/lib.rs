@@ -267,7 +267,6 @@ pub async fn initialize_with_dependencies(
     let verify_state = BuildVerifyState {
         orchestrator,
         jwt_secret: game_jwt_secret,
-        internal_api_key: internal_api_key.clone(),
         oracle_keypair,
         rpc_client,
         rpc_url_mainnet: rpc_url_mainnet.clone(),
@@ -484,7 +483,6 @@ struct BuildVerifyState {
     oracle_keypair: Option<Arc<solana_sdk::signature::Keypair>>,
     orchestrator: OrchestratorProxy,
     jwt_secret: Option<String>,
-    internal_api_key: Option<String>,
     rpc_client: reqwest::Client,
     rpc_url_mainnet: String,
     rpc_url_devnet: String,
@@ -982,10 +980,10 @@ async fn build_verify_tx_ready_handler(state: BuildVerifyState) -> axum::respons
 ///
 /// Builds and partially co-signs the `verify_task` transaction using
 /// `oracle_authority` after authenticating `(task_pda, score, hash)` against
-/// `shillbot-api` (or via internal API key). Falls back to the legacy
+/// `shillbot-api`. Falls back to the legacy
 /// `build-verify-client.ts` script only when `oracle_keypair` is absent.
 async fn build_verify_tx_handler(
-    headers: axum::http::HeaderMap,
+    _headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
     state: BuildVerifyState,
 ) -> axum::response::Response {
@@ -1015,67 +1013,56 @@ async fn build_verify_tx_handler(
     let cors_headers = [("Access-Control-Allow-Origin", "*")];
 
     if let Some(oracle_kp) = state.oracle_keypair.as_ref() {
-        let has_internal_key = state
-            .internal_api_key
+        let client = state
+            .jwt_secret
             .as_deref()
-            .filter(|k| !k.is_empty())
-            .zip(headers.get("x-api-key").and_then(|v| v.to_str().ok()))
-            .is_some_and(|(expected, provided)| expected == provided);
-
-        let (verified_task_pda, verified_score, verified_hash) = if has_internal_key {
-            (task_pda.clone(), score_u64, hash.clone())
-        } else {
-            let client = state
-                .jwt_secret
-                .as_deref()
-                .and_then(|sec| game_proxy::mint_internal_token(&payer, sec))
-                .map(|tok| state.orchestrator.authenticated(tok))
-                .unwrap_or_else(|| state.orchestrator.clone());
-            let net_opt = (network_str == "devnet").then_some("devnet");
-            let vdata = match client
-                .get_verification_data(&task_id, &payer, net_opt)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        service = "mcp-server",
-                        task_id = %task_id,
-                        error = %e,
-                        "build-verify-tx: failed to fetch authoritative verification data"
-                    );
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        cors_headers,
-                        "failed to validate verification data against shillbot-api",
-                    )
-                        .into_response();
-                }
-            };
-            if vdata.task_pda != task_pda {
+            .and_then(|sec| game_proxy::mint_internal_token(&payer, sec))
+            .map(|tok| state.orchestrator.authenticated(tok))
+            .unwrap_or_else(|| state.orchestrator.clone());
+        let net_opt = (network_str == "devnet").then_some("devnet");
+        let vdata = match client
+            .get_verification_data(&task_id, &payer, net_opt)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    service = "mcp-server",
+                    task_id = %task_id,
+                    error = %e,
+                    "build-verify-tx: failed to fetch authoritative verification data"
+                );
                 return (
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::BAD_GATEWAY,
                     cors_headers,
-                    "task_pda does not match authoritative task state",
+                    "failed to validate verification data against shillbot-api",
                 )
                     .into_response();
             }
-            if vdata.composite_score != score_u64
-                || !vdata.verification_hash.eq_ignore_ascii_case(&hash)
-            {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    cors_headers,
-                    "score or hash does not match authoritative verification data",
-                )
-                    .into_response();
-            }
-            (
-                vdata.task_pda,
-                vdata.composite_score,
-                vdata.verification_hash,
-            )
         };
+        if vdata.task_pda != task_pda {
+            return (
+                StatusCode::BAD_REQUEST,
+                cors_headers,
+                "task_pda does not match authoritative task state",
+            )
+                .into_response();
+        }
+        if vdata.composite_score != score_u64
+            || !vdata.verification_hash.eq_ignore_ascii_case(&hash)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                cors_headers,
+                "score or hash does not match authoritative verification data",
+            )
+                .into_response();
+        }
+        let (verified_task_pda, verified_score, verified_hash) = (
+            vdata.task_pda,
+            vdata.composite_score,
+            vdata.verification_hash,
+        );
 
         return match solana_tx::build_co_signed_verify_tx(
             &state.rpc_client,

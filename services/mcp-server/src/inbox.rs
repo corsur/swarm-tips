@@ -1981,7 +1981,12 @@ impl Inbox {
         let has_reputation = if wallet_verified {
             crate::reputation::get_agent_reputation(&self.db, caip10_address(caip10))
                 .await
-                .is_some()
+                .map(|r| {
+                    r.eigentrust_score > 0.0
+                        || r.settlements_received > 0
+                        || r.bug_bounties_received > 0
+                })
+                .unwrap_or(false)
         } else {
             false
         };

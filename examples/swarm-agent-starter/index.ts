@@ -93,25 +93,22 @@ function signBase64Tx(unsignedB64: string, signer: Keypair): string {
 }
 
 async function authenticateAndBootstrap(mcp: McpSession, wallet: Keypair): Promise<void> {
-  const address = wallet.publicKey.toBase58();
+  const pubkey = wallet.publicKey.toBase58();
   const reg = await mcp.callTool("register_wallet", {
-    chain: "solana",
-    address,
+    pubkey,
   });
-  console.log(`[1/3] Registered wallet ${address} (balance_lamports=${reg.balance_lamports ?? 0})`);
+  console.log(`[1/3] Registered wallet ${pubkey} (balance_lamports=${reg.balance_lamports ?? 0})`);
 
-  const challenge = await mcp.callTool("agent_verify_wallet", {
-    action: "challenge",
-    wallet: address,
-  });
-  const msgBytes = new TextEncoder().encode(challenge.challenge_message);
+  const nonce: string =
+    reg.verify_nonce ??
+    (await mcp.callTool("agent_verify_wallet", {})).nonce;
+  const msgBytes = new TextEncoder().encode(nonce);
   const sigBytes = nacl.sign.detached(msgBytes, wallet.secretKey);
   await mcp.callTool("agent_verify_wallet", {
-    action: "confirm",
-    wallet: address,
+    nonce,
     signature: bs58.encode(sigBytes),
   });
-  console.log(`[2/3] Verified Ed25519 ownership for ${address}`);
+  console.log(`[2/3] Verified Ed25519 ownership for ${pubkey}`);
 
   if ((reg.balance_lamports ?? 0) === 0 && process.env.EXECUTE_LIVE === "1") {
     const onboard = await mcp.callTool("shillbot_onboard", {});

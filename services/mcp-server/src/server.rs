@@ -2735,7 +2735,7 @@ impl SwarmTipsMcp {
         let (wallet, balance) = self
             .state
             .game_sessions
-            .register_wallet(&args.pubkey)
+            .register_wallet_with_verification(&args.pubkey, proof.is_some())
             .await
             .map_err(|e| McpError::internal_error(format!("registration failed: {e}"), None))?;
 
@@ -3012,23 +3012,24 @@ impl SwarmTipsMcp {
         let contract20 = decode_0x_fixed::<20>(&contract, "contract address")?;
         let game_id32 = decode_0x_fixed::<32>(&args.game_id, "game_id")?;
 
-        // Generate the commitment locally and build the unsigned call from the
-        // (previously orphaned) evm-chain builder — the EVM analog of the Solana
-        // game_commit_guess. The commitment scheme is the shared sha256(r) used on
-        // both chains.
-        let (preimage, commitment) = game_chain::commit::generate_commit_secret(guess)
+        // Generate candidate secret, then persist (or reuse existing preimage if
+        // already stored for this game with the same guess) before building the call.
+        let (candidate_preimage, _) = game_chain::commit::generate_commit_secret(guess)
             .map_err(|e| invalid_input(&format!("commit secret: {e}")))?;
-        let call = evm_chain::build_commit_guess_parts(contract20, game_id32, commitment);
-        let (to, data, value) = call.to_hex_parts();
-
-        // Persist the preimage so the reveal step survives a pod restart.
-        self.state
+        let preimage = self
+            .state
             .game_sessions
-            .store_evm_preimage(&address, &args.game_id, preimage)
+            .store_evm_preimage(&address, &args.game_id, candidate_preimage)
             .await
             .map_err(|e| {
                 McpError::internal_error(format!("commitment persistence failed: {e}"), None)
             })?;
+        let commitment: [u8; 32] = {
+            use sha2::Digest;
+            sha2::Sha256::digest(preimage).into()
+        };
+        let call = evm_chain::build_commit_guess_parts(contract20, game_id32, commitment);
+        let (to, data, value) = call.to_hex_parts();
 
         tracing::info!(event = "game_evm_commit_guess", wallet = %address, chain = %chain, guess, "built unsigned commitGuess");
         Ok(text_result(&serde_json::json!({
@@ -3540,7 +3541,7 @@ impl SwarmTipsMcp {
             return Err(invalid_input("message exceeds 4096 byte limit"));
         }
 
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let wallet = self.require_verified_game_wallet(Some(&parts)).await?;
 
         self.state
             .game_sessions
@@ -3561,7 +3562,7 @@ impl SwarmTipsMcp {
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let wallet = self.require_verified_game_wallet(Some(&parts)).await?;
 
         let messages = self
             .state
@@ -3594,7 +3595,7 @@ impl SwarmTipsMcp {
             _ => return Err(invalid_input("guess must be 'same' or 'different'")),
         };
 
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let wallet = self.require_verified_game_wallet(Some(&parts)).await?;
 
         let (unsigned, preimage_hex) = self
             .state
@@ -3622,7 +3623,7 @@ impl SwarmTipsMcp {
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let wallet = self.require_verified_game_wallet(Some(&parts)).await?;
 
         let unsigned_opt = self
             .state
@@ -3705,6 +3706,13 @@ impl SwarmTipsMcp {
             "agent_verify_wallet",
         )
         .await?;
+        if !native.starts_with("0x") {
+            let _ = self
+                .state
+                .game_sessions
+                .register_wallet_with_verification(native, true)
+                .await;
+        }
         let tier = self.caller_tier_str(&bound).await;
         Ok(text_result(&serde_json::json!({
             "status": "verified",
@@ -4509,13 +4517,24 @@ impl SwarmTipsMcp {
     async fn resolve_wallet(&self, parts: Option<&http::request::Parts>) -> Option<String> {
         let session_id = session_id_from_parts(parts)?;
         let wallet = self.state.session_binding.resolve(&session_id).await?;
+        let is_verified = self
+            .state
+            .session_binding
+            .resolve_verified(&session_id)
+            .await
+            .is_some();
         // Re-hydrate game session from Firestore only if the in-memory
         // map doesn't already have it. The heavy work (RPC balance
         // check + persisted session load) only fires on the first tool
         // call after a pod restart; steady-state tool calls just hit
         // the cheap `contains_key` check.
         if !self.state.game_sessions.is_registered(&wallet).await {
-            if let Err(e) = self.state.game_sessions.register_wallet(&wallet).await {
+            if let Err(e) = self
+                .state
+                .game_sessions
+                .register_wallet_with_verification(&wallet, is_verified)
+                .await
+            {
                 tracing::warn!(
                     wallet = %wallet,
                     session_id = %session_id,
@@ -4536,6 +4555,45 @@ impl SwarmTipsMcp {
         self.resolve_wallet(parts)
             .await
             .ok_or_else(|| invalid_input("no game session: call register_wallet first"))
+    }
+
+    /// Require a game wallet whose ownership has been proven in this MCP session
+    /// (either automatically via `deposit_stake` in `game_submit_tx`, or via
+    /// `register_wallet {pubkey, nonce, signature}` / `agent_verify_wallet`).
+    /// Prevents an unverified caller from calling `register_wallet(victim)` and
+    /// reading/sending chat or committing/revealing guesses for `victim`.
+    async fn require_verified_game_wallet(
+        &self,
+        parts: Option<&http::request::Parts>,
+    ) -> Result<String, McpError> {
+        let session_id =
+            session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
+        let wallet = self
+            .state
+            .session_binding
+            .resolve_verified(&session_id)
+            .await
+            .ok_or_else(|| {
+                invalid_input(
+                    "in-game actions require proven wallet ownership: submit your deposit_stake transaction via game_submit_tx first, or verify your wallet via register_wallet {pubkey, nonce, signature} (or agent_verify_wallet)",
+                )
+            })?;
+        if !self.state.game_sessions.is_registered(&wallet).await {
+            if let Err(e) = self
+                .state
+                .game_sessions
+                .register_wallet_with_verification(&wallet, true)
+                .await
+            {
+                tracing::warn!(
+                    wallet = %wallet,
+                    session_id = %session_id,
+                    error = %e,
+                    "failed to re-hydrate verified game session after binding lookup"
+                );
+            }
+        }
+        Ok(wallet)
     }
 
     /// Resolve the session-bound wallet without hydrating a Solana game
