@@ -1002,17 +1002,18 @@ impl GameSessionManager {
 
         // Never allow a re-registration to clobber an active in-memory session
         // (e.g. an unverified caller registering a victim's pubkey mid-game).
-        let has_active_in_memory = if let Some(existing) = self.sessions.read().await.get(&wallet).cloned() {
-            let s = existing.lock().await;
-            !s.jwt.is_empty()
-                || s.commit_preimage.is_some()
-                || !matches!(
-                    s.state,
-                    GameSessionState::Connected | GameSessionState::Resolved
-                )
-        } else {
-            false
-        };
+        let has_active_in_memory =
+            if let Some(existing) = self.sessions.read().await.get(&wallet).cloned() {
+                let s = existing.lock().await;
+                !s.jwt.is_empty()
+                    || s.commit_preimage.is_some()
+                    || !matches!(
+                        s.state,
+                        GameSessionState::Connected | GameSessionState::Resolved
+                    )
+            } else {
+                false
+            };
         if has_active_in_memory {
             self.tx_builders
                 .write()

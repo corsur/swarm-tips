@@ -475,11 +475,10 @@ pub fn rebuild_handler(
                 let anchors = resolve_anchors(body.and_then(|b| b.0.anchors));
                 if anchors.is_empty() {
                     return (
-                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-                    "{\"error\": \"no anchors: set REPUTATION_ANCHORS\"}"
-                        .to_string(),
-                )
-                    .into_response();
+                        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                        "{\"error\": \"no anchors: set REPUTATION_ANCHORS\"}".to_string(),
+                    )
+                        .into_response();
                 }
                 match rebuild(&db, &anchors).await {
                     Ok(summary) => (rebuild_status(&summary), axum::Json(summary)).into_response(),
