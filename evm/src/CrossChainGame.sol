@@ -530,16 +530,9 @@ contract CrossChainGame is
 
         address signerA = ECDSA.recover(digestA, sigA);
         address signerB = ECDSA.recover(digestB, sigB);
-        if (signerA != signerB) revert BadSignature();
+        if (signerA != signerB || signerA != m.counterSessionKey) revert BadSignature();
 
-        if (signerA == m.sessionKey) {
-            m.localEquivocated = true;
-        } else if (signerA == m.counterSessionKey) {
-            m.counterEquivocated = true;
-        } else {
-            revert BadSignature();
-        }
-
+        m.counterEquivocated = true;
         m.status = Status.Claiming;
         // claimWindowEnd and matchLiveDigest already snapshotted at lock (M2 / NEW-CRIT-01).
         // Verdict from flags only — order-independent, never read from the

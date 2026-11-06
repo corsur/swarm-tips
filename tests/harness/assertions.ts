@@ -175,7 +175,14 @@ export function assertNonDecreasing(
   next: bigint | number,
   label: string
 ): void {
-  assert.isAtLeast(Number(next), Number(prev), `monotonic: ${label} decreased`);
+  if (typeof prev === "bigint" || typeof next === "bigint") {
+    assert.isTrue(
+      BigInt(next) >= BigInt(prev),
+      `monotonic: ${label} decreased (${next} < ${prev})`
+    );
+    return;
+  }
+  assert.isAtLeast(next, prev, `monotonic: ${label} decreased`);
 }
 
 /** A quantity that must strictly increase (e.g. supersede best_step_count). */
@@ -184,9 +191,12 @@ export function assertStrictlyIncreasing(
   next: bigint | number,
   label: string
 ): void {
-  assert.isAbove(
-    Number(next),
-    Number(prev),
-    `monotonic: ${label} not strictly increasing`
-  );
+  if (typeof prev === "bigint" || typeof next === "bigint") {
+    assert.isTrue(
+      BigInt(next) > BigInt(prev),
+      `monotonic: ${label} not strictly increasing (${next} <= ${prev})`
+    );
+    return;
+  }
+  assert.isAbove(next, prev, `monotonic: ${label} not strictly increasing`);
 }

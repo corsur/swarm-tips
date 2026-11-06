@@ -26,12 +26,15 @@ from .types import AasV1Attestation, ProtocolHandler, Verdict
 # exist; ``(owner_b58, data_bytes)`` otherwise.
 RpcFetcher = Callable[[str], Optional[Tuple[str, bytes]]]
 
+DEFAULT_SCORE_MAX = 1_000_000
+
 
 def verify_v1(
     attestation: Any,
     protocol: ProtocolHandler,
     rpc: RpcFetcher,
     rpc_endpoint: str = "<injected>",
+    expected_score_max: Optional[int] = None,
 ) -> Verdict:
     checked_at = _now_rfc3339()
 
@@ -39,7 +42,9 @@ def verify_v1(
     if schema_fail is not None:
         return _failure(attestation, checked_at, rpc_endpoint, schema_fail)
 
-    on_chain_fail = verify_v1_on_chain(attestation, protocol, rpc)
+    on_chain_fail = verify_v1_on_chain(
+        attestation, protocol, rpc, expected_score_max=expected_score_max
+    )
     if on_chain_fail is not None:
         return _failure(attestation, checked_at, rpc_endpoint, on_chain_fail)
 
@@ -68,7 +73,20 @@ def verify_v1_on_chain(
     a: AasV1Attestation,
     protocol: ProtocolHandler,
     rpc: RpcFetcher,
+    expected_score_max: Optional[int] = None,
 ) -> Optional[str]:
+    expected_max = (
+        expected_score_max
+        if expected_score_max is not None
+        else (
+            protocol.score_max
+            if protocol.score_max is not None
+            else DEFAULT_SCORE_MAX
+        )
+    )
+    if int(a["score_max"]) != expected_max:
+        return "field_mismatch:score_max"
+
     # Step 2 — fetch the on-chain account.
     account = rpc(a["account"])
     if account is None:

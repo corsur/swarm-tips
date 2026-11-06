@@ -711,7 +711,7 @@ contract CrossChainGameTest is Test {
 
     // --- equivocation ----------------------------------------------------
 
-    function test_equivocation_localPlayerForfeits() public {
+    function test_equivocation_selfEquivocationReverts_counterEquivocationWins() public {
         bytes32 id = keccak256("m14");
         uint128 tranche = STAKE;
         _fund(id, true);
@@ -719,30 +719,31 @@ contract CrossChainGameTest is Test {
         CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
         bytes32 liveDigest = CertLib.matchLiveDigest(cert);
 
-        // Two distinct step-2 checkpoints both signed by the local session key.
+        // Two distinct step-2 checkpoints both signed by the local session key
+        // MUST revert so a player cannot manufacture self-equivocation to DoS settle.
         CertLib.Checkpoint memory a = _checkpoint(liveDigest, 2, 255, 255, 1);
         CertLib.Checkpoint memory b = _checkpoint(liveDigest, 2, 255, 255, 2); // differs
-        bytes memory sigA = _sign(localSessionPk, CertLib.checkpointDigest(a));
-        bytes memory sigB = _sign(localSessionPk, CertLib.checkpointDigest(b));
+        bytes memory localA = _sign(localSessionPk, CertLib.checkpointDigest(a));
+        bytes memory localB = _sign(localSessionPk, CertLib.checkpointDigest(b));
+        vm.expectRevert(CrossChainGame.BadSignature.selector);
+        game.submitEquivocationProof(cert, a, b, localA, localB);
 
-        game.submitEquivocationProof(cert, a, b, sigA, sigB);
+        // Counterparty equivocation proof succeeds and awards the local player.
+        bytes memory counterA = _sign(counterSessionPk, CertLib.checkpointDigest(a));
+        bytes memory counterB = _sign(counterSessionPk, CertLib.checkpointDigest(b));
+        game.submitEquivocationProof(cert, a, b, counterA, counterB);
         _warpPastClaimWindow();
-        uint256 before = player.balance;
+        uint256 before = player.balance + game.withdrawable(player);
         game.settleClaim(id);
-        // Local P1 equivocated → forfeits; no payout.
-        assertEq(player.balance, before, "equivocator forfeits");
+        assertEq(
+            player.balance + game.withdrawable(player),
+            before + STAKE + tranche,
+            "counterparty equivocation awards local player"
+        );
     }
 
-    /// Regression (review finding): when BOTH parties equivocate, the
-    /// verdict must be both-forfeit REGARDLESS of proof order. The old code
-    /// inferred prior equivocation from bestOutcomeKind, so counterparty-then-
-    /// local order wrongly left the counterparty as outright winner.
-    function test_equivocation_bothForfeit_orderIndependent() public {
-        _assertBothEquivocateForfeit(keccak256("eqA"), true); // counter first
-        _assertBothEquivocateForfeit(keccak256("eqB"), false); // local first
-    }
-
-    function _assertBothEquivocateForfeit(bytes32 id, bool counterFirst) internal {
+    function test_equivocation_stepCountMismatch_reverts() public {
+        bytes32 id = keccak256("eqStepMismatch");
         uint128 tranche = STAKE;
         _fund(id, true);
         _lock(id, tranche);
@@ -750,33 +751,12 @@ contract CrossChainGameTest is Test {
         bytes32 ld = CertLib.matchLiveDigest(cert);
 
         CertLib.Checkpoint memory a = _checkpoint(ld, 2, 255, 255, 1);
-        CertLib.Checkpoint memory b = _checkpoint(ld, 2, 255, 255, 2);
-        bytes memory localA = _sign(localSessionPk, CertLib.checkpointDigest(a));
-        bytes memory localB = _sign(localSessionPk, CertLib.checkpointDigest(b));
+        CertLib.Checkpoint memory b = _checkpoint(ld, 3, 1, 255, 1);
         bytes memory counterA = _sign(counterSessionPk, CertLib.checkpointDigest(a));
         bytes memory counterB = _sign(counterSessionPk, CertLib.checkpointDigest(b));
 
-        if (counterFirst) {
-            game.submitEquivocationProof(cert, a, b, counterA, counterB);
-            game.submitEquivocationProof(cert, a, b, localA, localB);
-        } else {
-            game.submitEquivocationProof(cert, a, b, localA, localB);
-            game.submitEquivocationProof(cert, a, b, counterA, counterB);
-        }
-        _warpPastClaimWindow();
-        // This helper runs twice in one test, so credits ACCUMULATE — measure the
-        // claimable (balance + withdrawable) DELTA from this settle, not the total.
-        uint256 treBefore = treasury.balance + game.withdrawable(treasury);
-        uint256 before = player.balance + game.withdrawable(player);
-        game.settleClaim(id);
-        // Both forfeit: player gets nothing, the whole stake splits to
-        // treasury+prize, and the tranche returns to the pool.
-        assertEq(player.balance + game.withdrawable(player), before, "both-forfeit pays player nothing");
-        assertEq(
-            treasury.balance + game.withdrawable(treasury) - treBefore,
-            STAKE * SPLIT_BPS / 10000,
-            "treasury cut on forfeit"
-        );
+        vm.expectRevert(CrossChainGame.BadOutcome.selector);
+        game.submitEquivocationProof(cert, a, b, counterA, counterB);
     }
 
     /// Regression (review finding): an honest player who legitimately filed a

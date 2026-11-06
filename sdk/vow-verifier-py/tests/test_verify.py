@@ -288,6 +288,7 @@ def test_happy_path_returns_valid_true():
         ("content_hash", "d" * 64, "field_mismatch:content_hash"),
         ("content_id_hash", "d" * 64, "field_mismatch:content_id_hash"),
         ("platform", 1, "field_mismatch:platform"),
+        ("score_max", "850000", "field_mismatch:score_max"),
     ],
 )
 def test_field_mismatch_reasons_are_each_reachable(field, wire_value, reason):

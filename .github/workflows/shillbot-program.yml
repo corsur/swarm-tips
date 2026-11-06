@@ -262,6 +262,7 @@ jobs:
         needs.deploy-devnet.result == 'success') ||
        (github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'))
     runs-on: ubuntu-latest
+    environment: mainnet
     permissions:
       contents: read
       id-token: write # Workload Identity Federation for the GCP secret read below

@@ -189,4 +189,7 @@ pub enum ShillbotError {
     /// reported InvalidTaskState, which describes an unrelated condition.
     #[msg("Account is not owned by this program")]
     InvalidAccountOwner,
+
+    #[msg("verification_timeout must exceed attestation_delay + staleness_window")]
+    InvalidTimeoutOrdering,
 }

@@ -240,7 +240,7 @@ fn mailbox_address_evm_mixed_case_collapses_to_one_mailbox() {
     let mixed = mailbox_address("0x996213ed4099707059B8B5D7489FFF23DAC9770D").expect("valid");
     assert_eq!(lower, mixed, "EIP-55 case must not mint a second mailbox");
     let full = mailbox_address(&format!(
-        "eip155:84532:{}",
+        "eip155:8453:{}",
         "0x996213ED4099707059b8b5d7489fff23dac9770d"
     ))
     .expect("valid");

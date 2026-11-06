@@ -92,15 +92,17 @@ pub fn xpool_withdraw(ctx: Context<XPoolWithdraw>, amount: u64) -> Result<()> {
         amount <= pool.free_lamports,
         CoordinationError::XPoolInsufficient
     );
+    let pool_ai = pool.to_account_info();
+    let pool_rent_floor = Rent::get()?.minimum_balance(pool_ai.data_len());
+    require!(
+        pool_ai.lamports().saturating_sub(amount) >= pool_rent_floor,
+        CoordinationError::XPoolInsufficient
+    );
     pool.free_lamports = pool
         .free_lamports
         .checked_sub(amount)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
-    transfer_lamports(
-        &pool.to_account_info(),
-        &ctx.accounts.operator.to_account_info(),
-        amount,
-    )?;
+    transfer_lamports(&pool_ai, &ctx.accounts.operator.to_account_info(), amount)?;
     emit!(XPoolWithdrawn { amount });
     Ok(())
 }
@@ -306,7 +308,8 @@ pub fn settle_xmatch(
 ) -> Result<()> {
     // Checks (read-only).
     require!(
-        ctx.accounts.xmatch.status == XChainStatus::Locked,
+        ctx.accounts.xmatch.status == XChainStatus::Locked
+            || ctx.accounts.xmatch.status == XChainStatus::Claiming,
         CoordinationError::XInvalidStatus
     );
     // Reconstruct leg A from authoritative on-chain state (saves 148 bytes
@@ -417,6 +420,8 @@ pub fn open_xclaim(
     cp.verify_matchup_binding(&cert.matchup_commitment)?;
 
     let m = &mut ctx.accounts.xmatch;
+    let challenge_window = m.claim_window_end.saturating_sub(m.locked_at).max(0);
+    m.claim_window_end = now.saturating_add(challenge_window).max(m.claim_window_end);
     m.status = XChainStatus::Claiming;
     m.match_live_digest = live_digest;
     m.best_step_count = cp.step_count;
@@ -424,7 +429,7 @@ pub fn open_xclaim(
     emit!(XClaimOpened {
         match_id: m.match_id,
         claimed_outcome: m.best_outcome_kind,
-        claim_window_end: window_end,
+        claim_window_end: m.claim_window_end,
     });
     Ok(())
 }
@@ -459,6 +464,8 @@ pub fn supersede_xclaim(
     cp.verify_matchup_binding(&cert.matchup_commitment)?;
 
     let m = &mut ctx.accounts.xmatch;
+    let challenge_window = m.claim_window_end.saturating_sub(m.locked_at).max(0);
+    m.claim_window_end = now.saturating_add(challenge_window).max(m.claim_window_end);
     m.best_step_count = cp.step_count;
     m.best_outcome_kind = cp.derive_claim_outcome();
     emit!(XClaimSuperseded {
@@ -469,9 +476,10 @@ pub fn supersede_xclaim(
     Ok(())
 }
 
-/// Two distinct co-signed checkpoints at the same step from the same session
-/// key = equivocation. The verdict is computed from explicit per-party flags
-/// (order-independent; never inferred from the current claim outcome).
+/// Two distinct co-signed checkpoints at the same step from the counterparty
+/// session key = equivocation. Only counterparty equivocation is accepted so a
+/// player cannot manufacture a self-equivocation proof from their own session
+/// key to block normal settlement.
 pub fn submit_equivocation_proof(
     ctx: Context<SubmitEquivocation>,
     cert: MatchLiveCertArg,
@@ -513,19 +521,14 @@ pub fn submit_equivocation_proof(
 
     let signer_a = recover_eth_address(&digest_a, &sig_a)?;
     let signer_b = recover_eth_address(&digest_b, &sig_b)?;
-    require!(signer_a == signer_b, CoordinationError::XBadSignature);
+    require!(
+        signer_a == signer_b && signer_a == m.counter_session_key,
+        CoordinationError::XBadSignature
+    );
 
     let local_is_p1 = m.player_is_p1 == 1;
-    let session_key = m.session_key;
-    let counter_session_key = m.counter_session_key;
     let m = &mut ctx.accounts.xmatch;
-    if signer_a == session_key {
-        m.local_equivocated = true;
-    } else if signer_a == counter_session_key {
-        m.counter_equivocated = true;
-    } else {
-        return Err(error!(CoordinationError::XBadSignature));
-    }
+    m.counter_equivocated = true;
     m.status = XChainStatus::Claiming;
     m.best_outcome_kind =
         equivocation_outcome(local_is_p1, m.local_equivocated, m.counter_equivocated);
@@ -602,12 +605,14 @@ pub fn refund_xmatch_nocert(ctx: Context<RefundXMatch>) -> Result<()> {
         CoordinationError::XDeadlineNotReached
     );
     let amount = m.stake_lamports;
+    let xmatch_ai = ctx.accounts.xmatch.to_account_info();
+    let xmatch_rent_floor = Rent::get()?.minimum_balance(xmatch_ai.data_len());
+    require!(
+        xmatch_ai.lamports().saturating_sub(amount) >= xmatch_rent_floor,
+        CoordinationError::InsufficientLamports
+    );
     ctx.accounts.xmatch.status = XChainStatus::RefundedNoCert;
-    transfer_lamports(
-        &ctx.accounts.xmatch.to_account_info(),
-        &ctx.accounts.player,
-        amount,
-    )?;
+    transfer_lamports(&xmatch_ai, &ctx.accounts.player, amount)?;
     emit!(XMatchRefunded {
         match_id: ctx.accounts.xmatch.match_id,
         to_player: amount,
@@ -647,6 +652,18 @@ pub fn refund_xmatch_timeout(ctx: Context<RefundXMatchTimeout>) -> Result<()> {
 
     let tranche = m.tranche_lamports;
     let amount = m.stake_lamports;
+    let pool_ai = ctx.accounts.pool.to_account_info();
+    let pool_rent_floor = Rent::get()?.minimum_balance(pool_ai.data_len());
+    require!(
+        pool_ai.lamports() >= pool_rent_floor,
+        CoordinationError::XPoolInsufficient
+    );
+    let xmatch_ai = ctx.accounts.xmatch.to_account_info();
+    let xmatch_rent_floor = Rent::get()?.minimum_balance(xmatch_ai.data_len());
+    require!(
+        xmatch_ai.lamports().saturating_sub(amount) >= xmatch_rent_floor,
+        CoordinationError::InsufficientLamports
+    );
     ctx.accounts.xmatch.status = XChainStatus::RefundedTimeout;
     // Release the locked tranche back to the pool's free balance.
     let pool = &mut ctx.accounts.pool;
@@ -658,11 +675,7 @@ pub fn refund_xmatch_timeout(ctx: Context<RefundXMatchTimeout>) -> Result<()> {
         .free_lamports
         .checked_add(tranche)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
-    transfer_lamports(
-        &ctx.accounts.xmatch.to_account_info(),
-        &ctx.accounts.player,
-        amount,
-    )?;
+    transfer_lamports(&xmatch_ai, &ctx.accounts.player, amount)?;
     emit!(XMatchRefunded {
         match_id: ctx.accounts.xmatch.match_id,
         to_player: amount,
@@ -809,32 +822,36 @@ fn execute_xleg<'info>(
     // Postcondition: the match PDA pays out EXACTLY its stake (never its
     // rent reserve), and the pool pays exactly the consumed tranche.
     require!(from_match == stake, CoordinationError::ArithmeticOverflow);
+    let pool_ai = pool.to_account_info();
+    let pool_rent_floor = Rent::get()?.minimum_balance(pool_ai.data_len());
+    require!(
+        pool_ai.lamports().saturating_sub(tranche_consumed) >= pool_rent_floor,
+        CoordinationError::XPoolInsufficient
+    );
+    let xmatch_ai = xmatch.to_account_info();
+    let xmatch_rent_floor = Rent::get()?.minimum_balance(xmatch_ai.data_len());
+    require!(
+        xmatch_ai.lamports().saturating_sub(from_match) >= xmatch_rent_floor,
+        CoordinationError::InsufficientLamports
+    );
     if tranche_consumed > 0 {
-        transfer_lamports(&pool.to_account_info(), player, tranche_consumed)?;
+        transfer_lamports(&pool_ai, player, tranche_consumed)?;
     }
     let from_match_to_player = r
         .to_player
         .checked_sub(tranche_consumed)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
     if from_match_to_player > 0 {
-        transfer_lamports(&xmatch.to_account_info(), player, from_match_to_player)?;
+        transfer_lamports(&xmatch_ai, player, from_match_to_player)?;
     }
     if r.to_treasury > 0 {
-        transfer_lamports(&xmatch.to_account_info(), treasury, r.to_treasury)?;
+        transfer_lamports(&xmatch_ai, treasury, r.to_treasury)?;
     }
     if r.to_pool_reimburse > 0 {
-        transfer_lamports(
-            &xmatch.to_account_info(),
-            &pool.to_account_info(),
-            r.to_pool_reimburse,
-        )?;
+        transfer_lamports(&xmatch_ai, &pool_ai, r.to_pool_reimburse)?;
     }
     if r.to_prize > 0 {
-        transfer_lamports(
-            &xmatch.to_account_info(),
-            &tournament.to_account_info(),
-            r.to_prize,
-        )?;
+        transfer_lamports(&xmatch_ai, &tournament.to_account_info(), r.to_prize)?;
         tournament.prize_lamports = tournament
             .prize_lamports
             .checked_add(r.to_prize)

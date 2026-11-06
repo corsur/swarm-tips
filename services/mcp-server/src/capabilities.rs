@@ -34,7 +34,14 @@ pub struct Capability {
     pub gate: Gate,
 }
 
-pub const TESTNET_GAME_TOOLS: &[&str] = &[
+/// Tools gated behind `MCP_SHOW_TESTNET_TOOLS=1`. Empty now that cross-chain
+/// (`xchain_*`) and same-chain EVM (`game_evm_*`) tools are live on Mainnet.
+pub const TESTNET_GAME_TOOLS: &[&str] = &[];
+
+/// The 19 cross-chain (`xchain_*`) and same-chain EVM (`game_evm_*`) game tools,
+/// promoted from testnet-gated to `Gate::Public` on the Game surface.
+#[cfg(test)]
+pub const XCHAIN_AND_EVM_GAME_TOOLS: &[&str] = &[
     "xchain_supported_chains",
     "xchain_find_match",
     "xchain_match_status",
@@ -180,11 +187,17 @@ mod tests {
 
     #[test]
     fn testnet_gate_is_confined_to_the_game_surface() {
-        for name in TESTNET_GAME_TOOLS {
-            let cap = capability(name).expect("gated tool registered");
+        assert!(
+            TESTNET_GAME_TOOLS.is_empty(),
+            "all 19 xchain_* and game_evm_* tools are un-gated on Mainnet"
+        );
+        for name in XCHAIN_AND_EVM_GAME_TOOLS {
+            let cap = capability(name).expect("xchain/evm game tool registered");
             assert_eq!(cap.category, Category::Game);
-            assert!(!listed_on(name, Surface::Game, false));
+            assert_eq!(cap.gate, Gate::Public);
+            assert!(listed_on(name, Surface::Game, false));
             assert!(listed_on(name, Surface::Game, true));
+            assert!(!listed_on(name, Surface::Swarm, false));
             assert!(!listed_on(name, Surface::Swarm, true));
         }
     }

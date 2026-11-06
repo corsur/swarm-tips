@@ -135,9 +135,30 @@ async function readSolanaRecords(
 ): Promise<{ records: PlayerRecord[]; pot: bigint }> {
   throw new Error(
     `Solana record reading is not wired for tournament ${tournamentId}. ` +
-      `scripts/finalize-tournament.ts still owns this path; port its ` +
-      `playerProfile.all() memcmp read here rather than duplicating the rules.`
+      `Port playerProfile.all() memcmp read here to run against Solana.`
   );
+}
+
+async function resolveViemChain(chainName: string) {
+  const { base, baseSepolia, mainnet, sepolia } = await import("viem/chains");
+  switch (chainName) {
+    case "base":
+      return base;
+    case "base_sepolia":
+    case "base-sepolia":
+      return baseSepolia;
+    case "ethereum":
+    case "mainnet":
+      return mainnet;
+    case "ethereum_sepolia":
+    case "ethereum-sepolia":
+    case "sepolia":
+      return sepolia;
+    default:
+      throw new Error(
+        `Unsupported EVM chain "${chainName}" (expected base | base_sepolia | ethereum | ethereum_sepolia)`
+      );
+  }
 }
 
 /**
@@ -151,6 +172,7 @@ async function readSolanaRecords(
  * rather than stranding a claimant.
  */
 async function submitEvmFinalize(
+  chainName: string,
   rpc: string,
   contract: string,
   season: bigint,
@@ -159,7 +181,7 @@ async function submitEvmFinalize(
 ): Promise<void> {
   const { createWalletClient, createPublicClient, http } = await import("viem");
   const { privateKeyToAccount } = await import("viem/accounts");
-  const { baseSepolia } = await import("viem/chains");
+  const viemChain = await resolveViemChain(chainName);
 
   const raw = process.env.OWNER_KEY;
   if (!raw) throw new Error("OWNER_KEY is required to sign finalizeSeason");
@@ -198,15 +220,15 @@ async function submitEvmFinalize(
     },
   ] as const;
 
-  const pub = createPublicClient({ chain: baseSepolia, transport: http(rpc) });
+  const pub = createPublicClient({ chain: viemChain, transport: http(rpc) });
   const wallet = createWalletClient({
     account: owner,
-    chain: baseSepolia,
+    chain: viemChain,
     transport: http(rpc),
   });
 
   console.log(
-    `submitting finalizeSeason(${season}, ${root}, ${totalWei}) as ${owner.address}`
+    `submitting finalizeSeason(${season}, ${root}, ${totalWei}) on ${viemChain.name} as ${owner.address}`
   );
   const hash = await wallet.writeContract({
     address: contract as `0x${string}`,
@@ -216,7 +238,7 @@ async function submitEvmFinalize(
     // Explicit even though the client already carries it: viem only infers the
     // chain away when the account generic is narrowed, and `owner` here is a
     // plain Account, so the parameter type still demands it.
-    chain: baseSepolia,
+    chain: viemChain,
     account: owner,
   });
   const rcpt = await pub.waitForTransactionReceipt({ hash });
@@ -268,10 +290,14 @@ async function main() {
     const i = a.indexOf(`--${k}`);
     return i === -1 ? undefined : a[i + 1];
   };
+  const defaultEvmRpc = isSolana
+    ? undefined
+    : (await resolveViemChain(chain)).rpcUrls.default.http[0];
+  const evmRpc = flag("rpc") ?? defaultEvmRpc ?? "https://sepolia.base.org";
   const { records, pot } = isSolana
     ? await readSolanaRecords(season)
     : await readEvmRecords(
-        flag("rpc") ?? "https://sepolia.base.org",
+        evmRpc,
         flag("contract") ??
           (() => {
             throw new Error("--contract is required for an EVM season");
@@ -283,9 +309,10 @@ async function main() {
           .filter(Boolean)
       );
 
+  const { PublicKey } = await import("@solana/web3.js");
   const accountBytes = isSolana
-    ? (a: string) => Buffer.from(a, "utf8") // placeholder: Solana leaves use the 32-byte pubkey
-    : (a: string) => Buffer.from(a.replace(/^0x/, ""), "hex");
+    ? (acct: string) => Buffer.from(new PublicKey(acct).toBytes())
+    : (acct: string) => Buffer.from(acct.replace(/^0x/, ""), "hex");
 
   const result = buildSeason(records, pot, accountBytes);
 
@@ -326,12 +353,11 @@ async function main() {
     return;
   }
   if (isSolana) {
-    throw new Error(
-      "Solana finalize submission is not wired here; finalize-tournament.ts still owns that path"
-    );
+    throw new Error("Solana finalize submission is not wired here");
   }
   await submitEvmFinalize(
-    flag("rpc") ?? "https://sepolia.base.org",
+    chain,
+    evmRpc,
     flag("contract")!,
     season,
     result.root,

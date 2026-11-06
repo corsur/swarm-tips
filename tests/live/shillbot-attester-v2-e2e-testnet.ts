@@ -313,7 +313,7 @@ async function runLifecycle(
   // the client-side 504 (the attester finishes server-side — see awaitVerified).
   console.log("  triggering attest (deployed pod runs mathlib, async ~90s)...");
   try {
-    await api("POST", `/internal/run-attest/${taskId}`, clientPk, {
+    await api("POST", `/internal/run-attest/${taskId}`, clientToken, {
       task_id: taskId,
     });
   } catch (e) {

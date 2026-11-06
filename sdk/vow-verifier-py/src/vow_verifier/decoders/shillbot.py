@@ -81,10 +81,12 @@ def shillbot_valid_states(account_kind: str):
 
 
 SHILLBOT_PROGRAM_ID = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi"
+SHILLBOT_SCORE_MAX = 1_000_000
 
 SHILLBOT_PROTOCOL = ProtocolHandler(
     decode=decode_shillbot_task,
     resolve_state=resolve_shillbot_state,
     valid_states=shillbot_valid_states,
     program_id=SHILLBOT_PROGRAM_ID,
+    score_max=SHILLBOT_SCORE_MAX,
 )

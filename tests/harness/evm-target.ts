@@ -9,6 +9,7 @@ import {
   Transcript as OracleInput,
   deriveClaimOutcome,
   TERMINAL_STEP_COUNT,
+  UNREVEALED,
 } from "../helpers/outcome-oracle";
 import { StateView } from "./assertions";
 
@@ -20,6 +21,7 @@ export const EVM_GAME_STATUS: Record<number, string> = {
   3: "Committing",
   4: "Revealing",
   5: "Resolved",
+  6: "Cancelled",
 };
 
 export function evmGameStatusLabel(code: number): string {
@@ -45,11 +47,27 @@ export interface EvmGameFields {
   p1Guess: number;
   p2Guess: number;
   firstCommitter: number;
+  stepCount?: number;
+  p1Committed?: boolean;
+  p2Committed?: boolean;
 }
 
 export interface EvmGameReader {
   status(): Promise<number>;
   fields(): Promise<EvmGameFields>;
+}
+
+function inferRealizedStepCount(f: EvmGameFields): number {
+  if (f.stepCount !== undefined) return f.stepCount;
+  const p1Revealed = f.p1Guess !== UNREVEALED;
+  const p2Revealed = f.p2Guess !== UNREVEALED;
+  if (p1Revealed && p2Revealed) return TERMINAL_STEP_COUNT;
+  if (p1Revealed || p2Revealed) return 3;
+  if (f.p1Committed !== undefined && f.p2Committed !== undefined) {
+    return (f.p1Committed ? 1 : 0) + (f.p2Committed ? 1 : 0);
+  }
+  if (f.firstCommitter === 1 || f.firstCommitter === 2) return 1;
+  return 0;
 }
 
 /** StateView for legality + oracle checks (raw game label + derived outcome). */
@@ -60,10 +78,10 @@ export function evmGameView(read: EvmGameReader): StateView {
     },
     async readOutcomeKind() {
       const status = await read.status();
-      if (status < 5) return -1;
+      if (status < 5 || status === 6) return -1;
       const f = await read.fields();
       const input: OracleInput = {
-        stepCount: TERMINAL_STEP_COUNT,
+        stepCount: inferRealizedStepCount(f),
         matchupType: f.matchupType,
         p1Guess: f.p1Guess,
         p2Guess: f.p2Guess,

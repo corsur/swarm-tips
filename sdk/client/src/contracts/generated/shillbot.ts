@@ -2114,9 +2114,10 @@ export type Shillbot = {
         {
           "name": "switchboardFeed",
           "docs": [
-            "The Switchboard pull feed account containing the oracle-attested composite score.",
-            "`PullFeedAccountData::parse()` which checks the account discriminator.",
-            "Account ownership is verified by Switchboard's `Owner` implementation."
+            "The oracle authority signer (`GlobalState.oracle_authority` or",
+            "`GlobalState.authority`) or legacy Switchboard pull feed account.",
+            "/ `global_state.authority`, or validated against `global_state.switchboard_feed`",
+            "and parsed via `PullFeedAccountData::parse()`."
           ]
         }
       ],
@@ -2888,6 +2889,11 @@ export type Shillbot = {
       "code": 6056,
       "name": "invalidAccountOwner",
       "msg": "Account is not owned by this program"
+    },
+    {
+      "code": 6057,
+      "name": "invalidTimeoutOrdering",
+      "msg": "verification_timeout must exceed attestation_delay + staleness_window"
     }
   ],
   "types": [

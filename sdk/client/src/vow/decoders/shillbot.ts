@@ -129,6 +129,7 @@ export const shillbotValidStates = (accountKind: string): readonly string[] => {
 };
 
 export const SHILLBOT_VOW_PROGRAM_ID = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi";
+export const SHILLBOT_SCORE_MAX = 1_000_000n;
 
 /** Convenience bundle for callers that just want the canonical Shillbot triple. */
 export const shillbotProtocol: ProtocolHandler = {
@@ -136,6 +137,7 @@ export const shillbotProtocol: ProtocolHandler = {
   resolveState: resolveShillbotState,
   validStates: shillbotValidStates,
   programId: SHILLBOT_VOW_PROGRAM_ID,
+  scoreMax: SHILLBOT_SCORE_MAX,
 };
 
 function bytesToHex(b: Uint8Array): string {

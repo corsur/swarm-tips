@@ -199,6 +199,11 @@ fn tool_name_manifest_is_exact() {
     const GAME: &[&str] = &[
         "game_check_match",
         "game_commit_guess",
+        "game_evm_commit_guess",
+        "game_evm_committed",
+        "game_evm_match_status",
+        "game_evm_reveal_guess",
+        "game_find_evm_match",
         "game_find_match",
         "game_get_leaderboard",
         "game_get_messages",
@@ -208,6 +213,20 @@ fn tool_name_manifest_is_exact() {
         "game_submit_tx",
         "list_related_servers",
         "register_wallet",
+        "xchain_build_create_match",
+        "xchain_build_create_xmatch",
+        "xchain_build_lock",
+        "xchain_build_lock_xmatch",
+        "xchain_build_refund",
+        "xchain_build_refund_xmatch",
+        "xchain_build_settle",
+        "xchain_commit_guess",
+        "xchain_find_match",
+        "xchain_gameplay_status",
+        "xchain_match_status",
+        "xchain_reveal_guess",
+        "xchain_sign_checkpoint",
+        "xchain_supported_chains",
     ];
 
     for (surface, expected) in [

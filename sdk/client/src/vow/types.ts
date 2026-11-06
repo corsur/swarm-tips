@@ -129,4 +129,5 @@ export interface ProtocolHandler {
   resolveState: StateResolver;
   validStates: ValidStates;
   programId?: string;
+  scoreMax?: bigint | number | string;
 }

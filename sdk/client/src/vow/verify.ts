@@ -8,6 +8,8 @@ import type {
   Verdict,
 } from "./types.js";
 
+export const DEFAULT_SCORE_MAX = 1_000_000n;
+
 /**
  * Step-by-step verifier per `docs/specs/vow-v1.md` §4.
  *
@@ -21,7 +23,8 @@ import type {
 export async function verifyV1(
   attestation: unknown,
   protocol: ProtocolHandler,
-  rpc: Connection
+  rpc: Connection,
+  expectedScoreMax?: bigint | number | string
 ): Promise<Verdict> {
   const checkedAt = nowRfc3339();
   const rpcEndpoint = rpc.rpcEndpoint;
@@ -38,7 +41,7 @@ export async function verifyV1(
   }
 
   const a = asV1(attestation);
-  const onChainFail = await verifyV1OnChain(a, protocol, rpc);
+  const onChainFail = await verifyV1OnChain(a, protocol, rpc, expectedScoreMax);
   if (onChainFail) {
     return {
       valid: false,
@@ -80,8 +83,16 @@ export function verifyV1Schema(attestation: unknown): FailureReason | null {
 export async function verifyV1OnChain(
   a: AasV1Attestation,
   protocol: ProtocolHandler,
-  rpc: Connection
+  rpc: Connection,
+  expectedScoreMax?: bigint | number | string
 ): Promise<FailureReason | null> {
+  const expectedMax = BigInt(
+    expectedScoreMax ?? protocol.scoreMax ?? DEFAULT_SCORE_MAX
+  );
+  if (BigInt(a.score_max) !== expectedMax) {
+    return "field_mismatch:score_max";
+  }
+
   // Step 2 — fetch the on-chain account.
   const accountInfo = await rpc.getAccountInfo(new PublicKey(a.account));
   if (accountInfo === null) {

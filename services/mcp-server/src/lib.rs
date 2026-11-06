@@ -980,8 +980,8 @@ async fn build_verify_tx_ready_handler(state: BuildVerifyState) -> axum::respons
 ///
 /// Builds and partially co-signs the `verify_task` transaction using
 /// `oracle_authority` after authenticating `(task_pda, score, hash)` against
-/// `shillbot-api`. Falls back to the legacy
-/// `build-verify-client.ts` script only when `oracle_keypair` is absent.
+/// `shillbot-api`. Returns `503 SERVICE_UNAVAILABLE` when `oracle_keypair` is
+/// not configured.
 async fn build_verify_tx_handler(
     _headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
@@ -994,11 +994,8 @@ async fn build_verify_tx_handler(
     let task_id = get("task_id");
     let payer = get("payer");
     let score_u64 = body["score"].as_u64().unwrap_or(0);
-    let score = score_u64.to_string();
     let hash = get("hash");
     let task_pda = get("task_pda");
-    let feed = get("feed");
-    let global_state = get("global_state");
 
     if task_id.is_empty() || payer.is_empty() || task_pda.is_empty() {
         return (StatusCode::BAD_REQUEST, "missing required fields").into_response();
@@ -1012,155 +1009,90 @@ async fn build_verify_tx_handler(
     };
     let cors_headers = [("Access-Control-Allow-Origin", "*")];
 
-    if let Some(oracle_kp) = state.oracle_keypair.as_ref() {
-        let client = state
-            .jwt_secret
-            .as_deref()
-            .and_then(|sec| game_proxy::mint_internal_token(&payer, sec))
-            .map(|tok| state.orchestrator.authenticated(tok))
-            .unwrap_or_else(|| state.orchestrator.clone());
-        let net_opt = (network_str == "devnet").then_some("devnet");
-        let vdata = match client
-            .get_verification_data(&task_id, &payer, net_opt)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    service = "mcp-server",
-                    task_id = %task_id,
-                    error = %e,
-                    "build-verify-tx: failed to fetch authoritative verification data"
-                );
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    cors_headers,
-                    "failed to validate verification data against shillbot-api",
-                )
-                    .into_response();
-            }
-        };
-        if vdata.task_pda != task_pda {
-            return (
-                StatusCode::BAD_REQUEST,
-                cors_headers,
-                "task_pda does not match authoritative task state",
-            )
-                .into_response();
-        }
-        if vdata.composite_score != score_u64
-            || !vdata.verification_hash.eq_ignore_ascii_case(&hash)
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                cors_headers,
-                "score or hash does not match authoritative verification data",
-            )
-                .into_response();
-        }
-        let (verified_task_pda, verified_score, verified_hash) = (
-            vdata.task_pda,
-            vdata.composite_score,
-            vdata.verification_hash,
-        );
-
-        return match solana_tx::build_co_signed_verify_tx(
-            &state.rpc_client,
-            rpc_url,
-            &payer,
-            &verified_task_pda,
-            verified_score,
-            &verified_hash,
-            oracle_kp,
+    let Some(oracle_kp) = state.oracle_keypair.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            cors_headers,
+            "oracle signer not configured",
         )
+            .into_response();
+    };
+
+    let client = state
+        .jwt_secret
+        .as_deref()
+        .and_then(|sec| game_proxy::mint_internal_token(&payer, sec))
+        .map(|tok| state.orchestrator.authenticated(tok))
+        .unwrap_or_else(|| state.orchestrator.clone());
+    let net_opt = (network_str == "devnet").then_some("devnet");
+    let vdata = match client
+        .get_verification_data(&task_id, &payer, net_opt)
         .await
-        {
-            Ok(tx) => (
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                service = "mcp-server",
+                task_id = %task_id,
+                error = %e,
+                "build-verify-tx: failed to fetch authoritative verification data"
+            );
+            return (
+                StatusCode::BAD_GATEWAY,
                 cors_headers,
-                axum::Json(serde_json::json!({ "transaction": tx })),
+                "failed to validate verification data against shillbot-api",
             )
-                .into_response(),
-            Err(e) => {
-                tracing::error!(
-                    service = "mcp-server",
-                    error = %e,
-                    "co-signed build_verify_tx failed"
-                );
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    cors_headers,
-                    "transaction builder failed",
-                )
-                    .into_response()
-            }
-        };
-    }
-
-    let script_path = std::env::var("BUILD_VERIFY_SCRIPT")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("scripts")
-                .join("build-verify-client.ts")
-        });
-    let script_dir = script_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-
-    let mut command = tokio::process::Command::new("tsx");
-    command
-        .current_dir(script_dir)
-        .arg(&script_path)
-        .arg("--task-id")
-        .arg(&task_id)
-        .arg("--payer")
-        .arg(&payer)
-        .arg("--score")
-        .arg(&score)
-        .arg("--hash")
-        .arg(&hash)
-        .arg("--task-pda")
-        .arg(&task_pda)
-        .arg("--feed")
-        .arg(&feed)
-        .arg("--global-state")
-        .arg(&global_state)
-        .arg("--rpc")
-        .arg(rpc_url)
-        .arg("--network")
-        .arg(network_str);
-    let output = bounded_builder_output(command, std::time::Duration::from_secs(60)).await;
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let tx = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            (
-                cors_headers,
-                axum::Json(serde_json::json!({ "transaction": tx })),
-            )
-                .into_response()
+                .into_response();
         }
-        Ok(out) => {
-            tracing::error!(service = "mcp-server", status = ?out.status.code(), "build-verify-tx failed");
+    };
+    if vdata.task_pda != task_pda {
+        return (
+            StatusCode::BAD_REQUEST,
+            cors_headers,
+            "task_pda does not match authoritative task state",
+        )
+            .into_response();
+    }
+    if vdata.composite_score != score_u64 || !vdata.verification_hash.eq_ignore_ascii_case(&hash) {
+        return (
+            StatusCode::BAD_REQUEST,
+            cors_headers,
+            "score or hash does not match authoritative verification data",
+        )
+            .into_response();
+    }
+    let (verified_task_pda, verified_score, verified_hash) = (
+        vdata.task_pda,
+        vdata.composite_score,
+        vdata.verification_hash,
+    );
+
+    match solana_tx::build_co_signed_verify_tx(
+        &state.rpc_client,
+        rpc_url,
+        &payer,
+        &verified_task_pda,
+        verified_score,
+        &verified_hash,
+        oracle_kp,
+    )
+    .await
+    {
+        Ok(tx) => (
+            cors_headers,
+            axum::Json(serde_json::json!({ "transaction": tx })),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(
+                service = "mcp-server",
+                error = %e,
+                "co-signed build_verify_tx failed"
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 cors_headers,
                 "transaction builder failed",
-            )
-                .into_response()
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [("Retry-After", "1"), ("Access-Control-Allow-Origin", "*")],
-            "transaction builder busy",
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(service = "mcp-server", error = %e, "spawn failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                cors_headers,
-                "transaction builder unavailable",
             )
                 .into_response()
         }
@@ -1265,5 +1197,31 @@ mod readiness_tests {
             handler().await.0,
             axum::http::StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[tokio::test]
+    async fn build_verify_tx_handler_rejects_when_oracle_keypair_unconfigured() {
+        let state = super::BuildVerifyState {
+            oracle_keypair: None,
+            orchestrator: crate::OrchestratorProxy::new(
+                "http://127.0.0.1:1".to_string(),
+                "http://127.0.0.1:1".to_string(),
+            ),
+            jwt_secret: None,
+            rpc_client: reqwest::Client::new(),
+            rpc_url_mainnet: "http://127.0.0.1:1".to_string(),
+            rpc_url_devnet: "http://127.0.0.1:1".to_string(),
+        };
+        let body = serde_json::json!({
+            "task_id": "t1",
+            "payer": "11111111111111111111111111111111",
+            "task_pda": "11111111111111111111111111111111",
+            "score": 80,
+            "hash": "00".repeat(32),
+        });
+        let resp =
+            super::build_verify_tx_handler(axum::http::HeaderMap::new(), axum::Json(body), state)
+                .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
     }
 }

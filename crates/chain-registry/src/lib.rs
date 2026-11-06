@@ -638,18 +638,23 @@ pub const fn active_tournament_id(is_mainnet: bool) -> u64 {
     }
 }
 
-/// The Solana leg the MCP cross-chain registration/queue path is pinned to
-/// (devnet), partnering the EVM testnet leg (Base Sepolia) — callers resolving
-/// a raw base58 Solana wallet use this single source of truth rather than
-/// hardcoding the devnet id. Mainnet CrossChainGame contracts ARE deployed and
-/// the game-api matchmaker prices mainnet legs dynamically; only this MCP
-/// wallet→chain default remains testnet-pinned (switching it to select by the
-/// EVM leg's `is_mainnet` is a real-money routing decision, deliberately not
-/// made here). Returns `None` only if the devnet entry is ever removed.
+/// Resolve the Solana leg for cross-chain registration/queue routing based on
+/// whether the match is on mainnet (`true` → `SOLANA_MAINNET_CAIP2`) or
+/// testnet/devnet (`false` → `SOLANA_DEVNET_CAIP2`).
+pub fn cross_chain_solana_for(is_mainnet: bool) -> Option<&'static ChainEntry> {
+    let caip2 = if is_mainnet {
+        SOLANA_MAINNET_CAIP2
+    } else {
+        SOLANA_DEVNET_CAIP2
+    };
+    ChainId::parse(caip2).ok().and_then(|id| entry(&id))
+}
+
+/// The default Solana leg for MCP cross-chain registration/queue routing
+/// (Solana Mainnet). Callers that need explicit network selection should call
+/// [`cross_chain_solana_for`].
 pub fn cross_chain_solana() -> Option<&'static ChainEntry> {
-    ChainId::parse(SOLANA_DEVNET_CAIP2)
-        .ok()
-        .and_then(|id| entry(&id))
+    cross_chain_solana_for(true)
 }
 
 /// All registered chains in a namespace.
@@ -709,14 +714,21 @@ mod tests {
     }
 
     #[test]
-    fn cross_chain_solana_is_a_registered_devnet_entry() {
-        let e = cross_chain_solana().expect("devnet solana registered");
-        assert_eq!(e.native_symbol, "SOL");
-        assert_eq!(e.display_name, "Solana Devnet");
-        // Assert on the DEDICATED field. This used to test x402_network.is_none(),
-        // which is unrelated to network class — a mainnet entry that simply has
-        // no x402 descriptor would have passed it.
-        assert!(!e.is_mainnet, "cross-chain solana leg must be devnet");
+    fn cross_chain_solana_defaults_to_mainnet_and_supports_devnet() {
+        let mainnet = cross_chain_solana().expect("mainnet solana registered");
+        assert_eq!(mainnet.chain_id, SOLANA_MAINNET_CAIP2);
+        assert_eq!(mainnet.native_symbol, "SOL");
+        assert_eq!(mainnet.display_name, "Solana Mainnet");
+        assert!(
+            mainnet.is_mainnet,
+            "default cross-chain solana leg must be mainnet"
+        );
+
+        let devnet = cross_chain_solana_for(false).expect("devnet solana registered");
+        assert_eq!(devnet.chain_id, SOLANA_DEVNET_CAIP2);
+        assert_eq!(devnet.native_symbol, "SOL");
+        assert_eq!(devnet.display_name, "Solana Devnet");
+        assert!(!devnet.is_mainnet, "devnet cross-chain solana leg");
     }
 
     #[test]

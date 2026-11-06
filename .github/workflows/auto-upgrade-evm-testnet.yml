@@ -106,6 +106,7 @@ jobs:
     needs: [guard, upgrade]
     if: needs.guard.outputs.changed == 'true' && needs.upgrade.result == 'success'
     runs-on: ubuntu-latest
+    environment: mainnet
     permissions:
       contents: read
       id-token: write # Workload Identity Federation for the RPC secret read
@@ -130,9 +131,7 @@ jobs:
         working-directory: evm
     env:
       V4_PROXY: ${{ vars[matrix.proxy_var] }}
-      # Same funded owner key as the testnet leg (see deploy-evm-mainnet.yml);
-      # a dedicated EVM_MAINNET_DEPLOYER wins if one is ever configured.
-      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
       IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
     steps:
       - uses: actions/checkout@v7
@@ -210,6 +209,7 @@ jobs:
     needs: [guard, upgrade-xchain]
     if: needs.guard.outputs.xchain_changed == 'true' && needs.upgrade-xchain.result == 'success'
     runs-on: ubuntu-latest
+    environment: mainnet
     permissions:
       contents: read
       id-token: write
@@ -234,7 +234,7 @@ jobs:
         working-directory: evm
     env:
       XCHAIN_PROXY: ${{ vars[matrix.proxy_var] }}
-      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
       IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
     steps:
       - uses: actions/checkout@v7

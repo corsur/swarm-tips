@@ -23,8 +23,10 @@
  * The fresh client keypair is persisted to tests/live/.worker-e2e-client.json
  * so leftover funds are never stranded.
  */
+import { createPrivateKey, sign as cryptoSign } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { homedir } from "os";
+import { utils } from "@coral-xyz/anchor";
 import {
   Connection,
   Keypair,
@@ -44,6 +46,48 @@ const BUDGET_LAMPORTS = 20_000_000; // 0.02 SOL — one small task
 const CLIENT_KEYFILE = `${__dirname}/.worker-e2e-client.json`;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function signEd25519Nonce(secretKey: Uint8Array, nonce: string): string {
+  const secret = Buffer.from(secretKey).subarray(0, 32);
+  const derPrivPrefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  const privKey = createPrivateKey({
+    key: Buffer.concat([derPrivPrefix, secret]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const sig = cryptoSign(null, Buffer.from(nonce, "utf8"), privKey);
+  return utils.bytes.bs58.encode(sig);
+}
+
+const tokenCache = new Map<string, string>();
+async function getAuthToken(wallet: Keypair): Promise<string> {
+  const pubkey = wallet.publicKey.toBase58();
+  if (tokenCache.has(pubkey)) return tokenCache.get(pubkey)!;
+
+  const challengeRes = await fetch(
+    "https://api.coordination.game/auth/challenge",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: pubkey }),
+    }
+  );
+  if (!challengeRes.ok)
+    throw new Error(`auth challenge failed: ${await challengeRes.text()}`);
+  const { nonce } = (await challengeRes.json()) as { nonce: string };
+
+  const signature = signEd25519Nonce(wallet.secretKey, nonce);
+  const verifyRes = await fetch("https://api.coordination.game/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wallet: pubkey, nonce, signature }),
+  });
+  if (!verifyRes.ok)
+    throw new Error(`auth verify failed: ${await verifyRes.text()}`);
+  const { token } = (await verifyRes.json()) as { token: string };
+  tokenCache.set(pubkey, token);
+  return token;
+}
 
 async function api(
   method: string,
@@ -108,6 +152,7 @@ async function main(): Promise<void> {
   );
   const client = loadOrCreateClient();
   const clientPk = client.publicKey.toBase58();
+  const clientToken = await getAuthToken(client);
   console.log(`external client: ${clientPk}`);
   console.log(`worker wallet:   ${WORKER_WALLET}`);
 
@@ -130,7 +175,7 @@ async function main(): Promise<void> {
   }
 
   // 1) Create the Website campaign as the external client.
-  const camp = await api("POST", `/campaigns?network=devnet`, clientPk, {
+  const camp = await api("POST", `/campaigns?network=devnet`, clientToken, {
     brief: {
       topic: "autonomous worker e2e — decentralized agent coordination",
       brand_voice: "clear and direct",
@@ -148,7 +193,7 @@ async function main(): Promise<void> {
   const fund = await api(
     "POST",
     `/campaigns/${campaignId}/fund?network=devnet`,
-    clientPk,
+    clientToken,
     { amount_lamports: BUDGET_LAMPORTS }
   );
   const taskId = fund.task_id as string;
@@ -156,7 +201,7 @@ async function main(): Promise<void> {
   const unsigned = fund.transaction as string;
   if (!unsigned) throw new Error("fund returned no transaction");
   const sig = await broadcast(conn, signBase64(unsigned, client));
-  await api("POST", `/tasks/${taskId}/confirm?network=devnet`, clientPk, {
+  await api("POST", `/tasks/${taskId}/confirm?network=devnet`, clientToken, {
     tx_signature: sig,
     action: "create",
     ...(taskPda ? { task_pda: taskPda } : {}),
@@ -169,7 +214,7 @@ async function main(): Promise<void> {
   let last = "";
   let task: Record<string, unknown> = {};
   while (Date.now() < deadline) {
-    task = await api("GET", `/tasks/${taskId}?network=devnet`, clientPk);
+    task = await api("GET", `/tasks/${taskId}?network=devnet`, clientToken);
     const state = String(task.state ?? "?");
     if (state !== last) {
       console.log(
@@ -207,7 +252,7 @@ async function main(): Promise<void> {
   // 5) Opportunistic: give verification a few minutes to land.
   const verifyDeadline = Date.now() + 8 * 60 * 1000;
   while (Date.now() < verifyDeadline) {
-    task = await api("GET", `/tasks/${taskId}?network=devnet`, clientPk);
+    task = await api("GET", `/tasks/${taskId}?network=devnet`, clientToken);
     const s = String(task.state ?? "?");
     if (s !== last) {
       console.log(`  state -> ${s}`);

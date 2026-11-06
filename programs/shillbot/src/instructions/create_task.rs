@@ -188,6 +188,22 @@ fn validate_create_task_inputs(
         );
     }
 
+    let effective_attestation_delay = if attestation_delay_override > 0 {
+        i64::from(attestation_delay_override)
+    } else {
+        global.attestation_delay_seconds
+    };
+    let effective_verification_timeout = if verification_timeout_override > 0 {
+        i64::from(verification_timeout_override)
+    } else {
+        global.verification_timeout_seconds
+    };
+    require!(
+        effective_verification_timeout
+            > effective_attestation_delay.saturating_add(global.staleness_window_seconds),
+        ShillbotError::InvalidTimeoutOrdering
+    );
+
     Ok(())
 }
 

@@ -445,6 +445,18 @@ describe("verifyV1 happy path + step-5 / step-7 negatives", () => {
     }
   });
 
+  it("returns field_mismatch:score_max when wire score_max differs from protocol constant", async () => {
+    const verdict = await verifyV1(
+      happyAttestation({ score_max: "850000" }),
+      shillbotProtocol,
+      happyMockRpc()
+    );
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("field_mismatch:score_max");
+    }
+  });
+
   it("rejects impossible calendar dates like Feb 31 in verified_at", () => {
     expect(
       checkSchema(

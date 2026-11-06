@@ -2813,7 +2813,7 @@ impl SwarmTipsMcp {
         if args.session_key.is_empty() {
             return Err(invalid_input("session_key (0x address) is required"));
         }
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
         let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound).ok_or_else(|| {
             invalid_input("registered wallet is not a cross-chain wallet (Solana base58 or EVM 0x)")
         })?;
@@ -2894,7 +2894,7 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<EvmFindMatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
         let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         if !chain.starts_with("eip155:") {
@@ -2969,7 +2969,7 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<EvmCommittedArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
         let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
 
@@ -3000,7 +3000,7 @@ impl SwarmTipsMcp {
             "different" => 1,
             _ => return Err(invalid_input("guess must be 'same' or 'different'")),
         };
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
         let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         if !chain.starts_with("eip155:") {
@@ -3053,7 +3053,7 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<EvmRevealGuessArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
         let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         if !chain.starts_with("eip155:") {
@@ -3210,7 +3210,7 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<XchainCommitArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
         let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         // The one path where an AGENT-built value enters the protocol — reject
@@ -3261,7 +3261,7 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<XchainSignArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
         let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         let resp = self
@@ -3288,7 +3288,7 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<XchainRevealArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
         let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         require_hex32(
@@ -3438,7 +3438,7 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<GameFindMatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let wallet = self.require_verified_game_wallet(Some(&parts)).await?;
         let tournament_id = args
             .tournament_id
             .unwrap_or_else(|| default_tournament_id(None));
@@ -4612,6 +4612,28 @@ impl SwarmTipsMcp {
             .resolve(&session_id)
             .await
             .ok_or_else(|| invalid_input("no wallet registered: call register_wallet first"))
+    }
+
+    /// Require a session-bound wallet (EVM or Solana) whose ownership has been
+    /// proven in this MCP session (`register_wallet {pubkey, nonce, signature}`,
+    /// `agent_verify_wallet`, or `deposit_stake`). Prevents an unverified caller
+    /// from calling `register_wallet(victim)` and joining queues, committing/
+    /// revealing guesses, or co-signing cross-chain checkpoints as `victim`.
+    async fn require_verified_bound_wallet(
+        &self,
+        parts: Option<&http::request::Parts>,
+    ) -> Result<String, McpError> {
+        let session_id =
+            session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
+        self.state
+            .session_binding
+            .resolve_verified(&session_id)
+            .await
+            .ok_or_else(|| {
+                invalid_input(
+                    "in-game actions require proven wallet ownership: verify your wallet via register_wallet {pubkey, nonce, signature} (or agent_verify_wallet) first",
+                )
+            })
     }
 
     /// Require a session that has PROVEN wallet ownership (agent_verify_wallet
@@ -6209,7 +6231,7 @@ mod tests {
         );
         assert_eq!(
             filter_tools_for_surface(all, crate::surfaces::Surface::Game, false).len(),
-            11
+            30
         );
     }
 
@@ -6232,18 +6254,37 @@ mod tests {
 
     #[test]
     fn hidden_list_is_exactly_the_19_testnet_tools_and_all_exist() {
-        assert_eq!(HIDDEN_UNTIL_MAINNET.len(), 19, "14 xchain + 5 EVM-game");
-        let xchain = HIDDEN_UNTIL_MAINNET
-            .iter()
-            .filter(|n| n.starts_with("xchain_"))
-            .count();
+        assert!(
+            HIDDEN_UNTIL_MAINNET.is_empty(),
+            "all 19 xchain_* and game_evm_* tools are now Gate::Public on Mainnet"
+        );
+        let promoted = crate::capabilities::XCHAIN_AND_EVM_GAME_TOOLS;
+        assert_eq!(promoted.len(), 19, "14 xchain + 5 EVM-game");
+        let xchain = promoted.iter().filter(|n| n.starts_with("xchain_")).count();
         assert_eq!(xchain, 14);
-        // Every hidden name must exist in the router — a rename would
-        // silently un-hide a tool.
         let router = SwarmTipsMcp::tool_router();
-        for name in HIDDEN_UNTIL_MAINNET {
+        for name in promoted {
             assert!(router.get(name).is_some(), "{name} is not a declared tool");
         }
+    }
+
+    #[test]
+    fn verified_wallet_gate_requires_session_id_header() {
+        let req = http::Request::builder().body(()).unwrap();
+        let (parts, _) = req.into_parts();
+        assert!(
+            session_id_from_parts(Some(&parts)).is_none(),
+            "missing Mcp-Session-Id must not resolve a wallet"
+        );
+        let req_with_sid = http::Request::builder()
+            .header("mcp-session-id", "sess-123")
+            .body(())
+            .unwrap();
+        let (parts_with_sid, _) = req_with_sid.into_parts();
+        assert_eq!(
+            session_id_from_parts(Some(&parts_with_sid)).as_deref(),
+            Some("sess-123")
+        );
     }
 
     // -- register_wallet proof args: back-compat ----------------------------

@@ -55,42 +55,58 @@ pub fn supported_chains_response() -> Value {
         "settlement": "Instant path: a co-signed outcome certificate settles both legs. \
             Contested/timeout path: optimistic claims against the latest co-signed \
             checkpoint, with an equivocation-slash backstop.",
-        "status": "testnet",
-        "note": "Mainnet cross-chain routes are gated pending legal review and EVM \
-            authority key rotation; only testnet chains (Solana devnet, Base Sepolia) \
-            are live today.",
+        "status": "live",
+        "note": "Cross-chain matches are live on Mainnet (Solana Mainnet, Base, Ethereum) \
+            as well as Testnet (Solana Devnet, Base Sepolia).",
     })
 }
 
-/// The active EVM testnet chain for wallet registration. Mainnet EVM is
-/// gated (decision.md §6), so a registered `0x` wallet is scoped to Base
-/// Sepolia until that gate clears.
-const EVM_TESTNET_CHAIN: &str = chain_registry::BASE_SEPOLIA_CAIP2;
+/// The default EVM mainnet chain for wallet registration (`Base` — `eip155:8453`).
+pub const DEFAULT_EVM_MAINNET_CHAIN: &str = chain_registry::BASE_MAINNET_CAIP2;
 
-/// Validate an EVM address and return its CAIP-10 account id on the active
-/// testnet EVM chain. Accepts `0x` + exactly 40 hex chars (case-insensitive;
-/// EIP-55 checksum is not enforced — wallets emit mixed-case but agents may
-/// pass lowercase). Returns `Err(reason)` for malformed input so the boundary
-/// rejects rather than guesses.
-pub fn evm_account_id(address: &str) -> Result<String, String> {
+/// Validate an EVM address and return its CAIP-10 account id on the selected
+/// EVM chain (`chain` override if provided, Base Sepolia when `network` is
+/// `"devnet"`/`"testnet"`, or [`DEFAULT_EVM_MAINNET_CHAIN`] by default).
+pub fn evm_account_id_for_chain(
+    address: &str,
+    chain: Option<&str>,
+    network: Option<&str>,
+) -> Result<String, String> {
     let hex = address
         .strip_prefix("0x")
         .ok_or("EVM address must start with 0x")?;
     if hex.len() != 40 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("EVM address must be 0x followed by 40 hex characters".to_string());
     }
-    let chain = chain_core::ChainId::parse(EVM_TESTNET_CHAIN).map_err(|e| e.to_string())?;
-    chain_core::AccountId::from_parts(&chain, address)
+    let caip2 = match chain.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(c) => c,
+        None => match network.map(str::trim) {
+            Some("devnet" | "testnet" | "sepolia") => chain_registry::BASE_SEPOLIA_CAIP2,
+            _ => DEFAULT_EVM_MAINNET_CHAIN,
+        },
+    };
+    let parsed_chain = chain_core::ChainId::parse(caip2).map_err(|e| e.to_string())?;
+    if parsed_chain.namespace() != chain_core::Namespace::Eip155 {
+        return Err(format!("expected an eip155 CAIP-2 chain, got '{caip2}'"));
+    }
+    chain_core::AccountId::from_parts(&parsed_chain, address)
         .map(|a| a.as_str().to_string())
         .map_err(|e| e.to_string())
 }
 
+/// Validate an EVM address and return its CAIP-10 account id on the default
+/// mainnet EVM chain (`eip155:8453`). Accepts `0x` + exactly 40 hex chars
+/// (case-insensitive; EIP-55 checksum is not enforced — wallets emit mixed-case
+/// but agents may pass lowercase). Returns `Err(reason)` for malformed input so
+/// the boundary rejects rather than guesses.
+pub fn evm_account_id(address: &str) -> Result<String, String> {
+    evm_account_id_for_chain(address, None, None)
+}
+
 /// Resolve a session-bound wallet to the `(caip2_chain, chain_native_address)`
-/// the cross-chain queue expects. An EVM registration is bound as its CAIP-10
-/// account (`eip155:84532:0x…`) — split it. A Solana registration is bound as a
-/// raw base58 pubkey — map it to the testnet cross-chain Solana chain (devnet)
-/// from the registry. Returns `None` if neither shape matches.
-pub fn resolve_xchain_wallet(bound: &str) -> Option<(String, String)> {
+/// the cross-chain queue expects, selecting the Solana mainnet or devnet leg
+/// according to `is_mainnet`.
+pub fn resolve_xchain_wallet_for(bound: &str, is_mainnet: bool) -> Option<(String, String)> {
     if let Ok(acct) = chain_core::AccountId::parse(bound) {
         return Some((
             acct.chain().as_str().to_string(),
@@ -99,10 +115,19 @@ pub fn resolve_xchain_wallet(bound: &str) -> Option<(String, String)> {
     }
     // Raw base58 Solana pubkey (the Solana register_wallet path stores this).
     if !bound.is_empty() && !bound.starts_with("0x") {
-        let chain = chain_registry::cross_chain_solana()?.chain_id;
+        let chain = chain_registry::cross_chain_solana_for(is_mainnet)?.chain_id;
         return Some((chain.to_string(), bound.to_string()));
     }
     None
+}
+
+/// Resolve a session-bound wallet to the `(caip2_chain, chain_native_address)`
+/// the cross-chain queue expects. An EVM registration is bound as its CAIP-10
+/// account (`eip155:8453:0x…`) — split it. A Solana registration is bound as a
+/// raw base58 pubkey — map it to the default cross-chain Solana chain (Mainnet)
+/// from the registry. Returns `None` if neither shape matches.
+pub fn resolve_xchain_wallet(bound: &str) -> Option<(String, String)> {
+    resolve_xchain_wallet_for(bound, true)
 }
 
 /// Seconds before `match_deadline` that the EVM leg's funding window closes.
@@ -355,16 +380,19 @@ pub fn build_evm_refund_call(payload: &Value, kind: &str) -> Result<Value, Strin
 /// (cross-chain txs are built as unsigned calls the agent's own tooling
 /// populates and submits), so the agent checks its own balance.
 pub fn evm_registration_response(account_id: &str) -> Value {
+    let chain = chain_core::AccountId::parse(account_id)
+        .map(|a| a.chain().as_str().to_string())
+        .unwrap_or_else(|_| DEFAULT_EVM_MAINNET_CHAIN.to_string());
     json!({
         "account": account_id,
         "namespace": "eip155",
-        "chain": EVM_TESTNET_CHAIN,
+        "chain": chain,
         "status": "registered",
-        "note": "EVM wallet registered for cross-chain Coordination Game matches on \
-            Base Sepolia (testnet). Call xchain_supported_chains for stake amounts and \
-            the deployed contract; cross-chain match tools return unsigned EVM \
-            transactions you sign and submit locally (the server never holds your key \
-            and never submits on your behalf).",
+        "note": "EVM wallet registered for cross-chain and same-chain EVM Coordination Game \
+            matches on Mainnet (Base, Ethereum) and Testnet (Base Sepolia). Call \
+            xchain_supported_chains for stake amounts and deployed contracts; cross-chain \
+            match tools return unsigned EVM transactions you sign and submit locally \
+            (the server never holds your key and never submits on your behalf).",
     })
 }
 
@@ -378,11 +406,31 @@ mod tests {
             evm_account_id("0x996213ed4099707059b8b5d7489ffF23dAC9770d").expect("valid address");
         assert_eq!(
             acct,
-            "eip155:84532:0x996213ed4099707059b8b5d7489ffF23dAC9770d"
+            "eip155:8453:0x996213ed4099707059b8b5d7489ffF23dAC9770d"
         );
         // The CAIP-10 must round-trip through chain-core's parser.
         let parsed = chain_core::AccountId::parse(&acct).expect("valid CAIP-10");
-        assert_eq!(parsed.chain().as_str(), EVM_TESTNET_CHAIN);
+        assert_eq!(parsed.chain().as_str(), DEFAULT_EVM_MAINNET_CHAIN);
+
+        // Explicit devnet/testnet routing and explicit chain override.
+        let sepolia = evm_account_id_for_chain(
+            "0x996213ed4099707059b8b5d7489ffF23dAC9770d",
+            None,
+            Some("devnet"),
+        )
+        .expect("devnet EVM address");
+        assert_eq!(
+            sepolia,
+            "eip155:84532:0x996213ed4099707059b8b5d7489ffF23dAC9770d"
+        );
+
+        let eth = evm_account_id_for_chain(
+            "0x996213ed4099707059b8b5d7489ffF23dAC9770d",
+            Some("eip155:1"),
+            None,
+        )
+        .expect("ethereum mainnet address");
+        assert_eq!(eth, "eip155:1:0x996213ed4099707059b8b5d7489ffF23dAC9770d");
     }
 
     #[test]
@@ -580,16 +628,23 @@ mod tests {
     fn resolve_xchain_wallet_splits_evm_caip10_and_maps_solana_base58() {
         // EVM: CAIP-10 binding splits into (chain, 0x address).
         let (chain, addr) =
-            resolve_xchain_wallet("eip155:84532:0x996213ed4099707059b8b5d7489ffF23dAC9770d")
+            resolve_xchain_wallet("eip155:8453:0x996213ed4099707059b8b5d7489ffF23dAC9770d")
                 .expect("evm caip-10");
-        assert_eq!(chain, "eip155:84532");
+        assert_eq!(chain, "eip155:8453");
         assert_eq!(addr, "0x996213ed4099707059b8b5d7489ffF23dAC9770d");
 
-        // Solana: a raw base58 pubkey maps to the testnet cross-chain chain.
+        // Solana: a raw base58 pubkey maps to the default mainnet cross-chain chain.
         let (chain, addr) =
             resolve_xchain_wallet("CKsZf8gZzfPdEXHxLUEPvAi5C5sXBV9aDhqmsM7yTipv").expect("solana");
-        assert_eq!(chain, "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1");
+        assert_eq!(chain, "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp");
         assert_eq!(addr, "CKsZf8gZzfPdEXHxLUEPvAi5C5sXBV9aDhqmsM7yTipv");
+
+        // Explicit devnet routing still resolves to Solana devnet.
+        let (dev_chain, dev_addr) =
+            resolve_xchain_wallet_for("CKsZf8gZzfPdEXHxLUEPvAi5C5sXBV9aDhqmsM7yTipv", false)
+                .expect("solana devnet");
+        assert_eq!(dev_chain, "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1");
+        assert_eq!(dev_addr, "CKsZf8gZzfPdEXHxLUEPvAi5C5sXBV9aDhqmsM7yTipv");
 
         // Empty input is not resolvable.
         assert!(resolve_xchain_wallet("").is_none());
@@ -597,16 +652,21 @@ mod tests {
 
     #[test]
     fn evm_registration_response_carries_account_and_chain() {
-        let resp = evm_registration_response("eip155:84532:0xabc");
-        assert_eq!(resp["account"], "eip155:84532:0xabc");
+        let resp =
+            evm_registration_response("eip155:8453:0x996213ed4099707059b8b5d7489fff23dac9770d");
+        assert_eq!(
+            resp["account"],
+            "eip155:8453:0x996213ed4099707059b8b5d7489fff23dac9770d"
+        );
         assert_eq!(resp["namespace"], "eip155");
-        assert_eq!(resp["chain"], EVM_TESTNET_CHAIN);
+        assert_eq!(resp["chain"], DEFAULT_EVM_MAINNET_CHAIN);
         assert_eq!(resp["status"], "registered");
     }
 
     #[test]
     fn lists_every_registered_chain_with_required_fields() {
         let resp = supported_chains_response();
+        assert_eq!(resp["status"], "live");
         let chains = resp["chains"].as_array().expect("chains is an array");
         assert_eq!(chains.len(), chain_registry::all().count());
 

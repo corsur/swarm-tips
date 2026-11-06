@@ -12,6 +12,7 @@ import {
   Transcript as OracleInput,
   deriveClaimOutcome,
   TERMINAL_STEP_COUNT,
+  UNREVEALED,
 } from "../helpers/outcome-oracle";
 import { SolanaRuntime } from "./target";
 import {
@@ -20,14 +21,15 @@ import {
   assertLegalTransition,
 } from "./assertions";
 
-/** Allowed same-chain game status transitions. Resolved is terminal. */
+/** Allowed same-chain game status transitions. Resolved and Cancelled are terminal. */
 export const GAME_GRAPH: TransitionGraph = {
-  Pending: ["Active"],
+  Pending: ["Active", "Resolved", "Cancelled"],
   Active: ["Committing", "Resolved"], // Resolved = timeout, both forfeit
   Committing: ["Revealing", "Resolved"],
   // self-loop: the FIRST reveal keeps the game in Revealing; the SECOND resolves.
   Revealing: ["Revealing", "Resolved"],
   Resolved: [],
+  Cancelled: [],
 };
 
 export interface Commit {
@@ -346,11 +348,21 @@ export function gameView(ctx: GameCtx, gamePda: PublicKey): StateView {
       if (gameStatusLabel(g.state as Record<string, unknown>) !== "Resolved") {
         return -1;
       }
+      const p1Guess = Number(g.p1Guess);
+      const p2Guess = Number(g.p2Guess);
+      const p1Revealed = p1Guess !== UNREVEALED;
+      const p2Revealed = p2Guess !== UNREVEALED;
+      const stepCount =
+        p1Revealed && p2Revealed
+          ? TERMINAL_STEP_COUNT
+          : p1Revealed || p2Revealed
+          ? 3
+          : (g.p1Committed ? 1 : 0) + (g.p2Committed ? 1 : 0);
       const input: OracleInput = {
-        stepCount: TERMINAL_STEP_COUNT,
+        stepCount,
         matchupType: Number(g.matchupType),
-        p1Guess: Number(g.p1Guess),
-        p2Guess: Number(g.p2Guess),
+        p1Guess,
+        p2Guess,
         firstCommitter: Number(g.firstCommitter),
       };
       return deriveClaimOutcome(input);

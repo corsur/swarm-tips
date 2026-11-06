@@ -67,6 +67,7 @@ class ProtocolHandler:
     resolve_state: StateResolver
     valid_states: ValidStates
     program_id: Optional[str] = None
+    score_max: Optional[int] = 1_000_000
 
 
 # Verdict shape. ``failure_reason`` is a string from the closed taxonomy

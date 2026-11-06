@@ -163,6 +163,11 @@ fn validate_update(
         staleness_window_seconds > 0,
         ShillbotError::InvalidParameter
     );
+    require!(
+        verification_timeout_seconds
+            > attestation_delay_seconds.saturating_add(staleness_window_seconds),
+        ShillbotError::InvalidTimeoutOrdering
+    );
     require!(max_concurrent_claims > 0, ShillbotError::InvalidParameter);
     // Challenge bond multiplier within bounds [2, 10]
     require!(

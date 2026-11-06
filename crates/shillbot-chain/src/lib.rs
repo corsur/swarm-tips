@@ -698,7 +698,8 @@ pub fn validate(
                 "transaction authority differs from wallet".into(),
             ));
         }
-    } else if !keys[..required].contains(&wallet) {
+    }
+    if !keys[..required].contains(&wallet) {
         return Err(ValidationError::Rejected(
             "registered wallet is not a required signer".into(),
         ));
@@ -1248,5 +1249,24 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("must be a required signer"));
+    }
+
+    #[test]
+    fn sponsored_tx_requires_wallet_to_be_signer() {
+        let sponsor = Keypair::new().pubkey();
+        let wallet = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        // Build a claim instruction where wallet (account 3) is NOT marked as a signer.
+        let mut ix = claim_task_instruction(wallet, task);
+        ix.accounts[3].is_signer = false;
+        let tx = transaction(vec![ix.clone()], &sponsor);
+        let mut expected = exact_request(Action::Claim, wallet, task, &ix);
+        expected.sponsor = Some(sponsor.to_string());
+        let err = validate(&tx, &expected).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("registered wallet is not a required signer"),
+            "unexpected error: {err}"
+        );
     }
 }

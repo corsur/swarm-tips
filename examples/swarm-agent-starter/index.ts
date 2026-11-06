@@ -86,8 +86,43 @@ function loadOrGenerateKeypair(): Keypair {
   return Keypair.generate();
 }
 
+const SHILLBOT_PROGRAM_ID = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi";
+const COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111";
+
+function assertSafeShillbotTx(tx: VersionedTransaction, walletPubkey: string): void {
+  const msg = tx.message;
+  if (msg.addressTableLookups && msg.addressTableLookups.length > 0) {
+    throw new Error("Refusing to sign a transaction with address table lookups");
+  }
+  const accountKeys = msg.staticAccountKeys.map((k) => k.toBase58());
+  const numSigners = msg.header.numRequiredSignatures;
+  const signers = accountKeys.slice(0, numSigners);
+  if (!signers.includes(walletPubkey)) {
+    throw new Error(
+      `Refusing to sign a transaction where wallet ${walletPubkey} is not a required signer`,
+    );
+  }
+  const allowedPrograms = new Set([SHILLBOT_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID]);
+  let hasShillbotIx = false;
+  for (const ix of msg.compiledInstructions) {
+    const programId = accountKeys[ix.programIdIndex];
+    if (!programId || !allowedPrograms.has(programId)) {
+      throw new Error(
+        `Refusing to sign a transaction invoking unauthorized program: ${programId ?? "unknown"}`,
+      );
+    }
+    if (programId === SHILLBOT_PROGRAM_ID) {
+      hasShillbotIx = true;
+    }
+  }
+  if (!hasShillbotIx) {
+    throw new Error("Refusing to sign a transaction with no Shillbot program instruction");
+  }
+}
+
 function signBase64Tx(unsignedB64: string, signer: Keypair): string {
   const tx = VersionedTransaction.deserialize(Buffer.from(unsignedB64, "base64"));
+  assertSafeShillbotTx(tx, signer.publicKey.toBase58());
   tx.sign([signer]);
   return Buffer.from(tx.serialize()).toString("base64");
 }
