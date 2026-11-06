@@ -156,8 +156,7 @@ async function mcpReachable(): Promise<boolean> {
         oracle_authority?: string;
       };
       c.check(
-        j.ready === true &&
-          j.oracle_authority === g.oracleAuthority.toBase58(),
+        j.ready === true && j.oracle_authority === g.oracleAuthority.toBase58(),
         "GET /internal/build-verify-tx ready & matches GlobalState.oracle_authority",
         `${j.mode ?? "unknown"} (${j.oracle_authority ?? "none"})`
       );
@@ -195,7 +194,11 @@ async function mcpReachable(): Promise<boolean> {
     `  · min_escrow_lamports = ${minEscrow} (${minEscrow / 1e9} SOL)`
   );
   console.log(
-    `  · attestation_delay = ${(g.attestationDelaySeconds as BN).toString()}s | challenge_window = ${(g.challengeWindowSeconds as BN).toString()}s\n`
+    `  · attestation_delay = ${(
+      g.attestationDelaySeconds as BN
+    ).toString()}s | challenge_window = ${(
+      g.challengeWindowSeconds as BN
+    ).toString()}s\n`
   );
 
   console.log(

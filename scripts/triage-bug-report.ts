@@ -14,7 +14,8 @@
 import fs from "node:fs";
 
 const LEAN_RUNNER_URL = process.env.LEAN_RUNNER_URL ?? "";
-const MCP_INTERNAL_URL = process.env.MCP_INTERNAL_URL ?? "https://mcp.swarm.tips";
+const MCP_INTERNAL_URL =
+  process.env.MCP_INTERNAL_URL ?? "https://mcp.swarm.tips";
 
 export function extractLeanBlocks(body: string): string[] {
   const blocks: string[] = [];
@@ -37,7 +38,7 @@ export function extractLeanBlocks(body: string): string[] {
 export async function verifyAgainstLeanRunner(
   statementLean: string,
   proofLean: string,
-  policyMask = 0,
+  policyMask = 0
 ): Promise<{
   ok: boolean;
   verified: boolean;
@@ -49,7 +50,8 @@ export async function verifyAgainstLeanRunner(
     return {
       ok: false,
       verified: false,
-      diagnostic: "LEAN_RUNNER_URL not set; skipped remote runner call (local syntax check only).",
+      diagnostic:
+        "LEAN_RUNNER_URL not set; skipped remote runner call (local syntax check only).",
     };
   }
   const res = await fetch(`${LEAN_RUNNER_URL.replace(/\/$/, "")}/check`, {
@@ -72,11 +74,18 @@ export async function verifyAgainstLeanRunner(
 }
 
 async function main() {
-  const msgId = process.argv.find((a) => a.startsWith("--message-id="))?.split("=")[1];
-  const statementFile = process.argv.find((a) => a.startsWith("--statement-file="))?.split("=")[1];
-  const proofFile = process.argv.find((a) => a.startsWith("--proof-file="))?.split("=")[1];
+  const msgId = process.argv
+    .find((a) => a.startsWith("--message-id="))
+    ?.split("=")[1];
+  const statementFile = process.argv
+    .find((a) => a.startsWith("--statement-file="))
+    ?.split("=")[1];
+  const proofFile = process.argv
+    .find((a) => a.startsWith("--proof-file="))
+    ?.split("=")[1];
   const reporterWallet =
-    process.argv.find((a) => a.startsWith("--reporter="))?.split("=")[1] ?? "<REPORTER_WALLET>";
+    process.argv.find((a) => a.startsWith("--reporter="))?.split("=")[1] ??
+    "<REPORTER_WALLET>";
 
   if (statementFile && proofFile) {
     const statementLean = fs.readFileSync(statementFile, "utf8");
@@ -92,14 +101,17 @@ async function main() {
           arguments: {
             reporter_wallet: reporterWallet,
             commit_sha: process.env.COMMIT_SHA ?? "<FIX_COMMIT_SHA>",
-            severity: verdict.resolution_direction === "disproved" ? "high" : "medium",
-            summary: `Verified Lean 4 ${verdict.resolution_direction ?? "formal"} audit report`,
+            severity:
+              verdict.resolution_direction === "disproved" ? "high" : "medium",
+            summary: `Verified Lean 4 ${
+              verdict.resolution_direction ?? "formal"
+            } audit report`,
             message_id: msgId,
           },
         },
         null,
-        2,
-      ),
+        2
+      )
     );
     return;
   }
@@ -114,8 +126,8 @@ async function main() {
           "npx tsx scripts/triage-bug-report.ts --statement-file=<stmt.lean> --proof-file=<proof.lean> [--reporter=<wallet>] [--message-id=<id>]",
       },
       null,
-      2,
-    ),
+      2
+    )
   );
 }
 

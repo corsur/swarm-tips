@@ -421,7 +421,9 @@ async function main(): Promise<void> {
   const challengeDeadline = task.challengeDeadline.toNumber();
   let nowSec = Math.floor(Date.now() / 1000);
   const waitFinalizeSecs = Math.max(1, challengeDeadline - nowSec + 2);
-  console.log(`  waiting ${waitFinalizeSecs}s for challenge window to close...`);
+  console.log(
+    `  waiting ${waitFinalizeSecs}s for challenge window to close...`
+  );
   await new Promise((r) => setTimeout(r, waitFinalizeSecs * 1000));
 
   await shillbot.methods
@@ -461,7 +463,7 @@ async function main(): Promise<void> {
     .rpc({ commitment: "confirmed" });
   const expectedSurplus = routedIn - ADVANCE.toNumber();
   check(
-    (await bal( onbAuth.publicKey)) - onbBeforeRecoup === ADVANCE.toNumber(),
+    (await bal(onbAuth.publicKey)) - onbBeforeRecoup === ADVANCE.toNumber(),
     `onbAuth recouped full advance principal (${ADVANCE.toNumber()} lamports) from task payout`
   );
   check(

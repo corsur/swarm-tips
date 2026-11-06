@@ -288,7 +288,11 @@ async function main(): Promise<void> {
       bountyTrust.inputs_present.eigentrust === true &&
       bountyTrust.eigentrust !== null &&
       bountyTrust.eigentrust.bug_bounties_received >= 1,
-    `agent_trust_score surfaces bug-bounty EigenTrust standing (score=${bountyTrust.trust_score.toFixed(4)}, rank #${bountyTrust.eigentrust?.rank}, bug_bounties_received=${bountyTrust.eigentrust?.bug_bounties_received})`
+    `agent_trust_score surfaces bug-bounty EigenTrust standing (score=${bountyTrust.trust_score.toFixed(
+      4
+    )}, rank #${bountyTrust.eigentrust?.rank}, bug_bounties_received=${
+      bountyTrust.eigentrust?.bug_bounties_received
+    })`
   );
 
   const bountyRep = (await (

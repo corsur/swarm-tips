@@ -216,20 +216,20 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
       const defaultEscrowLamports = name.startsWith("tier1-")
         ? 5_000_000
         : name.startsWith("tier2-")
-          ? 15_000_000
-          : name.startsWith("millennium-sub-")
-            ? 30_000_000
-            : name.startsWith("millennium-")
-              ? 50_000_000
-              : undefined;
+        ? 15_000_000
+        : name.startsWith("millennium-sub-")
+        ? 30_000_000
+        : name.startsWith("millennium-")
+        ? 50_000_000
+        : undefined;
       entries.push({
         name,
         kind,
         program: MILLENNIUM_TASKS.has(name)
           ? "millennium-rh-weil-gram"
           : LADDER_TASKS.has(name)
-            ? "lemma-ladder"
-            : "general",
+          ? "lemma-ladder"
+          : "general",
         statement: fs.readFileSync(path.join(dir, f), "utf8").trimEnd(),
         companionProof,
         sanityScriptPath,
@@ -249,8 +249,7 @@ export function assertOuterExistentialQuantifierOrder(
   entry: CatalogEntry
 ): void {
   const propIdx = entry.statement.indexOf("def statementProp");
-  const body =
-    propIdx >= 0 ? entry.statement.slice(propIdx) : entry.statement;
+  const body = propIdx >= 0 ? entry.statement.slice(propIdx) : entry.statement;
   const forallMatch = body.search(/∀\s*\(\s*[nNGP]\b/);
   const existsCMatch = body.search(/∃\s*\(?\s*C\s*:/);
   if (forallMatch >= 0 && existsCMatch > forallMatch) {
@@ -354,9 +353,9 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
       );
     }
     console.log(
-      `  [pre-seed check PASS] solvable/${entry.name} elaborated & companion proof verified (${
-        Date.now() - t0
-      }ms)`
+      `  [pre-seed check PASS] solvable/${
+        entry.name
+      } elaborated & companion proof verified (${Date.now() - t0}ms)`
     );
     return;
   }
@@ -423,7 +422,9 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
   }
 
   console.log(
-    `  [pre-seed check PASS] ${entry.name} elaborated cleanly & rejected all 5 vacuity/triviality canaries (${
+    `  [pre-seed check PASS] ${
+      entry.name
+    } elaborated cleanly & rejected all 5 vacuity/triviality canaries (${
       Date.now() - t0
     }ms)`
   );
@@ -465,7 +466,10 @@ async function main(): Promise<void> {
   const isMillenniumOnly =
     process.argv.includes("--millennium") ||
     process.argv.includes("--new") ||
-    (isMainnet && !process.argv.includes("--all-open") && !isLadder && !taskArg);
+    (isMainnet &&
+      !process.argv.includes("--all-open") &&
+      !isLadder &&
+      !taskArg);
 
   if (taskArg) {
     const allowed = new Set(
@@ -534,8 +538,8 @@ async function main(): Promise<void> {
       (escrowArg
         ? escrowLamports
         : isMainnet
-          ? e.defaultEscrowLamports ?? escrowLamports
-          : escrowLamports),
+        ? e.defaultEscrowLamports ?? escrowLamports
+        : escrowLamports),
     0
   );
   const minLamports = totalEscrowNeeded + 5_000_000;
@@ -561,8 +565,8 @@ async function main(): Promise<void> {
     const entryEscrow = escrowArg
       ? escrowLamports
       : isMainnet
-        ? entry.defaultEscrowLamports ?? escrowLamports
-        : escrowLamports;
+      ? entry.defaultEscrowLamports ?? escrowLamports
+      : escrowLamports;
     const topic = `catalog:${entry.name}`;
     if (already.has(topic)) {
       console.log(`  skip (open task exists): ${topic}`);
@@ -610,7 +614,11 @@ async function main(): Promise<void> {
       }
     );
     console.log(
-      `  [${network}] seeded ${entry.kind}/${entry.name} (${(entryEscrow / LAMPORTS_PER_SOL).toFixed(4)} SOL) -> campaign ${campaignId} task ${fund.task_id} pda ${fund.task_pda} (tx ${sig})`
+      `  [${network}] seeded ${entry.kind}/${entry.name} (${(
+        entryEscrow / LAMPORTS_PER_SOL
+      ).toFixed(4)} SOL) -> campaign ${campaignId} task ${fund.task_id} pda ${
+        fund.task_pda
+      } (tx ${sig})`
     );
     created++;
   }

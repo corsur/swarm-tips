@@ -357,7 +357,8 @@ export function gameView(ctx: GameCtx, gamePda: PublicKey): StateView {
           ? TERMINAL_STEP_COUNT
           : p1Revealed || p2Revealed
           ? 3
-          : (g.p1Committed ? 1 : 0) + (g.p2Committed ? 1 : 0);
+          : ((g.p1Commit as number[]).some((b) => b !== 0) ? 1 : 0) +
+            ((g.p2Commit as number[]).some((b) => b !== 0) ? 1 : 0);
       const input: OracleInput = {
         stepCount,
         matchupType: Number(g.matchupType),

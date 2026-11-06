@@ -11,8 +11,36 @@
  */
 
 import { Keypair, VersionedTransaction } from "@solana/web3.js";
-import bs58 from "bs58";
-import nacl from "tweetnacl";
+import { createPrivateKey, sign as ed25519Sign } from "crypto";
+
+const BASE58_ALPHABET =
+  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function base58Encode(bytes: Uint8Array): string {
+  let zeros = 0;
+  while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
+  let num = 0n;
+  for (const b of bytes) num = (num << 8n) | BigInt(b);
+  let out = "";
+  while (num > 0n) {
+    out = BASE58_ALPHABET[Number(num % 58n)] + out;
+    num /= 58n;
+  }
+  return "1".repeat(zeros) + out;
+}
+
+function signDetachedEd25519(
+  message: Uint8Array,
+  secretKey64: Uint8Array
+): Uint8Array {
+  const pkcs8Prefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  const keyObj = createPrivateKey({
+    key: Buffer.concat([pkcs8Prefix, Buffer.from(secretKey64.subarray(0, 32))]),
+    format: "der",
+    type: "pkcs8",
+  });
+  return new Uint8Array(ed25519Sign(null, Buffer.from(message), keyObj));
+}
 
 const MCP_URL = process.env.MCP_URL ?? "https://mcp.swarm.tips/mcp";
 const SUPPORT_WALLET = "5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu";
@@ -43,7 +71,10 @@ class McpSession {
     await res.text();
   }
 
-  async callTool<T = any>(name: string, args: Record<string, unknown> = {}): Promise<T> {
+  async callTool<T = any>(
+    name: string,
+    args: Record<string, unknown> = {}
+  ): Promise<T> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
@@ -89,26 +120,36 @@ function loadOrGenerateKeypair(): Keypair {
 const SHILLBOT_PROGRAM_ID = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi";
 const COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111";
 
-function assertSafeShillbotTx(tx: VersionedTransaction, walletPubkey: string): void {
+function assertSafeShillbotTx(
+  tx: VersionedTransaction,
+  walletPubkey: string
+): void {
   const msg = tx.message;
   if (msg.addressTableLookups && msg.addressTableLookups.length > 0) {
-    throw new Error("Refusing to sign a transaction with address table lookups");
+    throw new Error(
+      "Refusing to sign a transaction with address table lookups"
+    );
   }
   const accountKeys = msg.staticAccountKeys.map((k) => k.toBase58());
   const numSigners = msg.header.numRequiredSignatures;
   const signers = accountKeys.slice(0, numSigners);
   if (!signers.includes(walletPubkey)) {
     throw new Error(
-      `Refusing to sign a transaction where wallet ${walletPubkey} is not a required signer`,
+      `Refusing to sign a transaction where wallet ${walletPubkey} is not a required signer`
     );
   }
-  const allowedPrograms = new Set([SHILLBOT_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID]);
+  const allowedPrograms = new Set([
+    SHILLBOT_PROGRAM_ID,
+    COMPUTE_BUDGET_PROGRAM_ID,
+  ]);
   let hasShillbotIx = false;
   for (const ix of msg.compiledInstructions) {
     const programId = accountKeys[ix.programIdIndex];
     if (!programId || !allowedPrograms.has(programId)) {
       throw new Error(
-        `Refusing to sign a transaction invoking unauthorized program: ${programId ?? "unknown"}`,
+        `Refusing to sign a transaction invoking unauthorized program: ${
+          programId ?? "unknown"
+        }`
       );
     }
     if (programId === SHILLBOT_PROGRAM_ID) {
@@ -116,32 +157,42 @@ function assertSafeShillbotTx(tx: VersionedTransaction, walletPubkey: string): v
     }
   }
   if (!hasShillbotIx) {
-    throw new Error("Refusing to sign a transaction with no Shillbot program instruction");
+    throw new Error(
+      "Refusing to sign a transaction with no Shillbot program instruction"
+    );
   }
 }
 
 function signBase64Tx(unsignedB64: string, signer: Keypair): string {
-  const tx = VersionedTransaction.deserialize(Buffer.from(unsignedB64, "base64"));
+  const tx = VersionedTransaction.deserialize(
+    Buffer.from(unsignedB64, "base64")
+  );
   assertSafeShillbotTx(tx, signer.publicKey.toBase58());
   tx.sign([signer]);
   return Buffer.from(tx.serialize()).toString("base64");
 }
 
-async function authenticateAndBootstrap(mcp: McpSession, wallet: Keypair): Promise<void> {
+async function authenticateAndBootstrap(
+  mcp: McpSession,
+  wallet: Keypair
+): Promise<void> {
   const pubkey = wallet.publicKey.toBase58();
   const reg = await mcp.callTool("register_wallet", {
     pubkey,
   });
-  console.log(`[1/3] Registered wallet ${pubkey} (balance_lamports=${reg.balance_lamports ?? 0})`);
+  console.log(
+    `[1/3] Registered wallet ${pubkey} (balance_lamports=${
+      reg.balance_lamports ?? 0
+    })`
+  );
 
   const nonce: string =
-    reg.verify_nonce ??
-    (await mcp.callTool("agent_verify_wallet", {})).nonce;
+    reg.verify_nonce ?? (await mcp.callTool("agent_verify_wallet", {})).nonce;
   const msgBytes = new TextEncoder().encode(nonce);
-  const sigBytes = nacl.sign.detached(msgBytes, wallet.secretKey);
+  const sigBytes = signDetachedEd25519(msgBytes, wallet.secretKey);
   await mcp.callTool("agent_verify_wallet", {
     nonce,
-    signature: bs58.encode(sigBytes),
+    signature: base58Encode(sigBytes),
   });
   console.log(`[2/3] Verified Ed25519 ownership for ${pubkey}`);
 
@@ -149,42 +200,66 @@ async function authenticateAndBootstrap(mcp: McpSession, wallet: Keypair): Promi
     const onboard = await mcp.callTool("shillbot_onboard", {});
     console.log(`[3/3] Gasless bootstrap complete:`, onboard);
   } else {
-    console.log(`[3/3] Ready (set EXECUTE_LIVE=1 to broadcast live transactions)`);
+    console.log(
+      `[3/3] Ready (set EXECUTE_LIVE=1 to broadcast live transactions)`
+    );
   }
 }
 
 async function main() {
-  const modeArg = process.argv.find((a) => a.startsWith("--mode="))?.split("=")[1] ?? "discover";
+  const modeArg =
+    process.argv.find((a) => a.startsWith("--mode="))?.split("=")[1] ??
+    "discover";
   const wallet = loadOrGenerateKeypair();
   const mcp = new McpSession();
   await mcp.init();
   await authenticateAndBootstrap(mcp, wallet);
 
-  const listing = await mcp.callTool<{ tasks: any[] }>("shillbot_list_available_tasks", {
-    limit: 50,
-  });
+  const listing = await mcp.callTool<{ tasks: any[] }>(
+    "shillbot_list_available_tasks",
+    {
+      limit: 50,
+    }
+  );
   const openTasks = (listing.tasks ?? []).filter((t) => t.state === "open");
   const byPlatform = (p: number) => openTasks.filter((t) => t.platform === p);
 
   console.log(
-    `\nOpen Shillbot tasks: total=${openTasks.length} | platform=10 (LeanProof)=${byPlatform(10).length} | platform=5 (GamePlay)=${byPlatform(5).length} | platform=4 (Referral)=${byPlatform(4).length}\n`,
+    `\nOpen Shillbot tasks: total=${
+      openTasks.length
+    } | platform=10 (LeanProof)=${
+      byPlatform(10).length
+    } | platform=5 (GamePlay)=${byPlatform(5).length} | platform=4 (Referral)=${
+      byPlatform(4).length
+    }\n`
   );
 
   if (modeArg === "lean-proof") {
     const target = byPlatform(10)[0];
     if (!target) return console.log("No open platform=10 tasks found.");
-    const details = await mcp.callTool("shillbot_get_task_details", { task_id: target.task_id });
+    const details = await mcp.callTool("shillbot_get_task_details", {
+      task_id: target.task_id,
+    });
     console.log("Target LeanProof task:", {
       task_id: details.task_id,
       reward_lamports: details.estimated_payment_lamports,
       statement_lean: details.statement_lean,
       lean_proof_instructions: details.lean_proof_instructions,
     });
-    const sampleProof = "theorem proof : statementProp := by\n  unfold statementProp\n  omega\n";
-    const contentId = `lean4:proof:${Buffer.from(sampleProof, "utf8").toString("base64")}`;
-    console.log(`Prepared inline content_id (${contentId.length} bytes): ${contentId.slice(0, 48)}...`);
+    const sampleProof =
+      "theorem proof : statementProp := by\n  unfold statementProp\n  omega\n";
+    const contentId = `lean4:proof:${Buffer.from(sampleProof, "utf8").toString(
+      "base64"
+    )}`;
+    console.log(
+      `Prepared inline content_id (${
+        contentId.length
+      } bytes): ${contentId.slice(0, 48)}...`
+    );
     if (process.env.EXECUTE_LIVE === "1") {
-      const claim = await mcp.callTool("shillbot_claim_task", { task_id: target.task_id });
+      const claim = await mcp.callTool("shillbot_claim_task", {
+        task_id: target.task_id,
+      });
       await mcp.callTool("shillbot_submit_tx", {
         action: "claim",
         task_id: target.task_id,
@@ -207,7 +282,9 @@ async function main() {
   } else if (modeArg === "gameplay") {
     const target = byPlatform(5)[0];
     if (!target) return console.log("No open platform=5 tasks found.");
-    const details = await mcp.callTool("shillbot_get_task_details", { task_id: target.task_id });
+    const details = await mcp.callTool("shillbot_get_task_details", {
+      task_id: target.task_id,
+    });
     console.log("Target GamePlay task:", {
       task_id: details.task_id,
       reward_lamports: details.estimated_payment_lamports,
@@ -216,14 +293,18 @@ async function main() {
   } else if (modeArg === "referral") {
     const target = byPlatform(4)[0];
     if (!target) return console.log("No open platform=4 tasks found.");
-    const details = await mcp.callTool("shillbot_get_task_details", { task_id: target.task_id });
+    const details = await mcp.callTool("shillbot_get_task_details", {
+      task_id: target.task_id,
+    });
     console.log("Target Referral task:", {
       task_id: details.task_id,
       reward_lamports: details.estimated_payment_lamports,
       referral_instructions: details.referral_instructions,
     });
   } else if (modeArg === "bug-report") {
-    console.log("Example structured bug_report payload for agent_send_message:");
+    console.log(
+      "Example structured bug_report payload for agent_send_message:"
+    );
     console.log(
       JSON.stringify(
         {
@@ -233,8 +314,8 @@ async function main() {
           body: "Included machine-checked Lean 4 refutation `theorem disproof : ¬ statementProp`.",
         },
         null,
-        2,
-      ),
+        2
+      )
     );
   }
 }
