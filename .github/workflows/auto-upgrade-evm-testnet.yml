@@ -131,7 +131,7 @@ jobs:
         working-directory: evm
     env:
       V4_PROXY: ${{ vars[matrix.proxy_var] }}
-      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
+      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
       IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
     steps:
       - uses: actions/checkout@v7
@@ -234,7 +234,7 @@ jobs:
         working-directory: evm
     env:
       XCHAIN_PROXY: ${{ vars[matrix.proxy_var] }}
-      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
+      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
       IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
     steps:
       - uses: actions/checkout@v7
