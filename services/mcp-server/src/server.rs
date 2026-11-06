@@ -6253,6 +6253,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn hidden_list_is_exactly_the_19_testnet_tools_and_all_exist() {
         assert!(
             HIDDEN_UNTIL_MAINNET.is_empty(),

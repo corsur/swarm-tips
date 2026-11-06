@@ -186,6 +186,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn testnet_gate_is_confined_to_the_game_surface() {
         assert!(
             TESTNET_GAME_TOOLS.is_empty(),
