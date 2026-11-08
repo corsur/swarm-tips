@@ -801,3 +801,44 @@ fn xchain_submit_result_routes_next_step_by_action() {
             .contains("Refund submitted"));
     }
 }
+
+#[test]
+fn reset_for_queue_clears_previous_game_fields() {
+    let mut s = GameSession {
+        wallet: "CKsZ7Z".to_string(),
+        jwt: "jwt-2".to_string(),
+        state: GameSessionState::Resolved,
+        game_id: Some(42),
+        tournament_id: Some(1),
+        session_id: Some("old-session".to_string()),
+        role: Some(0),
+        chat_buffer: vec!["hello".to_string()],
+        match_found: Some(MatchFoundMsg {
+            session_id: "old-session".to_string(),
+            role: 0,
+            matchup_commitment: Some("ab".repeat(32)),
+            tournament_id: Some(1),
+        }),
+        matchup_commitment: Some("ab".repeat(32)),
+        commit_preimage: Some([7u8; 32]),
+        game_ready: Some(42),
+        reveal_data: Some("cd".repeat(32)),
+        network: Some("devnet".to_string()),
+    };
+
+    s.reset_for_queue(2);
+
+    assert_eq!(s.state, GameSessionState::Queued);
+    assert_eq!(s.tournament_id, Some(2));
+    assert_eq!(s.jwt, "jwt-2");
+    assert_eq!(s.network.as_deref(), Some("devnet"));
+    assert!(s.game_id.is_none());
+    assert!(s.session_id.is_none());
+    assert!(s.role.is_none());
+    assert!(s.chat_buffer.is_empty());
+    assert!(s.match_found.is_none());
+    assert!(s.matchup_commitment.is_none());
+    assert!(s.commit_preimage.is_none());
+    assert!(s.game_ready.is_none());
+    assert!(s.reveal_data.is_none());
+}

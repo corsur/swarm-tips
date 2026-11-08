@@ -160,6 +160,25 @@ pub struct GameSession {
     pub network: Option<String>,
 }
 
+impl GameSession {
+    /// Reset per-game fields when entering the matchmaking queue for a new game
+    /// so stale state (`match_found`, `game_id`, `commit_preimage`, `reveal_data`)
+    /// from a prior match in the same session cannot bleed into the new match.
+    pub fn reset_for_queue(&mut self, tournament_id: u64) {
+        self.state = GameSessionState::Queued;
+        self.tournament_id = Some(tournament_id);
+        self.game_id = None;
+        self.session_id = None;
+        self.role = None;
+        self.chat_buffer.clear();
+        self.match_found = None;
+        self.matchup_commitment = None;
+        self.commit_preimage = None;
+        self.game_ready = None;
+        self.reveal_data = None;
+    }
+}
+
 /// Status returned by `check_match`.
 #[derive(Debug, Serialize)]
 pub struct MatchStatus {
@@ -1813,8 +1832,7 @@ impl GameSessionManager {
             .context("no session for wallet")?
             .clone();
         let mut s = session.lock().await;
-        s.state = GameSessionState::Queued;
-        s.tournament_id = Some(tournament_id);
+        s.reset_for_queue(tournament_id);
         self.persist_session(&s).await?;
 
         tracing::info!(

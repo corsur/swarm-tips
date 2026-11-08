@@ -76,18 +76,19 @@ impl McpSessionBinding {
             anyhow::bail!("wallet must not be empty");
         }
 
-        let now = chrono::Utc::now();
-        let doc = McpHttpSessionDoc {
-            session_id: session_id.to_string(),
-            wallet: wallet.to_string(),
-            created_at: firestore::FirestoreTimestamp(now),
-            last_seen_at: firestore::FirestoreTimestamp(now),
-            // A fresh bind is always unproven: re-binding overwrites the whole
-            // doc, so any prior verification for a different wallet dies here.
-            verified_wallet: None,
-            verified_at: None,
-            access_token: None,
-        };
+        let existing: Option<McpHttpSessionDoc> = self
+            .db
+            .fluent()
+            .select()
+            .by_id_in(MCP_HTTP_SESSIONS_COLLECTION)
+            .obj()
+            .one(session_id)
+            .await
+            .ok()
+            .flatten();
+
+        let now = firestore::FirestoreTimestamp(chrono::Utc::now());
+        let doc = build_bound_session_doc(existing, session_id, wallet, now);
 
         if let Err(e) = self
             .db
@@ -282,6 +283,42 @@ impl McpSessionBinding {
     }
 }
 
+/// Build the `McpHttpSessionDoc` to persist on `bind(session_id, wallet)`.
+///
+/// Re-binding the same session to the same wallet is idempotent: it refreshes
+/// `last_seen_at` while preserving `created_at` and any existing ownership
+/// proof (`verified_wallet`, `verified_at`, `access_token`). Re-binding to a
+/// different wallet resets the proof so the new wallet cannot inherit the
+/// previous wallet's verification.
+fn build_bound_session_doc(
+    existing: Option<McpHttpSessionDoc>,
+    session_id: &str,
+    wallet: &str,
+    now: firestore::FirestoreTimestamp,
+) -> McpHttpSessionDoc {
+    if let Some(prev) = existing.filter(|d| d.wallet == wallet) {
+        McpHttpSessionDoc {
+            session_id: session_id.to_string(),
+            wallet: wallet.to_string(),
+            created_at: prev.created_at,
+            last_seen_at: now,
+            verified_wallet: prev.verified_wallet.filter(|v| v == wallet),
+            verified_at: prev.verified_at,
+            access_token: prev.access_token,
+        }
+    } else {
+        McpHttpSessionDoc {
+            session_id: session_id.to_string(),
+            wallet: wallet.to_string(),
+            created_at: now.clone(),
+            last_seen_at: now,
+            verified_wallet: None,
+            verified_at: None,
+            access_token: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +366,37 @@ mod tests {
         assert_eq!(parsed.session_id, "old-session");
         assert!(parsed.verified_wallet.is_none(), "legacy docs are unproven");
         assert!(parsed.verified_at.is_none());
+    }
+
+    #[test]
+    fn rebinding_same_wallet_preserves_verification_and_switching_wallet_clears_it() {
+        let t0 = firestore::FirestoreTimestamp(chrono::Utc::now() - chrono::Duration::seconds(60));
+        let t1 = firestore::FirestoreTimestamp(chrono::Utc::now());
+        let w1 = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+        let w2 = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+
+        let verified_doc = McpHttpSessionDoc {
+            session_id: "sess-1".to_string(),
+            wallet: w1.to_string(),
+            created_at: t0.clone(),
+            last_seen_at: t0.clone(),
+            verified_wallet: Some(w1.to_string()),
+            verified_at: Some(t0.clone()),
+            access_token: Some("tok-123".to_string()),
+        };
+
+        let rebound_same =
+            build_bound_session_doc(Some(verified_doc.clone()), "sess-1", w1, t1.clone());
+        assert_eq!(rebound_same.created_at, t0);
+        assert_eq!(rebound_same.last_seen_at, t1);
+        assert_eq!(rebound_same.verified_wallet.as_deref(), Some(w1));
+        assert_eq!(rebound_same.access_token.as_deref(), Some("tok-123"));
+
+        let rebound_diff = build_bound_session_doc(Some(verified_doc), "sess-1", w2, t1.clone());
+        assert_eq!(rebound_diff.wallet, w2);
+        assert_eq!(rebound_diff.created_at, t1);
+        assert!(rebound_diff.verified_wallet.is_none());
+        assert!(rebound_diff.verified_at.is_none());
+        assert!(rebound_diff.access_token.is_none());
     }
 }
