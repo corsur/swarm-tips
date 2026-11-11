@@ -76,13 +76,13 @@ function mockConnection(txSig = "5MockSig11111111111111111111111111111111111111"
 }
 
 describe("Version sync & multi-bin package contract", () => {
-  it("exports CLIENT_VERSION matching package.json 0.3.0 and registers both swarm and client bins", () => {
+  it("exports CLIENT_VERSION matching package.json 0.4.0 and registers both swarm and client bins", () => {
     const pkg = JSON.parse(readFileSync(resolve(clientRoot, "package.json"), "utf8")) as {
       version: string;
       bin: Record<string, string>;
     };
-    expect(pkg.version).toBe("0.3.0");
-    expect(CLIENT_VERSION).toBe("0.3.0");
+    expect(pkg.version).toBe("0.4.0");
+    expect(CLIENT_VERSION).toBe("0.4.0");
     expect(pkg.bin.swarm).toBe("./dist/cli/swarm.js");
     expect(pkg.bin.client).toBe("./dist/cli/swarm.js");
   });
