@@ -293,6 +293,8 @@ pub struct CreateCampaignParams<'a> {
     pub statement_lean: Option<&'a str>,
     /// LeanProof only: policy version (1 self-contained / 2 mathlib).
     pub lean_policy: Option<u32>,
+    /// OnChainAction (platform 11) declarative event/tx predicate spec.
+    pub onchain_action: Option<&'a serde_json::Value>,
     pub network: Option<&'a str>,
 }
 
@@ -546,6 +548,7 @@ impl OrchestratorProxy {
             requires_approval,
             statement_lean,
             lean_policy,
+            onchain_action,
             network,
         } = params;
         if wallet_pubkey.is_empty() {
@@ -566,6 +569,9 @@ impl OrchestratorProxy {
         }
         if let Some(p) = lean_policy {
             body["lean_policy"] = serde_json::json!(p);
+        }
+        if let Some(spec) = onchain_action {
+            body["onchain_action"] = spec.clone();
         }
         let response = self
             .client

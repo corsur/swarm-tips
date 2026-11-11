@@ -527,20 +527,22 @@ pub struct CreateCampaignArgs {
     pub utm_link: String,
     /// Per-task escrow in lamports (> 0) — the bounty one task pays.
     pub amount_lamports: u64,
-    /// Platform: 0 YouTube, 3 X, 4 referral, 5 game-play (default; deterministic
-    /// verification), 9 website, 10 LeanProof.
+    /// Platform: 0 YouTube, 3 X, 4 referral, 5 game (default), 9 web, 10 Lean, 11 OnChainAction.
     #[serde(default)]
     pub platform: Option<u8>,
-    /// Require client approve_task before verification (brand gate). Default false.
+    /// Require client approve_task before verification (default false).
     #[serde(default)]
     pub requires_approval: Option<bool>,
-    /// LeanProof only: the `Statement.lean` source to prove.
+    /// LeanProof (10): `Statement.lean` source.
     #[serde(default)]
     pub statement_lean: Option<String>,
     // Note: policy 3 (mathlib-heavy 600s) is also supported.
-    /// LeanProof only: policy 1 self-contained (default) or 2 mathlib.
+    /// LeanProof (10): policy 1 self-contained (default) or 2 mathlib.
     #[serde(default)]
     pub lean_policy: Option<u32>,
+    /// OnChainAction (11): predicate spec JSON.
+    #[serde(default)]
+    pub onchain_action: Option<serde_json::Value>,
     #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
@@ -1257,6 +1259,18 @@ impl SwarmTipsMcp {
         // Default platform 5 (game-play): the deterministically verifiable one, so a
         // programmatic first campaign can actually be completed + settled end-to-end.
         let platform = args.platform.unwrap_or(5);
+        if platform == 11 {
+            if args.onchain_action.is_none() {
+                return Err(invalid_input(
+                    "onchain_action predicate spec is required when platform=11 (OnChainAction)",
+                ));
+            }
+            if args.requires_approval.unwrap_or(false) {
+                return Err(invalid_input(
+                    "requires_approval must be false for platform=11 (OnChainAction)",
+                ));
+            }
+        }
         let brief = serde_json::json!({
             "topic": args.topic,
             "brand_voice": args.brand_voice,
@@ -1278,6 +1292,7 @@ impl SwarmTipsMcp {
                 requires_approval: args.requires_approval.unwrap_or(false),
                 statement_lean: args.statement_lean.as_deref(),
                 lean_policy: args.lean_policy,
+                onchain_action: args.onchain_action.as_ref(),
                 network,
             })
             .await
@@ -1416,7 +1431,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_submit_work",
-        description = "[EARN: SOL] Submit completed work for a claimed Shillbot task; sign and broadcast via shillbot_submit_tx action=\"submit\". content_id by platform: 10=lean4:proof:<base64> or gist URL (prove OR disprove statementProp, ~5m); 5=resolved coordination.game game_id UUID (~5m); 4=funded Shillbot campaign_id UUID (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
+        description = "[EARN: SOL] Submit work for a Shillbot task; sign and send via shillbot_submit_tx action=\"submit\". content_id by platform: 11=<caip2>:<tx>:<idx>[:sig:<hex>] (atomic claim+submit on Open task, ~1m); 10=lean4:proof:<base64> or gist URL (~5m); 5=game_id (~5m); 4=campaign_id (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_work(
@@ -2237,6 +2252,21 @@ impl SwarmTipsMcp {
             None => None,
         };
 
+        let unanchored_settlement_only = shillbot_input
+            .as_ref()
+            .is_some_and(|s| s.total_completed >= 1)
+            && curator.is_none()
+            && game_input.as_ref().is_none_or(|g| g.total_games < 5)
+            && credit_web
+                .as_ref()
+                .is_none_or(|cw| cw.extensions_count == 0)
+            && eigentrust_record.as_ref().is_none_or(|r| {
+                !crate::inbox::reputation_qualifies_for_reputable_tier(
+                    r.eigentrust_score,
+                    r.bug_bounties_received,
+                )
+            });
+
         let inputs = TrustInputs {
             shillbot: shillbot_input,
             eigentrust: eigentrust_record.as_ref().map(|r| r.rank_normalized),
@@ -2244,6 +2274,7 @@ impl SwarmTipsMcp {
             curator,
             agent_rank: args.agent_rank,
             credit_web,
+            unanchored_settlement_only,
         };
         let trust = compute_trust(&inputs);
 
@@ -5588,7 +5619,14 @@ fn task_next_action(
     expires: &str,
     network: Option<&str>,
 ) -> serde_json::Value {
-    let mut next = if task.state == "claimed" && task.platform == Some(9) {
+    let mut next = if task.state == "open" && task.platform == Some(11) {
+        serde_json::json!({
+            "next_action": "submit_work",
+            "next_tool": "shillbot_submit_work",
+            "args": { "task_id": task.task_id, "content_id": "<caip2>:<tx_id>:<index>[:sig:<hex>]" },
+            "hint": "OnChainAction (platform 11) uses atomic claim-on-proof: do NOT call shillbot_claim_task. Drive a finalized matching affiliate event on the target chain, optionally dry-run POST /tasks/:id/preflight, then call shillbot_submit_work directly.",
+        })
+    } else if task.state == "claimed" && task.platform == Some(9) {
         if task
             .website_instructions
             .as_ref()

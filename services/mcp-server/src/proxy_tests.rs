@@ -436,6 +436,7 @@ mod network_flow_tests {
                 requires_approval: false,
                 statement_lean: None,
                 lean_policy: None,
+                onchain_action: None,
                 network: Some("devnet"),
             })
             .await

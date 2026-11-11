@@ -1,0 +1,16 @@
+# Reproducible SBF test fixture for `tests/shillbot-guards.ts` (`cpi_claim_forwarder.so`).
+# Rebuild with:
+#   cargo build-sbf --manifest-path tests/fixtures/cpi_claim_forwarder/Cargo.toml
+#   cp tests/fixtures/cpi_claim_forwarder/target/deploy/cpi_claim_forwarder.so tests/fixtures/cpi_claim_forwarder.so
+[workspace]
+
+[package]
+name = "cpi_claim_forwarder"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+solana-program = "2"

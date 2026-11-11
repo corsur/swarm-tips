@@ -30,6 +30,7 @@ mod trust_matrix {
                 position: Some(v),
                 extensions_count: 3,
             }),
+            ..Default::default()
         }
     }
 

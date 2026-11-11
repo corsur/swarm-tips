@@ -41,9 +41,12 @@ export {
 export {
   SHILLBOT_ESCROW_DEPLOYMENTS,
   SHILLBOT_EVM_SELECTORS,
+  buildOnChainActionProofRef,
   estimateSolanaNetworkFeeLamports,
+  formatOnChainActionAttributionMessage,
   validatePreparedEvmCall,
   validatePreparedTransaction,
+  type BuildOnChainActionProofRefParams,
   type BuildVerifyOptions,
   type PreparedEvmCallExpectation,
   type PreparedTransactionExpectation,

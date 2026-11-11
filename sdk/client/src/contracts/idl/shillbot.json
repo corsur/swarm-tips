@@ -2108,10 +2108,9 @@
         {
           "name": "switchboard_feed",
           "docs": [
-            "The oracle authority signer (`GlobalState.oracle_authority` or",
-            "`GlobalState.authority`) or legacy Switchboard pull feed account.",
-            "/ `global_state.authority`, or validated against `global_state.switchboard_feed`",
-            "and parsed via `PullFeedAccountData::parse()`."
+            "Required oracle signer (`GlobalState.oracle_authority` or `GlobalState.authority`).",
+            "Field name retained as `switchboard_feed` for Anchor IDL backwards compatibility.",
+            "or `global_state.authority`."
           ]
         }
       ],
@@ -2559,6 +2558,19 @@
       ]
     },
     {
+      "name": "TaskReopened",
+      "discriminator": [
+        40,
+        56,
+        100,
+        41,
+        172,
+        36,
+        190,
+        61
+      ]
+    },
+    {
       "name": "TaskVerified",
       "discriminator": [
         8,
@@ -2888,6 +2900,11 @@
       "code": 6057,
       "name": "InvalidTimeoutOrdering",
       "msg": "verification_timeout must exceed attestation_delay + staleness_window"
+    },
+    {
+      "code": 6058,
+      "name": "InvalidInstructionBundle",
+      "msg": "OnChainAction claim must be bundled atomically at top-level with submit_work"
     }
   ],
   "types": [
@@ -4063,6 +4080,36 @@
           {
             "name": "fee_amount",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TaskReopened",
+      "docs": [
+        "Emitted when an `OnChainAction` (`platform == 11`) submission receives a `0`",
+        "score while still claimable (`now + claim_buffer < deadline`) and is reopened",
+        "in-place to `TaskState::Open` rather than entering terminal `Verified(0)`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "task_id",
+            "type": "u64"
+          },
+          {
+            "name": "prev_agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "verification_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }

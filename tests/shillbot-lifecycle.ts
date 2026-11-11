@@ -14,16 +14,9 @@ import { Clock } from "solana-bankrun";
 import { assert } from "chai";
 import { createHash, randomBytes } from "crypto";
 
-import { createMockPullFeedData } from "./helpers/mock-switchboard-feed";
-
 // Import the IDL type — anchor-bankrun requires the JSON IDL
 import { Shillbot } from "../target/types/shillbot";
 const IDL = require("../target/idl/shillbot.json");
-
-/// Switchboard On-Demand program ID (owner of feed accounts).
-const SWITCHBOARD_PROGRAM_ID = new PublicKey(
-  "Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2"
-);
 
 // ---------------------------------------------------------------------------
 // Constants matching the on-chain program
@@ -313,37 +306,25 @@ async function approveTask(
 
 async function verifyTask(
   program: Program<Shillbot>,
-  _authority: Keypair,
+  authority: Keypair,
   taskPdaAddr: PublicKey,
   globalPda: PublicKey,
   compositeScore: BN,
-  bankrunContext: Awaited<ReturnType<typeof startAnchor>>
+  _bankrunContext: Awaited<ReturnType<typeof startAnchor>>
 ): Promise<void> {
-  // Inject a mock Switchboard feed account with the desired score.
-  // bankrun lets us set arbitrary account data, bypassing the need for
-  // a real Switchboard program on the local validator.
-  const clock = await bankrunContext.banksClient.getClock();
-  const currentSlot = clock.slot;
-  const feedData = createMockPullFeedData(
-    compositeScore.toNumber(),
-    currentSlot
-  );
-  bankrunContext.setAccount(DUMMY_SWITCHBOARD_FEED, {
-    lamports: LAMPORTS_PER_SOL,
-    data: feedData,
-    owner: SWITCHBOARD_PROGRAM_ID,
-    executable: false,
-  });
-
   const verificationHash = Array.from({ length: 32 }, (_, i) => i + 1);
-  await program.methods
+  const ix = await program.methods
     .verifyTask(compositeScore, verificationHash)
     .accountsPartial({
       task: taskPdaAddr,
       globalState: globalPda,
-      switchboardFeed: DUMMY_SWITCHBOARD_FEED,
+      switchboardFeed: authority.publicKey,
     })
-    .rpc();
+    .instruction();
+  ix.keys[2].isSigner = true;
+  await program.provider.sendAndConfirm!(new Transaction().add(ix), [
+    authority,
+  ]);
 }
 
 // ---------------------------------------------------------------------------

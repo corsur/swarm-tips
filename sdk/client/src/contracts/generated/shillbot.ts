@@ -2114,10 +2114,9 @@ export type Shillbot = {
         {
           "name": "switchboardFeed",
           "docs": [
-            "The oracle authority signer (`GlobalState.oracle_authority` or",
-            "`GlobalState.authority`) or legacy Switchboard pull feed account.",
-            "/ `global_state.authority`, or validated against `global_state.switchboard_feed`",
-            "and parsed via `PullFeedAccountData::parse()`."
+            "Required oracle signer (`GlobalState.oracle_authority` or `GlobalState.authority`).",
+            "Field name retained as `switchboard_feed` for Anchor IDL backwards compatibility.",
+            "or `global_state.authority`."
           ]
         }
       ],
@@ -2565,6 +2564,19 @@ export type Shillbot = {
       ]
     },
     {
+      "name": "taskReopened",
+      "discriminator": [
+        40,
+        56,
+        100,
+        41,
+        172,
+        36,
+        190,
+        61
+      ]
+    },
+    {
       "name": "taskVerified",
       "discriminator": [
         8,
@@ -2894,6 +2906,11 @@ export type Shillbot = {
       "code": 6057,
       "name": "invalidTimeoutOrdering",
       "msg": "verification_timeout must exceed attestation_delay + staleness_window"
+    },
+    {
+      "code": 6058,
+      "name": "invalidInstructionBundle",
+      "msg": "OnChainAction claim must be bundled atomically at top-level with submit_work"
     }
   ],
   "types": [
@@ -4069,6 +4086,36 @@ export type Shillbot = {
           {
             "name": "feeAmount",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "taskReopened",
+      "docs": [
+        "Emitted when an `OnChainAction` (`platform == 11`) submission receives a `0`",
+        "score while still claimable (`now + claim_buffer < deadline`) and is reopened",
+        "in-place to `TaskState::Open` rather than entering terminal `Verified(0)`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "taskId",
+            "type": "u64"
+          },
+          {
+            "name": "prevAgent",
+            "type": "pubkey"
+          },
+          {
+            "name": "verificationHash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }

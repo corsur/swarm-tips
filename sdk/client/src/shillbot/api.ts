@@ -145,6 +145,9 @@ export class ShillbotApiClient {
   submitTask(id: string, body: unknown) {
     return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/submit`, body);
   }
+  preflightTask<TResponse = unknown>(id: string, body?: unknown) {
+    return this.post<TResponse>(`/tasks/${encodeURIComponent(id)}/preflight`, body);
+  }
   approveTask(id: string) {
     return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/approve`);
   }
@@ -513,16 +516,40 @@ export function validatePreparedTransaction(
     matchesDiscriminator(instruction.data_base64, expected.action),
   );
   const companions = shillbotIxs.filter((instruction) => instruction !== lifecycle[0]);
+  const claimDisc = shillbotInstructionDiscriminator("claim_task");
   const payoutDisc = shillbotInstructionDiscriminator("set_payout_to");
+  const hasDisc = (ix: TransactionInspection["instructions"][number], disc: Buffer) =>
+    Buffer.from(ix.data_base64, "base64").subarray(0, 8).equals(disc);
+  const ixPos = (ix: TransactionInspection["instructions"][number]) =>
+    inspected.instructions.indexOf(ix);
+  const validClaimCompanion = (ix: TransactionInspection["instructions"][number]) =>
+    hasDisc(ix, claimDisc) &&
+    ix.accounts.length >= 4 &&
+    (!expected.taskPda || ix.accounts[0] === expected.taskPda) &&
+    ix.accounts[0] === lifecycle[0]?.accounts[0] &&
+    ix.accounts[3] === expected.wallet;
+  const validPayoutCompanion = (ix: TransactionInspection["instructions"][number]) =>
+    hasDisc(ix, payoutDisc) &&
+    ix.accounts.length === 2 &&
+    (!expected.taskPda || ix.accounts[0] === expected.taskPda) &&
+    ix.accounts[0] === lifecycle[0]?.accounts[0] &&
+    ix.accounts[1] === expected.wallet;
   const validCompanions =
     companions.length === 0 ||
     (expected.action === "claim" &&
       companions.length === 1 &&
-      Buffer.from(companions[0].data_base64, "base64").subarray(0, 8).equals(payoutDisc) &&
-      inspected.instructions.indexOf(companions[0]) > inspected.instructions.indexOf(lifecycle[0]) &&
-      companions[0].accounts.length === 2 &&
-      (!expected.taskPda || companions[0].accounts[0] === expected.taskPda) &&
-      companions[0].accounts[1] === expected.wallet);
+      validPayoutCompanion(companions[0]) &&
+      ixPos(companions[0]) > ixPos(lifecycle[0])) ||
+    (expected.action === "submit" &&
+      companions.length === 1 &&
+      validClaimCompanion(companions[0]) &&
+      ixPos(lifecycle[0]) === ixPos(companions[0]) + 1) ||
+    (expected.action === "submit" &&
+      companions.length === 2 &&
+      validClaimCompanion(companions[0]) &&
+      validPayoutCompanion(companions[1]) &&
+      ixPos(companions[1]) === ixPos(companions[0]) + 1 &&
+      ixPos(lifecycle[0]) === ixPos(companions[1]) + 1);
   if (lifecycle.length !== 1 || !validCompanions) {
     throw new SwarmClientError({
       code: "TRANSACTION_MISMATCH",
@@ -574,6 +601,95 @@ export function validatePreparedTransaction(
     }
   }
   return inspected;
+}
+
+export interface BuildOnChainActionProofRefParams {
+  /** CAIP-2 target chain ID (e.g. `"eip155:56"`, `"eip155:8453"`, `"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"`). */
+  targetChainId: string;
+  /** Transaction hash (`0x` + 64 hex chars on EVM) or base58 signature (on Solana). */
+  txId: string;
+  /** Zero-based log index within the EVM receipt or matched instruction index on Solana. */
+  index: number;
+  /**
+   * Optional 65-byte EIP-191 signature (`0x` + 130 hex chars or `Uint8Array`)
+   * over `formatOnChainActionAttributionMessage(targetChainId, agentSolanaPubkey)`
+   * binding an EVM referral address to the Solana settlement wallet (`M2a`).
+   */
+  attributionSignature?: string | Uint8Array;
+}
+
+/**
+ * Format the canonical EIP-191 message signed by an agent's EVM referral wallet
+ * to bind cross-chain EVM conversions to their Solana settlement pubkey (`M2a`).
+ */
+export function formatOnChainActionAttributionMessage(
+  targetChainId: string,
+  agentSolanaPubkey: string,
+): string {
+  const caip2 = targetChainId.trim();
+  const agent = agentSolanaPubkey.trim();
+  if (!caip2.includes(":") || !agent) {
+    throw new SwarmClientError({
+      code: "INVALID_ARGUMENT",
+      operation: "shillbot.formatOnChainActionAttributionMessage",
+      message: "targetChainId (CAIP-2) and agentSolanaPubkey are required",
+    });
+  }
+  return `swarm-attr-v1:${caip2}:${agent}`;
+}
+
+/**
+ * Build a canonical `content_id` proof reference for `PlatformType::OnChainAction = 11`:
+ * `<caip2>:<tx_id>:<index>[:sig:<base64url_nopad_65B>]`.
+ */
+export function buildOnChainActionProofRef(params: BuildOnChainActionProofRefParams): string {
+  const caip2 = params.targetChainId.trim();
+  const txId = params.txId.trim();
+  if (!caip2.includes(":") || !txId) {
+    throw new SwarmClientError({
+      code: "INVALID_ARGUMENT",
+      operation: "shillbot.buildOnChainActionProofRef",
+      message: "targetChainId and txId are required",
+    });
+  }
+  if (!Number.isInteger(params.index) || params.index < 0) {
+    throw new SwarmClientError({
+      code: "INVALID_ARGUMENT",
+      operation: "shillbot.buildOnChainActionProofRef",
+      message: "index must be a non-negative integer",
+    });
+  }
+  const normalizedTxId = caip2.startsWith("eip155:") ? txId.toLowerCase() : txId;
+  if (params.attributionSignature === undefined) {
+    return `${caip2}:${normalizedTxId}:${params.index}`;
+  }
+  let sigBytes: Buffer;
+  if (typeof params.attributionSignature === "string") {
+    const hex = params.attributionSignature.trim().replace(/^0x/i, "");
+    if (!/^[0-9a-fA-F]{130}$/.test(hex)) {
+      throw new SwarmClientError({
+        code: "INVALID_ARGUMENT",
+        operation: "shillbot.buildOnChainActionProofRef",
+        message: "attributionSignature hex must be 65 bytes (130 hex chars)",
+      });
+    }
+    sigBytes = Buffer.from(hex, "hex");
+  } else {
+    sigBytes = Buffer.from(params.attributionSignature);
+  }
+  if (sigBytes.length !== 65) {
+    throw new SwarmClientError({
+      code: "INVALID_ARGUMENT",
+      operation: "shillbot.buildOnChainActionProofRef",
+      message: `attributionSignature must be 65 bytes, got ${sigBytes.length}`,
+    });
+  }
+  const b64url = sigBytes
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+  return `${caip2}:${normalizedTxId}:${params.index}:sig:${b64url}`;
 }
 
 export async function signBroadcastPreparedTransaction(input: {

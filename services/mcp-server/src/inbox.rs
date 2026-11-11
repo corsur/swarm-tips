@@ -662,6 +662,91 @@ fn plan_support_responder(
     })
 }
 
+/// True when a board post body carries the synthetic Playwright E2E probe
+/// prefix (`"a2a e2e "` from `scripts/e2e/a2a.spec.ts` or `"[e2e]"`).
+pub fn is_synthetic_e2e_post(body: &str) -> bool {
+    let lower = body.trim_start().to_ascii_lowercase();
+    lower.starts_with("a2a e2e ") || lower.contains("[e2e]")
+}
+
+/// Derive `/webhook/board` from a configured `SUPPORT_RESPONDER_URL` when an
+/// explicit `BOARD_WEBHOOK_URL` is unset.
+pub fn derive_board_webhook_url(responder_url: &str) -> String {
+    let trimmed = responder_url.trim();
+    if let Some(prefix) = trimmed.strip_suffix("/webhook/inbox") {
+        format!("{prefix}/webhook/board")
+    } else if let Some(prefix) = trimmed.strip_suffix("/webhook/support") {
+        format!("{prefix}/webhook/board")
+    } else {
+        String::new()
+    }
+}
+
+/// Serialized ONCE so the exact bytes match both the HMAC signature and wire body.
+#[allow(clippy::too_many_arguments)]
+fn board_payload_json(
+    event: &str,
+    board: &str,
+    post_id: &str,
+    parent_id: Option<&str>,
+    from_wallet: &str,
+    sender_tier: &str,
+    intent: Option<&str>,
+    body: &str,
+) -> String {
+    serde_json::json!({
+        "event": event,
+        "board": board,
+        "post_id": post_id,
+        "parent_id": parent_id,
+        "from_wallet": from_wallet,
+        "sender_tier": sender_tier,
+        "intent": intent,
+        "title": serde_json::Value::Null,
+        "body": body,
+    })
+    .to_string()
+}
+
+/// Pure planner for `POST /webhook/board` on `telegram-bridge`. Skips seed
+/// posts, support-wallet posts, synthetic E2E probes, and unconfigured endpoints.
+#[allow(clippy::too_many_arguments)]
+fn plan_board_responder(
+    doc: &TopicPostDoc,
+    tier: SenderTier,
+    board_webhook_url: &str,
+    responder_secret: Option<&str>,
+) -> Option<ResponderPost> {
+    if doc.seed || is_support_sender(&doc.author_wallet) || is_synthetic_e2e_post(&doc.body) {
+        return None;
+    }
+    if board_webhook_url.is_empty() {
+        return None;
+    }
+    let secret = responder_secret?;
+    let event = if doc.reply_to.is_some() {
+        "topic_reply"
+    } else {
+        "topic_post"
+    };
+    let payload = board_payload_json(
+        event,
+        &doc.topic_id,
+        &doc.post_id,
+        doc.reply_to.as_deref(),
+        &doc.author_wallet,
+        tier.as_str(),
+        doc.intent.as_deref(),
+        &doc.body,
+    );
+    let signature = webhook_signature(secret, &payload);
+    Some(ResponderPost {
+        url: board_webhook_url.to_string(),
+        signature,
+        body: payload,
+    })
+}
+
 /// Validate the optional intent discriminator. Unknown values are rejected at
 /// the boundary — a typo must not silently store as free-form.
 pub fn parse_intent(raw: Option<&str>) -> Result<Option<String>, String> {
@@ -875,6 +960,18 @@ pub fn resolve_tier(
         (true, false) => SenderTier::WalletVerified,
         (false, _) => SenderTier::SessionVerified,
     }
+}
+
+/// `BH-04a` Sybil-wash guard: only anchored EigenTrust standing
+/// (`eigentrust_score > 1e-12`) or anchor-awarded bug bounties
+/// (`bug_bounties_received > 0`) qualify a wallet for `SenderTier::Reputable`.
+/// Raw `settlements_received > 0` from un-anchored self-settlements NEVER
+/// upgrades `SenderTier` or stamps `"reputable"` on message envelopes.
+pub fn reputation_qualifies_for_reputable_tier(
+    eigentrust_score: f64,
+    bug_bounties_received: u32,
+) -> bool {
+    eigentrust_score > 1e-12 || bug_bounties_received > 0
 }
 
 // ---------------------------------------------------------------------------
@@ -1431,6 +1528,7 @@ pub fn log_topic_post(
         bytes = receipt.bytes,
         sender_tier = tier.as_str(),
         seed = if seed { "true" } else { "false" },
+        e2e = if receipt.e2e { "true" } else { "false" },
         // Provenance telemetry (Cloud Logging only; never persisted).
         client_ip = %prov.client_ip,
         user_agent = %prov.user_agent,
@@ -1670,7 +1768,7 @@ impl InboxRejection {
             ),
             InboxRejection::PostNotFound => "post not found in this topic".to_string(),
             InboxRejection::WalletProofRequired => {
-                "webhook registration requires an ON-CHAIN wallet ownership proof on record: call agent_verify_wallet with tx_signature (or land a deposit_stake) first".to_string()
+                "this action requires an ON-CHAIN wallet ownership proof on record: call agent_verify_wallet with tx_signature (or land a deposit_stake) first".to_string()
             }
             InboxRejection::InvalidWebhookUrl(e) => format!("invalid webhook url: {e}"),
             InboxRejection::WebhookChallengeFailed(e) => format!(
@@ -1744,13 +1842,23 @@ pub struct SenderReputationSummary {
 impl SenderReputationSummary {
     pub fn from_reputation(rep: Option<&reputation_indexer::AgentReputation>) -> Self {
         match rep {
-            Some(r) => Self {
-                tier: "reputable".to_string(),
-                trust_score: r.rank_normalized,
-                rank: Some(r.rank),
-                settlements_received: r.settlements_received,
-                bug_bounties_received: r.bug_bounties_received,
-            },
+            Some(r) => {
+                let tier = if reputation_qualifies_for_reputable_tier(
+                    r.eigentrust_score,
+                    r.bug_bounties_received,
+                ) {
+                    "reputable"
+                } else {
+                    "unanchored"
+                };
+                Self {
+                    tier: tier.to_string(),
+                    trust_score: r.rank_normalized,
+                    rank: Some(r.rank),
+                    settlements_received: r.settlements_received,
+                    bug_bounties_received: r.bug_bounties_received,
+                }
+            }
             None => Self {
                 tier: "unindexed".to_string(),
                 trust_score: 0.0,
@@ -1806,6 +1914,8 @@ pub struct PostReceipt {
     pub bytes: usize,
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub posts_remaining_today: u32,
+    /// True when the published body carries a synthetic E2E probe marker.
+    pub e2e: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1865,6 +1975,9 @@ pub struct Inbox {
     /// mailbox fires a best-effort signed POST here so the bridge auto-replies.
     /// Empty url = disabled (log-and-skip); the message is still delivered.
     responder_url: String,
+    /// Public topic-board (`topic_post` / `topic_reply`) -> founder Telegram
+    /// webhook (`POST /webhook/board` on `telegram-bridge`).
+    board_webhook_url: String,
     /// Shared secret (GCP Secret Manager `inbox-responder-secret`) keying the
     /// `X-Swarm-Responder-Signature` HMAC. None = disabled — we never POST an
     /// unsigned body the bridge would reject anyway.
@@ -1883,14 +1996,23 @@ impl Inbox {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
+        let board_webhook_url = derive_board_webhook_url(&responder_url);
         Self {
             db,
             http,
             workflows,
             self_url,
             responder_url,
+            board_webhook_url,
             responder_secret,
         }
+    }
+
+    pub fn with_board_webhook_url(mut self, url: String) -> Self {
+        if !url.trim().is_empty() {
+            self.board_webhook_url = url.trim().to_string();
+        }
+        self
     }
 
     fn mailbox_parent(&self, caip10: &str) -> anyhow::Result<firestore::ParentPathBuilder> {
@@ -1982,9 +2104,10 @@ impl Inbox {
             crate::reputation::get_agent_reputation(&self.db, caip10_address(caip10))
                 .await
                 .map(|r| {
-                    r.eigentrust_score > 0.0
-                        || r.settlements_received > 0
-                        || r.bug_bounties_received > 0
+                    reputation_qualifies_for_reputable_tier(
+                        r.eigentrust_score,
+                        r.bug_bounties_received,
+                    )
                 })
                 .unwrap_or(false)
         } else {
@@ -2487,6 +2610,52 @@ impl Inbox {
         }
     }
 
+    /// Best-effort signed POST to `telegram-bridge` (`POST /webhook/board`)
+    /// whenever an external (non-seed, non-E2E) board post or reply lands.
+    async fn notify_board_post(&self, doc: &TopicPostDoc, tier: SenderTier) {
+        let Some(post) = plan_board_responder(
+            doc,
+            tier,
+            &self.board_webhook_url,
+            self.responder_secret.as_deref(),
+        ) else {
+            return;
+        };
+        let result = self
+            .http
+            .post(&post.url)
+            .header(RESPONDER_SIGNATURE_HEADER, post.signature)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .timeout(std::time::Duration::from_secs(10))
+            .body(post.body)
+            .send()
+            .await;
+        match result {
+            Ok(resp) if resp.status().is_success() => tracing::info!(
+                event = "board_responder_triggered",
+                topic_id = %doc.topic_id,
+                post_id = %doc.post_id,
+                author_wallet = %doc.author_wallet,
+                status = resp.status().as_u16(),
+                "board-responder pinged"
+            ),
+            Ok(resp) => tracing::warn!(
+                event = "board_responder_triggered",
+                topic_id = %doc.topic_id,
+                post_id = %doc.post_id,
+                status = resp.status().as_u16(),
+                "board-responder returned non-2xx (post still published)"
+            ),
+            Err(e) => tracing::warn!(
+                event = "board_responder_triggered",
+                topic_id = %doc.topic_id,
+                post_id = %doc.post_id,
+                error = %e,
+                "board-responder POST failed (post still published)"
+            ),
+        }
+    }
+
     /// Masked write of the pending delivery id (never touches the failure
     /// counters or verification fields).
     async fn record_pending_delivery(
@@ -2905,7 +3074,10 @@ impl Inbox {
             .context("write topic post")?;
         self.bump_topic_meta(&req.topic_id, now).await?;
 
-        // -- INTERACTIONS: none (caller logs the business event). --
+        // -- INTERACTIONS: best-effort founder Telegram alert on external posts. --
+        let e2e = is_synthetic_e2e_post(&doc.body);
+        self.notify_board_post(&doc, req.tier).await;
+
         let posts_remaining = u32::try_from(
             i64::from(limit)
                 .saturating_sub(posts_used)
@@ -2923,6 +3095,7 @@ impl Inbox {
             bytes,
             expires_at,
             posts_remaining_today: posts_remaining,
+            e2e,
         })
     }
 
@@ -3038,6 +3211,12 @@ impl Inbox {
         assert!(!me.is_empty(), "reporter must be resolved upstream");
         validate_topic(topic_id).map_err(InboxRejection::InvalidTopic)?;
         validate_id_token(post_id, "post_id").map_err(InboxRejection::InvalidPostRef)?;
+        // Sybil censorship defense: 3 $0 `SessionVerified` nonces must NEVER
+        // auto-hide an honest board post. Require an on-chain wallet proof
+        // (`WalletVerified`+) unless the caller is an org support wallet.
+        if !is_support_sender(me) && self.wallet_verification(me).await.is_none() {
+            return Err(InboxRejection::WalletProofRequired.into());
+        }
 
         let parent = self.topic_parent(topic_id)?;
         let existing: Option<TopicPostDoc> = self

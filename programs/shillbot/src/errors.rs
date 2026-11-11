@@ -192,4 +192,7 @@ pub enum ShillbotError {
 
     #[msg("verification_timeout must exceed attestation_delay + staleness_window")]
     InvalidTimeoutOrdering,
+
+    #[msg("OnChainAction claim must be bundled atomically at top-level with submit_work")]
+    InvalidInstructionBundle,
 }

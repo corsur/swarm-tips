@@ -150,3 +150,13 @@ pub struct PayoutRouteSet {
     pub agent: Pubkey,
     pub payout_to: Pubkey,
 }
+
+/// Emitted when an `OnChainAction` (`platform == 11`) submission receives a `0`
+/// score while still claimable (`now + claim_buffer < deadline`) and is reopened
+/// in-place to `TaskState::Open` rather than entering terminal `Verified(0)`.
+#[event]
+pub struct TaskReopened {
+    pub task_id: u64,
+    pub prev_agent: Pubkey,
+    pub verification_hash: [u8; 32],
+}

@@ -20,7 +20,9 @@ import {
   CLIENT_VERSION,
   SwarmAgent,
   SwarmClientError,
+  buildOnChainActionProofRef,
   createSwarmAgent,
+  formatOnChainActionAttributionMessage,
   fromEvmPrivateKey,
   fromEvmWalletClient,
   fromSolanaKeypair,
@@ -39,6 +41,7 @@ import {
   buildCreate,
   buildFinalize,
   buildInstruction,
+  buildShillbotInstruction,
   buildVerify,
 } from "../src/shillbot/index.js";
 import { InboxClient } from "../src/inbox/client.js";
@@ -836,5 +839,142 @@ describe("C6 CLI security, keyfile permissions, swarm tx verify --json, and Pyth
       { input: unexpectedCreate.unsigned_tx, encoding: "utf8" },
     );
     expect(pyCreateAsClaim.status).toBe(1);
+  });
+
+  it("validates OnChainAction atomic [claim_task, (set_payout_to?), submit_work], proof refs, and adviseNextAction", async () => {
+    const kp = Keypair.generate();
+    const wallet = kp.publicKey.toBase58();
+    const taskKey = Keypair.generate().publicKey.toBase58();
+    const otherTaskKey = Keypair.generate().publicKey.toBase58();
+    const payoutKey = Keypair.generate().publicKey;
+    const blockhash = "11111111111111111111111111111111";
+
+    const evmPrivKey =
+      "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
+    const evmSigner = fromEvmPrivateKey(evmPrivKey, { chainId: 56 });
+    const attrMsg = formatOnChainActionAttributionMessage("eip155:56", wallet);
+    expect(attrMsg).toBe(`swarm-attr-v1:eip155:56:${wallet}`);
+    const attrSig = await evmSigner.signMessage(attrMsg);
+    const proofRef = buildOnChainActionProofRef({
+      targetChainId: "eip155:56",
+      txId: `0x${"AB".repeat(32)}`,
+      index: 0,
+      attributionSignature: attrSig,
+    });
+    expect(proofRef).toMatch(/^eip155:56:0x[0-9a-f]{64}:0:sig:[A-Za-z0-9_-]{87}$/);
+
+    // adviseNextAction routes open onchain_action directly to submit
+    expect(SwarmAgent.adviseNextAction({ state: "open", platform: "onchain_action" })).toEqual({
+      step: "submit",
+    });
+    expect(SwarmAgent.adviseNextAction({ state: "open", platform: 11 })).toEqual({
+      step: "submit",
+    });
+    expect(SwarmAgent.adviseNextAction({ state: "open", platform: "lean_proof" })).toEqual({
+      step: "claim",
+    });
+
+    const claimIx = buildInstruction({
+      action: "claim",
+      wallet,
+      network: "mainnet",
+      recentBlockhash: blockhash,
+      taskPda: taskKey,
+    });
+    const payoutIx = buildShillbotInstruction({
+      name: "set_payout_to",
+      accounts: { task: taskKey, agent: wallet },
+      args: { payout_to: payoutKey },
+    });
+    const submitIx = buildInstruction({
+      action: "submit",
+      wallet,
+      network: "mainnet",
+      recentBlockhash: blockhash,
+      taskPda: taskKey,
+      contentId: proofRef,
+    });
+
+    const atomicSubmitB64 = new Transaction({ feePayer: kp.publicKey, recentBlockhash: blockhash })
+      .add(claimIx, submitIx)
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+    expect(
+      validatePreparedTransaction(atomicSubmitB64, {
+        action: "submit",
+        network: "mainnet",
+        wallet,
+        taskPda: taskKey,
+      }).fee_payer,
+    ).toBe(wallet);
+
+    const atomicSubmitWithPayoutB64 = new Transaction({
+      feePayer: kp.publicKey,
+      recentBlockhash: blockhash,
+    })
+      .add(claimIx, payoutIx, submitIx)
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+    expect(
+      validatePreparedTransaction(atomicSubmitWithPayoutB64, {
+        action: "submit",
+        network: "mainnet",
+        wallet,
+        taskPda: taskKey,
+      }).fee_payer,
+    ).toBe(wallet);
+
+    // Reversed [submit_work, claim_task] MUST fail closed
+    const reversedB64 = new Transaction({ feePayer: kp.publicKey, recentBlockhash: blockhash })
+      .add(submitIx, claimIx)
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+    expect(() =>
+      validatePreparedTransaction(reversedB64, {
+        action: "submit",
+        network: "mainnet",
+        wallet,
+        taskPda: taskKey,
+      }),
+    ).toThrow(/Expected exactly one matching Shillbot lifecycle instruction/);
+
+    // Mismatched claim_task taskPda MUST fail closed
+    const wrongClaimIx = buildInstruction({
+      action: "claim",
+      wallet,
+      network: "mainnet",
+      recentBlockhash: blockhash,
+      taskPda: otherTaskKey,
+    });
+    const mismatchedTaskB64 = new Transaction({
+      feePayer: kp.publicKey,
+      recentBlockhash: blockhash,
+    })
+      .add(wrongClaimIx, submitIx)
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+    expect(() =>
+      validatePreparedTransaction(mismatchedTaskB64, {
+        action: "submit",
+        network: "mainnet",
+        wallet,
+        taskPda: taskKey,
+      }),
+    ).toThrow(/Expected exactly one matching Shillbot lifecycle instruction/);
+
+    // Standalone Python verifier also accepts atomic [claim_task, submit_work] and rejects reversed
+    const pyScript = resolve(repoRoot, "examples/python-safe-recipe/verify_shillbot_tx.py");
+    const pyAtomicOk = spawnSync(
+      "python3",
+      [pyScript, "--action", "submit", "--wallet", wallet, "--task-pda", taskKey],
+      { input: atomicSubmitB64, encoding: "utf8" },
+    );
+    expect(pyAtomicOk.status).toBe(0);
+    const pyReversedBad = spawnSync(
+      "python3",
+      [pyScript, "--action", "submit", "--wallet", wallet, "--task-pda", taskKey],
+      { input: reversedB64, encoding: "utf8" },
+    );
+    expect(pyReversedBad.status).toBe(1);
   });
 });

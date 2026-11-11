@@ -1,4 +1,11 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::instruction::{
+    get_stack_height, Instruction, TRANSACTION_LEVEL_STACK_HEIGHT,
+};
+use anchor_lang::solana_program::sysvar::instructions::{
+    self as ix_sysvar, load_current_index_checked, load_instruction_at_checked,
+};
+use anchor_lang::Discriminator;
 
 use crate::errors::ShillbotError;
 use crate::events::TaskClaimed;
@@ -18,6 +25,15 @@ pub fn claim_task_session(ctx: Context<ClaimTaskSession>) -> Result<()> {
         &ctx.accounts.agent_state,
         clock.unix_timestamp,
     )?;
+    if ctx.accounts.task.platform == shared::PlatformType::OnChainAction.discriminant() {
+        enforce_atomic_session_submit_bundle(
+            ctx.program_id,
+            &ctx.accounts.task.key(),
+            &ctx.accounts.session_delegate.key(),
+            &ctx.accounts.delegate.key(),
+            ctx.remaining_accounts,
+        )?;
+    }
     // Effects
     commit_claim_state(
         &mut ctx.accounts.agent_state,
@@ -31,6 +47,66 @@ pub fn claim_task_session(ctx: Context<ClaimTaskSession>) -> Result<()> {
         agent: agent_key,
     });
     Ok(())
+}
+
+fn enforce_atomic_session_submit_bundle(
+    program_id: &Pubkey,
+    task_key: &Pubkey,
+    session_delegate_key: &Pubkey,
+    delegate_key: &Pubkey,
+    remaining_accounts: &[AccountInfo],
+) -> Result<()> {
+    require!(
+        get_stack_height() == TRANSACTION_LEVEL_STACK_HEIGHT,
+        ShillbotError::InvalidInstructionBundle
+    );
+    let sysvar_info = remaining_accounts
+        .first()
+        .ok_or(ShillbotError::InvalidInstructionBundle)?;
+    require!(
+        sysvar_info.key() == ix_sysvar::ID,
+        ShillbotError::InvalidInstructionBundle
+    );
+    let cur = usize::from(
+        load_current_index_checked(sysvar_info)
+            .map_err(|_| error!(ShillbotError::InvalidInstructionBundle))?,
+    );
+    let next_idx = cur
+        .checked_add(1)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    let next_ix = load_instruction_at_checked(next_idx, sysvar_info)
+        .map_err(|_| error!(ShillbotError::InvalidInstructionBundle))?;
+    require!(
+        is_matching_submit_work_session(
+            &next_ix,
+            program_id,
+            task_key,
+            session_delegate_key,
+            delegate_key,
+        ),
+        ShillbotError::InvalidInstructionBundle
+    );
+    Ok(())
+}
+
+pub(crate) fn is_matching_submit_work_session(
+    ix: &Instruction,
+    program_id: &Pubkey,
+    task_key: &Pubkey,
+    session_delegate_key: &Pubkey,
+    delegate_key: &Pubkey,
+) -> bool {
+    ix.program_id == *program_id
+        && ix.data.len() > 12
+        && ix
+            .data
+            .starts_with(crate::instruction::SubmitWorkSession::DISCRIMINATOR)
+        && ix.accounts.len() >= 5
+        && ix.accounts[0].pubkey == *task_key
+        && ix.accounts[0].is_writable
+        && ix.accounts[3].pubkey == *session_delegate_key
+        && ix.accounts[4].pubkey == *delegate_key
+        && ix.accounts[4].is_signer
 }
 
 /// Pure check phase. Protocol-paused, session-bitmask-has-claim,

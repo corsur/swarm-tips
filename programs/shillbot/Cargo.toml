@@ -23,7 +23,6 @@ custom-panic = []
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 shared = { path = "../../crates/shared" }
 solana-sha256-hasher = "2"
-switchboard-on-demand = "0.11"
 
 [dev-dependencies]
 serde_json = "1"

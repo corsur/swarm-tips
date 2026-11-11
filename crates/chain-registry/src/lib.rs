@@ -266,6 +266,7 @@ pub const BASE_SEPOLIA_CAIP2: &str = "eip155:84532";
 pub const BASE_MAINNET_CAIP2: &str = "eip155:8453";
 pub const ETHEREUM_SEPOLIA_CAIP2: &str = "eip155:11155111";
 pub const ETHEREUM_MAINNET_CAIP2: &str = "eip155:1";
+pub const BSC_MAINNET_CAIP2: &str = "eip155:56";
 
 /// Testnet stake parity note: 0.05 SOL and 0.0025 ETH are within the
 /// same rough-USD band; exact parity is intentionally NOT enforced
@@ -664,6 +665,178 @@ pub fn entries_for(namespace: Namespace) -> impl Iterator<Item = &'static ChainE
             .map(|c| c.namespace() == namespace)
             .unwrap_or(false)
     })
+}
+
+/// Read-only verification target configuration for `PlatformType::OnChainAction`.
+///
+/// Kept deliberately separate from [`REGISTRY`] so chains where Shillbot verifies
+/// external contract/program events (such as BNB Smart Chain `eip155:56`) do not
+/// perturb Coordination Game stake-peg invariants or `xchain_supported_chains`.
+#[derive(Debug, Clone)]
+pub struct VerificationChainEntry {
+    /// CAIP-2 identifier, e.g. `eip155:56` or `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`.
+    pub chain_id: &'static str,
+    pub display_name: &'static str,
+    /// Distinct, independent $0 public RPC endpoints for M-of-N finalized quorum reads.
+    pub rpc_urls: &'static [&'static str],
+    /// Optional GCP Secret Manager secret name holding a premium read RPC endpoint.
+    pub premium_rpc_secret: Option<&'static str>,
+    /// Minimum number of independent RPC providers that must return identical
+    /// finalized transaction/receipt verdicts (`>= 2` on every mainnet chain).
+    pub quorum_m: usize,
+    pub finality: Finality,
+    /// Minimum block confirmations required if a provider omits the `finalized` tag
+    /// (e.g. BEP-126 fast finality fallback on BNB Smart Chain = 15 blocks).
+    pub min_confirmations_fallback: u64,
+    pub is_mainnet: bool,
+    pub native_symbol: &'static str,
+    pub native_decimals: u8,
+}
+
+/// Allowlisted target chains for `PlatformType::OnChainAction = 11` verification.
+pub const VERIFICATION_TARGETS: &[VerificationChainEntry] = &[
+    VerificationChainEntry {
+        chain_id: SOLANA_MAINNET_CAIP2,
+        display_name: "Solana Mainnet",
+        rpc_urls: &[
+            "https://api.mainnet-beta.solana.com",
+            "https://solana-rpc.publicnode.com",
+            "https://solana.drpc.org",
+        ],
+        premium_rpc_secret: None,
+        quorum_m: 2,
+        finality: Finality::SolanaFinalized,
+        min_confirmations_fallback: 32,
+        is_mainnet: true,
+        native_symbol: "SOL",
+        native_decimals: 9,
+    },
+    VerificationChainEntry {
+        chain_id: SOLANA_DEVNET_CAIP2,
+        display_name: "Solana Devnet",
+        rpc_urls: &["https://api.devnet.solana.com"],
+        premium_rpc_secret: None,
+        quorum_m: 1,
+        finality: Finality::SolanaFinalized,
+        min_confirmations_fallback: 32,
+        is_mainnet: false,
+        native_symbol: "SOL",
+        native_decimals: 9,
+    },
+    VerificationChainEntry {
+        chain_id: BASE_MAINNET_CAIP2,
+        display_name: "Base",
+        rpc_urls: &[
+            "https://mainnet.base.org",
+            "https://base-rpc.publicnode.com",
+            "https://base.drpc.org",
+        ],
+        premium_rpc_secret: Some("base-mainnet-rpc-url"),
+        quorum_m: 2,
+        finality: Finality::EvmFinalizedTag,
+        min_confirmations_fallback: 64,
+        is_mainnet: true,
+        native_symbol: "ETH",
+        native_decimals: 18,
+    },
+    VerificationChainEntry {
+        chain_id: BASE_SEPOLIA_CAIP2,
+        display_name: "Base Sepolia",
+        rpc_urls: &[
+            "https://sepolia.base.org",
+            "https://base-sepolia-rpc.publicnode.com",
+            "https://base-sepolia.drpc.org",
+        ],
+        premium_rpc_secret: Some("base-sepolia-rpc-url"),
+        quorum_m: 2,
+        finality: Finality::EvmFinalizedTag,
+        min_confirmations_fallback: 16,
+        is_mainnet: false,
+        native_symbol: "ETH",
+        native_decimals: 18,
+    },
+    VerificationChainEntry {
+        chain_id: ETHEREUM_MAINNET_CAIP2,
+        display_name: "Ethereum",
+        rpc_urls: &[
+            "https://ethereum-rpc.publicnode.com",
+            "https://eth.drpc.org",
+            "https://cloudflare-eth.com",
+        ],
+        premium_rpc_secret: Some("eth-mainnet-rpc-url"),
+        quorum_m: 2,
+        finality: Finality::EvmFinalizedTag,
+        min_confirmations_fallback: 64,
+        is_mainnet: true,
+        native_symbol: "ETH",
+        native_decimals: 18,
+    },
+    VerificationChainEntry {
+        chain_id: BSC_MAINNET_CAIP2,
+        display_name: "BNB Smart Chain",
+        rpc_urls: &[
+            "https://bsc-dataseed.bnbchain.org",
+            "https://bsc-rpc.publicnode.com",
+            "https://bsc.drpc.org",
+        ],
+        premium_rpc_secret: None,
+        quorum_m: 2,
+        finality: Finality::EvmFinalizedTag,
+        min_confirmations_fallback: 15,
+        is_mainnet: true,
+        native_symbol: "BNB",
+        native_decimals: 18,
+    },
+];
+
+/// Look up an allowlisted `OnChainAction` verification target by CAIP-2 chain ID.
+pub fn verification_entry(chain: &ChainId) -> Option<&'static VerificationChainEntry> {
+    VERIFICATION_TARGETS
+        .iter()
+        .find(|e| e.chain_id == chain.as_str())
+}
+
+/// Iterate all allowlisted `OnChainAction` verification target chains.
+pub fn verification_targets() -> impl Iterator<Item = &'static VerificationChainEntry> {
+    VERIFICATION_TARGETS.iter()
+}
+
+/// Candidate RPC endpoints for an `OnChainAction` verification target: optional
+/// env override first (`EVM_RPC_URL_<CAIP2>` for `eip155:*` or
+/// `VERIFICATION_RPC_URL_<CAIP2>`), followed by the static public endpoints,
+/// deduplicated by normalized URL string so one endpoint never counts twice
+/// toward `quorum_m`.
+pub fn verification_rpc_urls(target: &VerificationChainEntry) -> Vec<String> {
+    let suffix = target
+        .chain_id
+        .replace([':', '-'], "_")
+        .to_ascii_uppercase();
+    let primary_env = format!("VERIFICATION_RPC_URL_{suffix}");
+    let evm_env = format!("EVM_RPC_URL_{suffix}");
+
+    let mut urls: Vec<String> = Vec::with_capacity(target.rpc_urls.len().saturating_add(2));
+    for key in [primary_env.as_str(), evm_env.as_str()] {
+        if let Ok(val) = std::env::var(key) {
+            let trimmed = val.trim().trim_end_matches('/').to_string();
+            if !trimmed.is_empty() && !urls.iter().any(|u| u.trim_end_matches('/') == trimmed) {
+                urls.push(val.trim().to_string());
+            }
+        }
+    }
+    for &u in target.rpc_urls {
+        let norm = u.trim_end_matches('/');
+        if !urls
+            .iter()
+            .any(|existing| existing.trim_end_matches('/') == norm)
+        {
+            urls.push(u.to_string());
+        }
+    }
+    debug_assert!(
+        urls.len() >= target.quorum_m,
+        "verification_rpc_urls must supply at least quorum_m distinct providers"
+    );
+    urls
 }
 
 #[cfg(test)]
@@ -1259,5 +1432,54 @@ mod tests {
                 e.chain_id
             );
         }
+    }
+
+    #[test]
+    fn verification_targets_have_valid_caip2_distinct_providers_and_mainnet_quorum() {
+        assert_eq!(VERIFICATION_TARGETS.len(), 6);
+        for t in VERIFICATION_TARGETS {
+            let parsed = ChainId::parse(t.chain_id)
+                .unwrap_or_else(|err| panic!("{}: invalid CAIP-2: {err}", t.chain_id));
+            assert_eq!(parsed.as_str(), t.chain_id);
+            assert!(t.quorum_m >= 1, "{}: quorum_m must be >= 1", t.chain_id);
+            assert!(
+                t.quorum_m <= t.rpc_urls.len(),
+                "{}: quorum_m {} > provider count {}",
+                t.chain_id,
+                t.quorum_m,
+                t.rpc_urls.len()
+            );
+            if t.is_mainnet {
+                assert!(
+                    t.quorum_m >= 2 && t.rpc_urls.len() >= 3,
+                    "{}: mainnet verification target must enforce >= 2-of-3 quorum",
+                    t.chain_id
+                );
+            }
+            let urls = verification_rpc_urls(t);
+            assert_eq!(urls.len(), t.rpc_urls.len());
+        }
+
+        let bsc = ChainId::parse(BSC_MAINNET_CAIP2).unwrap();
+        let bsc_target = verification_entry(&bsc).expect("BSC registered in VERIFICATION_TARGETS");
+        assert_eq!(bsc_target.native_symbol, "BNB");
+        assert_eq!(bsc_target.min_confirmations_fallback, 15);
+        assert_eq!(bsc_target.quorum_m, 2);
+        // BSC must NOT leak into Coordination Game REGISTRY.
+        assert!(entry(&bsc).is_none());
+    }
+
+    #[test]
+    fn verification_rpc_urls_deduplicates_matching_env_override() {
+        let bsc = ChainId::parse(BSC_MAINNET_CAIP2).unwrap();
+        let bsc_target = verification_entry(&bsc).unwrap();
+        std::env::set_var(
+            "VERIFICATION_RPC_URL_EIP155_56",
+            "https://bsc-dataseed.bnbchain.org/",
+        );
+        let urls = verification_rpc_urls(bsc_target);
+        // Trailing-slash duplicate of static provider #1 must not inflate provider count.
+        assert_eq!(urls.len(), bsc_target.rpc_urls.len());
+        std::env::remove_var("VERIFICATION_RPC_URL_EIP155_56");
     }
 }

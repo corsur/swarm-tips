@@ -57,6 +57,10 @@ const WEIGHT_AGENT_RANK: f64 = 0.25;
 const WEIGHT_GAME: f64 = 0.15;
 const WEIGHT_CURATOR: f64 = 0.15;
 const WEIGHT_CREDIT_WEB: f64 = 0.20;
+/// Maximum composite trust score when an agent's only standing comes from
+/// un-anchored Shillbot settlements (`eigentrust <= 0` and no game/curator/credit-web
+/// standing), blocking permissionless self-settlement wash-farming (`BH-04b`).
+const UNANCHORED_SETTLEMENT_SCORE_CAP: f64 = 0.20;
 
 /// All six input signals to the composite trust formula. Each is
 /// `Option<...>`; missing signals don't contribute and don't
@@ -80,6 +84,12 @@ pub struct TrustInputs {
     pub curator: Option<CuratorTier>,
     pub agent_rank: Option<f64>,
     pub credit_web: Option<CreditWebInput>,
+    /// True when the agent has Shillbot completions (`total_completed >= 1`)
+    /// with zero anchored EigenTrust (`eigentrust <= 1e-12`, zero bug bounties)
+    /// and no independent curator/game/credit-web standing. Caps composite
+    /// `score` at `0.20` (`BH-04b`).
+    #[serde(default)]
+    pub unanchored_settlement_only: bool,
 }
 
 /// Shillbot reputation inputs (`agent_profile.shillbot.derived`).
@@ -279,7 +289,10 @@ pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
         c.weight /= total_weight;
     }
 
-    let score: f64 = signals.iter().map(|c| c.value * c.weight).sum();
+    let mut score: f64 = signals.iter().map(|c| c.value * c.weight).sum();
+    if inputs.unanchored_settlement_only {
+        score = score.min(UNANCHORED_SETTLEMENT_SCORE_CAP);
+    }
     let confidence = signals.len() as u8;
 
     TrustScore {
@@ -501,6 +514,7 @@ mod tests {
                 position: Some(1.0),
                 extensions_count: 5,
             }),
+            ..Default::default()
         });
         assert_eq!(result.confidence, 5);
         assert!(approx_eq(result.score, 1.0));
@@ -564,6 +578,7 @@ mod tests {
                 position: Some(5.0),
                 extensions_count: 1,
             }),
+            ..Default::default()
         });
         assert!(result.score <= 1.0);
         for c in &result.breakdown {
@@ -574,5 +589,37 @@ mod tests {
                 c.value
             );
         }
+    }
+
+    #[test]
+    fn unanchored_settlement_only_caps_composite_score_at_point_two() {
+        // BH-04b: 10 perfect self-settled permissionless tasks with zero anchored
+        // EigenTrust cannot inflate composite trust to 1.0 — capped at 0.20.
+        let wash = compute_trust(&TrustInputs {
+            shillbot: Some(ShillbotInput {
+                average_score: Some(1_000_000.0),
+                score_max: 1_000_000,
+                completion_rate: Some(1.0),
+                total_completed: 10,
+            }),
+            eigentrust: Some(0.0),
+            unanchored_settlement_only: true,
+            ..Default::default()
+        });
+        assert!(approx_eq(wash.score, 0.20));
+
+        // Once anchored in EigenTrust, unanchored_settlement_only is false and full score applies.
+        let anchored = compute_trust(&TrustInputs {
+            shillbot: Some(ShillbotInput {
+                average_score: Some(1_000_000.0),
+                score_max: 1_000_000,
+                completion_rate: Some(1.0),
+                total_completed: 10,
+            }),
+            eigentrust: Some(0.80),
+            unanchored_settlement_only: false,
+            ..Default::default()
+        });
+        assert!(anchored.score > 0.85);
     }
 }

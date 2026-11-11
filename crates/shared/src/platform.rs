@@ -32,6 +32,12 @@ pub enum PlatformType {
     /// not the Switchboard oracle. Policy (pinned toolchain, axiom
     /// allow-list, resource caps) = `policies/lean-attester-policy-v1.json`.
     LeanProof = 10,
+    /// Permissionless on-chain action / affiliate conversion verification
+    /// across allowlisted chains (`VERIFICATION_TARGETS`). Tasks commit
+    /// `sha256(OnChainActionSpec JCS)` into `Task.content_hash`, enforce
+    /// atomic `[claim_task, submit_work]` in one Solana tx (`M1`), and verify
+    /// via 2-of-3+ finalized RPC quorums.
+    OnChainAction = 11,
 }
 
 /// How the verifier scores submitted work for a platform.
@@ -69,6 +75,7 @@ impl PlatformType {
             8 => Some(Self::Blog),
             9 => Some(Self::Website),
             10 => Some(Self::LeanProof),
+            11 => Some(Self::OnChainAction),
             _ => None,
         }
     }
@@ -94,6 +101,7 @@ impl PlatformType {
             Self::Blog => "Blog",
             Self::Website => "Website Footer Backlink",
             Self::LeanProof => "Lean Proof",
+            Self::OnChainAction => "On-Chain Action",
         }
     }
 
@@ -110,7 +118,11 @@ impl PlatformType {
             // expired/unavailable in the current production environment. Code
             // paths stay live; campaigns just don't get created.
             Self::YouTube | Self::Twitter => true,
-            Self::Referral | Self::GamePlay | Self::Website | Self::LeanProof => false,
+            Self::Referral
+            | Self::GamePlay
+            | Self::Website
+            | Self::LeanProof
+            | Self::OnChainAction => false,
         }
     }
 
@@ -121,6 +133,10 @@ impl PlatformType {
     /// `shillbot-verifier::verification::verification_delay_secs_for_platform`.
     pub fn default_verification_delay_secs(self) -> u64 {
         match self {
+            // OnChainAction checks finalized block tags / commitment directly
+            // via 2-of-3+ RPC quorum; 60s avoids hot-looping newly submitted txs
+            // while non-finalized proofs defer via AwaitingFinality.
+            Self::OnChainAction => 60,
             // Binary platforms: synchronous on-chain or Firestore lookups,
             // 5 minutes lets the cluster propagate the resolving tx. The
             // Lean attester is a deterministic local check with the same
@@ -152,9 +168,13 @@ impl PlatformType {
     /// on a SINGLE attester signature (panel risk: single-attester trust),
     /// so the window must be long enough for a human to react to a
     /// compromised-key attestation — 15 s is not.
+    /// OnChainAction uses a 15-minute window over 2-of-3+ finalized RPC quorums.
     pub fn default_challenge_window_secs(self) -> u64 {
         if self == Self::LeanProof {
             return 60 * 60;
+        }
+        if self == Self::OnChainAction {
+            return 15 * 60;
         }
         match self.scoring_style() {
             ScoringStyle::Binary => 15,
@@ -167,9 +187,11 @@ impl PlatformType {
     /// the platform client's check is the authoritative proof (Binary).
     pub fn scoring_style(self) -> ScoringStyle {
         match self {
-            Self::Referral | Self::GamePlay | Self::Website | Self::LeanProof => {
-                ScoringStyle::Binary
-            }
+            Self::Referral
+            | Self::GamePlay
+            | Self::Website
+            | Self::LeanProof
+            | Self::OnChainAction => ScoringStyle::Binary,
             Self::YouTube | Self::Twitter => ScoringStyle::EngagementMetrics,
             Self::Farcaster | Self::TikTok | Self::Reddit | Self::Podcast | Self::Blog => {
                 ScoringStyle::EngagementMetrics
@@ -186,9 +208,12 @@ impl PlatformType {
     pub fn has_implicit_ai_disclosure(self) -> bool {
         match self {
             Self::YouTube => false,
-            Self::Twitter | Self::Referral | Self::GamePlay | Self::Website | Self::LeanProof => {
-                true
-            }
+            Self::Twitter
+            | Self::Referral
+            | Self::GamePlay
+            | Self::Website
+            | Self::LeanProof
+            | Self::OnChainAction => true,
             // Conservative default for not-yet-shipped platforms — if you
             // light one up, decide explicitly.
             Self::Farcaster | Self::TikTok | Self::Reddit | Self::Podcast | Self::Blog => false,
@@ -228,6 +253,7 @@ impl PlatformType {
             Self::Podcast => "Podcast episode URL",
             Self::Blog => "Blog post URL",
             Self::LeanProof => "URL of the Lean proof artifact (Proof.lean, max 5 MB)",
+            Self::OnChainAction => "CAIP-2 tx proof (<caip2>:<tx_hash>:<index>[:sig:<sig65>])",
         }
     }
 }
@@ -331,6 +357,7 @@ mod tests {
         assert_eq!(PlatformType::from_u8(8), Some(PlatformType::Blog));
         assert_eq!(PlatformType::from_u8(9), Some(PlatformType::Website));
         assert_eq!(PlatformType::from_u8(10), Some(PlatformType::LeanProof));
+        assert_eq!(PlatformType::from_u8(11), Some(PlatformType::OnChainAction));
     }
 
     #[test]
@@ -341,6 +368,7 @@ mod tests {
         assert_eq!(PlatformType::GamePlay.discriminant(), 5);
         assert_eq!(PlatformType::Website.discriminant(), 9);
         assert_eq!(PlatformType::LeanProof.discriminant(), 10);
+        assert_eq!(PlatformType::OnChainAction.discriminant(), 11);
     }
 
     #[test]
@@ -365,6 +393,7 @@ mod tests {
             PlatformType::GamePlay,
             PlatformType::Website,
             PlatformType::LeanProof,
+            PlatformType::OnChainAction,
         ] {
             assert!(!p.is_disabled(), "{p:?} should be enabled");
         }
@@ -380,6 +409,10 @@ mod tests {
         assert_eq!(PlatformType::Website.scoring_style(), ScoringStyle::Binary);
         assert_eq!(
             PlatformType::LeanProof.scoring_style(),
+            ScoringStyle::Binary
+        );
+        assert_eq!(
+            PlatformType::OnChainAction.scoring_style(),
             ScoringStyle::Binary
         );
         assert_eq!(
@@ -405,6 +438,8 @@ mod tests {
             PlatformType::Referral,
             PlatformType::GamePlay,
             PlatformType::Website,
+            PlatformType::LeanProof,
+            PlatformType::OnChainAction,
         ] {
             assert!(p.has_implicit_ai_disclosure(), "{p:?}");
         }
@@ -421,6 +456,7 @@ mod tests {
             PlatformType::Referral,
             PlatformType::Website,
             PlatformType::Farcaster,
+            PlatformType::OnChainAction,
         ] {
             assert!(!p.needs_on_chain_pre_check(), "{p:?}");
         }
@@ -434,6 +470,7 @@ mod tests {
             PlatformType::Twitter,
             PlatformType::GamePlay,
             PlatformType::Website,
+            PlatformType::OnChainAction,
         ] {
             assert!(!p.has_daily_cap_field(), "{p:?}");
         }
@@ -461,6 +498,10 @@ mod tests {
             PlatformType::LeanProof.default_challenge_window_secs(),
             3_600
         );
+        assert_eq!(
+            PlatformType::OnChainAction.default_challenge_window_secs(),
+            900
+        );
     }
 
     #[test]
@@ -468,6 +509,10 @@ mod tests {
         // Pin the existing mainnet defaults so this PR doesn't accidentally
         // collapse them into the network-aware devnet path. Devnet override
         // happens at the orchestrator boundary, not here.
+        assert_eq!(
+            PlatformType::OnChainAction.default_verification_delay_secs(),
+            60
+        );
         assert_eq!(
             PlatformType::Referral.default_verification_delay_secs(),
             300
@@ -496,7 +541,7 @@ mod tests {
 
     #[test]
     fn platform_type_from_u8_invalid() {
-        assert_eq!(PlatformType::from_u8(11), None);
+        assert_eq!(PlatformType::from_u8(12), None);
         assert_eq!(PlatformType::from_u8(255), None);
     }
 
@@ -514,6 +559,7 @@ mod tests {
             PlatformType::Blog,
             PlatformType::Website,
             PlatformType::LeanProof,
+            PlatformType::OnChainAction,
         ] {
             let bytes = borsh::to_vec(&variant).expect("serialize");
             let deserialized = PlatformType::try_from_slice(&bytes).expect("deserialize");

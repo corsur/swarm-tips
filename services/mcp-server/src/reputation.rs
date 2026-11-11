@@ -838,18 +838,73 @@ fn decode_event(data: &[u8]) -> Option<ChainEvent> {
     }
 }
 
-/// Extract decoded events from a transaction's log messages.
-fn events_from_logs(logs: &[String]) -> Vec<ChainEvent> {
+/// True when `getTransaction` returned a missing `meta` object or a non-null
+/// `meta.err` (failed transactions never committed state changes).
+fn tx_meta_failed(tx: &serde_json::Value) -> bool {
+    let Some(meta) = tx.get("meta") else {
+        return true;
+    };
+    if meta.is_null() {
+        return true;
+    }
+    match meta.get("err") {
+        None => false,
+        Some(err) => !err.is_null(),
+    }
+}
+
+/// Extract decoded events emitted strictly while `expected_program` is at the
+/// top of the SVM `Program <ID> invoke [N]` call stack.
+///
+/// Security invariants (`BH-01/02`):
+/// 1. Fails closed (`Vec::new()`) if any line contains `"Log truncated"`.
+/// 2. Rejects `"Program data: ..."` emitted by attacker wrapper programs or
+///    smuggled inside `"Program log: Program data: ..."`.
+fn events_from_logs_for_program(logs: &[String], expected_program: &str) -> Vec<ChainEvent> {
     use base64::Engine as _;
-    logs.iter()
-        .filter_map(|l| l.strip_prefix("Program data: "))
-        .filter_map(|b64| {
-            base64::engine::general_purpose::STANDARD
-                .decode(b64.trim())
-                .ok()
-        })
-        .filter_map(|data| decode_event(&data))
-        .collect()
+    debug_assert!(!expected_program.is_empty(), "expected_program required");
+    if logs.iter().any(|l| l.contains("Log truncated")) {
+        return Vec::new();
+    }
+    let mut stack: Vec<&str> = Vec::with_capacity(8);
+    let mut out = Vec::new();
+    for line in logs {
+        if let Some(rest) = line.strip_prefix("Program ") {
+            if let Some((prog_id, tail)) = rest.split_once(" invoke [") {
+                if tail.ends_with(']') && !prog_id.contains(' ') {
+                    stack.push(prog_id);
+                    continue;
+                }
+            } else if let Some((prog_id, tail)) = rest.split_once(' ') {
+                if tail == "success" || tail.starts_with("failed:") {
+                    if stack.last().copied() == Some(prog_id) {
+                        stack.pop();
+                    } else {
+                        stack.clear();
+                    }
+                    continue;
+                }
+            }
+        }
+        if stack.last().copied() != Some(expected_program) {
+            continue;
+        }
+        let Some(b64) = line.strip_prefix("Program data: ") else {
+            continue;
+        };
+        let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64.trim()) else {
+            continue;
+        };
+        if let Some(ev) = decode_event(&data) {
+            out.push(ev);
+        }
+    }
+    out
+}
+
+/// Extract decoded Shillbot events from a transaction's log messages.
+fn events_from_logs(logs: &[String]) -> Vec<ChainEvent> {
+    events_from_logs_for_program(logs, crate::solana_reads::SHILLBOT_PROGRAM_ID_BASE58)
 }
 
 async fn rpc_call(
@@ -1085,6 +1140,13 @@ pub async fn backfill(
                 continue;
             }
         };
+        if tx_meta_failed(&tx) {
+            tracing::warn!(
+                sig,
+                "getTransaction returned failed or missing meta — skipping"
+            );
+            continue;
+        }
         let logs: Vec<String> = tx
             .pointer("/meta/logMessages")
             .and_then(|l| l.as_array())

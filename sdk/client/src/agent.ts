@@ -205,6 +205,7 @@ export class SwarmAgent {
     claim: (id: string, sponsor?: string) => Promise<PreparedTransactionResponse>;
     claimAndExecute: (id: string, opts?: ExecuteTaskOptions) => Promise<ExecutedTaskResult>;
     submit: (id: string, body: unknown) => Promise<PreparedTransactionResponse>;
+    preflight: <TResponse = unknown>(id: string, body?: unknown) => Promise<TResponse>;
     submitAndExecute: (
       id: string,
       contentId: string,
@@ -388,6 +389,7 @@ export class SwarmAgent {
       claim: (id, sponsor = "auto") => self.shillbotClient.claimTask(id, sponsor),
       claimAndExecute: (id, opts) => self.executeClaimOrSubmit(id, "claim", undefined, opts),
       submit: (id, body) => self.shillbotClient.submitTask(id, body),
+      preflight: (id, body) => self.shillbotClient.preflightTask(id, body),
       submitAndExecute: (id, contentId, opts) =>
         self.executeClaimOrSubmit(id, "submit", contentId, opts),
       buildVerify: (id) =>
@@ -582,7 +584,7 @@ export class SwarmAgent {
       }
     } catch (err) {
       if (
-        action === "claim" &&
+        (action === "claim" || action === "submit") &&
         sponsorMode !== "none" &&
         err instanceof SwarmClientError &&
         err.code === "HTTP_ERROR" &&
@@ -590,7 +592,14 @@ export class SwarmAgent {
         /onboard|agent_state|bootstrap/i.test(err.message)
       ) {
         await this.shillbotClient.onboard();
-        prepared = await this.shillbotClient.claimTask(id, sponsorQuery);
+        if (action === "claim") {
+          prepared = await this.shillbotClient.claimTask(id, sponsorQuery);
+        } else {
+          prepared = await this.shillbotClient.post<PreparedTransactionResponse>(
+            `/tasks/${encodeURIComponent(id)}/submit?sponsor=${encodeURIComponent(sponsorQuery)}`,
+            { content_id: contentId, ...(opts?.extra ?? {}) },
+          );
+        }
       } else {
         throw err;
       }
@@ -778,8 +787,12 @@ export class SwarmAgent {
 
   static adviseNextAction(task: Record<string, unknown>, nowMs = Date.now()): NextTaskAction {
     const rawState = String(task.state ?? task.status ?? "").trim().toLowerCase();
+    const rawPlatform = task.platform;
+    const isOnChainAction =
+      rawPlatform === 11 ||
+      (typeof rawPlatform === "string" && rawPlatform.trim().toLowerCase() === "onchain_action");
     if (rawState === "open") {
-      return { step: "claim" };
+      return { step: isOnChainAction ? "submit" : "claim" };
     }
     if (rawState === "claimed") {
       return { step: "submit" };

@@ -10,16 +10,25 @@ fn encode_event(name: &str, body: &[u8]) -> String {
     )
 }
 
+fn in_shillbot(inner: Vec<String>) -> Vec<String> {
+    let prog = crate::solana_reads::SHILLBOT_PROGRAM_ID_BASE58;
+    let mut out = Vec::with_capacity(inner.len().saturating_add(2));
+    out.push(format!("Program {prog} invoke [1]"));
+    out.extend(inner);
+    out.push(format!("Program {prog} success"));
+    out
+}
+
 #[test]
 fn decodes_task_finalized_event_from_logs() {
     let mut body = 42u64.to_le_bytes().to_vec(); // task_id
     body.extend_from_slice(&[7u8; 32]); // agent pubkey
     body.extend_from_slice(&5000u64.to_le_bytes()); // payment
     body.extend_from_slice(&50u64.to_le_bytes()); // fee
-    let logs = vec![
+    let logs = in_shillbot(vec![
         "Program log: something".to_string(),
         encode_event("TaskFinalized", &body),
-    ];
+    ]);
     let events = events_from_logs(&logs);
     assert_eq!(events.len(), 1);
     match &events[0] {
@@ -39,10 +48,10 @@ fn decodes_created_verified_chain() {
     let mut verified = 7u64.to_le_bytes().to_vec();
     verified.extend_from_slice(&800_000u64.to_le_bytes()); // composite_score
     verified.extend_from_slice(&[0u8; 48]);
-    let logs = vec![
+    let logs = in_shillbot(vec![
         encode_event("TaskCreated", &created),
         encode_event("TaskVerified", &verified),
-    ];
+    ]);
     let events = events_from_logs(&logs);
     assert_eq!(events.len(), 2);
     assert!(matches!(events[0], ChainEvent::Created { task_id: 7, .. }));
@@ -60,10 +69,10 @@ fn decodes_created_verified_chain() {
 
 #[test]
 fn unknown_discriminators_are_ignored() {
-    let logs = vec![
+    let logs = in_shillbot(vec![
         encode_event("SomeOtherEvent", &[1, 2, 3]),
         "Program log: noise".to_string(),
-    ];
+    ]);
     assert!(events_from_logs(&logs).is_empty());
 }
 
@@ -72,7 +81,7 @@ fn challenge_resolved_decodes_challenger_won_flag() {
     let mut body = 3u64.to_le_bytes().to_vec();
     body.push(1); // challenger_won = true
     body.extend_from_slice(&100u64.to_le_bytes());
-    let logs = vec![encode_event("ChallengeResolved", &body)];
+    let logs = in_shillbot(vec![encode_event("ChallengeResolved", &body)]);
     let events = events_from_logs(&logs);
     match &events[0] {
         ChainEvent::ChallengeResolved {
@@ -131,8 +140,9 @@ fn every_noise_interleaving_extracts_exactly_the_valid_events() {
     // (before / between / after) — the extraction must be identical.
     for (noise_name, noise) in noise_variants() {
         for slot in 0..3 {
-            let mut logs = vec![created_frame(1), finalized_frame(1)];
-            logs.insert(slot, noise.clone());
+            let mut inner = vec![created_frame(1), finalized_frame(1)];
+            inner.insert(slot, noise.clone());
+            let logs = in_shillbot(inner);
             let events = events_from_logs(&logs);
             assert_eq!(
                 events.len(),
@@ -156,12 +166,12 @@ fn every_noise_interleaving_extracts_exactly_the_valid_events() {
 fn interleaved_tasks_keep_their_ids_straight() {
     // Frames from two tasks interleaved in one transaction's logs: the
     // decoder is order-preserving and never cross-wires task ids.
-    let logs = vec![
+    let logs = in_shillbot(vec![
         created_frame(10),
         created_frame(20),
         finalized_frame(20),
         finalized_frame(10),
-    ];
+    ]);
     let events = events_from_logs(&logs);
     assert_eq!(events.len(), 4);
     let ids: Vec<u64> = events
@@ -177,7 +187,7 @@ fn interleaved_tasks_keep_their_ids_straight() {
 
 #[test]
 fn all_noise_no_signal_yields_nothing() {
-    let logs: Vec<String> = noise_variants().into_iter().map(|(_, n)| n).collect();
+    let logs = in_shillbot(noise_variants().into_iter().map(|(_, n)| n).collect());
     assert!(events_from_logs(&logs).is_empty());
 }
 
@@ -362,4 +372,55 @@ fn join_state_carries_across_signatures() {
     assert_eq!(docs[0].from, "CLIENT", "client carried over from sig-a");
     assert_eq!(docs[0].tx_sig, "sig-b", "edge id is the FINALIZE signature");
     assert_eq!(delta.finalized, 1);
+}
+
+#[test]
+fn rejects_spoofed_program_data_from_foreign_or_nested_programs_and_truncated_logs() {
+    let shillbot = crate::solana_reads::SHILLBOT_PROGRAM_ID_BASE58;
+    let attacker = "Attacker11111111111111111111111111111111111";
+
+    // 1. Bare Program data without invoke frame -> rejected.
+    assert!(events_from_logs(&[finalized_frame(1)]).is_empty());
+
+    // 2. Foreign program emitting identical Anchor TaskFinalized bytes -> rejected.
+    let foreign_logs = vec![
+        format!("Program {attacker} invoke [1]"),
+        finalized_frame(1),
+        format!("Program {attacker} success"),
+    ];
+    assert!(events_from_logs(&foreign_logs).is_empty());
+
+    // 3. Nested CPI from shillbot into foreign program: foreign Program data is
+    //    ignored while shillbot's own Program data after CPI return is accepted.
+    let nested_logs = vec![
+        format!("Program {shillbot} invoke [1]"),
+        format!("Program {attacker} invoke [2]"),
+        finalized_frame(999),
+        format!("Program {attacker} success"),
+        finalized_frame(42),
+        format!("Program {shillbot} success"),
+    ];
+    let events = events_from_logs(&nested_logs);
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        events[0],
+        ChainEvent::Finalized { task_id: 42, .. }
+    ));
+
+    // 4. "Log truncated" fails closed over the entire transaction log slice.
+    let mut truncated = in_shillbot(vec![created_frame(1), finalized_frame(1)]);
+    truncated.push("Log truncated".to_string());
+    assert!(events_from_logs(&truncated).is_empty());
+}
+
+#[test]
+fn tx_meta_failed_rejects_missing_or_errored_meta() {
+    assert!(tx_meta_failed(&serde_json::json!({})));
+    assert!(tx_meta_failed(&serde_json::json!({ "meta": null })));
+    assert!(tx_meta_failed(&serde_json::json!({
+        "meta": { "err": { "InstructionError": [0, "Custom"] } }
+    })));
+    assert!(!tx_meta_failed(&serde_json::json!({
+        "meta": { "err": null }
+    })));
 }

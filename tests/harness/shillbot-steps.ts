@@ -22,7 +22,9 @@ import {
   LAMPORTS_PER_SOL,
   PublicKey,
   SystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
   SYSVAR_SLOT_HASHES_PUBKEY,
+  Transaction,
 } from "@solana/web3.js";
 import { createHash, randomBytes } from "crypto";
 import { Shillbot } from "../../target/types/shillbot";
@@ -35,8 +37,9 @@ import {
 import { readWhenAdvanced, readWhenVisible } from "./retry-read";
 import type { TaskPayout } from "@swarm-tips/client/shillbot";
 
-// Switchboard On-Demand program id (owner of feed accounts) and the fixed dummy
-// feed pubkey the program's `initialize` records — shared with shillbot-bankrun.ts.
+// Legacy Switchboard placeholder pubkey passed to `initialize` (Switchboard
+// pull-feed parsing is retired; kind-0 `verify_task` is co-signed by
+// `GlobalState.oracle_authority` / `GlobalState.authority`).
 export const SWITCHBOARD_PROGRAM_ID = new PublicKey(
   "Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2"
 );
@@ -45,14 +48,15 @@ export const DUMMY_SWITCHBOARD_FEED = new PublicKey(
 );
 
 export const LEAN_PROOF_PLATFORM = 10;
+export const ONCHAIN_ACTION_PLATFORM = 11;
 
 /** Allowed task status transitions. Terminals (Finalized/Resolved/Expired) are absorbing. */
 export const TASK_GRAPH: TransitionGraph = {
-  Open: ["Claimed", "Expired"],
+  // OnChainAction atomic claim+submit goes Open -> Submitted in one tx.
+  Open: ["Claimed", "Submitted", "Expired"],
   Claimed: ["Submitted", "Expired"],
-  // verify_task_attested (requires_approval=false) goes Submitted→Verified directly;
-  // the oracle path goes through Approved.
-  Submitted: ["Approved", "Verified", "Expired"],
+  // OnChainAction score=0 before deadline reopens Submitted -> Open in-place.
+  Submitted: ["Open", "Approved", "Verified", "Expired"],
   Approved: ["Verified", "Expired"],
   Verified: ["Finalized", "Disputed"],
   Disputed: ["Resolved"],
@@ -250,6 +254,7 @@ export interface CreateTaskOpts {
   attestationDelayOverride?: number;
   verificationTimeoutOverride?: number;
   contentTag?: string;
+  contentHashOverride?: number[];
   /** Task PDA nonce; a fresh random u64 when omitted. Pin it to drive a
    *  duplicate-nonce test (Anchor `init` must reject reuse of (nonce, client)). */
   nonce?: BN;
@@ -270,6 +275,7 @@ export async function createTask(
   const taskId = opts.nonce ?? randomTaskNonce();
   const task = taskPda(taskId, client.publicKey, ctx.rt.program.programId);
   const contentTag = opts.contentTag ?? `task-${taskId.toString()}`;
+  const hash = opts.contentHashOverride ?? contentHash(contentTag);
   const now = await ctx.rt.now();
   const deadline = new BN(now + (opts.deadlineSeconds ?? 86_400 * 60));
 
@@ -277,7 +283,7 @@ export async function createTask(
     .createTask(
       taskId,
       opts.escrowLamports,
-      contentHash(contentTag) as never,
+      hash as never,
       deadline,
       new BN(opts.submitMargin ?? 3600),
       new BN(opts.claimBuffer ?? 14_400),
@@ -316,6 +322,63 @@ export async function claimTask(
       agent: agent.publicKey,
       systemProgram: SystemProgram.programId,
     })
+    .signers([agent])
+    .rpc();
+  assertLegalTransition(
+    TASK_GRAPH,
+    before,
+    await statusAfter(ctx, task, before)
+  );
+}
+
+/** Atomic [claim_task (+ SYSVAR_INSTRUCTIONS), (set_payout_to?), submit_work]: Open → Submitted. */
+export async function claimAndSubmitAtomic(
+  ctx: ShillbotCtx,
+  agent: Keypair,
+  task: PublicKey,
+  contentId: string,
+  payoutTo?: PublicKey
+): Promise<void> {
+  const before = await statusOf(ctx, task);
+  const agentState = agentStatePda(agent.publicKey, ctx.rt.program.programId);
+  const postIxs = [];
+  if (payoutTo) {
+    postIxs.push(
+      await ctx.rt.program.methods
+        .setPayoutTo(payoutTo)
+        .accountsPartial({
+          task,
+          agent: agent.publicKey,
+        })
+        .instruction()
+    );
+  }
+  postIxs.push(
+    await ctx.rt.program.methods
+      .submitWork(Buffer.from(contentId))
+      .accountsPartial({
+        task,
+        agentState,
+        agent: agent.publicKey,
+      })
+      .instruction()
+  );
+  await ctx.rt.program.methods
+    .claimTask()
+    .accountsPartial({
+      task,
+      agentState,
+      agent: agent.publicKey,
+      systemProgram: SystemProgram.programId,
+    })
+    .remainingAccounts([
+      {
+        pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+        isSigner: false,
+        isWritable: false,
+      },
+    ])
+    .postInstructions(postIxs)
     .signers([agent])
     .rpc();
   assertLegalTransition(
@@ -368,29 +431,28 @@ export async function approveTask(
   );
 }
 
-/** verify_task (kind 0, Switchboard): Approved/Submitted → Verified.
- *  Requires the oracle feed primed to `score` (bankrun injects; devnet cranks). */
+/** verify_task (kind 0, co-signed by oracle_authority / authority):
+ *  Approved/Submitted → Verified (or Submitted → Open when OnChainAction score=0 before deadline). */
 export async function verifyTaskOracle(
   ctx: ShillbotCtx,
   task: PublicKey,
-  score: number
+  score: number,
+  oracle: Keypair = ctx.authority
 ): Promise<void> {
-  if (!ctx.primeFeed) {
-    throw new Error(
-      "verifyTaskOracle: ctx.primeFeed not set (kind-0 needs a feed)"
-    );
-  }
-  await ctx.primeFeed(score);
   const before = await statusOf(ctx, task);
   const verificationHash = Array.from({ length: 32 }, (_, i) => i + 1);
-  await ctx.rt.program.methods
+  const ix = await ctx.rt.program.methods
     .verifyTask(new BN(score), verificationHash as never)
     .accountsPartial({
       task,
       globalState: ctx.globalPda,
-      switchboardFeed: DUMMY_SWITCHBOARD_FEED,
+      switchboardFeed: oracle.publicKey,
     })
-    .rpc();
+    .instruction();
+  ix.keys[2].isSigner = true;
+  await ctx.rt.program.provider.sendAndConfirm!(new Transaction().add(ix), [
+    oracle,
+  ]);
   assertLegalTransition(
     TASK_GRAPH,
     before,

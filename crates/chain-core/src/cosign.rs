@@ -83,7 +83,7 @@ pub fn sign_digest_eth(secret_key: &[u8; 32], digest: &[u8; 32]) -> Result<[u8; 
 /// backend uses this to verify players' co-signatures before submitting.
 pub fn recover_address(digest: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 20], CosignError> {
     let v = if sig[64] == 27 || sig[64] == 28 {
-        sig[64] - 27
+        sig[64].saturating_sub(27)
     } else {
         sig[64]
     };

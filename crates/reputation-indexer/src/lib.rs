@@ -192,16 +192,29 @@ pub fn build_reputation(
             .insert(d.to.as_str());
     }
 
+    let mut capped_scores = result.scores;
+    cap_at_entry_points(&mut capped_scores, &unique, pre_trusted);
+
     // Rank by score, descending; ties broken by wallet for determinism.
-    let mut scored: Vec<(String, f64)> = result.scores.into_iter().collect();
+    let mut scored: Vec<(String, f64)> = capped_scores.into_iter().collect();
     scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    let n = scored.len().max(1) as f64;
+    // BH-03: Detached / un-anchored wallets (`eigentrust_score <= SCORE_FLOOR`)
+    // MUST receive `rank_normalized = 0.0`. Previously `1.0 - i / n` over all
+    // wallets let a `"1111..."` vanity pubkey with `0.0` score lexicographically
+    // jump to `rank_normalized > 0.97` via zero-score tie-breaking.
+    const SCORE_FLOOR: f64 = 1e-12;
+    let n_positive = scored.iter().filter(|(_, s)| *s > SCORE_FLOOR).count();
+    let denom = n_positive.max(1) as f64;
     let agents: Vec<AgentReputation> = scored
         .into_iter()
         .enumerate()
         .map(|(i, (wallet, score))| AgentReputation {
-            rank_normalized: 1.0 - (i as f64) / n,
+            rank_normalized: if score <= SCORE_FLOOR {
+                0.0
+            } else {
+                1.0 - (i as f64) / denom
+            },
             settlements_received: received.get(wallet.as_str()).copied().unwrap_or(0),
             settlements_paid: paid.get(wallet.as_str()).copied().unwrap_or(0),
             bug_bounties_received: bounties.get(wallet.as_str()).copied().unwrap_or(0),
@@ -236,6 +249,64 @@ pub fn build_reputation(
         iterations: result.iterations,
         agents,
     })
+}
+
+/// Path-monotonicity cap: trust flows outward from `pre_trusted` anchors, so no
+/// non-anchor wallet may outrank the strongest anchored chain connecting it to
+/// `pre_trusted`. Without this widest-path cap, a mutual-settlement Sybil ring
+/// sitting behind a single low-trust entry point traps random-walk mass and
+/// outranks its own entry point (`BH-03`).
+///
+/// Zero-weight edges (e.g., lost challenges) transmit zero trust capacity.
+fn cap_at_entry_points(
+    scores: &mut HashMap<String, f64>,
+    edges: &[&TrustEdgeDoc],
+    pre_trusted: &HashSet<String>,
+) {
+    let mut caps: HashMap<String, f64> = scores
+        .keys()
+        .map(|k| {
+            let init = if pre_trusted.contains(k) {
+                f64::INFINITY
+            } else {
+                0.0
+            };
+            (k.clone(), init)
+        })
+        .collect();
+    let max_passes = scores.len();
+    for _ in 0..=max_passes {
+        let mut changed = false;
+        for d in edges {
+            if d.weight <= 0.0 || d.from == d.to || pre_trusted.contains(&d.to) {
+                continue;
+            }
+            let inflow = if pre_trusted.contains(&d.from) {
+                f64::INFINITY
+            } else {
+                let from_cap = caps.get(&d.from).copied().unwrap_or(0.0);
+                let from_score = scores.get(&d.from).copied().unwrap_or(0.0);
+                from_cap.min(from_score)
+            };
+            let entry = caps.entry(d.to.clone()).or_insert(0.0);
+            if inflow > *entry {
+                *entry = inflow;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (wallet, score) in scores.iter_mut() {
+        if pre_trusted.contains(wallet) {
+            continue;
+        }
+        let cap = caps.get(wallet).copied().unwrap_or(0.0);
+        if *score > cap {
+            *score = cap;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -496,7 +567,12 @@ mod tests {
                         "{label}: ranks are not a permutation"
                     );
 
-                    let n = build.agents.len() as f64;
+                    let n_positive = build
+                        .agents
+                        .iter()
+                        .filter(|a| a.eigentrust_score > 1e-12)
+                        .count();
+                    let denom = n_positive.max(1) as f64;
                     let mut unique_sigs: std::collections::HashSet<&str> =
                         std::collections::HashSet::new();
                     for d in &docs {
@@ -514,7 +590,11 @@ mod tests {
                     );
 
                     for a in &build.agents {
-                        let expected_norm = 1.0 - ((a.rank as f64 - 1.0) / n.max(1.0));
+                        let expected_norm = if a.eigentrust_score <= 1e-12 {
+                            0.0
+                        } else {
+                            1.0 - ((a.rank as f64 - 1.0) / denom)
+                        };
                         assert!(
                             (a.rank_normalized - expected_norm).abs() < 1e-9,
                             "{label}: rank_normalized formula violated for {}",
@@ -635,5 +715,84 @@ mod tests {
             build.agents.iter().all(|a| a.wallet != "self_dealer"),
             "self-only dealer must not enter the reputation graph"
         );
+    }
+
+    #[test]
+    fn detached_vanity_sybils_receive_zero_rank_normalized() {
+        // BH-03 regression: 40 detached Sybil pairs including a `"1111..."` vanity
+        // pubkey must all receive `rank_normalized == 0.0`, never `> 0.90` via
+        // lexicographic zero-score tie-breaking.
+        let mut docs = vec![edge("t_honest", "anchor", "z_honest", 1.0)];
+        docs.push(edge(
+            "s_vanity",
+            "1111111111111111",
+            "2222222222222222",
+            1.0,
+        ));
+        for idx in 0..20 {
+            docs.push(edge(
+                &format!("s_{idx}"),
+                &format!("sybil_c_{idx:02}"),
+                &format!("sybil_w_{idx:02}"),
+                1.0,
+            ));
+        }
+        let build = build_reputation(
+            &docs,
+            &pre(&["anchor"]),
+            &EigenTrustConfig::default(),
+            chrono::Utc::now(),
+        )
+        .expect("build succeeds");
+        let vanity = build
+            .agents
+            .iter()
+            .find(|a| a.wallet == "1111111111111111")
+            .expect("vanity present");
+        assert_eq!(vanity.eigentrust_score, 0.0);
+        assert_eq!(vanity.rank_normalized, 0.0);
+        for a in &build.agents {
+            if a.wallet != "anchor" && a.wallet != "z_honest" {
+                assert_eq!(
+                    a.rank_normalized, 0.0,
+                    "detached peer {} leaked rank_normalized {}",
+                    a.wallet, a.rank_normalized
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn path_monotonicity_caps_mutual_ring_behind_single_entry_point() {
+        // BH-03 regression: `anchor` pays `honest_top` (weight 1.0) and `bridge`
+        // (weight 0.1). `bridge` funnels into a mutual ring `ring_a <-> ring_b`
+        // (weight 1.0). Without `cap_at_entry_points`, random-walk mass trapped
+        // inside `ring_a <-> ring_b` lets the ring outrank `bridge`.
+        let docs = vec![
+            edge("t1", "anchor", "honest_top", 1.0),
+            edge("t2", "anchor", "bridge", 0.1),
+            edge("t3", "bridge", "ring_a", 1.0),
+            edge("t4", "ring_a", "ring_b", 1.0),
+            edge("t5", "ring_b", "ring_a", 1.0),
+        ];
+        let build = build_reputation(
+            &docs,
+            &pre(&["anchor"]),
+            &EigenTrustConfig::default(),
+            chrono::Utc::now(),
+        )
+        .expect("build succeeds");
+        let score_of = |w: &str| {
+            build
+                .agents
+                .iter()
+                .find(|a| a.wallet == w)
+                .expect("present")
+                .eigentrust_score
+        };
+        let bridge_score = score_of("bridge");
+        assert!(score_of("ring_a") <= bridge_score + 1e-12);
+        assert!(score_of("ring_b") <= bridge_score + 1e-12);
+        assert!(score_of("honest_top") > bridge_score);
     }
 }

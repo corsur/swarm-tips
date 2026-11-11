@@ -1,25 +1,21 @@
 use anchor_lang::prelude::*;
-use switchboard_on_demand::on_demand::accounts::pull_feed::PullFeedAccountData;
-use switchboard_on_demand::prelude::rust_decimal::prelude::ToPrimitive;
 
 use crate::errors::ShillbotError;
-use crate::events::TaskVerified;
+use crate::events::{TaskReopened, TaskVerified};
 use crate::scoring::compute_payment;
 use crate::state::{GlobalState, Task, TaskState};
 
-// Switchboard On-Demand V3: get_value() returns a Decimal in human-readable
-// form (no manual rescaling needed). Old V2 used i128 scaled by 10^18.
-
-/// Oracle attestation records the composite score from a Switchboard pull feed
-/// and computes payment.
+/// Co-signed oracle verification records `composite_score` and computes payment.
 ///
-/// The off-chain flow:
-/// 1. Off-chain verifier triggers a Switchboard feed update with the composite score
-/// 2. Switchboard oracles post the score to the feed account
-/// 3. This instruction reads the feed, validates the score, and records verification
+/// Legacy Switchboard pull-feed parsing has been retired: `switchboard_feed`
+/// MUST be an active signer matching `GlobalState.oracle_authority` or
+/// `GlobalState.authority`.
 ///
-/// The `composite_score` argument must match the value read from the Switchboard feed.
-/// The `verification_hash` is computed off-chain and stored for audit trail.
+/// For `PlatformType::OnChainAction` (`11`), scores must be binary (`0` or
+/// `MAX_SCORE`), and a `0` score while the task is still claimable
+/// (`now + claim_buffer < deadline`) reopens the task in-place to `TaskState::Open`
+/// (emitting `TaskReopened` rather than `TaskVerified`) so a failed proof never
+/// burns the client's campaign slot or misleads terminal-event indexers.
 pub fn verify_task(
     ctx: Context<VerifyTask>,
     composite_score: u64,
@@ -32,19 +28,25 @@ pub fn verify_task(
     require!(!global.paused, ShillbotError::ProtocolPaused);
     validate_verify_inputs(task, composite_score, verification_hash)?;
     validate_attestation_staleness(task, global, clock.unix_timestamp)?;
-    if is_authorized_oracle_account(global, &ctx.accounts.switchboard_feed) {
-        require!(
-            ctx.accounts.switchboard_feed.is_signer,
-            ShillbotError::OracleAuthorityMismatch
-        );
-    } else {
-        validate_switchboard_feed(global, &ctx.accounts.switchboard_feed)?;
-        let feed_score = read_switchboard_score(&ctx.accounts.switchboard_feed, clock.slot)?;
-        require!(
-            feed_score == composite_score,
-            ShillbotError::SwitchboardScoreMismatch
-        );
+    require!(
+        is_authorized_oracle_account(global, &ctx.accounts.switchboard_feed)
+            && ctx.accounts.switchboard_feed.is_signer,
+        ShillbotError::OracleAuthorityMismatch
+    );
+
+    if should_reopen_onchain_action(task, composite_score, clock.unix_timestamp) {
+        let prev_agent = ctx.accounts.task.agent;
+        // Effects: reset per-submission state and reopen task in-place
+        reopen_task_in_place(&mut ctx.accounts.task);
+        // Interactions: none
+        emit!(TaskReopened {
+            task_id: ctx.accounts.task.task_id,
+            prev_agent,
+            verification_hash,
+        });
+        return Ok(());
     }
+
     // Effects: payment+fee pinned at verification time so finalize/resolve
     // use the fee that was in effect now, not the current GlobalState fee.
     let (payment_amount, fee_amount) = compute_payment_amounts(task, global, composite_score)?;
@@ -83,7 +85,7 @@ fn validate_verify_inputs(
         task.state == required_state,
         ShillbotError::InvalidTaskState
     );
-    // Mutual exclusion with `verify_task_attested`: the Switchboard path
+    // Mutual exclusion with `verify_task_attested`: `verify_task`
     // only admits kind 0 (OracleMetrics) tasks.
     require!(
         task.verification_kind == 0,
@@ -93,11 +95,42 @@ fn validate_verify_inputs(
         composite_score <= shared::MAX_SCORE,
         ShillbotError::ScoreOutOfBounds
     );
+    if task.platform == shared::PlatformType::OnChainAction.discriminant() {
+        require!(
+            composite_score == 0 || composite_score == shared::MAX_SCORE,
+            ShillbotError::AttestedScoreNotBinary
+        );
+    }
     require!(
         verification_hash != [0u8; 32],
         ShillbotError::InvalidVerificationHash
     );
     Ok(())
+}
+
+/// Returns `true` when an `OnChainAction` submission scored `0` and still has
+/// enough time before `deadline` (`now + claim_buffer < deadline`) for another
+/// agent to claim and submit a valid proof.
+fn should_reopen_onchain_action(task: &Task, composite_score: u64, now: i64) -> bool {
+    task.platform == shared::PlatformType::OnChainAction.discriminant()
+        && composite_score == 0
+        && now.saturating_add(task.claim_buffer) < task.deadline
+}
+
+/// Reset all per-claimant/per-submission fields on `Task` back to `TaskState::Open`
+/// while preserving escrow, immutable `content_hash`, deadlines, and overrides.
+fn reopen_task_in_place(task: &mut Task) {
+    task.state = TaskState::Open;
+    task.agent = Pubkey::default();
+    task.payout_to = Pubkey::default();
+    task.content_id_hash = [0u8; 32];
+    task.submitted_at = 0;
+    task.verified_at = 0;
+    task.challenge_deadline = 0;
+    task.composite_score = 0;
+    task.payment_amount = 0;
+    task.fee_amount = 0;
+    task.verification_hash = [0u8; 32];
 }
 
 /// Pure effect phase — write verification fields and the Verified
@@ -139,29 +172,6 @@ fn is_authorized_oracle_account(global: &GlobalState, account: &AccountInfo) -> 
 
 fn is_authorized_oracle_pubkey(global: &GlobalState, key: &Pubkey) -> bool {
     *key != Pubkey::default() && (*key == global.oracle_authority || *key == global.authority)
-}
-
-/// Verify the Switchboard feed account passed by the caller matches the
-/// one configured in GlobalState.
-///
-/// The 2026-05-01 commit (task #9) moved this check to a compile-time
-/// const for hardening, on the theory that "single-key compromise of the
-/// authority lets an attacker redirect verify to a malicious feed." That
-/// hardening was reverted 2026-05-08 because (a) the const was committed
-/// as a placeholder and the load-bearing TODO was missed, blocking every
-/// verify_task call on every network for ~7 days, and (b) at zero TVL
-/// the attacker-model was hypothetical, while the GlobalState field
-/// already has correct per-network values populated.
-fn validate_switchboard_feed(global: &GlobalState, feed: &AccountInfo) -> Result<()> {
-    require!(
-        global.switchboard_feed != Pubkey::default(),
-        ShillbotError::SwitchboardFeedNotConfigured
-    );
-    require!(
-        feed.key() == global.switchboard_feed,
-        ShillbotError::SwitchboardFeedMismatch
-    );
-    Ok(())
 }
 
 /// Compute (payment_amount, fee_amount) for the verification using the
@@ -210,41 +220,6 @@ fn validate_attestation_staleness(task: &Task, global: &GlobalState, now: i64) -
     Ok(())
 }
 
-/// Parse the Switchboard pull feed account and extract the composite score as a u64.
-///
-/// Switchboard On-Demand V3 `get_value()` returns a `Decimal` in human-readable
-/// form (e.g., score 6600 is returned as `Decimal(6600)`). No rescaling needed.
-///
-/// This function:
-/// 1. Parses the feed account data (validates discriminator)
-/// 2. Reads the latest value with staleness and sample checks
-/// 3. Converts the Decimal to u64
-fn read_switchboard_score(feed_account: &AccountInfo, clock_slot: u64) -> Result<u64> {
-    let data = feed_account
-        .try_borrow_data()
-        .map_err(|_| error!(ShillbotError::SwitchboardParseError))?;
-
-    let feed = PullFeedAccountData::parse(data)
-        .map_err(|_| error!(ShillbotError::SwitchboardParseError))?;
-
-    // Read value with staleness check (use the feed's own max_staleness config),
-    // require at least 1 sample, and require positive value.
-    let value = feed
-        .get_value(clock_slot, feed.max_staleness as u64, 1, true)
-        .map_err(|_| error!(ShillbotError::SwitchboardParseError))?;
-
-    // Switchboard On-Demand V3 get_value() returns a Decimal in human-readable
-    // form (e.g., 6600 for composite score 6600). Convert directly to u64.
-    let score = value
-        .to_u64()
-        .ok_or(ShillbotError::SwitchboardInvalidValue)?;
-
-    // Postcondition: score within valid bounds
-    require!(score <= shared::MAX_SCORE, ShillbotError::ScoreOutOfBounds);
-
-    Ok(score)
-}
-
 #[derive(Accounts)]
 pub struct VerifyTask<'info> {
     #[account(
@@ -262,11 +237,10 @@ pub struct VerifyTask<'info> {
         bump = global_state.bump,
     )]
     pub global_state: Account<'info, GlobalState>,
-    /// The oracle authority signer (`GlobalState.oracle_authority` or
-    /// `GlobalState.authority`) or legacy Switchboard pull feed account.
-    /// CHECK: Validated as a required signer matching `global_state.oracle_authority`
-    /// / `global_state.authority`, or validated against `global_state.switchboard_feed`
-    /// and parsed via `PullFeedAccountData::parse()`.
+    /// Required oracle signer (`GlobalState.oracle_authority` or `GlobalState.authority`).
+    /// Field name retained as `switchboard_feed` for Anchor IDL backwards compatibility.
+    /// CHECK: Validated as an active signer matching `global_state.oracle_authority`
+    /// or `global_state.authority`.
     pub switchboard_feed: AccountInfo<'info>,
 }
 
@@ -294,6 +268,10 @@ mod tests {
              (const retired 2026-05-08; per-network feed pubkey lives in \
              GlobalState.switchboard_feed). Re-introducing the const is the \
              same trap that shipped the placeholder bug."
+        );
+        assert!(
+            !production.contains("PullFeedAccountData"),
+            "verify_task.rs must not reference PullFeedAccountData after Switchboard retirement"
         );
     }
 
@@ -332,5 +310,58 @@ mod tests {
         assert!(!is_authorized_oracle_pubkey(&global, &feed));
         assert!(!is_authorized_oracle_pubkey(&global, &stranger));
         assert!(!is_authorized_oracle_pubkey(&global, &Pubkey::default()));
+    }
+
+    #[test]
+    fn onchain_action_score_zero_reopens_cleanly_and_resets_payout_route() {
+        let client = Pubkey::new_unique();
+        let mut task = Task {
+            task_id: 77,
+            client,
+            agent: Pubkey::new_unique(),
+            state: TaskState::Submitted,
+            platform: shared::PlatformType::OnChainAction.discriminant(),
+            escrow_lamports: 5_000_000,
+            content_hash: [0xAB; 32],
+            content_id_hash: [0xCD; 32],
+            task_nonce: [0x11; 16],
+            composite_score: 0,
+            payment_amount: 0,
+            fee_amount: 0,
+            deadline: 100_000,
+            submit_margin: 3_600,
+            claim_buffer: 14_400,
+            created_at: 1_000,
+            submitted_at: 2_000,
+            verified_at: 0,
+            challenge_deadline: 0,
+            attestation_delay_override: 60,
+            challenge_window_override: 900,
+            verification_timeout_override: 0,
+            verification_hash: [0; 32],
+            requires_approval: 0,
+            verification_kind: 0,
+            _reserved: [0; 18],
+            bump: 250,
+            payout_to: Pubkey::new_unique(),
+        };
+
+        assert!(should_reopen_onchain_action(&task, 0, 50_000));
+        assert!(!should_reopen_onchain_action(&task, 0, 90_000));
+        assert!(!should_reopen_onchain_action(
+            &task,
+            shared::MAX_SCORE,
+            50_000
+        ));
+        assert!(validate_verify_inputs(&task, 500_000, [1u8; 32]).is_err());
+
+        reopen_task_in_place(&mut task);
+        assert_eq!(task.state, TaskState::Open);
+        assert_eq!(task.agent, Pubkey::default());
+        assert_eq!(task.payout_to, Pubkey::default());
+        assert_eq!(task.content_id_hash, [0u8; 32]);
+        assert_eq!(task.submitted_at, 0);
+        assert_eq!(task.escrow_lamports, 5_000_000);
+        assert_eq!(task.content_hash, [0xAB; 32]);
     }
 }

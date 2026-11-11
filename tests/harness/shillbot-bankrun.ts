@@ -8,6 +8,7 @@ import { startAnchor, BankrunProvider } from "anchor-bankrun";
 import { Program } from "@coral-xyz/anchor";
 import { Clock } from "solana-bankrun";
 import {
+  Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
   SystemProgram,
@@ -23,6 +24,10 @@ import {
 
 const IDL = require("../../target/idl/shillbot.json");
 
+export const CPI_CLAIM_FORWARDER_ID = Keypair.fromSeed(
+  new Uint8Array(32).fill(99)
+).publicKey;
+
 export interface ShillbotBankrunHandle {
   runtime: SolanaRuntime<Shillbot>;
   context: Awaited<ReturnType<typeof startAnchor>>;
@@ -33,7 +38,11 @@ export interface ShillbotBankrunHandle {
 
 /** Boot a fresh in-process Solana VM with the shillbot program loaded. */
 export async function startShillbotBankrun(): Promise<ShillbotBankrunHandle> {
-  const context = await startAnchor(".", [], []);
+  const context = await startAnchor(
+    ".",
+    [{ name: "cpi_claim_forwarder", programId: CPI_CLAIM_FORWARDER_ID }],
+    []
+  );
   const provider = new BankrunProvider(context);
   const program = new Program<Shillbot>(IDL, provider);
 

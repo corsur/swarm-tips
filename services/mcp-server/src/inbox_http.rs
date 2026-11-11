@@ -2670,6 +2670,7 @@ mod bearer_and_mute_router_tests {
             &self,
             req: inbox::PublishPostRequest,
         ) -> Result<inbox::PostReceipt, inbox::InboxError> {
+            let e2e = inbox::is_synthetic_e2e_post(&req.body);
             Ok(inbox::PostReceipt {
                 post_id: "00000000000000000002_00000002".to_string(),
                 topic_id: req.topic_id,
@@ -2678,6 +2679,7 @@ mod bearer_and_mute_router_tests {
                 bytes: req.body.len(),
                 expires_at: chrono::Utc::now(),
                 posts_remaining_today: 4,
+                e2e,
             })
         }
         async fn read_posts(

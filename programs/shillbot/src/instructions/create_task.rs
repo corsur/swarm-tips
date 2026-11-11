@@ -44,6 +44,7 @@ pub fn create_task(
     validate_create_task_inputs(
         global,
         platform,
+        &content_hash,
         deadline,
         submit_margin,
         claim_buffer,
@@ -51,6 +52,7 @@ pub fn create_task(
         attestation_delay_override,
         challenge_window_override,
         verification_timeout_override,
+        requires_approval,
         verification_kind,
         now,
     )?;
@@ -120,6 +122,7 @@ fn transfer_escrow_to_task(ctx: &Context<CreateTask>, escrow_lamports: u64) -> R
 fn validate_create_task_inputs(
     global: &GlobalState,
     platform: u8,
+    content_hash: &[u8; 32],
     deadline: i64,
     submit_margin: i64,
     claim_buffer: i64,
@@ -127,6 +130,7 @@ fn validate_create_task_inputs(
     attestation_delay_override: u32,
     challenge_window_override: u32,
     verification_timeout_override: u32,
+    requires_approval: bool,
     verification_kind: u8,
     now: i64,
 ) -> Result<()> {
@@ -137,19 +141,7 @@ fn validate_create_task_inputs(
         ShillbotError::InvalidPlatform
     );
 
-    // verification_kind is append-only: 0 | 1 today. Kind 1
-    // (DeterministicAttested) ↔ the LeanProof platform, both directions —
-    // a deterministic task on an oracle platform (or vice versa) would
-    // dead-end at verify time, so reject at the boundary.
-    require!(
-        verification_kind <= 1,
-        ShillbotError::InvalidVerificationKind
-    );
-    let is_lean = platform == shared::PlatformType::LeanProof.discriminant();
-    require!(
-        (verification_kind == 1) == is_lean,
-        ShillbotError::VerificationKindMismatch
-    );
+    validate_platform_and_kind(platform, content_hash, requires_approval, verification_kind)?;
 
     let platform_bit = 1u16
         .checked_shl(platform as u32)
@@ -167,17 +159,67 @@ fn validate_create_task_inputs(
     );
     require!(escrow_lamports > 0, ShillbotError::InvalidParameter);
 
+    validate_timing_overrides(
+        global,
+        platform,
+        attestation_delay_override,
+        challenge_window_override,
+        verification_timeout_override,
+    )
+}
+
+/// Validate platform-specific invariants (`verification_kind`, `content_hash`,
+/// and `requires_approval` for `OnChainAction` and `LeanProof`).
+fn validate_platform_and_kind(
+    platform: u8,
+    content_hash: &[u8; 32],
+    requires_approval: bool,
+    verification_kind: u8,
+) -> Result<()> {
+    // verification_kind is append-only: 0 | 1 today. Kind 1
+    // (DeterministicAttested) ↔ the LeanProof platform, both directions —
+    // a deterministic task on an oracle platform (or vice versa) would
+    // dead-end at verify time, so reject at the boundary.
+    require!(
+        verification_kind <= 1,
+        ShillbotError::InvalidVerificationKind
+    );
+    let is_lean = platform == shared::PlatformType::LeanProof.discriminant();
+    require!(
+        (verification_kind == 1) == is_lean,
+        ShillbotError::VerificationKindMismatch
+    );
+    if platform == shared::PlatformType::OnChainAction.discriminant() {
+        require!(*content_hash != [0u8; 32], ShillbotError::InvalidParameter);
+        require!(!requires_approval, ShillbotError::InvalidParameter);
+    }
+    Ok(())
+}
+
+/// Validate per-task timing overrides (`0` = global default) and `S02-F01`
+/// timeout ordering (`effective_verification_timeout > effective_attestation_delay + staleness_window`).
+fn validate_timing_overrides(
+    global: &GlobalState,
+    platform: u8,
+    attestation_delay_override: u32,
+    challenge_window_override: u32,
+    verification_timeout_override: u32,
+) -> Result<()> {
+    let is_onchain_action = platform == shared::PlatformType::OnChainAction.discriminant();
+    let min_attestation_delay = if is_onchain_action { 60 } else { 3_600 };
+    let min_challenge_window = if is_onchain_action { 900 } else { 3_600 };
+
     // Timing-override bounds: 0 means "use the global default", any nonzero
     // value must fall inside the per-field [min, max] window.
     if attestation_delay_override > 0 {
         require!(
-            (3_600..=2_592_000).contains(&attestation_delay_override),
+            (min_attestation_delay..=2_592_000).contains(&attestation_delay_override),
             ShillbotError::TimingOverrideOutOfBounds
         );
     }
     if challenge_window_override > 0 {
         require!(
-            (3_600..=604_800).contains(&challenge_window_override),
+            (min_challenge_window..=604_800).contains(&challenge_window_override),
             ShillbotError::TimingOverrideOutOfBounds
         );
     }
@@ -369,4 +411,60 @@ pub struct CreateTask<'info> {
     #[account(address = anchor_lang::solana_program::sysvar::slot_hashes::id())]
     pub slot_hashes: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_global() -> GlobalState {
+        GlobalState {
+            task_counter: 0,
+            authority: Pubkey::new_unique(),
+            treasury: Pubkey::new_unique(),
+            protocol_fee_bps: 500,
+            quality_threshold: 200_000,
+            challenge_window_seconds: 86_400,
+            verification_timeout_seconds: 604_800,
+            attestation_delay_seconds: 86_400,
+            staleness_window_seconds: 86_400,
+            max_concurrent_claims: 5,
+            challenge_bond_multiplier_bps: 2,
+            bond_slash_treasury_bps: 5_000,
+            oracle_authority: Pubkey::new_unique(),
+            paused: false,
+            paused_platforms: 0,
+            switchboard_feed: Pubkey::default(),
+            min_escrow_lamports: 0,
+            rate_limit_window_seconds: 3_600,
+            max_tasks_per_rate_window: 100,
+            dispute_resolution_window_seconds: 86_400,
+            _reserved: [0; 4],
+            bump: 255,
+        }
+    }
+
+    #[test]
+    fn lower_timing_overrides_are_gated_strictly_to_onchain_action() {
+        let global = sample_global();
+        let onchain = shared::PlatformType::OnChainAction.discriminant();
+        let x_platform = shared::PlatformType::Twitter.discriminant();
+
+        assert!(validate_timing_overrides(&global, onchain, 60, 900, 0).is_ok());
+        assert!(validate_timing_overrides(&global, onchain, 59, 900, 0).is_err());
+        assert!(validate_timing_overrides(&global, onchain, 60, 899, 0).is_err());
+
+        assert!(validate_timing_overrides(&global, x_platform, 60, 3_600, 0).is_err());
+        assert!(validate_timing_overrides(&global, x_platform, 3_600, 900, 0).is_err());
+        assert!(validate_timing_overrides(&global, x_platform, 3_600, 3_600, 0).is_ok());
+    }
+
+    #[test]
+    fn onchain_action_requires_nonzero_content_hash_and_forbids_approval() {
+        let onchain = shared::PlatformType::OnChainAction.discriminant();
+        assert!(validate_platform_and_kind(onchain, &[0xAB; 32], false, 0).is_ok());
+        assert!(validate_platform_and_kind(onchain, &[0u8; 32], false, 0).is_err());
+        assert!(validate_platform_and_kind(onchain, &[0xAB; 32], true, 0).is_err());
+        assert!(validate_platform_and_kind(onchain, &[0xAB; 32], false, 1).is_err());
+    }
 }

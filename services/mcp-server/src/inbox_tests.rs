@@ -1470,6 +1470,7 @@ fn post_receipt_and_page_json_shapes() {
         bytes: 2,
         expires_at: ts("2026-09-23T00:00:00Z").0,
         posts_remaining_today: 4,
+        e2e: false,
     };
     let v = post_receipt_json(&receipt);
     assert_eq!(v["published"], true);
@@ -1567,7 +1568,7 @@ fn support_responder_quarantines_bug_reports_unless_responder_flag_enabled() {
 }
 
 #[test]
-fn sender_reputation_summary_projects_reputation_and_omits_when_absent() {
+fn sender_reputation_summary_projects_reputation_and_blocks_unanchored_sybil_wash() {
     let rep = reputation_indexer::AgentReputation {
         wallet: "w".to_string(),
         eigentrust_score: 0.25,
@@ -1587,8 +1588,95 @@ fn sender_reputation_summary_projects_reputation_and_omits_when_absent() {
     assert_eq!(summary.settlements_received, 5);
     assert_eq!(summary.bug_bounties_received, 1);
 
+    // BH-04a: un-anchored self-settlements (eigentrust_score == 0, bug_bounties == 0)
+    // NEVER qualify for `Reputable` tier or stamp `"reputable"` on envelopes.
+    let sybil = reputation_indexer::AgentReputation {
+        wallet: "sybil".to_string(),
+        eigentrust_score: 0.0,
+        rank: 99,
+        rank_normalized: 0.0,
+        settlements_received: 10,
+        settlements_paid: 0,
+        bug_bounties_received: 0,
+        counterparty_count: 1,
+        computed_at: ts("2026-11-10T00:00:00Z").0,
+        newest_edge_settled_at: Some(ts("2026-11-10T00:00:00Z").0),
+    };
+    assert!(!reputation_qualifies_for_reputable_tier(
+        sybil.eigentrust_score,
+        sybil.bug_bounties_received,
+    ));
+    let sybil_summary = SenderReputationSummary::from_reputation(Some(&sybil));
+    assert_eq!(sybil_summary.tier, "unanchored");
+    assert_eq!(sybil_summary.trust_score, 0.0);
+
     let unindexed = SenderReputationSummary::from_reputation(None);
     assert_eq!(unindexed.tier, "unindexed");
     assert_eq!(unindexed.rank, None);
     assert_eq!(unindexed.bug_bounties_received, 0);
+}
+
+#[test]
+fn board_responder_plans_external_posts_and_skips_seed_support_and_e2e_probes() {
+    assert_eq!(
+        derive_board_webhook_url("https://bridge.example.run.app/webhook/inbox"),
+        "https://bridge.example.run.app/webhook/board"
+    );
+    assert!(is_synthetic_e2e_post("a2a e2e board probe 123"));
+    assert!(is_synthetic_e2e_post("hello [E2E] test"));
+    assert!(!is_synthetic_e2e_post(
+        "Offering $1/sale (0.005 BNB NFT mint on BSC 0xbe9a615678b2f3f06196b2de3f331c2c8c149d56)"
+    ));
+
+    let author = mailbox_address(SOL_B58).expect("valid wallet");
+    let support = mailbox_address(SUPPORT_WALLET).expect("support wallet");
+    let url = "https://bridge.example.run.app/webhook/board";
+    let secret = "shared-responder-secret";
+    let base_doc = TopicPostDoc {
+        schema: MESSAGE_SCHEMA.to_string(),
+        post_id: "00001793550000000000_abcd1234".to_string(),
+        topic_id: "subcontract".to_string(),
+        author_wallet: author.clone(),
+        body: "Looking for agents to promote 0.005 BNB NFT mint ($1/sale)".to_string(),
+        reply_to: None,
+        intent: Some("task_offer".to_string()),
+        ref_id: None,
+        reported_count: 0,
+        reporters: vec![],
+        hidden: false,
+        created_at: ts("2026-11-01T14:00:00Z"),
+        expires_at: ts("2026-12-01T14:00:00Z"),
+        seed: false,
+    };
+
+    let planned = plan_board_responder(&base_doc, SenderTier::Reputable, url, Some(secret))
+        .expect("external post triggers board webhook");
+    assert_eq!(planned.url, url);
+    assert_eq!(planned.signature, webhook_signature(secret, &planned.body));
+    let parsed: serde_json::Value = serde_json::from_str(&planned.body).expect("json");
+    assert_eq!(parsed["event"], "topic_post");
+    assert_eq!(parsed["board"], "subcontract");
+    assert_eq!(parsed["from_wallet"], author);
+    assert_eq!(parsed["sender_tier"], "reputable");
+    assert_eq!(parsed["intent"], "task_offer");
+
+    let mut reply_doc = base_doc.clone();
+    reply_doc.reply_to = Some("00001793540000000000_00000001".to_string());
+    let reply_planned =
+        plan_board_responder(&reply_doc, SenderTier::WalletVerified, url, Some(secret))
+            .expect("external reply triggers board webhook");
+    let reply_parsed: serde_json::Value = serde_json::from_str(&reply_planned.body).expect("json");
+    assert_eq!(reply_parsed["event"], "topic_reply");
+
+    let mut seed_doc = base_doc.clone();
+    seed_doc.seed = true;
+    assert!(plan_board_responder(&seed_doc, SenderTier::Reputable, url, Some(secret)).is_none());
+
+    let mut e2e_doc = base_doc.clone();
+    e2e_doc.body = "a2a e2e synthetic probe".to_string();
+    assert!(plan_board_responder(&e2e_doc, SenderTier::Reputable, url, Some(secret)).is_none());
+
+    let mut support_doc = base_doc;
+    support_doc.author_wallet = support;
+    assert!(plan_board_responder(&support_doc, SenderTier::Reputable, url, Some(secret)).is_none());
 }

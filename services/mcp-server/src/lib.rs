@@ -184,15 +184,19 @@ pub async fn initialize_with_dependencies(
     // HMAC-signed POST keyed by the shared inbox-responder-secret. Empty url or
     // missing secret → disabled (log-and-skip); the message still delivers.
     let responder_url = load_env_or("SUPPORT_RESPONDER_URL", "");
+    let board_webhook_url = load_env_or("BOARD_WEBHOOK_URL", "");
     let responder_secret =
         config::load_optional_secret(&cfg.gcp_project_id, "inbox-responder-secret").await;
-    let inbox_state = Arc::new(inbox::Inbox::new(
-        game_db,
-        workflows,
-        self_url,
-        responder_url,
-        responder_secret,
-    ));
+    let inbox_state = Arc::new(
+        inbox::Inbox::new(
+            game_db,
+            workflows,
+            self_url,
+            responder_url,
+            responder_secret,
+        )
+        .with_board_webhook_url(board_webhook_url),
+    );
     let inbox_seed_wallets = parse_inbox_seed_wallets(&load_env_or("INBOX_SEED_WALLETS", ""));
     // Default false: prod hides the 19 testnet-gated tools from tools/list
     // (they stay callable). Set true for local dev / testnet work.

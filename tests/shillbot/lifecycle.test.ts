@@ -685,10 +685,11 @@ describe("shillbot - lifecycle", () => {
         // Will fail on feed mismatch or attestation staleness
         const errStr = e.toString();
         assert.isTrue(
-          errStr.includes("SwitchboardFeedMismatch") ||
-            errStr.includes("AttestationStale") ||
-            errStr.includes("SwitchboardFeedNotConfigured"),
-          `Expected Switchboard-related error, got: ${errStr}`
+          errStr.includes("OracleAuthorityMismatch") ||
+            errStr.includes("Signature verification failed") ||
+            errStr.includes("Missing signature") ||
+            errStr.includes("AttestationStale"),
+          `Expected oracle authority or staleness error, got: ${errStr}`
         );
       }
     });

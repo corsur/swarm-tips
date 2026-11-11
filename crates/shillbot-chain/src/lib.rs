@@ -101,6 +101,15 @@ pub fn claim_task_instruction(agent: Pubkey, task: Pubkey) -> Instruction {
     }
 }
 
+/// Build `claim_task` with the trailing `sysvar::instructions` account required
+/// by `PlatformType::OnChainAction = 11` (`M1` atomic claim+submit introspection).
+pub fn claim_task_atomic_instruction(agent: Pubkey, task: Pubkey) -> Instruction {
+    let mut ix = claim_task_instruction(agent, task);
+    ix.accounts
+        .push(AccountMeta::new_readonly(sysvar::instructions::id(), false));
+    ix
+}
+
 pub fn submit_work_instruction(agent: Pubkey, task: Pubkey, content_id: Vec<u8>) -> Instruction {
     Instruction {
         program_id: shillbot::ID,
@@ -112,6 +121,30 @@ pub fn submit_work_instruction(agent: Pubkey, task: Pubkey, content_id: Vec<u8>)
         ],
         data: shillbot::instruction::SubmitWork { content_id }.data(),
     }
+}
+
+/// Build the canonical atomic `[claim_task, (set_payout_to?), submit_work]` bundle
+/// for `PlatformType::OnChainAction = 11` (`M1`).
+pub fn claim_and_submit_instructions(
+    agent: Pubkey,
+    task: Pubkey,
+    content_id: Vec<u8>,
+    payout_to: Option<Pubkey>,
+) -> Vec<Instruction> {
+    let mut out = Vec::with_capacity(3);
+    out.push(claim_task_atomic_instruction(agent, task));
+    if let Some(dest) = payout_to {
+        out.push(Instruction {
+            program_id: shillbot::ID,
+            accounts: vec![
+                AccountMeta::new(task, false),
+                AccountMeta::new_readonly(agent, true),
+            ],
+            data: shillbot::instruction::SetPayoutTo { payout_to: dest }.data(),
+        });
+    }
+    out.push(submit_work_instruction(agent, task, content_id));
+    out
 }
 
 pub fn approve_task_instruction(client: Pubkey, task: Pubkey) -> Instruction {
@@ -511,6 +544,7 @@ pub fn validate(
 
     let shillbot_program = shillbot::ID;
     let expected_disc = discriminator(expected.action.instruction_name());
+    let claim_disc = discriminator("claim_task");
     let set_payout_disc = discriminator("set_payout_to");
     let switchboard_submit_disc = discriminator("pull_feed_submit_response_consensus");
     let compute_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM)
@@ -525,6 +559,8 @@ pub fn validate(
     .map_err(|_| ValidationError::Transaction("invalid switchboard program id".into()))?;
 
     let mut matched = None;
+    let mut preceding_claim_pos: Option<usize> = None;
+    let mut payout_pos: Option<usize> = None;
     let mut payout_routing = 0_usize;
     let mut secp_indices = Vec::new();
     let mut switchboard_indices = Vec::new();
@@ -543,12 +579,43 @@ pub fn validate(
                         "transaction repeats the lifecycle instruction".into(),
                     ));
                 }
+                if let Some(claim_pos) = preceding_claim_pos {
+                    let expected_submit_pos = match payout_pos {
+                        Some(p_pos) => p_pos.saturating_add(1),
+                        None => claim_pos.saturating_add(1),
+                    };
+                    if position != expected_submit_pos {
+                        return Err(ValidationError::Rejected(
+                            "submit_work must immediately follow atomic claim_task".into(),
+                        ));
+                    }
+                }
                 matched = Some((position, ix));
-            } else if expected.action == Action::Claim && disc == set_payout_disc {
-                if matched.is_none() {
+            } else if expected.action == Action::Submit && disc == claim_disc {
+                if matched.is_some() || preceding_claim_pos.is_some() || payout_routing > 0 {
+                    return Err(ValidationError::Rejected(
+                        "atomic claim_task must appear once before submit_work".into(),
+                    ));
+                }
+                validate_companion_claim_ix(ix, keys, &task, &wallet)?;
+                preceding_claim_pos = Some(position);
+            } else if disc == set_payout_disc
+                && (expected.action == Action::Claim
+                    || (expected.action == Action::Submit
+                        && preceding_claim_pos.is_some()
+                        && matched.is_none()))
+            {
+                if expected.action == Action::Claim && matched.is_none() {
                     return Err(ValidationError::Rejected(
                         "payout-routing instruction must follow claim".into(),
                     ));
+                }
+                if let Some(claim_pos) = preceding_claim_pos {
+                    if position != claim_pos.saturating_add(1) {
+                        return Err(ValidationError::Rejected(
+                            "payout-routing instruction must immediately follow claim_task".into(),
+                        ));
+                    }
                 }
                 payout_routing = payout_routing.saturating_add(1);
                 if payout_routing > 1 || allowed_payout_to.is_none() {
@@ -569,6 +636,11 @@ pub fn validate(
                         "payout routing differs from the authorized sponsor route".into(),
                     ));
                 }
+                payout_pos = Some(position);
+            } else if disc == set_payout_disc && expected.action == Action::Claim {
+                return Err(ValidationError::Rejected(
+                    "payout-routing instruction must follow claim".into(),
+                ));
             } else {
                 return Err(ValidationError::Rejected(
                     "unexpected Shillbot instruction".into(),
@@ -822,6 +894,53 @@ pub fn validate(
         }
         .into(),
     })
+}
+
+fn validate_companion_claim_ix(
+    ix: &solana_sdk::instruction::CompiledInstruction,
+    keys: &[Pubkey],
+    task: &Pubkey,
+    wallet: &Pubkey,
+) -> Result<(), ValidationError> {
+    if ix.data.as_slice() != discriminator("claim_task").as_slice() {
+        return Err(ValidationError::Rejected(
+            "companion claim_task carries unexpected instruction data".into(),
+        ));
+    }
+    if ix.accounts.len() != 5 && ix.accounts.len() != 6 {
+        return Err(ValidationError::Rejected(
+            "companion claim_task has invalid account count".into(),
+        ));
+    }
+    let key_at = |pos: usize| -> Option<&Pubkey> {
+        ix.accounts
+            .get(pos)
+            .and_then(|idx| keys.get(usize::from(*idx)))
+    };
+    if key_at(0) != Some(task) {
+        return Err(ValidationError::Rejected(
+            "companion claim_task targets a different task".into(),
+        ));
+    }
+    if key_at(1) != Some(&global_state_pda())
+        || key_at(2) != Some(&agent_state_pda(wallet))
+        || key_at(4) != Some(&solana_system_interface::program::ID)
+    {
+        return Err(ValidationError::Rejected(
+            "companion claim_task accounts differ from canonical PDAs".into(),
+        ));
+    }
+    if key_at(3) != Some(wallet) {
+        return Err(ValidationError::Rejected(
+            "companion claim_task authority differs from wallet".into(),
+        ));
+    }
+    if ix.accounts.len() == 6 && key_at(5) != Some(&sysvar::instructions::id()) {
+        return Err(ValidationError::Rejected(
+            "companion claim_task trailing account must be sysvar::instructions".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1268,5 +1387,70 @@ mod tests {
                 .contains("registered wallet is not a required signer"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn accepts_atomic_claim_and_submit_bundle_with_instructions_sysvar() {
+        let wallet = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let proof =
+            b"eip155:56:0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789:0";
+        let ixs = claim_and_submit_instructions(wallet, task, proof.to_vec(), None);
+        assert_eq!(ixs.len(), 2);
+        assert_eq!(ixs[0].accounts.len(), 6);
+
+        let tx = transaction(ixs.clone(), &wallet);
+        let mut expected = exact_request(Action::Submit, wallet, task, &ixs[1]);
+        expected.content_id = Some(String::from_utf8(proof.to_vec()).unwrap());
+
+        let inspected = validate(&tx, &expected).unwrap();
+        assert_eq!(inspected.action, Action::Submit);
+        assert_eq!(inspected.instruction_count, 2);
+        assert_eq!(inspected.instruction_index, 1);
+    }
+
+    #[test]
+    fn accepts_sponsored_atomic_claim_payout_route_and_submit_bundle() {
+        let wallet = Keypair::new().pubkey();
+        let sponsor = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let payout_to = Pubkey::new_unique();
+        let proof =
+            b"eip155:8453:0x1111111111111111111111111111111111111111111111111111111111111111:1";
+
+        let ixs = claim_and_submit_instructions(wallet, task, proof.to_vec(), Some(payout_to));
+        assert_eq!(ixs.len(), 3);
+        let tx = transaction(ixs.clone(), &sponsor);
+
+        let mut expected = exact_request(Action::Submit, wallet, task, &ixs[2]);
+        expected.content_id = Some(String::from_utf8(proof.to_vec()).unwrap());
+        expected.sponsor = Some(sponsor.to_string());
+        expected.allowed_payout_to = Some(payout_to.to_string());
+        expected.require_payout_routing = true;
+
+        let inspected = validate(&tx, &expected).unwrap();
+        assert_eq!(inspected.fee_payer, sponsor.to_string());
+        assert_eq!(inspected.payout_to, Some(payout_to.to_string()));
+        assert_eq!(inspected.instruction_index, 2);
+    }
+
+    #[test]
+    fn rejects_atomic_claim_and_submit_when_claim_targets_different_task_or_agent() {
+        let wallet = Keypair::new().pubkey();
+        let wrong_task = Pubkey::new_unique();
+        let task = Pubkey::new_unique();
+        let submit_ix = submit_work_instruction(wallet, task, b"proof-1".to_vec());
+        let bad_claim = claim_task_atomic_instruction(wallet, wrong_task);
+        let tx = transaction(vec![bad_claim, submit_ix.clone()], &wallet);
+
+        let mut expected = exact_request(Action::Submit, wallet, task, &submit_ix);
+        expected.content_id = Some("proof-1".into());
+        let err = validate(&tx, &expected).unwrap_err();
+        assert!(err.to_string().contains("different task"), "{err}");
+
+        // Lone claim_task without submit_work must also fail Action::Submit.
+        let lone_claim_tx = transaction(vec![claim_task_atomic_instruction(wallet, task)], &wallet);
+        let err2 = validate(&lone_claim_tx, &expected).unwrap_err();
+        assert!(err2.to_string().contains("missing submit_work"), "{err2}");
     }
 }

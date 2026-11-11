@@ -76,10 +76,38 @@ def verify_tx(tx_b64: str, action: str, wallet: str, network: str, fee_payer: st
 
     ix_name = "submit_work" if action == "submit" else f"{action}_task"
     expected_disc = hashlib.sha256(f"global:{ix_name}".encode()).digest()[:8]
+    claim_disc = hashlib.sha256(b"global:claim_task").digest()[:8]
+    payout_disc = hashlib.sha256(b"global:set_payout_to").digest()[:8]
     shillbot_ixs = [(accts, data) for prog_id, accts, data in ixs if prog_id == SHILLBOT_ID]
-    if len(shillbot_ixs) != 1 or shillbot_ixs[0][1][:8] != expected_disc:
+    if len(shillbot_ixs) == 1 and shillbot_ixs[0][1][:8] == expected_disc:
+        target_task = shillbot_ixs[0][0][1 if action == "create" else 0]
+    elif (
+        action == "submit"
+        and len(shillbot_ixs) == 2
+        and shillbot_ixs[0][1][:8] == claim_disc
+        and shillbot_ixs[1][1][:8] == expected_disc
+        and len(shillbot_ixs[0][0]) >= 4
+        and shillbot_ixs[0][0][0] == shillbot_ixs[1][0][0]
+        and shillbot_ixs[0][0][3] == wallet
+    ):
+        target_task = shillbot_ixs[1][0][0]
+    elif (
+        action == "submit"
+        and len(shillbot_ixs) == 3
+        and shillbot_ixs[0][1][:8] == claim_disc
+        and shillbot_ixs[1][1][:8] == payout_disc
+        and shillbot_ixs[2][1][:8] == expected_disc
+        and len(shillbot_ixs[0][0]) >= 4
+        and len(shillbot_ixs[1][0]) == 2
+        and shillbot_ixs[0][0][0] == shillbot_ixs[2][0][0]
+        and shillbot_ixs[1][0][0] == shillbot_ixs[2][0][0]
+        and shillbot_ixs[0][0][3] == wallet
+        and shillbot_ixs[1][0][1] == wallet
+    ):
+        target_task = shillbot_ixs[2][0][0]
+    else:
         raise ValueError(f"Expected single Shillbot {ix_name} instruction without unexpected companions")
-    if task_pda and shillbot_ixs[0][0][1 if action == "create" else 0] != task_pda:
+    if task_pda and target_task != task_pda:
         raise ValueError("Task PDA differs from expected")
     return {"ok": True, "action": action, "fee_payer": keys[0], "signers": signers}
 

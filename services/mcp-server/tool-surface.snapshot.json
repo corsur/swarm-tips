@@ -1376,7 +1376,7 @@
         },
         "lean_policy": {
           "default": null,
-          "description": "LeanProof only: policy 1 self-contained (default) or 2 mathlib.",
+          "description": "LeanProof (10): policy 1 self-contained (default) or 2 mathlib.",
           "format": "uint32",
           "minimum": 0,
           "type": [
@@ -1391,9 +1391,13 @@
             "null"
           ]
         },
+        "onchain_action": {
+          "default": null,
+          "description": "OnChainAction (11): predicate spec JSON."
+        },
         "platform": {
           "default": null,
-          "description": "Platform: 0 YouTube, 3 X, 4 referral, 5 game-play (default; deterministic\nverification), 9 website, 10 LeanProof.",
+          "description": "Platform: 0 YouTube, 3 X, 4 referral, 5 game (default), 9 web, 10 Lean, 11 OnChainAction.",
           "format": "uint8",
           "maximum": 255,
           "minimum": 0,
@@ -1404,7 +1408,7 @@
         },
         "requires_approval": {
           "default": null,
-          "description": "Require client approve_task before verification (brand gate). Default false.",
+          "description": "Require client approve_task before verification (default false).",
           "type": [
             "boolean",
             "null"
@@ -1412,7 +1416,7 @@
         },
         "statement_lean": {
           "default": null,
-          "description": "LeanProof only: the `Statement.lean` source to prove.",
+          "description": "LeanProof (10): `Statement.lean` source.",
           "type": [
             "string",
             "null"
@@ -1738,7 +1742,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN: SOL] Submit completed work for a claimed Shillbot task; sign and broadcast via shillbot_submit_tx action=\"submit\". content_id by platform: 10=lean4:proof:<base64> or gist URL (prove OR disprove statementProp, ~5m); 5=resolved coordination.game game_id UUID (~5m); 4=funded Shillbot campaign_id UUID (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
+    "description": "[EARN: SOL] Submit work for a Shillbot task; sign and send via shillbot_submit_tx action=\"submit\". content_id by platform: 11=<caip2>:<tx>:<idx>[:sig:<hex>] (atomic claim+submit on Open task, ~1m); 10=lean4:proof:<base64> or gist URL (~5m); 5=game_id (~5m); 4=campaign_id (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {

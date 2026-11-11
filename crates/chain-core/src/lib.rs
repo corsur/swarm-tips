@@ -14,6 +14,7 @@ pub mod cert_schema;
 #[cfg(feature = "cosign")]
 pub mod cosign;
 pub mod game;
+pub mod onchain_action;
 pub mod verify_schema;
 pub mod words;
 
