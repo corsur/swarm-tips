@@ -543,3 +543,745 @@ fn instructions_explain_workflows_without_broadcasting_related_hosts() {
     assert!(instructions.contains("Opening does not acknowledge"));
     assert!(instructions.contains("previews are off"));
 }
+
+// -- 1:1 REST / Stateful Client Parity Manifest -----------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolParity {
+    /// Stateless HTTP REST equivalent exposed on one of the first-party APIs.
+    HttpEndpoint {
+        host: &'static str,
+        method: &'static str,
+        path: &'static str,
+        operation_id: &'static str,
+    },
+    /// Inherently stateful WebSocket / commit-reveal preimage tool served by
+    /// `@swarm-tips/client/coordination-game` (`mcp.coordination.game` fallback).
+    ClientStateful {
+        surface: &'static str,
+        reason: &'static str,
+    },
+}
+
+const STATEFUL_GAME_SURFACE: &str = "@swarm-tips/client/coordination-game";
+const STATEFUL_GAME_REASON: &str =
+    "Stateful WebSocket matchmaking, bounded chat stream, and commit-reveal preimage lifecycle";
+
+const REST_PARITY_MANIFEST: &[(&str, ToolParity)] = &[
+    // Discovery (4)
+    (
+        "discover_opportunities",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/mcp/earning-candidates",
+            operation_id: "list_mcp_earning_candidates",
+        },
+    ),
+    (
+        "list_earning_opportunities",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/listings",
+            operation_id: "list_earning_opportunities",
+        },
+    ),
+    (
+        "list_related_servers",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/related-servers",
+            operation_id: "list_related_servers",
+        },
+    ),
+    (
+        "search_mcp_servers",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/mcp/search",
+            operation_id: "search_mcp_servers",
+        },
+    ),
+    // Identity & Reputation (6)
+    (
+        "agent_profile",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/agent-reputation",
+            operation_id: "get_agent_reputation",
+        },
+    ),
+    (
+        "agent_reputation_leaderboard",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/reputation/leaderboard",
+            operation_id: "get_reputation_leaderboard",
+        },
+    ),
+    (
+        "agent_trust_score",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/agent-reputation",
+            operation_id: "get_agent_reputation",
+        },
+    ),
+    (
+        "list_extensions",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/mcp/primitives",
+            operation_id: "list_mcp_primitives",
+        },
+    ),
+    (
+        "query_agent_credit_web_score",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/agent-reputation",
+            operation_id: "get_agent_reputation",
+        },
+    ),
+    (
+        "register_wallet",
+        ToolParity::HttpEndpoint {
+            host: "api.coordination.game",
+            method: "POST",
+            path: "/auth/challenge",
+            operation_id: "game_auth_challenge",
+        },
+    ),
+    // Messaging, Webhooks & Topic Boards (14)
+    (
+        "agent_ack_message_ids",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/inbox/ack-ids",
+            operation_id: "inbox_ack_message_ids",
+        },
+    ),
+    (
+        "agent_ack_messages",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/inbox/ack",
+            operation_id: "inbox_ack_messages",
+        },
+    ),
+    (
+        "agent_get_messages",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/inbox/messages",
+            operation_id: "inbox_get_messages",
+        },
+    ),
+    (
+        "agent_list_messages",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/inbox/list",
+            operation_id: "inbox_list_messages",
+        },
+    ),
+    (
+        "agent_mute_thread",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/inbox/mute",
+            operation_id: "inbox_mute_thread",
+        },
+    ),
+    (
+        "agent_open_messages",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/inbox/open",
+            operation_id: "inbox_open_messages",
+        },
+    ),
+    (
+        "agent_send_message",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/inbox/send",
+            operation_id: "inbox_send_message",
+        },
+    ),
+    (
+        "agent_verify_wallet",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/inbox/session",
+            operation_id: "create_inbox_session",
+        },
+    ),
+    (
+        "delete_webhook",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "DELETE",
+            path: "/internal/inbox/webhook",
+            operation_id: "inbox_delete_webhook",
+        },
+    ),
+    (
+        "get_webhook",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/inbox/webhook",
+            operation_id: "inbox_get_webhook",
+        },
+    ),
+    (
+        "register_webhook",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/inbox/webhook",
+            operation_id: "inbox_register_webhook",
+        },
+    ),
+    (
+        "topic_publish",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/topics/publish",
+            operation_id: "topics_publish",
+        },
+    ),
+    (
+        "topic_read",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "GET",
+            path: "/internal/topics/read",
+            operation_id: "topics_read",
+        },
+    ),
+    (
+        "topic_report",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/topics/report",
+            operation_id: "topics_report",
+        },
+    ),
+    // Shillbot Earn & Client (16)
+    (
+        "shillbot_approve_task",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/tasks/{task_id}/approve",
+            operation_id: "shillbot_approve_task",
+        },
+    ),
+    (
+        "shillbot_check_earnings",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "GET",
+            path: "/agent/earnings",
+            operation_id: "shillbot_get_agent_earnings",
+        },
+    ),
+    (
+        "shillbot_claim_task",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/tasks/{task_id}/claim",
+            operation_id: "shillbot_claim_task",
+        },
+    ),
+    (
+        "shillbot_complete_task",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "GET",
+            path: "/tasks/{task_id}",
+            operation_id: "shillbot_get_task",
+        },
+    ),
+    (
+        "shillbot_confirm_tx",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/tasks/{task_id}/confirm",
+            operation_id: "shillbot_confirm_task",
+        },
+    ),
+    (
+        "shillbot_create_campaign",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/campaigns",
+            operation_id: "shillbot_create_campaign",
+        },
+    ),
+    (
+        "shillbot_finalize_task",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/tasks/{task_id}/build-finalize",
+            operation_id: "shillbot_build_finalize",
+        },
+    ),
+    (
+        "shillbot_get_attestation",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "GET",
+            path: "/tasks/{task_id}/attestation",
+            operation_id: "shillbot_get_attestation",
+        },
+    ),
+    (
+        "shillbot_get_task_details",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "GET",
+            path: "/tasks/{task_id}",
+            operation_id: "shillbot_get_task",
+        },
+    ),
+    (
+        "shillbot_list_available_tasks",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "GET",
+            path: "/tasks",
+            operation_id: "shillbot_list_tasks",
+        },
+    ),
+    (
+        "shillbot_list_pending_approval",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "GET",
+            path: "/client/pending-approval",
+            operation_id: "shillbot_list_pending_approval",
+        },
+    ),
+    (
+        "shillbot_onboard",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/agent/onboard",
+            operation_id: "shillbot_agent_onboard",
+        },
+    ),
+    (
+        "shillbot_sponsor_tx",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/tasks/{task_id}/sponsor",
+            operation_id: "shillbot_sponsor_transaction",
+        },
+    ),
+    (
+        "shillbot_submit_tx",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/tasks/{task_id}/confirm",
+            operation_id: "shillbot_confirm_task",
+        },
+    ),
+    (
+        "shillbot_submit_work",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/tasks/{task_id}/submit",
+            operation_id: "shillbot_submit_task",
+        },
+    ),
+    (
+        "shillbot_verify_task",
+        ToolParity::HttpEndpoint {
+            host: "mcp.swarm.tips",
+            method: "POST",
+            path: "/internal/build-verify-tx",
+            operation_id: "build_verify_tx",
+        },
+    ),
+    // Video (2) — publicly served on api.shillbot.org via LB /shorts/* path split
+    (
+        "check_video_status",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "GET",
+            path: "/shorts/{id}",
+            operation_id: "shillbot_check_video_status",
+        },
+    ),
+    (
+        "generate_video",
+        ToolParity::HttpEndpoint {
+            host: "api.shillbot.org",
+            method: "POST",
+            path: "/shorts/create-crypto",
+            operation_id: "shillbot_generate_video",
+        },
+    ),
+    // Stateful Coordination Game (28)
+    (
+        "game_check_match",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_commit_guess",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_evm_commit_guess",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_evm_committed",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_evm_match_status",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_evm_reveal_guess",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_find_evm_match",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_find_match",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_get_leaderboard",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_get_messages",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_get_result",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_reveal_guess",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_send_message",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "game_submit_tx",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_build_create_match",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_build_create_xmatch",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_build_lock",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_build_lock_xmatch",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_build_refund",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_build_refund_xmatch",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_build_settle",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_commit_guess",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_find_match",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_gameplay_status",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_match_status",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_reveal_guess",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_sign_checkpoint",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+    (
+        "xchain_supported_chains",
+        ToolParity::ClientStateful {
+            surface: STATEFUL_GAME_SURFACE,
+            reason: STATEFUL_GAME_REASON,
+        },
+    ),
+];
+
+#[test]
+fn rest_parity_manifest_covers_every_declared_tool_one_to_one() {
+    let declared: BTreeSet<String> = all_tools()
+        .into_iter()
+        .map(|t| t.name.to_string())
+        .collect();
+
+    let mut seen = BTreeSet::new();
+    let mut http_count = 0usize;
+    let mut stateful_count = 0usize;
+
+    let merged_openapi: serde_json::Value =
+        serde_json::from_str(&crate::openapi::openapi_json_string())
+            .expect("valid merged OpenAPI 3.1 JSON");
+    let openapi_paths = merged_openapi["paths"].as_object().expect("paths object");
+
+    // Also ensure the bundled merged spec never drifts behind mcp-server's own utoipa spec.
+    let local_spec: serde_json::Value = serde_json::from_str(
+        &crate::openapi::openapi_spec()
+            .to_pretty_json()
+            .expect("local openapi JSON"),
+    )
+    .expect("valid local openapi JSON");
+    for (mcp_path, mcp_item) in local_spec["paths"].as_object().expect("local paths") {
+        let merged_item = openapi_paths.get(mcp_path).unwrap_or_else(|| {
+            panic!("openapi.merged.json is missing mcp-server path {mcp_path}; re-run merge-openapi.mjs")
+        });
+        for method in ["get", "post", "put", "patch", "delete"] {
+            if let Some(local_op) = mcp_item.get(method) {
+                assert_eq!(
+                    merged_item[method]["operationId"], local_op["operationId"],
+                    "openapi.merged.json drifted on {method} {mcp_path}"
+                );
+            }
+        }
+    }
+
+    for &(tool_name, parity) in REST_PARITY_MANIFEST {
+        assert!(
+            seen.insert(tool_name.to_string()),
+            "duplicate entry in REST_PARITY_MANIFEST: {tool_name}"
+        );
+        let cap = crate::capabilities::capability(tool_name)
+            .unwrap_or_else(|| panic!("tool {tool_name} missing capability classification"));
+        match parity {
+            ToolParity::HttpEndpoint {
+                host,
+                method,
+                path,
+                operation_id,
+            } => {
+                http_count = http_count.saturating_add(1);
+                assert_ne!(
+                    cap.category,
+                    crate::capabilities::Category::Game,
+                    "Game tool {tool_name} must be classified as ClientStateful"
+                );
+                assert!(!host.is_empty() && !method.is_empty() && path.starts_with('/'));
+                assert!(!operation_id.is_empty());
+
+                let path_obj = openapi_paths.get(path).unwrap_or_else(|| {
+                    panic!("tool {tool_name} maps to undocumented OpenAPI path {path} on {host}")
+                });
+                let method_key = method.to_ascii_lowercase();
+                let op = path_obj.get(&method_key).unwrap_or_else(|| {
+                    panic!("tool {tool_name} maps to undocumented method {method} on path {path}")
+                });
+                assert_eq!(
+                    op["operationId"].as_str(),
+                    Some(operation_id),
+                    "operationId mismatch for {tool_name} ({method} {path})"
+                );
+                let expected_server = format!("https://{host}");
+                assert_eq!(
+                    op["servers"][0]["url"].as_str(),
+                    Some(expected_server.as_str()),
+                    "server host mismatch for {tool_name} ({method} {path})"
+                );
+            }
+            ToolParity::ClientStateful { surface, reason } => {
+                stateful_count = stateful_count.saturating_add(1);
+                assert_eq!(
+                    cap.category,
+                    crate::capabilities::Category::Game,
+                    "non-Game tool {tool_name} must map to an HttpEndpoint"
+                );
+                assert!(!surface.is_empty() && !reason.is_empty());
+            }
+        }
+    }
+
+    let missing: Vec<_> = declared.difference(&seen).collect();
+    let extra: Vec<_> = seen.difference(&declared).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "REST_PARITY_MANIFEST drift — missing: {missing:?}, extra: {extra:?}"
+    );
+    assert_eq!(http_count, 42, "expected 42 stateless HTTP tools");
+    assert_eq!(stateful_count, 28, "expected 28 stateful Game tools");
+}
+
+#[test]
+fn skill_md_copies_are_byte_identical() {
+    let canonical = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../skill/SKILL.md"));
+    let indexed = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../skills/earning/swarm-tips/SKILL.md"
+    ));
+
+    assert_eq!(
+        canonical, indexed,
+        "skill/SKILL.md and skills/earning/swarm-tips/SKILL.md drifted; keep both byte-identical"
+    );
+    assert!(
+        canonical.contains("\nversion: 2.0.0\n"),
+        "SKILL.md must declare version: 2.0.0"
+    );
+    assert!(
+        canonical.contains("@swarm-tips/client")
+            && canonical.contains("https://mcp.swarm.tips/.well-known/openapi.json")
+            && canonical.contains("https://mcp.swarm.tips/mcp"),
+        "SKILL.md must document both Mode A (@swarm-tips/client + OpenAPI) and Mode B (MCP)"
+    );
+    assert!(
+        !canonical.contains("../../../"),
+        "SKILL.md must use full HTTPS links instead of depth-dependent ../../../ paths"
+    );
+    for tool in all_tools() {
+        assert!(
+            canonical.contains(tool.name.as_ref()),
+            "SKILL.md is missing declared MCP tool `{}`",
+            tool.name
+        );
+    }
+}

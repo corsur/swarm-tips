@@ -87,14 +87,14 @@ export class CoordinationGameApiClient {
   bothCommitted(body: { session_id: string }, token: string) { return this.http.post<{ r_matchup: string }>("/games/both-committed", body, token); }
   resolved(body: Record<string, number>, token: string) { return this.http.post<OkResponse>("/games/resolved", body, token); }
 
-  joinCrossChainQueue(body: { wallet: string; chain: string; session_key: string; tournament_id: number }) {
-    return this.http.post<XQueueResponse>("/internal/xqueue/join", body);
+  joinCrossChainQueue(body: { wallet: string; chain: string; session_key: string; tournament_id: number }, token?: string) {
+    return this.http.post<XQueueResponse>("/internal/xqueue/join", body, token);
   }
-  crossChainStatus(by: { handle: string } | { wallet: string }) {
+  crossChainStatus(by: { handle: string } | { wallet: string }, token?: string) {
     const query = "handle" in by
       ? `handle=${encodeURIComponent(by.handle)}`
       : `wallet=${encodeURIComponent(by.wallet)}`;
-    return this.http.get<XQueueResponse>(`/internal/xqueue/status?${query}`);
+    return this.http.get<XQueueResponse>(`/internal/xqueue/status?${query}`, token);
   }
   crossChainCommit(body: { wallet: string; commit: string; handle?: string }) {
     return this.http.post<{ status: string; both_committed: boolean }>("/internal/xqueue/commit", body);
@@ -111,11 +111,11 @@ export class CoordinationGameApiClient {
       : `wallet=${encodeURIComponent(by.wallet)}`;
     return this.http.get<XGameplayView>(`/internal/xqueue/gameplay?${query}`);
   }
-  joinEvmGame(body: { wallet: string; player_wallet?: string; chain: string; tournament_id: number }) {
-    return this.http.post<EvmJoinResponse>("/internal/evmgame/join", body);
+  joinEvmGame(body: { wallet: string; player_wallet?: string; chain: string; tournament_id: number }, token?: string) {
+    return this.http.post<EvmJoinResponse>("/internal/evmgame/join", body, token);
   }
-  evmGameStatus(wallet: string) {
-    return this.http.get<EvmJoinResponse>(`/internal/evmgame/status?wallet=${encodeURIComponent(wallet)}`);
+  evmGameStatus(wallet: string, token?: string) {
+    return this.http.get<EvmJoinResponse>(`/internal/evmgame/status?wallet=${encodeURIComponent(wallet)}`, token);
   }
   evmGameCommitted(body: { game_id: string; wallet: string }) {
     return this.http.post<{ status: string; both_committed: boolean; r_matchup: string | null }>("/internal/evmgame/committed", body);

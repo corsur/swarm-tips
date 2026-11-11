@@ -88,6 +88,41 @@ impl GameSessionState {
 
 const MCP_SESSIONS_COLLECTION: &str = "mcp_game_sessions";
 
+/// Hard upper bound on concurrently cached in-memory game sessions per pod (C8).
+pub const MAX_IN_MEMORY_SESSIONS: usize = 10_000;
+
+/// Per-session chat buffer bound so an abusive peer cannot grow memory unboundedly (C8).
+pub const MAX_CHAT_BUFFER_MESSAGES: usize = 256;
+
+/// Whether an in-memory session is safe to evict under memory pressure:
+/// resolved games and unauthenticated idle registrations carry no unpersisted
+/// preimage or active match state.
+fn is_evictable_session(s: &GameSession) -> bool {
+    if s.commit_preimage.is_some() {
+        return false;
+    }
+    match s.state {
+        GameSessionState::Resolved => true,
+        GameSessionState::Connected => s.jwt.is_empty(),
+        GameSessionState::Queued
+        | GameSessionState::Matched
+        | GameSessionState::InGame
+        | GameSessionState::Committed => false,
+    }
+}
+
+/// Append a chat line while keeping `buf.len() <= cap` (FIFO drop of oldest).
+fn push_bounded_chat(buf: &mut Vec<String>, text: String, cap: usize) {
+    if cap == 0 {
+        return;
+    }
+    if buf.len() >= cap {
+        let excess = buf.len().saturating_sub(cap).saturating_add(1);
+        buf.drain(0..excess.min(buf.len()));
+    }
+    buf.push(text);
+}
+
 /// Headroom over the stake a wallet needs before we let it deposit: rent for the
 /// game PDA plus transaction fees for the deposit/commit/reveal sequence. The
 /// stake itself is read LIVE from GlobalConfig (client::stake_lamports) — never
@@ -1042,6 +1077,9 @@ impl GameSessionManager {
             return Ok((wallet, balance));
         }
 
+        // Enforce C8 bound on in-memory session maps before inserting a new key.
+        self.ensure_session_capacity(&wallet).await?;
+
         // Only restore persisted Firestore sessions (which carry JWT and
         // commit_preimage) when the caller has proven wallet ownership.
         if wallet_verified {
@@ -1059,6 +1097,59 @@ impl GameSessionManager {
         self.register_fresh_session(&wallet, tx_builder, balance)
             .await;
         Ok((wallet, balance))
+    }
+
+    /// Ensure in-memory maps stay bounded by `MAX_IN_MEMORY_SESSIONS` (C8).
+    /// Sweeps `Resolved` and idle unauthenticated `Connected` sessions when at
+    /// capacity, cancelling any dangling WS tasks. Fails closed if all slots
+    /// are occupied by genuinely active mid-game sessions.
+    async fn ensure_session_capacity(&self, incoming_wallet: &str) -> Result<()> {
+        if self.sessions.read().await.contains_key(incoming_wallet) {
+            return Ok(());
+        }
+        if self.sessions.read().await.len() < MAX_IN_MEMORY_SESSIONS {
+            return Ok(());
+        }
+
+        let snapshot: Vec<(String, Arc<Mutex<GameSession>>)> = self
+            .sessions
+            .read()
+            .await
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect();
+
+        let mut evict_keys: Vec<String> = Vec::new();
+        for (k, arc_sess) in snapshot {
+            if k == incoming_wallet {
+                continue;
+            }
+            if is_evictable_session(&*arc_sess.lock().await) {
+                evict_keys.push(k);
+            }
+        }
+
+        if !evict_keys.is_empty() {
+            let mut sessions = self.sessions.write().await;
+            let mut builders = self.tx_builders.write().await;
+            let mut sinks = self.ws_sinks.write().await;
+            let mut tokens = self.ws_cancel_tokens.write().await;
+            for key in &evict_keys {
+                sessions.remove(key);
+                builders.remove(key);
+                sinks.remove(key);
+                if let Some(tok) = tokens.remove(key) {
+                    tok.cancel();
+                }
+            }
+        }
+
+        let remaining = self.sessions.read().await.len();
+        anyhow::ensure!(
+            remaining < MAX_IN_MEMORY_SESSIONS,
+            "game session capacity reached ({MAX_IN_MEMORY_SESSIONS} active sessions) — retry shortly"
+        );
+        Ok(())
     }
 
     /// Try to restore a persisted Firestore game session for `wallet`.
@@ -1596,9 +1687,11 @@ impl GameSessionManager {
     }
 
     async fn after_reveal_guess(&self, wallet: &str, session: &Arc<Mutex<GameSession>>) {
-        // Cleanup of WS sink + cancel token runs after the response is sent
-        // by the caller (see callers of submit_signed_game_tx).
-        session.lock().await.state = GameSessionState::Resolved;
+        {
+            let mut s = session.lock().await;
+            s.state = GameSessionState::Resolved;
+            s.commit_preimage = None;
+        }
         // Write the terminal state through, like every other transition. Without
         // this the doc stays Committed, so a pod restart resurrects a stale
         // Committed session for an already-resolved game — and the restore path's
@@ -1627,6 +1720,12 @@ impl GameSessionManager {
                 "after_reveal_guess: failed to notify backend (non-fatal)"
             );
         }
+
+        // Release per-game WS resources now that the game has resolved.
+        if let Some(tok) = self.ws_cancel_tokens.write().await.remove(wallet) {
+            tok.cancel();
+        }
+        self.ws_sinks.write().await.remove(wallet);
     }
 
     /// Read the on-chain Game state and, if Resolved, POST /games/resolved
@@ -2591,7 +2690,7 @@ async fn run_ws_read_loop(
                         s.reveal_data = Some(r_matchup);
                     }
                     ServerMessage::Chat { text } => {
-                        s.chat_buffer.push(text);
+                        push_bounded_chat(&mut s.chat_buffer, text, MAX_CHAT_BUFFER_MESSAGES);
                     }
                     ServerMessage::Unknown => {
                         tracing::debug!(wallet = %wallet, "ws: unknown message type");

@@ -16,6 +16,7 @@ export {
   type MessagePage,
   type NonceSigner,
   type SendReceipt,
+  type MuteReceipt,
   type TopicId,
   type TopicPost,
   type TopicPage,

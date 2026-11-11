@@ -58,6 +58,7 @@ url = "2.5"
 base64 = "0.22"
 bincode = "1"
 urlencoding = "2"
+utoipa = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

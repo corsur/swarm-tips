@@ -842,3 +842,63 @@ fn reset_for_queue_clears_previous_game_fields() {
     assert!(s.game_ready.is_none());
     assert!(s.reveal_data.is_none());
 }
+
+#[test]
+fn c8_eviction_predicate_protects_active_and_preimage_sessions() {
+    let base = || GameSession {
+        wallet: "CKsZ7Z".to_string(),
+        jwt: String::new(),
+        state: GameSessionState::Connected,
+        game_id: None,
+        tournament_id: None,
+        session_id: None,
+        role: None,
+        chat_buffer: Vec::new(),
+        match_found: None,
+        matchup_commitment: None,
+        commit_preimage: None,
+        game_ready: None,
+        reveal_data: None,
+        network: None,
+    };
+
+    // Idle Connected without JWT or preimage -> evictable.
+    assert!(is_evictable_session(&base()));
+
+    // Resolved without preimage -> evictable.
+    let mut resolved = base();
+    resolved.state = GameSessionState::Resolved;
+    resolved.jwt = "jwt-old".to_string();
+    assert!(is_evictable_session(&resolved));
+
+    // Authenticated Connected or Queued/Matched/InGame/Committed -> NOT evictable.
+    let mut authed = base();
+    authed.jwt = "jwt-live".to_string();
+    assert!(!is_evictable_session(&authed));
+
+    for active_state in [
+        GameSessionState::Queued,
+        GameSessionState::Matched,
+        GameSessionState::InGame,
+        GameSessionState::Committed,
+    ] {
+        let mut active = base();
+        active.state = active_state;
+        assert!(!is_evictable_session(&active));
+    }
+
+    // Any session still holding a commit_preimage -> NEVER evictable.
+    let mut with_preimage = base();
+    with_preimage.state = GameSessionState::Resolved;
+    with_preimage.commit_preimage = Some([1u8; 32]);
+    assert!(!is_evictable_session(&with_preimage));
+}
+
+#[test]
+fn c8_push_bounded_chat_caps_buffer_size() {
+    let mut buf = Vec::new();
+    for i in 0..5u8 {
+        push_bounded_chat(&mut buf, format!("m{i}"), 3);
+    }
+    assert_eq!(buf, vec!["m2", "m3", "m4"]);
+}

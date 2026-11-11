@@ -6,6 +6,8 @@ export type SwarmClientErrorCode =
   | "TIMEOUT"
   | "TRANSACTION_MISMATCH"
   | "TRANSACTION_FAILED"
+  | "SPEND_CAP_EXCEEDED"
+  | "AUTH_REQUIRED"
   | "STORAGE_ERROR"
   | "WEBSOCKET_ERROR";
 

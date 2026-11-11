@@ -6,14 +6,16 @@ export interface HttpClientOptions {
   baseUrl: string;
   fetch?: FetchLike;
   network?: string;
-  getToken?: () => string | null | undefined;
+  getToken?: () => Promise<string | null | undefined> | string | null | undefined;
+  onUnauthorized?: () => Promise<void> | void;
 }
 
 export class HttpClient {
   readonly baseUrl: string;
   readonly network?: string;
-  private readonly fetchImpl: FetchLike;
-  private readonly getToken?: () => string | null | undefined;
+  readonly fetchImpl: FetchLike;
+  readonly getToken?: () => Promise<string | null | undefined> | string | null | undefined;
+  private readonly onUnauthorized?: () => Promise<void> | void;
 
   constructor(options: HttpClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -28,6 +30,7 @@ export class HttpClient {
       ? (input, init) => options.fetch!(input, init)
       : candidate.bind(globalThis);
     this.getToken = options.getToken;
+    this.onUnauthorized = options.onUnauthorized;
   }
 
   withNetwork(path: string): string {
@@ -38,24 +41,25 @@ export class HttpClient {
 
   async request<T>(
     path: string,
-    init: RequestInit & { token?: string | null } = {},
+    init: RequestInit & { token?: string | null; _retried?: boolean } = {},
   ): Promise<T> {
     const operation = `${init.method ?? "GET"} ${path}`;
-    const token = init.token ?? this.getToken?.();
+    const token = init.token ?? (await this.getToken?.());
+    const { token: _token, _retried, ...fetchInit } = init;
     const headers: Record<string, string> = {
-      ...(init.headers as Record<string, string> | undefined),
+      ...(fetchInit.headers as Record<string, string> | undefined),
     };
     // A Content-Type header on a bodyless GET turns an otherwise simple
     // cross-origin read into a CORS preflight. Public browser reads should not
     // require OPTIONS for a body that does not exist.
-    if (init.body !== undefined && !headers["Content-Type"]) {
+    if (fetchInit.body !== undefined && !headers["Content-Type"]) {
       headers["Content-Type"] = "application/json";
     }
     if (token) headers.Authorization = `Bearer ${token}`;
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${this.withNetwork(path)}`, {
-        ...init,
+        ...fetchInit,
         headers,
       });
     } catch (cause) {
@@ -66,6 +70,19 @@ export class HttpClient {
         retryable: true,
         cause,
       });
+    }
+    if (
+      response.status === 401 &&
+      !_retried &&
+      init.token === undefined &&
+      this.onUnauthorized &&
+      this.getToken
+    ) {
+      await this.onUnauthorized();
+      const freshToken = await this.getToken();
+      if (freshToken && freshToken !== token) {
+        return this.request<T>(path, { ...init, _retried: true });
+      }
     }
     if (!response.ok) {
       const raw = await response.text().catch(() => "");

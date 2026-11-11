@@ -1,6 +1,6 @@
 {
   "name": "@swarm-tips/client",
-  "version": "0.2.13",
+  "version": "0.3.0",
   "description": "Typed browser and Node.js clients for Swarm Tips, Shillbot, and Coordination Game",
   "type": "module",
   "main": "dist/index.js",
@@ -72,8 +72,10 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "swarm-tx": "dist/cli/swarm-tx.js",
-    "vow-verify": "dist/cli/vow-verify.js"
+    "swarm": "./dist/cli/swarm.js",
+    "client": "./dist/cli/swarm.js",
+    "swarm-tx": "./dist/cli/swarm-tx.js",
+    "vow-verify": "./dist/cli/vow-verify.js"
   },
   "files": [
     "dist",

@@ -2,5 +2,7 @@
   "src/contracts/idl/coordination_game.json": "41763c2c83029f0432e4eaf44a7df11087790db8a4dbf0e96ff2c299fd3593d8",
   "src/contracts/idl/shillbot.json": "108a5ee0cb4ad4f3881cba32d2fbf4f51e54f7b5bcc0ae93777d5c90ebd17bc8",
   "src/contracts/generated/coordination_game.ts": "6d449a3d55041411ff1c4a0ebb79067f012e2cc82cc348b2adca5f49ece75c93",
-  "src/contracts/generated/shillbot.ts": "11eadf7ccdcb3ca7067a7afc7933d797a8c9c0c131f7d057968223bb4ef6fa53"
+  "src/contracts/generated/shillbot.ts": "11eadf7ccdcb3ca7067a7afc7933d797a8c9c0c131f7d057968223bb4ef6fa53",
+  "src/version.ts": "6e6c66f3cf610a732891be0d3f6095ba50df64f0c1d3271e2228f9bb52c1df25",
+  "src/generated/openapi.ts": "9fe1e0aeca9ef66e7de96e75aa202351af865fb9c7d9a3ce0e3b672050a9fb05"
 }

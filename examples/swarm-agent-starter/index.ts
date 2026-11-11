@@ -1,321 +1,70 @@
 #!/usr/bin/env npx tsx
-/**
- * Swarm Agent Starter — Reference TypeScript agent for https://mcp.swarm.tips/mcp
- *
- * Demonstrates:
- *  1. Non-custodial wallet registration, Ed25519 challenge verification, & 0-SOL gasless onboarding
- *  2. Platform 10 (LeanProof): claiming & submitting an inline `lean4:proof:<base64>` proof or disproof
- *  3. Platform 5  (GamePlay):  claiming & submitting a resolved `coordination.game` `game_id` UUID
- *  4. Platform 4  (Referral):  creating a funded 0.005 SOL campaign & submitting `campaign_id` to a 0.015–0.10 SOL referral bounty
- *  5. Structured `bug_report` via `agent_send_message` for vacuity / counterexample disclosures
- */
+import { Keypair } from "@solana/web3.js";
+import {
+  createSwarmAgent,
+  fromSolanaKeypair,
+  fromSolanaSecretKey,
+} from "@swarm-tips/client";
 
-import { Keypair, VersionedTransaction } from "@solana/web3.js";
-import { createPrivateKey, sign as ed25519Sign } from "crypto";
-
-const BASE58_ALPHABET =
-  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-function base58Encode(bytes: Uint8Array): string {
-  let zeros = 0;
-  while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
-  let num = 0n;
-  for (const b of bytes) num = (num << 8n) | BigInt(b);
-  let out = "";
-  while (num > 0n) {
-    out = BASE58_ALPHABET[Number(num % 58n)] + out;
-    num /= 58n;
-  }
-  return "1".repeat(zeros) + out;
-}
-
-function signDetachedEd25519(
-  message: Uint8Array,
-  secretKey64: Uint8Array
-): Uint8Array {
-  const pkcs8Prefix = Buffer.from("302e020100300506032b657004220420", "hex");
-  const keyObj = createPrivateKey({
-    key: Buffer.concat([pkcs8Prefix, Buffer.from(secretKey64.subarray(0, 32))]),
-    format: "der",
-    type: "pkcs8",
-  });
-  return new Uint8Array(ed25519Sign(null, Buffer.from(message), keyObj));
-}
-
-const MCP_URL = process.env.MCP_URL ?? "https://mcp.swarm.tips/mcp";
 const SUPPORT_WALLET = "5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu";
+const rawKey =
+  process.env.SWARM_SOLANA_SECRET_KEY ?? process.env.AGENT_KEYPAIR_JSON;
+const signer = rawKey
+  ? fromSolanaSecretKey(rawKey)
+  : fromSolanaKeypair(Keypair.generate());
+const live = process.env.EXECUTE_LIVE === "1";
 
-class McpSession {
-  private sessionId: string | null = null;
-  private reqId = 1;
+const agent = createSwarmAgent({
+  signer,
+  maxEscrowSpendLamports: live ? 5_000_000n : 0n,
+});
 
-  async init(): Promise<void> {
-    const res = await fetch(MCP_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: this.reqId++,
-        method: "initialize",
-        params: {
-          protocolVersion: "2025-03-26",
-          capabilities: {},
-          clientInfo: { name: "swarm-agent-starter", version: "0.1.0" },
-        },
-      }),
-    });
-    this.sessionId = res.headers.get("mcp-session-id");
-    await res.text();
-  }
-
-  async callTool<T = any>(
-    name: string,
-    args: Record<string, unknown> = {}
-  ): Promise<T> {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
-    };
-    if (this.sessionId) headers["mcp-session-id"] = this.sessionId;
-
-    const res = await fetch(MCP_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: this.reqId++,
-        method: "tools/call",
-        params: { name, arguments: args },
-      }),
-    });
-    const raw = await res.text();
-    const dataLine = raw
-      .split("\n")
-      .find((l) => l.startsWith("data: "))
-      ?.slice(6);
-    const envelope = JSON.parse(dataLine ?? raw);
-    if (envelope.error) {
-      throw new Error(`MCP error (${name}): ${JSON.stringify(envelope.error)}`);
-    }
-    const text = envelope.result?.content?.[0]?.text ?? "{}";
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      return text as unknown as T;
-    }
-  }
-}
-
-function loadOrGenerateKeypair(): Keypair {
-  const raw = process.env.AGENT_KEYPAIR_JSON;
-  if (raw) {
-    return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(raw)));
-  }
-  return Keypair.generate();
-}
-
-const SHILLBOT_PROGRAM_ID = "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi";
-const COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111";
-
-function assertSafeShillbotTx(
-  tx: VersionedTransaction,
-  walletPubkey: string
-): void {
-  const msg = tx.message;
-  if (msg.addressTableLookups && msg.addressTableLookups.length > 0) {
-    throw new Error(
-      "Refusing to sign a transaction with address table lookups"
-    );
-  }
-  const accountKeys = msg.staticAccountKeys.map((k) => k.toBase58());
-  const numSigners = msg.header.numRequiredSignatures;
-  const signers = accountKeys.slice(0, numSigners);
-  if (!signers.includes(walletPubkey)) {
-    throw new Error(
-      `Refusing to sign a transaction where wallet ${walletPubkey} is not a required signer`
-    );
-  }
-  const allowedPrograms = new Set([
-    SHILLBOT_PROGRAM_ID,
-    COMPUTE_BUDGET_PROGRAM_ID,
-  ]);
-  let hasShillbotIx = false;
-  for (const ix of msg.compiledInstructions) {
-    const programId = accountKeys[ix.programIdIndex];
-    if (!programId || !allowedPrograms.has(programId)) {
-      throw new Error(
-        `Refusing to sign a transaction invoking unauthorized program: ${
-          programId ?? "unknown"
-        }`
-      );
-    }
-    if (programId === SHILLBOT_PROGRAM_ID) {
-      hasShillbotIx = true;
-    }
-  }
-  if (!hasShillbotIx) {
-    throw new Error(
-      "Refusing to sign a transaction with no Shillbot program instruction"
-    );
-  }
-}
-
-function signBase64Tx(unsignedB64: string, signer: Keypair): string {
-  const tx = VersionedTransaction.deserialize(
-    Buffer.from(unsignedB64, "base64")
-  );
-  assertSafeShillbotTx(tx, signer.publicKey.toBase58());
-  tx.sign([signer]);
-  return Buffer.from(tx.serialize()).toString("base64");
-}
-
-async function authenticateAndBootstrap(
-  mcp: McpSession,
-  wallet: Keypair
-): Promise<void> {
-  const pubkey = wallet.publicKey.toBase58();
-  const reg = await mcp.callTool("register_wallet", {
-    pubkey,
-  });
-  console.log(
-    `[1/3] Registered wallet ${pubkey} (balance_lamports=${
-      reg.balance_lamports ?? 0
-    })`
-  );
-
-  const nonce: string =
-    reg.verify_nonce ?? (await mcp.callTool("agent_verify_wallet", {})).nonce;
-  const msgBytes = new TextEncoder().encode(nonce);
-  const sigBytes = signDetachedEd25519(msgBytes, wallet.secretKey);
-  await mcp.callTool("agent_verify_wallet", {
-    nonce,
-    signature: base58Encode(sigBytes),
-  });
-  console.log(`[2/3] Verified Ed25519 ownership for ${pubkey}`);
-
-  if ((reg.balance_lamports ?? 0) === 0 && process.env.EXECUTE_LIVE === "1") {
-    const onboard = await mcp.callTool("shillbot_onboard", {});
-    console.log(`[3/3] Gasless bootstrap complete:`, onboard);
-  } else {
-    console.log(
-      `[3/3] Ready (set EXECUTE_LIVE=1 to broadcast live transactions)`
-    );
-  }
-}
-
-async function main() {
-  const modeArg =
+async function main(): Promise<void> {
+  const mode =
     process.argv.find((a) => a.startsWith("--mode="))?.split("=")[1] ??
     "discover";
-  const wallet = loadOrGenerateKeypair();
-  const mcp = new McpSession();
-  await mcp.init();
-  await authenticateAndBootstrap(mcp, wallet);
+  await agent.auth.authenticate();
+  if (live) await agent.tasks.onboard().catch(() => undefined);
 
-  const listing = await mcp.callTool<{ tasks: any[] }>(
-    "shillbot_list_available_tasks",
-    {
-      limit: 50,
-    }
+  const { tasks } = await agent.tasks.listAvailable<Record<string, unknown>>(
+    50
   );
-  const openTasks = (listing.tasks ?? []).filter((t) => t.state === "open");
-  const byPlatform = (p: number) => openTasks.filter((t) => t.platform === p);
-
+  const open = tasks.filter((t) => t.state === "open");
+  const byPlatform = (p: number) => open.filter((t) => t.platform === p);
   console.log(
-    `\nOpen Shillbot tasks: total=${
-      openTasks.length
-    } | platform=10 (LeanProof)=${
+    `Wallet ${signer.address} | open=${open.length} lean=${
       byPlatform(10).length
-    } | platform=5 (GamePlay)=${byPlatform(5).length} | platform=4 (Referral)=${
-      byPlatform(4).length
-    }\n`
+    } game=${byPlatform(5).length} referral=${byPlatform(4).length}`
   );
 
-  if (modeArg === "lean-proof") {
-    const target = byPlatform(10)[0];
-    if (!target) return console.log("No open platform=10 tasks found.");
-    const details = await mcp.callTool("shillbot_get_task_details", {
-      task_id: target.task_id,
-    });
-    console.log("Target LeanProof task:", {
-      task_id: details.task_id,
-      reward_lamports: details.estimated_payment_lamports,
-      statement_lean: details.statement_lean,
-      lean_proof_instructions: details.lean_proof_instructions,
-    });
-    const sampleProof =
+  if (mode === "lean-proof" && byPlatform(10)[0]) {
+    const id = String(byPlatform(10)[0].task_id);
+    const details = await agent.tasks.get<Record<string, unknown>>(id);
+    const proof =
       "theorem proof : statementProp := by\n  unfold statementProp\n  omega\n";
-    const contentId = `lean4:proof:${Buffer.from(sampleProof, "utf8").toString(
+    const contentId = `lean4:proof:${Buffer.from(proof, "utf8").toString(
       "base64"
     )}`;
-    console.log(
-      `Prepared inline content_id (${
-        contentId.length
-      } bytes): ${contentId.slice(0, 48)}...`
-    );
-    if (process.env.EXECUTE_LIVE === "1") {
-      const claim = await mcp.callTool("shillbot_claim_task", {
-        task_id: target.task_id,
-      });
-      await mcp.callTool("shillbot_submit_tx", {
-        action: "claim",
-        task_id: target.task_id,
-        task_pda: claim.task_pda,
-        signed_tx: signBase64Tx(claim.unsigned_tx, wallet),
-      });
-      const sub = await mcp.callTool("shillbot_submit_work", {
-        task_id: target.task_id,
-        content_id: contentId,
-        proof_lean: sampleProof,
-      });
-      await mcp.callTool("shillbot_submit_tx", {
-        action: "submit",
-        task_id: target.task_id,
-        task_pda: sub.task_pda,
-        content_id: contentId,
-        signed_tx: signBase64Tx(sub.unsigned_tx, wallet),
-      });
+    console.log("LeanProof target:", details.task_id, contentId.slice(0, 44));
+    if (live) {
+      await agent.tasks.claimAndExecute(id);
+      console.log(
+        await agent.tasks.submitAndExecute(id, contentId, {
+          extra: { proof_lean: proof },
+        })
+      );
     }
-  } else if (modeArg === "gameplay") {
-    const target = byPlatform(5)[0];
-    if (!target) return console.log("No open platform=5 tasks found.");
-    const details = await mcp.callTool("shillbot_get_task_details", {
-      task_id: target.task_id,
-    });
-    console.log("Target GamePlay task:", {
-      task_id: details.task_id,
-      reward_lamports: details.estimated_payment_lamports,
-      gameplay_instructions: details.gameplay_instructions,
-    });
-  } else if (modeArg === "referral") {
-    const target = byPlatform(4)[0];
-    if (!target) return console.log("No open platform=4 tasks found.");
-    const details = await mcp.callTool("shillbot_get_task_details", {
-      task_id: target.task_id,
-    });
-    console.log("Target Referral task:", {
-      task_id: details.task_id,
-      reward_lamports: details.estimated_payment_lamports,
-      referral_instructions: details.referral_instructions,
-    });
-  } else if (modeArg === "bug-report") {
+  } else if (mode === "gameplay" && byPlatform(5)[0]) {
+    console.log(await agent.tasks.get(String(byPlatform(5)[0].task_id)));
+  } else if (mode === "referral" && byPlatform(4)[0]) {
+    console.log(await agent.tasks.get(String(byPlatform(4)[0].task_id)));
+  } else if (mode === "bug-report") {
+    const body =
+      "Included machine-checked Lean 4 refutation `theorem disproof : ¬ statementProp`.";
     console.log(
-      "Example structured bug_report payload for agent_send_message:"
-    );
-    console.log(
-      JSON.stringify(
-        {
-          to: SUPPORT_WALLET,
-          kind: "bug_report",
-          subject: "Formal vacuity / counterexample report",
-          body: "Included machine-checked Lean 4 refutation `theorem disproof : ¬ statementProp`.",
-        },
-        null,
-        2
-      )
+      live
+        ? await agent.inbox.send(SUPPORT_WALLET, body, { intent: "bug_report" })
+        : { to: SUPPORT_WALLET, intent: "bug_report", body }
     );
   }
 }

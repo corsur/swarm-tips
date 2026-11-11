@@ -1,7 +1,6 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { delimiter, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const tarball = process.argv[2];
@@ -54,7 +53,13 @@ run("node", [
   "--eval",
   `await Promise.all(${JSON.stringify(
     imports
-  )}.map((specifier) => import(specifier))); await import("@swarm-tips/client/idl/shillbot", { with: { type: "json" } }); await import("@swarm-tips/client/idl/coordination-game", { with: { type: "json" } });`,
+  )}.map((specifier) => import(specifier)));
+const root = await import("@swarm-tips/client");
+if (typeof root.SwarmAgent !== "function" || typeof root.createSwarmAgent !== "function") {
+  throw new Error("SwarmAgent missing from root export");
+}
+await import("@swarm-tips/client/idl/shillbot", { with: { type: "json" } });
+await import("@swarm-tips/client/idl/coordination-game", { with: { type: "json" } });`,
 ]);
 run("node", [
   "--eval",
@@ -109,5 +114,54 @@ const swarmTx = spawnSync(
 );
 if (swarmTx.status !== 1 || !swarmTx.stderr.includes("usage: swarm-tx"))
   throw new Error("swarm-tx command contract failed");
+
+for (const binName of ["swarm", "client"]) {
+  const swarmHelp = spawnSync(binName, ["--help"], {
+    cwd: fixture,
+    encoding: "utf8",
+    env: { ...process.env, PATH: binPath },
+  });
+  if (swarmHelp.status !== 0 || !swarmHelp.stdout.includes("Usage:"))
+    throw new Error(`${binName} --help command contract failed`);
+}
+
+const builtClaimJson = run("node", [
+  "--input-type=module",
+  "--eval",
+  `const { buildClaim } = await import("@swarm-tips/client/shillbot");
+const wallet = "11111111111111111111111111111111";
+const taskPda = "SysvarRent111111111111111111111111111111111";
+const built = buildClaim({
+  wallet,
+  network: "mainnet",
+  recentBlockhash: "11111111111111111111111111111111",
+  taskPda,
+});
+process.stdout.write(JSON.stringify({ wallet, taskPda, tx: built.unsigned_tx }));`,
+]).stdout;
+const { wallet, taskPda, tx } = JSON.parse(builtClaimJson);
+const verifyRes = spawnSync(
+  "swarm",
+  [
+    "tx",
+    "verify",
+    "--action",
+    "claim",
+    "--wallet",
+    wallet,
+    "--task-pda",
+    taskPda,
+    "--json",
+  ],
+  {
+    cwd: fixture,
+    input: tx,
+    encoding: "utf8",
+    env: { ...process.env, PATH: binPath },
+  }
+);
+if (verifyRes.status !== 0 || !JSON.parse(verifyRes.stdout).ok) {
+  throw new Error(`swarm tx verify contract failed: ${verifyRes.stdout} ${verifyRes.stderr}`);
+}
 
 console.log(`verified packed client in ${fixture}`);

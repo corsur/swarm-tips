@@ -56,7 +56,7 @@ const INBOX_CORS_HEADERS: [(&str, &str); 5] = [
     ("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"),
     (
         "Access-Control-Allow-Headers",
-        "content-type, x-inbox-session",
+        "content-type, authorization, x-inbox-session",
     ),
     ("Access-Control-Max-Age", "3600"),
     ("Access-Control-Expose-Headers", "x-request-id"),
@@ -69,6 +69,243 @@ pub struct InboxHttpState {
     pub session_binding: Arc<McpSessionBinding>,
     pub inbox: Arc<Inbox>,
     pub inbox_seed_wallets: HashSet<String>,
+    pub jwt_secret: Option<String>,
+}
+
+trait InboxBackend: Send + Sync + 'static {
+    fn jwt_secret(&self) -> Option<&str>;
+    fn is_seed_wallet(&self, wallet: &str) -> bool;
+    fn resolve_verified_session(
+        &self,
+        session_id: &str,
+    ) -> impl std::future::Future<Output = Option<crate::session_binding::VerifiedWallet>> + Send;
+    fn resolve_sender_tier(
+        &self,
+        wallet: &str,
+    ) -> impl std::future::Future<Output = inbox::SenderTier> + Send;
+    fn list_messages(
+        &self,
+        me: &str,
+        args: &inbox::ListMessagesArgs,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, inbox::InboxError>> + Send;
+    fn open_messages(
+        &self,
+        me: &str,
+        args: inbox::OpenMessagesArgs,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, inbox::InboxError>> + Send;
+    fn ack_message_ids(
+        &self,
+        me: &str,
+        args: inbox::AckMessageIdsArgs,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, inbox::InboxError>> + Send;
+    fn get_messages(
+        &self,
+        me: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+        thread_id: Option<&str>,
+        min_trust: Option<f64>,
+        include_sent: bool,
+    ) -> impl std::future::Future<Output = Result<inbox::ReadPage, inbox::InboxError>> + Send;
+    fn ack_messages(
+        &self,
+        me: &str,
+        up_to_cursor: &str,
+    ) -> impl std::future::Future<Output = Result<String, inbox::InboxError>> + Send;
+    fn send_message_with_key(
+        &self,
+        req: inbox::SendRequest,
+        delivery_key: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<inbox::SendReceipt, inbox::InboxError>> + Send;
+    fn send_message(
+        &self,
+        req: inbox::SendRequest,
+    ) -> impl std::future::Future<Output = Result<inbox::SendReceipt, inbox::InboxError>> + Send;
+    fn mute_thread(
+        &self,
+        me: &str,
+        thread_id: &str,
+        report: bool,
+    ) -> impl std::future::Future<Output = Result<(), inbox::InboxError>> + Send;
+    fn publish_post(
+        &self,
+        req: inbox::PublishPostRequest,
+    ) -> impl std::future::Future<Output = Result<inbox::PostReceipt, inbox::InboxError>> + Send;
+    fn read_posts(
+        &self,
+        topic_id: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+        min_trust: Option<f64>,
+    ) -> impl std::future::Future<Output = Result<inbox::PostPage, inbox::InboxError>> + Send;
+    fn report_post(
+        &self,
+        me: &str,
+        topic_id: &str,
+        post_id: &str,
+    ) -> impl std::future::Future<Output = Result<inbox::ReportOutcome, inbox::InboxError>> + Send;
+    fn register_webhook(
+        &self,
+        me: &str,
+        url: &str,
+    ) -> impl std::future::Future<Output = Result<inbox::WebhookDoc, inbox::InboxError>> + Send;
+    fn webhook(
+        &self,
+        me: &str,
+    ) -> impl std::future::Future<Output = Option<inbox::WebhookDoc>> + Send;
+    fn delete_webhook(
+        &self,
+        me: &str,
+    ) -> impl std::future::Future<Output = Result<(), inbox::InboxError>> + Send;
+    fn record_delivery_result(
+        &self,
+        wallet: &str,
+        delivery_id: &str,
+        delivered: bool,
+    ) -> impl std::future::Future<Output = Result<inbox::WebhookDoc, inbox::InboxError>> + Send;
+}
+
+impl InboxBackend for InboxHttpState {
+    fn jwt_secret(&self) -> Option<&str> {
+        self.jwt_secret.as_deref()
+    }
+    fn is_seed_wallet(&self, wallet: &str) -> bool {
+        self.inbox_seed_wallets.contains(wallet)
+    }
+    fn resolve_verified_session(
+        &self,
+        session_id: &str,
+    ) -> impl std::future::Future<Output = Option<crate::session_binding::VerifiedWallet>> + Send
+    {
+        self.session_binding.resolve_verified(session_id)
+    }
+    fn resolve_sender_tier(
+        &self,
+        wallet: &str,
+    ) -> impl std::future::Future<Output = inbox::SenderTier> + Send {
+        self.inbox.resolve_sender_tier(wallet, true)
+    }
+    fn list_messages(
+        &self,
+        me: &str,
+        args: &inbox::ListMessagesArgs,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, inbox::InboxError>> + Send
+    {
+        self.inbox.list_messages(me, args)
+    }
+    fn open_messages(
+        &self,
+        me: &str,
+        args: inbox::OpenMessagesArgs,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, inbox::InboxError>> + Send
+    {
+        self.inbox.open_messages(me, args)
+    }
+    fn ack_message_ids(
+        &self,
+        me: &str,
+        args: inbox::AckMessageIdsArgs,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, inbox::InboxError>> + Send
+    {
+        self.inbox.ack_message_ids(me, args)
+    }
+    fn get_messages(
+        &self,
+        me: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+        thread_id: Option<&str>,
+        min_trust: Option<f64>,
+        include_sent: bool,
+    ) -> impl std::future::Future<Output = Result<inbox::ReadPage, inbox::InboxError>> + Send {
+        self.inbox
+            .get_messages(me, cursor, limit, thread_id, min_trust, include_sent)
+    }
+    fn ack_messages(
+        &self,
+        me: &str,
+        up_to_cursor: &str,
+    ) -> impl std::future::Future<Output = Result<String, inbox::InboxError>> + Send {
+        self.inbox.ack_messages(me, up_to_cursor)
+    }
+    fn send_message_with_key(
+        &self,
+        req: inbox::SendRequest,
+        delivery_key: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<inbox::SendReceipt, inbox::InboxError>> + Send
+    {
+        self.inbox.send_message_with_key(req, delivery_key)
+    }
+    fn send_message(
+        &self,
+        req: inbox::SendRequest,
+    ) -> impl std::future::Future<Output = Result<inbox::SendReceipt, inbox::InboxError>> + Send
+    {
+        self.inbox.send_message(req)
+    }
+    fn mute_thread(
+        &self,
+        me: &str,
+        thread_id: &str,
+        report: bool,
+    ) -> impl std::future::Future<Output = Result<(), inbox::InboxError>> + Send {
+        self.inbox.mute_thread(me, thread_id, report)
+    }
+    fn publish_post(
+        &self,
+        req: inbox::PublishPostRequest,
+    ) -> impl std::future::Future<Output = Result<inbox::PostReceipt, inbox::InboxError>> + Send
+    {
+        self.inbox.publish_post(req)
+    }
+    fn read_posts(
+        &self,
+        topic_id: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+        min_trust: Option<f64>,
+    ) -> impl std::future::Future<Output = Result<inbox::PostPage, inbox::InboxError>> + Send {
+        self.inbox.read_posts(topic_id, cursor, limit, min_trust)
+    }
+    fn report_post(
+        &self,
+        me: &str,
+        topic_id: &str,
+        post_id: &str,
+    ) -> impl std::future::Future<Output = Result<inbox::ReportOutcome, inbox::InboxError>> + Send
+    {
+        self.inbox.report_post(me, topic_id, post_id)
+    }
+    fn register_webhook(
+        &self,
+        me: &str,
+        url: &str,
+    ) -> impl std::future::Future<Output = Result<inbox::WebhookDoc, inbox::InboxError>> + Send
+    {
+        self.inbox.register_webhook(me, url)
+    }
+    fn webhook(
+        &self,
+        me: &str,
+    ) -> impl std::future::Future<Output = Option<inbox::WebhookDoc>> + Send {
+        self.inbox.webhook(me)
+    }
+    fn delete_webhook(
+        &self,
+        me: &str,
+    ) -> impl std::future::Future<Output = Result<(), inbox::InboxError>> + Send {
+        self.inbox.delete_webhook(me)
+    }
+    fn record_delivery_result(
+        &self,
+        wallet: &str,
+        delivery_id: &str,
+        delivered: bool,
+    ) -> impl std::future::Future<Output = Result<inbox::WebhookDoc, inbox::InboxError>> + Send
+    {
+        self.inbox
+            .record_delivery_result(wallet, delivery_id, delivered)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +344,7 @@ fn json_error(status: StatusCode, reason: &str, message: &str) -> axum::response
             "Set status=all with include_sent=true, or include_sent=false for pending messages.";
     }
     if reason == "unproven_sender" || reason == "missing_session" {
-        next_step = "Obtain a nonce with POST /internal/inbox/session using wallet, sign it locally, then POST wallet, nonce and signature to that endpoint. Send the returned session_id as X-Inbox-Session. Never send a private key.";
+        next_step = "Pass Authorization: Bearer <jwt> (from /auth/challenge + /auth/verify), or obtain a nonce with POST /internal/inbox/session using wallet, sign it locally, then POST wallet, nonce and signature to that endpoint and send the returned session_id as X-Inbox-Session. Never send a private key.";
     }
     let readable = match &context {
         Some(ctx) => format!(
@@ -135,7 +372,15 @@ fn missing_session_response() -> axum::response::Response {
     json_error(
         StatusCode::UNAUTHORIZED,
         "missing_session",
-        "missing X-Inbox-Session header — mint one via POST /internal/inbox/session",
+        "missing Authorization: Bearer <jwt> or X-Inbox-Session header — pass a user Bearer JWT or mint a session via POST /internal/inbox/session",
+    )
+}
+
+fn conflicting_auth_headers_response() -> axum::response::Response {
+    json_error(
+        StatusCode::BAD_REQUEST,
+        "conflicting_auth_headers",
+        "conflicting auth headers: provide either Authorization: Bearer <jwt> or X-Inbox-Session, never both",
     )
 }
 
@@ -256,6 +501,34 @@ fn parse_ack_request(raw: &str) -> Result<String, String> {
     let obj = parse_json_object(raw)?;
     known_fields_only(&obj, &["up_to_cursor"])?;
     string_field(&obj, "up_to_cursor", true)?.ok_or_else(|| "up_to_cursor is required".to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MuteBody {
+    thread_id: String,
+    report: bool,
+}
+
+fn parse_mute_request(raw: &str) -> Result<MuteBody, String> {
+    let obj = parse_json_object(raw)?;
+    known_fields_only(&obj, &["thread_id", "muted", "report"])?;
+    let thread_id = string_field(&obj, "thread_id", true)?
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "thread_id is required".to_string())?;
+    match obj.get("muted") {
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(true)) => {}
+        Some(serde_json::Value::Bool(false)) => {
+            return Err("unmuting is not supported; pass muted: true or omit muted".to_string());
+        }
+        Some(_) => return Err("muted must be a boolean".to_string()),
+    }
+    let report = match obj.get("report") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(_) => return Err("report must be a boolean".to_string()),
+    };
+    Ok(MuteBody { thread_id, report })
 }
 
 #[derive(Debug)]
@@ -441,6 +714,37 @@ fn session_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
+fn has_conflicting_auth_headers(headers: &axum::http::HeaderMap) -> bool {
+    headers.contains_key(axum::http::header::AUTHORIZATION)
+        && headers.contains_key(INBOX_SESSION_HEADER)
+}
+
+fn bearer_token_from_headers(
+    headers: &axum::http::HeaderMap,
+) -> Result<Option<&str>, &'static str> {
+    let Some(header_val) = headers.get(axum::http::header::AUTHORIZATION) else {
+        return Ok(None);
+    };
+    let raw = header_val
+        .to_str()
+        .map_err(|_| "invalid Authorization header")?
+        .trim();
+    if raw.is_empty() {
+        return Err("empty Authorization header");
+    }
+    let Some((scheme, token)) = raw.split_once(' ') else {
+        return Err("Authorization header must use Bearer <jwt>");
+    };
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return Err("Authorization header must use Bearer <jwt>");
+    }
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("Bearer token must not be empty");
+    }
+    Ok(Some(token))
+}
+
 /// The client-IP-chain header the Cloud Run load balancer injects; the LEFTMOST
 /// hop is the real client (later hops are proxies).
 const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
@@ -459,9 +763,16 @@ fn client_ip_from_headers(headers: &axum::http::HeaderMap) -> String {
 /// Build the REST-twin provenance (client IP + User-Agent + inbox session id)
 /// for an inbox write from the request headers. The twin of
 /// `server::provenance_from_parts`, sourcing the session id from
-/// `X-Inbox-Session` instead of `Mcp-Session-Id`. This is the follow-up flagged
-/// in PR #6 — replaces the `SenderProvenance::unknown()` the twins used to log.
+/// `X-Inbox-Session` instead of `Mcp-Session-Id` (or `"bearer"` when
+/// authenticated via `Authorization: Bearer`, never logging raw JWT bytes).
 fn provenance_from_headers(headers: &axum::http::HeaderMap) -> inbox::SenderProvenance {
+    let session_id = session_id_from_headers(headers).unwrap_or_else(|| {
+        if headers.contains_key(axum::http::header::AUTHORIZATION) {
+            "bearer".to_string()
+        } else {
+            String::new()
+        }
+    });
     inbox::SenderProvenance {
         client_ip: api_transport::current_caller()
             .map(|caller| caller.peer.ip().to_string())
@@ -471,7 +782,7 @@ fn provenance_from_headers(headers: &axum::http::HeaderMap) -> inbox::SenderProv
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_string(),
-        session_id: session_id_from_headers(headers).unwrap_or_default(),
+        session_id,
     }
 }
 
@@ -654,21 +965,64 @@ async fn handle_session(state: &InboxHttpState, raw: &str) -> axum::response::Re
     }
 }
 
-/// Per-request guard — the REST twin of `require_verified_wallet`: resolve
-/// the session through the same `resolve_verified` path; unverified or
-/// unknown sessions get a structured-logged 401 and NOTHING else (reads
-/// included — same privacy invariant as the tools).
-async fn require_verified_mailbox(
-    state: &InboxHttpState,
+/// Per-request guard — the REST twin of `require_verified_wallet`: accepts
+/// either `Authorization: Bearer <user_jwt>` (`aud: "mcp"`, `typ: "user"`,
+/// rejecting `svc` tokens) OR `X-Inbox-Session` resolved through
+/// `resolve_verified`, while rejecting requests carrying BOTH headers (`400`,
+/// C1). Unverified or unknown callers get a structured-logged `401` and
+/// NOTHING else (reads included — same privacy invariant as the tools).
+async fn require_verified_mailbox<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
 ) -> Result<String, axum::response::Response> {
     let prov = provenance_from_headers(headers);
+    if has_conflicting_auth_headers(headers) {
+        inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
+        return Err(conflicting_auth_headers_response());
+    }
+    match bearer_token_from_headers(headers) {
+        Ok(Some(token)) => {
+            let Some(secret) = state.jwt_secret() else {
+                inbox::log_rejection("unproven_sender", None, None, &prov);
+                return Err(json_error(
+                    StatusCode::UNAUTHORIZED,
+                    "unproven_sender",
+                    "Bearer JWT verification is not configured on this server",
+                ));
+            };
+            let verified_wallet = match crate::jwt::verify_user_jwt(token, secret, "mcp") {
+                Ok(w) => w,
+                Err(_) => {
+                    inbox::log_rejection("unproven_sender", None, None, &prov);
+                    return Err(json_error(
+                        StatusCode::UNAUTHORIZED,
+                        "unproven_sender",
+                        "invalid, expired, or non-user Bearer token",
+                    ));
+                }
+            };
+            return inbox::mailbox_address(&verified_wallet).map_err(|e| {
+                inbox::log_rejection("invalid_wallet", None, None, &prov);
+                json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_wallet",
+                    &format!("authenticated wallet is not mailbox-addressable: {e}"),
+                )
+            });
+        }
+        Err(msg) => {
+            inbox::log_rejection("unproven_sender", None, None, &prov);
+            return Err(json_error(StatusCode::UNAUTHORIZED, "unproven_sender", msg));
+        }
+        Ok(None) => {}
+    }
+
     let Some(session_id) = session_id_from_headers(headers) else {
         inbox::log_rejection("missing_session", None, None, &prov);
         return Err(missing_session_response());
     };
-    match state.session_binding.resolve_verified(&session_id).await {
-        Some(wallet) => inbox::mailbox_address(&wallet).map_err(|e| {
+    match state.resolve_verified_session(&session_id).await {
+        Some(wallet) => inbox::mailbox_address(wallet.as_str()).map_err(|e| {
             inbox::log_rejection("invalid_wallet", None, None, &prov);
             json_error(
                 StatusCode::BAD_REQUEST,
@@ -683,7 +1037,7 @@ async fn require_verified_mailbox(
             Err(json_error(
                 StatusCode::UNAUTHORIZED,
                 "unproven_sender",
-                "session is unknown or has not proven wallet ownership: mint one via POST /internal/inbox/session",
+                "session is unknown or has not proven wallet ownership: pass Authorization: Bearer <jwt> or mint one via POST /internal/inbox/session",
             ))
         }
     }
@@ -717,11 +1071,11 @@ fn inbox_error_response(
 
 // ---------------------------------------------------------------------------
 // Op handlers — delegate DIRECTLY to inbox::{get_messages, ack_messages,
-// send_message}; no inbox logic on this side of the seam.
+// send_message, mute_thread}; no inbox logic on this side of the seam.
 // ---------------------------------------------------------------------------
 
-async fn handle_get_messages(
-    state: &InboxHttpState,
+async fn handle_get_messages<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
     q: &HashMap<String, String>,
 ) -> axum::response::Response {
@@ -738,7 +1092,6 @@ async fn handle_get_messages(
         }
     };
     match state
-        .inbox
         .get_messages(
             &me,
             query.cursor.as_deref(),
@@ -757,8 +1110,8 @@ async fn handle_get_messages(
     }
 }
 
-async fn handle_ack(
-    state: &InboxHttpState,
+async fn handle_ack<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
@@ -774,7 +1127,7 @@ async fn handle_ack(
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
-    match state.inbox.ack_messages(&me, &up_to_cursor).await {
+    match state.ack_messages(&me, &up_to_cursor).await {
         Ok(watermark) => {
             inbox::log_messages_acked(&me, &up_to_cursor);
             json_ok(inbox::ack_json(&watermark))
@@ -783,8 +1136,8 @@ async fn handle_ack(
     }
 }
 
-async fn handle_send(
-    state: &InboxHttpState,
+async fn handle_send<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
@@ -801,10 +1154,9 @@ async fn handle_send(
         }
     };
     let to_wallet = body.to_wallet.clone();
-    let seed = state.inbox_seed_wallets.contains(&me);
-    let tier = state.inbox.resolve_sender_tier(&me, true).await;
+    let seed = state.is_seed_wallet(&me);
+    let tier = state.resolve_sender_tier(&me).await;
     match state
-        .inbox
         .send_message_with_key(
             inbox::SendRequest {
                 from: me.clone(),
@@ -827,10 +1179,46 @@ async fn handle_send(
     }
 }
 
+async fn handle_mute<B: InboxBackend>(
+    state: &B,
+    headers: &axum::http::HeaderMap,
+    raw: &str,
+) -> axum::response::Response {
+    let prov = provenance_from_headers(headers);
+    let me = match require_verified_mailbox(state, headers).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let body = match parse_mute_request(raw) {
+        Ok(b) => b,
+        Err(e) => {
+            inbox::log_rejection("invalid_request", None, None, &prov);
+            return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
+        }
+    };
+    match state.mute_thread(&me, &body.thread_id, body.report).await {
+        Ok(()) => {
+            tracing::info!(
+                event = "agent_thread_muted",
+                wallet = %me,
+                thread_id = %body.thread_id,
+                reported = body.report,
+                "inbox thread muted"
+            );
+            json_ok(serde_json::json!({
+                "muted": true,
+                "thread_id": body.thread_id,
+                "reported": body.report,
+            }))
+        }
+        Err(e) => inbox_error_response(e, None, None, &prov),
+    }
+}
+
 // -- Topic board twins (/internal/topics/*) --
 
-async fn handle_topic_publish(
-    state: &InboxHttpState,
+async fn handle_topic_publish<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
@@ -847,10 +1235,9 @@ async fn handle_topic_publish(
         }
     };
     let topic_id = body.topic_id.clone();
-    let seed = state.inbox_seed_wallets.contains(&me);
-    let tier = state.inbox.resolve_sender_tier(&me, true).await;
+    let seed = state.is_seed_wallet(&me);
+    let tier = state.resolve_sender_tier(&me).await;
     match state
-        .inbox
         .publish_post(inbox::PublishPostRequest {
             from: me.clone(),
             topic_id: body.topic_id,
@@ -873,8 +1260,8 @@ async fn handle_topic_publish(
 
 /// Board reads are OPEN (no session) — same policy as /internal/listings;
 /// the page bound and fixed topic set bound the work.
-async fn handle_topic_read(
-    state: &InboxHttpState,
+async fn handle_topic_read<B: InboxBackend>(
+    state: &B,
     q: &HashMap<String, String>,
 ) -> axum::response::Response {
     // Board reads are open (no session header) — no provenance to attach.
@@ -887,7 +1274,6 @@ async fn handle_topic_read(
         }
     };
     match state
-        .inbox
         .read_posts(
             &query.topic_id,
             query.cursor.as_deref(),
@@ -904,8 +1290,8 @@ async fn handle_topic_read(
     }
 }
 
-async fn handle_topic_report(
-    state: &InboxHttpState,
+async fn handle_topic_report<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
@@ -921,7 +1307,7 @@ async fn handle_topic_report(
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
-    match state.inbox.report_post(&me, &topic_id, &post_id).await {
+    match state.report_post(&me, &topic_id, &post_id).await {
         Ok(outcome) => {
             inbox::log_topic_report(&me, &outcome);
             json_ok(inbox::report_outcome_json(&outcome))
@@ -932,8 +1318,8 @@ async fn handle_topic_report(
 
 // -- Webhook twins (/internal/inbox/webhook + the workflow callback) --
 
-async fn handle_webhook_register(
-    state: &InboxHttpState,
+async fn handle_webhook_register<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
@@ -949,7 +1335,7 @@ async fn handle_webhook_register(
             return json_error(StatusCode::BAD_REQUEST, "invalid_request", &e);
         }
     };
-    match state.inbox.register_webhook(&me, &url).await {
+    match state.register_webhook(&me, &url).await {
         Ok(doc) => {
             inbox::log_webhook_registered(&doc);
             json_ok(inbox::webhook_json(&doc))
@@ -958,22 +1344,22 @@ async fn handle_webhook_register(
     }
 }
 
-async fn handle_webhook_get(
-    state: &InboxHttpState,
+async fn handle_webhook_get<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
 ) -> axum::response::Response {
     let me = match require_verified_mailbox(state, headers).await {
         Ok(m) => m,
         Err(resp) => return resp,
     };
-    match state.inbox.webhook(&me).await {
+    match state.webhook(&me).await {
         Some(doc) => json_ok(inbox::webhook_json(&doc)),
         None => json_ok(serde_json::json!({ "registered": false })),
     }
 }
 
-async fn handle_webhook_delete(
-    state: &InboxHttpState,
+async fn handle_webhook_delete<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
 ) -> axum::response::Response {
     let prov = provenance_from_headers(headers);
@@ -981,7 +1367,7 @@ async fn handle_webhook_delete(
         Ok(m) => m,
         Err(resp) => return resp,
     };
-    match state.inbox.delete_webhook(&me).await {
+    match state.delete_webhook(&me).await {
         Ok(()) => {
             tracing::info!(event = "webhook_deleted", wallet = %me, "inbox webhook deleted");
             json_ok(serde_json::json!({ "deleted": true }))
@@ -994,7 +1380,7 @@ async fn handle_webhook_delete(
 /// — the gate is knowledge of the pending (wallet, delivery_id) pair, which
 /// only mcp-server, the workflow, and the owner's own endpoint ever see; a
 /// mismatch is a structured-logged 400 with no state change.
-async fn handle_delivery_result(state: &InboxHttpState, raw: &str) -> axum::response::Response {
+async fn handle_delivery_result<B: InboxBackend>(state: &B, raw: &str) -> axum::response::Response {
     // Workflow callback — no session header, so no provenance to attach.
     let prov = inbox::SenderProvenance::unknown();
     let body = match parse_delivery_result_request(raw) {
@@ -1016,7 +1402,6 @@ async fn handle_delivery_result(state: &InboxHttpState, raw: &str) -> axum::resp
         }
     };
     match state
-        .inbox
         .record_delivery_result(&wallet, &body.delivery_id, body.delivered)
         .await
     {
@@ -1097,8 +1482,8 @@ fn a2a_inbox_error(
     }
 }
 
-async fn a2a_message_send(
-    state: &InboxHttpState,
+async fn a2a_message_send<B: InboxBackend>(
+    state: &B,
     me: &str,
     req: &a2a::JsonRpcRequest,
     prov: &inbox::SenderProvenance,
@@ -1111,10 +1496,9 @@ async fn a2a_message_send(
         }
     };
     let to_wallet = mapped.to_wallet.clone();
-    let seed = state.inbox_seed_wallets.contains(me);
-    let tier = state.inbox.resolve_sender_tier(me, true).await;
+    let seed = state.is_seed_wallet(me);
+    let tier = state.resolve_sender_tier(me).await;
     match state
-        .inbox
         .send_message(inbox::SendRequest {
             from: me.to_string(),
             to_wallet: mapped.to_wallet,
@@ -1134,8 +1518,8 @@ async fn a2a_message_send(
     }
 }
 
-async fn a2a_tasks_get(
-    state: &InboxHttpState,
+async fn a2a_tasks_get<B: InboxBackend>(
+    state: &B,
     me: &str,
     req: &a2a::JsonRpcRequest,
     prov: &inbox::SenderProvenance,
@@ -1149,7 +1533,6 @@ async fn a2a_tasks_get(
     };
     // include_sent → the A2A Task history carries both directions of the thread.
     match state
-        .inbox
         .get_messages(me, None, g.history_length, Some(&g.thread_id), None, true)
         .await
     {
@@ -1161,8 +1544,8 @@ async fn a2a_tasks_get(
     }
 }
 
-async fn a2a_push_config_set(
-    state: &InboxHttpState,
+async fn a2a_push_config_set<B: InboxBackend>(
+    state: &B,
     me: &str,
     req: &a2a::JsonRpcRequest,
     prov: &inbox::SenderProvenance,
@@ -1174,7 +1557,7 @@ async fn a2a_push_config_set(
             return a2a_error(StatusCode::BAD_REQUEST, &req.id, a2a::INVALID_PARAMS, &e);
         }
     };
-    match state.inbox.register_webhook(me, &p.url).await {
+    match state.register_webhook(me, &p.url).await {
         Ok(doc) => {
             inbox::log_webhook_registered(&doc);
             a2a_ok(
@@ -1190,12 +1573,16 @@ async fn a2a_push_config_set(
 /// through the SAME session guard the twins use (unknown/unverified → the same
 /// 401), then dispatch. Every A2A method is session-gated: send writes, get
 /// reads a private mailbox, pushConfig registers a webhook.
-async fn handle_a2a(
-    state: &InboxHttpState,
+async fn handle_a2a<B: InboxBackend>(
+    state: &B,
     headers: &axum::http::HeaderMap,
     raw: &str,
 ) -> axum::response::Response {
     let prov = provenance_from_headers(headers);
+    if has_conflicting_auth_headers(headers) {
+        inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
+        return conflicting_auth_headers_response();
+    }
     let req = match a2a::parse_request(raw) {
         Ok(r) => r,
         Err((code, message)) => {
@@ -1243,17 +1630,21 @@ pub fn session_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRoute
     ))
 }
 
-pub fn messages_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+fn messages_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
     axum::routing::get(
         move |headers: axum::http::HeaderMap, q: axum::extract::Query<HashMap<String, String>>| {
             let state = state.clone();
-            async move { handle_get_messages(&state, &headers, &q).await }
+            async move { handle_get_messages(state.as_ref(), &headers, &q).await }
         },
     )
     .options(|| async { preflight_response() })
     .layer(axum::middleware::from_fn(
         crate::request_errors::observe_http,
     ))
+}
+
+pub fn messages_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    messages_handler_with(state)
 }
 
 fn parse_selective_query(q: &HashMap<String, String>) -> Result<inbox::ListMessagesArgs, String> {
@@ -1275,12 +1666,16 @@ fn parse_selective_query(q: &HashMap<String, String>) -> Result<inbox::ListMessa
         .map_err(|_| "invalid selective inbox query".into())
 }
 
-pub fn list_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+fn list_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
     axum::routing::get(
         move |headers: axum::http::HeaderMap, q: axum::extract::Query<HashMap<String, String>>| {
             let state = state.clone();
             async move {
                 let prov = provenance_from_headers(&headers);
+                if has_conflicting_auth_headers(&headers) {
+                    inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
+                    return conflicting_auth_headers_response();
+                }
                 let args = match parse_selective_query(&q) {
                     Ok(a) => a,
                     Err(e) => {
@@ -1295,11 +1690,11 @@ pub fn list_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
                 if let Err(e) = args.validate() {
                     return inbox_error_response(e, None, None, &prov);
                 }
-                let me = match require_verified_mailbox(&state, &headers).await {
+                let me = match require_verified_mailbox(state.as_ref(), &headers).await {
                     Ok(m) => m,
                     Err(r) => return r,
                 };
-                match state.inbox.list_messages(&me, &args).await {
+                match state.list_messages(&me, &args).await {
                     Ok(v) => json_ok(v),
                     Err(e) => inbox_error_response(e, None, None, &prov),
                 }
@@ -1312,11 +1707,19 @@ pub fn list_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
     ))
 }
 
-pub fn open_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+pub fn list_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    list_handler_with(state)
+}
+
+fn open_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
     axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
         let state = state.clone();
         async move {
             let prov = provenance_from_headers(&headers);
+            if has_conflicting_auth_headers(&headers) {
+                inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
+                return conflicting_auth_headers_response();
+            }
             let args = match serde_json::from_str::<inbox::OpenMessagesArgs>(&body) {
                 Ok(a) => a,
                 Err(_) => {
@@ -1331,11 +1734,11 @@ pub fn open_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
             if let Err(e) = args.validate() {
                 return inbox_error_response(e, None, None, &prov);
             }
-            let me = match require_verified_mailbox(&state, &headers).await {
+            let me = match require_verified_mailbox(state.as_ref(), &headers).await {
                 Ok(m) => m,
                 Err(r) => return r,
             };
-            match state.inbox.open_messages(&me, args).await {
+            match state.open_messages(&me, args).await {
                 Ok(v) => json_ok(v),
                 Err(e) => inbox_error_response(e, None, None, &prov),
             }
@@ -1347,11 +1750,19 @@ pub fn open_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
     ))
 }
 
-pub fn ack_ids_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+pub fn open_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    open_handler_with(state)
+}
+
+fn ack_ids_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
     axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
         let state = state.clone();
         async move {
             let prov = provenance_from_headers(&headers);
+            if has_conflicting_auth_headers(&headers) {
+                inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
+                return conflicting_auth_headers_response();
+            }
             let args = match serde_json::from_str::<inbox::AckMessageIdsArgs>(&body) {
                 Ok(a) => a,
                 Err(_) => {
@@ -1369,11 +1780,11 @@ pub fn ack_ids_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRoute
             if let Err(e) = args.validate() {
                 return inbox_error_response(e, None, None, &prov);
             }
-            let me = match require_verified_mailbox(&state, &headers).await {
+            let me = match require_verified_mailbox(state.as_ref(), &headers).await {
                 Ok(m) => m,
                 Err(r) => return r,
             };
-            match state.inbox.ack_message_ids(&me, args).await {
+            match state.ack_message_ids(&me, args).await {
                 Ok(v) => json_ok(v),
                 Err(e) => inbox_error_response(e, None, None, &prov),
             }
@@ -1385,10 +1796,29 @@ pub fn ack_ids_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRoute
     ))
 }
 
-pub fn ack_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+pub fn ack_ids_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    ack_ids_handler_with(state)
+}
+
+fn ack_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
     axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
         let state = state.clone();
-        async move { handle_ack(&state, &headers, &body).await }
+        async move { handle_ack(state.as_ref(), &headers, &body).await }
+    })
+    .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
+}
+
+pub fn ack_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    ack_handler_with(state)
+}
+
+fn send_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+        let state = state.clone();
+        async move { handle_send(state.as_ref(), &headers, &body).await }
     })
     .options(|| async { preflight_response() })
     .layer(axum::middleware::from_fn(
@@ -1397,9 +1827,28 @@ pub fn ack_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
 }
 
 pub fn send_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    send_handler_with(state)
+}
+
+fn mute_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
     axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
         let state = state.clone();
-        async move { handle_send(&state, &headers, &body).await }
+        async move { handle_mute(state.as_ref(), &headers, &body).await }
+    })
+    .options(|| async { preflight_response() })
+    .layer(axum::middleware::from_fn(
+        crate::request_errors::observe_http,
+    ))
+}
+
+pub fn mute_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    mute_handler_with(state)
+}
+
+fn topics_publish_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+        let state = state.clone();
+        async move { handle_topic_publish(state.as_ref(), &headers, &body).await }
     })
     .options(|| async { preflight_response() })
     .layer(axum::middleware::from_fn(
@@ -1408,9 +1857,13 @@ pub fn send_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
 }
 
 pub fn topics_publish_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
-    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+    topics_publish_handler_with(state)
+}
+
+fn topics_read_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
+    axum::routing::get(move |q: axum::extract::Query<HashMap<String, String>>| {
         let state = state.clone();
-        async move { handle_topic_publish(&state, &headers, &body).await }
+        async move { handle_topic_read(state.as_ref(), &q).await }
     })
     .options(|| async { preflight_response() })
     .layer(axum::middleware::from_fn(
@@ -1419,9 +1872,13 @@ pub fn topics_publish_handler(state: Arc<InboxHttpState>) -> axum::routing::Meth
 }
 
 pub fn topics_read_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
-    axum::routing::get(move |q: axum::extract::Query<HashMap<String, String>>| {
+    topics_read_handler_with(state)
+}
+
+fn topics_report_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
+    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
         let state = state.clone();
-        async move { handle_topic_read(&state, &q).await }
+        async move { handle_topic_report(state.as_ref(), &headers, &body).await }
     })
     .options(|| async { preflight_response() })
     .layer(axum::middleware::from_fn(
@@ -1430,9 +1887,25 @@ pub fn topics_read_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodR
 }
 
 pub fn topics_report_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    topics_report_handler_with(state)
+}
+
+/// One route, three methods: POST registers (body {url}), GET reads,
+/// DELETE removes — all owner-scoped through the session or Bearer header.
+fn webhook_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
+    let post_state = Arc::clone(&state);
+    let get_state = Arc::clone(&state);
     axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+        let state = post_state.clone();
+        async move { handle_webhook_register(state.as_ref(), &headers, &body).await }
+    })
+    .get(move |headers: axum::http::HeaderMap| {
+        let state = get_state.clone();
+        async move { handle_webhook_get(state.as_ref(), &headers).await }
+    })
+    .delete(move |headers: axum::http::HeaderMap| {
         let state = state.clone();
-        async move { handle_topic_report(&state, &headers, &body).await }
+        async move { handle_webhook_delete(state.as_ref(), &headers).await }
     })
     .options(|| async { preflight_response() })
     .layer(axum::middleware::from_fn(
@@ -1440,27 +1913,8 @@ pub fn topics_report_handler(state: Arc<InboxHttpState>) -> axum::routing::Metho
     ))
 }
 
-/// One route, three methods: POST registers (body {url}), GET reads,
-/// DELETE removes — all owner-scoped through the session header.
 pub fn webhook_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
-    let post_state = Arc::clone(&state);
-    let get_state = Arc::clone(&state);
-    axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
-        let state = post_state.clone();
-        async move { handle_webhook_register(&state, &headers, &body).await }
-    })
-    .get(move |headers: axum::http::HeaderMap| {
-        let state = get_state.clone();
-        async move { handle_webhook_get(&state, &headers).await }
-    })
-    .delete(move |headers: axum::http::HeaderMap| {
-        let state = state.clone();
-        async move { handle_webhook_delete(&state, &headers).await }
-    })
-    .options(|| async { preflight_response() })
-    .layer(axum::middleware::from_fn(
-        crate::request_errors::observe_http,
-    ))
+    webhook_handler_with(state)
 }
 
 /// The delivery workflow's outcome callback (see handle_delivery_result for
@@ -1468,20 +1922,24 @@ pub fn webhook_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRoute
 pub fn delivery_result_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
     axum::routing::post(move |body: String| {
         let state = state.clone();
-        async move { handle_delivery_result(&state, &body).await }
+        async move { handle_delivery_result(state.as_ref(), &body).await }
     })
 }
 
-/// `POST /a2a` — the Google-A2A JSON-RPC facade over the inbox (see handle_a2a).
-pub fn a2a_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+fn a2a_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRouter {
     axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
         let state = state.clone();
-        async move { handle_a2a(&state, &headers, &body).await }
+        async move { handle_a2a(state.as_ref(), &headers, &body).await }
     })
     .options(|| async { preflight_response() })
     .layer(axum::middleware::from_fn(
         crate::request_errors::observe_http,
     ))
+}
+
+/// `POST /a2a` — the Google-A2A JSON-RPC facade over the inbox (see handle_a2a).
+pub fn a2a_handler(state: Arc<InboxHttpState>) -> axum::routing::MethodRouter {
+    a2a_handler_with(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -1902,7 +2360,24 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .expect("allow-headers present");
         assert!(allow_headers.contains("x-inbox-session"), "{allow_headers}");
+        assert!(allow_headers.contains("authorization"), "{allow_headers}");
         assert!(allow_headers.contains("content-type"), "{allow_headers}");
+    }
+
+    #[test]
+    fn parse_mute_request_enforces_schema_and_muted_true() {
+        let minimal = parse_mute_request(r#"{"thread_id":"task:42"}"#).expect("valid");
+        assert_eq!(minimal.thread_id, "task:42");
+        assert!(!minimal.report);
+
+        let full = parse_mute_request(r#"{"thread_id":"task:42","muted":true,"report":true}"#)
+            .expect("ok");
+        assert_eq!(full.thread_id, "task:42");
+        assert!(full.report);
+
+        assert!(parse_mute_request(r#"{"thread_id":"task:42","muted":false}"#).is_err());
+        assert!(parse_mute_request(r#"{"thread_id":"   "}"#).is_err());
+        assert!(parse_mute_request(r#"{"thread_id":"task:42","extra":1}"#).is_err());
     }
 
     // -- game-api auth passthrough (wiremock) ------------------------------
@@ -2057,5 +2532,545 @@ mod selective_query_tests {
         ]))
         .unwrap();
         assert!(a.preview && a.include_sent && a.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod bearer_and_mute_router_tests {
+    use super::*;
+    use serde_json::json;
+
+    const SECRET: &str = "inbox-http-test-jwt-secret-key-32-bytes";
+    const ALICE_SOL: &str = "5vsGoTRoc5j1a2fKszyZ7y28G6ggmu87YobpwzuXsMhu";
+    const BOB_SOL: &str = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+    const SESSION_OK: &str = "sess-alice-valid";
+
+    struct FakeInboxBackend {
+        secret: String,
+        muted_calls: std::sync::Mutex<Vec<(String, String, bool)>>,
+    }
+
+    impl FakeInboxBackend {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                secret: SECRET.to_string(),
+                muted_calls: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl InboxBackend for FakeInboxBackend {
+        fn jwt_secret(&self) -> Option<&str> {
+            Some(&self.secret)
+        }
+        fn is_seed_wallet(&self, _wallet: &str) -> bool {
+            false
+        }
+        async fn resolve_verified_session(
+            &self,
+            session_id: &str,
+        ) -> Option<crate::session_binding::VerifiedWallet> {
+            if session_id == SESSION_OK {
+                Some(crate::session_binding::VerifiedWallet::new_for_test(
+                    ALICE_SOL,
+                ))
+            } else {
+                None
+            }
+        }
+        async fn resolve_sender_tier(&self, _wallet: &str) -> inbox::SenderTier {
+            inbox::SenderTier::SessionVerified
+        }
+        async fn list_messages(
+            &self,
+            me: &str,
+            _args: &inbox::ListMessagesArgs,
+        ) -> Result<serde_json::Value, inbox::InboxError> {
+            Ok(json!({ "owner": me, "messages": [], "count": 0 }))
+        }
+        async fn open_messages(
+            &self,
+            me: &str,
+            args: inbox::OpenMessagesArgs,
+        ) -> Result<serde_json::Value, inbox::InboxError> {
+            Ok(json!({ "owner": me, "opened": args.messages }))
+        }
+        async fn ack_message_ids(
+            &self,
+            me: &str,
+            args: inbox::AckMessageIdsArgs,
+        ) -> Result<serde_json::Value, inbox::InboxError> {
+            Ok(json!({ "owner": me, "acknowledged": args.message_ids }))
+        }
+        async fn get_messages(
+            &self,
+            _me: &str,
+            _cursor: Option<&str>,
+            _limit: Option<u32>,
+            _thread_id: Option<&str>,
+            _min_trust: Option<f64>,
+            _include_sent: bool,
+        ) -> Result<inbox::ReadPage, inbox::InboxError> {
+            Ok(inbox::ReadPage {
+                messages: Vec::new(),
+                next_cursor: None,
+                fast_path: true,
+                filtered_below_min_trust: 0,
+                filtered_muted: 0,
+            })
+        }
+        async fn ack_messages(
+            &self,
+            _me: &str,
+            up_to_cursor: &str,
+        ) -> Result<String, inbox::InboxError> {
+            Ok(up_to_cursor.to_string())
+        }
+        async fn send_message_with_key(
+            &self,
+            req: inbox::SendRequest,
+            _delivery_key: Option<&str>,
+        ) -> Result<inbox::SendReceipt, inbox::InboxError> {
+            self.send_message(req).await
+        }
+        async fn send_message(
+            &self,
+            req: inbox::SendRequest,
+        ) -> Result<inbox::SendReceipt, inbox::InboxError> {
+            let to = inbox::mailbox_address(&req.to_wallet)
+                .map_err(inbox::InboxRejection::InvalidRecipient)?;
+            let thread_id = req
+                .thread_id
+                .unwrap_or_else(|| inbox::pairwise_thread_id(&req.from, &to));
+            Ok(inbox::SendReceipt {
+                msg_id: "00000000000000000001_00000001".to_string(),
+                to,
+                thread_id,
+                intent: req.intent,
+                bytes: req.body.len(),
+                expires_at: None,
+                sends_remaining_today: 9,
+            })
+        }
+        async fn mute_thread(
+            &self,
+            me: &str,
+            thread_id: &str,
+            report: bool,
+        ) -> Result<(), inbox::InboxError> {
+            inbox::validate_thread_id(thread_id).map_err(inbox::InboxRejection::InvalidThreadId)?;
+            self.muted_calls.lock().expect("lock").push((
+                me.to_string(),
+                thread_id.to_string(),
+                report,
+            ));
+            Ok(())
+        }
+        async fn publish_post(
+            &self,
+            req: inbox::PublishPostRequest,
+        ) -> Result<inbox::PostReceipt, inbox::InboxError> {
+            Ok(inbox::PostReceipt {
+                post_id: "00000000000000000002_00000002".to_string(),
+                topic_id: req.topic_id,
+                reply_to: req.reply_to,
+                intent: req.intent,
+                bytes: req.body.len(),
+                expires_at: chrono::Utc::now(),
+                posts_remaining_today: 4,
+            })
+        }
+        async fn read_posts(
+            &self,
+            topic_id: &str,
+            _cursor: Option<&str>,
+            _limit: Option<u32>,
+            _min_trust: Option<f64>,
+        ) -> Result<inbox::PostPage, inbox::InboxError> {
+            Ok(inbox::PostPage {
+                topic_id: topic_id.to_string(),
+                posts: Vec::new(),
+                next_cursor: None,
+                filtered_hidden: 0,
+                filtered_below_min_trust: 0,
+            })
+        }
+        async fn report_post(
+            &self,
+            _me: &str,
+            topic_id: &str,
+            post_id: &str,
+        ) -> Result<inbox::ReportOutcome, inbox::InboxError> {
+            Ok(inbox::ReportOutcome {
+                topic_id: topic_id.to_string(),
+                post_id: post_id.to_string(),
+                reported_count: 1,
+                hidden: false,
+                already_reported: false,
+            })
+        }
+        async fn register_webhook(
+            &self,
+            me: &str,
+            url: &str,
+        ) -> Result<inbox::WebhookDoc, inbox::InboxError> {
+            Ok(inbox::WebhookDoc {
+                wallet: me.to_string(),
+                url: url.to_string(),
+                hmac_secret: "deadbeef".to_string(),
+                challenge_token: "tok".to_string(),
+                verified: true,
+                consecutive_failures: 0,
+                disabled_at: None,
+                last_delivery_at: None,
+                pending_delivery_id: String::new(),
+                created_at: firestore::FirestoreTimestamp::from(chrono::Utc::now()),
+            })
+        }
+        async fn webhook(&self, _me: &str) -> Option<inbox::WebhookDoc> {
+            None
+        }
+        async fn delete_webhook(&self, _me: &str) -> Result<(), inbox::InboxError> {
+            Ok(())
+        }
+        async fn record_delivery_result(
+            &self,
+            wallet: &str,
+            delivery_id: &str,
+            _delivered: bool,
+        ) -> Result<inbox::WebhookDoc, inbox::InboxError> {
+            Ok(inbox::WebhookDoc {
+                wallet: wallet.to_string(),
+                url: "https://example.com/hook".to_string(),
+                hmac_secret: "deadbeef".to_string(),
+                challenge_token: "tok".to_string(),
+                verified: true,
+                consecutive_failures: 0,
+                disabled_at: None,
+                last_delivery_at: None,
+                pending_delivery_id: delivery_id.to_string(),
+                created_at: firestore::FirestoreTimestamp::from(chrono::Utc::now()),
+            })
+        }
+    }
+
+    fn test_router(state: Arc<FakeInboxBackend>) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/internal/inbox/list",
+                list_handler_with(Arc::clone(&state)),
+            )
+            .route(
+                "/internal/inbox/open",
+                open_handler_with(Arc::clone(&state)),
+            )
+            .route(
+                "/internal/inbox/ack-ids",
+                ack_ids_handler_with(Arc::clone(&state)),
+            )
+            .route(
+                "/internal/inbox/messages",
+                messages_handler_with(Arc::clone(&state)),
+            )
+            .route("/internal/inbox/ack", ack_handler_with(Arc::clone(&state)))
+            .route(
+                "/internal/inbox/send",
+                send_handler_with(Arc::clone(&state)),
+            )
+            .route(
+                "/internal/inbox/mute",
+                mute_handler_with(Arc::clone(&state)),
+            )
+            .route(
+                "/internal/inbox/webhook",
+                webhook_handler_with(Arc::clone(&state)),
+            )
+            .route(
+                "/internal/topics/publish",
+                topics_publish_handler_with(Arc::clone(&state)),
+            )
+            .route(
+                "/internal/topics/report",
+                topics_report_handler_with(Arc::clone(&state)),
+            )
+            .route("/a2a", a2a_handler_with(state))
+    }
+
+    fn future_exp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+            .saturating_add(300)
+    }
+
+    async fn spawn_router(app: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    fn assert_no_set_cookie(resp: &reqwest::Response) {
+        assert!(
+            !resp.headers().contains_key(reqwest::header::SET_COOKIE),
+            "C11 violation: response carried Set-Cookie header"
+        );
+    }
+
+    #[tokio::test]
+    async fn c7_svc_token_is_rejected_with_401_on_inbox_routes() {
+        let backend = FakeInboxBackend::new();
+        let base = spawn_router(test_router(backend)).await;
+        let client = reqwest::Client::new();
+
+        let verified = crate::session_binding::VerifiedWallet::new_for_test(ALICE_SOL);
+        let svc_token = crate::jwt::mint_svc_token(&verified, SECRET).expect("svc token");
+
+        for (method, path, body) in [
+            ("GET", "/internal/inbox/list", None),
+            (
+                "POST",
+                "/internal/inbox/send",
+                Some(json!({ "to_wallet": BOB_SOL, "body": "hello" })),
+            ),
+            (
+                "POST",
+                "/internal/inbox/mute",
+                Some(json!({ "thread_id": "task:42" })),
+            ),
+        ] {
+            let req = if method == "GET" {
+                client.get(format!("{base}{path}"))
+            } else {
+                client
+                    .post(format!("{base}{path}"))
+                    .json(&body.expect("body"))
+            };
+            let resp = req.bearer_auth(&svc_token).send().await.expect("send");
+            assert_no_set_cookie(&resp);
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{method} {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn bearer_jwt_and_session_header_both_authenticate_twins_and_mute_and_a2a() {
+        let backend = FakeInboxBackend::new();
+        let base = spawn_router(test_router(Arc::clone(&backend))).await;
+        let client = reqwest::Client::new();
+
+        let user_jwt = crate::jwt::mint_user_jwt_for_test(
+            ALICE_SOL,
+            SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+        let alice_caip10 = inbox::mailbox_address(ALICE_SOL).expect("caip10");
+
+        // 1. GET /internal/inbox/list with Bearer
+        let list_resp = client
+            .get(format!("{base}/internal/inbox/list"))
+            .bearer_auth(&user_jwt)
+            .send()
+            .await
+            .expect("list");
+        assert_no_set_cookie(&list_resp);
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_json: serde_json::Value = list_resp.json().await.expect("json");
+        assert_eq!(list_json["owner"], alice_caip10);
+
+        // 2. POST /internal/inbox/open + ack-ids + messages + ack + webhook with Bearer
+        let open_resp = client
+            .post(format!("{base}/internal/inbox/open"))
+            .bearer_auth(&user_jwt)
+            .json(&json!({ "messages": [{ "msg_id": "00000000000000000001_00000001" }] }))
+            .send()
+            .await
+            .expect("open");
+        assert_no_set_cookie(&open_resp);
+        assert_eq!(open_resp.status(), StatusCode::OK);
+
+        let ack_ids_resp = client
+            .post(format!("{base}/internal/inbox/ack-ids"))
+            .bearer_auth(&user_jwt)
+            .json(&json!({ "message_ids": ["00000000000000000001_00000001"] }))
+            .send()
+            .await
+            .expect("ack-ids");
+        assert_no_set_cookie(&ack_ids_resp);
+        assert_eq!(ack_ids_resp.status(), StatusCode::OK);
+
+        let msgs_resp = client
+            .get(format!("{base}/internal/inbox/messages"))
+            .bearer_auth(&user_jwt)
+            .send()
+            .await
+            .expect("messages");
+        assert_no_set_cookie(&msgs_resp);
+        assert_eq!(msgs_resp.status(), StatusCode::OK);
+
+        let webhook_resp = client
+            .get(format!("{base}/internal/inbox/webhook"))
+            .bearer_auth(&user_jwt)
+            .send()
+            .await
+            .expect("webhook");
+        assert_no_set_cookie(&webhook_resp);
+        assert_eq!(webhook_resp.status(), StatusCode::OK);
+
+        // 3. POST /internal/inbox/send with Bearer
+        let send_resp = client
+            .post(format!("{base}/internal/inbox/send"))
+            .bearer_auth(&user_jwt)
+            .json(&json!({ "to_wallet": BOB_SOL, "body": "ping" }))
+            .send()
+            .await
+            .expect("send");
+        assert_no_set_cookie(&send_resp);
+        assert_eq!(send_resp.status(), StatusCode::OK);
+        let send_json: serde_json::Value = send_resp.json().await.expect("json");
+        assert_eq!(send_json["sent"], true);
+
+        // 4. POST /internal/inbox/mute with Bearer AND with X-Inbox-Session fallback
+        let mute_resp = client
+            .post(format!("{base}/internal/inbox/mute"))
+            .bearer_auth(&user_jwt)
+            .json(&json!({ "thread_id": "task:99", "muted": true, "report": true }))
+            .send()
+            .await
+            .expect("mute");
+        assert_no_set_cookie(&mute_resp);
+        assert_eq!(mute_resp.status(), StatusCode::OK);
+        let mute_json: serde_json::Value = mute_resp.json().await.expect("json");
+        assert_eq!(mute_json["muted"], true);
+        assert_eq!(mute_json["thread_id"], "task:99");
+        assert_eq!(mute_json["reported"], true);
+
+        let mute_sess_resp = client
+            .post(format!("{base}/internal/inbox/mute"))
+            .header(INBOX_SESSION_HEADER, SESSION_OK)
+            .json(&json!({ "thread_id": "game:7" }))
+            .send()
+            .await
+            .expect("mute session");
+        assert_no_set_cookie(&mute_sess_resp);
+        assert_eq!(mute_sess_resp.status(), StatusCode::OK);
+        assert_eq!(backend.muted_calls.lock().expect("lock").len(), 2);
+
+        // 5. POST /internal/topics/publish with Bearer
+        let pub_resp = client
+            .post(format!("{base}/internal/topics/publish"))
+            .bearer_auth(&user_jwt)
+            .json(&json!({ "topic_id": "town-square", "body": "hello world" }))
+            .send()
+            .await
+            .expect("publish");
+        assert_no_set_cookie(&pub_resp);
+        assert_eq!(pub_resp.status(), StatusCode::OK);
+        let pub_json: serde_json::Value = pub_resp.json().await.expect("json");
+        assert_eq!(pub_json["published"], true);
+
+        // 6. POST /a2a message/send with Bearer
+        let a2a_resp = client
+            .post(format!("{base}/a2a"))
+            .bearer_auth(&user_jwt)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "req-1",
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "role": "user",
+                        "parts": [{ "kind": "text", "text": "hello via a2a" }],
+                        "metadata": { "to_wallet": BOB_SOL }
+                    }
+                }
+            }))
+            .send()
+            .await
+            .expect("a2a");
+        assert_no_set_cookie(&a2a_resp);
+        assert_eq!(a2a_resp.status(), StatusCode::OK);
+        let a2a_json: serde_json::Value = a2a_resp.json().await.expect("json");
+        assert_eq!(a2a_json["id"], "req-1");
+        assert!(a2a_json["result"].is_object(), "{a2a_json}");
+    }
+
+    #[tokio::test]
+    async fn c1_conflicting_bearer_and_inbox_session_headers_rejected_with_400() {
+        let backend = FakeInboxBackend::new();
+        let base = spawn_router(test_router(backend)).await;
+        let client = reqwest::Client::new();
+        let user_jwt = crate::jwt::mint_user_jwt_for_test(
+            ALICE_SOL,
+            SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+
+        for (method, path, body) in [
+            ("GET", "/internal/inbox/list", None),
+            ("GET", "/internal/inbox/messages", None),
+            (
+                "POST",
+                "/internal/inbox/open",
+                Some(json!({ "message_ids": ["00000000000000000001_00000001"] })),
+            ),
+            (
+                "POST",
+                "/internal/inbox/ack-ids",
+                Some(json!({ "message_ids": ["00000000000000000001_00000001"] })),
+            ),
+            (
+                "POST",
+                "/internal/inbox/send",
+                Some(json!({ "to_wallet": BOB_SOL, "body": "hi" })),
+            ),
+            (
+                "POST",
+                "/internal/inbox/mute",
+                Some(json!({ "thread_id": "task:1" })),
+            ),
+            (
+                "POST",
+                "/internal/topics/publish",
+                Some(json!({ "topic_id": "town-square", "body": "hi" })),
+            ),
+            (
+                "POST",
+                "/a2a",
+                Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tasks/get",
+                    "params": { "id": "task:1" }
+                })),
+            ),
+        ] {
+            let req = if method == "GET" {
+                client.get(format!("{base}{path}"))
+            } else {
+                client
+                    .post(format!("{base}{path}"))
+                    .json(&body.expect("body"))
+            };
+            let resp = req
+                .bearer_auth(&user_jwt)
+                .header(INBOX_SESSION_HEADER, SESSION_OK)
+                .send()
+                .await
+                .expect("send");
+            assert_no_set_cookie(&resp);
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{method} {path}");
+            let err_json: serde_json::Value = resp.json().await.expect("json");
+            assert_eq!(
+                err_json["reason"], "conflicting_auth_headers",
+                "{method} {path}: {err_json}"
+            );
+        }
     }
 }

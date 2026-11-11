@@ -166,6 +166,11 @@ export interface SendReceipt {
   sends_remaining_today?: number;
 }
 
+export interface MuteReceipt {
+  thread_id: string;
+  muted: boolean;
+}
+
 /** Non-2xx responses and client-side boundary rejections. `status` is the
  *  HTTP status, or 0 for errors raised before any request was made. */
 export class InboxApiError extends Error {
@@ -189,6 +194,12 @@ export interface InboxClientOpts {
   storage?: StorageLike | null;
   /** fetch implementation — tests inject a mock. */
   fetchFn?: typeof fetch;
+  /** Unified Bearer token provider. When returning a token, sends
+   *  `Authorization: Bearer <token>` and NEVER sends `X-Inbox-Session` or
+   *  calls `/internal/inbox/session` (C1). */
+  getToken?: () => Promise<string | undefined> | string | undefined;
+  /** Optional hook invoked once before retrying a 401 in Bearer mode. */
+  onUnauthorized?: () => Promise<void> | void;
 }
 
 const DEFAULT_BASE_URL = "https://mcp.swarm.tips";
@@ -235,6 +246,8 @@ export class InboxClient {
   private readonly baseUrl: string;
   private readonly storage: StorageLike | null;
   private readonly fetchFn: typeof fetch;
+  private readonly getToken?: () => Promise<string | undefined> | string | undefined;
+  private readonly onUnauthorized?: () => Promise<void> | void;
   private session: InboxSession | null = null;
   private wallet: string | null = null;
   private signNonce: NonceSigner | null = null;
@@ -245,6 +258,8 @@ export class InboxClient {
     this.fetchFn =
       opts.fetchFn ??
       ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+    this.getToken = opts.getToken;
+    this.onUnauthorized = opts.onUnauthorized;
   }
 
   /** True when a cached session exists for `wallet` — opening the inbox will
@@ -404,6 +419,15 @@ export class InboxClient {
     });
   }
 
+  /** Mute or unmute a thread in the authenticated mailbox. */
+  async muteThread(threadId: string, muted = true): Promise<MuteReceipt> {
+    if (!threadId) throw new InboxApiError(0, "threadId is required");
+    return this.authed<MuteReceipt>("/internal/inbox/mute", {
+      method: "POST",
+      body: JSON.stringify({ thread_id: threadId, muted }),
+    });
+  }
+
   // -- topic boards ---------------------------------------------------------
 
   /** Read a page of a public topic board, newest first. OPEN — no session
@@ -475,12 +499,21 @@ export class InboxClient {
 
   /** Report a post for moderation. Session-gated. Idempotent per reporter —
    *  a repeat report returns `already_reported: true`. */
-  async reportPost(topicId: TopicId, postId: string): Promise<ReportReceipt> {
+  async reportPost(
+    topicId: TopicId,
+    postId: string,
+    reason?: string
+  ): Promise<ReportReceipt> {
     if (!topicId) throw new InboxApiError(0, "topicId is required");
     if (!postId) throw new InboxApiError(0, "postId is required");
+    const payload: Record<string, unknown> = {
+      topic_id: topicId,
+      post_id: postId,
+    };
+    if (reason !== undefined) payload["reason"] = reason;
     return this.authed<ReportReceipt>("/internal/topics/report", {
       method: "POST",
-      body: JSON.stringify({ topic_id: topicId, post_id: postId }),
+      body: JSON.stringify(payload),
     });
   }
 
@@ -539,6 +572,27 @@ export class InboxClient {
     path: string,
     init: { method: string; body?: string }
   ): Promise<T> {
+    if (this.getToken) {
+      const token = await this.getToken();
+      if (token) {
+        const res = await this.doBearerFetch(path, init, token);
+        if (res.status === 401 && this.onUnauthorized) {
+          await this.onUnauthorized();
+          const freshToken = await this.getToken();
+          if (freshToken && freshToken !== token) {
+            const retry = await this.doBearerFetch(path, init, freshToken);
+            return parseBody<T>(retry);
+          }
+        }
+        return parseBody<T>(res);
+      }
+      if (!this.session) {
+        throw new InboxApiError(
+          0,
+          "no Bearer token or inbox session — authenticate signer or call createSession first"
+        );
+      }
+    }
     const session = this.session;
     if (!session) {
       throw new InboxApiError(0, "no inbox session — call createSession first");
@@ -553,6 +607,19 @@ export class InboxClient {
       return parseBody<T>(retry);
     }
     return parseBody<T>(res);
+  }
+
+  private doBearerFetch(
+    path: string,
+    init: { method: string; body?: string },
+    token: string
+  ): Promise<Response> {
+    // C1 invariant: NEVER send X-Inbox-Session when authenticating with Authorization: Bearer.
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+    };
+    if (init.body !== undefined) headers["Content-Type"] = "application/json";
+    return this.fetchFn(`${this.baseUrl}${path}`, { ...init, headers });
   }
 
   private doFetch(

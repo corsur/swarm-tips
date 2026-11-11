@@ -1,4 +1,5 @@
 import { HttpClient, type FetchLike } from "../http.js";
+import { CLIENT_VERSION } from "../version.js";
 
 export interface AgentJob {
   source: string;
@@ -93,7 +94,9 @@ export class SwarmClient {
 
   constructor(options: SwarmClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
-    this.fetchImpl = (options.fetch ?? globalThis.fetch).bind(globalThis);
+    this.fetchImpl = options.fetch
+      ? (input, init) => options.fetch!(input, init)
+      : globalThis.fetch.bind(globalThis);
     this.http = new HttpClient(options);
   }
 
@@ -103,6 +106,10 @@ export class SwarmClient {
     if (query) params.set("query", query);
     params.set("limit", String(limit));
     return this.http.get(`/internal/mcp/search?${params.toString()}`);
+  }
+  async earningCandidates<T = unknown>(limit?: number): Promise<T> {
+    const qs = limit !== undefined ? `?limit=${encodeURIComponent(String(limit))}` : "";
+    return this.http.get<T>(`/internal/mcp/earning-candidates${qs}`);
   }
   reputation(wallet: string, network = "mainnet") {
     if (!wallet) return Promise.reject(new TypeError("wallet is required"));
@@ -116,7 +123,7 @@ export class SwarmClient {
   async toolCount(): Promise<number | null> {
     const headers = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
     try {
-      const init = await this.fetchImpl(`${this.baseUrl}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "swarm-client", version: "0.2.4" } } }) });
+      const init = await this.fetchImpl(`${this.baseUrl}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "swarm-client", version: CLIENT_VERSION } } }) });
       if (!init.ok) return null;
       const session = init.headers.get("mcp-session-id");
       await init.text();

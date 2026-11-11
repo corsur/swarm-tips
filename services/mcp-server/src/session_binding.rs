@@ -253,7 +253,7 @@ impl McpSessionBinding {
     /// The wallet this session has PROVEN, or `None` if the session is
     /// unbound, unproven, or the stored proof is for a different wallet
     /// than the current binding (stale proof after a re-bind race).
-    pub async fn resolve_verified(&self, session_id: &str) -> Option<String> {
+    pub async fn resolve_verified(&self, session_id: &str) -> Option<VerifiedWallet> {
         if session_id.is_empty() {
             return None;
         }
@@ -277,9 +277,50 @@ impl McpSessionBinding {
             .flatten();
         let doc = doc?;
         match doc.verified_wallet {
-            Some(v) if v == doc.wallet => Some(doc.wallet),
+            Some(v) if v == doc.wallet && !doc.wallet.is_empty() => {
+                Some(VerifiedWallet(doc.wallet))
+            }
             _ => None,
         }
+    }
+}
+
+/// Cryptographically proven wallet identity.
+///
+/// The inner string is private to `session_binding` (constructed only after
+/// Firestore session-proof verification, or via `#[cfg(test)] new_for_test`),
+/// so an unverified wallet string can never mint an internal service token
+/// (`jwt::mint_svc_token` / `GameApiProxy::internal_bearer`) at compile time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedWallet(String);
+
+impl VerifiedWallet {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Extract the CAIP-2 chain ID and chain-native address while preserving
+    /// compile-time proof that the extracted address belongs to this verified wallet.
+    pub fn to_xchain_native(&self) -> Option<(String, Self)> {
+        let (chain, native) = crate::xchain::resolve_xchain_wallet(&self.0)?;
+        Some((chain, Self(native)))
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(wallet: impl Into<String>) -> Self {
+        Self(wallet.into())
+    }
+}
+
+impl AsRef<str> for VerifiedWallet {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VerifiedWallet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 

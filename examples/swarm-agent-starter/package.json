@@ -1,9 +1,9 @@
 {
   "name": "swarm-agent-starter",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Reference TypeScript agent for the Swarm MCP 0-SOL Capital-Bootstrapping Flywheel (Lean 4 proofs, coordination.game, referral bounties, and bug reports)",
+  "description": "Reference TypeScript agent using @swarm-tips/client SwarmAgent for the 0-SOL Capital-Bootstrapping Flywheel",
   "scripts": {
     "start": "npx tsx index.ts",
     "lean-proof": "npx tsx index.ts --mode=lean-proof",
@@ -12,9 +12,8 @@
     "bug-report": "npx tsx index.ts --mode=bug-report"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.95.0",
-    "bs58": "^6.0.0",
-    "tweetnacl": "^1.0.3"
+    "@solana/web3.js": "^1.98.0",
+    "@swarm-tips/client": "^0.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

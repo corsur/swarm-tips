@@ -14,10 +14,13 @@ mod game_session;
 mod inbox;
 mod inbox_http;
 mod instructions;
+pub mod jwt;
 mod listings;
 #[cfg(test)]
 mod matrix_tests;
+pub mod openapi;
 mod proxy;
+mod rate_limit;
 mod reputation;
 mod reputation_lookup;
 mod request_errors;
@@ -216,6 +219,7 @@ pub async fn initialize_with_dependencies(
         session_binding: Arc::clone(&session_binding),
         inbox: Arc::clone(&inbox_state),
         inbox_seed_wallets: inbox_seed_wallets.clone(),
+        jwt_secret: game_jwt_secret.clone(),
     });
 
     let mut orchestrator =
@@ -592,6 +596,22 @@ fn build_router(
         .route("/", axum::routing::get(root_page))
         .route("/related-servers", axum::routing::get(related_servers_page))
         .route(
+            "/.well-known/openapi.json",
+            openapi::well_known_openapi_handler(),
+        )
+        .route(
+            "/.well-known/agent.json",
+            openapi::well_known_agent_card_handler(),
+        )
+        .route(
+            "/.well-known/agent-card.json",
+            openapi::well_known_agent_card_handler(),
+        )
+        .route(
+            "/.well-known/client.json",
+            openapi::well_known_client_manifest_handler(),
+        )
+        .route(
             "/internal/inbox/list",
             inbox_http::list_handler(Arc::clone(&inbox_http_state)),
         )
@@ -645,6 +665,10 @@ fn build_router(
             "/internal/inbox/send",
             inbox_http::send_handler(Arc::clone(&inbox_http_state)),
         )
+        .route(
+            "/internal/inbox/mute",
+            inbox_http::mute_handler(Arc::clone(&inbox_http_state)),
+        )
         // W4: webhook registration/management + the agent-webhook-delivery
         // workflow's outcome callback.
         .route(
@@ -686,11 +710,14 @@ fn build_router(
                 },
             )
             .options(|| async {
-                // CORS preflight for browser requests from shillbot.org
+                // CORS preflight for browser and CLI requests
                 axum::http::Response::builder()
                     .header("Access-Control-Allow-Origin", "*")
                     .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "content-type, x-api-key")
+                    .header(
+                        "Access-Control-Allow-Headers",
+                        "content-type, authorization, x-api-key",
+                    )
                     .header("Access-Control-Max-Age", "3600")
                     .body(axum::body::Body::empty())
                     .unwrap()
@@ -766,8 +793,13 @@ fn build_router(
     // streamable-http transport at /mcp manages its own framing; layering
     // a body limit before nest_service excludes it from the cap.
     let routed_services = mcp_services.clone();
+    let http_rate_limiters = rate_limit::HttpRateLimiters::default();
     router
         .layer(axum::extract::DefaultBodyLimit::max(1_048_576))
+        .layer(axum::middleware::from_fn_with_state(
+            http_rate_limiters,
+            rate_limit::enforce_http_rate_limit,
+        ))
         .route(
             "/mcp",
             axum::routing::any(move |req: axum::extract::Request| {
@@ -944,6 +976,15 @@ fn build_readiness_handler(
     }
 }
 
+const BUILD_VERIFY_CORS: [(&str, &str); 3] = [
+    ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    (
+        "Access-Control-Allow-Headers",
+        "content-type, authorization, x-api-key",
+    ),
+];
+
 /// Readiness probe for `/internal/build-verify-tx` (GET): reports whether the
 /// first-party `oracle_authority` keypair is loaded and what its pubkey is.
 async fn build_verify_tx_ready_handler(state: BuildVerifyState) -> axum::response::Response {
@@ -951,11 +992,10 @@ async fn build_verify_tx_ready_handler(state: BuildVerifyState) -> axum::respons
     use axum::response::IntoResponse;
     use solana_sdk::signer::Signer;
 
-    let cors_headers = [("Access-Control-Allow-Origin", "*")];
     match state.oracle_keypair.as_ref() {
         Some(kp) => (
             StatusCode::OK,
-            cors_headers,
+            BUILD_VERIFY_CORS,
             axum::Json(serde_json::json!({
                 "ready": true,
                 "mode": "oracle_authority_cosign",
@@ -965,7 +1005,7 @@ async fn build_verify_tx_ready_handler(state: BuildVerifyState) -> axum::respons
             .into_response(),
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
-            cors_headers,
+            BUILD_VERIFY_CORS,
             axum::Json(serde_json::json!({
                 "ready": false,
                 "mode": "unconfigured",
@@ -976,55 +1016,162 @@ async fn build_verify_tx_ready_handler(state: BuildVerifyState) -> axum::respons
     }
 }
 
+fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+    let raw = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .trim();
+    let (scheme, token) = raw.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = token.trim();
+    (!token.is_empty()).then_some(token)
+}
+
 /// HTTP handler for `/internal/build-verify-tx`.
 ///
-/// Builds and partially co-signs the `verify_task` transaction using
-/// `oracle_authority` after authenticating `(task_pda, score, hash)` against
-/// `shillbot-api`. Returns `503 SERVICE_UNAVAILABLE` when `oracle_keypair` is
-/// not configured.
+/// Requires `Authorization: Bearer <user_jwt>` (`aud: "mcp"`, `typ: "user"`),
+/// enforces `jwt.wallet == payer`, forwards the caller's Bearer token to
+/// `shillbot-api` (`POST /tasks/{id}/build-verify`), co-signs the `verify_task`
+/// transaction with `oracle_authority`, validates the resulting transaction
+/// with `shillbot_chain::validate_base64`, and returns
+/// `{ transaction, task_pda, transaction_intent }`.
 async fn build_verify_tx_handler(
-    _headers: axum::http::HeaderMap,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
     state: BuildVerifyState,
 ) -> axum::response::Response {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
-    let get = |key: &str| body[key].as_str().unwrap_or("").to_string();
-    let task_id = get("task_id");
-    let payer = get("payer");
-    let score_u64 = body["score"].as_u64().unwrap_or(0);
-    let hash = get("hash");
-    let task_pda = get("task_pda");
+    let Some(token) = extract_bearer_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            BUILD_VERIFY_CORS,
+            "missing or invalid Authorization: Bearer header",
+        )
+            .into_response();
+    };
+    let Some(jwt_secret) = state.jwt_secret.as_deref() else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            BUILD_VERIFY_CORS,
+            "JWT verification unavailable",
+        )
+            .into_response();
+    };
+    let verified_wallet = match crate::jwt::verify_user_jwt(token, jwt_secret, "mcp") {
+        Ok(w) => w,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                BUILD_VERIFY_CORS,
+                "invalid or expired user Bearer token",
+            )
+                .into_response();
+        }
+    };
 
-    if task_id.is_empty() || payer.is_empty() || task_pda.is_empty() {
-        return (StatusCode::BAD_REQUEST, "missing required fields").into_response();
+    let get_trimmed = |key: &str| {
+        body.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    let task_id = get_trimmed("task_id");
+    let payer = get_trimmed("payer");
+    if task_id.is_empty() || payer.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            BUILD_VERIFY_CORS,
+            "missing required fields: task_id and payer",
+        )
+            .into_response();
     }
 
-    let network_str = body["network"].as_str().unwrap_or("mainnet");
-    let rpc_url = if network_str == "devnet" {
-        state.rpc_url_devnet.as_str()
-    } else {
-        state.rpc_url_mainnet.as_str()
+    if !crate::jwt::wallets_match(&verified_wallet, &payer) {
+        return (
+            StatusCode::FORBIDDEN,
+            BUILD_VERIFY_CORS,
+            "authenticated wallet does not match payer",
+        )
+            .into_response();
+    }
+
+    let opt_task_pda = match body.get("task_pda") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => match v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => Some(s.to_string()),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    BUILD_VERIFY_CORS,
+                    "task_pda must be a non-empty string when provided",
+                )
+                    .into_response();
+            }
+        },
     };
-    let cors_headers = [("Access-Control-Allow-Origin", "*")];
+    let opt_score = match body.get("score") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => match v.as_u64() {
+            Some(s) => Some(s),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    BUILD_VERIFY_CORS,
+                    "score must be an unsigned integer when provided",
+                )
+                    .into_response();
+            }
+        },
+    };
+    let opt_hash = match body.get("hash") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => match v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => Some(s.to_string()),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    BUILD_VERIFY_CORS,
+                    "hash must be a non-empty hex string when provided",
+                )
+                    .into_response();
+            }
+        },
+    };
+
+    let (validation_network, rpc_url, net_opt) = match body.get("network") {
+        None | Some(serde_json::Value::Null) => ("mainnet", state.rpc_url_mainnet.as_str(), None),
+        Some(v) => match v.as_str().map(str::trim) {
+            Some("" | "mainnet" | "mainnet-beta") => {
+                ("mainnet", state.rpc_url_mainnet.as_str(), None)
+            }
+            Some("devnet") => ("devnet", state.rpc_url_devnet.as_str(), Some("devnet")),
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    BUILD_VERIFY_CORS,
+                    "network must be 'mainnet' or 'devnet'",
+                )
+                    .into_response();
+            }
+        },
+    };
 
     let Some(oracle_kp) = state.oracle_keypair.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            cors_headers,
+            BUILD_VERIFY_CORS,
             "oracle signer not configured",
         )
             .into_response();
     };
 
-    let client = state
-        .jwt_secret
-        .as_deref()
-        .and_then(|sec| game_proxy::mint_internal_token(&payer, sec))
-        .map(|tok| state.orchestrator.authenticated(tok))
-        .unwrap_or_else(|| state.orchestrator.clone());
-    let net_opt = (network_str == "devnet").then_some("devnet");
+    let client = state.orchestrator.authenticated(token.to_owned());
     let vdata = match client
         .get_verification_data(&task_id, &payer, net_opt)
         .await
@@ -1039,35 +1186,51 @@ async fn build_verify_tx_handler(
             );
             return (
                 StatusCode::BAD_GATEWAY,
-                cors_headers,
+                BUILD_VERIFY_CORS,
                 "failed to validate verification data against shillbot-api",
             )
                 .into_response();
         }
     };
-    if vdata.task_pda != task_pda {
-        return (
-            StatusCode::BAD_REQUEST,
-            cors_headers,
-            "task_pda does not match authoritative task state",
-        )
-            .into_response();
+
+    if let Some(ref caller_task_pda) = opt_task_pda {
+        if vdata.task_pda != *caller_task_pda {
+            return (
+                StatusCode::BAD_REQUEST,
+                BUILD_VERIFY_CORS,
+                "task_pda does not match authoritative task state",
+            )
+                .into_response();
+        }
     }
-    if vdata.composite_score != score_u64 || !vdata.verification_hash.eq_ignore_ascii_case(&hash) {
-        return (
-            StatusCode::BAD_REQUEST,
-            cors_headers,
-            "score or hash does not match authoritative verification data",
-        )
-            .into_response();
+    if let Some(caller_score) = opt_score {
+        if vdata.composite_score != caller_score {
+            return (
+                StatusCode::BAD_REQUEST,
+                BUILD_VERIFY_CORS,
+                "score or hash does not match authoritative verification data",
+            )
+                .into_response();
+        }
     }
+    if let Some(ref caller_hash) = opt_hash {
+        if !vdata.verification_hash.eq_ignore_ascii_case(caller_hash) {
+            return (
+                StatusCode::BAD_REQUEST,
+                BUILD_VERIFY_CORS,
+                "score or hash does not match authoritative verification data",
+            )
+                .into_response();
+        }
+    }
+
     let (verified_task_pda, verified_score, verified_hash) = (
         vdata.task_pda,
         vdata.composite_score,
         vdata.verification_hash,
     );
 
-    match solana_tx::build_co_signed_verify_tx(
+    let tx = match solana_tx::build_co_signed_verify_tx(
         &state.rpc_client,
         rpc_url,
         &payer,
@@ -1078,25 +1241,81 @@ async fn build_verify_tx_handler(
     )
     .await
     {
-        Ok(tx) => (
-            cors_headers,
-            axum::Json(serde_json::json!({ "transaction": tx })),
-        )
-            .into_response(),
+        Ok(tx) => tx,
         Err(e) => {
             tracing::error!(
                 service = "mcp-server",
                 error = %e,
                 "co-signed build_verify_tx failed"
             );
-            (
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                cors_headers,
+                BUILD_VERIFY_CORS,
                 "transaction builder failed",
             )
-                .into_response()
+                .into_response();
         }
-    }
+    };
+
+    let fee_payer = match shillbot_chain::fee_payer_base64(&tx) {
+        Ok(fp) => fp,
+        Err(e) => {
+            tracing::error!(
+                service = "mcp-server",
+                error = %e,
+                "build-verify-tx: failed to read fee payer from built transaction"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                BUILD_VERIFY_CORS,
+                "transaction validation failed",
+            )
+                .into_response();
+        }
+    };
+    let sponsor = (fee_payer != payer).then_some(fee_payer);
+    let expected_oracle = Some(solana_sdk::signer::Signer::pubkey(oracle_kp.as_ref()).to_string());
+    let validation_req = shillbot_chain::ValidationRequest {
+        action: shillbot_chain::Action::Verify,
+        network: validation_network.to_string(),
+        wallet: payer.clone(),
+        task_pda: verified_task_pda.clone(),
+        escrow_lamports: None,
+        content_id: None,
+        sponsor,
+        expected_accounts: None,
+        expected_data: None,
+        allowed_payout_to: None,
+        require_payout_routing: false,
+        switchboard_feed: expected_oracle,
+    };
+    let transaction_intent = match shillbot_chain::validate_base64(&tx, &validation_req) {
+        Ok(intent) => intent,
+        Err(e) => {
+            tracing::error!(
+                service = "mcp-server",
+                error = %e,
+                "build-verify-tx: built transaction failed local shillbot_chain validation"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                BUILD_VERIFY_CORS,
+                "transaction validation failed",
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        BUILD_VERIFY_CORS,
+        axum::Json(serde_json::json!({
+            "transaction": tx,
+            "task_pda": verified_task_pda,
+            "transaction_intent": transaction_intent,
+        })),
+    )
+        .into_response()
 }
 
 static BUILDER_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
@@ -1153,6 +1372,27 @@ pub(crate) async fn bounded_builder_output(
 
 #[cfg(test)]
 mod readiness_tests {
+    use solana_sdk::signer::Signer;
+
+    const TEST_JWT_SECRET: &str = "build-verify-test-secret-0123456789abcdef";
+
+    fn future_exp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+            .saturating_add(300)
+    }
+
+    fn bearer_headers(token: &str) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        h
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn transaction_builder_output_and_lifetime_are_bounded() {
@@ -1200,28 +1440,214 @@ mod readiness_tests {
     }
 
     #[tokio::test]
+    async fn build_verify_tx_handler_rejects_missing_or_svc_auth_with_401() {
+        let payer_kp = solana_sdk::signature::Keypair::new();
+        let payer = payer_kp.pubkey().to_string();
+        let state = super::BuildVerifyState {
+            oracle_keypair: Some(std::sync::Arc::new(solana_sdk::signature::Keypair::new())),
+            orchestrator: crate::OrchestratorProxy::new(
+                "http://127.0.0.1:1".to_string(),
+                "http://127.0.0.1:1".to_string(),
+            ),
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            rpc_client: reqwest::Client::new(),
+            rpc_url_mainnet: "http://127.0.0.1:1".to_string(),
+            rpc_url_devnet: "http://127.0.0.1:1".to_string(),
+        };
+        let body = serde_json::json!({ "task_id": "t1", "payer": payer });
+
+        // 1. Missing Authorization header -> 401 + CORS
+        let resp = super::build_verify_tx_handler(
+            axum::http::HeaderMap::new(),
+            axum::Json(body.clone()),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers()["access-control-allow-origin"],
+            axum::http::HeaderValue::from_static("*")
+        );
+
+        // 2. Forged/internal svc token -> 401 (C7 separation)
+        let verified = crate::session_binding::VerifiedWallet::new_for_test(&payer);
+        let svc_token = crate::jwt::mint_svc_token(&verified, TEST_JWT_SECRET).unwrap();
+        let resp_svc =
+            super::build_verify_tx_handler(bearer_headers(&svc_token), axum::Json(body), state)
+                .await;
+        assert_eq!(resp_svc.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn build_verify_tx_handler_rejects_mismatched_payer_with_403() {
+        let alice = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let bob = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let state = super::BuildVerifyState {
+            oracle_keypair: Some(std::sync::Arc::new(solana_sdk::signature::Keypair::new())),
+            orchestrator: crate::OrchestratorProxy::new(
+                "http://127.0.0.1:1".to_string(),
+                "http://127.0.0.1:1".to_string(),
+            ),
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            rpc_client: reqwest::Client::new(),
+            rpc_url_mainnet: "http://127.0.0.1:1".to_string(),
+            rpc_url_devnet: "http://127.0.0.1:1".to_string(),
+        };
+        let alice_jwt = crate::jwt::mint_user_jwt_for_test(
+            &alice,
+            TEST_JWT_SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+        let resp = super::build_verify_tx_handler(
+            bearer_headers(&alice_jwt),
+            axum::Json(serde_json::json!({ "task_id": "t1", "payer": bob })),
+            state,
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers()["access-control-allow-origin"],
+            axum::http::HeaderValue::from_static("*")
+        );
+    }
+
+    #[tokio::test]
     async fn build_verify_tx_handler_rejects_when_oracle_keypair_unconfigured() {
+        let payer = "11111111111111111111111111111111";
         let state = super::BuildVerifyState {
             oracle_keypair: None,
             orchestrator: crate::OrchestratorProxy::new(
                 "http://127.0.0.1:1".to_string(),
                 "http://127.0.0.1:1".to_string(),
             ),
-            jwt_secret: None,
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
             rpc_client: reqwest::Client::new(),
             rpc_url_mainnet: "http://127.0.0.1:1".to_string(),
             rpc_url_devnet: "http://127.0.0.1:1".to_string(),
         };
+        let user_jwt = crate::jwt::mint_user_jwt_for_test(
+            payer,
+            TEST_JWT_SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
         let body = serde_json::json!({
             "task_id": "t1",
-            "payer": "11111111111111111111111111111111",
-            "task_pda": "11111111111111111111111111111111",
-            "score": 80,
-            "hash": "00".repeat(32),
+            "payer": payer,
         });
         let resp =
-            super::build_verify_tx_handler(axum::http::HeaderMap::new(), axum::Json(body), state)
+            super::build_verify_tx_handler(bearer_headers(&user_jwt), axum::Json(body), state)
                 .await;
         assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn build_verify_tx_handler_one_hop_forwards_caller_bearer_and_returns_intent() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let orchestrator_mock = MockServer::start().await;
+        let rpc_mock = MockServer::start().await;
+
+        let payer_kp = solana_sdk::signature::Keypair::new();
+        let payer = payer_kp.pubkey().to_string();
+        let oracle_kp = std::sync::Arc::new(solana_sdk::signature::Keypair::new());
+        let task_pda = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let global_state = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let switchboard_feed = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let verification_hash = "ab".repeat(32);
+        let user_jwt = crate::jwt::mint_user_jwt_for_test(
+            &payer,
+            TEST_JWT_SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+
+        // Orchestrator MUST receive the caller's exact Bearer JWT (no minted internal token).
+        Mock::given(method("POST"))
+            .and(path("/tasks/task-42/build-verify"))
+            .and(header("authorization", format!("Bearer {user_jwt}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "task-42",
+                "task_pda": task_pda,
+                "composite_score": 850_000u64,
+                "verification_hash": verification_hash,
+                "global_state": global_state,
+                "switchboard_feed": switchboard_feed,
+            })))
+            .expect(2)
+            .mount(&orchestrator_mock)
+            .await;
+
+        // Solana RPC returns a deterministic blockhash.
+        let recent_bh = solana_sdk::hash::Hash::new_unique().to_string();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "context": { "slot": 1 },
+                    "value": {
+                        "blockhash": recent_bh,
+                        "lastValidBlockHeight": 100
+                    }
+                }
+            })))
+            .mount(&rpc_mock)
+            .await;
+
+        let state = super::BuildVerifyState {
+            oracle_keypair: Some(oracle_kp),
+            orchestrator: crate::OrchestratorProxy::new(
+                orchestrator_mock.uri(),
+                orchestrator_mock.uri(),
+            ),
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            rpc_client: reqwest::Client::new(),
+            rpc_url_mainnet: rpc_mock.uri(),
+            rpc_url_devnet: rpc_mock.uri(),
+        };
+
+        // 1-hop body: omit task_pda, score, and hash!
+        let resp = super::build_verify_tx_handler(
+            bearer_headers(&user_jwt),
+            axum::Json(serde_json::json!({
+                "task_id": "task-42",
+                "payer": payer,
+            })),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            resp.headers()["access-control-allow-origin"],
+            axum::http::HeaderValue::from_static("*")
+        );
+        assert_eq!(
+            resp.headers()["access-control-allow-headers"],
+            axum::http::HeaderValue::from_static("content-type, authorization, x-api-key")
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["transaction"].as_str().is_some_and(|s| !s.is_empty()));
+        assert_eq!(json["task_pda"], task_pda);
+        assert_eq!(json["transaction_intent"]["action"], "verify");
+        assert_eq!(json["transaction_intent"]["fee_payer"], payer);
+
+        // Optional score mismatch -> 400 Bad Request
+        let bad_resp = super::build_verify_tx_handler(
+            bearer_headers(&user_jwt),
+            axum::Json(serde_json::json!({
+                "task_id": "task-42",
+                "payer": payer,
+                "score": 999_999u64,
+            })),
+            state,
+        )
+        .await;
+        assert_eq!(bad_resp.status(), axum::http::StatusCode::BAD_REQUEST);
     }
 }

@@ -4,12 +4,15 @@ import {
   PublicKey,
   VersionedTransaction,
 } from "@solana/web3.js";
+import { createSwarmAgent, fromSolanaKeypair } from "@swarm-tips/client";
 import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { createHash } from "crypto";
+
 const RPC = "https://api.mainnet-beta.solana.com",
-  MCP = "https://mcp.swarm.tips";
+  MCP = "https://mcp.swarm.tips",
+  GAME_API = "https://api.coordination.game";
 const TASK =
   "3534bc4d-644e-4b95-b520-9a038261ce18:b9216590-eda0-4400-a1fc-a24ab836acb3";
 const FEED = "En9CNFh7p1VDJ5CAvRiKZbTFL8dH5u9s2shC5TS4T6qQ",
@@ -22,6 +25,13 @@ const kp = Keypair.fromSecretKey(
 );
 (async () => {
   const conn = new Connection(RPC, "confirmed");
+  const agent = createSwarmAgent({
+    signer: fromSolanaKeypair(kp),
+    rpcUrl: RPC,
+    mcpUrl: MCP,
+    gameUrl: GAME_API,
+  });
+  const token = await agent.auth.authenticate();
   const before = (await conn.getAccountInfo(new PublicKey(PDA)))!.data[80];
   console.log("task state before:", before, "(2=Submitted,3=Verified)");
   const score = 1000000;
@@ -43,7 +53,10 @@ const kp = Keypair.fromSecretKey(
   };
   const r = await fetch(`${MCP}/internal/build-verify-tx`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify(body),
   });
   if (!r.ok) {

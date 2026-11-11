@@ -2814,7 +2814,7 @@ impl SwarmTipsMcp {
             return Err(invalid_input("session_key (0x address) is required"));
         }
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound).ok_or_else(|| {
+        let (chain, address) = bound.to_xchain_native().ok_or_else(|| {
             invalid_input("registered wallet is not a cross-chain wallet (Solana base58 or EVM 0x)")
         })?;
         let tournament_id = args
@@ -2841,7 +2841,7 @@ impl SwarmTipsMcp {
             "status": resp.status,
             "match": resp.match_payload,
             "chain": chain,
-            "wallet": address,
+            "wallet": address.as_str(),
             // Secret handle: pass it to xchain_match_status so you poll by an
             // unguessable capability, not your public wallet (which anyone could
             // poll to read your match).
@@ -2895,7 +2895,8 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let (chain, address) = bound
+            .to_xchain_native()
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         if !chain.starts_with("eip155:") {
             return Err(invalid_input(
@@ -2926,7 +2927,7 @@ impl SwarmTipsMcp {
             "status": resp.status,
             "match": resp.match_payload,
             "chain": chain,
-            "wallet": address,
+            "wallet": address.as_str(),
             "next": "If 'waiting', poll game_evm_match_status. If 'matched', sign + submit your call from the match payload (create_call if you are the creator, join_call if the joiner), then commit/reveal on-chain (notify game_evm_committed after committing).",
         })))
     }
@@ -2940,8 +2941,9 @@ impl SwarmTipsMcp {
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = bound
+            .to_xchain_native()
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
 
         let resp = self
@@ -2955,7 +2957,7 @@ impl SwarmTipsMcp {
             "status": resp.status,
             "match": resp.match_payload,
             "chain": chain,
-            "wallet": address,
+            "wallet": address.as_str(),
         })))
     }
 
@@ -2970,7 +2972,7 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
 
         let resp = self
@@ -3001,7 +3003,7 @@ impl SwarmTipsMcp {
             _ => return Err(invalid_input("guess must be 'same' or 'different'")),
         };
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         if !chain.starts_with("eip155:") {
             return Err(invalid_input(
@@ -3054,7 +3056,7 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         if !chain.starts_with("eip155:") {
             return Err(invalid_input(
@@ -3211,7 +3213,7 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         // The one path where an AGENT-built value enters the protocol — reject
         // malformed hex here instead of surfacing a relay error string.
@@ -3262,7 +3264,7 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         let resp = self
             .state
@@ -3289,7 +3291,7 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         require_hex32(
             &args.preimage,
@@ -3795,7 +3797,7 @@ impl SwarmTipsMcp {
         let session = session_id_from_parts(Some(parts))
             .ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
         match self.state.session_binding.resolve_verified(&session).await {
-            Some(wallet) => crate::inbox::mailbox_address(&wallet)
+            Some(wallet) => crate::inbox::mailbox_address(wallet.as_str())
                 .map_err(|_| invalid_input("invalid bound mailbox")),
             None => Ok(crate::inbox::synthetic_session_sender(&session)),
         }
@@ -3911,7 +3913,7 @@ impl SwarmTipsMcp {
             .resolve_verified(&session_id)
             .await
         {
-            Some(wallet) => crate::inbox::mailbox_address(&wallet).map_err(|e| {
+            Some(wallet) => crate::inbox::mailbox_address(wallet.as_str()).map_err(|e| {
                 invalid_input(&format!("bound wallet is not mailbox-addressable: {e}"))
             })?,
             None => crate::inbox::synthetic_session_sender(&session_id),
@@ -4332,18 +4334,18 @@ const LEGACY_TX_CLIENT_MANIFEST_URI: &str =
     "https://swarm.tips/.well-known/transaction-client.json";
 const TX_INTENT_SCHEMA_URI: &str = "https://swarm.tips/schemas/shillbot-transaction-intent-v1.json";
 const TX_CLIENT_GUIDE_URI: &str = "https://swarm.tips/docs/mcp/local-transactions";
-const CLIENT_MANIFEST: &str = r#"{
+pub(crate) const CLIENT_MANIFEST: &str = r#"{
   "schema": "swarm.client-manifest/v1",
   "name": "@swarm-tips/client",
-  "version": "0.2.4",
-  "registry": "https://www.npmjs.com/package/@swarm-tips/client/v/0.2.4",
-  "tarball": "https://registry.npmjs.org/@swarm-tips/client/-/client-0.2.4.tgz",
+  "version": "0.3.0",
+  "registry": "https://www.npmjs.com/package/@swarm-tips/client/v/0.3.0",
+  "tarball": "https://registry.npmjs.org/@swarm-tips/client/-/client-0.3.0.tgz",
   "integrity": "sha512-ZLDpiEaI2GgXSu9LllenRjSjS8r8BiXDBhXnss9qlYE4Ii/E4QJZEcm2lOcHrRqc7wiSTqrOzkPvFcZV+CSSKw==",
   "shasum": "99bf2a032fd74e2e00f8e7de7db5429a2c9c8767",
-  "provenance": "https://registry.npmjs.org/-/npm/v1/attestations/@swarm-tips%2fclient@0.2.4",
+  "provenance": "https://registry.npmjs.org/-/npm/v1/attestations/@swarm-tips%2fclient@0.3.0",
   "source_commit": "2f09b355c1af7d5981020179ab1525f59ce8aaf2",
   "source": "https://github.com/corsur/swarm-tips/tree/2f09b355c1af7d5981020179ab1525f59ce8aaf2/sdk/client",
-  "sbom": "https://unpkg.com/@swarm-tips/client@0.2.4/SBOM.spdx.json",
+  "sbom": "https://unpkg.com/@swarm-tips/client@0.3.0/SBOM.spdx.json",
   "subpaths": {
     "shillbot": "@swarm-tips/client/shillbot",
     "shillbot_api": "@swarm-tips/client/shillbot/api",
@@ -4578,11 +4580,16 @@ impl SwarmTipsMcp {
                     "in-game actions require proven wallet ownership: submit your deposit_stake transaction via game_submit_tx first, or verify your wallet via register_wallet {pubkey, nonce, signature} (or agent_verify_wallet)",
                 )
             })?;
-        if !self.state.game_sessions.is_registered(&wallet).await {
+        if !self
+            .state
+            .game_sessions
+            .is_registered(wallet.as_str())
+            .await
+        {
             if let Err(e) = self
                 .state
                 .game_sessions
-                .register_wallet_with_verification(&wallet, true)
+                .register_wallet_with_verification(wallet.as_str(), true)
                 .await
             {
                 tracing::warn!(
@@ -4593,7 +4600,7 @@ impl SwarmTipsMcp {
                 );
             }
         }
-        Ok(wallet)
+        Ok(wallet.as_str().to_owned())
     }
 
     /// Resolve the session-bound wallet without hydrating a Solana game
@@ -4622,7 +4629,7 @@ impl SwarmTipsMcp {
     async fn require_verified_bound_wallet(
         &self,
         parts: Option<&http::request::Parts>,
-    ) -> Result<String, McpError> {
+    ) -> Result<crate::session_binding::VerifiedWallet, McpError> {
         let session_id =
             session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
         self.state
@@ -4664,7 +4671,7 @@ impl SwarmTipsMcp {
             .resolve_verified(&session_id)
             .await
         {
-            Some(wallet) => crate::inbox::mailbox_address(&wallet).map_err(|e| {
+            Some(wallet) => crate::inbox::mailbox_address(wallet.as_str()).map_err(|e| {
                 invalid_input(&format!("bound wallet is not mailbox-addressable: {e}"))
             }),
             None => {
@@ -4697,7 +4704,7 @@ impl SwarmTipsMcp {
             .session_binding
             .resolve_verified(&session_id)
             .await?;
-        crate::inbox::mailbox_address(&wallet).ok()
+        crate::inbox::mailbox_address(wallet.as_str()).ok()
     }
 
     /// Rejection for an UNPROVEN session addressing a NON-support recipient:
@@ -6105,7 +6112,7 @@ fn shillbot_transaction_result(
     value["risk"] = serde_json::Value::String(inspection.risk.clone());
     value["local_client"] = serde_json::json!({
         "package": "@swarm-tips/client",
-        "version": "0.2.4",
+        "version": "0.3.0",
         "import": "@swarm-tips/client/shillbot",
         "resource_uri": CLIENT_MANIFEST_URI,
     });
@@ -6164,7 +6171,7 @@ mod structured_result_tests {
         );
         let manifest: serde_json::Value = serde_json::from_str(CLIENT_MANIFEST).unwrap();
         assert_eq!(manifest["name"], "@swarm-tips/client");
-        assert_eq!(manifest["version"], "0.2.4");
+        assert_eq!(manifest["version"], "0.3.0");
         assert!(manifest["integrity"]
             .as_str()
             .unwrap()
@@ -6184,7 +6191,7 @@ mod structured_result_tests {
         assert!(manifest["provenance"]
             .as_str()
             .unwrap()
-            .contains("@swarm-tips%2fclient@0.2.4"));
+            .contains("@swarm-tips%2fclient@0.3.0"));
         assert_eq!(
             manifest["subpaths"]["shillbot"],
             "@swarm-tips/client/shillbot"
