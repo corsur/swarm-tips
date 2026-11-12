@@ -7,8 +7,8 @@
 //!   `mcp-server` OpenAPI 3.1 document generated from Rust types below.
 //! - `GET /.well-known/agent.json` & `GET /.well-known/agent-card.json` —
 //!   machine-readable Swarm / A2A agent card advertising stateless REST,
-//!   `@swarm-tips/client@0.3.0`, A2A `/a2a`, and Streamable HTTP MCP fallback.
-//! - `GET /.well-known/client.json` — pinned `@swarm-tips/client@0.3.0` manifest.
+//!   `@swarm-tips/client@0.4.2`, A2A `/a2a`, and Streamable HTTP MCP fallback.
+//! - `GET /.well-known/client.json` — pinned `@swarm-tips/client@0.4.2` manifest.
 
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -766,7 +766,7 @@ impl Modify for SwarmSecurityAddon {
     info(
         title = "Swarm Tips Unified Agent HTTP API",
         version = "0.3.0",
-        description = "Stateless HTTP REST + A2A surface for Swarm Tips (`mcp.swarm.tips`). Pairs with `api.shillbot.org` and `api.coordination.game` for complete CLI/SDK parity (`@swarm-tips/client@0.3.0`)."
+        description = "Stateless HTTP REST + A2A surface for Swarm Tips (`mcp.swarm.tips`). Pairs with `api.shillbot.org` and `api.coordination.game` for complete CLI/SDK parity (`@swarm-tips/client@0.4.2`)."
     ),
     servers(
         (url = "https://mcp.swarm.tips", description = "Primary Swarm Tips HTTP & MCP surface")
@@ -884,7 +884,7 @@ pub fn agent_card_json() -> serde_json::Value {
         "preferredTransport": "cli-or-rest",
         "cli": {
             "package": "@swarm-tips/client",
-            "version": "0.3.0",
+            "version": "0.4.2",
             "invoke": "npx -y @swarm-tips/client <command> --json"
         },
         "mcp": {
@@ -1072,6 +1072,6 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(client_manifest["version"], "0.3.0");
+        assert_eq!(client_manifest["version"], "0.4.2");
     }
 }
