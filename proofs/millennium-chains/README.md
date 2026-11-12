@@ -1,0 +1,10 @@
+# Millennium Proof Chains (`proofs/millennium-chains/`)
+
+Zero-`sorry` Lean 4 master reduction and synthesis proofs verifying that our intermediate `chain-*` bounties in `tests/fixtures/lean/catalog/open/` compose to imply (or follow strictly from) our live Mainnet Millennium Prize bounties (`lean_policy: 3`, Mathlib `v4.30.0`).
+
+| File                                 | Chain                                                            | Verified Kernel Theorem (`0 sorry`)                                                                                                                                                |
+| ------------------------------------ | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rh_lagarias_chain.lean`             | **Chain A: RH — Lagarias Superabundant Decomposition**           | `RungA1 → RungA2 → RungA3 → RungA4 → MillenniumRHLagarias` (`∀ n ≥ 1, σ(n) ≤ H_n + exp(H_n)log(H_n)`) via strong induction + superabundant minimal-counterexample descent          |
+| `bsd_congruent_chain.lean`           | **Chain B: BSD — Congruent Number 2-Descent & Semiprime Ladder** | `(RungB1 → RungB2 → ¬∃ x y : ℚ, y ≠ 0 ∧ y² = x³ - x)` and `(RungB3 → RungB4 → HigherSquarefreeSlice → MillenniumBSDCongruent)`                                                     |
+| `rh_analytic_chain.lean`             | **Chain C: RH Analytic — Mertens Exponent Hierarchy**            | `(MillenniumMertensQuasiRH → RungC4) ∧ (RungC4 → RungC3)` (`θ = 3/4 ⟹ θ = 99/100 ⟹ M(N) = o(N)`)                                                                                   |
+| `pnp_circuit_foundations_chain.lean` | **Track D: Boolean Circuit Lower Bound Foundations**             | Sharpness of `RungD1` (`s ≥ 2n - 1` at `n = 2` via explicit `OR + NAND + AND` circuit) and super-linear consequence of `RungD2` (Shannon counting beats `k · n` for every `k ≥ 1`) |

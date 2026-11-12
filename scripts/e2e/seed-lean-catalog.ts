@@ -185,14 +185,90 @@ export const LADDER_TASKS = new Set([
   "tier2-ns-dyadic-energy-conservation",
 ]);
 
+export interface ChainTaskMeta {
+  escrowLamports: number;
+  cta: string;
+}
+
+export const CHAIN_TASK_CONFIG: Record<string, ChainTaskMeta> = {
+  "chain-rh-lagarias-1-superabundant-even": {
+    escrowLamports: 10_000_000,
+    cta: "Chain A [Rung 1/4 -> RH Lagarias]: Prove superabundant n >= 2 is even + base n = 1",
+  },
+  "chain-rh-lagarias-2-normalized-monotonicity": {
+    escrowLamports: 20_000_000,
+    cta: "Chain A [Rung 2/4 -> RH Lagarias]: Prove normalized Lagarias RHS g(k) monotonicity",
+  },
+  "chain-rh-lagarias-3-odd-and-squarefree": {
+    escrowLamports: 35_000_000,
+    cta: "Chain A [Rung 3/4 -> RH Lagarias]: Prove Lagarias RH bound for all odd & squarefree n",
+  },
+  "chain-rh-lagarias-4-even-superabundant-core": {
+    escrowLamports: 60_000_000,
+    cta: "Chain A [Rung 4/4 -> RH Lagarias]: Open core on even non-squarefree superabundant n > 5040",
+  },
+  "chain-bsd-1-weierstrass-bijection": {
+    escrowLamports: 12_000_000,
+    cta: "Chain B [Rung 1/4 -> BSD Congruent]: Prove Koblitz bijection isCongruentNumber n <-> y^2 = x^3 - n^2 x",
+  },
+  "chain-bsd-2-fermat-noncongruent-1": {
+    escrowLamports: 25_000_000,
+    cta: "Chain B [Rung 2/4 -> BSD Congruent]: Prove Fermat right-triangle theorem ¬isCongruentNumber 1",
+  },
+  "chain-bsd-3-heegner-monsky-primes": {
+    escrowLamports: 50_000_000,
+    cta: "Chain B [Rung 3/4 -> BSD Congruent]: Prove Heegner-Monsky theorem for primes p ≡ 5, 7 (mod 8)",
+  },
+  "chain-bsd-4-congruent-semiprimes-567": {
+    escrowLamports: 65_000_000,
+    cta: "Chain B [Rung 4/4 -> BSD Congruent]: Open semiprime BSD slice pq ≡ 5, 6, 7 (mod 8)",
+  },
+  "chain-rh-analytic-1-chebyshev-theta-upper": {
+    escrowLamports: 10_000_000,
+    cta: "Chain C [Rung 1/4 -> RH Analytic]: Prove Chebyshev-Erdos prime product prod_{p<=N} p <= 4^N",
+  },
+  "chain-rh-analytic-2-mobius-harmonic-bound": {
+    escrowLamports: 20_000_000,
+    cta: "Chain C [Rung 2/4 -> RH Analytic]: Prove Mobius harmonic cancellation (sum_{n<=N} μ(n)/n)^2 <= 1",
+  },
+  "chain-rh-analytic-3-pnt-mertens-little-o": {
+    escrowLamports: 45_000_000,
+    cta: "Chain C [Rung 3/4 -> RH Analytic]: Prove Landau PNT equivalence M(N) = o(N)",
+  },
+  "chain-rh-analytic-4-zero-free-strip-99-100": {
+    escrowLamports: 65_000_000,
+    cta: "Chain C [Rung 4/4 -> RH Analytic]: Open zero-free strip Re(s) > 0.99 (M(N)^100 <= C * N^99)",
+  },
+  "chain-pnp-circuit-1-de-morgan-parity-lower-bound": {
+    escrowLamports: 20_000_000,
+    cta: "Track D [Rung 1/2 -> Circuit Lower Bounds]: Prove De Morgan parity circuit size s >= 2n - 1 (provable landmark)",
+  },
+  "chain-pnp-circuit-2-shannon-counting-bound": {
+    escrowLamports: 30_000_000,
+    cta: "Track D [Rung 2/2 -> Circuit Lower Bounds]: Prove Shannon exponential circuit bound s > 2^n/(4n) over B_2 (provable landmark)",
+  },
+};
+
+export const REDUCTION_CHAIN_FILES = [
+  "rh_lagarias_chain.lean",
+  "bsd_congruent_chain.lean",
+  "rh_analytic_chain.lean",
+  "pnp_circuit_foundations_chain.lean",
+];
+
 export interface CatalogEntry {
   name: string;
   kind: "open" | "solvable";
-  program: "millennium-rh-weil-gram" | "lemma-ladder" | "general";
+  program:
+    | "millennium-rh-weil-gram"
+    | "millennium-chains"
+    | "lemma-ladder"
+    | "general";
   statement: string;
   companionProof?: string;
   sanityScriptPath?: string;
   defaultEscrowLamports?: number;
+  customCta?: string;
 }
 
 export function loadCatalog(includeSolvable = false): CatalogEntry[] {
@@ -213,7 +289,10 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
       const sanityScriptPath = fs.existsSync(sanityPath)
         ? sanityPath
         : undefined;
-      const defaultEscrowLamports = name.startsWith("tier1-")
+      const chainMeta = CHAIN_TASK_CONFIG[name];
+      const defaultEscrowLamports = chainMeta
+        ? chainMeta.escrowLamports
+        : name.startsWith("tier1-")
         ? 5_000_000
         : name.startsWith("tier2-")
         ? 15_000_000
@@ -225,7 +304,9 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
       entries.push({
         name,
         kind,
-        program: MILLENNIUM_TASKS.has(name)
+        program: chainMeta
+          ? "millennium-chains"
+          : MILLENNIUM_TASKS.has(name)
           ? "millennium-rh-weil-gram"
           : LADDER_TASKS.has(name)
           ? "lemma-ladder"
@@ -234,6 +315,7 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
         companionProof,
         sanityScriptPath,
         defaultEscrowLamports,
+        customCta: chainMeta?.cta,
       });
     }
   }
@@ -276,8 +358,48 @@ function getRunnerIdToken(audience: string): string {
   }
 }
 
+async function runnerCheckWithRetry(
+  headers: Record<string, string>,
+  payload: Record<string, unknown>,
+  label: string
+): Promise<{ verdict?: string; detail?: string; axioms?: string[] }> {
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(`${DEFAULT_RUNNER_URL}/check`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      return (await res.json()) as {
+        verdict?: string;
+        detail?: string;
+        axioms?: string[];
+      };
+    }
+    const text = await res.text();
+    if (attempt < maxAttempts && (res.status === 429 || res.status >= 500)) {
+      const delayMs = 2_000 * attempt;
+      console.warn(
+        `  [runner retry ${attempt}/${maxAttempts}] ${label} HTTP ${res.status}; retrying in ${delayMs}ms...`
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+      continue;
+    }
+    throw new Error(
+      `runner check HTTP ${res.status} for ${label}: ${text.slice(0, 300)}`
+    );
+  }
+  throw new Error(`runner check exhausted retries for ${label}`);
+}
+
 async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
   assertOuterExistentialQuantifierOrder(entry);
+  if (/^\s*open\s+Classical\b/m.test(entry.statement)) {
+    throw new Error(
+      `[PRE-SEED GATE FAILED] ${entry.name} contains top-level 'open Classical', which causes Lean '#print axioms' to shorten 'Classical.choice' to 'choice' and fail allow-list verification!`
+    );
+  }
 
   if (entry.sanityScriptPath) {
     execSync(`npx tsx "${entry.sanityScriptPath}"`, { stdio: "inherit" });
@@ -290,10 +412,9 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const t0 = Date.now();
-  const res = await fetch(`${DEFAULT_RUNNER_URL}/check`, {
-    method: "POST",
+  const resp = await runnerCheckWithRetry(
     headers,
-    body: JSON.stringify({
+    {
       statement: entry.statement,
       proof: "theorem proof : statementProp := sorry",
       statement_def: "statementProp",
@@ -301,21 +422,11 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
       axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
       mode: "mathlib",
       import_allowlist: ["Mathlib"],
-      max_build_secs: 120,
+      max_build_secs: 180,
       max_build_mem_mb: 16384,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `pre-seed runner check HTTP ${res.status} for ${
-        entry.name
-      }: ${await res.text()}`
-    );
-  }
-  const resp = (await res.json()) as {
-    verdict?: string;
-    detail?: string;
-  };
+    },
+    entry.name
+  );
   if (
     resp.verdict !== "fail" ||
     !String(resp.detail ?? "").includes("proof uses sorry")
@@ -326,10 +437,9 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
   }
 
   if (entry.kind === "solvable" && entry.companionProof) {
-    const pRes = await fetch(`${DEFAULT_RUNNER_URL}/check`, {
-      method: "POST",
+    const pJson = await runnerCheckWithRetry(
       headers,
-      body: JSON.stringify({
+      {
         statement: entry.statement,
         proof: entry.companionProof,
         statement_def: "statementProp",
@@ -337,16 +447,11 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
         axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
         mode: "mathlib",
         import_allowlist: ["Mathlib"],
-        max_build_secs: 120,
+        max_build_secs: 180,
         max_build_mem_mb: 16384,
-      }),
-    });
-    if (!pRes.ok) {
-      throw new Error(
-        `companion proof check HTTP ${pRes.status} for ${entry.name}`
-      );
-    }
-    const pJson = (await pRes.json()) as { verdict?: string; detail?: string };
+      },
+      `${entry.name} (companion)`
+    );
     if (pJson.verdict !== "pass") {
       throw new Error(
         `companion proof FAILED for solvable entry ${entry.name}: verdict=${pJson.verdict} detail=${pJson.detail}`
@@ -393,10 +498,9 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
   ];
 
   for (const canary of canaryProbes) {
-    const cRes = await fetch(`${DEFAULT_RUNNER_URL}/check`, {
-      method: "POST",
+    const cJson = await runnerCheckWithRetry(
       headers,
-      body: JSON.stringify({
+      {
         statement: entry.statement,
         proof: canary.proof,
         statement_def: "statementProp",
@@ -404,16 +508,11 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
         axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
         mode: "mathlib",
         import_allowlist: ["Mathlib"],
-        max_build_secs: 90,
+        max_build_secs: 180,
         max_build_mem_mb: 16384,
-      }),
-    });
-    if (!cRes.ok) {
-      throw new Error(
-        `pre-seed canary check HTTP ${cRes.status} for ${entry.name} (${canary.label})`
-      );
-    }
-    const cJson = (await cRes.json()) as { verdict?: string; detail?: string };
+      },
+      `${entry.name} (${canary.label})`
+    );
     if (cJson.verdict === "pass") {
       throw new Error(
         `[ANTI-VACUITY GATE FAILED] ${entry.name} was solved trivially by canary '${canary.label}'! Refusing to seed.`
@@ -449,12 +548,66 @@ async function existingOpenTopics(
   return topics;
 }
 
+async function verifyReductionChainFiles(): Promise<void> {
+  const chainsDir = path.join(
+    __dirname,
+    "..",
+    "..",
+    "proofs",
+    "millennium-chains"
+  );
+  const token = getRunnerIdToken(DEFAULT_RUNNER_URL);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  for (const fileName of REDUCTION_CHAIN_FILES) {
+    const t0 = Date.now();
+    const src = fs.readFileSync(path.join(chainsDir, fileName), "utf8");
+    const splitIdx = src.search(/\n(?=lemma |theorem proof\b)/);
+    if (splitIdx < 0) {
+      throw new Error(
+        `Reduction file ${fileName} missing 'theorem proof' split`
+      );
+    }
+    const statement = src.slice(0, splitIdx).trim();
+    const proof = src.slice(splitIdx + 1).trim();
+    const json = await runnerCheckWithRetry(
+      headers,
+      {
+        statement,
+        proof,
+        statement_def: "statementProp",
+        entry_theorem: "proof",
+        axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
+        mode: "mathlib",
+        import_allowlist: ["Mathlib"],
+        max_build_secs: 300,
+        max_build_mem_mb: 16384,
+      },
+      fileName
+    );
+    if (json.verdict !== "pass") {
+      throw new Error(
+        `[REDUCTION GATE FAILED] ${fileName}: verdict=${json.verdict} detail=${json.detail}`
+      );
+    }
+    console.log(
+      `  [reduction PASS] proofs/millennium-chains/${fileName} kernel-verified with 0 sorry (${
+        Date.now() - t0
+      }ms, axioms=${JSON.stringify(json.axioms ?? [])})`
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const isMainnet =
     process.argv.includes("--mainnet") ||
     process.env.SOLANA_NETWORK === "mainnet";
   const checkOnly = process.argv.includes("--check-only");
   const isLadder = process.argv.includes("--ladder");
+  const isChains = process.argv.includes("--chains");
   const taskArg = process.argv.find((a) => a.startsWith("--tasks="));
   const reservedForWalletArg = process.argv
     .find((a) => a.startsWith("--reserved-for-wallet="))
@@ -469,6 +622,7 @@ async function main(): Promise<void> {
     (isMainnet &&
       !process.argv.includes("--all-open") &&
       !isLadder &&
+      !isChains &&
       !taskArg);
 
   if (taskArg) {
@@ -479,6 +633,8 @@ async function main(): Promise<void> {
         .map((s) => s.trim())
     );
     catalog = catalog.filter((e) => allowed.has(e.name));
+  } else if (isChains) {
+    catalog = catalog.filter((e) => e.program === "millennium-chains");
   } else if (isLadder) {
     catalog = catalog.filter((e) => e.program === "lemma-ladder");
   } else if (isMillenniumOnly) {
@@ -492,6 +648,9 @@ async function main(): Promise<void> {
   );
 
   if (checkOnly) {
+    if (isChains) {
+      await verifyReductionChainFiles();
+    }
     for (const entry of catalog) {
       await verifyStatementElaborates(entry);
     }
@@ -580,7 +739,7 @@ async function main(): Promise<void> {
       brief: {
         topic,
         brand_voice: "rigorous",
-        cta: `Prove: ${entry.name} (${entry.kind})`,
+        cta: entry.customCta ?? `Prove: ${entry.name} (${entry.kind})`,
         utm_link: "https://swarm.tips",
       },
       budget_lamports: entryEscrow * 2,

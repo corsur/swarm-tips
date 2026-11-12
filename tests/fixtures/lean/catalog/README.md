@@ -16,7 +16,7 @@ Statements posted as on-chain LeanProof campaigns (`lean_policy: 2`). Two kinds:
 - **Every statement is elaboration-gated** against the live runner before it is
   seeded: `open/` statements must type-check as a `Prop` (submitting them with a
   `by sorry` proof yields `verdict: fail, detail: "proof uses sorry"` — the
-  telltale that the *statement* elaborated and only the proof is missing; a
+  telltale that the _statement_ elaborated and only the proof is missing; a
   malformed statement instead yields an `unknownIdentifier`/type error).
   `solvable/` statements must pass with their proof.
 - **The statement IS the attack surface.** A subtly-false statement that is
@@ -36,12 +36,26 @@ elaborates under the cap; otherwise it stays here as deferred).
 
 ## Provenance (per statement)
 
-| file | problem | basis |
-|---|---|---|
-| open/twin-primes.lean | Twin prime conjecture | hand-authored: ∀ n, ∃ prime p ≥ n with p+2 prime |
-| open/goldbach.lean | Goldbach's conjecture | hand-authored: every even n>2 is a sum of two primes |
-| open/legendre.lean | Legendre's conjecture | hand-authored: a prime between n² and (n+1)² |
-| open/erdos-straus.lean | Erdős–Straus conjecture | hand-authored: 4/n = 1/a+1/b+1/c (cleared of denominators) |
-| open/collatz.lean | Collatz conjecture | hand-authored collatz iterate reaches 1 |
-| solvable/prime-101.lean | 101 is prime | `Nat.Prime 101`, proof `by norm_num` |
-| solvable/prime-1000003.lean | 1000003 is prime | `Nat.Prime 1000003`, proof `by norm_num` |
+| file                                                       | problem                              | basis                                                                                 |
+| ---------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------- |
+| open/twin-primes.lean                                      | Twin prime conjecture                | hand-authored: ∀ n, ∃ prime p ≥ n with p+2 prime                                      |
+| open/goldbach.lean                                         | Goldbach's conjecture                | hand-authored: every even n>2 is a sum of two primes                                  |
+| open/legendre.lean                                         | Legendre's conjecture                | hand-authored: a prime between n² and (n+1)²                                          |
+| open/erdos-straus.lean                                     | Erdős–Straus conjecture              | hand-authored: 4/n = 1/a+1/b+1/c (cleared of denominators)                            |
+| open/collatz.lean                                          | Collatz conjecture                   | hand-authored collatz iterate reaches 1                                               |
+| solvable/prime-101.lean                                    | 101 is prime                         | `Nat.Prime 101`, proof `by norm_num`                                                  |
+| solvable/prime-1000003.lean                                | 1000003 is prime                     | `Nat.Prime 1000003`, proof `by norm_num`                                              |
+| open/chain-rh-lagarias-1-superabundant-even.lean           | Chain A [1/4 → RH Lagarias]          | Alaoglu–Erdős (1944): superabundant `n ≥ 2` is even + `lagariasBound 1`               |
+| open/chain-rh-lagarias-2-normalized-monotonicity.lean      | Chain A [2/4 → RH Lagarias]          | Normalized Lagarias RHS `(H_k + exp(H_k)log(H_k))/k` monotonicity                     |
+| open/chain-rh-lagarias-3-odd-and-squarefree.lean           | Chain A [3/4 → RH Lagarias]          | Choie–Lichiardopol–Moree–Solé (2007): Lagarias holds for all odd & squarefree `n`     |
+| open/chain-rh-lagarias-4-even-superabundant-core.lean      | Chain A [4/4 → RH Lagarias]          | Open core: even non-squarefree superabundant `n > 5040` (`rh_lagarias_chain.lean`)    |
+| open/chain-bsd-1-weierstrass-bijection.lean                | Chain B [1/4 → BSD Congruent]        | Koblitz Prop. I.2: `isCongruentNumber n ↔ ∃ x y : ℚ, y ≠ 0 ∧ y² = x³ - n²x`           |
+| open/chain-bsd-2-fermat-noncongruent-1.lean                | Chain B [2/4 → BSD Congruent]        | Fermat right-triangle theorem `¬ isCongruentNumber 1` (rank-0 BSD on `E_1`)           |
+| open/chain-bsd-3-heegner-monsky-primes.lean                | Chain B [3/4 → BSD Congruent]        | Heegner (1952) & Monsky (1990): primes `p ≡ 5, 7 (mod 8)` are congruent (`ω=1`)       |
+| open/chain-bsd-4-congruent-semiprimes-567.lean             | Chain B [4/4 → BSD Congruent]        | Open semiprime slice `pq ≡ 5, 6, 7 (mod 8)` (`ω=2`, `bsd_congruent_chain.lean`)       |
+| open/chain-rh-analytic-1-chebyshev-theta-upper.lean        | Chain C [1/4 → RH Analytic]          | Chebyshev–Erdős primorial bound `∏_{p ≤ N} p ≤ 4^N`                                   |
+| open/chain-rh-analytic-2-mobius-harmonic-bound.lean        | Chain C [2/4 → RH Analytic]          | Möbius harmonic cancellation `(∑_{n ≤ N} μ(n)/n)^2 ≤ 1`                               |
+| open/chain-rh-analytic-3-pnt-mertens-little-o.lean         | Chain C [3/4 → RH Analytic]          | Landau (1899) PNT equivalent `M(N) = o(N)`                                            |
+| open/chain-rh-analytic-4-zero-free-strip-99-100.lean       | Chain C [4/4 → RH Analytic]          | Open zero-free strip `Re(s) > 0.99`: `M(N)^100 ≤ C · N^99` (`rh_analytic_chain.lean`) |
+| open/chain-pnp-circuit-1-de-morgan-parity-lower-bound.lean | Track D [1/2 → Circuit Lower Bounds] | Provable classical theorem (Schnorr 1974): De Morgan parity circuit size `s ≥ 2n - 1` |
+| open/chain-pnp-circuit-2-shannon-counting-bound.lean       | Track D [2/2 → Circuit Lower Bounds] | Provable classical theorem (Shannon 1949): `∃ f`, `B_2` circuit size `s > 2^n / (4n)` |
