@@ -4368,15 +4368,15 @@ const TX_CLIENT_GUIDE_URI: &str = "https://swarm.tips/docs/mcp/local-transaction
 pub(crate) const CLIENT_MANIFEST: &str = r#"{
   "schema": "swarm.client-manifest/v1",
   "name": "@swarm-tips/client",
-  "version": "0.3.0",
-  "registry": "https://www.npmjs.com/package/@swarm-tips/client/v/0.3.0",
-  "tarball": "https://registry.npmjs.org/@swarm-tips/client/-/client-0.3.0.tgz",
-  "integrity": "sha512-ZLDpiEaI2GgXSu9LllenRjSjS8r8BiXDBhXnss9qlYE4Ii/E4QJZEcm2lOcHrRqc7wiSTqrOzkPvFcZV+CSSKw==",
-  "shasum": "99bf2a032fd74e2e00f8e7de7db5429a2c9c8767",
-  "provenance": "https://registry.npmjs.org/-/npm/v1/attestations/@swarm-tips%2fclient@0.3.0",
-  "source_commit": "2f09b355c1af7d5981020179ab1525f59ce8aaf2",
-  "source": "https://github.com/corsur/swarm-tips/tree/2f09b355c1af7d5981020179ab1525f59ce8aaf2/sdk/client",
-  "sbom": "https://unpkg.com/@swarm-tips/client@0.3.0/SBOM.spdx.json",
+  "version": "0.4.2",
+  "registry": "https://www.npmjs.com/package/@swarm-tips/client/v/0.4.2",
+  "tarball": "https://registry.npmjs.org/@swarm-tips/client/-/client-0.4.2.tgz",
+  "integrity": "sha512-qfSvAEQHQncaIghJ+qYKjUqH0g7S3XOBAWTdlgo+XgNKPr4ODw6M9wRtBKYzHPMBxrv31+befJQwj+SEr0gmeQ==",
+  "shasum": "8e7dd83b2af6e9546cd164ff84d25d0bfdb30bbd",
+  "provenance": "https://registry.npmjs.org/-/npm/v1/attestations/@swarm-tips%2fclient@0.4.2",
+  "source_commit": "f55a15f018ceb8978fbbc107295ec87949053b5b",
+  "source": "https://github.com/corsur/swarm-tips/tree/f55a15f018ceb8978fbbc107295ec87949053b5b/sdk/client",
+  "sbom": "https://unpkg.com/@swarm-tips/client@0.4.2/SBOM.spdx.json",
   "subpaths": {
     "shillbot": "@swarm-tips/client/shillbot",
     "shillbot_api": "@swarm-tips/client/shillbot/api",
@@ -6150,7 +6150,7 @@ fn shillbot_transaction_result(
     value["risk"] = serde_json::Value::String(inspection.risk.clone());
     value["local_client"] = serde_json::json!({
         "package": "@swarm-tips/client",
-        "version": "0.3.0",
+        "version": "0.4.2",
         "import": "@swarm-tips/client/shillbot",
         "resource_uri": CLIENT_MANIFEST_URI,
     });
@@ -6209,14 +6209,14 @@ mod structured_result_tests {
         );
         let manifest: serde_json::Value = serde_json::from_str(CLIENT_MANIFEST).unwrap();
         assert_eq!(manifest["name"], "@swarm-tips/client");
-        assert_eq!(manifest["version"], "0.3.0");
+        assert_eq!(manifest["version"], "0.4.2");
         assert!(manifest["integrity"]
             .as_str()
             .unwrap()
             .starts_with("sha512-"));
         assert_eq!(
             manifest["source_commit"],
-            "2f09b355c1af7d5981020179ab1525f59ce8aaf2"
+            "f55a15f018ceb8978fbbc107295ec87949053b5b"
         );
         assert!(manifest["source"]
             .as_str()
@@ -6229,7 +6229,7 @@ mod structured_result_tests {
         assert!(manifest["provenance"]
             .as_str()
             .unwrap()
-            .contains("@swarm-tips%2fclient@0.3.0"));
+            .contains("@swarm-tips%2fclient@0.4.2"));
         assert_eq!(
             manifest["subpaths"]["shillbot"],
             "@swarm-tips/client/shillbot"
