@@ -542,9 +542,8 @@ export class SwarmAgent {
         const targetNet = net ?? self.network;
         const tournamentId = opts?.tournamentId ?? ACTIVE_TOURNAMENT_ID[targetNet];
         const limit = opts?.limit ?? 20;
-        const suffix = targetNet === "devnet" ? `&network=devnet` : "";
         return self.gameClient.http.get<T>(
-          `/tournaments/${encodeURIComponent(String(tournamentId))}/leaderboard?limit=${encodeURIComponent(String(limit))}${suffix}`,
+          `/leaderboard?tournament_id=${encodeURIComponent(String(tournamentId))}&limit=${encodeURIComponent(String(limit))}`,
         );
       },
     };

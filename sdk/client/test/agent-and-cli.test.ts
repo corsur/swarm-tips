@@ -76,15 +76,35 @@ function mockConnection(txSig = "5MockSig11111111111111111111111111111111111111"
 }
 
 describe("Version sync & multi-bin package contract", () => {
-  it("exports CLIENT_VERSION matching package.json 0.4.0 and registers both swarm and client bins", () => {
+  it("exports CLIENT_VERSION matching package.json 0.4.1 and registers both swarm and client bins", () => {
     const pkg = JSON.parse(readFileSync(resolve(clientRoot, "package.json"), "utf8")) as {
       version: string;
       bin: Record<string, string>;
     };
-    expect(pkg.version).toBe("0.4.0");
-    expect(CLIENT_VERSION).toBe("0.4.0");
+    expect(pkg.version).toBe("0.4.1");
+    expect(CLIENT_VERSION).toBe(pkg.version);
     expect(pkg.bin.swarm).toBe("./dist/cli/swarm.js");
     expect(pkg.bin.client).toBe("./dist/cli/swarm.js");
+  });
+
+  it("queries GET /leaderboard?tournament_id=...&limit=... on SwarmAgent.games.leaderboard", async () => {
+    let seenUrl = "";
+    const agent = createSwarmAgent({
+      network: "devnet",
+      gameUrl: "https://api.coordination.game",
+      fetch: (async (input: RequestInfo | URL) => {
+        seenUrl = String(input);
+        return new Response(JSON.stringify([{ wallet: "solana:x:abc", score: 1 }]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch,
+    });
+    const rows = await agent.games.leaderboard("devnet", { limit: 5 });
+    expect(seenUrl).toBe(
+      "https://api.coordination.game/leaderboard?tournament_id=1003&limit=5&network=devnet",
+    );
+    expect(Array.isArray(rows)).toBe(true);
   });
 });
 
