@@ -142,7 +142,12 @@ function mintJwt(wallet: string, secret: string): string {
   ).toString("base64url");
   const now = Math.floor(Date.now() / 1000);
   const payload = Buffer.from(
-    JSON.stringify({ wallet, exp: now + 86400 })
+    JSON.stringify({
+      wallet,
+      exp: now + 86400,
+      typ: "user",
+      aud: ["shillbot", "game", "mcp"],
+    })
   ).toString("base64url");
   const sig = crypto
     .createHmac("sha256", secret)
