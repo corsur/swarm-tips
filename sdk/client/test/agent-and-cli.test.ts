@@ -87,21 +87,35 @@ describe("Version sync & multi-bin package contract", () => {
     expect(pkg.bin.client).toBe("./dist/cli/swarm.js");
   });
 
-  it("exits the CLI child process immediately even when an active RPC/WebSocket handle is open", () => {
-    const res = spawnSync(
-      process.execPath,
-      [
-        "--import",
-        "data:text/javascript,setInterval(()=>{},60000);",
-        resolve(clientRoot, "dist/cli/swarm.js"),
-        "--version",
-        "--json",
-      ],
-      { encoding: "utf8", timeout: 4000 },
-    );
-    expect(res.error).toBeUndefined();
-    expect(res.status).toBe(0);
-    expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.2" });
+  it("exits the CLI child process immediately even when an active RPC/WebSocket handle is open", async () => {
+    const { buildSync } = await import("esbuild");
+    const cliBundle = resolve(clientRoot, `.tmp-swarm-cli-exit-${process.pid}.mjs`);
+    try {
+      buildSync({
+        entryPoints: [resolve(clientRoot, "src/cli/swarm.ts")],
+        bundle: true,
+        platform: "node",
+        format: "esm",
+        packages: "external",
+        outfile: cliBundle,
+      });
+      const res = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "data:text/javascript,setInterval(()=>{},60000);",
+          cliBundle,
+          "--version",
+          "--json",
+        ],
+        { cwd: clientRoot, encoding: "utf8", timeout: 4000 },
+      );
+      expect(res.error).toBeUndefined();
+      expect(res.status, res.stderr).toBe(0);
+      expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.2" });
+    } finally {
+      rmSync(cliBundle, { force: true });
+    }
   });
 
   it("queries GET /leaderboard?tournament_id=...&limit=... on SwarmAgent.games.leaderboard", async () => {

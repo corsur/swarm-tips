@@ -125,6 +125,23 @@ for (const binName of ["swarm", "client"]) {
     throw new Error(`${binName} --help command contract failed`);
 }
 
+const activeHandleRes = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "data:text/javascript,setInterval(()=>{},60000);",
+    resolve(installed, "dist", "cli", "swarm.js"),
+    "--version",
+    "--json",
+  ],
+  { cwd: fixture, encoding: "utf8", timeout: 4000 }
+);
+if (activeHandleRes.error || activeHandleRes.status !== 0) {
+  throw new Error(
+    `packed swarm CLI hung or failed with active handle: status=${activeHandleRes.status} err=${activeHandleRes.error}`
+  );
+}
+
 const builtClaimJson = run("node", [
   "--input-type=module",
   "--eval",
