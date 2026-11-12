@@ -313,6 +313,10 @@ mod network_flow_tests {
         body["lean_policy"] = serde_json::json!(2);
         body["requires_approval"] = serde_json::json!(false);
         body["check_detail"] = serde_json::json!("verified proof");
+        body["onchain_action_instructions"] = serde_json::json!({ "status": "ready" });
+        body["onchain_action_spec"] =
+            serde_json::json!({ "schema_version": 1, "target_chain": "eip155:8453" });
+        body["trust_level"] = serde_json::json!("anchored");
         Mock::given(method("GET"))
             .and(path("/tasks/c:t"))
             .and(query_param("network", "devnet"))
@@ -334,6 +338,9 @@ mod network_flow_tests {
             "lean_policy",
             "requires_approval",
             "check_detail",
+            "onchain_action_instructions",
+            "onchain_action_spec",
+            "trust_level",
         ] {
             assert_eq!(result[field], body[field]);
         }

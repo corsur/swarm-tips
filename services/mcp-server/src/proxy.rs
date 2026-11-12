@@ -107,6 +107,12 @@ pub struct TaskSummary {
     pub gameplay_instructions: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lean_proof_instructions: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onchain_action_instructions: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onchain_action_spec: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_level: Option<String>,
     #[serde(default)]
     pub statement_lean: Option<String>,
     #[serde(default)]

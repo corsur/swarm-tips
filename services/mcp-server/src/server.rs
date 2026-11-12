@@ -5623,7 +5623,7 @@ fn task_next_action(
         serde_json::json!({
             "next_action": "submit_work",
             "next_tool": "shillbot_submit_work",
-            "args": { "task_id": task.task_id, "content_id": "<caip2>:<tx_id>:<index>[:sig:<hex>]" },
+            "args": { "task_id": task.task_id, "content_id": "<caip2>:<tx_id>:<index>[:sig:<base64url_65B_secp256k1>]" },
             "hint": "OnChainAction (platform 11) uses atomic claim-on-proof: do NOT call shillbot_claim_task. Drive a finalized matching affiliate event on the target chain, optionally dry-run POST /tasks/:id/preflight, then call shillbot_submit_work directly.",
         })
     } else if task.state == "claimed" && task.platform == Some(9) {
