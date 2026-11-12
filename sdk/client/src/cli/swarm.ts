@@ -560,14 +560,23 @@ function isDirectExecution(): boolean {
   }
 }
 
+function exitAfterFlush(code: number): void {
+  const finish = () => process.exit(code);
+  if (process.stdout.writableNeedDrain) {
+    process.stdout.once("drain", finish);
+    return;
+  }
+  finish();
+}
+
 if (isDirectExecution()) {
   runSwarmCli(process.argv.slice(2)).then(
     (code) => {
-      process.exitCode = code;
+      exitAfterFlush(code);
     },
     (err: unknown) => {
       process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-      process.exitCode = 2;
+      exitAfterFlush(2);
     },
   );
 }

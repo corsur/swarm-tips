@@ -76,15 +76,32 @@ function mockConnection(txSig = "5MockSig11111111111111111111111111111111111111"
 }
 
 describe("Version sync & multi-bin package contract", () => {
-  it("exports CLIENT_VERSION matching package.json 0.4.1 and registers both swarm and client bins", () => {
+  it("exports CLIENT_VERSION matching package.json 0.4.2 and registers both swarm and client bins", () => {
     const pkg = JSON.parse(readFileSync(resolve(clientRoot, "package.json"), "utf8")) as {
       version: string;
       bin: Record<string, string>;
     };
-    expect(pkg.version).toBe("0.4.1");
+    expect(pkg.version).toBe("0.4.2");
     expect(CLIENT_VERSION).toBe(pkg.version);
     expect(pkg.bin.swarm).toBe("./dist/cli/swarm.js");
     expect(pkg.bin.client).toBe("./dist/cli/swarm.js");
+  });
+
+  it("exits the CLI child process immediately even when an active RPC/WebSocket handle is open", () => {
+    const res = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "data:text/javascript,setInterval(()=>{},60000);",
+        resolve(clientRoot, "dist/cli/swarm.js"),
+        "--version",
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 4000 },
+    );
+    expect(res.error).toBeUndefined();
+    expect(res.status).toBe(0);
+    expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.2" });
   });
 
   it("queries GET /leaderboard?tournament_id=...&limit=... on SwarmAgent.games.leaderboard", async () => {
