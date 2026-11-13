@@ -9,7 +9,9 @@ import { homedir } from "os";
 import { join } from "path";
 
 const RPC = process.env.MAINNET_RPC ?? "https://api.mainnet-beta.solana.com";
-const TARGET_STALENESS = new BN(Number(process.env.STALENESS ?? 1_209_600)); // 14d default
+const EXPLICIT_STALENESS = process.env.STALENESS
+  ? new BN(Number(process.env.STALENESS))
+  : null;
 const EXECUTE = process.argv.includes("--execute");
 
 function loadKeypair(name: string): Keypair {
@@ -29,12 +31,21 @@ function loadKeypair(name: string): Keypair {
     { commitment: "confirmed" }
   );
   anchor.setProvider(provider);
-  const idl = JSON.parse(
-    readFileSync(
+  const idl = ((): any => {
+    for (const p of [
+      join(__dirname, "shillbot.idl.json"),
       join(__dirname, "..", "..", "target", "idl", "shillbot.json"),
-      "utf8"
-    )
-  );
+    ]) {
+      try {
+        return JSON.parse(readFileSync(p, "utf8"));
+      } catch {
+        /* try next */
+      }
+    }
+    throw new Error(
+      "shillbot IDL not found (scripts/ops/shillbot.idl.json or target/idl/shillbot.json)"
+    );
+  })();
   const program = new anchor.Program(idl as anchor.Idl, provider);
   const globalPda = PublicKey.findProgramAddressSync(
     [Buffer.from("shillbot_global")],
@@ -42,6 +53,12 @@ function loadKeypair(name: string): Keypair {
   )[0];
 
   const s: any = await (program.account as any).globalState.fetch(globalPda);
+  // update_params enforces `verification_timeout > attestation_delay + staleness_window`.
+  const TARGET_STALENESS =
+    EXPLICIT_STALENESS ??
+    (s.verificationTimeoutSeconds as BN)
+      .sub(s.attestationDelaySeconds as BN)
+      .sub(new BN(1));
   console.log("program:", program.programId.toBase58());
   console.log("globalPda:", globalPda.toBase58());
   console.log(

@@ -39,6 +39,11 @@ const PLATFORMS: { id: number; name: string; content: string }[] = [
     content: "a URL whose footer links swarm.tips + task nonce",
   },
   { id: 10, name: "LeanProof", content: "a Lean statement (attester path)" },
+  {
+    id: 11,
+    name: "OnChainAction",
+    content: "a finalized EVM log or Solana tx receipt matching OnChainActionSpec",
+  },
 ];
 
 function loadKeypair(name: string): Keypair {
@@ -174,19 +179,21 @@ async function mcpReachable(): Promise<boolean> {
       String(err)
     );
   }
-  // The verify window is [submitted_at + delay ± staleness]. If staleness is
-  // shorter than the verification timeout, verify CLOSES before the task expires
-  // — an agent who doesn't verify in that window is locked out with escrow still
-  // live (the exact footgun that stranded the referral task at a 24h window).
-  // Sane = staleness covers the whole task lifetime.
+  // The verify window is [submitted_at + delay .. submitted_at + delay + staleness],
+  // while update_params enforces `vtimeout > delay + staleness` so verify_task's
+  // upper bound strictly precedes expire_task's `submitted_at + vtimeout`.
+  // Require `delay + staleness` to cover at least `vtimeout - 1h` so a 24h
+  // staleness footgun fails loudly while `delay + staleness = vtimeout - 1` passes.
+  const delay = (g.attestationDelaySeconds as BN).toNumber();
   const stale = (g.stalenessWindowSeconds as BN).toNumber();
   const vtimeout = (g.verificationTimeoutSeconds as BN).toNumber();
+  const verifyHorizon = delay + stale;
   c.check(
-    stale >= vtimeout,
+    verifyHorizon + 3600 >= vtimeout && verifyHorizon < vtimeout,
     "verify window spans task lifetime (no staleness lockout)",
-    `staleness ${(stale / 86400).toFixed(1)}d vs timeout ${(
+    `delay+staleness ${(verifyHorizon / 86400).toFixed(2)}d vs timeout ${(
       vtimeout / 86400
-    ).toFixed(1)}d`
+    ).toFixed(2)}d`
   );
   c.check(!g.paused, "protocol not paused");
   const minEscrow = (g.minEscrowLamports as BN).toNumber();
