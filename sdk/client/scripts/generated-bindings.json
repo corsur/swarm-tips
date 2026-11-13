@@ -3,6 +3,6 @@
   "src/contracts/idl/shillbot.json": "a1ec41e24242f73941f2f4934a308fdc69034e54fc7a86c2fbdaa1bcee2c4de5",
   "src/contracts/generated/coordination_game.ts": "bb0d86b4dd3f3c536e0438268f82311c79902f8aa74767e7186400caf3515901",
   "src/contracts/generated/shillbot.ts": "3b51ee2ded5bbdbde5a41768f551ec44b3cf3f00b33942438cbc870ab8bba719",
-  "src/version.ts": "75c202be042dae371bfd79176620f806ef69003857ed87027119e6a34b3761f0",
+  "src/version.ts": "4aedc3198debfce56ebf672363b5b333eacff27adebf0e674601e23b8c127733",
   "src/generated/openapi.ts": "445d04b0e4d97b8e7cfb47976b05164517dc76658d894d7d1f0f8201d34d2022"
 }
