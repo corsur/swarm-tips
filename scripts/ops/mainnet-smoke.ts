@@ -42,7 +42,8 @@ const PLATFORMS: { id: number; name: string; content: string }[] = [
   {
     id: 11,
     name: "OnChainAction",
-    content: "a finalized EVM log or Solana tx receipt matching OnChainActionSpec",
+    content:
+      "a finalized EVM log or Solana tx receipt matching OnChainActionSpec",
   },
 ];
 
