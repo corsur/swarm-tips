@@ -48,7 +48,8 @@ printf '%s\n' \
   '  "unpermitted_axiom_hard_error": true,' \
   '  "nat_extension": true,' \
   '  "string_extension": true,' \
-  '  "print_success_message": true' \
+  '  "print_success_message": true,' \
+  '  "print_axioms": false' \
   '}' > "$config_file"
 
 "$work_root/nanoda/target/release/nanoda_bin" "$config_file"

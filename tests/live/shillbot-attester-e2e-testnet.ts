@@ -70,7 +70,8 @@ const API_BASE = process.env.SHILLBOT_API ?? "https://api.shillbot.org";
 const ESCROW = new BN(2_000_000); // 0.002 SOL
 const DEMO_WINDOW = 8; // seconds — shrunk global challenge window for the run
 const STATEMENT = "def statementProp : Prop := True";
-const FALSE_STATEMENT = "def statementProp : Prop := (2 + 2 : Nat) = 5";
+const FALSE_STATEMENT =
+  "-- swarm:polarity=bidirectional\ndef statementProp : Prop := (2 + 2 : Nat) = 5";
 
 const RAW_BASE =
   "https://raw.githubusercontent.com/corsur/swarm-tips/main/tests/fixtures/lean";
