@@ -1,0 +1,24 @@
+[package]
+name = "safe-http-fetch"
+version = "0.1.0"
+edition = "2021"
+description = "SSRF-hardened outbound URL validation, DNS-pinned resolution, and bounded HTTP fetching"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+
+[features]
+default = ["reqwest"]
+reqwest = ["dep:reqwest"]
+
+[dependencies]
+thiserror = { workspace = true }
+tokio = { workspace = true }
+url = "2.5"
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+wiremock = "0.6"

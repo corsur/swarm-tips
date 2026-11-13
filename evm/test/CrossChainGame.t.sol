@@ -960,4 +960,249 @@ contract CrossChainGameTest is Test {
         vm.expectRevert(CrossChainGame.CertMismatch.selector);
         game.openClaim(cert, cp, _liveSigs(cert), _cpSigs(cp));
     }
+
+    // --- Phase 4.1 hardening: CRIT-10, HIGH-18, MED-13 -------------------
+
+    function test_proveLocalEquivocation_slashesImmediatelyAndBlocksTimeoutAndUnilateralClaim() public {
+        bytes32 id = keccak256("local-eq-immediate");
+        uint128 tranche = STAKE;
+        _fund(id, true); // local player is P1
+        _lock(id, tranche);
+
+        CertLib.MatchLiveCert memory cert = _cert(id, true, tranche);
+        bytes32 ld = CertLib.matchLiveDigest(cert);
+
+        // Local player signs two distinct step-2 checkpoints.
+        CertLib.Checkpoint memory cpA = _checkpoint(ld, 2, 255, 255, 1);
+        CertLib.Checkpoint memory cpB = _checkpoint(ld, 2, 255, 255, 2);
+        bytes memory sigA = _sign(localSessionPk, CertLib.checkpointDigest(cpA));
+        bytes memory sigB = _sign(localSessionPk, CertLib.checkpointDigest(cpB));
+
+        uint256 poolFreeBefore = game.poolFree();
+        uint256 treasuryBefore = game.withdrawable(treasury);
+
+        vm.expectEmit(true, true, false, true, address(game));
+        emit CrossChainGame.LocalEquivocationProven(id, localSession, CertLib.TIMEOUT_P2_WINS);
+        game.proveLocalEquivocation(id, cpA, cpB, sigA, sigB);
+
+        assertTrue(game.localEquivocated(id), "localEquivocated recorded");
+        assertEq(uint8(_status(id)), uint8(CrossChainGame.Status.Claiming), "moved to Claiming");
+
+        // Equivocating local player is blocked from unilateral claim, supersede, mutual settle, and timeout refund.
+        CertLib.Checkpoint memory cp1 = _checkpoint(ld, 1, 255, 255, 1);
+        vm.expectRevert(CrossChainGame.InvalidStatus.selector);
+        game.openClaim(cert, cp1, _liveSigs(cert), _cpSigs(cp1));
+
+        CertLib.Checkpoint memory cp4 = _checkpoint(ld, 4, 1, 0, 1);
+        vm.expectRevert(CrossChainGame.BadOutcome.selector);
+        game.supersedeClaim(cert, cp4, _cpSigs(cp4));
+
+        CertLib.OutcomeCert memory oc = _outcome(id, ld, CertLib.HETERO_P1_WINS);
+        vm.expectRevert(CrossChainGame.InvalidStatus.selector);
+        game.settle(cert, oc, _liveSigs(cert), _ocSigs(oc));
+
+        // Even if warped past timeoutOpensAt on a snapshot, refundTimeout reverts for local equivocator.
+        uint256 snap = vm.snapshotState();
+        vm.warp(block.timestamp + 30 days);
+        vm.expectRevert(CrossChainGame.InvalidStatus.selector);
+        game.refundTimeout(id);
+        vm.revertToState(snap);
+
+        // Counterparty / relayer settles IMMEDIATELY without waiting out claimWindowEnd!
+        uint256 playerBefore = player.balance + game.withdrawable(player);
+        game.settleClaim(id);
+
+        assertEq(uint8(_status(id)), uint8(CrossChainGame.Status.ClaimSettled));
+        assertEq(player.balance + game.withdrawable(player), playerBefore, "equivocating local receives 0");
+
+        uint256 expectedTreasury = (uint256(STAKE) * SPLIT_BPS) / 10_000;
+        uint256 expectedReimburse = STAKE - expectedTreasury;
+        assertEq(game.withdrawable(treasury), treasuryBefore + expectedTreasury, "treasury receives split");
+        assertEq(game.poolFree(), poolFreeBefore + tranche + expectedReimburse, "pool recovers tranche + reimburse");
+        assertEq(game.poolLocked(), 0, "locked tranche cleared");
+    }
+
+    function test_proveLocalEquivocation_andCounterEquivocation_bothForfeitOrderIndependent() public {
+        // Order A: local equivocation first, then counter equivocation.
+        bytes32 idA = keccak256("both-eq-A");
+        _fund(idA, true);
+        _lock(idA, STAKE);
+        CertLib.MatchLiveCert memory certA = _cert(idA, true, STAKE);
+        bytes32 ldA = CertLib.matchLiveDigest(certA);
+        CertLib.Checkpoint memory a1 = _checkpoint(ldA, 2, 255, 255, 1);
+        CertLib.Checkpoint memory b1 = _checkpoint(ldA, 2, 255, 255, 2);
+
+        game.proveLocalEquivocation(
+            idA,
+            a1,
+            b1,
+            _sign(localSessionPk, CertLib.checkpointDigest(a1)),
+            _sign(localSessionPk, CertLib.checkpointDigest(b1))
+        );
+        game.submitEquivocationProof(
+            certA,
+            a1,
+            b1,
+            _sign(counterSessionPk, CertLib.checkpointDigest(a1)),
+            _sign(counterSessionPk, CertLib.checkpointDigest(b1))
+        );
+        (,,,,,,,,,,,,,,, uint8 bestA,) = game.matches(idA);
+        assertEq(bestA, CertLib.TIMEOUT_BOTH_FORFEIT, "local then counter -> both forfeit");
+
+        // Order B: counter equivocation first, then local equivocation.
+        bytes32 idB = keccak256("both-eq-B");
+        _fund(idB, true);
+        _lock(idB, STAKE);
+        CertLib.MatchLiveCert memory certB = _cert(idB, true, STAKE);
+        bytes32 ldB = CertLib.matchLiveDigest(certB);
+        CertLib.Checkpoint memory a2 = _checkpoint(ldB, 2, 255, 255, 1);
+        CertLib.Checkpoint memory b2 = _checkpoint(ldB, 2, 255, 255, 2);
+
+        game.submitEquivocationProof(
+            certB,
+            a2,
+            b2,
+            _sign(counterSessionPk, CertLib.checkpointDigest(a2)),
+            _sign(counterSessionPk, CertLib.checkpointDigest(b2))
+        );
+        game.proveLocalEquivocation(
+            idB,
+            a2,
+            b2,
+            _sign(localSessionPk, CertLib.checkpointDigest(a2)),
+            _sign(localSessionPk, CertLib.checkpointDigest(b2))
+        );
+        (,,,,,,,,,,,,,,, uint8 bestB,) = game.matches(idB);
+        assertEq(bestB, CertLib.TIMEOUT_BOTH_FORFEIT, "counter then local -> both forfeit");
+    }
+
+    function test_proveLocalEquivocation_rejectsWrongSignerSameDigestOrStepMismatch() public {
+        bytes32 id = keccak256("local-eq-rejects");
+        _fund(id, true);
+        _lock(id, STAKE);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        bytes32 ld = CertLib.matchLiveDigest(cert);
+
+        CertLib.Checkpoint memory cpA = _checkpoint(ld, 2, 255, 255, 1);
+        CertLib.Checkpoint memory cpB = _checkpoint(ld, 2, 255, 255, 2);
+        CertLib.Checkpoint memory cpStep3 = _checkpoint(ld, 3, 1, 255, 1);
+
+        // Step mismatch -> BadOutcome.
+        vm.expectRevert(CrossChainGame.BadOutcome.selector);
+        game.proveLocalEquivocation(
+            id,
+            cpA,
+            cpStep3,
+            _sign(localSessionPk, CertLib.checkpointDigest(cpA)),
+            _sign(localSessionPk, CertLib.checkpointDigest(cpStep3))
+        );
+
+        // Identical checkpoint digest -> BadOutcome.
+        vm.expectRevert(CrossChainGame.BadOutcome.selector);
+        game.proveLocalEquivocation(
+            id,
+            cpA,
+            cpA,
+            _sign(localSessionPk, CertLib.checkpointDigest(cpA)),
+            _sign(localSessionPk, CertLib.checkpointDigest(cpA))
+        );
+
+        // Signed by counterparty instead of local session key -> BadSignature.
+        vm.expectRevert(CrossChainGame.BadSignature.selector);
+        game.proveLocalEquivocation(
+            id,
+            cpA,
+            cpB,
+            _sign(counterSessionPk, CertLib.checkpointDigest(cpA)),
+            _sign(counterSessionPk, CertLib.checkpointDigest(cpB))
+        );
+    }
+
+    function test_claimExtended_capsChallengeWindowExtensionToOnce() public {
+        bytes32 id = keccak256("single-extension-cap");
+        _fund(id, true);
+        _lock(id, STAKE);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        bytes32 ld = CertLib.matchLiveDigest(cert);
+
+        (,,,,,,,,,,,, uint64 initialWindowEnd,,,,) = game.matches(id);
+        assertFalse(game.claimExtended(id));
+
+        // Warp inside the post-matchDeadline claim window so response extension triggers.
+        uint64 tFirst = initialWindowEnd - 300;
+        vm.warp(tFirst);
+        CertLib.Checkpoint memory cp1 = _checkpoint(ld, 1, 255, 255, 1);
+        game.openClaim(cert, cp1, _liveSigs(cert), _cpSigs(cp1));
+
+        // First supersede extends claimWindowEnd once to tFirst + CLAIM_WINDOW.
+        CertLib.Checkpoint memory cp3 = _checkpoint(ld, 3, 1, 255, 1);
+        game.supersedeClaim(cert, cp3, _cpSigs(cp3));
+
+        uint64 expectedExtendedEnd = tFirst + CLAIM_WINDOW;
+        (,,,,,,,,,,,, uint64 afterFirstSupersede,,,, uint64 timeoutOpensAfterFirst) = game.matches(id);
+        assertTrue(game.claimExtended(id), "claimExtended flipped on first challenge");
+        assertEq(afterFirstSupersede, expectedExtendedEnd, "window extended once");
+        assertGe(timeoutOpensAfterFirst, expectedExtendedEnd + 2 * uint64(SKEW), "timeout backstop stays past window");
+
+        // Advance time further and supersede again with terminal step 4:
+        // stepCount updates, but claimWindowEnd MUST NOT extend a second time!
+        vm.warp(tFirst + 1000);
+        CertLib.Checkpoint memory cp4 = _checkpoint(ld, 4, 0, 1, 1);
+        game.supersedeClaim(cert, cp4, _cpSigs(cp4));
+
+        (,,,,,,,,,,,, uint64 afterSecondSupersede,, uint8 stepAfterSecond,,) = game.matches(id);
+        assertEq(stepAfterSecond, 4, "higher step still accepted");
+        assertEq(afterSecondSupersede, expectedExtendedEnd, "no second window extension");
+    }
+
+    function test_settle_symmetricGuard_allowsClaimingWithoutEquivocation_blocksWithEquivocation() public {
+        // Case 1: Status.Claiming with NO equivocation -> mutual OutcomeCert settle succeeds!
+        bytes32 idClean = keccak256("settle-from-claiming-clean");
+        _fund(idClean, true);
+        _lock(idClean, STAKE);
+        CertLib.MatchLiveCert memory certClean = _cert(idClean, true, STAKE);
+        bytes32 ldClean = CertLib.matchLiveDigest(certClean);
+        CertLib.Checkpoint memory cp1 = _checkpoint(ldClean, 1, 255, 255, 2); // P2 winning timeout claim
+        game.openClaim(certClean, cp1, _liveSigs(certClean), _cpSigs(cp1));
+        assertEq(uint8(_status(idClean)), uint8(CrossChainGame.Status.Claiming));
+
+        CertLib.OutcomeCert memory ocClean = _outcome(idClean, ldClean, CertLib.HETERO_P1_WINS);
+        uint256 before = player.balance + game.withdrawable(player);
+        game.settle(certClean, ocClean, _liveSigs(certClean), _ocSigs(ocClean));
+        assertEq(uint8(_status(idClean)), uint8(CrossChainGame.Status.Settled), "settled cleanly from Claiming");
+        assertEq(player.balance + game.withdrawable(player), before + 2 * STAKE, "winner paid");
+
+        // Case 2: Status.Claiming with counterEquivocated == true -> mutual settle reverts InvalidStatus.
+        bytes32 idCounterEq = keccak256("settle-from-claiming-counter-eq");
+        _fund(idCounterEq, true);
+        _lock(idCounterEq, STAKE);
+        CertLib.MatchLiveCert memory certEq = _cert(idCounterEq, true, STAKE);
+        bytes32 ldEq = CertLib.matchLiveDigest(certEq);
+        CertLib.Checkpoint memory a = _checkpoint(ldEq, 2, 255, 255, 1);
+        CertLib.Checkpoint memory b = _checkpoint(ldEq, 2, 255, 255, 2);
+        game.submitEquivocationProof(
+            certEq,
+            a,
+            b,
+            _sign(counterSessionPk, CertLib.checkpointDigest(a)),
+            _sign(counterSessionPk, CertLib.checkpointDigest(b))
+        );
+
+        CertLib.OutcomeCert memory ocEq = _outcome(idCounterEq, ldEq, CertLib.HETERO_P2_WINS);
+        vm.expectRevert(CrossChainGame.InvalidStatus.selector);
+        game.settle(certEq, ocEq, _liveSigs(certEq), _ocSigs(ocEq));
+    }
+
+    function test_storageLayout_preExistingSlotsPinned() public {
+        assertEq(address(uint160(uint256(vm.load(address(game), bytes32(uint256(0)))))), owner, "slot 0: _owner");
+        assertEq(vm.load(address(game), bytes32(uint256(4))), CHAIN_TAG, "slot 4: chainTag");
+        assertEq(uint256(vm.load(address(game), bytes32(uint256(6)))), game.poolFree(), "slot 6: poolFree");
+
+        bytes32 probeId = keccak256("xchain-slot-probe");
+        vm.store(address(game), keccak256(abi.encode(probeId, uint256(13))), bytes32(uint256(1)));
+        assertTrue(game.localEquivocated(probeId), "slot 13: localEquivocated");
+
+        vm.store(address(game), keccak256(abi.encode(probeId, uint256(14))), bytes32(uint256(1)));
+        assertTrue(game.claimExtended(probeId), "slot 14: claimExtended");
+    }
 }

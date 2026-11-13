@@ -175,6 +175,17 @@ pub async fn initialize_with_dependencies(
     }
     let game_sessions = Arc::new(game_sessions.with_shutdown(ct.child_token()));
     let session_binding = Arc::new(McpSessionBinding::new(Arc::clone(&game_db)));
+    let inbox_session_binding = Arc::new(McpSessionBinding::new_inbox(Arc::clone(&game_db)));
+
+    // game-api's session secret: lets /internal/* calls carry a short-lived
+    // token for the MCP-verified wallet (required once game-api enforces
+    // INTERNAL_AUTH_REQUIRED) and keys deterministic webhook secret derivation
+    // and cross-pod Mcp-Session-Id HMAC verification.
+    let game_jwt_secret = config::load_optional_secret(&cfg.gcp_project_id, "jwt-secret").await;
+    if game_jwt_secret.is_none() {
+        tracing::warn!("jwt-secret unavailable — game-api /internal/* calls go unauthenticated");
+    }
+
     // This service's public base URL, handed to the delivery workflow for
     // its POST /internal/webhooks/delivery-result callback. Empty → the
     // workflow skips callbacks (failure counters simply don't advance).
@@ -195,7 +206,8 @@ pub async fn initialize_with_dependencies(
             responder_url,
             responder_secret,
         )
-        .with_board_webhook_url(board_webhook_url),
+        .with_board_webhook_url(board_webhook_url)
+        .with_webhook_pepper(game_jwt_secret.clone()),
     );
     let inbox_seed_wallets = parse_inbox_seed_wallets(&load_env_or("INBOX_SEED_WALLETS", ""));
     // Default false: prod hides the 19 testnet-gated tools from tools/list
@@ -207,20 +219,12 @@ pub async fn initialize_with_dependencies(
         "true" | "1"
     );
 
-    // game-api's session secret: lets /internal/* calls carry a short-lived
-    // token for the MCP-verified wallet (required once game-api enforces
-    // INTERNAL_AUTH_REQUIRED). Optional so local/standalone runs still start.
-    let game_jwt_secret = config::load_optional_secret(&cfg.gcp_project_id, "jwt-secret").await;
-    if game_jwt_secret.is_none() {
-        tracing::warn!("jwt-secret unavailable — game-api /internal/* calls go unauthenticated");
-    }
-
-    // Browser REST twins for the agent inbox (/internal/inbox/*): the SAME
-    // session-binding + inbox handles the MCP tools use, with its own
-    // game-api adapter for the auth-challenge passthrough.
+    // Browser REST twins for the agent inbox (/internal/inbox/*): isolated
+    // `inbox_http_sessions` binding namespace (so X-Inbox-Session tokens cannot
+    // cross-hijack Mcp-Session-Id bindings or vice versa) + shared inbox store.
     let inbox_http_state = Arc::new(inbox_http::InboxHttpState {
         game_api: game_proxy(&cfg.game_api_url, &dependencies, game_jwt_secret.clone())?,
-        session_binding: Arc::clone(&session_binding),
+        session_binding: inbox_session_binding,
         inbox: Arc::clone(&inbox_state),
         inbox_seed_wallets: inbox_seed_wallets.clone(),
         jwt_secret: game_jwt_secret.clone(),
@@ -575,6 +579,7 @@ fn build_router(
     mcp_services: McpServices,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> axum::Router {
+    let mcp_session_key = Arc::new(derive_mcp_session_key(verify_state.jwt_secret.as_deref()));
     let verify_state_get = verify_state.clone();
     let verify_state_post = verify_state;
 
@@ -793,17 +798,9 @@ fn build_router(
             );
     }
 
-    // Apply body limit to the internal HTTP surface ONLY. The MCP
-    // streamable-http transport at /mcp manages its own framing; layering
-    // a body limit before nest_service excludes it from the cap.
     let routed_services = mcp_services.clone();
     let http_rate_limiters = rate_limit::HttpRateLimiters::default();
     router
-        .layer(axum::extract::DefaultBodyLimit::max(1_048_576))
-        .layer(axum::middleware::from_fn_with_state(
-            http_rate_limiters,
-            rate_limit::enforce_http_rate_limit,
-        ))
         .route(
             "/mcp",
             axum::routing::any(move |req: axum::extract::Request| {
@@ -811,15 +808,25 @@ fn build_router(
                 async move { services.handle(req).await }
             }),
         )
+        .layer(axum::extract::DefaultBodyLimit::max(1_048_576))
+        // Thread a server-signed Mcp-Session-Id on /mcp and reject unissued or
+        // forged Mcp-Session-Id headers with 404 before dispatching tool calls.
+        .layer(axum::middleware::from_fn_with_state(
+            mcp_session_key,
+            ensure_mcp_session_id,
+        ))
+        // HTTP rate limit wraps EVERYTHING (including /mcp) so public MCP
+        // transport calls cannot bypass per-IP rate limiting.
+        .layer(axum::middleware::from_fn_with_state(
+            http_rate_limiters,
+            rate_limit::enforce_http_rate_limit,
+        ))
         // In-flight counter wraps EVERYTHING (incl. /mcp) so the scaling
         // metric reflects real agent load, not just the internal API.
         .layer(axum::middleware::from_fn_with_state(
             inflight,
             track_inflight,
         ))
-        // Thread a stable Mcp-Session-Id so the Firestore wallet binding has a
-        // cross-pod correlation key even though the transport is stateless.
-        .layer(axum::middleware::from_fn(ensure_mcp_session_id))
 }
 
 type McpTransport = StreamableHttpService<SwarmTipsMcp, LocalSessionManager>;
@@ -839,6 +846,8 @@ fn streamable_service(
     )
 }
 
+const MAX_MCP_REQUEST_BYTES: usize = 1_048_576;
+
 #[derive(Clone)]
 struct McpServices {
     swarm: McpTransport,
@@ -848,6 +857,23 @@ struct McpServices {
 
 impl McpServices {
     async fn handle(&self, req: axum::extract::Request) -> axum::response::Response {
+        use axum::response::IntoResponse;
+
+        let (parts, body) = req.into_parts();
+        let bytes = match axum::body::to_bytes(body, MAX_MCP_REQUEST_BYTES).await {
+            Ok(b) => b,
+            Err(_) => {
+                return (
+                    axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                    axum::Json(serde_json::json!({
+                        "error": "payload_too_large",
+                        "message": "MCP request body exceeds 1 MiB limit.",
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        let req = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
         let surface = req
             .headers()
             .get(axum::http::header::HOST)
@@ -911,29 +937,109 @@ async fn related_servers_page(headers: axum::http::HeaderMap) -> axum::Json<serd
     axum::Json(surfaces::related_directory(surface))
 }
 
-/// Ensure every `/mcp` response carries an `Mcp-Session-Id`. In stateless rmcp
-/// mode the transport mints none, but the Firestore wallet binding
-/// (`session_binding.rs`) and `resolve_wallet` key on this header. So we thread
-/// a stable id: echo the client's if present, otherwise mint one on the first
-/// (`initialize`) call. A spec-compliant MCP client captures the header from the
-/// response and echoes it on every later request, giving cross-pod-stable wallet
-/// correlation without any pod-local session state.
+/// Derive a domain-separated 256-bit HMAC key for `Mcp-Session-Id` tokens so
+/// all Cloud Run replicas sharing `jwt-secret` accept each other's session IDs
+/// while rejecting arbitrary/forged client-chosen IDs.
+fn derive_mcp_session_key(jwt_secret: Option<&str>) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    if let Some(secret) = jwt_secret.map(str::trim).filter(|s| !s.is_empty()) {
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+        mac.update(b"swarm-mcp-session-id-v1");
+        let bytes = mac.finalize().into_bytes();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        return out;
+    }
+    let mut fallback = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut fallback);
+    fallback
+}
+
+/// Mint a signed `{uuid_v4}.{hmac_sha256_hex}` `Mcp-Session-Id` token.
+pub(crate) fn mint_signed_mcp_session_id(key: &[u8; 32]) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(b"mcp-session-v1:");
+    mac.update(id.as_bytes());
+    let tag = hex::encode(mac.finalize().into_bytes());
+    format!("{id}.{tag}")
+}
+
+/// Verify a signed `{uuid}.{hmac_sha256_hex}` `Mcp-Session-Id` token in constant time.
+pub(crate) fn verify_signed_mcp_session_id(token: &str, key: &[u8; 32]) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let Some((id, tag_hex)) = token.trim().split_once('.') else {
+        return false;
+    };
+    if uuid::Uuid::parse_str(id).is_err() || tag_hex.len() != 64 {
+        return false;
+    }
+    let Ok(tag_bytes) = hex::decode(tag_hex) else {
+        return false;
+    };
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(b"mcp-session-v1:");
+    mac.update(id.as_bytes());
+    mac.verify_slice(&tag_bytes).is_ok()
+}
+
+/// Ensure every `/mcp` request carries a server-issued, HMAC-signed `Mcp-Session-Id`.
+/// Unissued or tampered `Mcp-Session-Id` headers on `/mcp` are rejected with
+/// `404 Not Found` per the MCP Streamable HTTP specification so clients cannot
+/// pre-fixate predictable session IDs or probe another caller's session.
 async fn ensure_mcp_session_id(
-    req: axum::extract::Request,
+    axum::extract::State(key): axum::extract::State<Arc<[u8; 32]>>,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
     let header = axum::http::HeaderName::from_static("mcp-session-id");
     let is_mcp = req.uri().path().starts_with("/mcp");
-    let client_id = req
+    if !is_mcp {
+        return next.run(req).await;
+    }
+
+    let provided = req
         .headers()
         .get(&header)
-        .filter(|v| !v.as_bytes().iter().all(|b| b.is_ascii_whitespace()))
-        .cloned();
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
+    let session_value = match provided {
+        Some(existing) => {
+            if !verify_signed_mcp_session_id(&existing, &key) {
+                return (
+                    axum::http::StatusCode::NOT_FOUND,
+                    axum::Json(serde_json::json!({
+                        "error": "invalid_mcp_session",
+                        "message": "Invalid or unissued Mcp-Session-Id; initialize without Mcp-Session-Id to obtain a server-signed session.",
+                    })),
+                )
+                    .into_response();
+            }
+            axum::http::HeaderValue::from_str(&existing).ok()
+        }
+        None => {
+            let minted = mint_signed_mcp_session_id(&key);
+            let val = axum::http::HeaderValue::from_str(&minted).ok();
+            if let Some(ref v) = val {
+                req.headers_mut().insert(header.clone(), v.clone());
+            }
+            val
+        }
+    };
+
     let mut resp = next.run(req).await;
-    if is_mcp && !resp.headers().contains_key(&header) {
-        let value = client_id
-            .or_else(|| axum::http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()).ok());
-        if let Some(value) = value {
+    if !resp.headers().contains_key(&header) {
+        if let Some(value) = session_value {
             resp.headers_mut().insert(header, value);
         }
     }
@@ -1174,6 +1280,15 @@ async fn build_verify_tx_handler(
         )
             .into_response();
     };
+
+    if validation_network == "mainnet" {
+        return (
+            StatusCode::BAD_REQUEST,
+            BUILD_VERIFY_CORS,
+            "legacy verify_task is restricted to devnet; mainnet tasks settle via VOW v1 verify_task_attested",
+        )
+            .into_response();
+    }
 
     let client = state.orchestrator.authenticated(token.to_owned());
     let vdata = match client
@@ -1548,7 +1663,7 @@ mod readiness_tests {
 
     #[tokio::test]
     async fn build_verify_tx_handler_one_hop_forwards_caller_bearer_and_returns_intent() {
-        use wiremock::matchers::{header, method, path};
+        use wiremock::matchers::{header, method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let orchestrator_mock = MockServer::start().await;
@@ -1571,6 +1686,7 @@ mod readiness_tests {
         // Orchestrator MUST receive the caller's exact Bearer JWT (no minted internal token).
         Mock::given(method("POST"))
             .and(path("/tasks/task-42/build-verify"))
+            .and(query_param("network", "devnet"))
             .and(header("authorization", format!("Bearer {user_jwt}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "task_id": "task-42",
@@ -1613,12 +1729,26 @@ mod readiness_tests {
             rpc_url_devnet: rpc_mock.uri(),
         };
 
-        // 1-hop body: omit task_pda, score, and hash!
+        // Mainnet legacy verify_task is retired -> 400 Bad Request upfront.
+        let mainnet_resp = super::build_verify_tx_handler(
+            bearer_headers(&user_jwt),
+            axum::Json(serde_json::json!({
+                "task_id": "task-42",
+                "payer": payer,
+                "network": "mainnet",
+            })),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(mainnet_resp.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        // 1-hop devnet body: omit task_pda, score, and hash!
         let resp = super::build_verify_tx_handler(
             bearer_headers(&user_jwt),
             axum::Json(serde_json::json!({
                 "task_id": "task-42",
                 "payer": payer,
+                "network": "devnet",
             })),
             state.clone(),
         )
@@ -1647,11 +1777,83 @@ mod readiness_tests {
             axum::Json(serde_json::json!({
                 "task_id": "task-42",
                 "payer": payer,
+                "network": "devnet",
                 "score": 999_999u64,
             })),
             state,
         )
         .await;
         assert_eq!(bad_resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn mcp_session_id_middleware_signs_and_rejects_unissued_tokens() {
+        let key = std::sync::Arc::new(super::derive_mcp_session_key(Some(TEST_JWT_SECRET)));
+        let app = axum::Router::new()
+            .route(
+                "/mcp",
+                axum::routing::post(|headers: axum::http::HeaderMap| async move {
+                    let sid = headers
+                        .get("mcp-session-id")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    (axum::http::StatusCode::OK, sid)
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                key.clone(),
+                super::ensure_mcp_session_id,
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/mcp");
+
+        // 1. No Mcp-Session-Id -> server mints a signed token and injects it into both req and resp.
+        let init_resp = client.post(&url).send().await.unwrap();
+        assert_eq!(init_resp.status(), reqwest::StatusCode::OK);
+        let minted = init_resp
+            .headers()
+            .get("mcp-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(super::verify_signed_mcp_session_id(&minted, &key));
+        assert_eq!(init_resp.text().await.unwrap(), minted);
+
+        // 2. Echoing the server-signed Mcp-Session-Id succeeds.
+        let ok_resp = client
+            .post(&url)
+            .header("mcp-session-id", &minted)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok_resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(ok_resp.text().await.unwrap(), minted);
+
+        // 3. Client-chosen / forged Mcp-Session-Id -> 404 Not Found.
+        let forged = client
+            .post(&url)
+            .header("mcp-session-id", uuid::Uuid::new_v4().to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let tampered = format!("{minted}00");
+        let tampered_resp = client
+            .post(&url)
+            .header("mcp-session-id", tampered)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(tampered_resp.status(), reqwest::StatusCode::NOT_FOUND);
     }
 }

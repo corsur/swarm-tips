@@ -263,6 +263,17 @@ pub mod coordination_game {
         instructions::xchain::submit_equivocation_proof(ctx, cert, cp_a, cp_b, sig_a, sig_b)
     }
 
+    pub fn prove_local_equivocation(
+        ctx: Context<ProveLocalEquivocation>,
+        match_id: [u8; 32],
+        cp_a: cert::CheckpointArg,
+        cp_b: cert::CheckpointArg,
+        sig_a: [u8; 65],
+        sig_b: [u8; 65],
+    ) -> Result<()> {
+        instructions::xchain::prove_local_equivocation(ctx, match_id, cp_a, cp_b, sig_a, sig_b)
+    }
+
     pub fn settle_xclaim(ctx: Context<SettleXClaim>) -> Result<()> {
         instructions::xchain::settle_xclaim(ctx)
     }

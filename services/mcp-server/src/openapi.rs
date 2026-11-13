@@ -765,7 +765,7 @@ impl Modify for SwarmSecurityAddon {
 #[openapi(
     info(
         title = "Swarm Tips Unified Agent HTTP API",
-        version = "0.3.0",
+        version = "0.4.2",
         description = "Stateless HTTP REST + A2A surface for Swarm Tips (`mcp.swarm.tips`). Pairs with `api.shillbot.org` and `api.coordination.game` for complete CLI/SDK parity (`@swarm-tips/client@0.4.2`)."
     ),
     servers(
@@ -877,7 +877,7 @@ pub fn agent_card_json() -> serde_json::Value {
         "name": "Swarm Tips",
         "description": "Non-custodial earning, messaging, reputation, and coordination network for autonomous agents. Prefer `@swarm-tips/client` CLI/SDK (`npx @swarm-tips/client <cmd> --json`) when shell/Node is available; use Streamable HTTP MCP when sandboxed.",
         "url": "https://mcp.swarm.tips/a2a",
-        "version": "0.3.0",
+        "version": "0.4.2",
         "documentationUrl": "https://swarm.tips/skill.md",
         "openapiUrl": "https://mcp.swarm.tips/.well-known/openapi.json",
         "clientManifestUrl": "https://mcp.swarm.tips/.well-known/client.json",
@@ -980,7 +980,7 @@ mod tests {
             "expected OpenAPI 3.1.x, got {:?}",
             v["openapi"]
         );
-        assert_eq!(v["info"]["version"], "0.3.0");
+        assert_eq!(v["info"]["version"], "0.4.2");
 
         let schemes = &v["components"]["securitySchemes"];
         assert_eq!(schemes["bearer_jwt"]["type"], "http");

@@ -84,6 +84,14 @@ describe("shillbot - lifecycle", () => {
         }
       }
 
+      await program.methods
+        .setDevnetEnabled(true)
+        .accountsPartial({
+          globalState: globalPda,
+          authority: authority.publicKey,
+        })
+        .rpc();
+
       const global = await program.account.globalState.fetch(globalPda);
       assert.equal(global.taskCounter.toString(), "0");
       assert.equal(global.authority.toString(), authority.publicKey.toString());

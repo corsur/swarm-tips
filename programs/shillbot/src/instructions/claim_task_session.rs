@@ -145,6 +145,7 @@ fn validate_claim_session_inputs(
         agent_state.claimed_count < global.max_concurrent_claims,
         ShillbotError::MaxConcurrentClaimsExceeded
     );
+    crate::instructions::claim_task::validate_strike_cooldown(agent_state, now)?;
     Ok(())
 }
 
@@ -239,7 +240,7 @@ mod tests {
             total_score_sum: 0,
             total_tasks_claimed: 0,
             total_challenges_lost: 0,
-            _reserved: [0u8; 8],
+            last_strike_at: 0,
             bump: 0,
         }
     }

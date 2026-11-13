@@ -141,7 +141,14 @@ fn validate_create_task_inputs(
         ShillbotError::InvalidPlatform
     );
 
-    validate_platform_and_kind(platform, content_hash, requires_approval, verification_kind)?;
+    validate_platform_and_kind(
+        platform,
+        content_hash,
+        requires_approval,
+        verification_kind,
+        global.devnet_enabled,
+        escrow_lamports,
+    )?;
 
     let platform_bit = 1u16
         .checked_shl(platform as u32)
@@ -152,6 +159,19 @@ fn validate_create_task_inputs(
     );
 
     require!(deadline > now, ShillbotError::DeadlineExpired);
+    let max_horizon = if platform == shared::PlatformType::OnChainAction.discriminant() {
+        crate::constants::MAX_ONCHAIN_ACTION_DEADLINE_HORIZON_SECONDS
+    } else {
+        crate::constants::MAX_TASK_DEADLINE_HORIZON_SECONDS
+    };
+    let max_deadline = now
+        .checked_add(max_horizon)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    require!(
+        deadline <= max_deadline,
+        ShillbotError::DeadlineTooFarInFuture
+    );
+
     require!(submit_margin >= 0, ShillbotError::InvalidParameter);
     require!(
         claim_buffer >= submit_margin,
@@ -169,29 +189,45 @@ fn validate_create_task_inputs(
 }
 
 /// Validate platform-specific invariants (`verification_kind`, `content_hash`,
-/// and `requires_approval` for `OnChainAction` and `LeanProof`).
-fn validate_platform_and_kind(
+/// `requires_approval`, minimum escrow, and devnet gating for `OnChainAction` and `LeanProof`).
+pub(crate) fn validate_platform_and_kind(
     platform: u8,
     content_hash: &[u8; 32],
     requires_approval: bool,
     verification_kind: u8,
+    devnet_enabled: bool,
+    escrow_lamports: u64,
 ) -> Result<()> {
-    // verification_kind is append-only: 0 | 1 today. Kind 1
-    // (DeterministicAttested) ↔ the LeanProof platform, both directions —
-    // a deterministic task on an oracle platform (or vice versa) would
-    // dead-end at verify time, so reject at the boundary.
+    // verification_kind is append-only: 0 | 1 today.
+    // - LeanProof requires kind 1 (DeterministicAttested).
+    // - OnChainAction supports kind 1 on mainnet & devnet; kind 0 is devnet-only.
+    // - Social platforms require kind 0.
     require!(
         verification_kind <= 1,
         ShillbotError::InvalidVerificationKind
     );
     let is_lean = platform == shared::PlatformType::LeanProof.discriminant();
-    require!(
-        (verification_kind == 1) == is_lean,
-        ShillbotError::VerificationKindMismatch
-    );
-    if platform == shared::PlatformType::OnChainAction.discriminant() {
+    let is_onchain_action = platform == shared::PlatformType::OnChainAction.discriminant();
+    if is_lean {
+        require!(
+            verification_kind == 1,
+            ShillbotError::VerificationKindMismatch
+        );
+    } else if is_onchain_action {
         require!(*content_hash != [0u8; 32], ShillbotError::InvalidParameter);
         require!(!requires_approval, ShillbotError::InvalidParameter);
+        if verification_kind == 0 {
+            require!(devnet_enabled, ShillbotError::DevnetOnly);
+        }
+        require!(
+            escrow_lamports >= crate::constants::MIN_CAMPAIGN_ESCROW_LAMPORTS,
+            ShillbotError::BelowMinimumEscrow
+        );
+    } else {
+        require!(
+            verification_kind == 0,
+            ShillbotError::VerificationKindMismatch
+        );
     }
     Ok(())
 }
@@ -206,7 +242,11 @@ fn validate_timing_overrides(
     verification_timeout_override: u32,
 ) -> Result<()> {
     let is_onchain_action = platform == shared::PlatformType::OnChainAction.discriminant();
-    let min_attestation_delay = if is_onchain_action { 60 } else { 3_600 };
+    let min_attestation_delay = if is_onchain_action {
+        crate::constants::MIN_ONCHAIN_ACTION_ATTESTATION_DELAY_SECONDS
+    } else {
+        3_600
+    };
     let min_challenge_window = if is_onchain_action { 900 } else { 3_600 };
 
     // Timing-override bounds: 0 means "use the global default", any nonzero
@@ -235,6 +275,13 @@ fn validate_timing_overrides(
     } else {
         global.attestation_delay_seconds
     };
+    if is_onchain_action {
+        require!(
+            effective_attestation_delay
+                >= i64::from(crate::constants::MIN_ONCHAIN_ACTION_ATTESTATION_DELAY_SECONDS),
+            ShillbotError::TimingOverrideOutOfBounds
+        );
+    }
     let effective_verification_timeout = if verification_timeout_override > 0 {
         i64::from(verification_timeout_override)
     } else {
@@ -439,20 +486,26 @@ mod tests {
             rate_limit_window_seconds: 3_600,
             max_tasks_per_rate_window: 100,
             dispute_resolution_window_seconds: 86_400,
-            _reserved: [0; 4],
+            devnet_enabled: false,
+            _reserved: [0; 3],
             bump: 255,
         }
     }
 
     #[test]
     fn lower_timing_overrides_are_gated_strictly_to_onchain_action() {
-        let global = sample_global();
+        let mut global = sample_global();
         let onchain = shared::PlatformType::OnChainAction.discriminant();
         let x_platform = shared::PlatformType::Twitter.discriminant();
 
         assert!(validate_timing_overrides(&global, onchain, 60, 900, 0).is_ok());
         assert!(validate_timing_overrides(&global, onchain, 59, 900, 0).is_err());
         assert!(validate_timing_overrides(&global, onchain, 60, 899, 0).is_err());
+
+        // Effective attestation delay < 60 via global default must also fail on OnChainAction
+        global.attestation_delay_seconds = 30;
+        assert!(validate_timing_overrides(&global, onchain, 0, 900, 0).is_err());
+        global.attestation_delay_seconds = 86_400;
 
         assert!(validate_timing_overrides(&global, x_platform, 60, 3_600, 0).is_err());
         assert!(validate_timing_overrides(&global, x_platform, 3_600, 900, 0).is_err());
@@ -462,9 +515,74 @@ mod tests {
     #[test]
     fn onchain_action_requires_nonzero_content_hash_and_forbids_approval() {
         let onchain = shared::PlatformType::OnChainAction.discriminant();
-        assert!(validate_platform_and_kind(onchain, &[0xAB; 32], false, 0).is_ok());
-        assert!(validate_platform_and_kind(onchain, &[0u8; 32], false, 0).is_err());
-        assert!(validate_platform_and_kind(onchain, &[0xAB; 32], true, 0).is_err());
-        assert!(validate_platform_and_kind(onchain, &[0xAB; 32], false, 1).is_err());
+        let min_escrow = crate::constants::MIN_CAMPAIGN_ESCROW_LAMPORTS;
+
+        // Kind 1 (DeterministicAttested) allowed on mainnet (devnet_enabled = false) and devnet
+        assert!(
+            validate_platform_and_kind(onchain, &[0xAB; 32], false, 1, false, min_escrow).is_ok()
+        );
+        assert!(
+            validate_platform_and_kind(onchain, &[0xAB; 32], false, 1, true, min_escrow).is_ok()
+        );
+
+        // Kind 0 gated strictly to devnet_enabled
+        assert!(
+            validate_platform_and_kind(onchain, &[0xAB; 32], false, 0, false, min_escrow).is_err()
+        );
+        assert!(
+            validate_platform_and_kind(onchain, &[0xAB; 32], false, 0, true, min_escrow).is_ok()
+        );
+
+        // Content hash != 0, requires_approval == false, escrow >= 5_000_000
+        assert!(
+            validate_platform_and_kind(onchain, &[0u8; 32], false, 1, false, min_escrow).is_err()
+        );
+        assert!(
+            validate_platform_and_kind(onchain, &[0xAB; 32], true, 1, false, min_escrow).is_err()
+        );
+        assert!(
+            validate_platform_and_kind(onchain, &[0xAB; 32], false, 1, false, min_escrow - 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn onchain_action_and_task_deadlines_are_bounded() {
+        let global = sample_global();
+        let onchain = shared::PlatformType::OnChainAction.discriminant();
+        let now = 1_700_000_000i64;
+        let max_onchain = now + crate::constants::MAX_ONCHAIN_ACTION_DEADLINE_HORIZON_SECONDS;
+        assert!(validate_create_task_inputs(
+            &global,
+            onchain,
+            &[0xAB; 32],
+            max_onchain,
+            600,
+            1_200,
+            crate::constants::MIN_CAMPAIGN_ESCROW_LAMPORTS,
+            60,
+            900,
+            0,
+            false,
+            1,
+            now,
+        )
+        .is_ok());
+        assert!(validate_create_task_inputs(
+            &global,
+            onchain,
+            &[0xAB; 32],
+            max_onchain + 1,
+            600,
+            1_200,
+            crate::constants::MIN_CAMPAIGN_ESCROW_LAMPORTS,
+            60,
+            900,
+            0,
+            false,
+            1,
+            now,
+        )
+        .is_err());
     }
 }

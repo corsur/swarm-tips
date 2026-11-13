@@ -16,9 +16,9 @@ open scoped BigOperators Matrix
     correlation conjecture. -/
 def statementProp : Prop :=
   ∃ (C : ℝ), 0 ≤ C ∧
-    ∀ (P : Zeta23.Defs.Params) (_hValid : P.Valid) (_hLam : P.lam = 1)
-      (T : ℝ) (_hT : P.T0 ≤ T),
-      let n := P.M + 1
-      let G : Matrix (Fin n) (Fin n) ℝ := fun i j => P.Gentry T i.val j.val
+    ∀ (P : Zeta23.Params) (_hValid : P.Valid) (_hLam : P.lam = 1)
+      (T : ℝ) (_hT : 2 * Real.pi * Real.exp (8 * P.w) ≤ T),
+      let n := P.d T
+      let G : Matrix (Fin n) (Fin n) ℝ := fun i j => P.Gentry T (i.val : ℤ) (j.val : ℤ)
       |Matrix.trace (G ^ 4) - 2 * (Matrix.trace (G ^ 2)) ^ 2| ≤
         C * (1 / (n : ℝ)) * (Matrix.trace (G ^ 2)) ^ 2

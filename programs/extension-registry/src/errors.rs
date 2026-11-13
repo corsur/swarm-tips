@@ -34,4 +34,13 @@ pub enum ExtensionRegistryError {
 
     #[msg("Direct lamport transfer attempted from an account not owned by this program")]
     InvalidLamportSource,
+
+    #[msg("Unbond has already been requested for this extension")]
+    UnbondAlreadyRequested,
+
+    #[msg("Unbond must be requested before withdrawing an extension")]
+    UnbondNotRequested,
+
+    #[msg("Unbond cooldown period has not elapsed yet")]
+    UnbondCooldownActive,
 }

@@ -406,7 +406,7 @@ mod tests {
             evm_account_id("0x996213ed4099707059b8b5d7489ffF23dAC9770d").expect("valid address");
         assert_eq!(
             acct,
-            "eip155:8453:0x996213ed4099707059b8b5d7489ffF23dAC9770d"
+            "eip155:8453:0x996213ed4099707059b8b5d7489fff23dac9770d"
         );
         // The CAIP-10 must round-trip through chain-core's parser.
         let parsed = chain_core::AccountId::parse(&acct).expect("valid CAIP-10");
@@ -421,7 +421,7 @@ mod tests {
         .expect("devnet EVM address");
         assert_eq!(
             sepolia,
-            "eip155:84532:0x996213ed4099707059b8b5d7489ffF23dAC9770d"
+            "eip155:84532:0x996213ed4099707059b8b5d7489fff23dac9770d"
         );
 
         let eth = evm_account_id_for_chain(
@@ -430,7 +430,7 @@ mod tests {
             None,
         )
         .expect("ethereum mainnet address");
-        assert_eq!(eth, "eip155:1:0x996213ed4099707059b8b5d7489ffF23dAC9770d");
+        assert_eq!(eth, "eip155:1:0x996213ed4099707059b8b5d7489fff23dac9770d");
     }
 
     #[test]
@@ -631,7 +631,7 @@ mod tests {
             resolve_xchain_wallet("eip155:8453:0x996213ed4099707059b8b5d7489ffF23dAC9770d")
                 .expect("evm caip-10");
         assert_eq!(chain, "eip155:8453");
-        assert_eq!(addr, "0x996213ed4099707059b8b5d7489ffF23dAC9770d");
+        assert_eq!(addr, "0x996213ed4099707059b8b5d7489fff23dac9770d");
 
         // Solana: a raw base58 pubkey maps to the default mainnet cross-chain chain.
         let (chain, addr) =

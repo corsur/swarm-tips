@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {VerifyLib} from "../src/VerifyLib.sol";
 
 /// @notice Proves the Solidity verification-schema encoder is byte-for-byte
@@ -138,5 +139,67 @@ contract VerifyLibTest is Test {
             base != VerifyLib.attestationDigest(_fill(0x61), _fill(0x63), 42, d, VerifyLib.MAX_SCORE),
             "contract not bound"
         );
+    }
+
+    function recoverExternal(bytes32 digest, bytes memory sig) external pure returns (address) {
+        return VerifyLib.recoverSigner(digest, sig);
+    }
+
+    function test_policyAndPlatformConstants_matchVerifySchema() public pure {
+        assertEq(
+            VerifyLib.ONCHAIN_ACTION_POLICY_V1_ID,
+            0x68ebd4b18b7400c67bca5d46db6d16847070c4d883517a1fdeb5c399ccef3d9f,
+            "onchain-action-policy-v1 id"
+        );
+        assertEq(
+            VerifyLib.LEAN_POLICY_V2_ID,
+            0x3fd32d5ba49af64e26ecefc7262234e14732feedbebcceaaac3c998c1a4d4ea0,
+            "lean-policy-v2 id"
+        );
+        assertEq(
+            VerifyLib.LEAN_POLICY_V3_ID,
+            0x984853e2ec3a1c9dcc9866121120400f09dd9352863dcd0472807259872809a3,
+            "lean-policy-v3 id"
+        );
+        assertEq(
+            VerifyLib.LEAN_POLICY_V4_ID,
+            0xd6a00cfb261c7136c74c6f29d53a2cfcdbbca12d520c63c25b09b90569f20533,
+            "lean-policy-v4 id"
+        );
+        assertEq(VerifyLib.PLATFORM_ONCHAIN_ACTION, 11, "PlatformType::OnChainAction == 11");
+    }
+
+    function test_recoverSigner_enforcesValidV_lowS_andNonZeroAddress() public {
+        uint256 pk = 0xBEEF1234;
+        address expected = vm.addr(pk);
+        bytes32 digest = keccak256("phase-4-1-strict-ecdsa");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        bytes memory validSig = abi.encodePacked(r, s, v);
+        assertEq(this.recoverExternal(digest, validSig), expected, "canonical signature recovers");
+
+        // Reject non-65-byte signatures.
+        vm.expectRevert(abi.encodeWithSelector(ECDSA.ECDSAInvalidSignatureLength.selector, 64));
+        this.recoverExternal(digest, new bytes(64));
+
+        // Reject v != 27 && v != 28 (e.g. raw parity 0/1 or EIP-155 v = 29).
+        uint8[4] memory badVs = [uint8(0), uint8(1), uint8(26), uint8(29)];
+        for (uint256 i = 0; i < badVs.length; i++) {
+            bytes memory badVSig = abi.encodePacked(r, s, badVs[i]);
+            vm.expectRevert(ECDSA.ECDSAInvalidSignature.selector);
+            this.recoverExternal(digest, badVSig);
+        }
+
+        // Reject malleable upper-half s > secp256k1n / 2.
+        uint256 curveOrder = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+        bytes32 highS = bytes32(curveOrder - uint256(s));
+        uint8 flippedV = v == 27 ? 28 : 27;
+        bytes memory malleableSig = abi.encodePacked(r, highS, flippedV);
+        vm.expectRevert(abi.encodeWithSelector(ECDSA.ECDSAInvalidSignatureS.selector, highS));
+        this.recoverExternal(digest, malleableSig);
+
+        // Reject invalid r = 0 (ecrecover returns address(0)).
+        bytes memory zeroRSig = abi.encodePacked(bytes32(0), s, v);
+        vm.expectRevert(ECDSA.ECDSAInvalidSignature.selector);
+        this.recoverExternal(digest, zeroRSig);
     }
 }

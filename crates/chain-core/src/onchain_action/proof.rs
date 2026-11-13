@@ -115,7 +115,7 @@ impl OnChainProofRef {
         })
     }
 
-    /// Global replay-lock key (`M1b`):
+    /// Per-event/instruction replay-lock key (`M1b`):
     /// `sha256("{caip2}:{canonical_target}:{canonical_tx_id}:{index}")`.
     ///
     /// For `eip155`, `canonical_target` is lowercase `0x` + 40 hex chars; for `solana`,
@@ -131,10 +131,48 @@ impl OnChainProofRef {
         sha256(preimage.as_bytes())
     }
 
-    /// Hex-encoded Firestore document ID for `consumed_onchain_proofs/{doc_id}`.
+    /// Transaction-wide replay-lock key used whenever a predicate evaluates
+    /// transaction-level native value (`EvmFieldRef::TxValue` or `min_lamports > 0`),
+    /// preventing a batched multi-call transaction from satisfying `N` tasks with `1x` value:
+    /// `sha256("{caip2}:{canonical_target}:{canonical_tx_id}:tx")`.
+    pub fn tx_replay_lock_id(&self, canonical_target: &str) -> [u8; 32] {
+        let preimage = format!(
+            "{}:{}:{}:tx",
+            self.chain_id.as_str(),
+            canonical_target,
+            self.tx_id
+        );
+        sha256(preimage.as_bytes())
+    }
+
+    /// Select the sound replay-lock digest for `spec` (`tx`-scoped if `spec.uses_tx_wide_value()`,
+    /// otherwise event/instruction-index-scoped).
+    pub fn effective_replay_lock_id(
+        &self,
+        spec: &crate::onchain_action::OnChainActionSpec,
+    ) -> [u8; 32] {
+        let target = spec.canonical_target_address();
+        if spec.uses_tx_wide_value() {
+            self.tx_replay_lock_id(&target)
+        } else {
+            self.replay_lock_id(&target)
+        }
+    }
+
+    /// Hex-encoded Firestore document ID for `consumed_onchain_proofs/{doc_id}`
+    /// (per-event/instruction scope).
     pub fn replay_lock_doc_id(&self, canonical_target: &str) -> String {
         let digest = self.replay_lock_id(canonical_target);
-        // Strip leading `0x` for clean 64-char hex Firestore document IDs.
+        crate::onchain_action::crypto::encode_0x_hex(&digest)[2..].to_string()
+    }
+
+    /// Hex-encoded Firestore document ID for `consumed_onchain_proofs/{doc_id}`
+    /// scoped automatically to `tx` when `spec.uses_tx_wide_value()` is true.
+    pub fn effective_replay_lock_doc_id(
+        &self,
+        spec: &crate::onchain_action::OnChainActionSpec,
+    ) -> String {
+        let digest = self.effective_replay_lock_id(spec);
         crate::onchain_action::crypto::encode_0x_hex(&digest)[2..].to_string()
     }
 

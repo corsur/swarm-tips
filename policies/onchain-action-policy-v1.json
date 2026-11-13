@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "name": "onchain-action-attester-policy",
+  "version": 1,
+  "mode": "deterministic-rpc-quorum",
+  "statement_commitment": "sha256(jcs(OnChainActionSpec))",
+  "artifact_commitment": "sha256(content_id)",
+  "finality": "chain-registry-finalized",
+  "quorum_mode": "m-of-n-independent-providers",
+  "reopen_on_zero_score": true,
+  "max_proof_bytes": 256,
+  "max_rpc_response_bytes": 262144
+}

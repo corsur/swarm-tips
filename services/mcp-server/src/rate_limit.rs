@@ -13,7 +13,6 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -28,7 +27,6 @@ pub const PUBLIC_GET_PER_MINUTE: usize = 120;
 pub const PUBLIC_WRITE_PER_MINUTE: usize = 60;
 
 const WINDOW_SECS: u64 = 60;
-const INBOX_SESSION_HEADER: &str = "x-inbox-session";
 const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
 
 const RATE_LIMIT_CORS: [(&str, &str); 4] = [
@@ -69,8 +67,10 @@ impl RateLimiter {
     /// Check and record one request for `key` at `now`.
     ///
     /// Returns `Ok(())` when allowed, or `Err(retry_after_secs)` when the
-    /// caller exceeded `max_requests` in `window` OR when all `max_buckets`
-    /// slots are occupied by active callers (fail-closed C8 bound).
+    /// caller exceeded `max_requests` in `window`. When `max_buckets` is
+    /// reached, expired buckets are swept first; if still full, the
+    /// least-recently-seen bucket is evicted so memory stays strictly bounded
+    /// without allowing spoofed keys to trigger a global 429 lockout (`HIGH-11`).
     pub fn check_at(&self, key: &str, now: Instant) -> Result<(), u64> {
         let mut map = self
             .buckets
@@ -93,7 +93,13 @@ impl RateLimiter {
         if map.len() >= self.max_buckets {
             sweep_expired(&mut map, now, self.window);
             if map.len() >= self.max_buckets {
-                return Err(self.window.as_secs().max(1));
+                if let Some(lru_key) = map
+                    .iter()
+                    .min_by_key(|(_, deque)| deque.back().copied())
+                    .map(|(k, _)| k.clone())
+                {
+                    map.remove(&lru_key);
+                }
             }
         }
 
@@ -144,61 +150,54 @@ fn retry_after_secs(oldest: Instant, now: Instant, window: Duration) -> u64 {
     }
 }
 
-/// Derive a bounded, secret-safe rate-limit key from request headers / caller context.
+/// Extract the verified client IP behind GCP External Application Load Balancer
+/// (`<untrusted_prefix...>, <real_client_ip>, <gcp_lb_ip>`) or single-hop proxy.
 ///
-/// Priority:
-/// 1. `Authorization: Bearer <token>` -> `"bearer:<sha256-hex>"` (never stores raw JWT)
-/// 2. `X-Inbox-Session: <id>` -> `"sess:<sha256-hex>"`
-/// 3. `api_transport::current_caller()` peer IP -> `"ip:<addr>"`
-/// 4. Leftmost `X-Forwarded-For` hop -> `"ip:<hop>"` (bounded to 64 chars or hashed)
-/// 5. `"ip:unknown"`
-pub fn caller_rate_key(headers: &HeaderMap) -> String {
-    if let Some(raw) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-    {
-        if let Some((scheme, token)) = raw.trim().split_once(' ') {
-            let token = token.trim();
-            if scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() {
-                return format!("bearer:{}", sha256_hex(token.as_bytes()));
+/// Never trusts leftmost `X-Forwarded-For` prefixes when 3+ hops are present (`CRIT-05`).
+pub fn extract_gcp_lb_client_ip(headers: &HeaderMap) -> Option<std::net::IpAddr> {
+    let raw = headers.get(X_FORWARDED_FOR_HEADER)?.to_str().ok()?;
+    extract_gcp_lb_client_ip_str(raw)
+}
+
+pub fn extract_gcp_lb_client_ip_str(raw: &str) -> Option<std::net::IpAddr> {
+    let hops: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    match hops.as_slice() {
+        [] => None,
+        [single] => single.parse::<std::net::IpAddr>().ok(),
+        many => {
+            let candidate = many[many.len().saturating_sub(2)];
+            if let Ok(ip) = candidate.parse::<std::net::IpAddr>() {
+                Some(ip)
+            } else {
+                many.last()
+                    .and_then(|last| last.parse::<std::net::IpAddr>().ok())
             }
         }
     }
+}
 
-    if let Some(sess) = headers
-        .get(INBOX_SESSION_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return format!("sess:{}", sha256_hex(sess.as_bytes()));
-    }
-
+/// Derive a bounded, spoof-resistant network rate-limit key (`CRIT-05`).
+///
+/// Pre-authentication HTTP rate limiting MUST key on network peer / LB-verified
+/// client IP rather than unverified `Authorization` or `X-Inbox-Session` headers
+/// (which an attacker can randomize on every request to bypass rate limits).
+pub fn caller_rate_key(headers: &HeaderMap) -> String {
     if let Some(caller) = api_transport::current_caller() {
         return format!("ip:{}", caller.peer.ip());
     }
 
-    if let Some(hop) = headers
-        .get(X_FORWARDED_FOR_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|raw| raw.split(',').next())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if hop.len() <= 64 {
-            return format!("ip:{hop}");
-        }
-        return format!("ip:{}", sha256_hex(hop.as_bytes()));
+    if let Some(ip) = extract_gcp_lb_client_ip(headers) {
+        return format!("ip:{ip}");
     }
 
     "ip:unknown".to_string()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
-/// Pair of read (`GET`) and write (`POST`/`DELETE`/other) rate limiters for HTTP routes.
+/// Pair of read (`GET`) and write (`POST`/`DELETE`/`other`) rate limiters for HTTP routes.
 #[derive(Clone)]
 pub struct HttpRateLimiters {
     pub read: Arc<RateLimiter>,
@@ -315,60 +314,66 @@ mod tests {
     }
 
     #[test]
-    fn c8_max_buckets_sweeps_expired_and_fails_closed_when_saturated() {
-        let limiter = RateLimiter::with_max_buckets(5, Duration::from_secs(60), 3);
+    fn c8_max_buckets_sweeps_expired_and_lru_evicts_without_global_lockout() {
+        let limiter = RateLimiter::with_max_buckets(2, Duration::from_secs(60), 3);
         let t0 = Instant::now();
+        let t1 = t0.checked_add(Duration::from_secs(1)).expect("t1");
+        let t2 = t0.checked_add(Duration::from_secs(2)).expect("t2");
+        let t3 = t0.checked_add(Duration::from_secs(3)).expect("t3");
 
         assert!(limiter.check_at("k1", t0).is_ok());
-        assert!(limiter.check_at("k2", t0).is_ok());
-        assert!(limiter.check_at("k3", t0).is_ok());
+        assert!(limiter.check_at("k2", t1).is_ok());
+        assert!(limiter.check_at("k3", t2).is_ok());
         assert_eq!(limiter.bucket_count(), 3);
 
-        // At t0 + 5s all 3 buckets are still active -> 4th distinct key MUST fail closed (429)
-        // and bucket_count MUST never exceed max_buckets (3).
-        let t_active = t0.checked_add(Duration::from_secs(5)).expect("t_active");
-        let err = limiter
-            .check_at("k4", t_active)
-            .expect_err("must fail closed when MAX_BUCKETS saturated");
-        assert_eq!(err, 60);
+        // Refresh k1 at t3 so k2 becomes the least-recently-used key (last seen t1).
+        assert!(limiter.check_at("k1", t3).is_ok());
+        // k1 has now used 2/2 requests -> a 3rd call on k1 must be rate-limited.
+        assert!(limiter.check_at("k1", t3).is_err());
+
+        // New caller k4 at t3 MUST succeed by evicting LRU k2 (never global 429 lockout)
+        // while keeping bucket_count strictly <= 3 and preserving k1's exhausted state!
+        assert!(limiter.check_at("k4", t3).is_ok());
         assert_eq!(limiter.bucket_count(), 3);
+        assert!(
+            limiter.check_at("k1", t3).is_err(),
+            "recent active abuser k1 must remain rate-limited after LRU eviction"
+        );
 
-        // Existing bucket k1 is still allowed up to its per-key quota.
-        assert!(limiter.check_at("k1", t_active).is_ok());
-
-        // At t0 + 61s, k2 and k3 have expired (k1 still has t_active = +5s -> expires at +65s).
-        // New key k4 triggers sweep of k2 & k3 and succeeds!
-        let t_swept = t0.checked_add(Duration::from_secs(61)).expect("t_swept");
-        assert!(limiter.check_at("k4", t_swept).is_ok());
-        assert_eq!(limiter.bucket_count(), 2); // k1 + k4
+        // At t0 + 62s, k3 (t2) expired, while k1 (t3) and k4 (t3) remain active.
+        let t_swept = t0.checked_add(Duration::from_secs(62)).expect("t_swept");
+        assert!(limiter.check_at("k5", t_swept).is_ok());
+        assert_eq!(limiter.bucket_count(), 3); // k1 + k4 + k5
     }
 
     #[test]
-    fn caller_rate_key_hashes_bearer_and_session_and_falls_back_to_xff() {
+    fn caller_rate_key_uses_right_hand_gcp_lb_xff_and_ignores_spoofed_headers() {
         let mut h = HeaderMap::new();
         assert_eq!(caller_rate_key(&h), "ip:unknown");
 
+        // 2-hop GCP LB XFF (`<real_client>, <gfe_lb>`): picks `hops[len - 2]`.
         h.insert(
             X_FORWARDED_FOR_HEADER,
-            HeaderValue::from_static("203.0.113.7, 10.0.0.1"),
+            HeaderValue::from_static("203.0.113.7, 34.102.136.180"),
         );
         assert_eq!(caller_rate_key(&h), "ip:203.0.113.7");
 
-        h.insert(INBOX_SESSION_HEADER, HeaderValue::from_static("sess-abc"));
-        let sess_key = caller_rate_key(&h);
-        assert!(sess_key.starts_with("sess:"), "{sess_key}");
-        assert!(!sess_key.contains("sess-abc"), "must hash session id");
+        // Attacker prepends spoofed leftmost XFF hops (`1.1.1.1, 8.8.8.8`):
+        // GCP LB appends `203.0.113.7, 34.102.136.180` -> still keys on `203.0.113.7`!
+        h.insert(
+            X_FORWARDED_FOR_HEADER,
+            HeaderValue::from_static("1.1.1.1, 8.8.8.8, 203.0.113.7, 34.102.136.180"),
+        );
+        assert_eq!(caller_rate_key(&h), "ip:203.0.113.7");
 
+        // Random unverified Authorization or X-Inbox-Session headers MUST NOT
+        // mint fresh pre-auth rate-limit buckets for the same client IP!
+        h.insert("x-inbox-session", HeaderValue::from_static("random-sess-1"));
         h.insert(
             axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer secret.jwt.payload"),
+            HeaderValue::from_static("Bearer forged.random.jwt"),
         );
-        let bearer_key = caller_rate_key(&h);
-        assert!(bearer_key.starts_with("bearer:"), "{bearer_key}");
-        assert!(
-            !bearer_key.contains("secret.jwt.payload"),
-            "must never retain raw JWT in rate-limit key"
-        );
+        assert_eq!(caller_rate_key(&h), "ip:203.0.113.7");
     }
 
     #[tokio::test]

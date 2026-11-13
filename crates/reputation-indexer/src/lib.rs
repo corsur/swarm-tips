@@ -148,10 +148,22 @@ pub fn build_reputation(
 
     let edges: Vec<eigentrust::TrustEdge> = unique
         .iter()
-        .map(|d| eigentrust::TrustEdge {
-            from: d.from.clone(),
-            to: d.to.clone(),
-            weight: d.weight.clamp(0.0, MAX_EDGE_WEIGHT),
+        .map(|d| {
+            let max_w = if d.source == "bug_bounty" {
+                MAX_EDGE_WEIGHT
+            } else {
+                1.0
+            };
+            let w = if d.weight.is_finite() {
+                d.weight.clamp(0.0, max_w)
+            } else {
+                0.0
+            };
+            eigentrust::TrustEdge {
+                from: d.from.clone(),
+                to: d.to.clone(),
+                weight: w,
+            }
         })
         .collect();
 
@@ -193,7 +205,7 @@ pub fn build_reputation(
     }
 
     let mut capped_scores = result.scores;
-    cap_at_entry_points(&mut capped_scores, &unique, pre_trusted);
+    cap_at_entry_points(&mut capped_scores, &edges, pre_trusted, config.alpha);
 
     // Rank by score, descending; ties broken by wallet for determinism.
     let mut scored: Vec<(String, f64)> = capped_scores.into_iter().collect();
@@ -251,60 +263,165 @@ pub fn build_reputation(
     })
 }
 
-/// Path-monotonicity cap: trust flows outward from `pre_trusted` anchors, so no
-/// non-anchor wallet may outrank the strongest anchored chain connecting it to
-/// `pre_trusted`. Without this widest-path cap, a mutual-settlement Sybil ring
-/// sitting behind a single low-trust entry point traps random-walk mass and
-/// outranks its own entry point (`BH-03`).
+/// Cycle-safe entry-point cap (`BH-03` + `HIGH-19`):
+/// Condenses non-anchor peers into strongly connected components (Tarjan SCC)
+/// and propagates exact `(1.0 - alpha)` row-normalized trust across the acyclic
+/// condensation DAG.
 ///
-/// Zero-weight edges (e.g., lost challenges) transmit zero trust capacity.
+/// Any internal cycle — including a 2-wallet `anchor -> entry_sybil <-> sybil_2`
+/// mutual-settlement loop directly adjacent to an anchor — forms a single SCC
+/// whose capacity is bounded strictly by its external incoming trust from
+/// `pre_trusted` anchors and strictly upstream SCCs, preventing random-walk
+/// mass trapping from amplifying `entry_sybil` above its direct anchor allocation.
 fn cap_at_entry_points(
     scores: &mut HashMap<String, f64>,
-    edges: &[&TrustEdgeDoc],
+    edges: &[eigentrust::TrustEdge],
     pre_trusted: &HashSet<String>,
+    alpha: f64,
 ) {
-    let mut caps: HashMap<String, f64> = scores
-        .keys()
-        .map(|k| {
-            let init = if pre_trusted.contains(k) {
-                f64::INFINITY
-            } else {
-                0.0
-            };
-            (k.clone(), init)
-        })
-        .collect();
-    let max_passes = scores.len();
-    for _ in 0..=max_passes {
-        let mut changed = false;
-        for d in edges {
-            if d.weight <= 0.0 || d.from == d.to || pre_trusted.contains(&d.to) {
-                continue;
-            }
-            let inflow = if pre_trusted.contains(&d.from) {
-                f64::INFINITY
-            } else {
-                let from_cap = caps.get(&d.from).copied().unwrap_or(0.0);
-                let from_score = scores.get(&d.from).copied().unwrap_or(0.0);
-                from_cap.min(from_score)
-            };
-            let entry = caps.entry(d.to.clone()).or_insert(0.0);
-            if inflow > *entry {
-                *entry = inflow;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    for (wallet, score) in scores.iter_mut() {
-        if pre_trusted.contains(wallet) {
+    let decay = (1.0 - alpha).clamp(0.0, 1.0);
+    let mut out_sum: HashMap<&str, f64> = HashMap::new();
+    let mut pair_weight: HashMap<(&str, &str), f64> = HashMap::new();
+    for e in edges {
+        if e.weight <= 0.0 || !e.weight.is_finite() || e.from == e.to {
             continue;
         }
-        let cap = caps.get(wallet).copied().unwrap_or(0.0);
-        if *score > cap {
-            *score = cap;
+        *out_sum.entry(e.from.as_str()).or_insert(0.0) += e.weight;
+        *pair_weight
+            .entry((e.from.as_str(), e.to.as_str()))
+            .or_insert(0.0) += e.weight;
+    }
+
+    let mut non_anchors: Vec<String> = scores
+        .keys()
+        .filter(|w| !pre_trusted.contains(w.as_str()))
+        .cloned()
+        .collect();
+    non_anchors.sort_unstable();
+    if non_anchors.is_empty() {
+        return;
+    }
+    let node_idx: HashMap<&str, usize> = non_anchors
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (w.as_str(), i))
+        .collect();
+
+    let n = non_anchors.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut incoming_anchors: Vec<Vec<(&str, f64)>> = vec![Vec::new(); n];
+    let mut incoming_non_anchors: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+
+    for (&(u, v), &w) in &pair_weight {
+        let Some(&v_idx) = node_idx.get(v) else {
+            // `v` is an anchor; anchors are never capped.
+            continue;
+        };
+        if pre_trusted.contains(u) {
+            incoming_anchors[v_idx].push((u, w));
+        } else if let Some(&u_idx) = node_idx.get(u) {
+            adj[u_idx].push(v_idx);
+            incoming_non_anchors[v_idx].push((u_idx, w));
+        }
+    }
+    for list in &mut adj {
+        list.sort_unstable();
+    }
+
+    // Iterative Tarjan SCC over `0..n`. Tarjan emits SCCs in reverse topological
+    // order (sinks first, sources last), so `.reverse()` gives exact source-to-sink order.
+    struct TarjanState {
+        index_counter: usize,
+        indices: Vec<usize>,
+        lowlink: Vec<usize>,
+        on_stack: Vec<bool>,
+        stack: Vec<usize>,
+        sccs: Vec<Vec<usize>>,
+    }
+    fn strongconnect(v: usize, adj: &[Vec<usize>], st: &mut TarjanState) {
+        st.indices[v] = st.index_counter;
+        st.lowlink[v] = st.index_counter;
+        st.index_counter = st.index_counter.saturating_add(1);
+        st.stack.push(v);
+        st.on_stack[v] = true;
+
+        for &w in &adj[v] {
+            if st.indices[w] == usize::MAX {
+                strongconnect(w, adj, st);
+                st.lowlink[v] = st.lowlink[v].min(st.lowlink[w]);
+            } else if st.on_stack[w] {
+                st.lowlink[v] = st.lowlink[v].min(st.indices[w]);
+            }
+        }
+
+        if st.lowlink[v] == st.indices[v] {
+            let mut comp = Vec::new();
+            while let Some(w) = st.stack.pop() {
+                st.on_stack[w] = false;
+                comp.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            st.sccs.push(comp);
+        }
+    }
+
+    let mut tarjan = TarjanState {
+        index_counter: 0,
+        indices: vec![usize::MAX; n],
+        lowlink: vec![usize::MAX; n],
+        on_stack: vec![false; n],
+        stack: Vec::with_capacity(n),
+        sccs: Vec::new(),
+    };
+    for v in 0..n {
+        if tarjan.indices[v] == usize::MAX {
+            strongconnect(v, &adj, &mut tarjan);
+        }
+    }
+    tarjan.sccs.reverse();
+
+    let mut comp_of = vec![0usize; n];
+    for (cid, comp) in tarjan.sccs.iter().enumerate() {
+        for &v in comp {
+            comp_of[v] = cid;
+        }
+    }
+
+    let mut caps = vec![0.0f64; n];
+    for (cid, comp) in tarjan.sccs.iter().enumerate() {
+        let mut external_inflow = 0.0f64;
+        for &v in comp {
+            for &(anchor, w) in &incoming_anchors[v] {
+                let denom = out_sum.get(anchor).copied().unwrap_or(0.0);
+                if denom > 0.0 {
+                    let anchor_score = scores.get(anchor).copied().unwrap_or(0.0);
+                    external_inflow += decay * anchor_score * (w / denom);
+                }
+            }
+            for &(u_idx, w) in &incoming_non_anchors[v] {
+                if comp_of[u_idx] != cid {
+                    let u_name = non_anchors[u_idx].as_str();
+                    let denom = out_sum.get(u_name).copied().unwrap_or(0.0);
+                    if denom > 0.0 {
+                        let u_score = scores.get(u_name).copied().unwrap_or(0.0);
+                        let u_eff = caps[u_idx].min(u_score);
+                        external_inflow += decay * u_eff * (w / denom);
+                    }
+                }
+            }
+        }
+        for &v in comp {
+            caps[v] = external_inflow;
+        }
+    }
+
+    for (idx, wallet) in non_anchors.iter().enumerate() {
+        if let Some(score) = scores.get_mut(wallet.as_str()) {
+            if *score > caps[idx] {
+                *score = caps[idx];
+            }
         }
     }
 }
@@ -794,5 +911,44 @@ mod tests {
         assert!(score_of("ring_a") <= bridge_score + 1e-12);
         assert!(score_of("ring_b") <= bridge_score + 1e-12);
         assert!(score_of("honest_top") > bridge_score);
+    }
+
+    #[test]
+    fn direct_anchor_mutual_loop_cannot_amplify_entry_sybil() {
+        // HIGH-19 regression: `anchor` pays `honest_top` (weight 0.9) and
+        // `entry_sybil` (weight 0.1). `entry_sybil` and `sybil_2` settle back
+        // and forth (`entry_sybil <-> sybil_2`, weight 1.0). Previously
+        // `pre_trusted.contains(from)` set `caps[entry_sybil] = f64::INFINITY`,
+        // letting the 2-wallet loop amplify `entry_sybil` ~5.26x and outrank
+        // `honest_top`. With SCC condensation, `{entry_sybil, sybil_2}` is capped
+        // at `(1 - alpha) * s(anchor) * (0.1 / 1.0)`, 9x below `honest_top`.
+        let cfg = EigenTrustConfig::default();
+        let docs = vec![
+            edge("t1", "anchor", "honest_top", 0.9),
+            edge("t2", "anchor", "entry_sybil", 0.1),
+            edge("t3", "entry_sybil", "sybil_2", 1.0),
+            edge("t4", "sybil_2", "entry_sybil", 1.0),
+        ];
+        let build =
+            build_reputation(&docs, &pre(&["anchor"]), &cfg, chrono::Utc::now()).expect("build");
+        let score_of = |w: &str| {
+            build
+                .agents
+                .iter()
+                .find(|a| a.wallet == w)
+                .expect("present")
+                .eigentrust_score
+        };
+        let anchor_score = score_of("anchor");
+        let honest_score = score_of("honest_top");
+        let entry_cap = (1.0 - cfg.alpha) * anchor_score * 0.1;
+        assert!(
+            score_of("entry_sybil") <= entry_cap + 1e-12,
+            "entry_sybil {} exceeded direct anchor allocation {}",
+            score_of("entry_sybil"),
+            entry_cap
+        );
+        assert!(score_of("sybil_2") <= entry_cap + 1e-12);
+        assert!(honest_score > score_of("entry_sybil") * 8.5);
     }
 }

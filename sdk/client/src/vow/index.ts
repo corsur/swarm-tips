@@ -12,7 +12,18 @@ export type {
 
 export { anchorDiscriminator, bytesEqual } from "./discriminator.js";
 export { checkSchema, asV1 } from "./schema.js";
-export { verifyV1, verifyV1Schema, verifyV1OnChain } from "./verify.js";
+export {
+  DEFAULT_MAX_VOW_BYTES,
+  DEFAULT_SCORE_MAX,
+  fetchVowAttestationJson,
+  validateVowUrl,
+  verifyV1,
+  verifyV1OnChain,
+  verifyV1Schema,
+  verifyVow,
+  type FetchVowOptions,
+  type VerifyVowOptions,
+} from "./verify.js";
 
 export {
   decodeShillbotTask,

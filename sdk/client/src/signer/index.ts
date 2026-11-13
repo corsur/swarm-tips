@@ -2,6 +2,7 @@ export {
   redactSigner,
   type EvmCallRequest,
   type EvmSwarmSigner,
+  type EvmTransactionSigner,
   type SolanaSwarmSigner,
   type SwarmSigner,
 } from "./types.js";

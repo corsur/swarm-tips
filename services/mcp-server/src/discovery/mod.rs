@@ -1007,19 +1007,40 @@ pub fn search_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter
     )
 }
 
+fn constant_time_eq_str(a: &str, b: &str) -> bool {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    if ab.len() != bb.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in ab.iter().zip(bb.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn bearer_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>) -> bool {
     let provided = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "));
-    matches!((expected_key, provided), (Some(exp), Some(got)) if !exp.is_empty() && got == exp)
+    matches!(
+        (expected_key, provided),
+        (Some(exp), Some(got)) if !exp.is_empty() && constant_time_eq_str(got, exp)
+    )
 }
 
 fn refresh_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>) -> bool {
-    if headers
-        .get(COMBINED_CALLBACK_VERIFIED_HEADER)
-        .and_then(|v| v.to_str().ok())
-        == Some("1")
+    // Only trust `x-combined-callback-verified: 1` when dispatched in-process by
+    // `combined-api` (`api_transport::current_caller().is_some()`). External HTTP
+    // requests to standalone `mcp.swarm.tips` have `current_caller().is_none()`
+    // and MUST NOT bypass authentication with a forged header (`CRIT-15`).
+    if api_transport::current_caller().is_some()
+        && headers
+            .get(COMBINED_CALLBACK_VERIFIED_HEADER)
+            .and_then(|v| v.to_str().ok())
+            == Some("1")
     {
         return true;
     }
@@ -1319,8 +1340,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn refresh_authorized_accepts_verified_callback_header_or_bearer_key() {
+    #[tokio::test]
+    async fn refresh_authorized_accepts_verified_callback_header_or_bearer_key() {
         let mut h = axum::http::HeaderMap::new();
         assert!(!refresh_authorized(&h, Some("secret-key")));
 
@@ -1328,7 +1349,17 @@ mod tests {
             COMBINED_CALLBACK_VERIFIED_HEADER,
             axum::http::HeaderValue::from_static("1"),
         );
-        assert!(refresh_authorized(&h, None));
+        // External HTTP callers (no in-process CallerContext) cannot spoof the header.
+        assert!(!refresh_authorized(&h, None));
+
+        // Trusted in-process combined-api caller context authorizes the verified callback.
+        let caller = api_transport::Caller {
+            peer: "127.0.0.1:4321".parse().unwrap(),
+            user_agent: None,
+        };
+        let accepted =
+            api_transport::with_caller(caller, async { refresh_authorized(&h, None) }).await;
+        assert!(accepted);
 
         let mut h2 = axum::http::HeaderMap::new();
         h2.insert(

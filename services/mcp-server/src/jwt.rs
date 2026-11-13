@@ -3,8 +3,7 @@
 //!
 //! Mirrors `module_transport::wallet` in `coordination-app`:
 //! - End-user tokens are verified with the raw `jwt_secret` (`HS256`) and must
-//!   carry `typ == "user"` + matching `aud` (or legacy `typ == None` before
-//!   [`LEGACY_TYP_NONE_MAX_EXP`]).
+//!   carry `typ == "user"` + matching `aud`.
 //! - Internal service tokens (`mint_svc_token`) are signed with a domain-separated
 //!   HMAC-SHA256 subkey (`derive_svc_key`, message `b"swarm:jwt:svc:v1"`), carry
 //!   `typ: "svc"` and `aud: ["game-internal"]`, have a 60s TTL, and require a
@@ -20,37 +19,38 @@ type HmacSha256 = Hmac<Sha256>;
 /// Lifetime of a minted internal service token (seconds).
 pub const INTERNAL_TOKEN_TTL_SECS: u64 = 60;
 
-// TODO(2026-11-12): Phase-1 exit criterion — remove legacy typ:None branch >=24h post-deploy
-pub const LEGACY_TYP_NONE_MAX_EXP: u64 = 1_794_475_200;
-
 const SVC_KEY_DOMAIN: &[u8] = b"swarm:jwt:svc:v1";
 
-/// Normalize a wallet identifier: lowercases `0x`-prefixed EVM addresses (and
-/// trailing `0x` segments in `eip155:` CAIP-10 strings) while preserving
-/// exact case for Solana base58 pubkeys.
+/// Normalize a wallet identifier via [`chain_core::CanonicalWallet`]: lowercases
+/// `0x`-prefixed EVM addresses and `eip155:` CAIP-10 account segments while
+/// preserving exact case for Solana base58 pubkeys.
 pub fn normalize_wallet(wallet: &str) -> String {
-    if wallet.starts_with("0x") || wallet.starts_with("0X") {
-        return wallet.to_ascii_lowercase();
+    let trimmed = wallet.trim();
+    if let Ok(canon) = chain_core::CanonicalWallet::parse(trimmed) {
+        return canon.as_str().to_owned();
     }
-    if wallet.starts_with("eip155:") {
-        if let Some(idx) = wallet.rfind(':') {
-            let (prefix, addr) = wallet.split_at(idx);
+    if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+        return trimmed.to_ascii_lowercase();
+    }
+    if trimmed.starts_with("eip155:") {
+        if let Some(idx) = trimmed.rfind(':') {
+            let (prefix, addr) = trimmed.split_at(idx);
             return format!("{prefix}{}", addr.to_ascii_lowercase());
         }
     }
-    wallet.to_owned()
+    trimmed.to_owned()
 }
 
-/// Compare two wallet strings: case-insensitive for `0x`-prefixed EVM
-/// addresses, exact case-sensitive match for Solana base58 pubkeys.
+/// Compare two wallet strings in canonical form: case-insensitive for bare `0x`
+/// and `eip155:` CAIP-10 EVM addresses, exact case-sensitive match for Solana base58.
 pub fn wallets_match(a: &str, b: &str) -> bool {
-    let a_evm = a.starts_with("0x") || a.starts_with("0X");
-    let b_evm = b.starts_with("0x") || b.starts_with("0X");
-    if a_evm || b_evm {
-        a_evm && b_evm && a.eq_ignore_ascii_case(b)
-    } else {
-        a == b
+    if let (Ok(ca), Ok(cb)) = (
+        chain_core::CanonicalWallet::parse(a),
+        chain_core::CanonicalWallet::parse(b),
+    ) {
+        return ca == cb;
     }
+    normalize_wallet(a) == normalize_wallet(b)
 }
 
 /// Derive the internal service-token signing key from `jwt_secret` via
@@ -99,9 +99,8 @@ pub fn mint_svc_token(
 }
 
 /// Verify an end-user HS256 JWT signed with raw `jwt_secret.as_bytes()`,
-/// enforcing `exp > now` (0 leeway), non-empty `wallet`, `typ == "user"` with
-/// `expected_aud` in `aud` (or legacy `typ == None` bounded by
-/// [`LEGACY_TYP_NONE_MAX_EXP`]), and rejecting `typ == "svc"` or any other type.
+/// enforcing `exp > now` (0 leeway), non-empty `wallet`, `typ == "user"`, and
+/// `expected_aud` in `aud` (`MED-10`: legacy `typ: None` tokens are retired).
 pub fn verify_user_jwt(
     token: &str,
     jwt_secret: &str,
@@ -114,7 +113,7 @@ pub fn verify_user_jwt(
     verify_user_jwt_at(token, jwt_secret, expected_aud, now)
 }
 
-fn verify_user_jwt_at(
+pub fn verify_user_jwt_at(
     token: &str,
     jwt_secret: &str,
     expected_aud: &str,
@@ -185,12 +184,7 @@ fn verify_user_jwt_at(
             }
             Ok(normalize_wallet(wallet))
         }
-        None | Some(serde_json::Value::Null) => {
-            if exp > LEGACY_TYP_NONE_MAX_EXP {
-                return Err("legacy_token_past_sunset");
-            }
-            Ok(normalize_wallet(wallet))
-        }
+        None | Some(serde_json::Value::Null) => Err("missing_token_type"),
         Some(_) => Err("invalid_token_type"),
     }
 }
@@ -301,13 +295,11 @@ mod tests {
     fn c7_svc_token_is_rejected_by_verify_user_jwt_even_if_forged_with_raw_secret() {
         let verified = VerifiedWallet::new_for_test(SOL_WALLET);
         let svc_token = mint_svc_token(&verified, SECRET).expect("mints");
-        // Rejected at cryptographic boundary (different HMAC key):
         assert_eq!(
             verify_user_jwt(&svc_token, SECRET, "mcp"),
             Err("invalid_signature")
         );
 
-        // Even if someone signs typ="svc" with the raw secret + aud=["mcp"], claim gate rejects:
         let raw_signed_svc = sign_hs256_for_test(
             &json!({
                 "wallet": SOL_WALLET,
@@ -352,51 +344,47 @@ mod tests {
     }
 
     #[test]
-    fn verify_user_jwt_enforces_audience_expiry_and_legacy_typ_none_sunset() {
-        let wrong_aud =
-            mint_user_jwt_for_test(SOL_WALLET, SECRET, &["shillbot", "game"], future_exp());
+    fn verify_user_jwt_enforces_audience_expiry_and_rejects_missing_typ() {
+        let now = 1_794_400_000_u64;
+        let wrong_aud = mint_user_jwt_for_test(
+            SOL_WALLET,
+            SECRET,
+            &["shillbot", "game"],
+            now.saturating_add(300),
+        );
         assert_eq!(
-            verify_user_jwt(&wrong_aud, SECRET, "mcp"),
+            verify_user_jwt_at(&wrong_aud, SECRET, "mcp", now),
             Err("invalid_audience")
         );
 
-        let now = 1_794_400_000_u64;
         let expired = mint_user_jwt_for_test(SOL_WALLET, SECRET, &["mcp"], now);
         assert_eq!(
             verify_user_jwt_at(&expired, SECRET, "mcp", now),
             Err("token_expired")
         );
 
-        // Legacy typ:None before sunset succeeds:
-        let legacy_ok = sign_hs256_for_test(
+        // Legacy typ:None tokens are unconditionally rejected (`MED-10`).
+        let legacy_typ_none = sign_hs256_for_test(
             &json!({
                 "wallet": SOL_WALLET,
-                "exp": LEGACY_TYP_NONE_MAX_EXP,
+                "exp": now.saturating_add(300),
+                "aud": ["mcp"],
             }),
             SECRET.as_bytes(),
         );
         assert_eq!(
-            verify_user_jwt_at(&legacy_ok, SECRET, "mcp", now).expect("legacy accepted"),
-            SOL_WALLET
-        );
-
-        // Legacy typ:None after sunset is rejected:
-        let legacy_past = sign_hs256_for_test(
-            &json!({
-                "wallet": SOL_WALLET,
-                "exp": LEGACY_TYP_NONE_MAX_EXP.saturating_add(1),
-            }),
-            SECRET.as_bytes(),
-        );
-        assert_eq!(
-            verify_user_jwt_at(&legacy_past, SECRET, "mcp", now),
-            Err("legacy_token_past_sunset")
+            verify_user_jwt_at(&legacy_typ_none, SECRET, "mcp", now),
+            Err("missing_token_type")
         );
     }
 
     #[test]
-    fn wallets_match_is_case_insensitive_for_evm_and_exact_for_solana() {
+    fn wallets_match_is_case_insensitive_for_evm_and_caip10_and_exact_for_solana() {
         assert!(wallets_match(EVM_MIXED, EVM_LOWER));
+        assert!(wallets_match(
+            &format!("eip155:8453:{EVM_MIXED}"),
+            &format!("eip155:8453:{EVM_LOWER}")
+        ));
         assert!(!wallets_match(EVM_LOWER, SOL_WALLET));
         assert!(wallets_match(SOL_WALLET, SOL_WALLET));
         let mutated_sol = "cksZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";

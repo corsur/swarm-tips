@@ -1,6 +1,6 @@
 use crate::errors::CoordinationError;
 use crate::events::TournamentCreated;
-use crate::state::Tournament;
+use crate::state::{GlobalConfig, Tournament};
 use anchor_lang::prelude::*;
 
 pub fn create_tournament(
@@ -9,6 +9,11 @@ pub fn create_tournament(
     start_time: i64,
     end_time: i64,
 ) -> Result<()> {
+    require_keys_eq!(
+        ctx.accounts.authority.key(),
+        ctx.accounts.global_config.authority,
+        CoordinationError::NotAuthority
+    );
     let now = Clock::get()?.unix_timestamp;
     require!(
         end_time > start_time,
@@ -54,6 +59,12 @@ pub struct CreateTournament<'info> {
         bump,
     )]
     pub tournament: Account<'info, Tournament>,
+    #[account(
+        seeds = [b"global_config"],
+        bump = global_config.bump,
+        constraint = global_config.authority == authority.key() @ CoordinationError::NotAuthority,
+    )]
+    pub global_config: Account<'info, GlobalConfig>,
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,

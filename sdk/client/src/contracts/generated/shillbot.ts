@@ -1476,6 +1476,59 @@ export type Shillbot = {
       "args": []
     },
     {
+      "name": "setDevnetEnabled",
+      "discriminator": [
+        186,
+        145,
+        8,
+        221,
+        180,
+        97,
+        214,
+        209
+      ],
+      "accounts": [
+        {
+          "name": "globalState",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  105,
+                  108,
+                  108,
+                  98,
+                  111,
+                  116,
+                  95,
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "setPayoutTo",
       "docs": [
         "Agent routes this task's finalize payment to `payout_to` (e.g. an",
@@ -2382,6 +2435,19 @@ export type Shillbot = {
       ]
     },
     {
+      "name": "devnetEnabledUpdated",
+      "discriminator": [
+        134,
+        199,
+        123,
+        224,
+        220,
+        73,
+        89,
+        126
+      ]
+    },
+    {
       "name": "emergencyReturn",
       "discriminator": [
         223,
@@ -2911,6 +2977,31 @@ export type Shillbot = {
       "code": 6058,
       "name": "invalidInstructionBundle",
       "msg": "OnChainAction claim must be bundled atomically at top-level with submit_work"
+    },
+    {
+      "code": 6059,
+      "name": "devnetOnly",
+      "msg": "Instruction or verification mode is restricted to devnet"
+    },
+    {
+      "code": 6060,
+      "name": "belowMinimumEscrow",
+      "msg": "Escrow amount is below the minimum required for this platform"
+    },
+    {
+      "code": 6061,
+      "name": "deadlineTooFarInFuture",
+      "msg": "Task deadline exceeds maximum allowed horizon"
+    },
+    {
+      "code": 6062,
+      "name": "verificationTimeoutExceeded",
+      "msg": "Verification timeout window has elapsed since submission"
+    },
+    {
+      "code": 6063,
+      "name": "strikeCooldownActive",
+      "msg": "Agent is in cooldown after a score-0 reopened submission"
     }
   ],
   "types": [
@@ -3006,17 +3097,13 @@ export type Shillbot = {
             "type": "u64"
           },
           {
-            "name": "reserved",
+            "name": "lastStrikeAt",
             "docs": [
-              "Reserved space for future fields without reallocation. Reduced from",
-              "32 to 8 bytes when the three counters above were claimed."
+              "Unix timestamp of the most recent score-0 reopened submission for this",
+              "agent (`0` = none). Carved from the 8-byte `_reserved` slot so",
+              "`AgentState::SPACE` stays `90` and existing accounts read `0`."
             ],
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "type": "i64"
           },
           {
             "name": "bump",
@@ -3236,6 +3323,18 @@ export type Shillbot = {
       }
     },
     {
+      "name": "devnetEnabledUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "devnetEnabled",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
       "name": "emergencyReturn",
       "type": {
         "kind": "struct",
@@ -3437,16 +3536,24 @@ export type Shillbot = {
             "type": "i64"
           },
           {
+            "name": "devnetEnabled",
+            "docs": [
+              "Whether devnet-only verification paths (`verify_task` and kind-0",
+              "`OnChainAction`) are enabled. Carved from `_reserved` — existing",
+              "zero-initialized mainnet accounts read `false` without migration."
+            ],
+            "type": "bool"
+          },
+          {
             "name": "reserved",
             "docs": [
               "Reserved space for future fields without reallocation.",
-              "32 → 12 by D2/D3 → 4 by the 2026-07-07",
-              "`dispute_resolution_window_seconds` carve."
+              "32 → 12 by D2/D3 → 4 by dispute-window carve → 3 by `devnet_enabled`."
             ],
             "type": {
               "array": [
                 "u8",
-                4
+                3
               ]
             }
           },

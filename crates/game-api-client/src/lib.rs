@@ -25,6 +25,9 @@ pub enum GameApiError {
 
     #[error("failed to build HTTP client: {0}")]
     ClientBuild(reqwest::Error),
+
+    #[error("invalid argument: {0}")]
+    InvalidInput(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -219,10 +222,15 @@ impl GameApiClient {
     /// to mainnet routing — call `with_network` to attach a non-default
     /// `?network=` query param to every request.
     pub fn new(base_url: &str) -> Result<Self, GameApiError> {
-        assert!(!base_url.is_empty(), "game-api base_url must not be empty");
+        if base_url.trim().is_empty() {
+            return Err(GameApiError::InvalidInput(
+                "game-api base_url must not be empty".to_string(),
+            ));
+        }
 
         let inner = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(GameApiError::ClientBuild)?;
 
@@ -253,7 +261,14 @@ impl GameApiClient {
     fn url(&self, path: &str) -> String {
         debug_assert!(path.starts_with('/'), "path must start with /");
         match self.network.as_deref() {
-            Some(n) if !n.is_empty() => format!("{}{}?network={}", self.base_url, path, n),
+            Some(n) if !n.is_empty() => {
+                format!(
+                    "{}{}?network={}",
+                    self.base_url,
+                    path,
+                    urlencoding::encode(n)
+                )
+            }
             _ => format!("{}{}", self.base_url, path),
         }
     }
@@ -262,7 +277,11 @@ impl GameApiClient {
 
     /// `POST /auth/challenge` — request a nonce for wallet authentication.
     pub async fn request_challenge(&self, wallet: &str) -> Result<ChallengeResponse, GameApiError> {
-        assert!(!wallet.is_empty(), "wallet must not be empty");
+        if wallet.trim().is_empty() {
+            return Err(GameApiError::InvalidInput(
+                "wallet must not be empty".to_string(),
+            ));
+        }
 
         #[derive(Serialize)]
         struct Body<'a> {
@@ -320,8 +339,16 @@ impl GameApiClient {
         &self,
         wallet: &str,
     ) -> Result<ChallengeResponse, GameApiError> {
-        assert!(!wallet.is_empty(), "wallet must not be empty");
-        assert!(wallet.starts_with("0x"), "EVM wallet must start with 0x");
+        if wallet.trim().is_empty() {
+            return Err(GameApiError::InvalidInput(
+                "wallet must not be empty".to_string(),
+            ));
+        }
+        if !wallet.starts_with("0x") && !wallet.starts_with("0X") {
+            return Err(GameApiError::InvalidInput(
+                "EVM wallet must start with 0x".to_string(),
+            ));
+        }
 
         #[derive(Serialize)]
         struct Body<'a> {
@@ -597,18 +624,28 @@ impl GameApiClient {
         game_id: &str,
         wallet: &str,
     ) -> Result<serde_json::Value, GameApiError> {
+        self.evmgame_committed_as(game_id, wallet, None).await
+    }
+
+    /// `evmgame_committed` carrying a wallet-scoped internal bearer token.
+    pub async fn evmgame_committed_as(
+        &self,
+        game_id: &str,
+        wallet: &str,
+        bearer: Option<&str>,
+    ) -> Result<serde_json::Value, GameApiError> {
         #[derive(Serialize)]
         struct Body<'a> {
             game_id: &'a str,
             wallet: &'a str,
         }
         let url = format!("{}/internal/evmgame/committed", self.base_url);
-        let resp = self
-            .inner
-            .post(&url)
-            .json(&Body { game_id, wallet })
-            .send()
-            .await?;
+        let resp = with_bearer(
+            self.inner.post(&url).json(&Body { game_id, wallet }),
+            bearer,
+        )
+        .send()
+        .await?;
         Self::check_status(resp)
             .await?
             .json()
@@ -1106,7 +1143,7 @@ impl GameApiClient {
         // query param — `self.url(path)` would conflict with `?` placement.
         let mut url = format!("{}{}?limit={}", self.base_url, path, effective_limit);
         if let Some(n) = self.network.as_deref().filter(|n| !n.is_empty()) {
-            url.push_str(&format!("&network={n}"));
+            url.push_str(&format!("&network={}", urlencoding::encode(n)));
         }
 
         let resp = self.inner.get(&url).send().await?;
@@ -1133,8 +1170,8 @@ impl GameApiClient {
         let status = response.status();
         // A body-read failure used to collapse to "", so the caller saw a bare
         // status with no explanation and could not tell an empty error body from
-        // an unreadable one.
-        let body = match response.text().await {
+        // an unreadable one. Cap error diagnostics to 64 KiB against OOM.
+        let body = match api_transport::read_bounded_text(response, 65_536).await {
             Ok(b) => b,
             Err(e) => format!("<error body unreadable: {e}>"),
         };
@@ -1306,9 +1343,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "game-api base_url must not be empty")]
     fn new_rejects_empty_url() {
-        let _ = GameApiClient::new("");
+        let err = GameApiClient::new("")
+            .err()
+            .expect("empty url must be rejected");
+        assert!(
+            matches!(err, GameApiError::InvalidInput(msg) if msg.contains("must not be empty"))
+        );
+        assert!(GameApiClient::new("   ").is_err());
     }
 
     #[test]

@@ -1,13 +1,38 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
+use extension_registry::constants::MIN_BOND_LAMPORTS;
+use extension_registry::state::Extension;
 
 use crate::constants::MIN_ADVANCE_LAMPORTS;
 use crate::errors::ExtensionCreditError;
 use crate::events::AdvanceOpened;
 use crate::state::Advance;
 
+/// Pure validation that a live, non-unbonding `Extension` backs `(backer, recipient)`.
+pub fn validate_backing_extension(
+    extension: &Extension,
+    backer: &Pubkey,
+    recipient: &Pubkey,
+) -> Result<()> {
+    require!(
+        extension.extender == *backer && extension.recipient == *recipient,
+        ExtensionCreditError::MissingActiveExtension
+    );
+    require!(
+        !extension.is_unbonding(),
+        ExtensionCreditError::ExtensionUnbonding
+    );
+    require!(
+        extension.bond_lamports >= MIN_BOND_LAMPORTS,
+        ExtensionCreditError::InsufficientExtensionBond
+    );
+    Ok(())
+}
+
 /// Backer fronts working capital to the recipient and opens the advance (which
-/// is also the earnings-routing vault). CEI: validate → record → transfer.
+/// is also the earnings-routing vault). Requires an active, non-unbonding
+/// `extension-registry` vouch (`Extension` PDA) from `backer` to `recipient`
+/// (HIGH-16). CEI: validate → record → transfer.
 pub fn open_advance(ctx: Context<OpenAdvance>, advance_lamports: u64) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let backer_key = ctx.accounts.backer.key();
@@ -22,6 +47,7 @@ pub fn open_advance(ctx: Context<OpenAdvance>, advance_lamports: u64) -> Result<
         backer_key != recipient_key,
         ExtensionCreditError::SelfAdvance
     );
+    validate_backing_extension(&ctx.accounts.extension, &backer_key, &recipient_key)?;
 
     // Effects
     let advance = &mut ctx.accounts.advance;
@@ -78,10 +104,56 @@ pub struct OpenAdvance<'info> {
         bump,
     )]
     pub advance: Account<'info, Advance>,
+    #[account(
+        seeds = [b"extension", backer.key().as_ref(), recipient.key().as_ref()],
+        bump = extension.bump,
+        seeds::program = extension_registry::ID,
+    )]
+    pub extension: Account<'info, Extension>,
     #[account(mut)]
     pub backer: Signer<'info>,
     /// CHECK: receives the fronted capital and is used to derive the PDA seed.
     #[account(mut)]
     pub recipient: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_extension(extender: Pubkey, recipient: Pubkey) -> Extension {
+        Extension {
+            extender,
+            recipient,
+            extension_type: 0,
+            bond_lamports: MIN_BOND_LAMPORTS,
+            created_at: 1_700_000_000,
+            bump: 254,
+            unbond_requested_at: 0,
+            _reserved: [0u8; 8],
+        }
+    }
+
+    #[test]
+    fn validate_backing_extension_accepts_active_and_rejects_unbonding_or_mismatched() {
+        let backer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mut ext = sample_extension(backer, recipient);
+
+        assert!(validate_backing_extension(&ext, &backer, &recipient).is_ok());
+
+        // Mismatched backer or recipient -> rejected.
+        assert!(validate_backing_extension(&ext, &Pubkey::new_unique(), &recipient).is_err());
+        assert!(validate_backing_extension(&ext, &backer, &Pubkey::new_unique()).is_err());
+
+        // Unbonding in progress -> rejected.
+        ext.unbond_requested_at = 1_700_000_500;
+        assert!(validate_backing_extension(&ext, &backer, &recipient).is_err());
+
+        // Below minimum bond -> rejected.
+        ext.unbond_requested_at = 0;
+        ext.bond_lamports = MIN_BOND_LAMPORTS - 1;
+        assert!(validate_backing_extension(&ext, &backer, &recipient).is_err());
+    }
 }

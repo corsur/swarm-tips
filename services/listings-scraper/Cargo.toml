@@ -30,3 +30,4 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+safe-http-fetch = { path = "../../crates/safe-http-fetch", default-features = false }

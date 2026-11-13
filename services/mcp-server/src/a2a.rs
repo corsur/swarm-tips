@@ -277,12 +277,17 @@ pub fn map_push_config_set(params: &Value) -> Result<PushConfigSet, String> {
 /// the client's static `token`, so the minted secret is returned AS the config
 /// token and the HMAC scheme is spelled out in `authentication`.
 pub fn webhook_to_push_config(task_id: Option<&str>, doc: &WebhookDoc) -> Value {
+    let token = if doc.hmac_secret.is_empty() {
+        Value::Null
+    } else {
+        json!(doc.hmac_secret)
+    };
     json!({
         "taskId": task_id,
         "pushNotificationConfig": {
             "id": doc.wallet,
             "url": doc.url,
-            "token": doc.hmac_secret,
+            "token": token,
             "authentication": {
                 "schemes": ["HMAC-SHA256"],
                 "description": "X-Swarm-Signature: sha256=<hex HMAC-SHA256 of the raw request body, keyed by token>; X-Swarm-Delivery-Id dedups redeliveries",
@@ -569,6 +574,9 @@ mod tests {
             wallet: "solana:x:ME".to_string(),
             url: "https://a.example/hook".to_string(),
             hmac_secret: "deadbeefsecret".to_string(),
+            secret_salt: "salt".to_string(),
+            hmac_secret_sha256: String::new(),
+            webhook_host: "a.example".to_string(),
             challenge_token: "chal".to_string(),
             verified: true,
             consecutive_failures: 0,
@@ -583,12 +591,19 @@ mod tests {
             cfg["pushNotificationConfig"]["url"],
             "https://a.example/hook"
         );
-        // A2A's static token slot carries our per-delivery HMAC secret.
+        // A2A's static token slot carries our per-delivery HMAC secret on registration.
         assert_eq!(cfg["pushNotificationConfig"]["token"], "deadbeefsecret");
         assert_eq!(
             cfg["pushNotificationConfig"]["authentication"]["schemes"][0],
             "HMAC-SHA256"
         );
         assert_eq!(cfg["metadata"]["verified"], true);
+
+        let redacted_doc = WebhookDoc {
+            hmac_secret: String::new(),
+            ..doc
+        };
+        let redacted_cfg = webhook_to_push_config(Some("task:42"), &redacted_doc);
+        assert!(redacted_cfg["pushNotificationConfig"]["token"].is_null());
     }
 }

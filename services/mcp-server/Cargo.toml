@@ -16,6 +16,7 @@ all = "deny"
 [dependencies]
 backoff = "0.4"
 api-transport = { workspace = true }
+safe-http-fetch = { workspace = true }
 rmcp = { version = "1.3", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 schemars = "1.0"
 axum = "0.8"

@@ -57,9 +57,8 @@ fn finalize_game_session(ctx: Context<RevealGuessSession>) -> Result<()> {
     let tournament_id = ctx.accounts.game.tournament_id;
     let outcome = compute_finalization(
         &ctx.accounts.game,
-        ctx.accounts.tournament.end_time,
+        ctx.accounts.tournament.finalized,
         ctx.accounts.global_config.treasury_split_bps,
-        now,
     )?;
     apply_finalize_effects(
         &mut ctx.accounts.tournament,

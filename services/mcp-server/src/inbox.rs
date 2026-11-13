@@ -109,6 +109,9 @@ pub mod limits {
     pub const WEBHOOK_AUTO_DISABLE_FAILURES: i64 = 5;
     /// Max accepted webhook URL length.
     pub const MAX_WEBHOOK_URL_BYTES: usize = 2048;
+    /// Max active webhook registrations targeting a single destination host
+    /// across distinct wallets (amplification / fan-out bound).
+    pub const MAX_WEBHOOKS_PER_HOST: usize = 5;
 }
 
 pub const MESSAGE_SCHEMA: &str = "swarm/v1";
@@ -375,9 +378,11 @@ pub struct TopicMetaDoc {
 
 /// Webhook push registration: `inbox_webhooks/{caip10}` (durable, no TTL).
 ///
-/// v1 stores the HMAC secret VALUE in the doc — org-internal Firestore, and
-/// the secret never enters the delivery workflow (mcp-server computes the
-/// signature and passes only the finished header value). Delivery outcomes
+/// At rest in Firestore, `hmac_secret` is stored empty (`""`) and derived on
+/// demand from `HMAC-SHA256(pepper, "swarm-webhook-secret-v1:{wallet}:{secret_salt}")`
+/// (with `hmac_secret_sha256` recording the commitment). Only the transient
+/// `WebhookDoc` returned at registration time carries the one-time `whsec_...`
+/// secret; subsequent reads redact `hmac_secret` to `null`. Delivery outcomes
 /// come back via `POST /internal/webhooks/delivery-result`, which owns
 /// `consecutive_failures` / `disabled_at` / `last_delivery_at`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,9 +391,19 @@ pub struct WebhookDoc {
     pub wallet: String,
     /// HTTPS endpoint, SSRF-screened and ownership-verified at registration.
     pub url: String,
-    /// Per-registration HMAC-SHA256 key (hex). Signature header:
-    /// `X-Swarm-Signature: sha256=<hex hmac over the exact request body>`.
+    /// Transient registration-time HMAC-SHA256 key (`whsec_<hex>`), or empty
+    /// string (`""`) at rest in Firestore for PRF-derived registrations.
+    #[serde(default)]
     pub hmac_secret: String,
+    /// Random per-registration 32-byte hex salt for HMAC-PRF secret derivation.
+    #[serde(default)]
+    pub secret_salt: String,
+    /// Hex SHA-256 digest of the derived `whsec_...` secret for audit/integrity.
+    #[serde(default)]
+    pub hmac_secret_sha256: String,
+    /// Canonical lowercase destination hostname/IP for per-host fan-out caps.
+    #[serde(default)]
+    pub webhook_host: String,
     /// The ownership-handshake token the endpoint echoed.
     pub challenge_token: String,
     /// True once the endpoint echoed the challenge. Only verified webhooks
@@ -1172,93 +1187,29 @@ pub fn apply_delivery_result(consecutive_failures: i64, delivered: bool) -> (i64
 // Webhook SSRF screening + ownership handshake + HMAC (pure / wiremockable)
 // ---------------------------------------------------------------------------
 
-/// Hostnames and suffixes that can never be a public webhook target:
-/// loopback aliases, GCP metadata, internal DNS, and our own Cloud Run
-/// estate (`*.run.app` — a webhook must not become an internal-route bridge).
-const FORBIDDEN_WEBHOOK_HOSTS: [&str; 3] = ["localhost", "metadata.google.internal", "metadata"];
-const FORBIDDEN_WEBHOOK_HOST_SUFFIXES: [&str; 4] =
-    [".run.app", ".internal", ".localhost", ".local"];
-
-fn v4_is_forbidden(ip: std::net::Ipv4Addr) -> bool {
-    let o = ip.octets();
-    ip.is_private()
-        || ip.is_loopback()
-        || ip.is_link_local() // covers the 169.254.169.254 metadata IP
-        || ip.is_unspecified()
-        || ip.is_broadcast()
-        || o[0] == 0 // 0.0.0.0/8
-        || (o[0] == 100 && (o[1] & 0xC0) == 64) // 100.64.0.0/10 (CGNAT)
-        || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
+pub(crate) const fn webhook_fetch_policy() -> safe_http_fetch::FetchPolicy {
+    safe_http_fetch::FetchPolicy::webhook(
+        limits::WEBHOOK_HANDSHAKE_MAX_RESPONSE_BYTES,
+        limits::WEBHOOK_HANDSHAKE_TIMEOUT_SECS,
+    )
 }
 
 /// Address-level SSRF screen, applied to URL IP literals AND every address
-/// the hostname resolves to at registration time. (DNS re-binding after
-/// registration is covered by the delivery workflow's egress re-check.)
+/// the hostname resolves to at registration time, delegated to `safe-http-fetch`.
+#[cfg(test)]
 pub fn ip_is_forbidden(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => v4_is_forbidden(v4),
-        std::net::IpAddr::V6(v6) => {
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return v4_is_forbidden(mapped);
-            }
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
-                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
-        }
-    }
+    safe_http_fetch::ip_is_non_global(ip)
 }
 
-/// Registration-time URL screen: HTTPS only, no embedded credentials, no
-/// forbidden hosts/suffixes, no forbidden IP literals. Reject-at-boundary —
-/// DNS resolution of the host is screened separately (I/O).
+/// Registration-time URL screen: HTTPS on port 443 only, no embedded credentials,
+/// no trailing-dot FQDNs, no forbidden hosts/suffixes, and no non-global IP literals.
+#[cfg(test)]
 pub fn validate_webhook_url(raw: &str) -> Result<url::Url, String> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err("url is required".to_string());
-    }
-    if raw.len() > limits::MAX_WEBHOOK_URL_BYTES {
-        return Err(format!(
-            "url exceeds {} bytes",
-            limits::MAX_WEBHOOK_URL_BYTES
-        ));
-    }
-    let parsed = url::Url::parse(raw).map_err(|e| format!("invalid url: {e}"))?;
-    if parsed.scheme() != "https" {
-        return Err("webhook url must be https".to_string());
-    }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err("webhook url must not embed credentials".to_string());
-    }
-    match parsed.host() {
-        None => Err("webhook url must have a host".to_string()),
-        Some(url::Host::Domain(d)) => {
-            let d = d.to_ascii_lowercase();
-            let forbidden = FORBIDDEN_WEBHOOK_HOSTS.contains(&d.as_str())
-                || FORBIDDEN_WEBHOOK_HOST_SUFFIXES
-                    .iter()
-                    .any(|s| d.ends_with(s));
-            if forbidden {
-                Err(format!("host {d:?} is not a valid public webhook target"))
-            } else {
-                Ok(parsed)
-            }
-        }
-        Some(url::Host::Ipv4(ip)) => {
-            if v4_is_forbidden(ip) {
-                Err(format!("address {ip} is not a valid public webhook target"))
-            } else {
-                Ok(parsed)
-            }
-        }
-        Some(url::Host::Ipv6(ip)) => {
-            if ip_is_forbidden(std::net::IpAddr::V6(ip)) {
-                Err(format!("address {ip} is not a valid public webhook target"))
-            } else {
-                Ok(parsed)
-            }
-        }
-    }
+    let mut policy = webhook_fetch_policy();
+    policy.max_url_bytes = limits::MAX_WEBHOOK_URL_BYTES;
+    safe_http_fetch::validate_public_url(raw, &policy)
+        .map(|v| v.url)
+        .map_err(|e| e.to_string())
 }
 
 /// URL-ownership handshake (v1 synchronous echo): POST the challenge; the
@@ -1284,24 +1235,37 @@ pub async fn perform_challenge_handshake(
     if !status.is_success() {
         return Err(format!("challenge POST returned {status}"));
     }
-    // Bounded body read — the endpoint is untrusted external input.
-    let mut body: Vec<u8> = Vec::with_capacity(1024);
-    let mut resp = resp;
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| format!("challenge response read failed: {e}"))?
-    {
-        body.extend_from_slice(&chunk);
-        if body.len() >= limits::WEBHOOK_HANDSHAKE_MAX_RESPONSE_BYTES {
-            break;
-        }
-    }
-    if String::from_utf8_lossy(&body).contains(token) {
+    // Bounded body read via `safe_http_fetch` — rejects oversize Content-Length / streams.
+    let bounded = safe_http_fetch::reqwest_client::read_response_bounded(
+        resp,
+        limits::WEBHOOK_HANDSHAKE_MAX_RESPONSE_BYTES,
+    )
+    .await
+    .map_err(|e| format!("challenge response read failed: {e}"))?;
+    if String::from_utf8_lossy(&bounded.body).contains(token) {
         Ok(())
     } else {
         Err("endpoint did not echo the challenge token".to_string())
     }
+}
+
+/// Deterministically derive the per-registration `whsec_<hex>` signing secret
+/// from a Secret Manager pepper, canonical CAIP-10 wallet, and stored random salt.
+/// Avoids persisting raw signing secrets in Firestore (`MED-07`).
+pub fn derive_webhook_secret(pepper: &str, wallet: &str, secret_salt: &str) -> String {
+    use hmac::Mac;
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(pepper.as_bytes())
+        .expect("HMAC-SHA256 accepts any key length");
+    mac.update(b"swarm-webhook-secret-v1:");
+    mac.update(wallet.as_bytes());
+    mac.update(b":");
+    mac.update(secret_salt.as_bytes());
+    format!("whsec_{}", hex::encode(mac.finalize().into_bytes()))
+}
+
+pub fn sha256_hex(input: &str) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(input.as_bytes()))
 }
 
 /// The `X-Swarm-Signature` header value: `sha256=<hex HMAC-SHA256>` over the
@@ -1325,7 +1289,7 @@ pub fn webhook_signature(hmac_secret: &str, payload: &str) -> String {
     }
 }
 
-/// 32 random bytes, hex-encoded — challenge tokens, HMAC secrets, delivery
+/// 32 random bytes, hex-encoded — challenge tokens, HMAC salts, delivery
 /// ids.
 fn random_hex_32() -> String {
     let bytes: [u8; 32] = rand::random();
@@ -1413,15 +1377,30 @@ pub fn report_outcome_json(outcome: &ReportOutcome) -> serde_json::Value {
     })
 }
 
-/// The `register_webhook` / `get_webhook` response body. Includes the HMAC
-/// secret — this surface is only reachable by the webhook's proven owner,
-/// and the receiver needs the secret to verify `X-Swarm-Signature`.
+/// The `register_webhook` / `get_webhook` response body. Returns the one-time
+/// transient `hmac_secret` at registration time and redacts it (`null`) on
+/// subsequent `get_webhook` reads once cleared at rest.
 pub fn webhook_json(doc: &WebhookDoc) -> serde_json::Value {
+    let redacted = doc.hmac_secret.is_empty();
+    let hmac_secret = if redacted {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(doc.hmac_secret.clone())
+    };
+    let secret_sha256 = if !doc.hmac_secret_sha256.is_empty() {
+        serde_json::Value::String(doc.hmac_secret_sha256.clone())
+    } else if !redacted {
+        serde_json::Value::String(sha256_hex(&doc.hmac_secret))
+    } else {
+        serde_json::Value::Null
+    };
     serde_json::json!({
         "wallet": doc.wallet,
         "url": doc.url,
         "verified": doc.verified,
-        "hmac_secret": doc.hmac_secret,
+        "hmac_secret": hmac_secret,
+        "hmac_secret_redacted": redacted,
+        "hmac_secret_sha256": secret_sha256,
         "signature_scheme": "X-Swarm-Signature: sha256=<hex HMAC-SHA256 of the raw request body, keyed by hmac_secret>; X-Swarm-Delivery-Id dedups redeliveries",
         "consecutive_failures": doc.consecutive_failures,
         "disabled_at": doc.disabled_at.as_ref().map(|t| t.0.to_rfc3339()),
@@ -1703,6 +1682,7 @@ pub enum InboxRejection {
     PostNotFound,
     WalletProofRequired,
     InvalidWebhookUrl(String),
+    WebhookHostQuotaExceeded { host: String, limit: usize },
     WebhookChallengeFailed(String),
     WebhookNotFound,
     DeliveryIdMismatch,
@@ -1729,6 +1709,7 @@ impl InboxRejection {
             InboxRejection::PostNotFound => "post_not_found",
             InboxRejection::WalletProofRequired => "wallet_proof_required",
             InboxRejection::InvalidWebhookUrl(_) => "invalid_webhook_url",
+            InboxRejection::WebhookHostQuotaExceeded { .. } => "webhook_host_quota_exceeded",
             InboxRejection::WebhookChallengeFailed(_) => "webhook_challenge_failed",
             InboxRejection::WebhookNotFound => "webhook_not_found",
             InboxRejection::DeliveryIdMismatch => "delivery_id_mismatch",
@@ -1771,6 +1752,9 @@ impl InboxRejection {
                 "this action requires an ON-CHAIN wallet ownership proof on record: call agent_verify_wallet with tx_signature (or land a deposit_stake) first".to_string()
             }
             InboxRejection::InvalidWebhookUrl(e) => format!("invalid webhook url: {e}"),
+            InboxRejection::WebhookHostQuotaExceeded { host, limit } => format!(
+                "webhook target host {host:?} already has {limit} active webhook registrations across wallets"
+            ),
             InboxRejection::WebhookChallengeFailed(e) => format!(
                 "webhook ownership handshake failed: {e}. Your endpoint must respond 2xx to the challenge POST ({{\"type\":\"swarm_webhook_challenge\",\"token\":...}}) and echo the token in the response body."
             ),
@@ -1962,7 +1946,7 @@ pub struct ReportOutcome {
 /// webhook workflow trigger (a best-effort INTERACTION, after all effects).
 pub struct Inbox {
     db: Arc<FirestoreDb>,
-    /// Client for the webhook ownership handshake (per-request timeouts).
+    /// Client for internal trusted notifications (support/board responder).
     http: reqwest::Client,
     /// Workflow trigger for durable webhook delivery. None (or an
     /// unreachable metadata server at runtime) degrades to log-and-skip —
@@ -1982,6 +1966,9 @@ pub struct Inbox {
     /// `X-Swarm-Responder-Signature` HMAC. None = disabled — we never POST an
     /// unsigned body the bridge would reject anyway.
     responder_secret: Option<String>,
+    /// Server-side Secret Manager pepper for deterministic HMAC-PRF derivation
+    /// of per-registration `whsec_` keys so Firestore never stores raw secrets.
+    webhook_pepper: String,
 }
 
 impl Inbox {
@@ -1995,8 +1982,12 @@ impl Inbox {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("redirect-disabled reqwest client must build");
         let board_webhook_url = derive_board_webhook_url(&responder_url);
+        let webhook_pepper = responder_secret
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(random_hex_32);
         Self {
             db,
             http,
@@ -2005,6 +1996,7 @@ impl Inbox {
             responder_url,
             board_webhook_url,
             responder_secret,
+            webhook_pepper,
         }
     }
 
@@ -2013,6 +2005,31 @@ impl Inbox {
             self.board_webhook_url = url.trim().to_string();
         }
         self
+    }
+
+    pub fn with_webhook_pepper(mut self, pepper: Option<String>) -> Self {
+        if let Some(p) = pepper.filter(|s| !s.is_empty()) {
+            self.webhook_pepper = p;
+        }
+        self
+    }
+
+    fn effective_webhook_secret(&self, doc: &WebhookDoc) -> Option<String> {
+        if !doc.hmac_secret.is_empty() {
+            return Some(doc.hmac_secret.clone());
+        }
+        if doc.secret_salt.is_empty() {
+            return None;
+        }
+        let derived = derive_webhook_secret(&self.webhook_pepper, &doc.wallet, &doc.secret_salt);
+        if !doc.hmac_secret_sha256.is_empty() && sha256_hex(&derived) != doc.hmac_secret_sha256 {
+            tracing::error!(
+                wallet = %doc.wallet,
+                "webhook secret SHA-256 commitment mismatch — pepper rotated or doc tampered"
+            );
+            return None;
+        }
+        Some(derived)
     }
 
     fn mailbox_parent(&self, caip10: &str) -> anyhow::Result<firestore::ParentPathBuilder> {
@@ -2476,6 +2493,10 @@ impl Inbox {
             tracing::warn!(wallet = %to, "webhook registered but workflow trigger unavailable — delivery skipped (agent falls back to polling)");
             return;
         };
+        let Some(signing_secret) = self.effective_webhook_secret(&webhook) else {
+            tracing::warn!(wallet = %to, "webhook signing secret unavailable — delivery skipped");
+            return;
+        };
         let delivery_id = random_hex_32();
         // The callback gate: record which delivery_id may report back.
         // Best-effort — a failed record means the callback will mismatch
@@ -2494,7 +2515,7 @@ impl Inbox {
             "sent_at": now.to_rfc3339(),
         })
         .to_string();
-        let signature = webhook_signature(&webhook.hmac_secret, &payload_json);
+        let signature = webhook_signature(&signing_secret, &payload_json);
         let args = serde_json::json!({
             "webhook_url": webhook.url,
             "signature": signature,
@@ -2666,13 +2687,16 @@ impl Inbox {
     ) -> anyhow::Result<()> {
         let doc = WebhookDoc {
             wallet: wallet.to_string(),
-            url: String::new(),             // masked out
-            hmac_secret: String::new(),     // masked out
-            challenge_token: String::new(), // masked out
-            verified: false,                // masked out
-            consecutive_failures: 0,        // masked out
-            disabled_at: None,              // masked out
-            last_delivery_at: None,         // masked out
+            url: String::new(),                // masked out
+            hmac_secret: String::new(),        // masked out
+            secret_salt: String::new(),        // masked out
+            hmac_secret_sha256: String::new(), // masked out
+            webhook_host: String::new(),       // masked out
+            challenge_token: String::new(),    // masked out
+            verified: false,                   // masked out
+            consecutive_failures: 0,           // masked out
+            disabled_at: None,                 // masked out
+            last_delivery_at: None,            // masked out
             pending_delivery_id: delivery_id.to_string(),
             created_at: FirestoreTimestamp(now), // masked out
         };
@@ -3296,8 +3320,9 @@ impl Inbox {
 
     /// Register (or replace) the caller's webhook. v1 mandatory boundaries:
     /// on-chain wallet proof required, SSRF screen (URL shape + resolved
-    /// addresses), and the synchronous URL-ownership handshake — the
-    /// challenge POST is an egress-shaped CHECK that deliberately precedes
+    /// addresses via `safe-http-fetch`), per-host fan-out ceiling
+    /// (`MAX_WEBHOOKS_PER_HOST`), and the synchronous URL-ownership handshake —
+    /// the challenge POST is an egress-shaped CHECK that deliberately precedes
     /// the doc write, so only echo-verified endpoints are ever stored.
     pub async fn register_webhook(
         &self,
@@ -3309,28 +3334,48 @@ impl Inbox {
         if self.wallet_verification(me).await.is_none() {
             return Err(InboxRejection::WalletProofRequired.into());
         }
-        let url = validate_webhook_url(raw_url).map_err(InboxRejection::InvalidWebhookUrl)?;
-        let (host, verified_addrs) = self
-            .screen_resolved_addresses(&url)
+        let mut policy = webhook_fetch_policy();
+        policy.max_url_bytes = limits::MAX_WEBHOOK_URL_BYTES;
+        let pinned = safe_http_fetch::resolve_and_pin_public_url(raw_url, &policy)
             .await
-            .map_err(InboxRejection::InvalidWebhookUrl)?;
-        let pinned_http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .resolve_to_addrs(&host, &verified_addrs)
-            .build()
-            .unwrap_or_else(|_| self.http.clone());
+            .map_err(|e| InboxRejection::InvalidWebhookUrl(e.to_string()))?;
+
+        // Amplification / fan-out bound (`HIGH-12`): cap active distinct-wallet
+        // webhook registrations targeting the same canonical host.
+        let active_on_host = self.active_webhooks_for_host(&pinned.host, me).await?;
+        if active_on_host >= limits::MAX_WEBHOOKS_PER_HOST {
+            return Err(InboxRejection::WebhookHostQuotaExceeded {
+                host: pinned.host,
+                limit: limits::MAX_WEBHOOKS_PER_HOST,
+            }
+            .into());
+        }
+
+        // Fail closed on client construction — never fall back to an unpinned client.
+        let pinned_http = safe_http_fetch::reqwest_client::build_pinned_client(
+            &pinned,
+            &policy,
+            Some("swarm-mcp-webhook/1.0"),
+        )
+        .map_err(|e| InboxRejection::InvalidWebhookUrl(e.to_string()))?;
 
         let challenge_token = random_hex_32();
-        let hmac_secret = random_hex_32();
-        perform_challenge_handshake(&pinned_http, url.as_str(), &challenge_token)
+        perform_challenge_handshake(&pinned_http, pinned.url.as_str(), &challenge_token)
             .await
             .map_err(InboxRejection::WebhookChallengeFailed)?;
 
-        // -- EFFECTS: store only after the echo passed. --
-        let doc = WebhookDoc {
+        let secret_salt = random_hex_32();
+        let transient_secret = derive_webhook_secret(&self.webhook_pepper, me, &secret_salt);
+        let hmac_secret_sha256 = sha256_hex(&transient_secret);
+
+        // -- EFFECTS: store only after the echo passed; never persist raw secret. --
+        let stored_doc = WebhookDoc {
             wallet: me.to_string(),
-            url: url.to_string(),
-            hmac_secret,
+            url: pinned.url.to_string(),
+            hmac_secret: String::new(),
+            secret_salt,
+            hmac_secret_sha256,
+            webhook_host: pinned.host,
             challenge_token,
             verified: true,
             consecutive_failures: 0,
@@ -3344,38 +3389,44 @@ impl Inbox {
             .update()
             .in_col(INBOX_WEBHOOKS_COLLECTION)
             .document_id(me)
-            .object(&doc)
+            .object(&stored_doc)
             .execute::<WebhookDoc>()
             .await
             .context("write webhook doc")?;
-        // Postcondition: never store an unverified webhook.
-        debug_assert!(doc.verified, "stored webhooks are echo-verified");
-        Ok(doc)
+        // Postcondition: never store an unverified webhook or plaintext secret.
+        debug_assert!(stored_doc.verified, "stored webhooks are echo-verified");
+        debug_assert!(
+            stored_doc.hmac_secret.is_empty(),
+            "plaintext hmac_secret must never be persisted at rest"
+        );
+        Ok(WebhookDoc {
+            hmac_secret: transient_secret,
+            ..stored_doc
+        })
     }
 
-    /// Resolve the URL's host, screen every address, and return the verified
-    /// socket addresses so the handshake client can pin them (closing the
-    /// TOCTOU DNS-rebinding window between check and POST).
-    async fn screen_resolved_addresses(
+    async fn active_webhooks_for_host(
         &self,
-        url: &url::Url,
-    ) -> Result<(String, Vec<std::net::SocketAddr>), String> {
-        let host = url.host_str().ok_or("url must have a host")?.to_string();
-        let port = url.port_or_known_default().unwrap_or(443);
-        let addrs = tokio::net::lookup_host((host.as_str(), port))
+        host: &str,
+        exclude_wallet: &str,
+    ) -> anyhow::Result<usize> {
+        let query_cap =
+            u32::try_from(limits::MAX_WEBHOOKS_PER_HOST.saturating_add(8)).unwrap_or(16);
+        let docs: Vec<WebhookDoc> = self
+            .db
+            .fluent()
+            .select()
+            .from(INBOX_WEBHOOKS_COLLECTION)
+            .filter(|q| q.field("webhook_host").eq(host))
+            .limit(query_cap)
+            .obj()
+            .query()
             .await
-            .map_err(|e| format!("host does not resolve: {e}"))?;
-        let mut verified = Vec::with_capacity(16);
-        for addr in addrs.take(16) {
-            if ip_is_forbidden(addr.ip()) {
-                return Err(format!("host resolves to forbidden address {}", addr.ip()));
-            }
-            verified.push(addr);
-        }
-        if verified.is_empty() {
-            return Err("host resolved to no addresses".to_string());
-        }
-        Ok((host, verified))
+            .context("query active webhooks for host")?;
+        Ok(docs
+            .into_iter()
+            .filter(|d| d.wallet != exclude_wallet && d.verified && d.disabled_at.is_none())
+            .count())
     }
 
     /// Delete the caller's webhook registration. Idempotent.

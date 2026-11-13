@@ -139,8 +139,12 @@ abstract contract SeasonPot {
     ///      This replaces v3's single `prizePoolWei`, which was owner-drainable
     ///      and had no claim path at all.
     function _accrue(uint256 amount) internal {
+        _accrueTo(currentSeasonId, amount);
+    }
+
+    function _accrueTo(uint256 seasonId, uint256 amount) internal {
         if (amount == 0) return;
-        seasons[currentSeasonId].accruedWei += amount;
+        seasons[seasonId].accruedWei += amount;
     }
 
     function _finalizeSeason(uint256 seasonId, bytes32 root, uint256 totalWei) internal {
@@ -174,9 +178,12 @@ abstract contract SeasonPot {
     ///      and yet awards BOTH a win, because a win records a correct read of
     ///      the opponent rather than a profit.
     function _recordResult(address p1, address p2, bool p1Won, bool p2Won) internal {
-        uint256 sid = currentSeasonId;
-        PlayerRecord storage r1 = records[sid][p1];
-        PlayerRecord storage r2 = records[sid][p2];
+        _recordResultFor(currentSeasonId, p1, p2, p1Won, p2Won);
+    }
+
+    function _recordResultFor(uint256 seasonId, address p1, address p2, bool p1Won, bool p2Won) internal {
+        PlayerRecord storage r1 = records[seasonId][p1];
+        PlayerRecord storage r2 = records[seasonId][p2];
         unchecked {
             // u64 games cannot realistically overflow; the pot is bounded by
             // the contract balance long before this does.

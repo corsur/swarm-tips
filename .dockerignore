@@ -1,0 +1,40 @@
+# Version control & local build caches
+.git
+**/.git
+target/
+**/target
+node_modules/
+**/node_modules
+dist/
+**/dist
+**/.astro
+**/test-results
+**/playwright-report
+
+# Terraform state & provider caches
+.terraform/
+**/.terraform
+terraform.tfstate*
+**/terraform.tfstate*
+*.tfvars
+**/*.tfvars
+
+# Secrets, environment files, keys, keypairs, registry tokens & recovery codes
+.env
+**/.env
+.env.*
+**/.env.*
+!**/.env.example
+*.pem
+**/*.pem
+*.key
+**/*.key
+*keypair*.json
+**/*keypair*.json
+.mcpregistry_*
+**/.mcpregistry_*
+.mcpregistry_*_token
+**/.mcpregistry_*_token
+*recovery_codes*
+**/*recovery_codes*
+**/gha-creds-*.json

@@ -44,29 +44,36 @@ permissions:
 
 jobs:
   guard:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: mainnet
     steps:
-      - name: Verify confirmation phrase
+      - name: Verify branch and confirmation phrase
         env:
           INPUT_CONFIRM: ${{ github.event.inputs.confirm }}
           INPUT_CONTRACT: ${{ github.event.inputs.contract }}
           INPUT_NETWORK: ${{ github.event.inputs.network }}
+          CURRENT_REF: ${{ github.ref }}
         run: |
+          if [ "$CURRENT_REF" != "refs/heads/main" ]; then
+            echo "::error::mainnet deployments are restricted to refs/heads/main (got '$CURRENT_REF')"
+            exit 1
+          fi
           if [ "$INPUT_CONFIRM" != "DEPLOY-MAINNET" ]; then
             echo "::error::confirmation phrase mismatch — type exactly DEPLOY-MAINNET to proceed"
             exit 1
           fi
-          echo "Confirmed mainnet deploy: $INPUT_CONTRACT → $INPUT_NETWORK"
+          echo "Confirmed mainnet deploy: $INPUT_CONTRACT → $INPUT_NETWORK on $CURRENT_REF"
 
   deploy:
     needs: guard
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/_deploy-evm.yml
     with:
       contract: ${{ github.event.inputs.contract }}
       network: ${{ github.event.inputs.network }}
     secrets:
-      # Reuse the funded xchain deployer key (already in EVM_TESTNET_DEPLOYER and
-      # loaded with Base-mainnet ETH) — no separate mainnet secret to set. Falls
-      # back to a dedicated EVM_MAINNET_DEPLOYER if one is ever configured.
-      EVM_MAINNET_DEPLOYER: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+      # Strict key isolation: mainnet deploys require the dedicated EVM_MAINNET_DEPLOYER
+      # secret and NEVER fall back to EVM_TESTNET_DEPLOYER.
+      EVM_MAINNET_DEPLOYER: ${{ secrets.EVM_MAINNET_DEPLOYER }}
       EVM_MAINNET_RPC_URL: ${{ secrets.EVM_MAINNET_RPC_URL }}

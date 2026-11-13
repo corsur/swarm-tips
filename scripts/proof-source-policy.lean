@@ -11,10 +11,21 @@ partial def auditSyntax (stx : Syntax) : IO Unit := do
   if forbiddenKinds.contains stx.getKind then
     throw <| IO.userError s!"forbidden syntax: {stx.getKind}"
   if let .atom _ token := stx then
-    if #["unsafe", "partial", "opaque", "meta", "sorry", "admit", "run_tac", "run_elab",
-      "by_elab", "native_decide", "extern", "implemented_by", "csimp", "deriving",
+    if #["unsafe", "partial", "opaque", "meta", "constant", "sorry", "sorryAx", "admit",
+      "run_cmd", "run_tac", "run_elab", "by_elab", "native_decide", "ofReduceBool",
+      "trustCompiler", "extern", "implemented_by", "csimp", "deriving", "local",
+      "#eval", "#print", "#reduce", "#synth", "#check",
       "notation", "macro", "macro_rules", "elab", "elab_rules", "syntax"].contains token.trimAscii.toString then
       throw <| IO.userError s!"forbidden syntax token: {token}"
+  if let .ident _ _ val _ := stx then
+    let forbiddenIdents : Array Name := #[
+      `sorryAx, `ofReduceBool, `Lean.ofReduceBool, `trustCompiler, `Lean.trustCompiler,
+      `unsafeBaseIO, `IO.unsafeBaseIO, `unsafeIO, `IO.unsafeIO, `unsafeEIO, `IO.unsafeEIO]
+    if forbiddenIdents.contains val then
+      throw <| IO.userError s!"forbidden identifier: {val}"
+    for pfx in #[`IO.Process, `IO.FS, `System.Process, `System.FilePath] do
+      if pfx.isPrefixOf val then
+        throw <| IO.userError s!"forbidden host identifier: {val}"
   for child in stx.getArgs do auditSyntax child
 
 unsafe def main (args : List String) : IO Unit := do

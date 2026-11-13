@@ -92,12 +92,15 @@ jobs:
           mkdir -p ~/.config/solana
           solana-keygen new --no-bip39-passphrase --silent -o ~/.config/solana/id.json
 
-      - name: Build program
-        run: anchor build -p extension-credit
+      - name: Build programs
+        run: |
+          anchor build -p extension-registry
+          anchor build -p extension-credit
 
       - name: Start local validator
         run: |
           solana-test-validator \
+            --bpf-program H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j target/deploy/extension_registry.so \
             --bpf-program Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh target/deploy/extension_credit.so \
             --reset --quiet &
           sleep 8

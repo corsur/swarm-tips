@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {VerifyLib} from "../VerifyLib.sol";
 
 /// @title AttesterGated — allow-listed off-chain-signer gate
 /// @notice One dedicated secp256k1 key (the game matchmaker / cert operator,
@@ -27,11 +27,12 @@ abstract contract AttesterGated {
     /// @dev True iff `sig` (65-byte [r||s||v], v = 27|28 — the
     ///      chain-core `cosign::sign_digest_eth` form) over `digest` recovers
     ///      to the authorized signer. Malformed signatures revert inside
-    ///      OZ ECDSA; a valid signature from the wrong key returns false.
+    ///      VerifyLib.recoverSigner; a valid signature from the wrong key
+    ///      returns false.
     ///      Consumers revert their own `BadSignature()` on false (Solidity
     ///      cannot surface a base-declared error through the derived type,
     ///      and existing tests reference `<Consumer>.BadSignature.selector`).
     function _recoverAndCheck(bytes32 digest, bytes memory sig) internal view returns (bool) {
-        return ECDSA.recover(digest, sig) == _authorizedSigner;
+        return VerifyLib.recoverSigner(digest, sig) == _authorizedSigner;
     }
 }

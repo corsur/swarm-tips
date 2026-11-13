@@ -161,7 +161,7 @@ fn write_current_layout(
         total_score_sum: 0,
         total_tasks_claimed: 0,
         total_challenges_lost: 0,
-        _reserved: [0u8; 8],
+        last_strike_at: 0,
         bump: old_bump,
     };
     let mut data = agent_state_info.try_borrow_mut_data()?;
@@ -258,7 +258,7 @@ mod tests {
             total_score_sum: 0,
             total_tasks_claimed: 0,
             total_challenges_lost: 0,
-            _reserved: [0u8; 8],
+            last_strike_at: 0,
             bump,
         };
 
@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(parsed.total_score_sum, 0);
         assert_eq!(parsed.total_tasks_claimed, 0);
         assert_eq!(parsed.total_challenges_lost, 0);
-        assert_eq!(parsed._reserved, [0u8; 8]);
+        assert_eq!(parsed.last_strike_at, 0);
         assert_eq!(parsed.bump, bump);
     }
 }

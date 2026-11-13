@@ -195,4 +195,19 @@ pub enum ShillbotError {
 
     #[msg("OnChainAction claim must be bundled atomically at top-level with submit_work")]
     InvalidInstructionBundle,
+
+    #[msg("Instruction or verification mode is restricted to devnet")]
+    DevnetOnly,
+
+    #[msg("Escrow amount is below the minimum required for this platform")]
+    BelowMinimumEscrow,
+
+    #[msg("Task deadline exceeds maximum allowed horizon")]
+    DeadlineTooFarInFuture,
+
+    #[msg("Verification timeout window has elapsed since submission")]
+    VerificationTimeoutExceeded,
+
+    #[msg("Agent is in cooldown after a score-0 reopened submission")]
+    StrikeCooldownActive,
 }

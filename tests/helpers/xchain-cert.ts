@@ -190,8 +190,8 @@ export function newSessionSigner(seed?: number): SessionSigner {
   return { privateKey, address };
 }
 
-/** Sign a 32-byte digest, returning the program's [r(32) || s(32) || v(1)]
- *  with v = recovery id (0 or 1). */
+/** Sign a 32-byte digest, returning canonical [r(32) || s(32) || v(1)]
+ *  with v = recid + 27 (27 or 28, matching EVM ECDSA.recover and Solana cert.rs). */
 export function signDigest(
   signer: SessionSigner,
   digest: Uint8Array
@@ -204,7 +204,7 @@ export function signDigest(
   const recid = sig[0];
   const out = new Uint8Array(65);
   out.set(sig.slice(1, 65), 0); // r || s
-  out[64] = recid; // v = recid (program accepts 0/1)
+  out[64] = recid + 27;
   return Array.from(out);
 }
 

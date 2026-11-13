@@ -80,6 +80,39 @@ pub fn finalize_task(ctx: Context<FinalizeTask>) -> Result<()> {
 /// a safe fallback when `task.payout_to` is proven closed/uninitialized via
 /// `remaining_accounts`, preventing `InsufficientFundsForRent` or stranded
 /// payouts on a closed credit Advance PDA — NEW-HIGH-02).
+pub(crate) fn is_valid_payout_destination_info(acc: &AccountInfo, expected_agent: &Pubkey) -> bool {
+    if acc.executable || crate::instructions::set_payout_to::is_forbidden_payout_pubkey(&acc.key())
+    {
+        return false;
+    }
+    if acc.owner == &anchor_lang::system_program::ID && acc.data_is_empty() {
+        return true;
+    }
+    // Also permit a live `extension-credit` `Advance` vault PDA bound to `expected_agent`.
+    if acc.owner == &crate::constants::EXTENSION_CREDIT_PROGRAM_ID
+        && acc.data_len() == crate::constants::EXTENSION_CREDIT_ADVANCE_SPACE
+    {
+        if let Ok(data) = acc.try_borrow_data() {
+            let disc = &solana_sha256_hasher::hash(b"account:Advance").to_bytes()[..8];
+            if &data[..8] == disc && &data[40..72] == expected_agent.as_ref() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn validate_payout_destination_account(
+    acc: &AccountInfo,
+    expected_agent: &Pubkey,
+) -> Result<()> {
+    require!(
+        is_valid_payout_destination_info(acc, expected_agent),
+        ShillbotError::InvalidPayoutTarget
+    );
+    Ok(())
+}
+
 pub(crate) fn validate_payout_recipient(
     agent: &AccountInfo,
     task: &Task,
@@ -87,18 +120,35 @@ pub(crate) fn validate_payout_recipient(
 ) -> Result<()> {
     if task.payout_to == Pubkey::default() {
         require!(agent.key() == task.agent, ShillbotError::NotTaskAgent);
+        require!(
+            !agent.executable
+                && !crate::instructions::set_payout_to::is_forbidden_payout_pubkey(&agent.key())
+                && agent.owner == &anchor_lang::system_program::ID
+                && agent.data_is_empty(),
+            ShillbotError::InvalidPayoutTarget
+        );
         return Ok(());
     }
     if agent.key() == task.payout_to {
+        validate_payout_destination_account(agent, &task.agent)?;
         return Ok(());
     }
     if agent.key() == task.agent {
-        let payout_vault_closed = remaining_accounts.iter().any(|acc| {
+        let payout_vault_closed_or_invalid = remaining_accounts.iter().any(|acc| {
             acc.key() == task.payout_to
-                && acc.owner == &anchor_lang::system_program::ID
-                && acc.data_is_empty()
+                && ((acc.lamports() == 0
+                    && acc.owner == &anchor_lang::system_program::ID
+                    && acc.data_is_empty())
+                    || !is_valid_payout_destination_info(acc, &task.agent))
         });
-        require!(payout_vault_closed, ShillbotError::NotTaskAgent);
+        require!(payout_vault_closed_or_invalid, ShillbotError::NotTaskAgent);
+        require!(
+            !agent.executable
+                && !crate::instructions::set_payout_to::is_forbidden_payout_pubkey(&agent.key())
+                && agent.owner == &anchor_lang::system_program::ID
+                && agent.data_is_empty(),
+            ShillbotError::InvalidPayoutTarget
+        );
         return Ok(());
     }
     Err(error!(ShillbotError::NotTaskAgent))

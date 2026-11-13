@@ -193,11 +193,14 @@ for (const schemaKey of [...mergedSchemas.keys()].sort()) {
   sortedSchemas[schemaKey] = sortDeep(mergedSchemas.get(schemaKey));
 }
 
+const sdkPkgPath = resolve(swarmTipsRoot, "sdk/client/package.json");
+const sdkVersion = JSON.parse(readFileSync(sdkPkgPath, "utf8")).version;
+
 const mergedDoc = {
   openapi: "3.1.0",
   info: {
     title: "Swarm Tips Unified Agent API",
-    version: "0.3.0",
+    version: sdkVersion,
     description:
       "Canonical OpenAPI 3.1 specification spanning all three Swarm Tips production API hosts (`https://mcp.swarm.tips`, `https://api.shillbot.org`, `https://api.coordination.game`) with unified stateless wallet Bearer JWT authentication and non-custodial transaction intent inspection.",
     contact: {

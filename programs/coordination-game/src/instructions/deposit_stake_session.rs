@@ -1,16 +1,15 @@
 use crate::errors::CoordinationError;
 use crate::events::StakeDeposited;
 use crate::instructions::session_utils::validate_session_authority;
-use crate::state::{SessionAuthority, StakeEscrow, Tournament};
+use crate::state::{GlobalConfig, SessionAuthority, StakeEscrow, Tournament};
 use anchor_lang::prelude::*;
 
 /// Session-delegated variant of `deposit_stake`. The session key signs the
-/// transaction instead of the player wallet. The session authority PDA's
-/// lamports fund the stake transfer (the player pre-funded the session PDA
-/// at creation time).
+/// transaction instead of the player wallet. Reads the authoritative stake
+/// from `GlobalConfig` and routes any downward re-peg refund strictly to the
+/// principal `player` wallet (never to `session_signer` — HIGH-13).
 pub fn deposit_stake_session(ctx: Context<DepositStakeSession>) -> Result<()> {
-    let stake =
-        crate::instructions::deposit_stake::live_stake(ctx.remaining_accounts, ctx.program_id)?;
+    let stake = ctx.accounts.global_config.stake_lamports;
     validate_session_authority(
         &ctx.accounts.session_authority,
         &ctx.accounts.player.key(),
@@ -42,7 +41,8 @@ pub fn deposit_stake_session(ctx: Context<DepositStakeSession>) -> Result<()> {
         ctx.bumps.escrow,
         stake,
     )?;
-    // Interactions: transfer delta from session signer to escrow PDA (or refund excess).
+    // Interactions: transfer delta from session signer to escrow PDA, or refund
+    // excess strictly back to the player's principal wallet (never session_signer).
     if stake > prior_unconsumed {
         let top_up = stake
             .checked_sub(prior_unconsumed)
@@ -63,7 +63,7 @@ pub fn deposit_stake_session(ctx: Context<DepositStakeSession>) -> Result<()> {
             .ok_or(CoordinationError::ArithmeticOverflow)?;
         crate::instructions::utils::transfer_lamports(
             &ctx.accounts.escrow.to_account_info(),
-            &ctx.accounts.session_signer.to_account_info(),
+            &ctx.accounts.player.to_account_info(),
             excess,
         )?;
     }
@@ -130,8 +130,15 @@ pub struct DepositStakeSession<'info> {
     )]
     pub escrow: Account<'info, StakeEscrow>,
     pub tournament: Account<'info, Tournament>,
+    #[account(
+        seeds = [b"global_config"],
+        bump = global_config.bump,
+    )]
+    pub global_config: Account<'info, GlobalConfig>,
     /// CHECK: The player wallet. Not a signer — the session key signs instead.
-    /// Verified against session_authority.player in the handler.
+    /// Verified against session_authority.player in the handler. Mutable so any
+    /// downward stake re-peg excess refunds strictly to the player wallet.
+    #[account(mut)]
     pub player: UncheckedAccount<'info>,
     #[account(
         mut,

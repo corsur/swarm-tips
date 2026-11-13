@@ -831,7 +831,8 @@ contract ShillbotEscrowTest is BoundaryBattery {
     // ----- pause policy -----------------------------------------------------
 
     function test_pause_blocksStateChangingEntryPoints() public {
-        uint64 verified = _toVerified();
+        uint64 verifiedForFinalize = _toVerified();
+        uint64 verifiedForChallenge = _toVerified();
         uint64 disputed = _toDisputed();
         uint64 claimed = _create(1, false);
         _claim(claimed);
@@ -854,20 +855,158 @@ contract ShillbotEscrowTest is BoundaryBattery {
         vm.prank(client);
         vm.expectRevert(Pausable.EnforcedPause.selector);
         esc.approveTask(claimed);
-        vm.prank(challenger);
-        vm.expectRevert(Pausable.EnforcedPause.selector);
-        esc.challengeTask{value: BOND}(verified);
-        vm.prank(owner);
-        vm.expectRevert(Pausable.EnforcedPause.selector);
-        esc.resolveChallenge(disputed, true);
-        vm.warp(uint256(esc.getTask(verified).challengeDeadline) + 1);
-        vm.expectRevert(Pausable.EnforcedPause.selector);
-        esc.finalizeTask(verified);
 
-        // After unpause, the frozen finalize goes through.
+        // HIGH-18: challengeTask and resolveChallenge MUST succeed while paused
+        // so an emergency pause cannot run out challengeDeadline unchallenged.
+        vm.prank(challenger);
+        esc.challengeTask{value: BOND}(verifiedForChallenge);
+        assertEq(uint8(_state(verifiedForChallenge)), uint8(ShillbotEscrow.TaskState.Disputed));
+
+        vm.prank(owner);
+        esc.resolveChallenge(disputed, true);
+        assertEq(uint8(_state(disputed)), uint8(ShillbotEscrow.TaskState.Resolved));
+
+        // finalizeTask remains gated by whenNotPaused.
+        vm.warp(uint256(esc.getTask(verifiedForFinalize).challengeDeadline) + 1);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        esc.finalizeTask(verifiedForFinalize);
+
+        // After unpause, the frozen finalize goes through, while the challenged
+        // task cannot be finalized.
         vm.prank(owner);
         esc.unpause();
-        esc.finalizeTask(verified);
+        esc.finalizeTask(verifiedForFinalize);
+        vm.expectRevert(ShillbotEscrow.InvalidStatus.selector);
+        esc.finalizeTask(verifiedForChallenge);
+    }
+
+    function test_pause_exemptsChallengeAndResolve_preventsForcedAutoFinalize() public {
+        uint64 id = _toVerified();
+        uint64 challengeDl = esc.getTask(id).challengeDeadline;
+
+        // Emergency pause immediately after verification.
+        vm.prank(owner);
+        esc.pause();
+
+        // Challenger disputes WHILE PAUSED before challengeDeadline expires.
+        vm.warp(challengeDl - 1);
+        vm.prank(challenger);
+        esc.challengeTask{value: BOND}(id);
+        assertEq(uint8(_state(id)), uint8(ShillbotEscrow.TaskState.Disputed));
+
+        // Even past challengeDeadline, finalizeTask is blocked while paused AND
+        // blocked after unpause because the challenge landed.
+        vm.warp(uint256(challengeDl) + 10);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        esc.finalizeTask(id);
+
+        // Owner resolves in challenger's favor WHILE PAUSED, and both parties withdraw.
+        vm.prank(owner);
+        esc.resolveChallenge(id, true);
+        assertEq(uint8(_state(id)), uint8(ShillbotEscrow.TaskState.Resolved));
+        assertEq(esc.withdrawable(client), ESCROW, "client refunded while paused");
+        assertEq(esc.withdrawable(challenger), BOND, "challenger bond returned while paused");
+
+        vm.prank(client);
+        esc.withdraw();
+        vm.prank(challenger);
+        esc.withdraw();
+    }
+
+    // ----- CRIT-04: OnChainAction (11) VOW v1 policy & score-0 reopen -------
+
+    function test_onChainAction_scoreZeroBeforeDeadline_reopensTaskForNewWorker() public {
+        uint64 deadline = uint64(block.timestamp + 2 days);
+        vm.prank(client);
+        uint64 id = esc.createTask{value: ESCROW}(
+            STATEMENT, VerifyLib.ONCHAIN_ACTION_POLICY_V1_ID, VerifyLib.KIND_DETERMINISTIC_ATTESTED, deadline, false
+        );
+
+        // Worker 1 claims and submits an action receipt that fails RPC-quorum verification (score = 0).
+        _claim(id);
+        _submit(id);
+        bytes32 failDigest = _digestOn(esc, id, 0);
+        bytes memory failSig = _sign(attesterPk, failDigest);
+
+        vm.expectEmit(true, true, false, true, address(esc));
+        emit ShillbotEscrow.TaskReopened(id, worker, failDigest);
+        esc.verifyTaskAttested(id, 0, failSig);
+
+        // Task reopened in-place: Open, unclaimed, submission fields zeroed, escrow intact.
+        ShillbotEscrow.Task memory reopened = esc.getTask(id);
+        assertEq(uint8(reopened.state), uint8(ShillbotEscrow.TaskState.Open), "reopened to Open");
+        assertEq(reopened.worker, address(0), "worker cleared");
+        assertEq(reopened.contentIdHash, bytes32(0), "contentIdHash cleared");
+        assertEq(reopened.artifactHash, bytes32(0), "artifactHash cleared");
+        assertEq(reopened.submittedAt, 0, "submittedAt cleared");
+        assertEq(reopened.verifiedAt, 0, "verifiedAt cleared");
+        assertEq(reopened.challengeDeadline, 0, "challengeDeadline cleared");
+        assertEq(reopened.paymentWei, 0, "paymentWei cleared");
+        assertEq(reopened.feeWei, 0, "feeWei cleared");
+        assertEq(reopened.escrowWei, ESCROW, "escrow preserved");
+        assertEq(address(esc).balance, ESCROW, "contract balance intact");
+
+        // Second worker claims, submits valid proof, verifies MAX_SCORE, and finalizes.
+        address worker2 = makeAddr("worker2");
+        bytes32 content2 = keccak256("tx-hash-2");
+        bytes32 artifact2 = keccak256("receipt-2");
+        vm.prank(worker2);
+        esc.claimTask(id);
+        vm.prank(worker2);
+        esc.submitWork(id, content2, artifact2);
+
+        bytes32 passDigest = _digestOn(esc, id, VerifyLib.MAX_SCORE);
+        esc.verifyTaskAttested(id, VerifyLib.MAX_SCORE, _sign(attesterPk, passDigest));
+        assertEq(uint8(_state(id)), uint8(ShillbotEscrow.TaskState.Verified));
+
+        vm.warp(uint256(esc.getTask(id).challengeDeadline) + 1);
+        esc.finalizeTask(id);
+
+        uint256 expectedFee = (uint256(ESCROW) * FEE_BPS) / 10_000;
+        assertEq(esc.withdrawable(worker2), ESCROW - expectedFee, "worker2 paid");
+        assertEq(esc.withdrawable(worker), 0, "failed worker1 paid nothing");
+        assertEq(esc.withdrawable(treasury), expectedFee, "treasury fee credited");
+        assertEq(
+            address(esc).balance,
+            esc.withdrawable(worker2) + esc.withdrawable(treasury) + esc.withdrawable(client),
+            "exact wei conservation across reopen + finalize"
+        );
+    }
+
+    function test_onChainAction_scoreZeroAtOrAfterDeadline_doesNotReopenRefundsClient() public {
+        uint64 deadline = uint64(block.timestamp + 1 days);
+        vm.prank(client);
+        uint64 id = esc.createTask{value: ESCROW}(
+            STATEMENT, VerifyLib.ONCHAIN_ACTION_POLICY_V1_ID, VerifyLib.KIND_DETERMINISTIC_ATTESTED, deadline, false
+        );
+
+        _claim(id);
+        _submit(id);
+
+        // Verification lands AT the deadline (not strictly before) -> must NOT reopen into a dead window.
+        vm.warp(deadline);
+        esc.verifyTaskAttested(id, 0, _sign(attesterPk, _digestOn(esc, id, 0)));
+
+        ShillbotEscrow.Task memory t = esc.getTask(id);
+        assertEq(uint8(t.state), uint8(ShillbotEscrow.TaskState.Verified), "falls through to Verified(0)");
+        assertEq(t.paymentWei, 0);
+        assertEq(t.feeWei, 0);
+
+        vm.warp(uint256(t.challengeDeadline) + 1);
+        esc.finalizeTask(id);
+        assertEq(esc.withdrawable(client), ESCROW, "client recovers full escrow");
+    }
+
+    function test_onChainAction_enforcesBinaryScoreEvenOnKind0() public {
+        uint64 deadline = uint64(block.timestamp + 1 days);
+        vm.prank(client);
+        uint64 id = esc.createTask{value: ESCROW}(
+            STATEMENT, VerifyLib.ONCHAIN_ACTION_POLICY_V1_ID, VerifyLib.KIND_ORACLE_METRICS, deadline, false
+        );
+        _claim(id);
+        _submit(id);
+
+        _verifyExpectRevert(id, 500_000, ShillbotEscrow.BadScore.selector);
     }
 
     // ----- ownership --------------------------------------------------------

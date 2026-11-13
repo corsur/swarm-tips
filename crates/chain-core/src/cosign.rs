@@ -78,14 +78,15 @@ pub fn sign_digest_eth(secret_key: &[u8; 32], digest: &[u8; 32]) -> Result<[u8; 
 }
 
 /// Recover the 20-byte Ethereum address that produced a 65-byte
-/// `[r || s || v]` signature over `digest` — the same operation the Anchor
-/// program's `secp256k1_recover` and the EVM `ecrecover` perform. The
-/// backend uses this to verify players' co-signatures before submitting.
+/// `[r || s || v]` signature over `digest` with canonical Ethereum `v ∈ {27, 28}`
+/// and low-`s` normalization — matching OpenZeppelin `ECDSA.recover` on EVM
+/// and `recover_eth_address` on Solana so no signature verifies on one leg
+/// while reverting on the other.
 pub fn recover_address(digest: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 20], CosignError> {
-    let v = if sig[64] == 27 || sig[64] == 28 {
-        sig[64].saturating_sub(27)
-    } else {
-        sig[64]
+    let v = match sig[64] {
+        27 => 0u8,
+        28 => 1u8,
+        _ => return Err(CosignError::BadSignature),
     };
     let recid = RecoveryId::from_byte(v).ok_or(CosignError::BadSignature)?;
     let signature = Signature::from_slice(&sig[..64]).map_err(|_| CosignError::BadSignature)?;
@@ -101,22 +102,22 @@ pub fn recover_address(digest: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 20], Co
     Ok(verifying_key_address(&vk))
 }
 
-/// Co-sign a match-live certificate (used by both players and the operator).
+/// Co-sign a match-live certificate (`v ∈ {27, 28}` for cross-VM EVM + Solana parity).
 pub fn sign_match_live(
     secret_key: &[u8; 32],
     cert: &MatchLiveCert,
 ) -> Result<[u8; 65], CosignError> {
-    sign_digest(secret_key, &keccak256(&cert.encode()))
+    sign_digest_eth(secret_key, &keccak256(&cert.encode()))
 }
 
-/// Co-sign an outcome certificate.
+/// Co-sign an outcome certificate (`v ∈ {27, 28}` for cross-VM EVM + Solana parity).
 pub fn sign_outcome(secret_key: &[u8; 32], oc: &OutcomeCert) -> Result<[u8; 65], CosignError> {
-    sign_digest(secret_key, &keccak256(&oc.encode()))
+    sign_digest_eth(secret_key, &keccak256(&oc.encode()))
 }
 
-/// Co-sign a transcript checkpoint.
+/// Co-sign a transcript checkpoint (`v ∈ {27, 28}` for cross-VM EVM + Solana parity).
 pub fn sign_checkpoint(secret_key: &[u8; 32], cp: &Checkpoint) -> Result<[u8; 65], CosignError> {
-    sign_digest(secret_key, &keccak256(&cp.encode()))
+    sign_digest_eth(secret_key, &keccak256(&cp.encode()))
 }
 
 /// Verify a checkpoint co-signed by BOTH session keys, exactly as the on-chain
@@ -158,7 +159,7 @@ mod tests {
         let digest = keccak256(b"hello cross-chain");
         let sig = sign_digest(&sk, &digest).unwrap();
 
-        // Recover exactly as the on-chain secp256k1_recover / EVM ecrecover do.
+        // Raw k256 recovery id is 0 or 1.
         let recid = RecoveryId::from_byte(sig[64]).unwrap();
         let signature = Signature::from_slice(&sig[..64]).unwrap();
         let recovered = VerifyingKey::recover_from_prehash(&digest, &signature, recid).unwrap();
@@ -166,40 +167,38 @@ mod tests {
     }
 
     #[test]
-    fn sign_digest_eth_uses_v_27_28_and_recovers_to_signer() {
+    fn sign_digest_eth_uses_v_27_28_and_rejects_raw_0_1_v() {
         let sk = secret(0x42);
         let addr = eth_address(&sk).unwrap();
         let digest = keccak256(b"on-chain evm attestation");
 
         let eth_sig = sign_digest_eth(&sk, &digest).unwrap();
-        // v MUST be 27 or 28 — what ecrecover / OZ ECDSA.recover require.
         assert!(eth_sig[64] == 27 || eth_sig[64] == 28, "v={}", eth_sig[64]);
+        assert_eq!(recover_address(&digest, &eth_sig).unwrap(), addr);
 
-        // It is exactly sign_digest with v normalized: de-normalizing (v-27)
-        // yields the k256 form, which recovers to the same signer.
-        let mut k256_sig = eth_sig;
-        k256_sig[64] = k256_sig[64].wrapping_sub(27);
-        assert_eq!(k256_sig, sign_digest(&sk, &digest).unwrap());
-        assert_eq!(recover_address(&digest, &k256_sig).unwrap(), addr);
+        // Raw v = 0 | 1 MUST be rejected by recover_address so EVM ECDSA.recover
+        // and Rust verification never diverge.
+        let raw_sig = sign_digest(&sk, &digest).unwrap();
+        assert_eq!(
+            recover_address(&digest, &raw_sig),
+            Err(CosignError::BadSignature)
+        );
     }
 
     #[test]
     fn recover_address_rejects_high_s_malleable_signature() {
         let sk = secret(0x42);
         let digest = keccak256(b"malleable twin");
-        let sig = sign_digest(&sk, &digest).unwrap();
-        // The canonical low-s signature recovers fine.
+        let sig = sign_digest_eth(&sk, &digest).unwrap();
         assert!(recover_address(&digest, &sig).is_ok());
 
-        // Build the malleable high-s twin: s' = n - s (the recovery bit would
-        // also flip, but the low-s guard fires before recovery).
         let signature = Signature::from_slice(&sig[..64]).unwrap();
         let neg_s = -(*signature.s());
         let twin = Signature::from_scalars(signature.r().to_bytes(), neg_s.to_bytes())
             .expect("valid scalars");
         let mut malleable = [0u8; 65];
         malleable[..64].copy_from_slice(&twin.to_bytes());
-        malleable[64] = sig[64] ^ 1;
+        malleable[64] = if sig[64] == 27 { 28 } else { 27 };
         assert_eq!(
             recover_address(&digest, &malleable),
             Err(CosignError::MalleableSignature)
@@ -207,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn sign_match_live_digest_matches_canonical_encoding() {
+    fn sign_match_live_digest_matches_canonical_eth_encoding() {
         use crate::cert_schema::CertLeg;
         let leg = |s: u8| CertLeg {
             chain_tag: [s; 32],
@@ -229,11 +228,11 @@ mod tests {
             claim_window_secs: 3600,
             a_is_p1: 1,
         };
-        // The cosign path hashes the same bytes as the standalone digest.
         let sk = secret(0x99);
         let via_cert = sign_match_live(&sk, &cert).unwrap();
-        let via_digest = sign_digest(&sk, &keccak256(&cert.encode())).unwrap();
+        let via_digest = sign_digest_eth(&sk, &keccak256(&cert.encode())).unwrap();
         assert_eq!(via_cert, via_digest);
+        assert!(via_cert[64] == 27 || via_cert[64] == 28);
     }
 
     #[test]

@@ -205,6 +205,15 @@ async function initializeGlobal(
     .signers([authority])
     .rpc();
 
+  await program.methods
+    .setDevnetEnabled(true)
+    .accountsPartial({
+      globalState: globalPda,
+      authority: authority.publicKey,
+    })
+    .signers([authority])
+    .rpc();
+
   // `initialize` sets `global.switchboard_feed` to the per-network feed
   // pubkey (here, `DUMMY_SWITCHBOARD_FEED` — a bankrun-mocked account
   // set up below). The 2026-05-01 const lockdown was reverted 2026-05-08.

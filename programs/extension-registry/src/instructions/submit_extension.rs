@@ -42,7 +42,8 @@ pub fn submit_extension(
     extension.bond_lamports = bond_lamports;
     extension.created_at = now;
     extension.bump = ctx.bumps.extension;
-    extension._reserved = [0u8; 16];
+    extension.unbond_requested_at = 0;
+    extension._reserved = [0u8; 8];
 
     // Interactions: move the bond from the extender wallet into the PDA.
     system_program::transfer(

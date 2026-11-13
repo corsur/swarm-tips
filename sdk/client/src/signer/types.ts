@@ -11,16 +11,20 @@ export interface EvmCallRequest {
   to: `0x${string}`;
   data: `0x${string}`;
   value?: bigint;
+  chain?: string;
   chainId?: number;
+  maxFeePerGas?: bigint;
 }
 
 export interface EvmSwarmSigner {
   readonly chain: "evm";
   readonly address: `0x${string}`;
-  readonly chainId?: number;
+  readonly chainId?: string | number;
   signMessage(message: string | Uint8Array): Promise<`0x${string}`>;
   sendTransaction?(call: EvmCallRequest): Promise<`0x${string}`>;
 }
+
+export type EvmTransactionSigner = EvmSwarmSigner;
 
 export type SwarmSigner = SolanaSwarmSigner | EvmSwarmSigner;
 

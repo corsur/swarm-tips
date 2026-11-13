@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Swarm Tips Unified Agent API",
-    "version": "0.3.0",
+    "version": "0.4.2",
     "description": "Canonical OpenAPI 3.1 specification spanning all three Swarm Tips production API hosts (`https://mcp.swarm.tips`, `https://api.shillbot.org`, `https://api.coordination.game`) with unified stateless wallet Bearer JWT authentication and non-custodial transaction intent inspection.",
     "contact": {
       "name": "Swarm Tips",
@@ -1914,6 +1914,11 @@
             }
           }
         },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ],
         "servers": [
           {
             "url": "https://api.coordination.game",
@@ -2003,6 +2008,11 @@
             }
           }
         },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ],
         "servers": [
           {
             "url": "https://api.coordination.game",
@@ -4687,7 +4697,7 @@
           {
             "name": "task_id",
             "in": "path",
-            "description": "LeanProof task identifier",
+            "description": "LeanProof (platform=10) or OnChainAction (platform=11) task identifier",
             "required": true,
             "schema": {
               "type": "string"
@@ -4706,7 +4716,7 @@
         },
         "responses": {
           "200": {
-            "description": "Deterministic Lean 4 precheck verdict",
+            "description": "Deterministic Lean 4 or OnChainAction dry-run precheck verdict",
             "content": {
               "application/json": {
                 "schema": {
@@ -4716,9 +4726,17 @@
             }
           },
           "400": {
-            "description": "Invalid proof or non-LeanProof task"
+            "description": "Invalid proof or unsupported task platform"
+          },
+          "401": {
+            "description": "Missing or invalid Bearer token"
           }
         },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ],
         "servers": [
           {
             "url": "https://api.shillbot.org",
@@ -5412,6 +5430,13 @@
               "null"
             ]
           },
+          "onchain_action_spec": {
+            "description": "OnChainAction (`platform == 11`) campaigns only: target-chain predicate.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "policy_id": {
             "description": "LeanProof campaigns only: hex of the verification policy id (v1/v2).",
             "type": [
@@ -5693,8 +5718,15 @@
               "null"
             ]
           },
+          "onchain_action": {
+            "description": "Required iff `platform == 11` (OnChainAction): declarative target-chain\nevent/instruction predicate committed into `Task.content_hash`.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "platform": {
-            "description": "Platform type: 0 = YouTube, 3 = Twitter/X, 10 = Lean proof. Defaults to 0.",
+            "description": "Platform type: 0 = YouTube, 3 = Twitter/X, 10 = Lean proof, 11 = OnChainAction. Defaults to 0.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -5883,6 +5915,13 @@
           "game_id": {
             "description": "`0x` hex game id of the same-chain EVM match.",
             "type": "string"
+          },
+          "wallet": {
+            "description": "Optional `0x` wallet of the caller reporting stake (checked against caller JWT).",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -6340,6 +6379,29 @@
         },
         "type": "object"
       },
+      "OnChainActionInstructions": {
+        "properties": {
+          "atomic_claim_and_submit": {
+            "type": "boolean"
+          },
+          "content_id_format": {
+            "type": "string"
+          },
+          "guidance": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "content_id_format",
+          "atomic_claim_and_submit",
+          "guidance"
+        ],
+        "type": "object"
+      },
       "OnboardResponse": {
         "properties": {
           "message": {
@@ -6419,13 +6481,24 @@
       },
       "PreflightTaskRequest": {
         "properties": {
+          "agent_wallet": {
+            "description": "Optional Solana agent wallet base58 pubkey for `platform=11` attribution preflight.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_id": {
+            "description": "Optional `content_id` proof reference (`<caip2>:<tx_hash_or_sig>:<log_or_ix_index>[:sig:<base64url_65B_secp256k1>]`)\nfor `PlatformType::OnChainAction` (`platform=11`) dry-run verification.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "proof_lean": {
             "type": "string"
           }
         },
-        "required": [
-          "proof_lean"
-        ],
         "type": "object"
       },
       "PreflightTaskResponse": {
@@ -6440,6 +6513,13 @@
           },
           "ok": {
             "type": "boolean"
+          },
+          "status": {
+            "description": "Structured preflight status for `platform=11` (`\"ready\"`, `\"awaiting_finality\"`, `\"invalid_proof\"`).",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "task_id": {
             "type": "string"
@@ -7134,6 +7214,23 @@
               }
             ]
           },
+          "onchain_action_instructions": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OnChainActionInstructions"
+              }
+            ]
+          },
+          "onchain_action_spec": {
+            "description": "Declarative `OnChainActionSpec` joined from the campaign for `platform=11` tasks.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "payment_amount": {
             "format": "int64",
             "minimum": 0,
@@ -7203,6 +7300,13 @@
           },
           "task_pda": {
             "description": "On-chain Task PDA (base58; mirrors `TaskDoc::on_chain_address`).\n`None` until the create transaction is confirmed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trust_level": {
+            "description": "Client anchor status for `platform=11` tasks (`\"anchored\"` vs `\"unverified_permissionless\"`).",
             "type": [
               "string",
               "null"

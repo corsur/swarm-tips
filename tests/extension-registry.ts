@@ -1,17 +1,22 @@
-import * as anchor from "@coral-xyz/anchor";
-import { Program, BN } from "@coral-xyz/anchor";
-import { ExtensionRegistry } from "../target/types/extension_registry";
+import { BN, Program } from "@coral-xyz/anchor";
+import { BankrunProvider, startAnchor } from "anchor-bankrun";
+import { Clock } from "solana-bankrun";
 import {
+  ComputeBudgetProgram,
   Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
   SystemProgram,
+  Transaction,
 } from "@solana/web3.js";
 import { assert } from "chai";
+import type { ExtensionRegistry } from "../target/types/extension_registry";
+import IDL from "../target/idl/extension_registry.json";
 
 // Constants matching the on-chain program (constants.rs).
 const MIN_BOND_LAMPORTS = 1_000_000;
 const BOND = new BN(5_000_000); // 0.005 SOL, above the floor
+const UNBOND_COOLDOWN_SECS = 7 * 86_400;
 const TYPE_CAPABILITY_VALIDATION = 0;
 const TYPE_MENTORSHIP = 1;
 
@@ -26,62 +31,81 @@ function extensionPda(
   );
 }
 
-async function fund(
-  provider: anchor.AnchorProvider,
-  pubkey: PublicKey,
-  sol: number
-): Promise<void> {
-  const sig = await provider.connection.requestAirdrop(
-    pubkey,
-    sol * LAMPORTS_PER_SOL
-  );
-  await provider.connection.confirmTransaction(sig, "confirmed");
-}
-
 describe("extension-registry", () => {
-  const provider = anchor.AnchorProvider.env();
-  anchor.setProvider(provider);
-  const program = anchor.workspace
-    .extensionRegistry as Program<ExtensionRegistry>;
-  // The provider wallet (id.json) becomes the registry authority + treasury.
-  const authority = provider.wallet.publicKey;
-  const [globalState] = PublicKey.findProgramAddressSync(
-    [Buffer.from("extension_global")],
-    program.programId
-  );
+  let context: Awaited<ReturnType<typeof startAnchor>>;
+  let provider: BankrunProvider;
+  let program: Program<ExtensionRegistry>;
+  let authorityKp: Keypair;
+  let treasuryKp: Keypair;
+  let globalState: PublicKey;
 
-  const bal = (pk: PublicKey) =>
-    provider.connection.getBalance(pk, "confirmed");
+  async function bal(pk: PublicKey): Promise<number> {
+    const acct = await context.banksClient.getAccount(pk);
+    return acct ? Number(acct.lamports) : 0;
+  }
+
+  async function fund(pubkey: PublicKey, sol: number): Promise<void> {
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: provider.wallet.publicKey,
+        toPubkey: pubkey,
+        lamports: Math.round(sol * LAMPORTS_PER_SOL),
+      })
+    );
+    await provider.sendAndConfirm!(tx, []);
+  }
+
+  async function now(): Promise<number> {
+    const c = await context.banksClient.getClock();
+    return Number(c.unixTimestamp);
+  }
+
+  async function warpTo(ts: number): Promise<void> {
+    const c = await context.banksClient.getClock();
+    context.setClock(
+      new Clock(
+        c.slot + 1n,
+        c.epochStartTimestamp,
+        c.epoch,
+        c.leaderScheduleEpoch,
+        BigInt(ts)
+      )
+    );
+  }
 
   before(async () => {
-    // Idempotent init, but VERIFIED: swallowing every error here once let a
-    // transient failure (validator warm-up) through silently, and the
-    // default_extension tests then failed with AccountNotInitialized. Retry
-    // until the account demonstrably exists.
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await program.methods
-          .initialize(authority, authority)
-          .accountsPartial({
-            globalState,
-            payer: authority,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc({ commitment: "confirmed" });
-      } catch (_e) {
-        // possibly already initialized — the existence check below decides
-      }
-      const info = await provider.connection.getAccountInfo(globalState);
-      if (info !== null) return;
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-    throw new Error("global_state failed to initialize after 5 attempts");
+    const programId = new PublicKey(IDL.address);
+    context = await startAnchor(
+      "",
+      [{ name: "extension_registry", programId }],
+      []
+    );
+    provider = new BankrunProvider(context);
+    program = new Program<ExtensionRegistry>(IDL as never, provider);
+    authorityKp = Keypair.generate();
+    treasuryKp = Keypair.generate();
+    await fund(authorityKp.publicKey, 10);
+    await fund(treasuryKp.publicKey, 1);
+
+    [globalState] = PublicKey.findProgramAddressSync(
+      [Buffer.from("extension_global")],
+      program.programId
+    );
+    await program.methods
+      .initialize(authorityKp.publicKey, treasuryKp.publicKey)
+      .accountsPartial({
+        globalState,
+        payer: authorityKp.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([authorityKp])
+      .rpc();
   });
 
-  it("submit → withdraw returns the full bond + rent to the extender (conservation)", async () => {
+  it("submit -> request_unbond -> 7d cooldown -> withdraw returns full bond + rent (and rejects premature withdraw)", async () => {
     const extender = Keypair.generate();
     const recipient = Keypair.generate();
-    await fund(provider, extender.publicKey, 1);
+    await fund(extender.publicKey, 1);
     const [extension] = extensionPda(
       extender.publicKey,
       recipient.publicKey,
@@ -99,25 +123,78 @@ describe("extension-registry", () => {
         systemProgram: SystemProgram.programId,
       })
       .signers([extender])
-      .rpc({ commitment: "confirmed" });
+      .rpc();
 
-    // Bond is held on the PDA (rent + bond).
     const pdaBal = await bal(extension);
     assert.isAbove(pdaBal, BOND.toNumber(), "PDA holds bond + rent");
 
+    // Premature withdraw before request_unbond must fail with UnbondNotRequested.
+    try {
+      await program.methods
+        .withdrawExtension()
+        .preInstructions([
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 200_001 }),
+        ])
+        .accountsPartial({
+          extension,
+          extender: extender.publicKey,
+          recipient: recipient.publicKey,
+        })
+        .signers([extender])
+        .rpc();
+      assert.fail("expected UnbondNotRequested");
+    } catch (e) {
+      assert.include(`${e}`, "UnbondNotRequested");
+    }
+
     await program.methods
-      .withdrawExtension()
+      .requestUnbond()
       .accountsPartial({
         extension,
         extender: extender.publicKey,
         recipient: recipient.publicKey,
       })
       .signers([extender])
-      .rpc({ commitment: "confirmed" });
+      .rpc();
 
-    // Account is closed; extender got bond + rent back, losing only tx fees.
-    const closed = await provider.connection.getAccountInfo(extension);
-    assert.isNull(closed, "extension account is closed after attest");
+    const tReq = await now();
+    // 1 second before cooldown expires must fail with UnbondCooldownActive.
+    await warpTo(tReq + UNBOND_COOLDOWN_SECS - 1);
+    try {
+      await program.methods
+        .withdrawExtension()
+        .preInstructions([
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 200_002 }),
+        ])
+        .accountsPartial({
+          extension,
+          extender: extender.publicKey,
+          recipient: recipient.publicKey,
+        })
+        .signers([extender])
+        .rpc();
+      assert.fail("expected UnbondCooldownActive");
+    } catch (e) {
+      assert.include(`${e}`, "UnbondCooldownActive");
+    }
+
+    // At exact cooldown boundary, withdraw succeeds and returns bond + rent.
+    await warpTo(tReq + UNBOND_COOLDOWN_SECS);
+    await program.methods
+      .withdrawExtension()
+      .preInstructions([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 200_003 }),
+      ])
+      .accountsPartial({
+        extension,
+        extender: extender.publicKey,
+        recipient: recipient.publicKey,
+      })
+      .signers([extender])
+      .rpc();
+
+    const closed = await context.banksClient.getAccount(extension);
+    assert.isNull(closed, "extension account is closed after withdraw");
 
     const after = await bal(extender.publicKey);
     const netLoss = before - after;
@@ -129,10 +206,10 @@ describe("extension-registry", () => {
     );
   });
 
-  it("submit → default slashes the bond to treasury, returns rent to extender (conservation)", async () => {
+  it("submit -> (even during unbonding) default slashes bond to treasury, returns rent to extender (conservation)", async () => {
     const extender = Keypair.generate();
     const recipient = Keypair.generate();
-    await fund(provider, extender.publicKey, 1);
+    await fund(extender.publicKey, 1);
     const [extension] = extensionPda(
       extender.publicKey,
       recipient.publicKey,
@@ -148,64 +225,60 @@ describe("extension-registry", () => {
         systemProgram: SystemProgram.programId,
       })
       .signers([extender])
-      .rpc({ commitment: "confirmed" });
+      .rpc();
 
-    const pdaBefore = await bal(extension); // rent + bond
-    const treasuryBefore = await bal(authority);
+    // Extender tries to escape slashing by requesting unbond; default_extension still slashes!
+    await program.methods
+      .requestUnbond()
+      .accountsPartial({
+        extension,
+        extender: extender.publicKey,
+        recipient: recipient.publicKey,
+      })
+      .signers([extender])
+      .rpc();
+
+    const pdaBefore = await bal(extension);
+    const treasuryBefore = await bal(treasuryKp.publicKey);
     const extenderBefore = await bal(extender.publicKey);
 
-    // authority == treasury == provider wallet (id.json / root) — so the
-    // treasury wallet is ALSO the fee payer; account for that fee exactly.
-    const sig = await program.methods
+    await program.methods
       .defaultExtension()
       .accountsPartial({
         extension,
         globalState,
-        authority,
-        treasury: authority,
+        authority: authorityKp.publicKey,
+        treasury: treasuryKp.publicKey,
         extender: extender.publicKey,
         recipient: recipient.publicKey,
       })
-      .rpc({ commitment: "confirmed" });
-    const txMeta = await provider.connection.getTransaction(sig, {
-      commitment: "confirmed",
-      maxSupportedTransactionVersion: 0,
-    });
-    const fee = txMeta!.meta!.fee;
+      .signers([authorityKp])
+      .rpc();
 
-    const closed = await provider.connection.getAccountInfo(extension);
+    const closed = await context.banksClient.getAccount(extension);
     assert.isNull(closed, "extension account is closed after default");
 
-    const treasuryDelta = (await bal(authority)) - treasuryBefore;
+    const treasuryDelta = (await bal(treasuryKp.publicKey)) - treasuryBefore;
     const extenderDelta = (await bal(extender.publicKey)) - extenderBefore;
-
-    // Clean, fee-independent invariant: the extender pays no fee here, so it
-    // must receive EXACTLY the rent (pdaBefore − bond). This proves the bond
-    // (and only the bond) left the PDA toward the treasury.
     const rent = pdaBefore - BOND.toNumber();
+
     assert.equal(extenderDelta, rent, "extender receives exactly the rent");
-    // The bond goes to the treasury, net of the fee the treasury wallet paid
-    // (treasury == fee payer here). Tolerance < 1 base fee absorbs Solana's
-    // fee-burn / reported-fee accounting artifact — immaterial to safety.
-    assert.closeTo(
-      treasuryDelta + fee,
+    assert.equal(
+      treasuryDelta,
       BOND.toNumber(),
-      100,
-      "treasury receives the slashed bond"
+      "treasury receives exact slashed bond"
     );
-    // No material leak: total accounted lamports == pdaBefore within < 1 fee.
-    assert.closeTo(
-      treasuryDelta + extenderDelta + fee,
+    assert.equal(
+      treasuryDelta + extenderDelta,
       pdaBefore,
-      100,
-      "PDA lamports fully conserved (no material leak)"
+      "PDA lamports 100% conserved"
     );
   });
 
   it("rejects an unsupported extension type", async () => {
     const extender = Keypair.generate();
     const recipient = Keypair.generate();
-    await fund(provider, extender.publicKey, 1);
+    await fund(extender.publicKey, 1);
     const [extension] = extensionPda(
       extender.publicKey,
       recipient.publicKey,
@@ -221,7 +294,7 @@ describe("extension-registry", () => {
           systemProgram: SystemProgram.programId,
         })
         .signers([extender])
-        .rpc({ commitment: "confirmed" });
+        .rpc();
       assert.fail("expected UnsupportedExtensionType");
     } catch (e) {
       assert.include(`${e}`, "UnsupportedExtensionType");
@@ -231,7 +304,7 @@ describe("extension-registry", () => {
   it("rejects a bond below the minimum", async () => {
     const extender = Keypair.generate();
     const recipient = Keypair.generate();
-    await fund(provider, extender.publicKey, 1);
+    await fund(extender.publicKey, 1);
     const [extension] = extensionPda(
       extender.publicKey,
       recipient.publicKey,
@@ -250,7 +323,7 @@ describe("extension-registry", () => {
           systemProgram: SystemProgram.programId,
         })
         .signers([extender])
-        .rpc({ commitment: "confirmed" });
+        .rpc();
       assert.fail("expected BondTooLow");
     } catch (e) {
       assert.include(`${e}`, "BondTooLow");
@@ -259,7 +332,7 @@ describe("extension-registry", () => {
 
   it("rejects self-extension", async () => {
     const extender = Keypair.generate();
-    await fund(provider, extender.publicKey, 1);
+    await fund(extender.publicKey, 1);
     const [extension] = extensionPda(
       extender.publicKey,
       extender.publicKey,
@@ -275,7 +348,7 @@ describe("extension-registry", () => {
           systemProgram: SystemProgram.programId,
         })
         .signers([extender])
-        .rpc({ commitment: "confirmed" });
+        .rpc();
       assert.fail("expected SelfExtension");
     } catch (e) {
       assert.include(`${e}`, "SelfExtension");
@@ -286,8 +359,8 @@ describe("extension-registry", () => {
     const extender = Keypair.generate();
     const recipient = Keypair.generate();
     const intruder = Keypair.generate();
-    await fund(provider, extender.publicKey, 1);
-    await fund(provider, intruder.publicKey, 1);
+    await fund(extender.publicKey, 1);
+    await fund(intruder.publicKey, 1);
     const [extension] = extensionPda(
       extender.publicKey,
       recipient.publicKey,
@@ -303,7 +376,7 @@ describe("extension-registry", () => {
         systemProgram: SystemProgram.programId,
       })
       .signers([extender])
-      .rpc({ commitment: "confirmed" });
+      .rpc();
 
     try {
       await program.methods
@@ -312,12 +385,12 @@ describe("extension-registry", () => {
           extension,
           globalState,
           authority: intruder.publicKey,
-          treasury: authority,
+          treasury: treasuryKp.publicKey,
           extender: extender.publicKey,
           recipient: recipient.publicKey,
         })
         .signers([intruder])
-        .rpc({ commitment: "confirmed" });
+        .rpc();
       assert.fail("expected NotAuthority");
     } catch (e) {
       assert.include(`${e}`, "NotAuthority");

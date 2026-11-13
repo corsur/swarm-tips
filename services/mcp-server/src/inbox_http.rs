@@ -745,18 +745,12 @@ fn bearer_token_from_headers(
     Ok(Some(token))
 }
 
-/// The client-IP-chain header the Cloud Run load balancer injects; the LEFTMOST
-/// hop is the real client (later hops are proxies).
-const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
-
-/// The real client IP behind the LB: the first (leftmost) `X-Forwarded-For`
-/// hop, or empty when absent. Provenance telemetry only (Cloud Logging).
+/// Extract the real client IP behind GCP External HTTPS Load Balancing
+/// (`hops[len - 2]` when LB hops are present), preventing `X-Forwarded-For`
+/// leftmost-hop spoofing.
 fn client_ip_from_headers(headers: &axum::http::HeaderMap) -> String {
-    headers
-        .get(X_FORWARDED_FOR_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(|raw| raw.split(',').next().unwrap_or("").trim().to_string())
-        .filter(|s| !s.is_empty())
+    crate::rate_limit::extract_gcp_lb_client_ip(headers)
+        .map(|ip| ip.to_string())
         .unwrap_or_default()
 }
 
@@ -2720,6 +2714,9 @@ mod bearer_and_mute_router_tests {
                 wallet: me.to_string(),
                 url: url.to_string(),
                 hmac_secret: "deadbeef".to_string(),
+                secret_salt: "salt".to_string(),
+                hmac_secret_sha256: String::new(),
+                webhook_host: "example.com".to_string(),
                 challenge_token: "tok".to_string(),
                 verified: true,
                 consecutive_failures: 0,
@@ -2744,7 +2741,10 @@ mod bearer_and_mute_router_tests {
             Ok(inbox::WebhookDoc {
                 wallet: wallet.to_string(),
                 url: "https://example.com/hook".to_string(),
-                hmac_secret: "deadbeef".to_string(),
+                hmac_secret: String::new(),
+                secret_salt: "salt".to_string(),
+                hmac_secret_sha256: String::new(),
+                webhook_host: "example.com".to_string(),
                 challenge_token: "tok".to_string(),
                 verified: true,
                 consecutive_failures: 0,

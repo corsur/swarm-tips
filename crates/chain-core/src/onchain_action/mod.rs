@@ -42,23 +42,54 @@ pub const MIN_CAMPAIGN_ESCROW_LAMPORTS: u64 = 5_000_000;
 /// matching `anchor_lang::event::EVENT_IX_TAG_LE`).
 pub const ANCHOR_EVENT_IX_TAG_LE: [u8; 8] = [0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d];
 
-/// Denylisted EVM `topic0` event signatures that represent token approvals or
-/// ownership handovers rather than conversion/affiliate events (`M2a` safety rail).
+/// Maximum integer representable losslessly in IEEE-754 double-precision JSON (`2^53 - 1`),
+/// ensuring byte-identical RFC 8785 JCS canonicalization across Rust and JS/TS runtimes.
+pub const MAX_SAFE_JS_INTEGER_U64: u64 = 9_007_199_254_740_991;
+pub const MAX_SAFE_JS_INTEGER_I64: i64 = 9_007_199_254_740_991;
+
+/// Denylisted EVM target contracts (shared approval routers, smart-account factories,
+/// and ERC-4337 entrypoints where conversion attribution can be spoofed or abused).
+const DENYLISTED_EVM_CONTRACTS: &[&str] = &[
+    // Uniswap Permit2 (canonical deterministic address across EVM chains)
+    "0x000000000022d473030f116ddee9f6b43ac78ba3",
+    // Safe v1.3.0 / v1.4.1 singletons & proxy factories
+    "0xd9db270c1b5e3bd161e8c8503c55ceabee709552",
+    "0x3e5c63644e683549055b9be8653de26e0b4cd36e",
+    "0x41675c099f32341bf84bfc5382af534df5c7461a",
+    "0x29fcb43b46531bca003ddc8fcb67ffe91900c762",
+    "0xa6b71e26c5e0845f74c812102ca7114b6a896ab2",
+    "0x4e1dcf7ad4e460cfd30791ccc4f9c8a4f820ec67",
+    // ERC-4337 EntryPoint v0.6 & v0.7
+    "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789",
+    "0x0000000071727de22e5e9d8baf0edac6f37da032",
+];
+
+/// Denylisted EVM `topic0` event signatures that represent token approvals,
+/// permit signatures, or wallet ownership/module handovers (`M2a` safety rail).
 const DENYLISTED_EVM_TOPIC0: &[&str] = &[
-    // Approval(address,address,uint256) (ERC-20 / ERC-721)
+    // Approval(address,address,uint256) (ERC-20 / ERC-721 / WETH9)
     "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
     // ApprovalForAll(address,address,bool) (ERC-721 / ERC-1155)
     "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31",
     // OwnershipTransferred(address,address) (Ownable)
     "0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0",
+    // Permit2 Approval(address,address,address,uint160,uint48)
+    "0xcd3829a3813dc3cdd188fd3d01dcf3268c16be2fdd2dd21d0665418816e46062",
+    // Permit2 Permit(address,address,address,uint160,uint48,uint48)
+    "0xc6a377bfc4eb120024a8ac08eef205be16b817020812c73223e81d1bdb9708ec",
+    // Safe AddedOwner(address) & EnabledModule(address)
+    "0x9465fa0c962cc76958e6373a993326400c1c94f8be2fe3a952adfa7f60b2ea26",
+    "0xecdf3a3effea5783a3c4c2140e677577666428d44ef9d474a0b3a4c26123fd77",
 ];
 
-/// Denylisted Solana system / token programs for raw `OnChainAction` targets
-/// (`Assign`, `Approve`, `SetAuthority` wallet-drainer prevention).
+/// Denylisted Solana system / token / stake / loader programs for raw `OnChainAction`
+/// targets (`Assign`, `Approve`, `SetAuthority`, `Authorize` wallet-drainer prevention).
 const DENYLISTED_SOLANA_PROGRAMS: &[&str] = &[
     "11111111111111111111111111111111",
     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "Stake11111111111111111111111111111111111111",
+    "BPFLoaderUpgradeab1e11111111111111111111111",
 ];
 
 /// Execution mode for `PlatformType::OnChainAction`.
@@ -106,7 +137,10 @@ impl PredicateOp {
 /// Where the claimant's referral/affiliate attribution appears inside an EVM log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "source", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)
+)]
 pub enum EvmAttributionSource {
     /// Indexed event parameter `topics[1..=3]`.
     Topic { index: u8 },
@@ -117,7 +151,10 @@ pub enum EvmAttributionSource {
 /// Reference to an EVM transaction or receipt-log word for predicates and `actor_field`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "field", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(tag = "field", rename_all = "snake_case", deny_unknown_fields)
+)]
 pub enum EvmFieldRef {
     /// Outer transaction sender `tx.from` (left-padded with 12 zero bytes to 32 bytes).
     TxFrom,
@@ -133,6 +170,7 @@ pub enum EvmFieldRef {
 /// One bounded predicate over an EVM transaction/log word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct EvmFieldPredicate {
     pub field: EvmFieldRef,
     pub op: PredicateOp,
@@ -143,6 +181,7 @@ pub struct EvmFieldPredicate {
 /// Declarative EVM receipt-log predicate (`eth_getTransactionReceipt` + finalized block).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct EvmLogPredicate {
     /// `0x` + 40 hex chars contract address (`log.address == target_contract`).
     pub target_contract: String,
@@ -169,7 +208,10 @@ pub struct EvmLogPredicate {
 /// How a Solana target program's conversion action is matched (`M2c` — never `meta.logMessages`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "mode", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)
+)]
 pub enum SolanaEventMatcher {
     /// Anchor `emit_cpi!` self-CPI (`PDA(["__event_authority"], program_id)` + `ANCHOR_EVENT_IX_TAG_LE`
     /// + 8-byte `event_discriminator_hex`).
@@ -181,7 +223,10 @@ pub enum SolanaEventMatcher {
 /// Where the claimant's Solana pubkey appears in a matched Solana instruction / `emit_cpi!` event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "source", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)
+)]
 pub enum SolanaAttributionSource {
     /// Account index `0..32` in the matched instruction's account list.
     AccountIndex { index: u8 },
@@ -204,6 +249,7 @@ pub enum SolanaSliceEncoding {
 /// Bounded slice predicate on a matched Solana `emit_cpi!` payload or instruction data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SolanaSlicePredicate {
     pub byte_offset: u16,
     pub encoding: SolanaSliceEncoding,
@@ -214,6 +260,7 @@ pub struct SolanaSlicePredicate {
 /// Declarative Solana program predicate (`M2c`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SolanaProgramPredicate {
     /// Base58 32-byte target program ID.
     pub program_id: String,
@@ -221,9 +268,17 @@ pub struct SolanaProgramPredicate {
     pub agent_attribution: SolanaAttributionSource,
     /// Account index (`0..32`) of the end-buyer / counterparty (`actor != agent && actor != client`).
     pub actor_account_index: u8,
-    /// Optional minimum native lamport balance delta paid by `actor_account_index` (`0` if N/A).
+    /// Optional minimum native lamport balance delta (`0` if N/A; capped at `2^53 - 1` for JCS parity).
     #[cfg_attr(feature = "serde", serde(default))]
     pub min_lamports: u64,
+    /// Optional recipient/vault account index (`0..32`) that must gain `>= min_lamports`
+    /// (`postBalances[idx] - preBalances[idx] >= min_lamports`), preventing rent-reclaim
+    /// side-instruction balance spoofing.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub recipient_account_index: Option<u8>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub field_predicates: Vec<SolanaSlicePredicate>,
 }
@@ -240,11 +295,19 @@ pub enum TargetPredicate {
 /// Top-level immutable specification committed into `Task.content_hash = sha256(to_jcs_bytes())`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct OnChainActionSpec {
     pub schema_version: u16,
     /// CAIP-2 chain ID from `chain_registry::VERIFICATION_TARGETS` (e.g. `"eip155:56"`).
     pub target_chain: String,
     pub action_mode: ActionMode,
+    /// Optional campaign-wide minimum Unix timestamp floor (`block.timestamp >= min_block_timestamp`).
+    /// Verifiers always enforce `max(onchain_task.created_at, min_block_timestamp)`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub min_block_timestamp: Option<i64>,
     pub predicate: TargetPredicate,
 }
 
@@ -254,7 +317,9 @@ pub enum SpecValidationError {
     UnsupportedSchemaVersion(u16),
     InvalidTargetChain,
     ChainPredicateNamespaceMismatch,
+    InvalidMinBlockTimestamp(i64),
     InvalidTargetContract,
+    DenylistedTargetContract,
     InvalidTopic0,
     DenylistedTopic0,
     InvalidEventSignature,
@@ -262,6 +327,7 @@ pub enum SpecValidationError {
     InvalidDataWordIndex(u8),
     InvalidActorField,
     ActorEqualsAttributionField,
+    RecipientEqualsActorOrAttribution,
     TxValueRequiresDirectCall,
     TooManyPredicates(usize),
     InvalidPredicateValueHex,
@@ -269,11 +335,56 @@ pub enum SpecValidationError {
     DenylistedProgramId,
     InvalidDiscriminatorHex,
     InvalidAccountIndex(u8),
+    MinLamportsExceedsSafeJsInteger(u64),
     InvalidSliceBounds(u16),
     SpecTooLarge(usize),
 }
 
 impl OnChainActionSpec {
+    /// Normalize all hex fields (`target_contract`, `topic0`, `value_hex`, discriminators)
+    /// to lowercase in-place so deserialized specs and JCS commitments are case-invariant.
+    pub fn canonicalize(&mut self) {
+        match &mut self.predicate {
+            TargetPredicate::EvmLog(p) => {
+                p.target_contract = p.target_contract.to_ascii_lowercase();
+                p.topic0 = p.topic0.to_ascii_lowercase();
+                for fp in &mut p.field_predicates {
+                    fp.value_hex = fp.value_hex.to_ascii_lowercase();
+                }
+            }
+            TargetPredicate::SolanaIx(p) => {
+                match &mut p.matcher {
+                    SolanaEventMatcher::AnchorEmitCpi {
+                        event_discriminator_hex,
+                    } => {
+                        *event_discriminator_hex = event_discriminator_hex.to_ascii_lowercase();
+                    }
+                    SolanaEventMatcher::InstructionData {
+                        ix_discriminator_hex,
+                    } => {
+                        *ix_discriminator_hex = ix_discriminator_hex.to_ascii_lowercase();
+                    }
+                }
+                for fp in &mut p.field_predicates {
+                    fp.value_hex = fp.value_hex.to_ascii_lowercase();
+                }
+            }
+        }
+    }
+
+    /// True if this spec evaluates transaction-wide value (`EvmFieldRef::TxValue`
+    /// or `min_lamports > 0`), requiring transaction-level replay locking rather
+    /// than per-log / per-instruction replay locking.
+    pub fn uses_tx_wide_value(&self) -> bool {
+        match &self.predicate {
+            TargetPredicate::EvmLog(p) => p
+                .field_predicates
+                .iter()
+                .any(|fp| matches!(fp.field, EvmFieldRef::TxValue)),
+            TargetPredicate::SolanaIx(p) => p.min_lamports > 0,
+        }
+    }
+
     /// Validate all structural bounds, CAIP-2 namespace parity, safety denylists,
     /// and NASA Power-of-Ten caps.
     pub fn validate(&self) -> Result<(), SpecValidationError> {
@@ -284,6 +395,12 @@ impl OnChainActionSpec {
         }
         let chain = ChainId::parse(&self.target_chain)
             .map_err(|_| SpecValidationError::InvalidTargetChain)?;
+
+        if let Some(ts) = self.min_block_timestamp {
+            if !(0..=MAX_SAFE_JS_INTEGER_I64).contains(&ts) {
+                return Err(SpecValidationError::InvalidMinBlockTimestamp(ts));
+            }
+        }
 
         match (chain.namespace(), &self.predicate) {
             (Namespace::Eip155, TargetPredicate::EvmLog(p)) => validate_evm_predicate(p)?,
@@ -328,6 +445,10 @@ fn validate_evm_predicate(p: &EvmLogPredicate) -> Result<(), SpecValidationError
         .ok_or(SpecValidationError::InvalidTargetContract)?;
     if contract_bytes == [0u8; 20] {
         return Err(SpecValidationError::InvalidTargetContract);
+    }
+    let contract_lower = p.target_contract.to_ascii_lowercase();
+    if DENYLISTED_EVM_CONTRACTS.contains(&contract_lower.as_str()) {
+        return Err(SpecValidationError::DenylistedTargetContract);
     }
 
     let topic0_bytes =
@@ -426,6 +547,12 @@ fn validate_solana_predicate(p: &SolanaProgramPredicate) -> Result<(), SpecValid
         return Err(SpecValidationError::DenylistedProgramId);
     }
 
+    if p.min_lamports > MAX_SAFE_JS_INTEGER_U64 {
+        return Err(SpecValidationError::MinLamportsExceedsSafeJsInteger(
+            p.min_lamports,
+        ));
+    }
+
     match &p.matcher {
         SolanaEventMatcher::AnchorEmitCpi {
             event_discriminator_hex,
@@ -447,6 +574,19 @@ fn validate_solana_predicate(p: &SolanaProgramPredicate) -> Result<(), SpecValid
         return Err(SpecValidationError::InvalidAccountIndex(
             p.actor_account_index,
         ));
+    }
+
+    if let Some(recip_idx) = p.recipient_account_index {
+        if recip_idx >= 32 {
+            return Err(SpecValidationError::InvalidAccountIndex(recip_idx));
+        }
+        if recip_idx == p.actor_account_index {
+            return Err(SpecValidationError::RecipientEqualsActorOrAttribution);
+        }
+        if matches!(p.agent_attribution, SolanaAttributionSource::AccountIndex { index } if index == recip_idx)
+        {
+            return Err(SpecValidationError::RecipientEqualsActorOrAttribution);
+        }
     }
 
     match p.agent_attribution {
@@ -506,6 +646,7 @@ mod tests {
             schema_version: ONCHAIN_ACTION_SCHEMA_VERSION,
             target_chain: "eip155:56".to_string(),
             action_mode: ActionMode::AffiliateEvent,
+            min_block_timestamp: None,
             predicate: TargetPredicate::EvmLog(EvmLogPredicate {
                 target_contract: "0xBe9A615678B2F3F06196B2dE3F331c2C8c149D56".to_string(),
                 topic0: "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -574,6 +715,7 @@ mod tests {
             schema_version: ONCHAIN_ACTION_SCHEMA_VERSION,
             target_chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string(),
             action_mode: ActionMode::AffiliateEvent,
+            min_block_timestamp: None,
             predicate: TargetPredicate::SolanaIx(SolanaProgramPredicate {
                 program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
                 matcher: SolanaEventMatcher::InstructionData {
@@ -582,6 +724,7 @@ mod tests {
                 agent_attribution: SolanaAttributionSource::AccountIndex { index: 1 },
                 actor_account_index: 0,
                 min_lamports: 0,
+                recipient_account_index: None,
                 field_predicates: vec![],
             }),
         };
@@ -618,6 +761,7 @@ mod tests {
             schema_version: ONCHAIN_ACTION_SCHEMA_VERSION,
             target_chain: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1".to_string(),
             action_mode: ActionMode::AffiliateEvent,
+            min_block_timestamp: Some(1_765_000_000),
             predicate: TargetPredicate::SolanaIx(SolanaProgramPredicate {
                 program_id: "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P".to_string(),
                 matcher: SolanaEventMatcher::AnchorEmitCpi {
@@ -626,6 +770,7 @@ mod tests {
                 agent_attribution: SolanaAttributionSource::PayloadPubkey { byte_offset: 0 },
                 actor_account_index: 0,
                 min_lamports: 10_000_000,
+                recipient_account_index: Some(2),
                 field_predicates: vec![SolanaSlicePredicate {
                     byte_offset: 32,
                     encoding: SolanaSliceEncoding::LeU64,
@@ -635,7 +780,66 @@ mod tests {
             }),
         };
         spec.validate().expect("Solana emit_cpi spec valid");
+        assert!(spec.uses_tx_wide_value());
         assert_ne!(spec.spec_commitment_sha256(), [0u8; 32]);
+    }
+
+    #[test]
+    fn rejects_permit2_stake_program_and_unsafe_js_integers() {
+        let mut permit2_spec = sample_bsc_affiliate_spec();
+        if let TargetPredicate::EvmLog(ref mut p) = permit2_spec.predicate {
+            p.target_contract = "0x000000000022D473030F116dDEE9F6B43aC78BA3".to_string();
+        }
+        assert_eq!(
+            permit2_spec.validate(),
+            Err(SpecValidationError::DenylistedTargetContract)
+        );
+
+        let stake_spec = OnChainActionSpec {
+            schema_version: ONCHAIN_ACTION_SCHEMA_VERSION,
+            target_chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string(),
+            action_mode: ActionMode::AffiliateEvent,
+            min_block_timestamp: None,
+            predicate: TargetPredicate::SolanaIx(SolanaProgramPredicate {
+                program_id: "Stake11111111111111111111111111111111111111".to_string(),
+                matcher: SolanaEventMatcher::InstructionData {
+                    ix_discriminator_hex: "0x01".to_string(),
+                },
+                agent_attribution: SolanaAttributionSource::AccountIndex { index: 1 },
+                actor_account_index: 0,
+                min_lamports: 0,
+                recipient_account_index: None,
+                field_predicates: vec![],
+            }),
+        };
+        assert_eq!(
+            stake_spec.validate(),
+            Err(SpecValidationError::DenylistedProgramId)
+        );
+
+        let overflow_js = OnChainActionSpec {
+            schema_version: ONCHAIN_ACTION_SCHEMA_VERSION,
+            target_chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string(),
+            action_mode: ActionMode::AffiliateEvent,
+            min_block_timestamp: None,
+            predicate: TargetPredicate::SolanaIx(SolanaProgramPredicate {
+                program_id: "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P".to_string(),
+                matcher: SolanaEventMatcher::InstructionData {
+                    ix_discriminator_hex: "0x01".to_string(),
+                },
+                agent_attribution: SolanaAttributionSource::AccountIndex { index: 1 },
+                actor_account_index: 0,
+                min_lamports: MAX_SAFE_JS_INTEGER_U64.saturating_add(1),
+                recipient_account_index: Some(2),
+                field_predicates: vec![],
+            }),
+        };
+        assert_eq!(
+            overflow_js.validate(),
+            Err(SpecValidationError::MinLamportsExceedsSafeJsInteger(
+                MAX_SAFE_JS_INTEGER_U64.saturating_add(1)
+            ))
+        );
     }
 
     #[cfg(feature = "cosign")]

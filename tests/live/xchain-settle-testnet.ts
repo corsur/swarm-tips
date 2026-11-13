@@ -69,11 +69,9 @@ function signerFromHex(hex: string): SessionSigner {
   return { privateKey, address: toBytes(acct.address) };
 }
 
-/** EVM signature: helper emits v=recid (0/1); OZ ECDSA wants 27/28. */
+/** Canonical signature: signDigest emits v=27/28 for both EVM and Solana. */
 function signEvm(signer: SessionSigner, digest: Uint8Array): `0x${string}` {
-  const sig = signDigest(signer, digest); // [r..32, s..32, v(0|1)]
-  const out = Uint8Array.from(sig);
-  out[64] = out[64] + 27;
+  const out = Uint8Array.from(signDigest(signer, digest));
   return bytesToHex(out);
 }
 

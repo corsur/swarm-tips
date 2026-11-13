@@ -22,10 +22,12 @@ import { assert } from "chai";
 import { createHash } from "crypto";
 import {
   Checkpoint,
+  checkpointDigest,
   newSessionSigner,
   keccak256,
   matchLiveDigest,
   signDigest,
+  toArray,
 } from "./helpers/xchain-cert";
 import { startBankrun, BankrunHandle } from "./harness/bankrun";
 import { Ledger } from "./harness/ledger";
@@ -41,6 +43,7 @@ import {
   settleXclaim,
   refundXmatchTimeout,
   refundTimeoutOpensAt,
+  toCheckpointArg,
   xmatchView,
   readXmatch,
   checkpointOracleInput,
@@ -398,5 +401,71 @@ describe("coordination-game cross-chain contested (bankrun, harness)", () => {
     );
     assert.match(String(err), /XCertMismatch/);
     assert.equal((await readXmatch(ctx, m.xmatchPda)).statusLabel, "Locked");
+  });
+
+  it("CRIT-10: rejects legacy v=0/1 signatures and slashes local equivocator immediately via prove_local_equivocation", async () => {
+    const m = await lockMatch(ctx, {
+      seed: "audit-local-equivocation",
+      matchupCommitment: keccak256(enc("commit-local-equivocation")),
+      player,
+    });
+    const cpA = step1Checkpoint(m);
+    const cpB: Checkpoint = {
+      ...cpA,
+      p1Commit: sha256(enc("conflicting-p1-commit")),
+    };
+    const sigA = signDigest(ctx.bundle.local, checkpointDigest(cpA));
+    const sigB = signDigest(ctx.bundle.local, checkpointDigest(cpB));
+
+    // Legacy v = 0 / 1 recovery IDs must be rejected (canonical v = 27 / 28 only).
+    const rawRecidSigA = [...sigA];
+    rawRecidSigA[64] -= 27;
+    let rawErr: unknown;
+    try {
+      await ctx.rt.program.methods
+        .proveLocalEquivocation(
+          toArray(m.cert.matchId),
+          toCheckpointArg(cpA),
+          toCheckpointArg(cpB),
+          rawRecidSigA,
+          sigB
+        )
+        .accountsPartial({ xmatch: m.xmatchPda })
+        .rpc();
+    } catch (e) {
+      rawErr = e;
+    }
+    assert.isDefined(rawErr, "raw v=0/1 signature must be rejected");
+    assert.match(String(rawErr), /InvalidGameState/);
+
+    // Canonical v=27/28 equivocation proof succeeds and unlocks immediate settle_xclaim BEFORE windowEnd!
+    await ctx.rt.program.methods
+      .proveLocalEquivocation(
+        toArray(m.cert.matchId),
+        toCheckpointArg(cpA),
+        toCheckpointArg(cpB),
+        sigA,
+        sigB
+      )
+      .accountsPartial({ xmatch: m.xmatchPda })
+      .rpc();
+
+    const stateAfterProof = await ctx.rt.program.account.xChainMatch.fetch(
+      m.xmatchPda
+    );
+    assert.isTrue(stateAfterProof.localEquivocated);
+    assert.equal(stateAfterProof.bestStepCount, 255);
+
+    // Settle immediately (without warping past m.windowEnd) and verify conservation + player stake forfeiture!
+    const led = await ledgerAround(m);
+    const l = await led.open();
+    await settleXclaim(ctx, m, { cranker });
+    await led.close(l);
+    assertConservation(l);
+    assert.equal(
+      l.delta("player").toString(),
+      "0",
+      "equivocating local player forfeits entire stake"
+    );
   });
 });

@@ -160,6 +160,13 @@ pub struct XEquivocationProven {
 }
 
 #[event]
+pub struct XLocalEquivocationProven {
+    pub match_id: [u8; 32],
+    pub session_key: [u8; 20],
+    pub new_best_outcome: u8,
+}
+
+#[event]
 pub struct XPoolDeposited {
     pub funder: Pubkey,
     pub amount: u64,

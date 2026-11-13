@@ -929,7 +929,10 @@ impl GameSessionManager {
         game_id: &str,
         preimage: [u8; 32],
     ) -> Result<[u8; 32]> {
-        if let Some(existing) = self.load_evm_preimage(wallet, game_id).await? {
+        let canonical_wallet = chain_core::CanonicalWallet::parse(wallet)
+            .map(|c| c.as_str().to_owned())
+            .map_err(|e| anyhow::anyhow!("invalid wallet address for EVM preimage: {e}"))?;
+        if let Some(existing) = self.load_evm_preimage(&canonical_wallet, game_id).await? {
             if (existing[31] & 1) != (preimage[31] & 1) {
                 anyhow::bail!(
                     "EVM commit preimage already recorded for this game with a different guess; call game_evm_reveal_guess or retry with your original guess"
@@ -938,8 +941,8 @@ impl GameSessionManager {
             return Ok(existing);
         }
         let doc = EvmPreimageDoc {
-            id: format!("{wallet}:{game_id}"),
-            wallet: wallet.to_string(),
+            id: format!("{canonical_wallet}:{game_id}"),
+            wallet: canonical_wallet.clone(),
             game_id: game_id.to_string(),
             preimage_hex: hex::encode(preimage),
             updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
@@ -953,23 +956,41 @@ impl GameSessionManager {
             .execute::<EvmPreimageDoc>()
             .await
             .map_err(|e| {
-                tracing::error!(wallet = %wallet, game_id, error = %e, "CRITICAL: failed to persist EVM commit preimage");
+                tracing::error!(wallet = %canonical_wallet, game_id, error = %e, "CRITICAL: failed to persist EVM commit preimage");
                 anyhow::anyhow!("failed to persist EVM commit preimage — retry game_evm_commit_guess")
             })?;
         Ok(preimage)
     }
 
     /// Load a same-chain EVM guess preimage for `wallet`+`game_id`, if stored.
+    /// Checks the canonicalized (lowercase EVM) document key first and falls back
+    /// to the raw caller string so pre-existing mixed-case documents still resolve.
     pub async fn load_evm_preimage(&self, wallet: &str, game_id: &str) -> Result<Option<[u8; 32]>> {
-        let doc: Option<EvmPreimageDoc> = self
+        let canonical = crate::jwt::normalize_wallet(wallet);
+        let primary_key = format!("{canonical}:{game_id}");
+        let mut doc: Option<EvmPreimageDoc> = self
             .db
             .fluent()
             .select()
             .by_id_in(MCP_EVM_PREIMAGES_COLLECTION)
             .obj::<EvmPreimageDoc>()
-            .one(format!("{wallet}:{game_id}"))
+            .one(&primary_key)
             .await
             .map_err(|e| anyhow::anyhow!("failed to load EVM preimage: {e}"))?;
+        if doc.is_none() {
+            let fallback_key = format!("{wallet}:{game_id}");
+            if fallback_key != primary_key {
+                doc = self
+                    .db
+                    .fluent()
+                    .select()
+                    .by_id_in(MCP_EVM_PREIMAGES_COLLECTION)
+                    .obj::<EvmPreimageDoc>()
+                    .one(&fallback_key)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("failed to load EVM preimage: {e}"))?;
+            }
+        }
         let Some(doc) = doc else { return Ok(None) };
         let bytes = hex::decode(&doc.preimage_hex)
             .map_err(|e| anyhow::anyhow!("stored EVM preimage is not hex: {e}"))?;

@@ -344,6 +344,11 @@ describe("shillbot - disputes", () => {
       const taskBefore = await program.account.task.fetch(tp);
       assert.deepEqual(taskBefore.state, { claimed: {} });
 
+      const agentStateBefore = await program.account.agentState.fetch(
+        emergencyAgentPda
+      );
+      assert.equal(agentStateBefore.claimedCount, 1);
+
       const clientBalanceBefore = await provider.connection.getBalance(
         client.publicKey
       );
@@ -357,8 +362,15 @@ describe("shillbot - disputes", () => {
         .remainingAccounts([
           { pubkey: tp, isWritable: true, isSigner: false },
           { pubkey: client.publicKey, isWritable: true, isSigner: false },
+          { pubkey: emergencyAgentPda, isWritable: true, isSigner: false },
         ])
         .rpc();
+
+      // Verify AgentState.claimed_count was decremented back to 0
+      const agentStateAfter = await program.account.agentState.fetch(
+        emergencyAgentPda
+      );
+      assert.equal(agentStateAfter.claimedCount, 0);
 
       // Verify task is closed
       try {

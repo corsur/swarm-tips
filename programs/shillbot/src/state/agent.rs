@@ -51,9 +51,10 @@ pub struct AgentState {
     pub total_tasks_claimed: u64,
     /// Total challenges this agent has lost (basis for `dispute_rate`).
     pub total_challenges_lost: u64,
-    /// Reserved space for future fields without reallocation. Reduced from
-    /// 32 to 8 bytes when the three counters above were claimed.
-    pub _reserved: [u8; 8],
+    /// Unix timestamp of the most recent score-0 reopened submission for this
+    /// agent (`0` = none). Carved from the 8-byte `_reserved` slot so
+    /// `AgentState::SPACE` stays `90` and existing accounts read `0`.
+    pub last_strike_at: i64,
     pub bump: u8,
 }
 
@@ -67,7 +68,7 @@ impl AgentState {
         + 8    // total_score_sum
         + 8    // total_tasks_claimed
         + 8    // total_challenges_lost
-        + 8    // _reserved
+        + 8    // last_strike_at (carved from _reserved[8])
         + 1; // bump
 }
 
@@ -157,8 +158,8 @@ mod tests {
             "total_challenges_lost must read as 0 from old-shape account"
         );
 
-        // `_reserved` shrunk to 8 bytes (also zero from old layout).
-        assert_eq!(parsed._reserved, [0u8; 8]);
+        // `last_strike_at` carved from 8-byte `_reserved` (also zero from old layout).
+        assert_eq!(parsed.last_strike_at, 0);
 
         // `bump` at the same offset in both layouts.
         assert_eq!(parsed.bump, bump);

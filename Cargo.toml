@@ -12,6 +12,7 @@ resolver = "2"
 
 [workspace.dependencies]
 api-transport = { path = "crates/api-transport" }
+safe-http-fetch = { path = "crates/safe-http-fetch" }
 reputation-indexer = { path = "crates/reputation-indexer" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

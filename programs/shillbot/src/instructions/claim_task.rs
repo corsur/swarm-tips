@@ -70,6 +70,7 @@ pub fn claim_task(ctx: Context<ClaimTask>) -> Result<()> {
         agent_state.claimed_count < global.max_concurrent_claims,
         ShillbotError::MaxConcurrentClaimsExceeded
     );
+    validate_strike_cooldown(agent_state, clock.unix_timestamp)?;
 
     // Effects: update agent state and task
     commit_wallet_claim(
@@ -85,6 +86,16 @@ pub fn claim_task(ctx: Context<ClaimTask>) -> Result<()> {
         agent: agent_key,
     });
 
+    Ok(())
+}
+
+pub(crate) fn validate_strike_cooldown(agent_state: &AgentState, now: i64) -> Result<()> {
+    if agent_state.last_strike_at > 0 {
+        let cooldown_until = agent_state
+            .last_strike_at
+            .saturating_add(crate::constants::SCORE_ZERO_COOLDOWN_SECONDS);
+        require!(now >= cooldown_until, ShillbotError::StrikeCooldownActive);
+    }
     Ok(())
 }
 

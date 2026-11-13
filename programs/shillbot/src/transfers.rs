@@ -10,6 +10,8 @@ use crate::errors::ShillbotError;
 /// contract is part of the function, not caller-discipline.
 pub fn transfer_lamports(from: &AccountInfo, to: &AccountInfo, amount: u64) -> Result<()> {
     require!(*from.owner == crate::ID, ShillbotError::InvalidTaskState);
+    require_keys_neq!(from.key(), to.key(), ShillbotError::InvalidPayoutTarget);
+    require!(!to.executable, ShillbotError::InvalidPayoutTarget);
 
     let from_lamports = from.lamports();
     let to_lamports = to.lamports();

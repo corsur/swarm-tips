@@ -30,6 +30,18 @@ fn network_query_suffix(network: Option<&str>) -> String {
     result
 }
 
+const MAX_ERROR_BODY_BYTES: usize = 65_536;
+
+fn require_path_segment(value: &str, field: &str) -> Result<String, McpServiceError> {
+    chain_core::SafePathSegment::parse(value)
+        .map(|seg| seg.as_str().to_owned())
+        .map_err(|_| {
+            McpServiceError::InvalidInput(format!(
+                "{field} must be a valid URL path segment without traversal characters"
+            ))
+        })
+}
+
 /// HTTP client for proxying read operations to the orchestrator API.
 /// Reject a non-2xx orchestrator response with the status and body.
 ///
@@ -51,7 +63,9 @@ async fn require_success(
         return Ok(response);
     }
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+        .await
+        .unwrap_or_default();
     tracing::error!(
         service = "mcp-server",
         op = %op,
@@ -359,6 +373,7 @@ impl OrchestratorProxy {
         // configured HTTP client cannot be built.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_else(|e| {
                 tracing::error!(
@@ -417,7 +432,9 @@ impl OrchestratorProxy {
             // preserved, and the body only enriches the logged/returned
             // message — an unreadable body degrades to "" instead of masking
             // the real error with a second one.
-            let body = response.text().await.unwrap_or_default();
+            let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             tracing::error!(service = "mcp-server", status = %status, body = %body, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
@@ -451,9 +468,10 @@ impl OrchestratorProxy {
                 "task_id must not be empty".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
 
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}{qs}", self.base_url);
+        let url = format!("{}/tasks/{encoded_task_id}{qs}", self.base_url);
 
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator get_task_details failed");
@@ -462,7 +480,9 @@ impl OrchestratorProxy {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             tracing::error!(service = "mcp-server", status = %status, task_id = %task_id, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
@@ -511,7 +531,9 @@ impl OrchestratorProxy {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             tracing::error!(service = "mcp-server", status = %status, wallet = %wallet_pubkey, "orchestrator returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
@@ -623,6 +645,7 @@ impl OrchestratorProxy {
                 "campaign_id must not be empty".to_string(),
             ));
         }
+        let encoded_campaign_id = require_path_segment(campaign_id, "campaign_id")?;
         if wallet_pubkey.is_empty() {
             return Err(McpServiceError::InvalidInput(
                 "wallet_pubkey must not be empty".to_string(),
@@ -634,7 +657,7 @@ impl OrchestratorProxy {
             ));
         }
         let qs = network_query_suffix(network);
-        let url = format!("{}/campaigns/{campaign_id}/fund{qs}", self.base_url);
+        let url = format!("{}/campaigns/{encoded_campaign_id}/fund{qs}", self.base_url);
         let body = serde_json::json!({ "amount_lamports": amount_lamports });
         let response = self
             .client
@@ -703,6 +726,7 @@ impl OrchestratorProxy {
                 "task_id must not be empty".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
         if wallet_pubkey.is_empty() {
             return Err(McpServiceError::InvalidInput(
                 "wallet_pubkey must not be empty".to_string(),
@@ -710,7 +734,7 @@ impl OrchestratorProxy {
         }
 
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/claim{qs}", self.base_url);
+        let url = format!("{}/tasks/{encoded_task_id}/claim{qs}", self.base_url);
         let response = self.bodyless_post(&url)
             .send()
             .await
@@ -749,6 +773,7 @@ impl OrchestratorProxy {
                 "task_id must not be empty".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
         if wallet_pubkey.is_empty() {
             return Err(McpServiceError::InvalidInput(
                 "wallet_pubkey must not be empty".to_string(),
@@ -761,7 +786,7 @@ impl OrchestratorProxy {
         }
 
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/submit{qs}", self.base_url);
+        let url = format!("{}/tasks/{encoded_task_id}/submit{qs}", self.base_url);
         let body = serde_json::json!({ "content_id": content_id });
         let response = self
             .client
@@ -805,13 +830,14 @@ impl OrchestratorProxy {
                 "task_id, wallet_pubkey, and unsigned_transaction are required".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
         if action != "claim" && action != "submit" {
             return Err(McpServiceError::InvalidInput(
                 "sponsorship is limited to claim and submit".to_string(),
             ));
         }
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/sponsor{qs}", self.base_url);
+        let url = format!("{}/tasks/{encoded_task_id}/sponsor{qs}", self.base_url);
         let response = self
             .client
             .post(&url)
@@ -846,6 +872,7 @@ impl OrchestratorProxy {
                 "task_id and wallet_pubkey are required".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
         if action != "claim" && action != "submit" {
             return Err(McpServiceError::InvalidInput(
                 "sponsorship is limited to claim and submit".to_string(),
@@ -858,7 +885,7 @@ impl OrchestratorProxy {
             "&sponsor=true"
         });
         let response = if action == "claim" {
-            let url = format!("{}/tasks/{task_id}/claim{qs}", self.base_url);
+            let url = format!("{}/tasks/{encoded_task_id}/claim{qs}", self.base_url);
             self.bodyless_post(&url).send().await
         } else {
             let content_id = content_id
@@ -868,7 +895,7 @@ impl OrchestratorProxy {
                         "content_id is required for a submit sponsorship template".to_string(),
                     )
                 })?;
-            let url = format!("{}/tasks/{task_id}/submit{qs}", self.base_url);
+            let url = format!("{}/tasks/{encoded_task_id}/submit{qs}", self.base_url);
             self.client
                 .post(&url)
                 .bearer_auth(&self.access_token)
@@ -897,9 +924,10 @@ impl OrchestratorProxy {
                 "task_id must not be empty".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
 
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/build-verify{qs}", self.base_url);
+        let url = format!("{}/tasks/{encoded_task_id}/build-verify{qs}", self.base_url);
         let response = self.bodyless_post(&url)
             .send()
             .await
@@ -910,7 +938,9 @@ impl OrchestratorProxy {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
             )));
@@ -934,9 +964,13 @@ impl OrchestratorProxy {
                 "task_id must not be empty".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
 
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/build-finalize{qs}", self.base_url);
+        let url = format!(
+            "{}/tasks/{encoded_task_id}/build-finalize{qs}",
+            self.base_url
+        );
         let response = self.bodyless_post(&url)
             .send()
             .await
@@ -947,7 +981,9 @@ impl OrchestratorProxy {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
             )));
@@ -974,6 +1010,7 @@ impl OrchestratorProxy {
                 "task_id must not be empty".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
         if wallet_pubkey.is_empty() {
             return Err(McpServiceError::InvalidInput(
                 "wallet_pubkey must not be empty".to_string(),
@@ -981,7 +1018,7 @@ impl OrchestratorProxy {
         }
 
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/approve{qs}", self.base_url);
+        let url = format!("{}/tasks/{encoded_task_id}/approve{qs}", self.base_url);
         let response = self.bodyless_post(&url)
             .send()
             .await
@@ -1019,9 +1056,10 @@ impl OrchestratorProxy {
                 "task_id must not be empty".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
 
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/attestation{qs}", self.base_url);
+        let url = format!("{}/tasks/{encoded_task_id}/attestation{qs}", self.base_url);
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator get_attestation failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
@@ -1058,9 +1096,13 @@ impl OrchestratorProxy {
                 task_pda.len()
             )));
         }
+        let encoded_task_pda = require_path_segment(task_pda, "task_pda")?;
 
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/by-pda/{task_pda}/attestation{qs}", self.base_url);
+        let url = format!(
+            "{}/tasks/by-pda/{encoded_task_pda}/attestation{qs}",
+            self.base_url
+        );
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, task_pda = %task_pda, "orchestrator get_attestation_by_pda failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
@@ -1068,7 +1110,9 @@ impl OrchestratorProxy {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             tracing::error!(service = "mcp-server", status = %status, task_pda = %task_pda, "orchestrator get_attestation_by_pda returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
@@ -1108,7 +1152,9 @@ impl OrchestratorProxy {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             tracing::error!(service = "mcp-server", status = %status, "orchestrator list_pending_approval returned error");
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
@@ -1139,6 +1185,7 @@ impl OrchestratorProxy {
                 "task_id must not be empty".to_string(),
             ));
         }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
         if wallet_pubkey.is_empty() {
             return Err(McpServiceError::InvalidInput(
                 "wallet_pubkey must not be empty".to_string(),
@@ -1151,7 +1198,7 @@ impl OrchestratorProxy {
         }
 
         let qs = network_query_suffix(network);
-        let url = format!("{}/tasks/{task_id}/confirm{qs}", self.base_url);
+        let url = format!("{}/tasks/{encoded_task_id}/confirm{qs}", self.base_url);
         let mut body = serde_json::json!({
             "tx_signature": tx_signature,
             "action": action,
@@ -1252,8 +1299,9 @@ impl OrchestratorProxy {
                 "session_id must not be empty".to_string(),
             ));
         }
+        let encoded_session_id = require_path_segment(session_id, "session_id")?;
 
-        let url = format!("{}/shorts/{session_id}", self.shorts_base_url);
+        let url = format!("{}/shorts/{encoded_session_id}", self.shorts_base_url);
 
         let response = self.shorts_client.get(&url).send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, session_id = %session_id, "orchestrator get_short_status failed");
@@ -1262,7 +1310,9 @@ impl OrchestratorProxy {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             return Err(McpServiceError::OrchestratorError(format!(
                 "status {status}: {body}"
             )));

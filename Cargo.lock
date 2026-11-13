@@ -2014,6 +2014,7 @@ name = "extension-credit"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "extension-registry",
 ]
 
 [[package]]
@@ -2350,6 +2351,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "urlencoding",
  "wiremock",
 ]
 
@@ -3262,6 +3264,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "rquest",
+ "safe-http-fetch",
  "serde",
  "serde_json",
  "tokio",
@@ -3357,6 +3360,7 @@ dependencies = [
  "reputation-indexer",
  "reqwest 0.12.28",
  "rmcp",
+ "safe-http-fetch",
  "schemars",
  "serde",
  "serde_json",
@@ -4638,6 +4642,17 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe-http-fetch"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
+ "wiremock",
+]
 
 [[package]]
 name = "schannel"

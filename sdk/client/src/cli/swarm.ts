@@ -3,7 +3,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { SwarmAgent, type SwarmNetwork } from "../agent.js";
 import { SwarmClientError } from "../errors.js";
-import type { TopicId } from "../inbox/client.js";
+import { VALID_TOPICS, isValidTopicId } from "../inbox/types.js";
 import { validatePreparedTransaction, type Action } from "../shillbot/api.js";
 import { inspectTransaction } from "../shillbot/index.js";
 import { CLIENT_VERSION } from "../version.js";
@@ -21,7 +21,7 @@ export interface CliIo {
   fetch?: typeof fetch;
 }
 
-interface ParsedCliArgs {
+export interface ParsedCliArgs {
   positionals: string[];
   flags: Map<string, string | boolean>;
 }
@@ -36,15 +36,21 @@ const BOOLEAN_FLAGS = new Set([
   "--no-exec",
   "--unmute",
   "--cursor",
+  "--allow-localhost-http",
 ]);
 
-function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
+export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   assertNoSecretCliFlags(argv);
+  const effectiveArgv = argv[0] === "--" ? argv.slice(1) : argv;
   const positionals: string[] = [];
   const flags = new Map<string, string | boolean>();
 
-  for (let i = 0; i < argv.length; i += 1) {
-    const token = argv[i];
+  for (let i = 0; i < effectiveArgv.length; i += 1) {
+    const token = effectiveArgv[i];
+    if (token === "--") {
+      positionals.push(...effectiveArgv.slice(i + 1));
+      break;
+    }
     if (!token.startsWith("-") || token === "-") {
       positionals.push(token);
       continue;
@@ -60,7 +66,7 @@ function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       flags.set(token, true);
       continue;
     }
-    const next = argv[i + 1];
+    const next = effectiveArgv[i + 1];
     if (next === undefined || (next.startsWith("--") && next.length > 2)) {
       throw new CliUsageError(`Flag ${token} requires a value.`);
     }
@@ -120,8 +126,8 @@ Commands:
   listings [--limit N] [--category CAT] [--chain CHAIN]
   reputation <wallet>
   tasks list [--limit N] | mine | earnings | next <task-json-or-id>
-  tasks claim <id> [--no-exec]
-  tasks submit <id> --content <str> [--no-exec]
+  tasks claim <id> [--payout-to <pubkey>] [--no-exec]
+  tasks submit <id> --content <str> [--payout-to <pubkey>] [--no-exec]
   tasks verify <id> [--no-exec]
   tasks finalize <id> [--no-exec]
   inbox list [--status pending|all] [--limit N]
@@ -129,10 +135,10 @@ Commands:
   inbox send <to_wallet> <body> [--thread <id>] [--intent <intent>]
   inbox ack <msg_id> [--cursor]
   inbox mute <thread_id> [--unmute]
-  topics read <open-challenge|subcontract> [--limit N]
-  topics publish <topic> <body> [--ref <id>] [--reply-to <id>] [--intent <intent>]
+  topics read <open-challenge|subcontract|town-square> [--limit N]
+  topics publish <open-challenge|subcontract|town-square> <body> [--ref <id>] [--reply-to <id>] [--intent <intent>]
   tx inspect [--tx <base64>]
-  tx verify --action <claim|submit|verify|finalize|approve|create> --wallet <pubkey> [--task-pda <pda>] [--tx <base64>]
+  tx verify --action <claim|submit|verify|finalize|approve|create> --wallet <pubkey> [--task-pda <pda>] [--payout-to <pubkey>] [--tx <base64>]
   vow-verify <file-or-url> [--rpc <url>]
 
 Global Options:
@@ -265,6 +271,8 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         }
         const taskPda = getStringFlag(flags, "--task-pda");
         const feePayer = getStringFlag(flags, "--fee-payer");
+        const payoutTo = getStringFlag(flags, "--payout-to");
+        const oracleAuthority = getStringFlag(flags, "--oracle-authority");
         const escrowLamports = getBigIntFlag(flags, "--escrow-lamports");
         try {
           const inspection = validatePreparedTransaction(txB64, {
@@ -273,6 +281,8 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
             wallet,
             ...(taskPda ? { taskPda } : {}),
             ...(feePayer ? { feePayer } : {}),
+            ...(payoutTo ? { payoutTo } : {}),
+            ...(oracleAuthority ? { oracleAuthority } : {}),
             ...(escrowLamports !== undefined ? { escrowLamports } : {}),
           });
           writeOutput(stdout, jsonMode, { ok: true, inspection });
@@ -382,8 +392,11 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
       }
       if (sub === "claim") {
         const id = rest[0];
-        if (!id) throw new CliUsageError("Usage: swarm tasks claim <task_id> [--no-exec]");
-        const res = noExec ? await agent.tasks.claim(id) : await agent.tasks.claimAndExecute(id);
+        if (!id) throw new CliUsageError("Usage: swarm tasks claim <task_id> [--payout-to <pubkey>] [--no-exec]");
+        const payoutTo = getStringFlag(flags, "--payout-to");
+        const res = noExec
+          ? await agent.tasks.claim(id)
+          : await agent.tasks.claimAndExecute(id, payoutTo ? { payoutTo } : undefined);
         writeOutput(stdout, jsonMode, res);
         return 0;
       }
@@ -391,11 +404,14 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         const id = rest[0];
         const content = getStringFlag(flags, "--content");
         if (!id || !content) {
-          throw new CliUsageError("Usage: swarm tasks submit <task_id> --content <str> [--no-exec]");
+          throw new CliUsageError(
+            "Usage: swarm tasks submit <task_id> --content <str> [--payout-to <pubkey>] [--no-exec]",
+          );
         }
+        const payoutTo = getStringFlag(flags, "--payout-to");
         const res = noExec
           ? await agent.tasks.submit(id, { content_id: content })
-          : await agent.tasks.submitAndExecute(id, content);
+          : await agent.tasks.submitAndExecute(id, content, payoutTo ? { payoutTo } : undefined);
         writeOutput(stdout, jsonMode, res);
         return 0;
       }
@@ -481,9 +497,9 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
 
     if (cmd === "topics") {
       if (sub === "read") {
-        const topic = rest[0] as TopicId | undefined;
-        if (topic !== "open-challenge" && topic !== "subcontract") {
-          throw new CliUsageError("Usage: swarm topics read <open-challenge|subcontract>");
+        const topic = rest[0];
+        if (!isValidTopicId(topic)) {
+          throw new CliUsageError(`Usage: swarm topics read <${VALID_TOPICS.join("|")}>`);
         }
         const res = await agent.topics.read(topic, {
           limit: getIntFlag(flags, "--limit"),
@@ -493,9 +509,9 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
       }
       if (sub === "publish") {
         const [topic, body] = rest;
-        if ((topic !== "open-challenge" && topic !== "subcontract") || !body) {
+        if (!isValidTopicId(topic) || !body) {
           throw new CliUsageError(
-            "Usage: swarm topics publish <open-challenge|subcontract> <body> [--ref <id>]",
+            `Usage: swarm topics publish <${VALID_TOPICS.join("|")}> <body> [--ref <id>]`,
           );
         }
         const res = await agent.topics.publish(topic, body, {
@@ -517,7 +533,7 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
       let payload: string | Record<string, unknown>;
       if (target === "-") {
         payload = await readStdinText(io);
-      } else if (/^https?:\/\//i.test(target)) {
+      } else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(target)) {
         payload = target;
       } else {
         try {
@@ -528,7 +544,10 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
           );
         }
       }
-      const verdict = await agent.tasks.verifyVow(payload, { rpcUrl });
+      const verdict = await agent.tasks.verifyVow(payload, {
+        rpcUrl,
+        allowLocalhostHttp: Boolean(flags.get("--allow-localhost-http")),
+      });
       writeOutput(stdout, jsonMode, verdict);
       return verdict.valid ? 0 : 1;
     }

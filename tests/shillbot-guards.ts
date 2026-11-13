@@ -28,6 +28,7 @@ import {
 import {
   ShillbotCtx,
   setupShillbot,
+  setDevnetEnabled,
   createTask,
   claimTask,
   claimAndSubmitAtomic,
@@ -279,8 +280,53 @@ describe("shillbot-guards (bankrun, discrete)", () => {
   // --- OnChainAction (platform = 11), Switchboard retirement & S02-F01 -----
 
   describe("OnChainAction (platform 11) + co-signed oracle + S02-F01 guards", () => {
-    it("creates OnChainAction (kind=0, 60s delay, 900s challenge) and rejects kind=1, zero content_hash, and requires_approval=true", async () => {
+    it("creates OnChainAction (kind=1 VOW v1 on mainnet & kind=0 on devnet, 60s delay, 900s challenge) and enforces DevnetOnly, min escrow, non-zero content_hash, and requires_approval=false", async () => {
       const client = await freshClient();
+
+      // Mainnet mode (`devnet_enabled = false`): kind=1 (VOW v1) succeeds, kind=0 rejected with DevnetOnly!
+      await setDevnetEnabled(ctx, false);
+      try {
+        await expectErr(
+          createTask(ctx, client, {
+            escrowLamports: ESCROW,
+            platform: ONCHAIN_ACTION_PLATFORM,
+            verificationKind: 0,
+            requiresApproval: false,
+            attestationDelayOverride: 60,
+            challengeWindowOverride: 900,
+          }),
+          /DevnetOnly/
+        );
+        // Below 0.005 SOL minimum campaign escrow rejected even on kind=1.
+        await expectErr(
+          createTask(ctx, client, {
+            escrowLamports: new BN(4_999_999),
+            platform: ONCHAIN_ACTION_PLATFORM,
+            verificationKind: 1,
+            requiresApproval: false,
+            attestationDelayOverride: 60,
+            challengeWindowOverride: 900,
+          }),
+          /BelowMinimumEscrow/
+        );
+        const { task: vowTask } = await createTask(ctx, client, {
+          escrowLamports: ESCROW,
+          platform: ONCHAIN_ACTION_PLATFORM,
+          verificationKind: 1,
+          requiresApproval: false,
+          attestationDelayOverride: 60,
+          challengeWindowOverride: 900,
+        });
+        const vowFetched = await ctx.rt.program.account.task.fetch(vowTask);
+        assert.equal(vowFetched.platform, ONCHAIN_ACTION_PLATFORM);
+        assert.equal(vowFetched.verificationKind, 1);
+        assert.equal(vowFetched.attestationDelayOverride, 60);
+        assert.equal(vowFetched.challengeWindowOverride, 900);
+      } finally {
+        await setDevnetEnabled(ctx, true);
+      }
+
+      // Devnet mode (`devnet_enabled = true`): legacy kind=0 also permitted.
       const { task } = await createTask(ctx, client, {
         escrowLamports: ESCROW,
         platform: ONCHAIN_ACTION_PLATFORM,
@@ -320,16 +366,16 @@ describe("shillbot-guards (bankrun, discrete)", () => {
         createTask(ctx, client, {
           escrowLamports: ESCROW,
           platform: ONCHAIN_ACTION_PLATFORM,
-          verificationKind: 1,
+          verificationKind: 2,
           requiresApproval: false,
         }),
-        /VerificationKindMismatch/
+        /InvalidVerificationKind/
       );
       await expectErr(
         createTask(ctx, client, {
           escrowLamports: ESCROW,
           platform: ONCHAIN_ACTION_PLATFORM,
-          verificationKind: 0,
+          verificationKind: 1,
           requiresApproval: false,
           contentHashOverride: new Array(32).fill(0),
         }),
@@ -339,11 +385,117 @@ describe("shillbot-guards (bankrun, discrete)", () => {
         createTask(ctx, client, {
           escrowLamports: ESCROW,
           platform: ONCHAIN_ACTION_PLATFORM,
-          verificationKind: 0,
+          verificationKind: 1,
           requiresApproval: true,
         }),
         /InvalidParameter/
       );
+    });
+
+    it("mainnet VOW v1 verify_task_attested(score=0) reopens OnChainAction with AgentState strike cooldown, and goodAgent completes + finalizes", async () => {
+      const client = await freshClient();
+      const badAgent = await freshClient();
+      const badVault = await freshClient();
+      const goodAgent = await freshClient();
+
+      await setDevnetEnabled(ctx, false);
+      try {
+        const { task, taskId } = await createTask(ctx, client, {
+          escrowLamports: ESCROW,
+          platform: ONCHAIN_ACTION_PLATFORM,
+          verificationKind: 1,
+          requiresApproval: false,
+          attestationDelayOverride: 60,
+          challengeWindowOverride: 900,
+          deadlineSeconds: 86_400 * 7,
+        });
+
+        await claimAndSubmitAtomic(
+          ctx,
+          badAgent,
+          task,
+          "eip155:56:0x" + "aa".repeat(32) + ":0",
+          badVault.publicKey
+        );
+        const sub1 = await ctx.rt.program.account.task.fetch(task);
+        await handle.runtime.warpTo(sub1.submittedAt.toNumber() + 65);
+        const reopenHash = Array.from({ length: 32 }, (_, i) => (i + 7) & 0xff);
+
+        // Omitting remaining_accounts[0] (writable AgentState PDA) must fail with MissingAgentState!
+        await expectErr(
+          ctx.rt.program.methods
+            .verifyTaskAttested(new BN(0), reopenHash as never)
+            .accountsPartial({
+              task,
+              globalState: ctx.globalPda,
+              attester: ctx.authority.publicKey,
+            })
+            .signers([ctx.authority])
+            .rpc(),
+          /MissingAgentState/
+        );
+
+        const badAgentState = agentStatePda(
+          badAgent.publicKey,
+          ctx.rt.program.programId
+        );
+        await ctx.rt.program.methods
+          .verifyTaskAttested(new BN(0), reopenHash as never)
+          .accountsPartial({
+            task,
+            globalState: ctx.globalPda,
+            attester: ctx.authority.publicKey,
+          })
+          .remainingAccounts([
+            { pubkey: badAgentState, isWritable: true, isSigner: false },
+          ])
+          .signers([ctx.authority])
+          .rpc();
+
+        const reopened = await ctx.rt.program.account.task.fetch(task);
+        assert.deepEqual(reopened.state, { open: {} });
+        assert.equal(reopened.agent.toBase58(), PublicKey.default.toBase58());
+        assert.equal(
+          reopened.payoutTo.toBase58(),
+          PublicKey.default.toBase58()
+        );
+
+        // Immediate re-claim by badAgent within the 60s strike cooldown must fail!
+        await expectErr(
+          claimAndSubmitAtomic(
+            ctx,
+            badAgent,
+            task,
+            "eip155:56:0x" + "ab".repeat(32) + ":0"
+          ),
+          /StrikeCooldownActive/
+        );
+
+        // goodAgent claims, submits, passes VOW v1 verify_task_attested(MAX_SCORE), and finalizes!
+        await claimAndSubmitAtomic(
+          ctx,
+          goodAgent,
+          task,
+          "eip155:56:0x" + "bb".repeat(32) + ":0"
+        );
+        const sub2 = await ctx.rt.program.account.task.fetch(task);
+        await handle.runtime.warpTo(sub2.submittedAt.toNumber() + 65);
+        await verifyTaskAttested(ctx, task, taskId, MAX_SCORE);
+
+        const verified = await ctx.rt.program.account.task.fetch(task);
+        await handle.runtime.warpTo(verified.challengeDeadline.toNumber() + 1);
+        const agentBefore = await ctx.rt.getBalance(goodAgent.publicKey);
+        const treasuryBefore = await ctx.rt.getBalance(ctx.treasury);
+        await finalizeTask(ctx, task, goodAgent.publicKey, client.publicKey);
+        const agentAfter = await ctx.rt.getBalance(goodAgent.publicKey);
+        const treasuryAfter = await ctx.rt.getBalance(ctx.treasury);
+        assert.equal(
+          agentAfter - agentBefore + (treasuryAfter - treasuryBefore),
+          BigInt(ESCROW.toString())
+        );
+      } finally {
+        await setDevnetEnabled(ctx, true);
+      }
     });
 
     it("enforces M1 instruction-bundle invariants across bare, wrong-sysvar, wrong-task, and session paths", async () => {

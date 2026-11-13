@@ -129,6 +129,27 @@ impl RequestBuilder {
     }
 }
 
+/// Read up to `max_bytes` from a `reqwest::Response` body as lossy UTF-8 so an
+/// untrusted or misbehaving upstream cannot OOM a caller on error diagnostics.
+pub async fn read_bounded_text(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String, reqwest::Error> {
+    let mut buf = Vec::with_capacity(max_bytes.min(4096));
+    while let Some(chunk) = response.chunk().await? {
+        let remaining = max_bytes.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        let take = chunk.len().min(remaining);
+        buf.extend_from_slice(&chunk[..take]);
+        if buf.len() >= max_bytes {
+            break;
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

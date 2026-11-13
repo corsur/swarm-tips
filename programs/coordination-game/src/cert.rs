@@ -293,11 +293,14 @@ const SECP256K1_HALF_ORDER: [u8; 32] = [
 
 /// Recover the 20-byte Ethereum address that produced a 65-byte
 /// `[r || s || v]` secp256k1 signature over `digest`.
+///
+/// Strictly accepts canonical Ethereum `v` values `27` (`0`) and `28` (`1`),
+/// rejecting raw `0`/`1` recovery IDs so the Solana leg's signature acceptance
+/// set matches OpenZeppelin `ECDSA.recover` on the EVM leg (CRIT-10).
 pub fn recover_eth_address(digest: &[u8; 32], sig65: &[u8; 65]) -> Result<[u8; 20]> {
     let recovery_id = match sig65[64] {
         27 => 0u8,
         28 => 1u8,
-        v @ (0 | 1) => v,
         _ => return Err(error!(CoordinationError::InvalidGameState)),
     };
     // Reject high-s (malleable) signatures so this leg's acceptance set matches
@@ -417,10 +420,34 @@ mod tests {
     }
 
     fn hex_literal(s: &str) -> [u8; 32] {
-        let mut out = [0u8; 32];
+        let mut out = [u8::default(); 32];
         for (slot, pair) in out.iter_mut().zip(s.as_bytes().chunks_exact(2)) {
             *slot = u8::from_str_radix(core::str::from_utf8(pair).unwrap(), 16).unwrap();
         }
         out
+    }
+
+    #[test]
+    fn recover_eth_address_rejects_raw_0_1_v_and_accepts_canonical_27_28() {
+        let digest =
+            hex_literal("29fad2095388ceace2cabf6a25f558be830e9ac5d7f5bac82d91a653693208df");
+        // Valid secp256k1 point (r=1, s=1) with low s.
+        let mut sig = [0u8; 65];
+        sig[31] = 1;
+        sig[63] = 1;
+
+        for bad_v in [0u8, 1, 2, 26, 29, 255] {
+            sig[64] = bad_v;
+            assert!(
+                recover_eth_address(&digest, &sig).is_err(),
+                "v={bad_v} must be rejected"
+            );
+        }
+
+        // Canonical v = 27 / 28 must pass the v-gate and recover cleanly.
+        sig[64] = 27;
+        assert!(recover_eth_address(&digest, &sig).is_ok());
+        sig[64] = 28;
+        assert!(recover_eth_address(&digest, &sig).is_ok());
     }
 }

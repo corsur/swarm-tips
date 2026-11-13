@@ -480,6 +480,7 @@ export function verifyIntent(
       throw new Error(`unexpected companion program ${ix.program_id}`);
     }
   }
+  validateComputeBudgetInstructions(inspected.instructions);
   const expectedDiscriminator = shillbotInstructionDiscriminator(
     intent.action === "submit" ? "submit_work" : `${intent.action}_task`
   );
@@ -616,3 +617,16 @@ export const buildFinalize = (request: Omit<FinalizeBuild, "action">) =>
 export { buildSwitchboardCrankAndVerify } from "./switchboard.js";
 export type { SwitchboardVerifyRequest } from "./switchboard.js";
 export * from "./payout-oracle.js";
+import { validateComputeBudgetInstructions } from "./verify-tx.js";
+export {
+  MAX_COMPUTE_UNIT_LIMIT,
+  MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  SHILLBOT_INSTRUCTION_SPECS,
+  validateComputeBudgetInstruction,
+  validateComputeBudgetInstructions,
+  verifyBuiltTransaction,
+  type AuthoritySlotRule,
+  type ShillbotInstructionName,
+  type ShillbotInstructionSpec,
+  type VerifyBuiltTransactionExpectation,
+} from "./verify-tx.js";

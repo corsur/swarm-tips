@@ -16,12 +16,16 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
     );
     let clock = Clock::get()?;
     let outcome = find_timeout(game, clock.slot)?;
-    let resolved = compute_timeout_result(&outcome, game.stake_lamports, game.player_one)?;
+    let resolved = compute_timeout_result(&outcome, game.stake_lamports)?;
     let stake_lamports = game.stake_lamports;
     let tournament_id = ctx.accounts.tournament.tournament_id;
+    let tournament_finalized = ctx.accounts.tournament.finalized;
     let treasury_split_bps = ctx.accounts.global_config.treasury_split_bps;
-    let (treasury_share, tournament_share) =
-        compute_pool_split(resolved.pool_gain, treasury_split_bps)?;
+    let (treasury_share, tournament_share) = if tournament_finalized {
+        (resolved.pool_gain, 0)
+    } else {
+        compute_pool_split(resolved.pool_gain, treasury_split_bps)?
+    };
     assert_lamport_conservation(
         &outcome,
         &resolved,
@@ -48,6 +52,7 @@ pub fn resolve_timeout(ctx: Context<ResolveTimeout>) -> Result<()> {
         &resolved,
         tournament_share,
         tournament_id,
+        tournament_finalized,
         clock.unix_timestamp,
     )?;
     let game_id = ctx.accounts.game.game_id;
@@ -120,19 +125,22 @@ fn apply_timeout_effects(
     resolved: &TimeoutResult,
     tournament_share: u64,
     tournament_id: u64,
+    tournament_finalized: bool,
     now: i64,
 ) -> Result<()> {
-    p1_profile.update_after_game(resolved.p1_won, tournament_id)?;
-    p2_profile.update_after_game(resolved.p2_won, tournament_id)?;
-    tournament.game_count = tournament
-        .game_count
-        .checked_add(1)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    if tournament_share > 0 {
-        tournament.prize_lamports = tournament
-            .prize_lamports
-            .checked_add(tournament_share)
+    if !tournament_finalized {
+        p1_profile.update_after_game(resolved.p1_won, tournament_id)?;
+        p2_profile.update_after_game(resolved.p2_won, tournament_id)?;
+        tournament.game_count = tournament
+            .game_count
+            .checked_add(1)
             .ok_or(CoordinationError::ArithmeticOverflow)?;
+        if tournament_share > 0 {
+            tournament.prize_lamports = tournament
+                .prize_lamports
+                .checked_add(tournament_share)
+                .ok_or(CoordinationError::ArithmeticOverflow)?;
+        }
     }
     game.state = GameState::Resolved;
     game.resolved_at = now;
@@ -158,14 +166,10 @@ struct TimeoutResult {
 //  │   Anti-griefing: non-participant forfeits, revealer/committer   │
 //  │   is fully compensated.                                        │
 //  │                                                                │
-//  │ BothForfeited: both lose. Pool gain = 2S split via treasury    │
-//  │   split bps between treasury and tournament.                   │
+//  │ BothForfeited: both lose symmetrically. Pool gain = 2S split   │
+//  │   via treasury split bps between treasury and tournament.      │
 //  └──────────────────────────────────────────────────────────────────┘
-fn compute_timeout_result(
-    outcome: &TimeoutOutcome,
-    stake_lamports: u64,
-    player_one: Pubkey,
-) -> Result<TimeoutResult> {
+fn compute_timeout_result(outcome: &TimeoutOutcome, stake_lamports: u64) -> Result<TimeoutResult> {
     let both_stakes = stake_lamports
         .checked_mul(2)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
@@ -185,11 +189,12 @@ fn compute_timeout_result(
             }
         }
         TimeoutOutcome::BothForfeited => {
-            // Report player_one as canonical slashed address; both were slashed
+            // Symmetric bilateral forfeiture — neither player won and neither is
+            // singled out as sole slashed player.
             TimeoutResult {
                 pool_gain: both_stakes,
                 both_stakes,
-                slashed_player: player_one,
+                slashed_player: Pubkey::default(),
                 p1_won: false,
                 p2_won: false,
             }

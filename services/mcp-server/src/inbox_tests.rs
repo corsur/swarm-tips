@@ -1433,7 +1433,10 @@ fn webhook_doc_roundtrip_and_defaults() {
     let doc = WebhookDoc {
         wallet: format!("{}:{SOL_B58}", chain_registry::SOLANA_MAINNET_CAIP2),
         url: "https://agent.example.com/hook".to_string(),
-        hmac_secret: "ab".repeat(32),
+        hmac_secret: String::new(),
+        secret_salt: "ab".repeat(32),
+        hmac_secret_sha256: "ef".repeat(32),
+        webhook_host: "agent.example.com".to_string(),
         challenge_token: "cd".repeat(32),
         verified: true,
         consecutive_failures: 2,
@@ -1447,8 +1450,9 @@ fn webhook_doc_roundtrip_and_defaults() {
     assert!(parsed.verified);
     assert_eq!(parsed.consecutive_failures, 2);
     assert_eq!(parsed.pending_delivery_id, "d1");
+    assert_eq!(parsed.webhook_host, "agent.example.com");
 
-    // Registration-time doc: outcome-owned fields default.
+    // Legacy registration-time doc: outcome-owned and PRF fields default.
     let bare = r#"{"wallet":"w","url":"https://x.example/h","hmac_secret":"s",
                  "challenge_token":"t","verified":true,
                  "created_at":"2026-08-24T00:00:00Z"}"#;
@@ -1456,6 +1460,7 @@ fn webhook_doc_roundtrip_and_defaults() {
     assert_eq!(parsed.consecutive_failures, 0);
     assert!(parsed.disabled_at.is_none() && parsed.last_delivery_at.is_none());
     assert_eq!(parsed.pending_delivery_id, "");
+    assert_eq!(parsed.secret_salt, "");
 }
 
 // -- new wire shapes ----------------------------------------------------
@@ -1507,10 +1512,26 @@ fn report_and_webhook_json_shapes() {
     assert_eq!(v["hidden"], true);
     assert_eq!(v["reported_count"], 3);
 
+    let derived = derive_webhook_secret("pepper-1", "w", "salt-1");
+    assert!(derived.starts_with("whsec_"));
+    assert_eq!(
+        derived,
+        derive_webhook_secret("pepper-1", "w", "salt-1"),
+        "PRF derivation is deterministic"
+    );
+    assert_ne!(
+        derived,
+        derive_webhook_secret("pepper-1", "w2", "salt-1"),
+        "wallet domain-separated"
+    );
+
     let doc = WebhookDoc {
         wallet: "w".to_string(),
         url: "https://agent.example.com/hook".to_string(),
         hmac_secret: "sek".to_string(),
+        secret_salt: "salt-1".to_string(),
+        hmac_secret_sha256: sha256_hex("sek"),
+        webhook_host: "agent.example.com".to_string(),
         challenge_token: "tok".to_string(),
         verified: true,
         consecutive_failures: 0,
@@ -1522,6 +1543,7 @@ fn report_and_webhook_json_shapes() {
     let v = webhook_json(&doc);
     assert_eq!(v["verified"], true);
     assert_eq!(v["hmac_secret"], "sek");
+    assert_eq!(v["hmac_secret_redacted"], false);
     assert!(v["signature_scheme"]
         .as_str()
         .expect("scheme")
@@ -1530,6 +1552,21 @@ fn report_and_webhook_json_shapes() {
         v.get("challenge_token").is_none(),
         "the challenge token is not re-exposed"
     );
+
+    // At rest (`hmac_secret == ""`), `webhook_json` redacts `hmac_secret` to null.
+    let stored_doc = WebhookDoc {
+        hmac_secret: String::new(),
+        ..doc
+    };
+    let redacted_v = webhook_json(&stored_doc);
+    assert!(redacted_v["hmac_secret"].is_null());
+    assert_eq!(redacted_v["hmac_secret_redacted"], true);
+    assert_eq!(redacted_v["hmac_secret_sha256"], sha256_hex("sek"));
+
+    // Trailing-dot FQDNs and non-443 ports are rejected by safe-http-fetch.
+    assert!(validate_webhook_url("https://metadata.google.internal./computeMetadata/v1/").is_err());
+    assert!(validate_webhook_url("https://mcp-server-abc.a.run.app./hook").is_err());
+    assert!(validate_webhook_url("https://example.com:8443/hook").is_err());
 }
 
 #[test]

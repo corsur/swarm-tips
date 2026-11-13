@@ -8,9 +8,6 @@ import {
 import { HttpClient, type HttpClientOptions } from "../http.js";
 import { SwarmClientError } from "../errors.js";
 import {
-  SHILLBOT_PROGRAM_ID,
-  inspectTransaction,
-  shillbotInstructionDiscriminator,
   signAndBroadcast,
   type Action,
   type TransactionInspection,
@@ -227,13 +224,43 @@ export class ShillbotApiClient {
   }
 }
 
+import {
+  MAX_COMPUTE_UNIT_LIMIT,
+  MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  SHILLBOT_INSTRUCTION_SPECS,
+  validateComputeBudgetInstruction,
+  validateComputeBudgetInstructions,
+  verifyBuiltTransaction,
+  type AuthoritySlotRule,
+  type ShillbotInstructionName,
+  type ShillbotInstructionSpec,
+  type VerifyBuiltTransactionExpectation,
+} from "./verify-tx.js";
+
+export {
+  MAX_COMPUTE_UNIT_LIMIT,
+  MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  SHILLBOT_INSTRUCTION_SPECS,
+  validateComputeBudgetInstruction,
+  validateComputeBudgetInstructions,
+  verifyBuiltTransaction,
+  type AuthoritySlotRule,
+  type ShillbotInstructionName,
+  type ShillbotInstructionSpec,
+  type VerifyBuiltTransactionExpectation,
+};
+
 export interface PreparedTransactionExpectation {
   action: Action;
   network: "mainnet" | "devnet";
   wallet: string;
   taskPda?: string;
   feePayer?: string;
+  payoutTo?: string;
+  oracleAuthority?: string;
   escrowLamports?: bigint;
+  contentId?: string;
+  maxComputeUnitPriceMicroLamports?: bigint;
   allowedProgramIds?: string[];
 }
 
@@ -270,12 +297,23 @@ export interface ValidatedEvmCall {
   chain: string;
 }
 
-function normalizeEvmChainId(chain: string): string {
+export function normalizeEvmChainId(chain: string | number): string {
+  if (typeof chain === "number") {
+    if (!Number.isSafeInteger(chain) || chain <= 0) {
+      throw new SwarmClientError({
+        code: "INVALID_ARGUMENT",
+        operation: "shillbot.normalizeEvmChainId",
+        message: `Invalid EVM chain ID: ${String(chain)}`,
+      });
+    }
+    return `eip155:${chain}`;
+  }
   const trimmed = chain.trim().toLowerCase();
-  if (trimmed === "base-sepolia" || trimmed === "84532") return "eip155:84532";
-  if (trimmed === "base" || trimmed === "8453") return "eip155:8453";
-  if (trimmed === "ethereum" || trimmed === "1") return "eip155:1";
-  if (trimmed === "ethereum-sepolia" || trimmed === "sepolia" || trimmed === "11155111") {
+  if (/^\d+$/.test(trimmed)) return `eip155:${trimmed}`;
+  if (trimmed === "base-sepolia") return "eip155:84532";
+  if (trimmed === "base") return "eip155:8453";
+  if (trimmed === "ethereum") return "eip155:1";
+  if (trimmed === "ethereum-sepolia" || trimmed === "sepolia") {
     return "eip155:11155111";
   }
   return trimmed;
@@ -328,7 +366,7 @@ export function validatePreparedEvmCall(
     typeof raw.chain === "string"
       ? normalizeEvmChainId(raw.chain)
       : typeof raw.chain_id === "number"
-      ? `eip155:${raw.chain_id}`
+      ? normalizeEvmChainId(raw.chain_id)
       : undefined;
   const expectedChain = expected.chain ? normalizeEvmChainId(expected.chain) : undefined;
   if (callChain && expectedChain && callChain !== expectedChain) {
@@ -427,6 +465,7 @@ export function estimateSolanaNetworkFeeLamports(
   const computeBudgetId = ComputeBudgetProgram.programId.toBase58();
   let computeUnitLimit: bigint | undefined;
   let microLamportsPerCu = 0n;
+  let additionalFeeLamports = 0n;
   let nonComputeBudgetIxCount = 0;
 
   for (const ix of inspected.instructions) {
@@ -437,15 +476,27 @@ export function estimateSolanaNetworkFeeLamports(
     const data = Buffer.from(ix.data_base64, "base64");
     if (data.length === 0) continue;
     const tag = data[0];
+    if (tag === 0 && data.length >= 9) {
+      // Legacy RequestUnitsDeprecated: u32 units + u32 additionalFeeLamports (never early-return!)
+      computeUnitLimit = BigInt(data.readUInt32LE(1));
+      additionalFeeLamports += BigInt(data.readUInt32LE(5));
+      continue;
+    }
+    if (tag === 1) {
+      // RequestHeapFrame(u32 bytes): does not alter fee, continue checking subsequent instructions!
+      continue;
+    }
     if (tag === 2 && data.length >= 5) {
       computeUnitLimit = BigInt(data.readUInt32LE(1));
-    } else if (tag === 3 && data.length >= 9) {
+      continue;
+    }
+    if (tag === 3 && data.length >= 9) {
       const view = new DataView(data.buffer, data.byteOffset + 1, 8);
-      microLamportsPerCu = view.getBigUint64(0, true);
-    } else if (tag === 1 && data.length >= 9) {
-      // Legacy RequestUnitsDeprecated: u32 units + u32 additionalFeeLamports
-      const additionalFee = BigInt(data.readUInt32LE(5));
-      return BigInt(inspected.signers.length) * 5_000n + additionalFee;
+      const price = view.getBigUint64(0, true);
+      if (price > microLamportsPerCu) {
+        microLamportsPerCu = price;
+      }
+      continue;
     }
   }
 
@@ -454,7 +505,7 @@ export function estimateSolanaNetworkFeeLamports(
   const priorityFeeLamports =
     (effectiveUnits * microLamportsPerCu + 999_999n) / 1_000_000n;
   const baseSignatureFeeLamports = BigInt(Math.max(1, inspected.signers.length)) * 5_000n;
-  return baseSignatureFeeLamports + priorityFeeLamports;
+  return baseSignatureFeeLamports + priorityFeeLamports + additionalFeeLamports;
 }
 
 export function permittedPreparedProgramIds(
@@ -466,17 +517,6 @@ export function permittedPreparedProgramIds(
     : [];
 }
 
-function lifecycleName(action: Action): string {
-  if (action === "create") return "create_task";
-  if (action === "submit") return "submit_work";
-  return `${action}_task`;
-}
-
-function matchesDiscriminator(dataBase64: string, action: Action): boolean {
-  const data = Buffer.from(dataBase64, "base64");
-  return data.subarray(0, 8).equals(shillbotInstructionDiscriminator(lifecycleName(action)));
-}
-
 /**
  * Fail-closed local validation for a server-prepared Shillbot transaction.
  * The network is an explicit part of the expectation; callers must construct
@@ -486,121 +526,7 @@ export function validatePreparedTransaction(
   encoded: string,
   expected: PreparedTransactionExpectation,
 ): TransactionInspection {
-  if (expected.network !== "mainnet" && expected.network !== "devnet") {
-    throw new SwarmClientError({
-      code: "INVALID_ARGUMENT",
-      operation: "shillbot.validatePreparedTransaction",
-      message: "Unsupported network",
-    });
-  }
-  const inspected = inspectTransaction(encoded);
-  if (!inspected.signers.includes(expected.wallet)) {
-    throw new SwarmClientError({
-      code: "TRANSACTION_MISMATCH",
-      operation: "shillbot.validatePreparedTransaction",
-      message: "Wallet is not a required signer",
-    });
-  }
-  if (expected.feePayer && inspected.fee_payer !== expected.feePayer) {
-    throw new SwarmClientError({
-      code: "TRANSACTION_MISMATCH",
-      operation: "shillbot.validatePreparedTransaction",
-      message: "Fee payer differs from expectation",
-    });
-  }
-  const shillbotId = SHILLBOT_PROGRAM_ID.toBase58();
-  const shillbotIxs = inspected.instructions.filter(
-    (instruction) => instruction.program_id === shillbotId,
-  );
-  const lifecycle = shillbotIxs.filter((instruction) =>
-    matchesDiscriminator(instruction.data_base64, expected.action),
-  );
-  const companions = shillbotIxs.filter((instruction) => instruction !== lifecycle[0]);
-  const claimDisc = shillbotInstructionDiscriminator("claim_task");
-  const payoutDisc = shillbotInstructionDiscriminator("set_payout_to");
-  const hasDisc = (ix: TransactionInspection["instructions"][number], disc: Buffer) =>
-    Buffer.from(ix.data_base64, "base64").subarray(0, 8).equals(disc);
-  const ixPos = (ix: TransactionInspection["instructions"][number]) =>
-    inspected.instructions.indexOf(ix);
-  const validClaimCompanion = (ix: TransactionInspection["instructions"][number]) =>
-    hasDisc(ix, claimDisc) &&
-    ix.accounts.length >= 4 &&
-    (!expected.taskPda || ix.accounts[0] === expected.taskPda) &&
-    ix.accounts[0] === lifecycle[0]?.accounts[0] &&
-    ix.accounts[3] === expected.wallet;
-  const validPayoutCompanion = (ix: TransactionInspection["instructions"][number]) =>
-    hasDisc(ix, payoutDisc) &&
-    ix.accounts.length === 2 &&
-    (!expected.taskPda || ix.accounts[0] === expected.taskPda) &&
-    ix.accounts[0] === lifecycle[0]?.accounts[0] &&
-    ix.accounts[1] === expected.wallet;
-  const validCompanions =
-    companions.length === 0 ||
-    (expected.action === "claim" &&
-      companions.length === 1 &&
-      validPayoutCompanion(companions[0]) &&
-      ixPos(companions[0]) > ixPos(lifecycle[0])) ||
-    (expected.action === "submit" &&
-      companions.length === 1 &&
-      validClaimCompanion(companions[0]) &&
-      ixPos(lifecycle[0]) === ixPos(companions[0]) + 1) ||
-    (expected.action === "submit" &&
-      companions.length === 2 &&
-      validClaimCompanion(companions[0]) &&
-      validPayoutCompanion(companions[1]) &&
-      ixPos(companions[1]) === ixPos(companions[0]) + 1 &&
-      ixPos(lifecycle[0]) === ixPos(companions[1]) + 1);
-  if (lifecycle.length !== 1 || !validCompanions) {
-    throw new SwarmClientError({
-      code: "TRANSACTION_MISMATCH",
-      operation: "shillbot.validatePreparedTransaction",
-      message: "Expected exactly one matching Shillbot lifecycle instruction",
-    });
-  }
-  const taskAccountIndex = expected.action === "create" ? 1 : 0;
-  if (expected.taskPda && lifecycle[0].accounts[taskAccountIndex] !== expected.taskPda) {
-    throw new SwarmClientError({
-      code: "TRANSACTION_MISMATCH",
-      operation: "shillbot.validatePreparedTransaction",
-      message: "Task PDA differs from expectation",
-    });
-  }
-  const alwaysAllowed = new Set([
-    shillbotId,
-    ComputeBudgetProgram.programId.toBase58(),
-    ...permittedPreparedProgramIds(expected.action, expected.network),
-    ...(expected.allowedProgramIds ?? []),
-  ]);
-  const unrelated = inspected.instructions.find(
-    (instruction) => !alwaysAllowed.has(instruction.program_id),
-  );
-  if (unrelated) {
-    throw new SwarmClientError({
-      code: "TRANSACTION_MISMATCH",
-      operation: "shillbot.validatePreparedTransaction",
-      message: `Unexpected program ${unrelated.program_id}`,
-    });
-  }
-  if (expected.action === "create" && expected.escrowLamports !== undefined) {
-    const data = Buffer.from(lifecycle[0].data_base64, "base64");
-    if (data.length < 24) {
-      throw new SwarmClientError({
-        code: "TRANSACTION_MISMATCH",
-        operation: "shillbot.validatePreparedTransaction",
-        message: "Create instruction is truncated",
-      });
-    }
-    const view = new DataView(data.buffer, data.byteOffset + 16, 8);
-    const amount = view.getBigUint64(0, true);
-    if (amount !== expected.escrowLamports) {
-      throw new SwarmClientError({
-        code: "TRANSACTION_MISMATCH",
-        operation: "shillbot.validatePreparedTransaction",
-        message: `Escrow amount ${amount} differs from expected ${expected.escrowLamports}`,
-      });
-    }
-  }
-  return inspected;
+  return verifyBuiltTransaction(encoded, expected, "shillbot.validatePreparedTransaction");
 }
 
 export interface BuildOnChainActionProofRefParams {

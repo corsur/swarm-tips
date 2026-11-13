@@ -157,7 +157,22 @@ export interface ShillbotSetup {
   protocolFeeBps?: number;
   qualityThreshold?: BN;
   startingCounter?: BN;
+  devnetEnabled?: boolean;
   primeFeed?: (score: number) => Promise<void>;
+}
+
+export async function setDevnetEnabled(
+  ctx: ShillbotCtx,
+  enabled: boolean
+): Promise<void> {
+  await ctx.rt.program.methods
+    .setDevnetEnabled(enabled)
+    .accountsPartial({
+      globalState: ctx.globalPda,
+      authority: ctx.authority.publicKey,
+    })
+    .signers([ctx.authority])
+    .rpc();
 }
 
 /** Idempotent singleton init: create GlobalState with the given params. */
@@ -181,13 +196,17 @@ export async function setupShillbot(
     })
     .signers([s.authority])
     .rpc();
-  return {
+  const ctx: ShillbotCtx = {
     rt,
     globalPda,
     treasury: s.treasury,
     authority: s.authority,
     primeFeed: s.primeFeed,
   };
+  if (s.devnetEnabled !== false) {
+    await setDevnetEnabled(ctx, true);
+  }
+  return ctx;
 }
 
 // --- Step helpers ----------------------------------------------------------

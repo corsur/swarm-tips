@@ -136,6 +136,13 @@ export async function ensureShillbotInitialized(
         systemProgram: SystemProgram.programId,
       })
       .rpc();
+    await program.methods
+      .setDevnetEnabled(true)
+      .accountsPartial({
+        globalState: globalPda,
+        authority: authority.publicKey,
+      })
+      .rpc();
   }
   return globalPda;
 }

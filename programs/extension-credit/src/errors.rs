@@ -31,4 +31,13 @@ pub enum ExtensionCreditError {
 
     #[msg("Direct lamport transfer attempted from an account not owned by this program")]
     InvalidLamportSource,
+
+    #[msg("An active extension-registry vouch is required to open an advance")]
+    MissingActiveExtension,
+
+    #[msg("Cannot open an advance while the backing extension is unbonding")]
+    ExtensionUnbonding,
+
+    #[msg("Backing extension bond is below the minimum required bond")]
+    InsufficientExtensionBond,
 }

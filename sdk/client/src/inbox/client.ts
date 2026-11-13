@@ -156,9 +156,8 @@ export interface ReportReceipt {
   already_reported: boolean;
 }
 
-/** Known public topic boards. `open-challenge` = game matchmaking,
- *  `subcontract` = Shillbot task handoff. */
-export type TopicId = "open-challenge" | "subcontract";
+import { VALID_TOPICS, isValidTopicId, type TopicId } from "./types.js";
+export { VALID_TOPICS, isValidTopicId, type TopicId };
 
 export interface SendReceipt {
   msg_id: string;
@@ -437,7 +436,12 @@ export class InboxClient {
     topicId: TopicId,
     opts: { cursor?: string; limit?: number; minTrust?: number } = {}
   ): Promise<TopicPage> {
-    if (!topicId) throw new InboxApiError(0, "topicId is required");
+    if (!isValidTopicId(topicId)) {
+      throw new InboxApiError(
+        0,
+        `topicId must be one of ${VALID_TOPICS.join(", ")}`
+      );
+    }
     const params = new URLSearchParams({ topic_id: topicId });
     if (opts.cursor) params.set("cursor", opts.cursor);
     if (opts.minTrust !== undefined)
@@ -479,7 +483,12 @@ export class InboxClient {
     body: string,
     opts: { replyTo?: string; intent?: string; refId?: string } = {}
   ): Promise<PublishReceipt> {
-    if (!topicId) throw new InboxApiError(0, "topicId is required");
+    if (!isValidTopicId(topicId)) {
+      throw new InboxApiError(
+        0,
+        `topicId must be one of ${VALID_TOPICS.join(", ")}`
+      );
+    }
     const bytes = new TextEncoder().encode(body).length;
     if (bytes === 0 || bytes > MAX_BODY_BYTES) {
       throw new InboxApiError(
@@ -504,7 +513,12 @@ export class InboxClient {
     postId: string,
     reason?: string
   ): Promise<ReportReceipt> {
-    if (!topicId) throw new InboxApiError(0, "topicId is required");
+    if (!isValidTopicId(topicId)) {
+      throw new InboxApiError(
+        0,
+        `topicId must be one of ${VALID_TOPICS.join(", ")}`
+      );
+    }
     if (!postId) throw new InboxApiError(0, "postId is required");
     const payload: Record<string, unknown> = {
       topic_id: topicId,

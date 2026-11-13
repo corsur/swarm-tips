@@ -10,9 +10,9 @@ use coordination::{
     cert::{CheckpointArg, MatchLiveCertArg, MatchLiveCertNoA, OutcomeCertArg},
     instruction::{
         CloseXmatch, CommitGuess, CreateGame, CreateXmatch, DepositStake, InitializeXpool,
-        JoinGame, LockXtranche, OpenXclaim, RefundPending, RefundXmatchNocert, RefundXmatchTimeout,
-        RevealGuess, SettleXclaim, SettleXmatch, SubmitEquivocationProof, SupersedeXclaim,
-        XpoolDeposit,
+        JoinGame, LockXtranche, OpenXclaim, ProveLocalEquivocation, RefundPending,
+        RefundXmatchNocert, RefundXmatchTimeout, RevealGuess, SettleXclaim, SettleXmatch,
+        SubmitEquivocationProof, SupersedeXclaim, XpoolDeposit,
     },
     instructions::xchain::CreateXMatchArgs,
     ID as PROGRAM_ID,
@@ -85,8 +85,8 @@ pub fn build_create_game(
 /// Build the `create_xmatch` instruction — the Solana leg of a cross-chain
 /// match. Like `create_game` it is co-signed by the matchmaker and funded by
 /// the player; `match_id` is the 32-byte cross-chain match id (seeds the
-/// xmatch PDA). The stake is locked into the xmatch account, which doubles as
-/// the escrow vault.
+/// xmatch PDA). Appends the canonical `tournament_pda` as a trailing readonly
+/// account so the on-chain handler validates active tournament status (HIGH-15).
 pub fn build_create_xmatch(
     match_id: [u8; 32],
     args: CreateXMatchArgs,
@@ -98,6 +98,7 @@ pub fn build_create_xmatch(
 
     let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
     let (global_config_pda, _) = pda::global_config_pda();
+    let (tournament_pda, _) = pda::tournament_pda(args.tournament_id);
 
     Instruction {
         program_id: PROGRAM_ID,
@@ -107,6 +108,7 @@ pub fn build_create_xmatch(
             AccountMeta::new_readonly(*matchmaker, true), // signer (cosigned)
             AccountMeta::new(*player, true),              // signer + payer
             AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            AccountMeta::new_readonly(tournament_pda, false), // trailing optional tournament PDA
         ],
         data: CreateXmatch { match_id, args }.data(),
     }
@@ -313,6 +315,32 @@ pub fn build_submit_equivocation_proof(
         ],
         data: SubmitEquivocationProof {
             cert,
+            cp_a,
+            cp_b,
+            sig_a,
+            sig_b,
+        }
+        .data(),
+    }
+}
+
+/// Build the permissionless `prove_local_equivocation` instruction — proves the
+/// local Solana-leg player signed two DISTINCT checkpoints at the SAME
+/// `step_count` (`cp_a != cp_b`) for an already-locked match (`match_live_digest`
+/// already bound on `XChainMatch`), mirroring EVM `proveLocalEquivocation`.
+pub fn build_prove_local_equivocation(
+    match_id: [u8; 32],
+    cp_a: CheckpointArg,
+    cp_b: CheckpointArg,
+    sig_a: [u8; 65],
+    sig_b: [u8; 65],
+) -> Instruction {
+    let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![AccountMeta::new(xmatch_pda, false)],
+        data: ProveLocalEquivocation {
+            match_id,
             cp_a,
             cp_b,
             sig_a,
@@ -709,8 +737,8 @@ mod tests {
         );
 
         assert_eq!(ix.program_id, PROGRAM_ID);
-        // 5 accounts: xmatch, global_config, matchmaker, player, system.
-        assert_eq!(ix.accounts.len(), 5, "create_xmatch must have 5 accounts");
+        // 6 accounts: xmatch, global_config, matchmaker, player, system, trailing tournament_pda.
+        assert_eq!(ix.accounts.len(), 6, "create_xmatch must have 6 accounts");
 
         // xmatch account is the PDA seeded by match_id, writable, not a signer.
         let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
@@ -722,6 +750,11 @@ mod tests {
         assert_eq!(ix.accounts[2].pubkey, matchmaker.pubkey());
         assert!(ix.accounts[3].is_signer && ix.accounts[3].is_writable);
         assert_eq!(ix.accounts[3].pubkey, player.pubkey());
+
+        // Trailing optional tournament PDA (HIGH-15).
+        let (tournament_pda, _) = pda::tournament_pda(1);
+        assert_eq!(ix.accounts[5].pubkey, tournament_pda);
+        assert!(!ix.accounts[5].is_writable && !ix.accounts[5].is_signer);
     }
 
     #[test]
@@ -1042,6 +1075,27 @@ mod tests {
         assert_eq!(ix.accounts.len(), 2);
         assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
         assert!(!ix.accounts[1].is_writable && !ix.accounts[1].is_signer);
+    }
+
+    #[test]
+    fn build_prove_local_equivocation_has_single_mut_xmatch() {
+        let match_id = [0xC1; 32];
+        let ix = build_prove_local_equivocation(
+            match_id,
+            checkpoint_arg(2),
+            checkpoint_arg(2),
+            [0u8; 65],
+            [1u8; 65],
+        );
+        assert_eq!(ix.program_id, PROGRAM_ID);
+        assert_eq!(
+            ix.accounts.len(),
+            1,
+            "prove_local_equivocation must have 1 account"
+        );
+        let (xmatch_pda, _) = pda::xmatch_pda(&match_id);
+        assert_eq!(ix.accounts[0].pubkey, xmatch_pda);
+        assert!(ix.accounts[0].is_writable && !ix.accounts[0].is_signer);
     }
 
     #[test]

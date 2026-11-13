@@ -563,4 +563,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     function unpause() external onlyOwner {
         _unpause();
     }
+
+    /// @dev Reserved storage gap for future upgradeability / storage extensions.
+    uint256[50] private __gap;
 }

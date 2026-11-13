@@ -32,28 +32,15 @@ fn session_id_from_parts(parts: Option<&http::request::Parts>) -> Option<String>
         .map(|s| s.to_string())
 }
 
-/// Header carrying the client IP chain injected by the Cloud Run load
-/// balancer. The LEFTMOST hop is the real client; later hops are proxies.
-const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
-
-/// The real client IP behind the Cloud Run LB: the first (leftmost) hop of
-/// `X-Forwarded-For`. `None` when the header is absent or empty. Abuse/
-/// provenance telemetry only — logged to Cloud Logging, never persisted.
+/// Extract the real client IP behind the GCP External HTTPS Load Balancer
+/// (`hops[len - 2]` when LB hops are present), preventing `X-Forwarded-For`
+/// leftmost-hop spoofing.
 fn client_ip_from_parts(parts: Option<&http::request::Parts>) -> Option<String> {
     let parts = parts?;
     if let Some(caller) = parts.extensions.get::<api_transport::Caller>() {
         return Some(caller.peer.ip().to_string());
     }
-    let raw = parts
-        .headers
-        .get(X_FORWARDED_FOR_HEADER)
-        .and_then(|v| v.to_str().ok())?;
-    let first = raw.split(',').next().unwrap_or("").trim();
-    if first.is_empty() {
-        None
-    } else {
-        Some(first.to_string())
-    }
+    crate::rate_limit::extract_gcp_lb_client_ip(&parts.headers).map(|ip| ip.to_string())
 }
 
 /// The `User-Agent` request header, or `None` when absent. Provenance
@@ -112,7 +99,7 @@ mod provenance_tests {
 
     fn parts_with_xff(value: &str) -> http::request::Parts {
         let req = http::Request::builder()
-            .header(super::X_FORWARDED_FOR_HEADER, value)
+            .header("x-forwarded-for", value)
             .body(())
             .expect("request builds");
         let (parts, ()) = req.into_parts();
@@ -168,16 +155,16 @@ mod provenance_tests {
     }
 
     #[test]
-    fn client_ip_takes_leftmost_forwarded_hop() {
+    fn client_ip_takes_gcp_lb_verified_hop() {
         // Single hop: the value itself.
         let p = parts_with_xff("203.0.113.7");
         assert_eq!(
             client_ip_from_parts(Some(&p)).as_deref(),
             Some("203.0.113.7")
         );
-        // Comma-separated chain (client, lb, proxy): the FIRST hop wins, and
-        // surrounding whitespace is trimmed.
-        let p = parts_with_xff("203.0.113.7, 10.0.0.1, 172.16.0.9");
+        // Comma-separated chain (spoofed_prefix, real_client, gcp_lb_ip):
+        // GCP LB appends `<real_client>, <lb_ip>`, so `hops[len - 2]` wins.
+        let p = parts_with_xff("1.2.3.4, 203.0.113.7, 34.107.1.1");
         assert_eq!(
             client_ip_from_parts(Some(&p)).as_deref(),
             Some("203.0.113.7")
@@ -3003,13 +2990,14 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (_chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
+        let (_chain, address) = bound
+            .to_xchain_native()
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
 
         let resp = self
             .state
             .game_api
-            .evmgame_committed(&args.game_id, &address)
+            .evmgame_committed_as(&args.game_id, &address)
             .await
             .map_err(|e| {
                 McpError::internal_error(format!("EVM commit signal failed: {e}"), None)
@@ -3087,8 +3075,10 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
+        let (chain, verified_addr) = bound
+            .to_xchain_native()
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
+        let address = verified_addr.as_str().to_string();
         if !chain.starts_with("eip155:") {
             return Err(invalid_input(
                 "game_evm_reveal_guess is for same-chain EVM play; register an EVM (0x) wallet",
@@ -3112,7 +3102,7 @@ impl SwarmTipsMcp {
         let resp = self
             .state
             .game_api
-            .evmgame_committed(&args.game_id, &address)
+            .evmgame_committed_as(&args.game_id, &verified_addr)
             .await
             .map_err(|e| {
                 McpError::internal_error(format!("EVM commit signal failed: {e}"), None)

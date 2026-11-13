@@ -84,10 +84,13 @@ pub struct GlobalState {
     /// Existing deployments read 0 until `update_params` sets it;
     /// `initialize` defaults new deployments to 7 days.
     pub dispute_resolution_window_seconds: i64,
+    /// Whether devnet-only verification paths (`verify_task` and kind-0
+    /// `OnChainAction`) are enabled. Carved from `_reserved` — existing
+    /// zero-initialized mainnet accounts read `false` without migration.
+    pub devnet_enabled: bool,
     /// Reserved space for future fields without reallocation.
-    /// 32 → 12 by D2/D3 → 4 by the 2026-07-07
-    /// `dispute_resolution_window_seconds` carve.
-    pub _reserved: [u8; 4],
+    /// 32 → 12 by D2/D3 → 4 by dispute-window carve → 3 by `devnet_enabled`.
+    pub _reserved: [u8; 3],
     pub bump: u8,
 }
 
@@ -113,7 +116,8 @@ impl GlobalState {
         + 8    // rate_limit_window_seconds   (D3 — was const)
         + 4    // max_tasks_per_rate_window   (D3 — was const)
         + 8    // dispute_resolution_window_seconds (2026-07-07 — was reserved)
-        + 4    // _reserved (32 → 12 by D2+D3 → 4 by dispute-window carve)
+        + 1    // devnet_enabled (carved from _reserved; 0 = false on mainnet)
+        + 3    // _reserved
         + 1; // bump
              // Total = 227 (unchanged); bytewise-compatible with v4 layout
              // because the carved bytes were zero in `_reserved`.
@@ -202,6 +206,7 @@ mod tests {
         assert_eq!(parsed.rate_limit_window_seconds, 0);
         assert_eq!(parsed.max_tasks_per_rate_window, 0);
         assert_eq!(parsed.dispute_resolution_window_seconds, 0);
-        assert_eq!(parsed._reserved, [0u8; 4]);
+        assert!(!parsed.devnet_enabled);
+        assert_eq!(parsed._reserved, [0u8; 3]);
     }
 }

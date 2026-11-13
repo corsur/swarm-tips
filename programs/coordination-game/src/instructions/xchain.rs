@@ -11,8 +11,8 @@ use crate::cert::{
 };
 use crate::errors::CoordinationError;
 use crate::events::{
-    XClaimOpened, XClaimSuperseded, XEquivocationProven, XMatchCreated, XMatchRefunded,
-    XMatchSettled, XPoolDeposited, XPoolWithdrawn, XTrancheLocked,
+    XClaimOpened, XClaimSuperseded, XEquivocationProven, XLocalEquivocationProven, XMatchCreated,
+    XMatchRefunded, XMatchSettled, XPoolDeposited, XPoolWithdrawn, XTrancheLocked,
 };
 use crate::instructions::utils::transfer_lamports;
 use crate::payoff::{resolve_xleg, XLegResolution};
@@ -149,6 +149,30 @@ pub fn create_xmatch(
         CoordinationError::XDeadlinePassed
     );
 
+    // Optional trailing `Tournament` PDA validation (HIGH-15): when provided
+    // (non-program-ID), require program ownership, canonical PDA derivation,
+    // valid `Tournament` discriminator/deserialization, and active window.
+    if let Some(t_info) = ctx.remaining_accounts.first() {
+        if t_info.key() != crate::ID {
+            require!(t_info.owner == &crate::ID, CoordinationError::XBadConfig);
+            let (expected_pda, _) = Pubkey::find_program_address(
+                &[b"tournament", &args.tournament_id.to_le_bytes()],
+                &crate::ID,
+            );
+            require_keys_eq!(t_info.key(), expected_pda, CoordinationError::XBadConfig);
+            let tournament = Tournament::try_deserialize(&mut &t_info.try_borrow_data()?[..])
+                .map_err(|_| error!(CoordinationError::XBadConfig))?;
+            require!(
+                tournament.tournament_id == args.tournament_id,
+                CoordinationError::XBadConfig
+            );
+            require!(
+                tournament.is_active(now),
+                CoordinationError::OutsideTournamentWindow
+            );
+        }
+    }
+
     let player_key = ctx.accounts.player.key();
     let m = &mut ctx.accounts.xmatch;
     m.match_id = match_id;
@@ -282,7 +306,7 @@ fn verify_lock_authorization(
             && cert.leg_b.session_key == m.counter_session_key
             && u64::try_from(leg.stake).unwrap_or(u64::MAX) == m.stake_lamports
             && cert.match_deadline == u64::try_from(m.match_deadline).unwrap_or(0)
-            && (cert.a_is_p1 == 1) == (m.player_is_p1 == 1),
+            && (cert.a_is_p1 == 1) == m.is_p1(),
         CoordinationError::XCertMismatch
     );
     let quote_ok = u128::from(cert.quote_timestamp)
@@ -299,6 +323,11 @@ fn verify_lock_authorization(
 // Settlement — terminal certificates (instant path)
 // ---------------------------------------------------------------------------
 
+pub(crate) fn can_settle_xmatch_in_status(m: &XChainMatch) -> bool {
+    m.status == XChainStatus::Locked
+        || (m.status == XChainStatus::Claiming && !m.local_equivocated && !m.counter_equivocated)
+}
+
 pub fn settle_xmatch(
     ctx: Context<SettleXMatch>,
     cert_no_a: MatchLiveCertNoA,
@@ -306,10 +335,11 @@ pub fn settle_xmatch(
     live_sigs: [[u8; 65]; 3],
     oc_sigs: [[u8; 65]; 3],
 ) -> Result<()> {
-    // Checks (read-only).
+    // Checks (read-only). Matches EVM `CrossChainGame.settle`: terminal cert
+    // settlement is permitted from `Locked` or from `Claiming` ONLY when no
+    // equivocation has been proven on either side.
     require!(
-        ctx.accounts.xmatch.status == XChainStatus::Locked
-            || ctx.accounts.xmatch.status == XChainStatus::Claiming,
+        can_settle_xmatch_in_status(&ctx.accounts.xmatch),
         CoordinationError::XInvalidStatus
     );
     // Reconstruct leg A from authoritative on-chain state (saves 148 bytes
@@ -388,6 +418,20 @@ fn claim_window_end(
         .ok_or(error!(CoordinationError::ArithmeticOverflow))
 }
 
+/// Bounds challenge/supersede response-window extension to at most ONE extension
+/// per match (`XChainMatch::claim_extended`, HIGH-20), preventing repeated
+/// `supersede_xclaim` calls from pushing `claim_window_end` out indefinitely.
+pub(crate) fn maybe_extend_claim_window(m: &mut XChainMatch, now: i64) -> Result<()> {
+    let extended_end = now
+        .checked_add(i64::from(m.claim_window_secs))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    if !m.claim_extended() && extended_end > m.claim_window_end {
+        m.set_claim_extended();
+        m.claim_window_end = extended_end;
+    }
+    Ok(())
+}
+
 pub fn open_xclaim(
     ctx: Context<OpenXClaim>,
     cert: MatchLiveCertArg,
@@ -397,7 +441,8 @@ pub fn open_xclaim(
 ) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     require!(
-        ctx.accounts.xmatch.status == XChainStatus::Locked,
+        ctx.accounts.xmatch.status == XChainStatus::Locked
+            && !ctx.accounts.xmatch.local_equivocated,
         CoordinationError::XInvalidStatus
     );
     let window_end = ctx.accounts.xmatch.claim_window_end;
@@ -420,8 +465,6 @@ pub fn open_xclaim(
     cp.verify_matchup_binding(&cert.matchup_commitment)?;
 
     let m = &mut ctx.accounts.xmatch;
-    let challenge_window = m.claim_window_end.saturating_sub(m.locked_at).max(0);
-    m.claim_window_end = now.saturating_add(challenge_window).max(m.claim_window_end);
     m.status = XChainStatus::Claiming;
     m.match_live_digest = live_digest;
     m.best_step_count = cp.step_count;
@@ -454,8 +497,11 @@ pub fn supersede_xclaim(
         cert.digest() == m.match_live_digest && cp.match_live_digest == m.match_live_digest,
         CoordinationError::XCertMismatch
     );
-    // An equivocation verdict (best_step_count == MAX) is final.
-    require!(m.best_step_count != u8::MAX, CoordinationError::XBadOutcome);
+    // An equivocation verdict (best_step_count == MAX or local_equivocated) is final.
+    require!(
+        !m.local_equivocated && m.best_step_count != u8::MAX,
+        CoordinationError::XBadOutcome
+    );
     require!(
         cp.step_count > m.best_step_count,
         CoordinationError::XBadOutcome
@@ -464,8 +510,7 @@ pub fn supersede_xclaim(
     cp.verify_matchup_binding(&cert.matchup_commitment)?;
 
     let m = &mut ctx.accounts.xmatch;
-    let challenge_window = m.claim_window_end.saturating_sub(m.locked_at).max(0);
-    m.claim_window_end = now.saturating_add(challenge_window).max(m.claim_window_end);
+    maybe_extend_claim_window(m, now)?;
     m.best_step_count = cp.step_count;
     m.best_outcome_kind = cp.derive_claim_outcome();
     emit!(XClaimSuperseded {
@@ -476,10 +521,9 @@ pub fn supersede_xclaim(
     Ok(())
 }
 
-/// Two distinct co-signed checkpoints at the same step from the counterparty
-/// session key = equivocation. Only counterparty equivocation is accepted so a
-/// player cannot manufacture a self-equivocation proof from their own session
-/// key to block normal settlement.
+/// Two distinct checkpoints at the same step signed by the counterparty session
+/// key = counterparty equivocation. Grants at most one bounded response-window
+/// extension per match (`claim_extended`).
 pub fn submit_equivocation_proof(
     ctx: Context<SubmitEquivocation>,
     cert: MatchLiveCertArg,
@@ -526,13 +570,73 @@ pub fn submit_equivocation_proof(
         CoordinationError::XBadSignature
     );
 
-    let local_is_p1 = m.player_is_p1 == 1;
+    let local_is_p1 = m.is_p1();
     let m = &mut ctx.accounts.xmatch;
+    maybe_extend_claim_window(m, now)?;
     m.counter_equivocated = true;
     m.status = XChainStatus::Claiming;
     m.best_outcome_kind =
         equivocation_outcome(local_is_p1, m.local_equivocated, m.counter_equivocated);
     m.best_step_count = u8::MAX; // equivocation verdict is final
+    emit!(XEquivocationProven {
+        match_id: m.match_id,
+        new_best_outcome: m.best_outcome_kind,
+    });
+    Ok(())
+}
+
+/// Prove that the LOCAL player's session key (`m.session_key`) signed two
+/// distinct checkpoints at the same `(match_live_digest, step_count)` (CRIT-10).
+/// Mirrors EVM `CrossChainGame.proveLocalEquivocation`: records
+/// `m.local_equivocated = true`, sets an un-supersedable forfeiture verdict,
+/// blocks the equivocating local player from `open_xclaim`, `supersede_xclaim`,
+/// `settle_xmatch`, and `refund_xmatch_timeout`, and allows immediate
+/// settlement via `settle_xclaim`.
+pub fn prove_local_equivocation(
+    ctx: Context<ProveLocalEquivocation>,
+    _match_id: [u8; 32],
+    cp_a: CheckpointArg,
+    cp_b: CheckpointArg,
+    sig_a: [u8; 65],
+    sig_b: [u8; 65],
+) -> Result<()> {
+    let m = &ctx.accounts.xmatch;
+    require!(
+        m.status == XChainStatus::Locked || m.status == XChainStatus::Claiming,
+        CoordinationError::XInvalidStatus
+    );
+    let live_digest = m.match_live_digest;
+    require!(live_digest != [0u8; 32], CoordinationError::XCertMismatch);
+    require!(
+        cp_a.match_live_digest == live_digest && cp_b.match_live_digest == live_digest,
+        CoordinationError::XCertMismatch
+    );
+    require!(
+        cp_a.step_count == cp_b.step_count,
+        CoordinationError::XBadOutcome
+    );
+    let digest_a = cp_a.digest();
+    let digest_b = cp_b.digest();
+    require!(digest_a != digest_b, CoordinationError::XBadOutcome);
+
+    let signer_a = recover_eth_address(&digest_a, &sig_a)?;
+    let signer_b = recover_eth_address(&digest_b, &sig_b)?;
+    require!(
+        signer_a == signer_b && signer_a == m.session_key,
+        CoordinationError::XBadSignature
+    );
+
+    let local_is_p1 = m.is_p1();
+    let m = &mut ctx.accounts.xmatch;
+    m.local_equivocated = true;
+    m.status = XChainStatus::Claiming;
+    m.best_outcome_kind = equivocation_outcome(local_is_p1, true, m.counter_equivocated);
+    m.best_step_count = u8::MAX;
+    emit!(XLocalEquivocationProven {
+        match_id: m.match_id,
+        session_key: signer_a,
+        new_best_outcome: m.best_outcome_kind,
+    });
     emit!(XEquivocationProven {
         match_id: m.match_id,
         new_best_outcome: m.best_outcome_kind,
@@ -546,10 +650,12 @@ pub fn settle_xclaim(ctx: Context<SettleXClaim>) -> Result<()> {
         ctx.accounts.xmatch.status == XChainStatus::Claiming,
         CoordinationError::XInvalidStatus
     );
-    require!(
-        now > ctx.accounts.xmatch.claim_window_end,
-        CoordinationError::XDeadlineNotReached
-    );
+    if !ctx.accounts.xmatch.local_equivocated {
+        require!(
+            now > ctx.accounts.xmatch.claim_window_end,
+            CoordinationError::XDeadlineNotReached
+        );
+    }
     let kind = ctx.accounts.xmatch.best_outcome_kind;
     ctx.accounts.xmatch.status = XChainStatus::ClaimSettled;
     ctx.accounts.player_profile.init_if_new(
@@ -751,7 +857,7 @@ fn verify_match_live(
             && u64::try_from(leg.stake).unwrap_or(u64::MAX) == m.stake_lamports
             && u64::try_from(leg.tranche).unwrap_or(u64::MAX) == m.tranche_lamports
             && cert.match_deadline == u64::try_from(m.match_deadline).unwrap_or(0)
-            && (cert.a_is_p1 == 1) == (m.player_is_p1 == 1),
+            && (cert.a_is_p1 == 1) == m.is_p1(),
         CoordinationError::XCertMismatch
     );
     // Quote freshness: quoted no earlier than max_age before the lock.
@@ -784,7 +890,7 @@ fn execute_xleg<'info>(
 ) -> Result<()> {
     let stake = xmatch.stake_lamports;
     let tranche = xmatch.tranche_lamports;
-    let local_is_p1 = xmatch.player_is_p1 == 1;
+    let local_is_p1 = xmatch.is_p1();
     let r: XLegResolution = resolve_xleg(
         outcome_kind,
         local_is_p1,
@@ -1054,6 +1160,13 @@ pub struct SubmitEquivocation<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(match_id: [u8; 32])]
+pub struct ProveLocalEquivocation<'info> {
+    #[account(mut, seeds = [b"xmatch", match_id.as_ref()], bump = xmatch.bump)]
+    pub xmatch: Account<'info, XChainMatch>,
+}
+
+#[derive(Accounts)]
 pub struct SettleXClaim<'info> {
     #[account(
         mut,
@@ -1144,19 +1257,45 @@ pub struct CloseXMatch<'info> {
 
 #[cfg(test)]
 mod chain_tag_tests {
-    use super::solana_chain_tag;
+    use super::{
+        can_settle_xmatch_in_status, equivocation_outcome, maybe_extend_claim_window,
+        solana_chain_tag, XKIND_TIMEOUT_BOTH_FORFEIT, XKIND_TIMEOUT_P1_WINS, XKIND_TIMEOUT_P2_WINS,
+    };
     use crate::cert::keccak256;
+    use crate::state::{XChainMatch, XChainStatus};
+    use anchor_lang::prelude::Pubkey;
 
     // The two cluster CAIP-2 strings (must mirror crates/chain-registry).
     const DEVNET: &[u8] = b"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
     const MAINNET: &[u8] = b"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 
+    fn dummy_xmatch() -> XChainMatch {
+        XChainMatch {
+            match_id: [0x11; 32],
+            tournament_id: 1,
+            player: Pubkey::default(),
+            player_is_p1: 1,
+            session_key: [0x22; 20],
+            counter_session_key: [0x33; 20],
+            stake_lamports: 50_000_000,
+            tranche_lamports: 40_000_000,
+            fund_deadline: 1_000,
+            match_deadline: 2_000,
+            locked_at: 1_500,
+            claim_window_end: 5_600,
+            claim_window_secs: 3_600,
+            match_live_digest: [0x44; 32],
+            best_step_count: 1,
+            best_outcome_kind: 6,
+            local_equivocated: false,
+            counter_equivocated: false,
+            status: XChainStatus::Claiming,
+            bump: 255,
+        }
+    }
+
     #[test]
     fn tag_matches_the_build_feature_cluster() {
-        // A binary built without `mainnet` binds the devnet tag; with it, mainnet.
-        // This is the exact equality `lock_xtranche`/`settle_xmatch` enforce
-        // against the cert's leg-A tag, so a wrong build silently breaks all
-        // cross-chain settlement on that cluster.
         let expected = if cfg!(feature = "mainnet") {
             MAINNET
         } else {
@@ -1167,7 +1306,64 @@ mod chain_tag_tests {
 
     #[test]
     fn the_two_clusters_produce_distinct_tags() {
-        // If these ever collided a devnet cert would satisfy a mainnet lock.
         assert_ne!(keccak256(DEVNET), keccak256(MAINNET));
+    }
+
+    #[test]
+    fn claim_window_extension_is_bounded_to_at_most_once() {
+        let mut m = dummy_xmatch();
+        assert!(!m.claim_extended());
+
+        // First supersede at t=5000 extends claim_window_end to 5000 + 3600 = 8600.
+        maybe_extend_claim_window(&mut m, 5_000).unwrap();
+        assert_eq!(m.claim_window_end, 8_600);
+        assert!(m.claim_extended());
+        assert!(m.is_p1());
+
+        // Subsequent supersede at t=8500 does NOT extend claim_window_end further.
+        maybe_extend_claim_window(&mut m, 8_500).unwrap();
+        assert_eq!(m.claim_window_end, 8_600);
+    }
+
+    #[test]
+    fn equivocation_verdict_and_settle_xmatch_claiming_guard_are_symmetric() {
+        assert_eq!(
+            equivocation_outcome(true, true, false),
+            XKIND_TIMEOUT_P2_WINS
+        );
+        assert_eq!(
+            equivocation_outcome(false, true, false),
+            XKIND_TIMEOUT_P1_WINS
+        );
+        assert_eq!(
+            equivocation_outcome(true, false, true),
+            XKIND_TIMEOUT_P1_WINS
+        );
+        assert_eq!(
+            equivocation_outcome(false, false, true),
+            XKIND_TIMEOUT_P2_WINS
+        );
+        assert_eq!(
+            equivocation_outcome(true, true, true),
+            XKIND_TIMEOUT_BOTH_FORFEIT
+        );
+        assert_eq!(
+            equivocation_outcome(false, true, true),
+            XKIND_TIMEOUT_BOTH_FORFEIT
+        );
+
+        let mut m = dummy_xmatch();
+        m.status = XChainStatus::Locked;
+        assert!(can_settle_xmatch_in_status(&m));
+
+        m.status = XChainStatus::Claiming;
+        assert!(can_settle_xmatch_in_status(&m));
+
+        m.local_equivocated = true;
+        assert!(!can_settle_xmatch_in_status(&m));
+
+        m.local_equivocated = false;
+        m.counter_equivocated = true;
+        assert!(!can_settle_xmatch_in_status(&m));
     }
 }

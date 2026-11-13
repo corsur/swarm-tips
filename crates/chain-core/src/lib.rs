@@ -18,4 +18,6 @@ pub mod onchain_action;
 pub mod verify_schema;
 pub mod words;
 
-pub use caip::{AccountId, ChainId, Namespace};
+pub use caip::{
+    AccountId, CaipError, CanonicalWallet, ChainId, Namespace, PathSegmentError, SafePathSegment,
+};

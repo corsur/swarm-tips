@@ -28,9 +28,11 @@ import {ChainTagged} from "./base/ChainTagged.sol";
 ///           (Solana kind 0 goes through the Switchboard `verify_task` path).
 ///
 ///         Pause policy: state-changing entry points are `whenNotPaused`
-///         EXCEPT the liveness paths `withdraw()`, `defaultResolve` and
-///         `expireTask`, which must work while paused so a pause can never
-///         freeze a resolved dispute or strand an expired task's escrow.
+///         EXCEPT the safety/liveness paths `withdraw()`, `challengeTask`,
+///         `resolveChallenge`, `defaultResolve`, and `expireTask`, which must
+///         work while paused so a pause can never run out `challengeDeadline`
+///         unchallenged (`finalizeTask` remains `whenNotPaused`), freeze a
+///         dispute, or strand an expired task's escrow.
 ///
 /// Task state machine (u8 values are the Solana `TaskState` wire values;
 /// `DefaultResolved = 8` is appended, never reordered):
@@ -140,6 +142,7 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     event WorkSubmitted(uint64 indexed taskId, bytes32 contentIdHash, bytes32 artifactHash);
     event TaskApproved(uint64 indexed taskId);
     event TaskVerified(uint64 indexed taskId, uint64 score, uint128 paymentWei, uint128 feeWei, bytes32 digest);
+    event TaskReopened(uint64 indexed taskId, address indexed prevWorker, bytes32 digest);
     event TaskFinalized(uint64 indexed taskId, address indexed worker, uint128 paymentWei, uint128 feeWei);
     event TaskChallenged(uint64 indexed taskId, address indexed challenger, uint128 bondWei);
     event ChallengeResolved(uint64 indexed taskId, bool challengerWon, uint128 bondSlashed);
@@ -326,7 +329,8 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         // Arms-length (Solana ArmsLengthViolation): the attester key must not
         // be the worker it is pricing.
         if (t.worker == attesterSigner()) revert NotParticipant();
-        if (t.verificationKind == VerifyLib.KIND_DETERMINISTIC_ATTESTED) {
+        bool isOnChainActionPolicy = t.policyId == VerifyLib.ONCHAIN_ACTION_POLICY_V1_ID;
+        if (t.verificationKind == VerifyLib.KIND_DETERMINISTIC_ATTESTED || isOnChainActionPolicy) {
             if (score != 0 && score != VerifyLib.MAX_SCORE) revert BadScore();
         } else if (score > VerifyLib.MAX_SCORE) {
             revert BadScore();
@@ -344,6 +348,28 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
             score
         );
         if (!_recoverAndCheck(digest, sig)) revert BadSignature();
+
+        // OnChainAction (11) VOW v1 policy (`reopen_on_zero_score: true`, CRIT-04):
+        // when a submission fails verification (`score == 0`) strictly before
+        // `t.deadline`, reopen the task in-place to `TaskState.Open` with
+        // per-submission fields cleared so another worker can claim without
+        // stranding the client's escrow. At or after `t.deadline`, fall through
+        // to normal `Verified(0)` so the client recovers full escrow.
+        if (isOnChainActionPolicy && score == 0 && block.timestamp < t.deadline) {
+            address prevWorker = t.worker;
+            t.state = TaskState.Open;
+            t.worker = address(0);
+            t.contentIdHash = bytes32(0);
+            t.artifactHash = bytes32(0);
+            t.submittedAt = 0;
+            t.verifiedAt = 0;
+            t.challengeDeadline = 0;
+            t.paymentWei = 0;
+            t.feeWei = 0;
+            emit TaskReopened(taskId, prevWorker, digest);
+            return;
+        }
+
         (uint128 payment, uint128 fee) = _computePayment(score, qualityThreshold, t.escrowWei, protocolFeeBps);
 
         // Effects
@@ -360,7 +386,10 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     ///         belongs to neither challenge nor finalize (Solana parity).
     ///         ALWAYS arms the resolution deadline, so an unadjudicated
     ///         dispute can never freeze funds (defaultResolve backstop).
-    function challengeTask(uint64 taskId) external payable whenNotPaused {
+    ///         DELIBERATELY NOT `whenNotPaused` (HIGH-18): an emergency pause
+    ///         must never run out `challengeDeadline` and let a bad submission
+    ///         auto-finalize unchallenged once unpaused.
+    function challengeTask(uint64 taskId) external payable {
         Task storage t = _existing(taskId);
         if (t.state != TaskState.Verified) revert InvalidStatus();
         if (block.timestamp >= t.challengeDeadline) revert DeadlinePassed();
@@ -382,8 +411,9 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     ///         permissionless `defaultResolve`). Challenger won: escrow home
     ///         to the client, bond back. Worker won: pinned payout executes
     ///         and the bond is slashed worker/treasury per
-    ///         `bondSlashTreasuryBps`.
-    function resolveChallenge(uint64 taskId, bool challengerWon) external onlyOwner whenNotPaused {
+    ///         `bondSlashTreasuryBps`. DELIBERATELY NOT `whenNotPaused`
+    ///         (HIGH-18) so active disputes can be resolved during a pause.
+    function resolveChallenge(uint64 taskId, bool challengerWon) external onlyOwner {
         Task storage t = _existing(taskId);
         if (t.state != TaskState.Disputed) revert InvalidStatus();
         if (block.timestamp > t.resolutionDeadline) revert DeadlinePassed();
@@ -545,4 +575,7 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     function unpause() external onlyOwner {
         _unpause();
     }
+
+    /// @dev Reserved storage gap for future upgradeability / storage extensions.
+    uint256[50] private __gap;
 }

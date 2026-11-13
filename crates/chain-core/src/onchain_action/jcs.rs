@@ -186,7 +186,7 @@ fn push_solana_slice_item(out: &mut String, item: &SolanaSlicePredicate) {
 fn push_solana_program_predicate(out: &mut String, p: &SolanaProgramPredicate) {
     // Keys in strict ASCII/UTF-16 order:
     // "actor_account_index" < "agent_attribution" < "field_predicates"
-    // < "kind" < "matcher" < "min_lamports" < "program_id"
+    // < "kind" < "matcher" < "min_lamports" < "program_id" < ("recipient_account_index")
     out.push_str("{\"actor_account_index\":");
     out.push_str(&p.actor_account_index.to_string());
     out.push_str(",\"agent_attribution\":");
@@ -204,6 +204,10 @@ fn push_solana_program_predicate(out: &mut String, p: &SolanaProgramPredicate) {
     out.push_str(&p.min_lamports.to_string());
     out.push_str(",\"program_id\":");
     push_jcs_str(out, &p.program_id);
+    if let Some(recip) = p.recipient_account_index {
+        out.push_str(",\"recipient_account_index\":");
+        out.push_str(&recip.to_string());
+    }
     out.push('}');
 }
 
@@ -211,10 +215,14 @@ fn push_solana_program_predicate(out: &mut String, p: &SolanaProgramPredicate) {
 pub fn serialize_spec_jcs(spec: &OnChainActionSpec) -> String {
     let mut out = String::with_capacity(512);
     // Top-level keys in strict ASCII/UTF-16 order:
-    // "action_mode" < "predicate" < "schema_version" < "target_chain"
+    // "action_mode" < ("min_block_timestamp") < "predicate" < "schema_version" < "target_chain"
     out.push_str("{\"action_mode\":");
     match spec.action_mode {
         ActionMode::AffiliateEvent => push_jcs_str(&mut out, "affiliate_event"),
+    }
+    if let Some(ts) = spec.min_block_timestamp {
+        out.push_str(",\"min_block_timestamp\":");
+        out.push_str(&ts.to_string());
     }
     out.push_str(",\"predicate\":");
     match &spec.predicate {

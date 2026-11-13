@@ -256,4 +256,8 @@ pub mod shillbot {
     ) -> Result<()> {
         instructions::update_oracle_authority::update_oracle_authority(ctx, new_oracle_authority)
     }
+
+    pub fn set_devnet_enabled(ctx: Context<SetDevnetEnabled>, enabled: bool) -> Result<()> {
+        instructions::set_devnet_enabled::set_devnet_enabled(ctx, enabled)
+    }
 }

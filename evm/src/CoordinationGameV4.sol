@@ -296,9 +296,10 @@ contract CoordinationGameV4 is
         g.firstCommitter = 0;
         g.matchupType = MATCHUP_UNSET;
         g.createdAt = uint64(block.timestamp);
-        // Freeze this game's timeout schedule at the config in force now (M3).
+        // Freeze this game's timeout schedule and season at the config in force now (M3 / MED-13).
         g.commitWindowSecs = commitTimeoutSecs;
         g.revealWindowSecs = revealTimeoutSecs;
+        gameSeasonId[gameId] = currentSeasonId;
         emit GameCreated(gameId, player, g.stakeWei);
     }
 
@@ -660,10 +661,14 @@ contract CoordinationGameV4 is
 
         // Effects.
         g.status = Status.Resolved;
-        // v3 put this in a single owner-drainable `prizePoolWei` with NO claim
-        // path -- the exact defect v4 exists to fix. Forfeits now accrue to the
-        // OPEN SEASON and are claimable by the players who earned them.
-        _accrue(toPrize);
+        // Credit the season snapshotted at `createGame` (`gameSeasonId[gameId]`, MED-13)
+        // rather than reading `currentSeasonId` at reveal/timeout time, so a mid-game
+        // `startSeason` rollover never shifts forfeits or player records to the new season.
+        // Pre-upgrade in-flight games (where `gameSeasonId` is 0 and season 0 was never
+        // started) fall back cleanly to `currentSeasonId`.
+        uint256 snap = gameSeasonId[gameId];
+        uint256 sid = seasons[snap].startTime != 0 ? snap : currentSeasonId;
+        _accrueTo(sid, toPrize);
 
         // Interactions. Players are PUSH-PREFERRED via {_settle}: an EOA
         // wallet-as-player is paid inside this resolving tx (matching Solana's
@@ -681,7 +686,7 @@ contract CoordinationGameV4 is
         // gain) and yet awards BOTH a win, because a win records a correct
         // read of the opponent rather than a profit.
         (bool p1Won, bool p2Won) = _winsFor(outcomeKind);
-        _recordResult(g.player1, g.player2, p1Won, p2Won);
+        _recordResultFor(sid, g.player1, g.player2, p1Won, p2Won);
 
         emit GameResolved(gameId, outcomeKind, toP1, toP2, toTreasury);
     }
@@ -776,4 +781,10 @@ contract CoordinationGameV4 is
 
     /// sessionKey => player wallet that currently owns it (appended at end of v4 storage).
     mapping(address => address) public sessionOwner;
+
+    /// gameId => seasonId snapshotted at `createGame` (appended at slot 58, MED-13).
+    mapping(bytes32 => uint256) public gameSeasonId;
+
+    /// @dev Reserved storage gap for future UUPS upgrades.
+    uint256[49] private __gap;
 }

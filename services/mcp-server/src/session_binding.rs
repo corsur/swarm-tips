@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const MCP_HTTP_SESSIONS_COLLECTION: &str = "mcp_http_sessions";
+const INBOX_HTTP_SESSIONS_COLLECTION: &str = "inbox_http_sessions";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct McpHttpSessionDoc {
@@ -40,9 +41,7 @@ pub struct McpHttpSessionDoc {
     pub last_seen_at: firestore::FirestoreTimestamp,
     /// The wallet this session has PROVEN ownership of (signed nonce or
     /// on-chain memo tx via game-api's auth endpoints). `None` = merely
-    /// registered, never proven. `bind()` always writes `None`, so
-    /// re-binding (same or different wallet) clears verification — the
-    /// whole-doc overwrite is the invalidation, by design.
+    /// registered, never proven.
     #[serde(default)]
     pub verified_wallet: Option<String>,
     /// When the proof was accepted. `#[serde(default)]` so docs written
@@ -56,11 +55,25 @@ pub struct McpHttpSessionDoc {
 
 pub struct McpSessionBinding {
     db: Arc<FirestoreDb>,
+    collection: &'static str,
 }
 
 impl McpSessionBinding {
     pub fn new(db: Arc<FirestoreDb>) -> Self {
-        Self { db }
+        Self {
+            db,
+            collection: MCP_HTTP_SESSIONS_COLLECTION,
+        }
+    }
+
+    /// Separate Firestore collection (`inbox_http_sessions`) for REST
+    /// `X-Inbox-Session` tokens so REST inbox sessions and `Mcp-Session-Id`
+    /// sessions cannot cross-contaminate (`CRIT-07`).
+    pub fn new_inbox(db: Arc<FirestoreDb>) -> Self {
+        Self {
+            db,
+            collection: INBOX_HTTP_SESSIONS_COLLECTION,
+        }
     }
 
     /// Persist `session_id → wallet`. Idempotent — re-binding the same
@@ -75,12 +88,13 @@ impl McpSessionBinding {
         if wallet.trim().is_empty() {
             anyhow::bail!("wallet must not be empty");
         }
+        let canonical = crate::jwt::normalize_wallet(wallet);
 
         let existing: Option<McpHttpSessionDoc> = self
             .db
             .fluent()
             .select()
-            .by_id_in(MCP_HTTP_SESSIONS_COLLECTION)
+            .by_id_in(self.collection)
             .obj()
             .one(session_id)
             .await
@@ -88,13 +102,13 @@ impl McpSessionBinding {
             .flatten();
 
         let now = firestore::FirestoreTimestamp(chrono::Utc::now());
-        let doc = build_bound_session_doc(existing, session_id, wallet, now);
+        let doc = build_bound_session_doc(existing, session_id, &canonical, now);
 
         if let Err(e) = self
             .db
             .fluent()
             .update()
-            .in_col(MCP_HTTP_SESSIONS_COLLECTION)
+            .in_col(self.collection)
             .document_id(session_id)
             .object(&doc)
             .execute::<McpHttpSessionDoc>()
@@ -102,9 +116,10 @@ impl McpSessionBinding {
         {
             tracing::warn!(
                 session_id = %session_id,
-                wallet = %wallet,
+                wallet = %canonical,
+                collection = self.collection,
                 error = %e,
-                "failed to persist mcp http session binding (non-fatal — agent can re-register)"
+                "failed to persist http session binding (non-fatal — agent can re-register)"
             );
         } else {
             // CONTRACT: the `event` field below is matched by
@@ -117,7 +132,7 @@ impl McpSessionBinding {
             tracing::info!(
                 event = "register_wallet_bound",
                 session_id = %session_id,
-                wallet = %wallet,
+                wallet = %canonical,
                 "mcp http session bound"
             );
         }
@@ -136,22 +151,23 @@ impl McpSessionBinding {
             .db
             .fluent()
             .select()
-            .by_id_in(MCP_HTTP_SESSIONS_COLLECTION)
+            .by_id_in(self.collection)
             .obj()
             .one(session_id)
             .await
             .map_err(|e| {
                 tracing::warn!(
                     session_id = %session_id,
+                    collection = self.collection,
                     error = %e,
-                    "mcp http session lookup failed"
+                    "http session lookup failed"
                 );
                 e
             })
             .ok()
             .flatten();
 
-        doc.map(|d| d.wallet)
+        doc.map(|d| crate::jwt::normalize_wallet(&d.wallet))
     }
 
     /// Mark the session's bound wallet as ownership-proven. Read-modify-write:
@@ -171,25 +187,29 @@ impl McpSessionBinding {
         token: Option<&str>,
     ) -> Result<()> {
         anyhow::ensure!(
-            !session_id.is_empty() && !wallet.is_empty(),
+            !session_id.is_empty() && !wallet.trim().is_empty(),
             "missing session identity"
         );
+        let canonical = crate::jwt::normalize_wallet(wallet);
+        let collection = self.collection;
         self.db
             .run_transaction_with_options(
                 |tx_db, tx| {
                     let session_id = session_id.to_owned();
-                    let wallet = wallet.to_owned();
+                    let wallet = canonical.clone();
                     let token = token.map(str::to_owned);
                     Box::pin(async move {
                         let doc: Option<McpHttpSessionDoc> = tx_db
                             .fluent()
                             .select()
-                            .by_id_in(MCP_HTTP_SESSIONS_COLLECTION)
+                            .by_id_in(collection)
                             .obj()
                             .one(&session_id)
                             .await
                             .map_err(backoff::Error::Permanent)?;
-                        let Some(mut doc) = doc.filter(|doc| doc.wallet == wallet) else {
+                        let Some(mut doc) =
+                            doc.filter(|doc| crate::jwt::wallets_match(&doc.wallet, &wallet))
+                        else {
                             return Err(backoff::Error::Permanent(
                                 firestore::errors::FirestoreError::DataConflictError(
                                     firestore::errors::FirestoreDataConflictError::new(
@@ -202,6 +222,7 @@ impl McpSessionBinding {
                             ));
                         };
                         let now = firestore::FirestoreTimestamp(chrono::Utc::now());
+                        doc.wallet = wallet.clone();
                         doc.verified_wallet = Some(wallet);
                         doc.verified_at = Some(now.clone());
                         doc.last_seen_at = now;
@@ -211,7 +232,7 @@ impl McpSessionBinding {
                         tx_db
                             .fluent()
                             .update()
-                            .in_col(MCP_HTTP_SESSIONS_COLLECTION)
+                            .in_col(collection)
                             .document_id(session_id)
                             .object(&doc)
                             .add_to_transaction(tx)
@@ -236,17 +257,19 @@ impl McpSessionBinding {
             .db
             .fluent()
             .select()
-            .by_id_in(MCP_HTTP_SESSIONS_COLLECTION)
+            .by_id_in(self.collection)
             .obj()
             .one(session_id)
             .await?;
         Ok(doc.and_then(|doc| {
-            if doc.verified_wallet.as_deref() != Some(&doc.wallet) {
+            let verified = doc.verified_wallet.as_deref()?;
+            if !crate::jwt::wallets_match(verified, &doc.wallet) {
                 return None;
             }
+            let canonical = crate::jwt::normalize_wallet(&doc.wallet);
             doc.access_token
                 .filter(|token| !token.is_empty())
-                .map(|token| (doc.wallet, token))
+                .map(|token| (canonical, token))
         }))
     }
 
@@ -261,15 +284,16 @@ impl McpSessionBinding {
             .db
             .fluent()
             .select()
-            .by_id_in(MCP_HTTP_SESSIONS_COLLECTION)
+            .by_id_in(self.collection)
             .obj()
             .one(session_id)
             .await
             .map_err(|e| {
                 tracing::warn!(
                     session_id = %session_id,
+                    collection = self.collection,
                     error = %e,
-                    "mcp http session verified lookup failed"
+                    "http session verified lookup failed"
                 );
                 e
             })
@@ -277,8 +301,8 @@ impl McpSessionBinding {
             .flatten();
         let doc = doc?;
         match doc.verified_wallet {
-            Some(v) if v == doc.wallet && !doc.wallet.is_empty() => {
-                Some(VerifiedWallet(doc.wallet))
+            Some(v) if crate::jwt::wallets_match(&v, &doc.wallet) && !doc.wallet.is_empty() => {
+                Some(VerifiedWallet(crate::jwt::normalize_wallet(&doc.wallet)))
             }
             _ => None,
         }
@@ -303,12 +327,12 @@ impl VerifiedWallet {
     /// compile-time proof that the extracted address belongs to this verified wallet.
     pub fn to_xchain_native(&self) -> Option<(String, Self)> {
         let (chain, native) = crate::xchain::resolve_xchain_wallet(&self.0)?;
-        Some((chain, Self(native)))
+        Some((chain, Self(crate::jwt::normalize_wallet(&native))))
     }
 
     #[cfg(test)]
     pub fn new_for_test(wallet: impl Into<String>) -> Self {
-        Self(wallet.into())
+        Self(crate::jwt::normalize_wallet(&wallet.into()))
     }
 }
 
@@ -326,31 +350,35 @@ impl std::fmt::Display for VerifiedWallet {
 
 /// Build the `McpHttpSessionDoc` to persist on `bind(session_id, wallet)`.
 ///
-/// Re-binding the same session to the same wallet is idempotent: it refreshes
-/// `last_seen_at` while preserving `created_at` and any existing ownership
-/// proof (`verified_wallet`, `verified_at`, `access_token`). Re-binding to a
-/// different wallet resets the proof so the new wallet cannot inherit the
-/// previous wallet's verification.
+/// Re-binding the same session to the same wallet (including EIP-55 mixed-case
+/// vs lowercase EVM addresses) is idempotent: it refreshes `last_seen_at` and
+/// canonicalizes `wallet` / `verified_wallet` while preserving `created_at` and
+/// any existing ownership proof. Re-binding to a different wallet resets the
+/// proof so the new wallet cannot inherit the previous wallet's verification.
 fn build_bound_session_doc(
     existing: Option<McpHttpSessionDoc>,
     session_id: &str,
     wallet: &str,
     now: firestore::FirestoreTimestamp,
 ) -> McpHttpSessionDoc {
-    if let Some(prev) = existing.filter(|d| d.wallet == wallet) {
+    let canonical = crate::jwt::normalize_wallet(wallet);
+    if let Some(prev) = existing.filter(|d| crate::jwt::wallets_match(&d.wallet, &canonical)) {
         McpHttpSessionDoc {
             session_id: session_id.to_string(),
-            wallet: wallet.to_string(),
+            wallet: canonical.clone(),
             created_at: prev.created_at,
             last_seen_at: now,
-            verified_wallet: prev.verified_wallet.filter(|v| v == wallet),
+            verified_wallet: prev
+                .verified_wallet
+                .filter(|v| crate::jwt::wallets_match(v, &canonical))
+                .map(|_| canonical),
             verified_at: prev.verified_at,
             access_token: prev.access_token,
         }
     } else {
         McpHttpSessionDoc {
             session_id: session_id.to_string(),
-            wallet: wallet.to_string(),
+            wallet: canonical,
             created_at: now.clone(),
             last_seen_at: now,
             verified_wallet: None,
@@ -364,8 +392,6 @@ fn build_bound_session_doc(
 mod tests {
     use super::*;
 
-    /// Validates the document structure round-trips through serde so a
-    /// schema drift would fail compilation rather than at runtime.
     #[test]
     fn doc_serde_roundtrip() {
         let now = firestore::FirestoreTimestamp(chrono::Utc::now());
@@ -392,9 +418,6 @@ mod tests {
         assert!(parsed.verified_at.is_some());
     }
 
-    /// Back-compat: session docs written before the `verified_*` fields
-    /// existed must still deserialize (as unproven). A serde failure here
-    /// would strand every pre-rollout live session at the first tool call.
     #[test]
     fn doc_without_verified_fields_still_deserializes_as_unproven() {
         let legacy = r#"{
@@ -439,5 +462,28 @@ mod tests {
         assert!(rebound_diff.verified_wallet.is_none());
         assert!(rebound_diff.verified_at.is_none());
         assert!(rebound_diff.access_token.is_none());
+    }
+
+    #[test]
+    fn rebinding_evm_mixed_case_preserves_verification_and_canonicalizes_lowercase() {
+        let t0 = firestore::FirestoreTimestamp(chrono::Utc::now() - chrono::Duration::seconds(60));
+        let t1 = firestore::FirestoreTimestamp(chrono::Utc::now());
+        let mixed = "eip155:8453:0x996213ed4099707059B8B5D7489FFF23DAC9770D";
+        let lower = "eip155:8453:0x996213ed4099707059b8b5d7489fff23dac9770d";
+
+        let verified_doc = McpHttpSessionDoc {
+            session_id: "sess-evm".to_string(),
+            wallet: mixed.to_string(),
+            created_at: t0.clone(),
+            last_seen_at: t0.clone(),
+            verified_wallet: Some(mixed.to_string()),
+            verified_at: Some(t0),
+            access_token: Some("tok-evm".to_string()),
+        };
+
+        let rebound = build_bound_session_doc(Some(verified_doc), "sess-evm", mixed, t1);
+        assert_eq!(rebound.wallet, lower);
+        assert_eq!(rebound.verified_wallet.as_deref(), Some(lower));
+        assert_eq!(rebound.access_token.as_deref(), Some("tok-evm"));
     }
 }

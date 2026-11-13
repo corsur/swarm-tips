@@ -50,15 +50,22 @@ pub mod extension_registry {
         instructions::submit_extension::submit_extension(ctx, extension_type, bond_lamports)
     }
 
-    /// Extender withdraws its vouch: the edge closes, the recipient's borrowed
-    /// standing drops, and the bond (plus the account's rent) returns to the
-    /// extender. Makes no claim that the recipient "fulfilled" anything.
+    /// Extender initiates the 7-day unbonding cooldown (`UNBOND_COOLDOWN_SECS`)
+    /// required before `withdraw_extension` can reclaim the bond.
+    pub fn request_unbond(ctx: Context<RequestUnbond>) -> Result<()> {
+        instructions::request_unbond::request_unbond(ctx)
+    }
+
+    /// Extender withdraws its vouch after the unbond cooldown elapses: the edge
+    /// closes, the recipient's borrowed standing drops, and the bond (plus the
+    /// account's rent) returns to the extender.
     pub fn withdraw_extension(ctx: Context<WithdrawExtension>) -> Result<()> {
         instructions::withdraw_extension::withdraw_extension(ctx)
     }
 
     /// Authority arbitrates a default: the bond is slashed to the treasury, the
-    /// account's rent is returned to the extender, and the edge closes.
+    /// account's rent is returned to the extender, and the edge closes (applies
+    /// both while active and during the unbonding cooldown).
     pub fn default_extension(ctx: Context<DefaultExtension>) -> Result<()> {
         instructions::default_extension::default_extension(ctx)
     }

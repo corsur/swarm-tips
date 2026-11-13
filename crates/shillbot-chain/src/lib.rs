@@ -21,6 +21,8 @@ const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget11111111111111111111111111111
 const SECP256K1_PROGRAM: &str = "KeccakSecp256k11111111111111111111111111111";
 const SWITCHBOARD_MAINNET: &str = "SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv";
 const SWITCHBOARD_DEVNET: &str = "Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2";
+const MAX_SCORE: u64 = 1_000_000;
+const ONCHAIN_ACTION_PLATFORM: u8 = 11;
 
 pub fn global_state_pda() -> Pubkey {
     Pubkey::find_program_address(&[b"shillbot_global"], &shillbot::ID).0
@@ -194,6 +196,32 @@ pub fn verify_task_co_signed_instruction(
         ],
         data: shillbot::instruction::VerifyTask {
             composite_score,
+            verification_hash,
+        }
+        .data(),
+    }
+}
+
+pub fn verify_task_attested_instruction(
+    task: Pubkey,
+    attester: Pubkey,
+    score: u64,
+    verification_hash: [u8; 32],
+    reopen_agent: Option<Pubkey>,
+) -> Instruction {
+    let mut accounts = vec![
+        AccountMeta::new(task, false),
+        AccountMeta::new_readonly(global_state_pda(), false),
+        AccountMeta::new_readonly(attester, true),
+    ];
+    if let Some(agent) = reopen_agent {
+        accounts.push(AccountMeta::new(agent_state_pda(&agent), false));
+    }
+    Instruction {
+        program_id: shillbot::ID,
+        accounts,
+        data: shillbot::instruction::VerifyTaskAttested {
+            score,
             verification_hash,
         }
         .data(),
@@ -487,6 +515,26 @@ fn validate_compute_budget(data: &[u8]) -> Result<(), ValidationError> {
     Ok(())
 }
 
+fn is_static_account_writable(message: &VersionedMessage, index: u8) -> bool {
+    let idx = usize::from(index);
+    let header = match message {
+        VersionedMessage::Legacy(m) => &m.header,
+        VersionedMessage::V0(m) => &m.header,
+    };
+    let num_req = usize::from(header.num_required_signatures);
+    let num_ro_signed = usize::from(header.num_readonly_signed_accounts);
+    let num_ro_unsigned = usize::from(header.num_readonly_unsigned_accounts);
+    let total = static_keys(message).len();
+    if idx >= total {
+        return false;
+    }
+    if idx < num_req {
+        idx < num_req.saturating_sub(num_ro_signed)
+    } else {
+        idx < total.saturating_sub(num_ro_unsigned)
+    }
+}
+
 pub fn validate(
     tx: &VersionedTransaction,
     expected: &ValidationRequest,
@@ -544,6 +592,7 @@ pub fn validate(
 
     let shillbot_program = shillbot::ID;
     let expected_disc = discriminator(expected.action.instruction_name());
+    let verify_attested_disc = discriminator("verify_task_attested");
     let claim_disc = discriminator("claim_task");
     let set_payout_disc = discriminator("set_payout_to");
     let switchboard_submit_disc = discriminator("pull_feed_submit_response_consensus");
@@ -559,6 +608,7 @@ pub fn validate(
     .map_err(|_| ValidationError::Transaction("invalid switchboard program id".into()))?;
 
     let mut matched = None;
+    let mut is_attested_verify = false;
     let mut preceding_claim_pos: Option<usize> = None;
     let mut payout_pos: Option<usize> = None;
     let mut payout_routing = 0_usize;
@@ -573,7 +623,9 @@ pub fn validate(
             let disc = ix.data.get(..8).ok_or_else(|| {
                 ValidationError::Rejected("Shillbot instruction has no discriminator".into())
             })?;
-            if disc == expected_disc {
+            let matches_lifecycle = disc == expected_disc
+                || (expected.action == Action::Verify && disc == verify_attested_disc);
+            if matches_lifecycle {
                 if matched.is_some() {
                     return Err(ValidationError::Rejected(
                         "transaction repeats the lifecycle instruction".into(),
@@ -589,6 +641,9 @@ pub fn validate(
                             "submit_work must immediately follow atomic claim_task".into(),
                         ));
                     }
+                }
+                if expected.action == Action::Verify && disc == verify_attested_disc {
+                    is_attested_verify = true;
                 }
                 matched = Some((position, ix));
             } else if expected.action == Action::Submit && disc == claim_disc {
@@ -698,51 +753,123 @@ pub fn validate(
         ));
     }
     if expected.action == Action::Verify {
-        if secp_indices.is_empty() && switchboard_indices.is_empty() {
-            let oracle_index = lifecycle.accounts.get(2).copied().ok_or_else(|| {
-                ValidationError::Rejected("verify instruction has too few accounts".into())
-            })?;
-            if usize::from(oracle_index) >= required {
+        if is_attested_verify {
+            if !secp_indices.is_empty() || !switchboard_indices.is_empty() {
                 return Err(ValidationError::Rejected(
-                    "verify oracle authority account must be a required signer".into(),
+                    "Switchboard companion instructions are not allowed with verify_task_attested"
+                        .into(),
+                ));
+            }
+            if lifecycle.accounts.len() != 3 && lifecycle.accounts.len() != 4 {
+                return Err(ValidationError::Rejected(
+                    "verify_task_attested must carry 3 accounts (or 4 for score-0 reopen)".into(),
+                ));
+            }
+            if lifecycle.data.len() != 48 {
+                return Err(ValidationError::Rejected(
+                    "verify_task_attested instruction data has invalid length".into(),
+                ));
+            }
+            let score_bytes: [u8; 8] = lifecycle.data[8..16].try_into().map_err(|_| {
+                ValidationError::Rejected("verify_task_attested score is invalid".into())
+            })?;
+            let score = u64::from_le_bytes(score_bytes);
+            if score != 0 && score != MAX_SCORE {
+                return Err(ValidationError::Rejected(
+                    "verify_task_attested score must be 0 or MAX_SCORE".into(),
+                ));
+            }
+            if lifecycle.data.get(16..48) == Some([0u8; 32].as_slice()) {
+                return Err(ValidationError::Rejected(
+                    "verify_task_attested verification_hash must be non-zero".into(),
+                ));
+            }
+            let global_idx = lifecycle.accounts[1];
+            if keys.get(usize::from(global_idx)) != Some(&global_state_pda()) {
+                return Err(ValidationError::Rejected(
+                    "verify_task_attested global_state differs from canonical PDA".into(),
+                ));
+            }
+            let attester_idx = lifecycle.accounts[2];
+            if usize::from(attester_idx) >= required {
+                return Err(ValidationError::Rejected(
+                    "verify_task_attested attester must be a required signer".into(),
                 ));
             }
             if let Some(feed) = expected_feed {
-                let oracle_key = keys
-                    .get(usize::from(oracle_index))
-                    .copied()
-                    .ok_or_else(|| {
-                        ValidationError::Rejected("verify oracle account index is invalid".into())
-                    })?;
-                if oracle_key != feed {
+                if keys.get(usize::from(attester_idx)) != Some(&feed) {
                     return Err(ValidationError::Rejected(
                         "verify oracle authority differs from expected authority".into(),
                     ));
                 }
             }
-        } else {
-            if secp_indices.len() != 1 || switchboard_indices.len() != 1 {
-                return Err(ValidationError::Rejected(
-                    "verify requires exactly one secp256k1 and one Switchboard instruction".into(),
-                ));
-            }
-            if secp_indices[0].saturating_add(1) != switchboard_indices[0]
-                || switchboard_indices[0] >= lifecycle_index
-            {
-                return Err(ValidationError::Rejected(
-                    "Switchboard verification instructions have an unsafe order".into(),
-                ));
-            }
-            if let Some(feed) = expected_feed {
-                let switchboard_ix = &instructions(&tx.message)[switchboard_indices[0]];
-                let includes_feed = switchboard_ix.accounts.iter().any(|index| {
-                    keys.get(usize::from(*index))
-                        .is_some_and(|key| *key == feed)
-                });
-                if !includes_feed {
+            if lifecycle.accounts.len() == 4 {
+                if score != 0 {
                     return Err(ValidationError::Rejected(
-                        "Switchboard instruction targets a different feed".into(),
+                        "trailing AgentState account is only allowed for score-0 reopen".into(),
                     ));
+                }
+                if !is_static_account_writable(&tx.message, lifecycle.accounts[3]) {
+                    return Err(ValidationError::Rejected(
+                        "reopen AgentState account must be writable".into(),
+                    ));
+                }
+            }
+        } else {
+            if expected.network == "mainnet" {
+                return Err(ValidationError::Rejected(
+                    "legacy verify_task is restricted to devnet".into(),
+                ));
+            }
+            if secp_indices.is_empty() && switchboard_indices.is_empty() {
+                let oracle_index = lifecycle.accounts.get(2).copied().ok_or_else(|| {
+                    ValidationError::Rejected("verify instruction has too few accounts".into())
+                })?;
+                if usize::from(oracle_index) >= required {
+                    return Err(ValidationError::Rejected(
+                        "verify oracle authority account must be a required signer".into(),
+                    ));
+                }
+                if let Some(feed) = expected_feed {
+                    let oracle_key =
+                        keys.get(usize::from(oracle_index))
+                            .copied()
+                            .ok_or_else(|| {
+                                ValidationError::Rejected(
+                                    "verify oracle account index is invalid".into(),
+                                )
+                            })?;
+                    if oracle_key != feed {
+                        return Err(ValidationError::Rejected(
+                            "verify oracle authority differs from expected authority".into(),
+                        ));
+                    }
+                }
+            } else {
+                if secp_indices.len() != 1 || switchboard_indices.len() != 1 {
+                    return Err(ValidationError::Rejected(
+                        "verify requires exactly one secp256k1 and one Switchboard instruction"
+                            .into(),
+                    ));
+                }
+                if secp_indices[0].saturating_add(1) != switchboard_indices[0]
+                    || switchboard_indices[0] >= lifecycle_index
+                {
+                    return Err(ValidationError::Rejected(
+                        "Switchboard verification instructions have an unsafe order".into(),
+                    ));
+                }
+                if let Some(feed) = expected_feed {
+                    let switchboard_ix = &instructions(&tx.message)[switchboard_indices[0]];
+                    let includes_feed = switchboard_ix.accounts.iter().any(|index| {
+                        keys.get(usize::from(*index))
+                            .is_some_and(|key| *key == feed)
+                    });
+                    if !includes_feed {
+                        return Err(ValidationError::Rejected(
+                            "Switchboard instruction targets a different feed".into(),
+                        ));
+                    }
                 }
             }
         }
@@ -759,6 +886,18 @@ pub fn validate(
             .copied()
             .ok_or_else(|| ValidationError::Rejected("lifecycle account index is invalid".into()))
     };
+    if expected.action == Action::Claim {
+        if lifecycle.accounts.len() > 6 {
+            return Err(ValidationError::Rejected(
+                "claim_task has invalid account count".into(),
+            ));
+        }
+        if lifecycle.accounts.len() == 6 && account_key(5)? != sysvar::instructions::id() {
+            return Err(ValidationError::Rejected(
+                "claim_task trailing account must be sysvar::instructions".into(),
+            ));
+        }
+    }
     if account_key(expected.action.task_account_position())? != task {
         return Err(ValidationError::Rejected(
             "transaction targets a different task".into(),
@@ -819,6 +958,34 @@ pub fn validate(
                 ));
             }
         }
+        if let (Some(&platform), Some(&kind), Some(escrow_slice)) = (
+            lifecycle.data.get(80),
+            lifecycle.data.get(94),
+            lifecycle.data.get(16..24),
+        ) {
+            if platform == ONCHAIN_ACTION_PLATFORM {
+                if kind > 1 {
+                    return Err(ValidationError::Rejected(
+                        "OnChainAction carries invalid verification_kind".into(),
+                    ));
+                }
+                if kind == 0 && expected.network == "mainnet" {
+                    return Err(ValidationError::Rejected(
+                        "OnChainAction verification_kind 0 is restricted to devnet".into(),
+                    ));
+                }
+                let escrow_bytes: [u8; 8] = escrow_slice.try_into().map_err(|_| {
+                    ValidationError::Rejected("create instruction escrow is invalid".into())
+                })?;
+                if u64::from_le_bytes(escrow_bytes)
+                    < shillbot::constants::MIN_CAMPAIGN_ESCROW_LAMPORTS
+                {
+                    return Err(ValidationError::Rejected(
+                        "OnChainAction escrow is below minimum campaign escrow".into(),
+                    ));
+                }
+            }
+        }
     }
     if expected.action == Action::Submit {
         if let Some(content_id) = expected.content_id.as_deref() {
@@ -854,7 +1021,11 @@ pub fn validate(
         wallet: expected.wallet.clone(),
         fee_payer: fee_payer.to_string(),
         sponsor: expected.sponsor.clone(),
-        payout_to: expected.allowed_payout_to.clone(),
+        payout_to: if payout_routing == 1 {
+            expected.allowed_payout_to.clone()
+        } else {
+            None
+        },
         escrow_lamports: expected.escrow_lamports.map(|amount| amount.to_string()),
         content_id: expected.content_id.clone(),
         required_signers: keys[..required].iter().map(ToString::to_string).collect(),
@@ -907,9 +1078,9 @@ fn validate_companion_claim_ix(
             "companion claim_task carries unexpected instruction data".into(),
         ));
     }
-    if ix.accounts.len() != 5 && ix.accounts.len() != 6 {
+    if ix.accounts.len() != 6 {
         return Err(ValidationError::Rejected(
-            "companion claim_task has invalid account count".into(),
+            "companion claim_task must carry 6 accounts including sysvar::instructions".into(),
         ));
     }
     let key_at = |pos: usize| -> Option<&Pubkey> {
@@ -935,7 +1106,7 @@ fn validate_companion_claim_ix(
             "companion claim_task authority differs from wallet".into(),
         ));
     }
-    if ix.accounts.len() == 6 && key_at(5) != Some(&sysvar::instructions::id()) {
+    if key_at(5) != Some(&sysvar::instructions::id()) {
         return Err(ValidationError::Rejected(
             "companion claim_task trailing account must be sysvar::instructions".into(),
         ));
@@ -1452,5 +1623,129 @@ mod tests {
         let lone_claim_tx = transaction(vec![claim_task_atomic_instruction(wallet, task)], &wallet);
         let err2 = validate(&lone_claim_tx, &expected).unwrap_err();
         assert!(err2.to_string().contains("missing submit_work"), "{err2}");
+
+        // 5-account non-atomic claim_task bundled with submit_work must be rejected.
+        let five_acct_claim = claim_task_instruction(wallet, task);
+        let bad_bundle_tx = transaction(vec![five_acct_claim, submit_ix], &wallet);
+        let err3 = validate(&bad_bundle_tx, &expected).unwrap_err();
+        assert!(err3.to_string().contains("6 accounts"), "{err3}");
+    }
+
+    #[test]
+    fn payout_to_inspection_is_none_when_allowed_payout_to_set_without_routing_ix() {
+        let wallet = Keypair::new().pubkey();
+        let sponsor = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let payout_to = Pubkey::new_unique();
+        let lifecycle = claim_task_instruction(wallet, task);
+        let tx = transaction(vec![lifecycle], &sponsor);
+
+        let mut expected = request(Action::Claim, wallet, task);
+        expected.sponsor = Some(sponsor.to_string());
+        expected.allowed_payout_to = Some(payout_to.to_string());
+        expected.require_payout_routing = false;
+
+        let inspected = validate(&tx, &expected).unwrap();
+        assert_eq!(inspected.payout_to, None);
+    }
+
+    #[test]
+    fn verify_task_attested_validates_mainnet_pass_and_score_zero_reopen() {
+        let payer = Keypair::new().pubkey();
+        let attester = Keypair::new().pubkey();
+        let agent = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+
+        // Passing attestation (3 accounts) on mainnet
+        let pass_ix = verify_task_attested_instruction(task, attester, MAX_SCORE, [7; 32], None);
+        let pass_tx = transaction(vec![pass_ix.clone()], &payer);
+        let mut expected = exact_request(Action::Verify, payer, task, &pass_ix);
+        expected.network = "mainnet".into();
+        expected.switchboard_feed = Some(attester.to_string());
+        validate(&pass_tx, &expected).unwrap();
+
+        // Legacy verify_task must be rejected on mainnet
+        let legacy_ix = verify_task_co_signed_instruction(task, attester, 900_000, [7; 32]);
+        let legacy_tx = transaction(vec![legacy_ix.clone()], &payer);
+        let mut legacy_expected = exact_request(Action::Verify, payer, task, &legacy_ix);
+        legacy_expected.network = "mainnet".into();
+        legacy_expected.switchboard_feed = Some(attester.to_string());
+        assert!(validate(&legacy_tx, &legacy_expected)
+            .unwrap_err()
+            .to_string()
+            .contains("restricted to devnet"));
+
+        // Score-0 reopen with writable AgentState (4 accounts) on mainnet
+        let reopen_ix = verify_task_attested_instruction(task, attester, 0, [8; 32], Some(agent));
+        assert_eq!(reopen_ix.accounts.len(), 4);
+        assert!(reopen_ix.accounts[3].is_writable);
+        let reopen_tx = transaction(vec![reopen_ix.clone()], &payer);
+        let mut reopen_expected = exact_request(Action::Verify, payer, task, &reopen_ix);
+        reopen_expected.network = "mainnet".into();
+        reopen_expected.switchboard_feed = Some(attester.to_string());
+        validate(&reopen_tx, &reopen_expected).unwrap();
+
+        // Non-writable trailing AgentState must be rejected
+        let mut readonly_reopen_ix = reopen_ix;
+        readonly_reopen_ix.accounts[3].is_writable = false;
+        let readonly_tx = transaction(vec![readonly_reopen_ix.clone()], &payer);
+        let mut readonly_expected = exact_request(Action::Verify, payer, task, &readonly_reopen_ix);
+        readonly_expected.network = "mainnet".into();
+        readonly_expected.switchboard_feed = Some(attester.to_string());
+        assert!(validate(&readonly_tx, &readonly_expected)
+            .unwrap_err()
+            .to_string()
+            .contains("writable"));
+    }
+
+    #[test]
+    fn onchain_action_create_accepts_kind_1_on_mainnet_and_rejects_kind_0_or_low_escrow() {
+        let wallet = Keypair::new().pubkey();
+        let base_args = CreateTaskArgs {
+            nonce: 77,
+            escrow_lamports: 5_000_000,
+            content_hash: [0x55; 32],
+            deadline: 1_900_000_000,
+            submit_margin: 3_600,
+            claim_buffer: 3_600,
+            platform: ONCHAIN_ACTION_PLATFORM,
+            attestation_delay_override: 60,
+            challenge_window_override: 0,
+            verification_timeout_override: 0,
+            requires_approval: false,
+            verification_kind: 1,
+        };
+        let task = task_pda(base_args.nonce, &wallet);
+
+        // kind == 1 with 5_000_000 escrow succeeds on mainnet
+        let ok_ix = create_task_instruction(wallet, base_args);
+        let ok_tx = transaction(vec![ok_ix.clone()], &wallet);
+        let mut ok_expected = exact_request(Action::Create, wallet, task, &ok_ix);
+        ok_expected.network = "mainnet".into();
+        ok_expected.escrow_lamports = Some(5_000_000);
+        validate(&ok_tx, &ok_expected).unwrap();
+
+        // kind == 0 on mainnet is rejected
+        let mut kind0_args = base_args;
+        kind0_args.verification_kind = 0;
+        let kind0_ix = create_task_instruction(wallet, kind0_args);
+        let kind0_tx = transaction(vec![kind0_ix.clone()], &wallet);
+        let mut kind0_expected = exact_request(Action::Create, wallet, task, &kind0_ix);
+        kind0_expected.network = "mainnet".into();
+        assert!(validate(&kind0_tx, &kind0_expected)
+            .unwrap_err()
+            .to_string()
+            .contains("restricted to devnet"));
+
+        // Escrow < 5_000_000 on OnChainAction is rejected
+        let mut low_args = base_args;
+        low_args.escrow_lamports = 4_999_999;
+        let low_ix = create_task_instruction(wallet, low_args);
+        let low_tx = transaction(vec![low_ix.clone()], &wallet);
+        let low_expected = exact_request(Action::Create, wallet, task, &low_ix);
+        assert!(validate(&low_tx, &low_expected)
+            .unwrap_err()
+            .to_string()
+            .contains("minimum campaign escrow"));
     }
 }

@@ -113,7 +113,8 @@ fn init_global_state(
     global.rate_limit_window_seconds = crate::constants::RATE_LIMIT_WINDOW_SECONDS;
     global.max_tasks_per_rate_window = crate::constants::MAX_TASKS_PER_RATE_WINDOW;
     global.dispute_resolution_window_seconds = DEFAULT_DISPUTE_RESOLUTION_WINDOW_SECONDS;
-    global._reserved = [0u8; 4];
+    global.devnet_enabled = false;
+    global._reserved = [0u8; 3];
     global.bump = bump;
 }
 

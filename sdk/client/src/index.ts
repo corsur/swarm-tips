@@ -6,8 +6,10 @@ export { SwarmClientError } from "./errors.js";
 export type { SwarmClientErrorCode, SwarmClientErrorOptions } from "./errors.js";
 
 export {
+  DEFAULT_MAX_NETWORK_FEE_WEI,
   SwarmAgent,
   createSwarmAgent,
+  extractCreateEscrowLamports,
   type ExecuteTaskOptions,
   type ExecutedTaskResult,
   type NextTaskAction,
@@ -32,6 +34,7 @@ export {
   type EvmCallRequest,
   type EvmPrivateKeyOptions,
   type EvmSwarmSigner,
+  type EvmTransactionSigner,
   type EvmWalletClientLike,
   type SolanaSwarmSigner,
   type SolanaWalletAdapterLike,
@@ -39,21 +42,47 @@ export {
 } from "./signer/index.js";
 
 export {
+  MAX_COMPUTE_UNIT_LIMIT,
+  MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
   SHILLBOT_ESCROW_DEPLOYMENTS,
   SHILLBOT_EVM_SELECTORS,
+  SHILLBOT_INSTRUCTION_SPECS,
   buildOnChainActionProofRef,
   estimateSolanaNetworkFeeLamports,
   formatOnChainActionAttributionMessage,
+  normalizeEvmChainId,
+  validateComputeBudgetInstruction,
+  validateComputeBudgetInstructions,
   validatePreparedEvmCall,
   validatePreparedTransaction,
+  verifyBuiltTransaction,
+  type AuthoritySlotRule,
   type BuildOnChainActionProofRefParams,
   type BuildVerifyOptions,
   type PreparedEvmCallExpectation,
   type PreparedTransactionExpectation,
   type PreparedTransactionResponse,
+  type ShillbotInstructionName,
+  type ShillbotInstructionSpec,
   type ValidatedEvmCall,
   type VerificationDataResponse,
+  type VerifyBuiltTransactionExpectation,
 } from "./shillbot/api.js";
+
+export {
+  VALID_TOPICS,
+  isValidTopicId,
+  type TopicId,
+} from "./inbox/types.js";
+
+export {
+  DEFAULT_MAX_VOW_BYTES,
+  fetchVowAttestationJson,
+  validateVowUrl,
+  verifyVow,
+  type FetchVowOptions,
+  type VerifyVowOptions,
+} from "./vow/verify.js";
 
 export {
   OPENAPI_SERVERS,

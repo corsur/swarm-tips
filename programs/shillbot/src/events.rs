@@ -160,3 +160,8 @@ pub struct TaskReopened {
     pub prev_agent: Pubkey,
     pub verification_hash: [u8; 32],
 }
+
+#[event]
+pub struct DevnetEnabledUpdated {
+    pub devnet_enabled: bool,
+}

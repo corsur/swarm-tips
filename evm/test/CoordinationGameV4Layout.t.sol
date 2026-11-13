@@ -120,4 +120,15 @@ contract CoordinationGameV4LayoutTest is Test {
         (CoordinationGameV4.Status status,,,,,,,,,,,,,,,,) = game.games(gameId);
         assertEq(uint8(status), 6, "games must start at slot 52, immediately after the 45-slot gap");
     }
+
+    function test_appendedGameSeasonIdAndGapPreserveExistingSlots() public {
+        address sessionKey = address(0x5E55);
+        address wallet = address(0xBEEF);
+        vm.store(address(game), keccak256(abi.encode(sessionKey, uint256(57))), bytes32(uint256(uint160(wallet))));
+        assertEq(game.sessionOwner(sessionKey), wallet, "sessionOwner must remain at slot 57");
+
+        bytes32 gameId = keccak256("season-slot-probe");
+        vm.store(address(game), keccak256(abi.encode(gameId, uint256(58))), bytes32(uint256(77)));
+        assertEq(game.gameSeasonId(gameId), 77, "gameSeasonId must be appended at slot 58");
+    }
 }

@@ -243,6 +243,7 @@ impl GameApiProxy {
 
     /// Notify that a player committed on-chain; once both have, the response
     /// carries `r_matchup`.
+    #[allow(dead_code)]
     pub async fn evmgame_committed(
         &self,
         game_id: &str,
@@ -250,6 +251,20 @@ impl GameApiProxy {
     ) -> Result<serde_json::Value, McpServiceError> {
         self.client
             .evmgame_committed(game_id, wallet)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Authenticated variant of `evmgame_committed` carrying a wallet-scoped
+    /// internal service token for `game-api`.
+    pub async fn evmgame_committed_as(
+        &self,
+        game_id: &str,
+        wallet: &crate::session_binding::VerifiedWallet,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        let bearer = self.internal_bearer(wallet);
+        self.client
+            .evmgame_committed_as(game_id, wallet.as_str(), bearer.as_deref())
             .await
             .map_err(map_game_api_error)
     }

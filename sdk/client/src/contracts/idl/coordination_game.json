@@ -993,6 +993,31 @@
           }
         },
         {
+          "name": "global_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "authority",
           "writable": true,
           "signer": true
@@ -1216,10 +1241,37 @@
           "name": "tournament"
         },
         {
+          "name": "global_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "player",
           "docs": [
-            "Verified against session_authority.player in the handler."
-          ]
+            "Verified against session_authority.player in the handler. Mutable so any",
+            "downward stake re-peg excess refunds strictly to the player wallet."
+          ],
+          "writable": true
         },
         {
           "name": "session_authority",
@@ -2155,6 +2207,89 @@
                 ]
               },
               2
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "prove_local_equivocation",
+      "discriminator": [
+        57,
+        20,
+        235,
+        37,
+        36,
+        185,
+        45,
+        214
+      ],
+      "accounts": [
+        {
+          "name": "xmatch",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  120,
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "match_id"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "match_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "cp_a",
+          "type": {
+            "defined": {
+              "name": "CheckpointArg"
+            }
+          }
+        },
+        {
+          "name": "cp_b",
+          "type": {
+            "defined": {
+              "name": "CheckpointArg"
+            }
+          }
+        },
+        {
+          "name": "sig_a",
+          "type": {
+            "array": [
+              "u8",
+              65
+            ]
+          }
+        },
+        {
+          "name": "sig_b",
+          "type": {
+            "array": [
+              "u8",
+              65
             ]
           }
         }
@@ -4180,6 +4315,19 @@
       ]
     },
     {
+      "name": "XLocalEquivocationProven",
+      "discriminator": [
+        140,
+        113,
+        104,
+        158,
+        24,
+        7,
+        144,
+        217
+      ]
+    },
+    {
       "name": "XMatchCreated",
       "discriminator": [
         138,
@@ -5905,6 +6053,36 @@
               "array": [
                 "u8",
                 32
+              ]
+            }
+          },
+          {
+            "name": "new_best_outcome",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "XLocalEquivocationProven",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "match_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "session_key",
+            "type": {
+              "array": [
+                "u8",
+                20
               ]
             }
           },

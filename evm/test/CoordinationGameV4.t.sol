@@ -15,17 +15,40 @@ contract V5Probe is CoordinationGameV4 {
 
 contract CoordinationGameV4Test is Test {
     CoordinationGameV4 internal game;
+    uint256 internal constant OPERATOR_PK = 0x09E7A;
     address internal owner = address(0xA11CE);
-    address internal operator = address(0x09E7A);
+    address internal operator;
     address internal treasury = address(0xCAFE);
     address internal mallory = address(0xBAD);
+    address internal alice = address(0xA1);
+    address internal bob = address(0xB0B);
+    uint128 internal constant STAKE = 0.0027 ether;
 
     function setUp() public {
+        operator = vm.addr(OPERATOR_PK);
         CoordinationGameV4 impl = new CoordinationGameV4();
         bytes memory init = abi.encodeCall(
-            CoordinationGameV4.initialize, (owner, operator, treasury, 5000, 0.0027 ether, 3600, 7200, 1, 365 days)
+            CoordinationGameV4.initialize, (owner, operator, treasury, 5000, STAKE, 3600, 7200, 1, 365 days)
         );
         game = CoordinationGameV4(payable(address(new ERC1967Proxy(address(impl), init))));
+        vm.deal(alice, 10 ether);
+        vm.deal(bob, 10 ether);
+    }
+
+    function _createSig(bytes32 gameId, address creator, bytes32 matchupCommitment)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 digest = keccak256(abi.encode(block.chainid, address(game), gameId, creator, matchupCommitment));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OPERATOR_PK, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _joinSig(bytes32 gameId, address joiner) internal view returns (bytes memory) {
+        bytes32 digest = keccak256(abi.encode(block.chainid, address(game), gameId, joiner));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OPERATOR_PK, digest);
+        return abi.encodePacked(r, s, v);
     }
 
     // ----- proxy wiring ----------------------------------------------------
@@ -156,5 +179,85 @@ contract CoordinationGameV4Test is Test {
         vm.prank(mallory);
         vm.expectRevert(SeasonPot.NothingToClaim.selector);
         game.claimPrize(1, 0, proof);
+    }
+
+    // ----- MED-13: gameSeasonId snapshot across season rollover -------------
+
+    function test_midGameSeasonRollover_creditsSnapshottedCreationSeason() public {
+        bytes32 gameId = keccak256("season-rollover-reveal");
+        bytes32 rMatchup = bytes32(uint256(2)); // LSB = 0 (homogeneous)
+        bytes32 matchupCommit = sha256(abi.encodePacked(rMatchup));
+
+        // Created in Season 1.
+        vm.prank(alice);
+        game.createGame{value: STAKE}(gameId, matchupCommit, _createSig(gameId, alice, matchupCommit), alice);
+        assertEq(game.gameSeasonId(gameId), 1, "gameSeasonId snapshotted to season 1 at createGame");
+
+        vm.prank(bob);
+        game.joinGame{value: STAKE}(gameId, bob, _joinSig(gameId, bob));
+
+        // Owner rolls over to Season 2 while the game is still in flight.
+        vm.prank(owner);
+        game.startSeason(2, 365 days);
+        assertEq(game.currentSeasonId(), 2, "live currentSeasonId moved to season 2");
+
+        // HOMOG_P1_CORRECT: alice guesses 0 (correct), bob guesses 1 (wrong).
+        bytes32 rAlice = bytes32(uint256(4)); // LSB = 0
+        bytes32 rBob = bytes32(uint256(5)); // LSB = 1
+        bytes32 cAlice = sha256(abi.encodePacked(rAlice));
+        bytes32 cBob = sha256(abi.encodePacked(rBob));
+        vm.prank(alice);
+        game.commitGuess(gameId, cAlice);
+        vm.prank(bob);
+        game.commitGuess(gameId, cBob);
+
+        vm.prank(alice);
+        game.revealGuess(gameId, rAlice, rMatchup);
+        vm.prank(bob);
+        game.revealGuess(gameId, rBob, bytes32(0));
+
+        // Gain = 2 * STAKE - STAKE/2 = 1.5 * STAKE; 50% split -> 0.75 * STAKE to prize pot.
+        uint256 gain = uint256(STAKE) * 2 - uint256(STAKE) / 2;
+        uint256 expectedPrize = gain - (gain * 5000 / 10_000);
+
+        (,,,, uint256 s1Accrued,,) = game.seasons(1);
+        (,,,, uint256 s2Accrued,,) = game.seasons(2);
+        assertEq(s1Accrued, expectedPrize, "forfeit accrued to snapshotted season 1");
+        assertEq(s2Accrued, 0, "season 2 untouched by season-1 game");
+
+        (uint64 s1AliceWins, uint64 s1AliceGames,) = game.records(1, alice);
+        (uint64 s1BobWins, uint64 s1BobGames,) = game.records(1, bob);
+        (uint64 s2AliceWins, uint64 s2AliceGames,) = game.records(2, alice);
+        assertEq(s1AliceWins, 1, "alice win recorded in season 1");
+        assertEq(s1AliceGames, 1, "alice game recorded in season 1");
+        assertEq(s1BobWins, 0, "bob loss recorded in season 1");
+        assertEq(s1BobGames, 1, "bob game recorded in season 1");
+        assertEq(s2AliceWins, 0, "season 2 wins untouched");
+        assertEq(s2AliceGames, 0, "season 2 games untouched");
+    }
+
+    function test_midGameSeasonRollover_timeoutResolutionCreditsSnapshottedSeason() public {
+        bytes32 gameId = keccak256("season-rollover-timeout");
+        bytes32 matchupCommit = sha256(abi.encodePacked(bytes32(uint256(2))));
+
+        vm.prank(alice);
+        game.createGame{value: STAKE}(gameId, matchupCommit, _createSig(gameId, alice, matchupCommit), alice);
+        vm.prank(bob);
+        game.joinGame{value: STAKE}(gameId, bob, _joinSig(gameId, bob));
+
+        // Rollover to Season 2 before timeout fires.
+        vm.prank(owner);
+        game.startSeason(2, 365 days);
+
+        // Neither player commits -> TIMEOUT_BOTH_FORFEIT (gain = 2 * STAKE).
+        vm.warp(block.timestamp + 3600);
+        game.resolveTimeout(gameId);
+
+        uint256 gain = uint256(STAKE) * 2;
+        uint256 expectedPrize = gain - (gain * 5000 / 10_000);
+        (,,,, uint256 s1Accrued,,) = game.seasons(1);
+        (,,,, uint256 s2Accrued,,) = game.seasons(2);
+        assertEq(s1Accrued, expectedPrize, "timeout forfeit credited to season 1");
+        assertEq(s2Accrued, 0, "season 2 untouched");
     }
 }

@@ -999,6 +999,31 @@ export type CoordinationGame = {
           }
         },
         {
+          "name": "globalConfig",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "authority",
           "writable": true,
           "signer": true
@@ -1222,10 +1247,37 @@ export type CoordinationGame = {
           "name": "tournament"
         },
         {
+          "name": "globalConfig",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  108,
+                  111,
+                  98,
+                  97,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "player",
           "docs": [
-            "Verified against session_authority.player in the handler."
-          ]
+            "Verified against session_authority.player in the handler. Mutable so any",
+            "downward stake re-peg excess refunds strictly to the player wallet."
+          ],
+          "writable": true
         },
         {
           "name": "sessionAuthority",
@@ -2161,6 +2213,89 @@ export type CoordinationGame = {
                 ]
               },
               2
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "proveLocalEquivocation",
+      "discriminator": [
+        57,
+        20,
+        235,
+        37,
+        36,
+        185,
+        45,
+        214
+      ],
+      "accounts": [
+        {
+          "name": "xmatch",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  120,
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "matchId"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "matchId",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "cpA",
+          "type": {
+            "defined": {
+              "name": "checkpointArg"
+            }
+          }
+        },
+        {
+          "name": "cpB",
+          "type": {
+            "defined": {
+              "name": "checkpointArg"
+            }
+          }
+        },
+        {
+          "name": "sigA",
+          "type": {
+            "array": [
+              "u8",
+              65
+            ]
+          }
+        },
+        {
+          "name": "sigB",
+          "type": {
+            "array": [
+              "u8",
+              65
             ]
           }
         }
@@ -4186,6 +4321,19 @@ export type CoordinationGame = {
       ]
     },
     {
+      "name": "xLocalEquivocationProven",
+      "discriminator": [
+        140,
+        113,
+        104,
+        158,
+        24,
+        7,
+        144,
+        217
+      ]
+    },
+    {
       "name": "xMatchCreated",
       "discriminator": [
         138,
@@ -5911,6 +6059,36 @@ export type CoordinationGame = {
               "array": [
                 "u8",
                 32
+              ]
+            }
+          },
+          {
+            "name": "newBestOutcome",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "xLocalEquivocationProven",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "matchId",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "sessionKey",
+            "type": {
+              "array": [
+                "u8",
+                20
               ]
             }
           },

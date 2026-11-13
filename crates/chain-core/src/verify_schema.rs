@@ -84,6 +84,13 @@ pub const LEAN_POLICY_V4_ID: [u8; 32] = [
     0xdb, 0xbc, 0xa1, 0x2d, 0x52, 0x0c, 0x63, 0xc2, 0x5b, 0x09, 0xb9, 0x05, 0x69, 0xf2, 0x05, 0x33,
 ];
 
+/// keccak256 of the exact bytes of `policies/onchain-action-policy-v1.json` —
+/// the v1 deterministic RPC-quorum `PlatformType::OnChainAction (11)` VOW policy.
+pub const ONCHAIN_ACTION_POLICY_V1_ID: [u8; 32] = [
+    0x68, 0xeb, 0xd4, 0xb1, 0x8b, 0x74, 0x00, 0xc6, 0x7b, 0xca, 0x5d, 0x46, 0xdb, 0x6d, 0x16, 0x84,
+    0x70, 0x70, 0xc4, 0xd8, 0x83, 0x51, 0x7a, 0x1f, 0xde, 0xb5, 0xc3, 0x99, 0xcc, 0xef, 0x3d, 0x9f,
+];
+
 /// How a task's verification is adjudicated. The numeric values are part
 /// of the cross-chain wire format AND the on-chain `Task.verification_kind`
 /// byte — append-only, never reorder.
@@ -310,6 +317,18 @@ mod tests {
             keccak256(manifest),
             LEAN_POLICY_V4_ID,
             "v4 policy manifest bytes changed — published policy bytes are immutable"
+        );
+    }
+
+    #[cfg(feature = "keccak")]
+    #[test]
+    fn onchain_action_policy_v1_id_pins_the_manifest_bytes() {
+        use crate::cert_schema::keccak256;
+        let manifest = include_bytes!("../../../policies/onchain-action-policy-v1.json");
+        assert_eq!(
+            keccak256(manifest),
+            ONCHAIN_ACTION_POLICY_V1_ID,
+            "onchain-action v1 policy manifest bytes changed — published policy bytes are immutable"
         );
     }
 

@@ -121,7 +121,7 @@ fn process_emergency_task(
     };
 
     require!(
-        task.state == TaskState::Open || task.state == TaskState::Claimed,
+        is_emergency_returnable_state(task.state),
         ShillbotError::InvalidTaskState
     );
     require!(
@@ -130,7 +130,7 @@ fn process_emergency_task(
     );
 
     let task_id = task.task_id;
-    let claimed_agent = if task.state == TaskState::Claimed {
+    let claimed_agent = if task.state == TaskState::Claimed && task.agent != Pubkey::default() {
         Some(task.agent)
     } else {
         None
@@ -154,14 +154,16 @@ fn process_emergency_task(
 }
 
 /// Decrements `AgentState.claimed_count` when a `Claimed` task is emergency-returned
-/// and the corresponding `AgentState` account is present in `remaining_accounts`.
+/// and the corresponding writable canonical `AgentState` PDA is present in `remaining_accounts`.
 fn decrement_agent_claimed_count(
     remaining_accounts: &[AccountInfo],
     program_id: &Pubkey,
     expected_agent: &Pubkey,
 ) -> Result<()> {
+    let (expected_pda, _) =
+        Pubkey::find_program_address(&[b"agent_state", expected_agent.as_ref()], program_id);
     for acc in remaining_accounts {
-        if acc.owner != program_id {
+        if acc.owner != program_id || !acc.is_writable || acc.key() != expected_pda {
             continue;
         }
         let mut data = acc.try_borrow_mut_data()?;
@@ -186,6 +188,13 @@ fn decrement_agent_claimed_count(
     Ok(())
 }
 
+/// Pre-submission states eligible for `emergency_return` (`Open` and `Claimed` only;
+/// post-submission states use `expire_task` / `resolve_challenge` so authority cannot
+/// confiscate escrow after an agent has submitted work).
+pub(crate) fn is_emergency_returnable_state(state: TaskState) -> bool {
+    matches!(state, TaskState::Open | TaskState::Claimed)
+}
+
 #[derive(Accounts)]
 pub struct EmergencyReturnAccounts<'info> {
     #[account(
@@ -194,4 +203,25 @@ pub struct EmergencyReturnAccounts<'info> {
     )]
     pub global_state: Account<'info, GlobalState>,
     pub authority: Signer<'info>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emergency_return_admits_only_open_and_claimed_states() {
+        assert!(is_emergency_returnable_state(TaskState::Open));
+        assert!(is_emergency_returnable_state(TaskState::Claimed));
+        for post_submission in [
+            TaskState::Submitted,
+            TaskState::Approved,
+            TaskState::Verified,
+            TaskState::Disputed,
+            TaskState::Finalized,
+            TaskState::Resolved,
+        ] {
+            assert!(!is_emergency_returnable_state(post_submission));
+        }
+    }
 }

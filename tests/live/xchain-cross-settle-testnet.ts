@@ -90,13 +90,11 @@ function signerFromHex(hex: string): SessionSigner {
   const acct = privateKeyToAccount(`0x${clean}`);
   return { privateKey: toBytes(`0x${clean}`), address: toBytes(acct.address) };
 }
-/** EVM/OZ ECDSA wants v=27/28; the helper emits v=recid (0/1). */
+/** Both EVM OZ ECDSA and Solana cert.rs accept canonical v=27/28 directly. */
 function signEvm(s: SessionSigner, d: Uint8Array): `0x${string}` {
   const out = Uint8Array.from(signDigest(s, d));
-  out[64] += 27;
   return bytesToHex(out);
 }
-/** Solana secp256k1_recover wants the raw recid (0/1) — helper's native form. */
 function signSol(s: SessionSigner, d: Uint8Array): number[] {
   return Array.from(signDigest(s, d));
 }

@@ -1,8 +1,8 @@
 {
-  "src/contracts/idl/coordination_game.json": "41763c2c83029f0432e4eaf44a7df11087790db8a4dbf0e96ff2c299fd3593d8",
-  "src/contracts/idl/shillbot.json": "9fa842937a41b87953a3cbac9a7b40b46588016154f339e5ff33f8e717481384",
-  "src/contracts/generated/coordination_game.ts": "6d449a3d55041411ff1c4a0ebb79067f012e2cc82cc348b2adca5f49ece75c93",
-  "src/contracts/generated/shillbot.ts": "3cab483b7912d1c1f1bd20c73dfc06524bf47aebd375ae840107e4d0a1507059",
+  "src/contracts/idl/coordination_game.json": "b13ae93c9a6737340b791d2190427e1ba46b1fff97a12dc5ab1895815d92b7ae",
+  "src/contracts/idl/shillbot.json": "a1ec41e24242f73941f2f4934a308fdc69034e54fc7a86c2fbdaa1bcee2c4de5",
+  "src/contracts/generated/coordination_game.ts": "bb0d86b4dd3f3c536e0438268f82311c79902f8aa74767e7186400caf3515901",
+  "src/contracts/generated/shillbot.ts": "3b51ee2ded5bbdbde5a41768f551ec44b3cf3f00b33942438cbc870ab8bba719",
   "src/version.ts": "75c202be042dae371bfd79176620f806ef69003857ed87027119e6a34b3761f0",
-  "src/generated/openapi.ts": "9fe1e0aeca9ef66e7de96e75aa202351af865fb9c7d9a3ce0e3b672050a9fb05"
+  "src/generated/openapi.ts": "445d04b0e4d97b8e7cfb47976b05164517dc76658d894d7d1f0f8201d34d2022"
 }

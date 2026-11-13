@@ -3,8 +3,8 @@ pragma solidity ^0.8.24;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {CertLib} from "./CertLib.sol";
+import {VerifyLib} from "./VerifyLib.sol";
 import {PullPayment} from "./base/PullPayment.sol";
 import {AttesterGated} from "./base/AttesterGated.sol";
 import {ChainTaggedUpgradeable} from "./base/ChainTaggedUpgradeable.sol";
@@ -144,6 +144,7 @@ contract CrossChainGame is
     event ClaimOpened(bytes32 indexed matchId, uint8 claimedOutcome, uint64 claimWindowEnd);
     event ClaimSuperseded(bytes32 indexed matchId, uint8 stepCount, uint8 claimedOutcome);
     event EquivocationProven(bytes32 indexed matchId, address equivocator, uint8 newBestOutcome);
+    event LocalEquivocationProven(bytes32 indexed matchId, address indexed equivocator, uint8 newBestOutcome);
     event ClaimSettled(bytes32 indexed matchId, uint8 outcomeKind, uint256 toPlayer);
     event Refunded(bytes32 indexed matchId, Status kind, uint256 toPlayer);
     event PoolDeposited(address indexed from, uint256 amount);
@@ -392,7 +393,9 @@ contract CrossChainGame is
         bytes[3] calldata ocSigs
     ) external nonReentrant {
         Match storage m = matches[cert.matchId];
-        if (m.status != Status.Locked) revert InvalidStatus();
+        bool canSettleFromClaiming = m.status == Status.Claiming && !localEquivocated[cert.matchId]
+            && !m.localEquivocated && !m.counterEquivocated;
+        if (m.status != Status.Locked && !canSettleFromClaiming) revert InvalidStatus();
 
         bytes32 liveDigest = _verifyMatchLive(m, cert, liveSigs);
         if (liveDigest != m.matchLiveDigest) revert CertMismatch();
@@ -429,7 +432,7 @@ contract CrossChainGame is
         bytes[2] calldata cpSigs
     ) external {
         Match storage m = matches[cert.matchId];
-        if (m.status != Status.Locked) revert InvalidStatus();
+        if (m.status != Status.Locked || localEquivocated[cert.matchId] || m.localEquivocated) revert InvalidStatus();
         // Use the window snapshotted at lock (M2) — never the live config.
         uint64 windowEnd = m.claimWindowEnd;
         // Claims may only be filed inside the window; after it closes the
@@ -461,9 +464,25 @@ contract CrossChainGame is
         return matchDeadline + claimWindowSecs;
     }
 
+    /// @dev Bound challenge/supersede response-window extension to at most ONE
+    ///      extension per match (`claimExtended[matchId]`), so repeated challenges
+    ///      cannot push `claimWindowEnd` out indefinitely. Also preserves the
+    ///      `timeoutOpensAt >= claimWindowEnd + 2 * skewMarginSecs` invariant.
+    function _maybeExtendClaimWindow(bytes32 matchId, Match storage m, uint32 claimWindowSecs) private {
+        uint64 extendedEnd = uint64(block.timestamp) + claimWindowSecs;
+        if (!claimExtended[matchId] && extendedEnd > m.claimWindowEnd) {
+            claimExtended[matchId] = true;
+            m.claimWindowEnd = extendedEnd;
+            uint64 minTimeoutOpensAt = extendedEnd + 2 * uint64(skewMarginSecs);
+            if (minTimeoutOpensAt > m.timeoutOpensAt) {
+                m.timeoutOpensAt = minTimeoutOpensAt;
+            }
+        }
+    }
+
     /// @notice Replace the best claim with a strictly more complete
-    ///         checkpoint (reveals supersede commits). Does not extend the
-    ///         window.
+    ///         checkpoint (reveals supersede commits). Grants at most a single
+    ///         bounded response-window extension per match (`claimExtended`).
     function supersedeClaim(
         CertLib.MatchLiveCert calldata cert,
         CertLib.Checkpoint calldata cp,
@@ -474,12 +493,16 @@ contract CrossChainGame is
         if (block.timestamp > m.claimWindowEnd) revert DeadlinePassed();
         if (cert.matchLiveDigest() != m.matchLiveDigest) revert CertMismatch();
         if (cp.matchLiveDigest != m.matchLiveDigest) revert CertMismatch();
-        // An equivocation verdict (bestStepCount == max) is final and
-        // cannot be superseded by a completeness claim.
-        if (m.bestStepCount == type(uint8).max) revert BadOutcome();
+        // An equivocation verdict (bestStepCount == max or localEquivocated) is
+        // final and cannot be superseded by a completeness claim.
+        if (localEquivocated[cert.matchId] || m.localEquivocated || m.bestStepCount == type(uint8).max) {
+            revert BadOutcome();
+        }
         if (cp.stepCount <= m.bestStepCount) revert BadOutcome();
         _verifyCheckpoint(cert, cp, cpSigs);
         _verifyMatchupBinding(cp, cert.matchupCommitment);
+
+        _maybeExtendClaimWindow(cert.matchId, m, cert.claimWindowSecs);
 
         m.bestStepCount = cp.stepCount;
         m.bestOutcomeKind = CertLib.deriveClaimOutcome(cp);
@@ -487,17 +510,12 @@ contract CrossChainGame is
     }
 
     /// @notice Two distinct co-signed checkpoints at the same stepCount
-    ///         from the same session key = equivocation. Which party
+    ///         from the counterparty session key = counter-equivocation. Which party
     ///         equivocated is recorded as an explicit flag, so the verdict
     ///         is order-independent and never inferred from the current
     ///         claim outcome: local-only → local forfeits; counter-only →
-    ///         local wins; both → both forfeit. The window is anchored to
-    ///         matchDeadline exactly like openClaim, so the cross-leg and
-    ///         refund-backstop guarantees hold identically.
-    ///         Known limitation (testnet): a counter-equivocation submitted
-    ///         in the final block of the window has little time for the
-    ///         honest party to respond; a response-window extension is the
-    ///         deferred claim-window-tuning item in decision.md §7.
+    ///         local wins; both → both forfeit. Grants at most one bounded
+    ///         response-window extension per match (`claimExtended`).
     function submitEquivocationProof(
         CertLib.MatchLiveCert calldata cert,
         CertLib.Checkpoint calldata cpA,
@@ -528,18 +546,62 @@ contract CrossChainGame is
         bytes32 digestB = cpB.checkpointDigest();
         if (digestA == digestB) revert BadOutcome();
 
-        address signerA = ECDSA.recover(digestA, sigA);
-        address signerB = ECDSA.recover(digestB, sigB);
+        address signerA = VerifyLib.recoverSigner(digestA, sigA);
+        address signerB = VerifyLib.recoverSigner(digestB, sigB);
         if (signerA != signerB || signerA != m.counterSessionKey) revert BadSignature();
+
+        _maybeExtendClaimWindow(cert.matchId, m, cert.claimWindowSecs);
 
         m.counterEquivocated = true;
         m.status = Status.Claiming;
         // claimWindowEnd and matchLiveDigest already snapshotted at lock (M2 / NEW-CRIT-01).
         // Verdict from flags only — order-independent, never read from the
         // current claim outcome.
-        m.bestOutcomeKind = _equivocationOutcome(m.playerIsP1, m.localEquivocated, m.counterEquivocated);
+        bool localEq = m.localEquivocated || localEquivocated[cert.matchId];
+        m.bestOutcomeKind = _equivocationOutcome(m.playerIsP1, localEq, m.counterEquivocated);
         m.bestStepCount = type(uint8).max; // equivocation verdict is final
         emit EquivocationProven(cert.matchId, signerA, m.bestOutcomeKind);
+    }
+
+    /// @notice Prove that the LOCAL player's session key (`m.sessionKey`) signed
+    ///         two distinct checkpoints at the same `(matchId, stepCount)`.
+    ///         Records `localEquivocated[matchId] = true`, sets an un-supersedable
+    ///         forfeiture verdict, allows immediate settlement via {settleClaim}
+    ///         without waiting out `claimWindowEnd`, and blocks the equivocating
+    ///         local player from {openClaim}, {supersedeClaim}, {settle}, and
+    ///         {refundTimeout}.
+    function proveLocalEquivocation(
+        bytes32 matchId,
+        CertLib.Checkpoint calldata cpA,
+        CertLib.Checkpoint calldata cpB,
+        bytes calldata sigA,
+        bytes calldata sigB
+    ) external {
+        Match storage m = matches[matchId];
+        if (m.status != Status.Locked && m.status != Status.Claiming) revert InvalidStatus();
+
+        bytes32 liveDigest = m.matchLiveDigest;
+        if (liveDigest == bytes32(0)) revert CertMismatch();
+        if (cpA.matchLiveDigest != liveDigest || cpB.matchLiveDigest != liveDigest) {
+            revert CertMismatch();
+        }
+
+        if (cpA.stepCount != cpB.stepCount) revert BadOutcome();
+        bytes32 digestA = cpA.checkpointDigest();
+        bytes32 digestB = cpB.checkpointDigest();
+        if (digestA == digestB) revert BadOutcome();
+
+        address signerA = VerifyLib.recoverSigner(digestA, sigA);
+        address signerB = VerifyLib.recoverSigner(digestB, sigB);
+        if (signerA != signerB || signerA != m.sessionKey) revert BadSignature();
+
+        localEquivocated[matchId] = true;
+        m.localEquivocated = true;
+        m.status = Status.Claiming;
+        m.bestOutcomeKind = _equivocationOutcome(m.playerIsP1, true, m.counterEquivocated);
+        m.bestStepCount = type(uint8).max;
+        emit LocalEquivocationProven(matchId, signerA, m.bestOutcomeKind);
+        emit EquivocationProven(matchId, signerA, m.bestOutcomeKind);
     }
 
     /// @dev Deterministic equivocation verdict. local-only → local forfeits
@@ -551,11 +613,14 @@ contract CrossChainGame is
         return localIsP1 ? CertLib.TIMEOUT_P1_WINS : CertLib.TIMEOUT_P2_WINS;
     }
 
-    /// @notice Execute the best claim after the window closes.
+    /// @notice Execute the best claim after the window closes, or IMMEDIATELY
+    ///         when the local player has been proven to equivocate.
     function settleClaim(bytes32 matchId) external nonReentrant {
         Match storage m = matches[matchId];
         if (m.status != Status.Claiming) revert InvalidStatus();
-        if (block.timestamp <= m.claimWindowEnd) revert DeadlineNotReached();
+        if (!localEquivocated[matchId] && !m.localEquivocated && block.timestamp <= m.claimWindowEnd) {
+            revert DeadlineNotReached();
+        }
 
         m.status = Status.ClaimSettled;
         (uint256 toPlayer,) = _execute(m, m.bestOutcomeKind);
@@ -583,14 +648,14 @@ contract CrossChainGame is
     ///         lock as m.timeoutOpensAt). Two cases:
     ///         - Locked, no claim ever filed: player made whole, tranche back to
     ///           the pool — any unfiled forfeit is eaten by the operator by design.
-    ///         - Claiming: a co-signed claim already proved the outcome, so this
-    ///           realizes THAT outcome exactly like settleClaim. It must NOT flat-
-    ///           refund the stake, which would strip a winning claimant of the
-    ///           tranche they proved and hand it to whoever races the call. Making
-    ///           both terminal functions settle identically removes the race.
+    ///         - Claiming (without local equivocation): a co-signed claim already
+    ///           proved the outcome, so this realizes THAT outcome exactly like
+    ///           settleClaim. An equivocating local player is blocked from
+    ///           refundTimeout ({settleClaim} executes the forfeiture instead).
     function refundTimeout(bytes32 matchId) external nonReentrant {
         Match storage m = matches[matchId];
         if (m.status != Status.Locked && m.status != Status.Claiming) revert InvalidStatus();
+        if (localEquivocated[matchId] || m.localEquivocated) revert InvalidStatus();
         if (block.timestamp <= m.timeoutOpensAt) revert DeadlineNotReached();
 
         if (m.status == Status.Claiming) {
@@ -728,7 +793,7 @@ contract CrossChainGame is
     }
 
     function _requireSigner(bytes32 digest, bytes calldata sig, address expected) private pure {
-        if (ECDSA.recover(digest, sig) != expected) revert BadSignature();
+        if (VerifyLib.recoverSigner(digest, sig) != expected) revert BadSignature();
     }
 
     /// @dev Operator-signature gate — the AttesterGated base holds the key.
@@ -853,4 +918,13 @@ contract CrossChainGame is
     }
 
     // Pull-payment credit + withdraw() live in the shared PullPayment base.
+
+    /// @notice Appended per-match local equivocation flag (preserves Match struct & slots 0..12).
+    mapping(bytes32 => bool) public localEquivocated;
+
+    /// @notice Appended per-match single-extension guard for challenge/supersede response windows.
+    mapping(bytes32 => bool) public claimExtended;
+
+    /// @dev Reserved storage gap for future UUPS upgrades.
+    uint256[48] private __gap;
 }

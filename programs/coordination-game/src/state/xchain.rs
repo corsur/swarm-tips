@@ -77,7 +77,7 @@ impl XChainMatch {
         + 32 // match_id
         + 8  // tournament_id
         + 32 // player
-        + 1  // player_is_p1
+        + 1  // player_is_p1 (bit 0 = is_p1, bit 1 = claim_extended)
         + 20 // session_key
         + 20 // counter_session_key
         + 8  // stake_lamports
@@ -94,6 +94,21 @@ impl XChainMatch {
         + 1  // counter_equivocated
         + 1  // status (enum tag)
         + 1; // bump
+
+    pub const PLAYER_IS_P1_MASK: u8 = 0x01;
+    pub const CLAIM_EXTENDED_FLAG: u8 = 0x02;
+
+    pub fn is_p1(&self) -> bool {
+        (self.player_is_p1 & Self::PLAYER_IS_P1_MASK) != 0
+    }
+
+    pub fn claim_extended(&self) -> bool {
+        (self.player_is_p1 & Self::CLAIM_EXTENDED_FLAG) != 0
+    }
+
+    pub fn set_claim_extended(&mut self) {
+        self.player_is_p1 |= Self::CLAIM_EXTENDED_FLAG;
+    }
 }
 
 /// Singleton operator float pool — the on-chain collateral that pays
@@ -136,5 +151,44 @@ mod tests {
         assert_ne!(XChainStatus::Funded, XChainStatus::Locked);
         assert_ne!(XChainStatus::Settled, XChainStatus::ClaimSettled);
         assert_ne!(XChainStatus::RefundedNoCert, XChainStatus::RefundedTimeout);
+    }
+
+    #[test]
+    fn xmatch_space_is_211_and_claim_extended_preserves_p1_bit() {
+        assert_eq!(XChainMatch::SPACE, 211);
+        let mut m = XChainMatch {
+            match_id: [0; 32],
+            tournament_id: 1,
+            player: Pubkey::default(),
+            player_is_p1: 1,
+            session_key: [0; 20],
+            counter_session_key: [0; 20],
+            stake_lamports: 0,
+            tranche_lamports: 0,
+            fund_deadline: 0,
+            match_deadline: 0,
+            locked_at: 0,
+            claim_window_end: 0,
+            claim_window_secs: 0,
+            match_live_digest: [0; 32],
+            best_step_count: 0,
+            best_outcome_kind: 0,
+            local_equivocated: false,
+            counter_equivocated: false,
+            status: XChainStatus::Locked,
+            bump: 0,
+        };
+        assert!(m.is_p1());
+        assert!(!m.claim_extended());
+        m.set_claim_extended();
+        assert!(m.is_p1());
+        assert!(m.claim_extended());
+
+        m.player_is_p1 = 0;
+        assert!(!m.is_p1());
+        assert!(!m.claim_extended());
+        m.set_claim_extended();
+        assert!(!m.is_p1());
+        assert!(m.claim_extended());
     }
 }

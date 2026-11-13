@@ -22,6 +22,7 @@ import {
 import {
   ShillbotApiClient,
   estimateSolanaNetworkFeeLamports,
+  normalizeEvmChainId,
   signBroadcastPreparedTransaction,
   validatePreparedEvmCall,
   validatePreparedTransaction,
@@ -30,7 +31,11 @@ import {
   type PreparedTransactionResponse,
   type TaskListResponse,
 } from "./shillbot/api.js";
-import { inspectTransaction } from "./shillbot/index.js";
+import {
+  SHILLBOT_PROGRAM_ID,
+  inspectTransaction,
+  shillbotInstructionDiscriminator,
+} from "./shillbot/index.js";
 import type { EvmSwarmSigner, SolanaSwarmSigner, SwarmSigner } from "./signer/types.js";
 import {
   SwarmClient,
@@ -39,11 +44,13 @@ import {
   type EigenTrustRecord,
   type SearchHit,
 } from "./swarm/index.js";
-import { shillbotProtocol } from "./vow/decoders/shillbot.js";
 import type { Verdict } from "./vow/types.js";
-import { verifyV1 } from "./vow/verify.js";
+import { verifyVow } from "./vow/verify.js";
 
 export type SwarmNetwork = "mainnet" | "devnet";
+
+/** Default EVM gas price ceiling (`maxFeePerGas` = 50 gwei). */
+export const DEFAULT_MAX_NETWORK_FEE_WEI = 50_000_000_000n;
 
 export interface SwarmAgentOptions {
   signer?: SwarmSigner;
@@ -59,6 +66,8 @@ export interface SwarmAgentOptions {
   maxEscrowSpendWei?: bigint;
   /** Maximum Solana network fee (base + priority) allowed when wallet is fee payer; default `100_000n` = 0.0001 SOL (C9). */
   maxNetworkFeeLamports?: bigint;
+  /** Maximum EVM gas price ceiling (`maxFeePerGas`) in wei; default `50_000_000_000n` = 50 gwei (C9). */
+  maxNetworkFeeWei?: bigint;
   fetch?: typeof fetch;
 }
 
@@ -86,6 +95,8 @@ export interface ExecutedTaskResult<TConfirm = unknown> {
 export interface ExecuteTaskOptions {
   sponsor?: "auto" | "true" | "none";
   connection?: Connection;
+  /** Explicit authorized payout destination pubkey (base58) when `set_payout_to` is expected. */
+  payoutTo?: string;
   extra?: Record<string, unknown>;
 }
 
@@ -142,12 +153,21 @@ function extractBodyBigInt(
   return undefined;
 }
 
-function extractCreateEscrowLamports(encodedTx: string): bigint | undefined {
+const SHILLBOT_PROGRAM_ID_B58 = SHILLBOT_PROGRAM_ID.toBase58();
+const CREATE_TASK_DISCRIMINATOR = shillbotInstructionDiscriminator("create_task");
+
+/**
+ * Extract `escrow_lamports` (`u64` at bytes `[16..24]`) strictly from a Shillbot
+ * `create_task` instruction (`program_id === SHILLBOT_PROGRAM_ID` AND
+ * `data[0..8] === sha256("global:create_task")[0..8]`).
+ */
+export function extractCreateEscrowLamports(encodedTx: string): bigint | undefined {
   try {
     const inspected = inspectTransaction(encodedTx);
     for (const ix of inspected.instructions) {
+      if (ix.program_id !== SHILLBOT_PROGRAM_ID_B58) continue;
       const data = Buffer.from(ix.data_base64, "base64");
-      if (data.length >= 24) {
+      if (data.length >= 24 && data.subarray(0, 8).equals(CREATE_TASK_DISCRIMINATOR)) {
         const view = new DataView(data.buffer, data.byteOffset + 16, 8);
         return view.getBigUint64(0, true);
       }
@@ -170,6 +190,7 @@ export class SwarmAgent {
   readonly maxEscrowSpendLamports: bigint;
   readonly maxEscrowSpendWei: bigint;
   readonly maxNetworkFeeLamports: bigint;
+  readonly maxNetworkFeeWei: bigint;
 
   private readonly signer?: SwarmSigner;
   private readonly fetchImpl: FetchLike;
@@ -219,12 +240,17 @@ export class SwarmAgent {
     buildFinalize: (id: string) => Promise<PreparedTransactionResponse>;
     finalizeAndExecute: (
       id: string,
-      opts?: { connection?: Connection },
+      opts?: { connection?: Connection; payoutTo?: string },
     ) => Promise<ExecutedTaskResult>;
     nextAction: (task: Record<string, unknown>) => NextTaskAction;
     verifyVow: (
       urlOrJson: string | Record<string, unknown>,
-      opts?: { rpcUrl?: string; connection?: Connection },
+      opts?: {
+        rpcUrl?: string;
+        connection?: Connection;
+        maxBytes?: number;
+        allowLocalhostHttp?: boolean;
+      },
     ) => Promise<Verdict>;
   };
 
@@ -295,6 +321,7 @@ export class SwarmAgent {
     this.maxEscrowSpendLamports = options.maxEscrowSpendLamports ?? 0n;
     this.maxEscrowSpendWei = options.maxEscrowSpendWei ?? 0n;
     this.maxNetworkFeeLamports = options.maxNetworkFeeLamports ?? 100_000n;
+    this.maxNetworkFeeWei = options.maxNetworkFeeWei ?? DEFAULT_MAX_NETWORK_FEE_WEI;
     this.signer = options.signer;
 
     const rawFetch = options.fetch ?? globalThis.fetch;
@@ -409,47 +436,22 @@ export class SwarmAgent {
         const prepared = await self.tasks.buildFinalize(id);
         return self.executePreparedAction(id, "finalize", prepared, {
           connection: opts?.connection,
+          payoutTo: opts?.payoutTo,
         });
       },
       nextAction: (task) => SwarmAgent.adviseNextAction(task),
       async verifyVow(urlOrJson, opts) {
-        let attestation: unknown = urlOrJson;
-        if (typeof urlOrJson === "string") {
-          const trimmed = urlOrJson.trim();
-          if (/^https?:\/\//i.test(trimmed)) {
-            const resp = await self.fetchImpl(trimmed, { method: "GET" });
-            if (!resp.ok) {
-              throw new SwarmClientError({
-                code: "HTTP_ERROR",
-                operation: "tasks.verifyVow",
-                message: `Failed to fetch VOW attestation: HTTP ${resp.status}`,
-                status: resp.status,
-              });
-            }
-            attestation = await resp.json();
-          } else {
-            try {
-              attestation = JSON.parse(trimmed);
-            } catch (cause) {
-              throw new SwarmClientError({
-                code: "INVALID_ARGUMENT",
-                operation: "tasks.verifyVow",
-                message: "Expected VOW URL, JSON string, or object",
-                cause,
-              });
-            }
-          }
-        }
-        const net =
-          attestation &&
-          typeof attestation === "object" &&
-          (attestation as { network?: unknown }).network === "devnet"
-            ? "devnet"
-            : self.network;
-        const conn =
-          opts?.connection ??
-          new Connection(opts?.rpcUrl ?? DEFAULT_SOLANA_RPC[net], "confirmed");
-        return verifyV1(attestation, shillbotProtocol, conn);
+        const customAgentRpc =
+          self.rpcUrl !== DEFAULT_SOLANA_RPC[self.network] ? self.rpcUrl : undefined;
+        return verifyVow(urlOrJson, {
+          fetch: self.fetchImpl,
+          network: self.network,
+          rpcUrl: opts?.rpcUrl ?? customAgentRpc,
+          connection: opts?.connection,
+          maxBytes: opts?.maxBytes,
+          allowLocalhostHttp: opts?.allowLocalhostHttp,
+          operation: "tasks.verifyVow",
+        });
       },
     };
 
@@ -616,6 +618,7 @@ export class SwarmAgent {
         network: this.network,
         wallet: this.signer.address,
         taskPda: prepared.task_pda,
+        ...(opts?.payoutTo !== undefined ? { payoutTo: opts.payoutTo } : {}),
       });
       if (
         inspected.fee_payer !== this.signer.address &&
@@ -635,6 +638,7 @@ export class SwarmAgent {
 
     return this.executePreparedAction(id, action, prepared, {
       connection: opts?.connection,
+      payoutTo: opts?.payoutTo,
     });
   }
 
@@ -646,6 +650,7 @@ export class SwarmAgent {
       connection?: Connection;
       chain?: string;
       expectedEscrowLamports?: bigint;
+      payoutTo?: string;
     },
   ): Promise<ExecutedTaskResult> {
     const signer = this.requireSigner();
@@ -694,10 +699,27 @@ export class SwarmAgent {
       chain,
       maxValueWei: action === "create" ? this.maxEscrowSpendWei : 0n,
     });
+    if (signer.chainId !== undefined) {
+      const normalizedSignerChain = normalizeEvmChainId(signer.chainId);
+      if (normalizedSignerChain !== validated.chain) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: `tasks.${action}AndExecute`,
+          message: `EVM signer chain ${normalizedSignerChain} differs from validated call chain ${validated.chain}`,
+        });
+      }
+    }
+    const caipMatch = /^eip155:(\d+)$/.exec(validated.chain);
+    const numericChainId = caipMatch ? Number(caipMatch[1]) : undefined;
     const txHash = await signer.sendTransaction({
       to: validated.to,
       data: validated.data,
       value: validated.value,
+      chain: validated.chain,
+      ...(numericChainId !== undefined && Number.isSafeInteger(numericChainId)
+        ? { chainId: numericChainId }
+        : {}),
+      maxFeePerGas: this.maxNetworkFeeWei,
     });
     const confirmation = await this.shillbotClient.confirmTask(id, {
       tx_signature: txHash,
@@ -720,6 +742,7 @@ export class SwarmAgent {
     opts: {
       connection?: Connection;
       expectedEscrowLamports?: bigint;
+      payoutTo?: string;
     },
   ): Promise<ExecutedTaskResult> {
     if (!prepared.transaction) {
@@ -741,19 +764,18 @@ export class SwarmAgent {
       }
     }
 
-    const expected = {
-      action,
-      network: this.network,
-      wallet: signer.address,
-      taskPda: prepared.task_pda,
-      ...(action === "create" && opts.expectedEscrowLamports !== undefined
-        ? { escrowLamports: opts.expectedEscrowLamports }
-        : {}),
-    };
-    const inspected = validatePreparedTransaction(prepared.transaction, expected);
-
-    // C9 Network Fee Cap check whenever the agent's wallet pays transaction fees
-    const estimatedFeeLamports = estimateSolanaNetworkFeeLamports(inspected, signer.address);
+    // C9 Network Fee Cap check first so fee cap breaches report SPEND_CAP_EXCEEDED
+    let preInspected;
+    try {
+      preInspected = inspectTransaction(prepared.transaction);
+    } catch (err) {
+      throw new SwarmClientError({
+        code: "TRANSACTION_MISMATCH",
+        operation: `tasks.${action}AndExecute`,
+        message: err instanceof Error ? err.message : `Malformed transaction: ${String(err)}`,
+      });
+    }
+    const estimatedFeeLamports = estimateSolanaNetworkFeeLamports(preInspected, signer.address);
     if (estimatedFeeLamports > this.maxNetworkFeeLamports) {
       throw new SwarmClientError({
         code: "SPEND_CAP_EXCEEDED",
@@ -761,6 +783,18 @@ export class SwarmAgent {
         message: `Estimated Solana network fee ${estimatedFeeLamports} lamports exceeds maxNetworkFeeLamports (${this.maxNetworkFeeLamports})`,
       });
     }
+
+    const expected = {
+      action,
+      network: this.network,
+      wallet: signer.address,
+      taskPda: prepared.task_pda,
+      ...(opts.payoutTo !== undefined ? { payoutTo: opts.payoutTo } : {}),
+      ...(action === "create" && opts.expectedEscrowLamports !== undefined
+        ? { escrowLamports: opts.expectedEscrowLamports }
+        : {}),
+    };
+    validatePreparedTransaction(prepared.transaction, expected);
 
     const connection = opts.connection ?? new Connection(this.rpcUrl, "confirmed");
     const signature = await signBroadcastPreparedTransaction({

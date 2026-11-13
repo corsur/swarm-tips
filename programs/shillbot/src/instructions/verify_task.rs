@@ -27,6 +27,7 @@ pub fn verify_task(
     // Checks
     require!(!global.paused, ShillbotError::ProtocolPaused);
     validate_verify_inputs(task, composite_score, verification_hash)?;
+    validate_devnet_gate(global)?;
     validate_attestation_staleness(task, global, clock.unix_timestamp)?;
     require!(
         is_authorized_oracle_account(global, &ctx.accounts.switchboard_feed)
@@ -67,6 +68,12 @@ pub fn verify_task(
         fee_amount,
         verification_hash,
     });
+    Ok(())
+}
+
+/// Gate legacy `verify_task` strictly to devnet (`GlobalState.devnet_enabled`).
+pub(crate) fn validate_devnet_gate(global: &GlobalState) -> Result<()> {
+    require!(global.devnet_enabled, ShillbotError::DevnetOnly);
     Ok(())
 }
 
@@ -111,7 +118,7 @@ fn validate_verify_inputs(
 /// Returns `true` when an `OnChainAction` submission scored `0` and still has
 /// enough time before `deadline` (`now + claim_buffer < deadline`) for another
 /// agent to claim and submit a valid proof.
-fn should_reopen_onchain_action(task: &Task, composite_score: u64, now: i64) -> bool {
+pub(crate) fn should_reopen_onchain_action(task: &Task, composite_score: u64, now: i64) -> bool {
     task.platform == shared::PlatformType::OnChainAction.discriminant()
         && composite_score == 0
         && now.saturating_add(task.claim_buffer) < task.deadline
@@ -119,7 +126,7 @@ fn should_reopen_onchain_action(task: &Task, composite_score: u64, now: i64) -> 
 
 /// Reset all per-claimant/per-submission fields on `Task` back to `TaskState::Open`
 /// while preserving escrow, immutable `content_hash`, deadlines, and overrides.
-fn reopen_task_in_place(task: &mut Task) {
+pub(crate) fn reopen_task_in_place(task: &mut Task) {
     task.state = TaskState::Open;
     task.agent = Pubkey::default();
     task.payout_to = Pubkey::default();
@@ -302,9 +309,14 @@ mod tests {
             rate_limit_window_seconds: 0,
             max_tasks_per_rate_window: 0,
             dispute_resolution_window_seconds: 0,
-            _reserved: [0; 4],
+            devnet_enabled: false,
+            _reserved: [0; 3],
             bump: 255,
         };
+        assert!(validate_devnet_gate(&global).is_err());
+        let mut devnet_global = global.clone();
+        devnet_global.devnet_enabled = true;
+        assert!(validate_devnet_gate(&devnet_global).is_ok());
         assert!(is_authorized_oracle_pubkey(&global, &oracle_authority));
         assert!(is_authorized_oracle_pubkey(&global, &authority));
         assert!(!is_authorized_oracle_pubkey(&global, &feed));

@@ -90,60 +90,57 @@ pub struct FinalizeOutcome {
     pub tournament_share: u64,
     pub p1_won: bool,
     pub p2_won: bool,
-    pub is_late_resolution: bool,
+    pub tournament_finalized: bool,
 }
 
-/// Pure-compute step shared by both reveal handlers. Computes the
-/// returns, the win flags, and the treasury/tournament split so the
-/// caller can apply effects and interactions independently.
+/// Pure-compute step shared by both reveal handlers. Always evaluates the real
+/// payoff matrix (removing the `now > tournament_end_time` free-roll refund
+/// where a losing second revealer could stall past `end_time` for a full
+/// stake refund). If the tournament was already finalized before resolution,
+/// any `tournament_gain` routes to `treasury_share` so lamports are never
+/// stranded above `prize_snapshot`.
 pub fn compute_finalization(
     game: &Game,
-    tournament_end_time: i64,
+    tournament_finalized: bool,
     treasury_split_bps: u16,
-    now: i64,
 ) -> Result<FinalizeOutcome> {
-    let is_late_resolution = now > tournament_end_time;
-    let (p1_return, p2_return, tournament_gain) = if is_late_resolution {
-        (game.stake_lamports, game.stake_lamports, 0u64)
+    let resolution = resolve_game(
+        game.matchup_type,
+        game.p1_guess,
+        game.p2_guess,
+        game.stake_lamports,
+        game.first_committer,
+    )?;
+    let p1_return = resolution.p1_return;
+    let p2_return = resolution.p2_return;
+    let tournament_gain = resolution.tournament_gain;
+
+    let correct_guess = if game.matchup_type == 0 {
+        GUESS_SAME_TEAM
     } else {
-        let resolution = resolve_game(
-            game.matchup_type,
-            game.p1_guess,
-            game.p2_guess,
-            game.stake_lamports,
-            game.first_committer,
-        )?;
-        (
-            resolution.p1_return,
-            resolution.p2_return,
-            resolution.tournament_gain,
-        )
+        crate::state::GUESS_DIFF_TEAM
     };
-    // Determine wins. Late-resolved games don't count (refund with no scoring).
-    let (p1_won, p2_won) = if is_late_resolution {
-        (false, false)
+    let p1_correct = game.p1_guess == correct_guess;
+    let p2_correct = game.p2_guess == correct_guess;
+    let (p1_won, p2_won) = if game.matchup_type == 1 && p1_correct && p2_correct {
+        // Heterogeneous both-correct: only pot-winner earns a win.
+        (p1_return > p2_return, p2_return > p1_return)
     } else {
-        let correct_guess = if game.matchup_type == 0 {
-            GUESS_SAME_TEAM
-        } else {
-            crate::state::GUESS_DIFF_TEAM
-        };
-        let p1_correct = game.p1_guess == correct_guess;
-        let p2_correct = game.p2_guess == correct_guess;
-        if game.matchup_type == 1 && p1_correct && p2_correct {
-            // Heterogeneous both-correct: only pot-winner earns a win.
-            (p1_return > p2_return, p2_return > p1_return)
-        } else {
-            (p1_correct, p2_correct)
-        }
+        (p1_correct, p2_correct)
     };
+
     // Compute treasury/tournament split exactly once.
     let (treasury_share, tournament_share) = if tournament_gain > 0 {
-        let split = compute_treasury_split(tournament_gain, treasury_split_bps)?;
-        (split.treasury_share, split.tournament_share)
+        if tournament_finalized {
+            (tournament_gain, 0)
+        } else {
+            let split = compute_treasury_split(tournament_gain, treasury_split_bps)?;
+            (split.treasury_share, split.tournament_share)
+        }
     } else {
         (0, 0)
     };
+
     Ok(FinalizeOutcome {
         p1_return,
         p2_return,
@@ -152,7 +149,7 @@ pub fn compute_finalization(
         tournament_share,
         p1_won,
         p2_won,
-        is_late_resolution,
+        tournament_finalized,
     })
 }
 
@@ -168,7 +165,7 @@ pub fn apply_finalize_effects(
     tournament_id: u64,
     now: i64,
 ) -> Result<()> {
-    if !outcome.is_late_resolution {
+    if !outcome.tournament_finalized {
         tournament.game_count = tournament
             .game_count
             .checked_add(1)
@@ -357,5 +354,55 @@ mod tests {
         let result = compute_treasury_split(two_s, 5_000).unwrap();
         assert_eq!(result.treasury_share, 50_000_000);
         assert_eq!(result.tournament_share, 50_000_000);
+    }
+
+    #[test]
+    fn compute_finalization_evaluates_real_payoff_and_routes_finalized_gain_to_treasury() {
+        let mut game = Game {
+            game_id: 1,
+            tournament_id: 1,
+            player_one: Pubkey::new_unique(),
+            player_two: Pubkey::new_unique(),
+            state: GameState::Active,
+            stake_lamports: 50_000_000,
+            p1_commit: [0u8; 32],
+            p2_commit: [0u8; 32],
+            p1_guess: crate::state::GUESS_DIFF_TEAM,
+            p2_guess: crate::state::GUESS_DIFF_TEAM,
+            first_committer: 1,
+            p1_commit_slot: 10,
+            p2_commit_slot: 11,
+            commit_timeout_slots: COMMIT_TIMEOUT_SLOTS,
+            created_at: 1_000,
+            resolved_at: 0,
+            activated_at_slot: 9,
+            matchup_commitment: [0u8; 32],
+            matchup_type: 0, // homogeneous, so both guesses are wrong -> 2S = 100M gain
+            bump: 255,
+        };
+
+        // Active tournament: 50/50 split between treasury and tournament pool (no free-roll refund).
+        let active_outcome = compute_finalization(&game, false, 5_000).unwrap();
+        assert_eq!(active_outcome.p1_return, 0);
+        assert_eq!(active_outcome.p2_return, 0);
+        assert_eq!(active_outcome.tournament_gain, 100_000_000);
+        assert_eq!(active_outcome.treasury_share, 50_000_000);
+        assert_eq!(active_outcome.tournament_share, 50_000_000);
+
+        // Already-finalized tournament: real payoff still applies, and all pool gain routes to treasury
+        // so zero lamports are stranded above prize_snapshot.
+        let finalized_outcome = compute_finalization(&game, true, 5_000).unwrap();
+        assert_eq!(finalized_outcome.p1_return, 0);
+        assert_eq!(finalized_outcome.p2_return, 0);
+        assert_eq!(finalized_outcome.tournament_gain, 100_000_000);
+        assert_eq!(finalized_outcome.treasury_share, 100_000_000);
+        assert_eq!(finalized_outcome.tournament_share, 0);
+
+        // Heterogeneous pot-winner still wins 2S even if tournament already finalized.
+        game.matchup_type = 1;
+        let het_outcome = compute_finalization(&game, true, 5_000).unwrap();
+        assert_eq!(het_outcome.p1_return, 100_000_000);
+        assert_eq!(het_outcome.p2_return, 0);
+        assert!(het_outcome.p1_won && !het_outcome.p2_won);
     }
 }

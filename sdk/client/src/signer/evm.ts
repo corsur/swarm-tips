@@ -122,7 +122,7 @@ function toEip55Address(lowerHexNoPrefix: string): `0x${string}` {
 }
 
 export interface EvmPrivateKeyOptions {
-  chainId?: number;
+  chainId?: number | string;
   rpcUrl?: string;
 }
 
@@ -133,6 +133,39 @@ export interface EvmWalletClientLike {
   signMessage: (args: any) => Promise<`0x${string}`>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sendTransaction?: (args: any) => Promise<`0x${string}`>;
+}
+
+function normalizeSignerEvmChain(chain: string | number): string {
+  if (typeof chain === "number") {
+    if (!Number.isSafeInteger(chain) || chain <= 0) {
+      throw new SwarmClientError({
+        code: "INVALID_ARGUMENT",
+        operation: "signer.evm",
+        message: `Invalid EVM chainId: ${String(chain)}`,
+      });
+    }
+    return `eip155:${chain}`;
+  }
+  const trimmed = chain.trim().toLowerCase();
+  if (/^\d+$/.test(trimmed)) return `eip155:${trimmed}`;
+  if (trimmed === "base-sepolia") return "eip155:84532";
+  if (trimmed === "base") return "eip155:8453";
+  if (trimmed === "ethereum") return "eip155:1";
+  if (trimmed === "ethereum-sepolia" || trimmed === "sepolia") return "eip155:11155111";
+  return trimmed;
+}
+
+function parseCaip2NumericChainId(caip2: string): number {
+  const match = /^eip155:(\d+)$/.exec(caip2);
+  const parsed = match ? Number(match[1]) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new SwarmClientError({
+      code: "INVALID_ARGUMENT",
+      operation: "signer.sendTransaction",
+      message: `Unsupported EVM CAIP-2 chain identifier: ${caip2}`,
+    });
+  }
+  return parsed;
 }
 
 /**
@@ -150,6 +183,9 @@ export function fromEvmPrivateKey(
       operation: "signer.fromEvmPrivateKey",
       message: "Expected a 0x-prefixed 32-byte hex EVM private key",
     });
+  }
+  if (opts.chainId !== undefined) {
+    normalizeSignerEvmChain(opts.chainId);
   }
   const secretBytes = Buffer.from(privateKeyHex.slice(2), "hex");
   const normalizedKey = `0x${privateKeyHex.slice(2).toLowerCase()}` as `0x${string}`;
@@ -200,12 +236,28 @@ export function fromEvmPrivateKey(
           message: "rpcUrl is required in fromEvmPrivateKey options to broadcast EVM transactions",
         });
       }
+      const signerChain =
+        opts.chainId !== undefined ? normalizeSignerEvmChain(opts.chainId) : undefined;
+      const requestedChain =
+        call.chain !== undefined
+          ? normalizeSignerEvmChain(call.chain)
+          : call.chainId !== undefined
+          ? normalizeSignerEvmChain(call.chainId)
+          : undefined;
+      if (signerChain && requestedChain && signerChain !== requestedChain) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "signer.sendTransaction",
+          message: `EVM signer chain ${signerChain} differs from call chain ${requestedChain}`,
+        });
+      }
+      const resolvedCaip2 = requestedChain ?? signerChain ?? "eip155:84532";
+      const chainId = parseCaip2NumericChainId(resolvedCaip2);
       const [{ createWalletClient, http }, { privateKeyToAccount }] = await Promise.all([
         import("viem"),
         import("viem/accounts"),
       ]);
       const account = privateKeyToAccount(normalizedKey);
-      const chainId = call.chainId ?? opts.chainId ?? 84532;
       const client = createWalletClient({
         account,
         transport: http(opts.rpcUrl),
@@ -221,6 +273,7 @@ export function fromEvmPrivateKey(
         to: call.to,
         data: call.data,
         value: call.value ?? 0n,
+        ...(call.maxFeePerGas !== undefined ? { maxFeePerGas: call.maxFeePerGas } : {}),
       });
     },
   });
@@ -260,12 +313,31 @@ export function fromEvmWalletClient(walletClient: EvmWalletClientLike): EvmSwarm
     ...(walletClient.sendTransaction
       ? {
           async sendTransaction(call: EvmCallRequest): Promise<`0x${string}`> {
+            const signerChain =
+              chainId !== undefined ? normalizeSignerEvmChain(chainId) : undefined;
+            const requestedChain =
+              call.chain !== undefined
+                ? normalizeSignerEvmChain(call.chain)
+                : call.chainId !== undefined
+                ? normalizeSignerEvmChain(call.chainId)
+                : undefined;
+            if (signerChain && requestedChain && signerChain !== requestedChain) {
+              throw new SwarmClientError({
+                code: "TRANSACTION_MISMATCH",
+                operation: "signer.sendTransaction",
+                message: `WalletClient chain ${signerChain} differs from call chain ${requestedChain}`,
+              });
+            }
+            const resolvedNumeric =
+              call.chainId ??
+              (requestedChain ? parseCaip2NumericChainId(requestedChain) : chainId);
             return walletClient.sendTransaction!({
               account: rawAccount ?? address,
               to: call.to,
               data: call.data,
               value: call.value ?? 0n,
-              ...(call.chainId ? { chainId: call.chainId } : {}),
+              ...(resolvedNumeric !== undefined ? { chainId: resolvedNumeric } : {}),
+              ...(call.maxFeePerGas !== undefined ? { maxFeePerGas: call.maxFeePerGas } : {}),
             });
           },
         }

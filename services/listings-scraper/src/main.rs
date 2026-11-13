@@ -49,7 +49,9 @@ fn parse_url_from<I: Iterator<Item = String>>(mut args: I) -> Result<String> {
     }
 }
 
-fn build_client() -> Result<Client> {
+const MAX_SCRAPER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+fn build_client(target: &safe_http_fetch::PinnedPublicTarget) -> Result<Client> {
     // Header bundle matches what a real Chrome-on-macOS sends, layered on
     // top of the JA3/HTTP2 fingerprint the impersonate() call provides.
     let mut headers = header::HeaderMap::new();
@@ -72,26 +74,57 @@ fn build_client() -> Result<Client> {
         h("\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\""),
     );
 
-    Client::builder()
+    let mut builder = Client::builder()
         .impersonate(Impersonate::Chrome131)
         .user_agent(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
              (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
         .default_headers(headers)
+        .redirect(rquest::redirect::Policy::none())
         .timeout(Duration::from_secs(15))
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .context("rquest client build")
+        .connect_timeout(Duration::from_secs(5));
+    if target.needs_dns_pin {
+        builder = builder.resolve_to_addrs(&target.host, &target.addrs);
+    }
+    builder.build().context("rquest client build")
+}
+
+async fn read_body_bounded(mut res: rquest::Response, max_bytes: usize) -> Result<String> {
+    if let Some(len) = res.content_length() {
+        if len > max_bytes as u64 {
+            return Err(anyhow!("response body exceeds {max_bytes} bytes"));
+        }
+    }
+    let mut buf = Vec::with_capacity(4096);
+    while let Some(chunk) = res.chunk().await.context("read response chunk")? {
+        let next_len = buf
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| anyhow!("response body size overflow"))?;
+        if next_len > max_bytes {
+            return Err(anyhow!("response body exceeds {max_bytes} bytes"));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).context("decode utf-8 response body")
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let url = parse_url_arg()?;
-    let client = build_client()?;
-    let res = client.get(&url).send().await.context("send request")?;
+    let policy = safe_http_fetch::FetchPolicy::strict_domain_only(MAX_SCRAPER_RESPONSE_BYTES);
+    let target = safe_http_fetch::resolve_and_pin_public_url(&url, &policy)
+        .await
+        .context("validate target url")?;
+    let client = build_client(&target)?;
+    let res = client
+        .get(target.url.as_str())
+        .send()
+        .await
+        .context("send request")?;
     let status_code = res.status().as_u16();
-    let body = res.text().await.context("read response body")?;
+    let body = read_body_bounded(res, MAX_SCRAPER_RESPONSE_BYTES).await?;
     let out = ScraperOutput { status_code, body };
     println!(
         "{}",

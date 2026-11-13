@@ -29,6 +29,17 @@ pub struct ExtensionWithdrawn {
     pub bond_lamports: u64,
 }
 
+/// Emitted when an extender initiates the 7-day unbond cooldown (`request_unbond`).
+/// While unbonding, the vouch no longer qualifies for new `extension-credit`
+/// advances and remains slashable via `default_extension` until withdrawn.
+#[event]
+pub struct UnbondRequested {
+    pub extender: Pubkey,
+    pub recipient: Pubkey,
+    pub requested_at: i64,
+    pub withdrawable_at: i64,
+}
+
 /// Emitted when the authority records a default. Negative terminal signal —
 /// the bond was slashed to the treasury; feeds default-detection / the
 /// failure-records archive.
