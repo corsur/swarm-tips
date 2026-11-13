@@ -1,6 +1,7 @@
+import path from "node:path";
 import { BN, Program } from "@coral-xyz/anchor";
-import { BankrunProvider, startAnchor } from "anchor-bankrun";
-import { Clock } from "solana-bankrun";
+import { BankrunProvider } from "anchor-bankrun";
+import { Clock, type ProgramTestContext, start } from "solana-bankrun";
 import {
   ComputeBudgetProgram,
   Keypair,
@@ -32,7 +33,7 @@ function extensionPda(
 }
 
 describe("extension-registry", () => {
-  let context: Awaited<ReturnType<typeof startAnchor>>;
+  let context: ProgramTestContext;
   let provider: BankrunProvider;
   let program: Program<ExtensionRegistry>;
   let authorityKp: Keypair;
@@ -74,12 +75,9 @@ describe("extension-registry", () => {
   }
 
   before(async () => {
+    process.env.SBF_OUT_DIR ??= path.resolve(process.cwd(), "target/deploy");
     const programId = new PublicKey(IDL.address);
-    context = await startAnchor(
-      "",
-      [{ name: "extension_registry", programId }],
-      []
-    );
+    context = await start([{ name: "extension_registry", programId }], []);
     provider = new BankrunProvider(context);
     program = new Program<ExtensionRegistry>(IDL as never, provider);
     authorityKp = Keypair.generate();
