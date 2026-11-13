@@ -37,6 +37,7 @@ import {
   type Idl,
 } from "@coral-xyz/anchor";
 import {
+  encodeAbiParameters,
   encodeFunctionData,
   keccak256 as viemKeccak,
   toBytes,
@@ -371,7 +372,7 @@ function ocForAbi(o: OutcomeCert) {
       const evmChainTag = cast([
         "call",
         CONTRACT,
-        "CHAIN_TAG()(bytes32)",
+        "chainTag()(bytes32)",
         "--rpc-url",
         EVM_RPC,
       ]) as `0x${string}`;
@@ -408,15 +409,43 @@ function ocForAbi(o: OutcomeCert) {
         .signers([matchmaker])
         .rpc();
 
-      // ---- EVM leg: createMatch (playerIsP1=false) ----
+      // ---- EVM leg: createMatch (playerIsP1=false, M4 operatorSig) ----
+      const createMatchDigest = viemKeccak(
+        encodeAbiParameters(
+          [
+            { type: "uint256" },
+            { type: "address" },
+            { type: "bytes32" },
+            { type: "address" },
+            { type: "address" },
+            { type: "address" },
+            { type: "bool" },
+            { type: "uint64" },
+            { type: "uint64" },
+          ],
+          [
+            84532n,
+            CONTRACT,
+            matchIdHex,
+            evmPlayer.address,
+            toHex(legB.address) as `0x${string}`,
+            toHex(legA.address) as `0x${string}`,
+            false,
+            BigInt(fundDeadline),
+            BigInt(matchDeadline),
+          ]
+        )
+      );
+      const createMatchSig = signEvm(operator, toBytes(createMatchDigest));
       castSend([
-        "createMatch(bytes32,address,address,bool,uint64,uint64)",
+        "createMatch(bytes32,address,address,bool,uint64,uint64,bytes)",
         matchIdHex,
         toHex(legB.address),
         toHex(legA.address),
         "false",
         String(fundDeadline),
         String(matchDeadline),
+        createMatchSig,
         "--value",
         evmStake.toString(),
       ]);

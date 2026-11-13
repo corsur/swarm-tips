@@ -199,6 +199,7 @@ async function main(): Promise<void> {
     .openAdvance(ADVANCE)
     .accountsPartial({
       advance: advancePda,
+      extension: extPda(onbAuth.publicKey, agent.publicKey),
       backer: onbAuth.publicKey,
       recipient: agent.publicKey,
       systemProgram: SystemProgram.programId,
@@ -232,7 +233,23 @@ async function main(): Promise<void> {
     [Buffer.from("shillbot_global")],
     shillbot.programId
   );
-  const globalAccount = await shillbot.account.globalState.fetch(sbGlobal);
+  let globalAccount = await shillbot.account.globalState.fetch(sbGlobal);
+  if (!globalAccount.devnetEnabled) {
+    const genesisHash = await connection.getGenesisHash();
+    if (genesisHash !== "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG") {
+      throw new Error(
+        `Refusing setDevnetEnabled(true) on non-devnet cluster (${genesisHash})`
+      );
+    }
+    await shillbot.methods
+      .setDevnetEnabled(true)
+      .accountsPartial({
+        globalState: sbGlobal,
+        authority: root.publicKey,
+      })
+      .rpc({ commitment: "confirmed" });
+    globalAccount = await shillbot.account.globalState.fetch(sbGlobal);
+  }
   const nonce = new BN(randomBytes(8));
   const [taskPda] = PublicKey.findProgramAddressSync(
     [
@@ -490,23 +507,43 @@ async function main(): Promise<void> {
     .signers([agent])
     .rpc({ commitment: "confirmed" });
 
+  const extOnbAgent = extPda(onbAuth.publicKey, agent.publicKey);
+  const extRootOnb = extPda(root.publicKey, onbAuth.publicKey);
   await registry.methods
-    .withdrawExtension()
+    .requestUnbond()
     .accountsPartial({
-      extension: extPda(onbAuth.publicKey, agent.publicKey),
+      extension: extOnbAgent,
       extender: onbAuth.publicKey,
       recipient: agent.publicKey,
     })
     .signers([onbAuth])
     .rpc({ commitment: "confirmed" });
   await registry.methods
-    .withdrawExtension()
+    .requestUnbond()
     .accountsPartial({
-      extension: extPda(root.publicKey, onbAuth.publicKey),
+      extension: extRootOnb,
       extender: root.publicKey,
       recipient: onbAuth.publicKey,
     })
     .rpc({ commitment: "confirmed" });
+
+  let prematureWithdrawRejected = false;
+  try {
+    await registry.methods
+      .withdrawExtension()
+      .accountsPartial({
+        extension: extRootOnb,
+        extender: root.publicKey,
+        recipient: onbAuth.publicKey,
+      })
+      .rpc({ commitment: "confirmed" });
+  } catch (err) {
+    prematureWithdrawRejected = String(err).includes("UnbondCooldownActive");
+  }
+  check(
+    prematureWithdrawRejected,
+    "7-day unbond cooldown (HIGH-16) rejects premature withdraw_extension on live devnet"
+  );
 
   check(
     await waitAccountsClosed(connection, [taskPda, advancePda, agentState]),
@@ -541,11 +578,16 @@ async function main(): Promise<void> {
       /* best effort */
     }
   }
-  const rootNet = rootStart - (await bal(root.publicKey));
+  const lockedInUnbonding = (await bal(extOnbAgent)) + (await bal(extRootOnb));
+  const rootNetExBonds =
+    rootStart - (await bal(root.publicKey)) - lockedInUnbonding;
   console.log(
-    `[ledger] root net out ${rootNet} lamports — bonds, advance principal+rent, AgentState rent, and task escrow+rent all recovered. Only gas spent.`
+    `[ledger] root net out ${rootNetExBonds} lamports ex-timelocked bonds (${lockedInUnbonding} lamports in 7d unbond cooldown) — advance principal+rent, AgentState rent, and task escrow+rent all recovered. Only gas spent.`
   );
-  check(rootNet <= 500_000, "no SOL lost beyond gas");
+  check(
+    rootNetExBonds <= 500_000,
+    "no SOL lost beyond gas and 7d-timelocked bonds"
+  );
 
   console.log(
     `\n${failures === 0 ? "PASS" : "FAIL"} — ${failures} failed check(s)`

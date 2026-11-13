@@ -226,7 +226,7 @@ const randBytes32 = (): Uint8Array => {
       );
 
       const stake = castUint("stakeWei()(uint256)");
-      const chainTagB = castCall("CHAIN_TAG()(bytes32)") as `0x${string}`;
+      const chainTagB = castCall("chainTag()(bytes32)") as `0x${string}`;
       const poolFreeStart = readUint("poolFree");
       expect(
         poolFreeStart >= stake,
