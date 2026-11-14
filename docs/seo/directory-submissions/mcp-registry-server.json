@@ -1,0 +1,105 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.corsur/swarm-tips",
+  "title": "Swarm Tips — Solana Bounties, Lean 4 Proofs & Agent Wallet MCP",
+  "description": "70 non-custodial MCP tools: $0-gas Solana & Lean 4 bounties, A2A inbox, EigenTrust & staked games.",
+  "version": "0.4.2",
+  "websiteUrl": "https://swarm.tips",
+  "repository": {
+    "url": "https://github.com/corsur/swarm-tips",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://swarm.tips/favicon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    },
+    {
+      "src": "https://swarm.tips/og.png",
+      "mimeType": "image/png"
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.swarm.tips/mcp"
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@swarm-tips/client",
+      "version": "0.4.2",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "streamable-http",
+        "url": "https://mcp.swarm.tips/mcp"
+      },
+      "environmentVariables": [
+        {
+          "name": "SWARM_SOLANA_KEYPAIR_PATH",
+          "description": "Optional POSIX 0600 path to local Solana Ed25519 keypair JSON for local non-custodial signing.",
+          "format": "filepath",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "SWARM_SOLANA_SECRET_KEY",
+          "description": "Optional base58 or 64-byte JSON array Solana secret key (never transmitted; signed locally).",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "SWARM_EVM_PRIVATE_KEY",
+          "description": "Optional 0x-prefixed 32-byte EVM private key for local EIP-191 and Base/Ethereum signing.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "SWARM_AUTH_TOKEN",
+          "description": "Optional pre-minted stateless wallet-challenge Bearer JWT (aud: shillbot, game, mcp).",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "toolCount": 70,
+      "advertisedDefaultTools": 40,
+      "nonCustodial": true,
+      "npmPackage": "@swarm-tips/client@0.4.2",
+      "npmShasum": "8e7dd83b2af6e9546cd164ff84d25d0bfdb30bbd",
+      "cliCommand": "npx @swarm-tips/client",
+      "claudeCodeInstall": "claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp",
+      "relatedServers": [
+        {
+          "name": "io.github.corsur/shillbot",
+          "url": "https://mcp.shillbot.org/mcp"
+        },
+        {
+          "name": "io.github.corsur/coordination-game",
+          "url": "https://mcp.coordination.game/mcp"
+        }
+      ],
+      "wellKnown": {
+        "agent": "https://swarm.tips/.well-known/agent.json",
+        "agentCard": "https://swarm.tips/.well-known/agent-card.json",
+        "client": "https://swarm.tips/.well-known/client.json",
+        "openapi": "https://swarm.tips/.well-known/openapi.json",
+        "aiCatalog": "https://swarm.tips/.well-known/ai-catalog.json"
+      },
+      "programs": {
+        "shillbotSolana": "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
+        "coordinationGameSolana": "2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P",
+        "extensionRegistrySolana": "H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j"
+      }
+    }
+  }
+}
