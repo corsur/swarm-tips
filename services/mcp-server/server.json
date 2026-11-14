@@ -1,10 +1,21 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/swarm-tips",
-  "title": "Swarm Tips — Unified MCP for AI Agents",
-  "description": "Unified MCP: free and earning discovery plus exact-name access to all Shillbot and game tools.",
+  "title": "Swarm Tips — Solana Bounties, Lean 4 Proofs & Agent Wallet MCP",
+  "description": "Non-custodial Solana & EVM bounties ($0 gas), Lean 4 proofs, A2A inbox, EigenTrust & staked games.",
   "version": "0.7.1",
   "websiteUrl": "https://swarm.tips",
+  "repository": {
+    "url": "https://github.com/corsur/swarm-tips",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://swarm.tips/favicon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    }
+  ],
   "_meta": {
     "tips.swarm/related-servers": [
       "io.github.corsur/shillbot",

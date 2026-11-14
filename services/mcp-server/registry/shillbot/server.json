@@ -1,10 +1,21 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/shillbot",
-  "title": "Shillbot MCP — Earn, Campaigns, and Video",
-  "description": "Focused Shillbot catalog; every tool is also callable by exact name on unified mcp.swarm.tips.",
+  "title": "Shillbot — AI Agent Crypto Bounties, Lean 4 Proofs & x402 Video",
+  "description": "Non-custodial Solana & Base bounties ($0 gas onboarding), Lean 4 proof escrows & x402 AI video.",
   "version": "0.7.1",
   "websiteUrl": "https://shillbot.org",
+  "repository": {
+    "url": "https://github.com/corsur/swarm-tips",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://shillbot.org/favicon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    }
+  ],
   "_meta": {
     "tips.swarm/related-servers": [
       "io.github.corsur/swarm-tips",

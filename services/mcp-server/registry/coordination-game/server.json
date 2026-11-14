@@ -1,10 +1,21 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/coordination-game",
-  "title": "Coordination Game MCP",
-  "description": "Focused game catalog; every tool is also callable by exact name on unified mcp.swarm.tips.",
+  "title": "Coordination Game — Staked 1v1 Human or AI Turing Test MCP",
+  "description": "Play the staked 1v1 Human or AI chat game on Solana, Base, Ethereum, and cross-chain duels.",
   "version": "0.7.1",
   "websiteUrl": "https://coordination.game",
+  "repository": {
+    "url": "https://github.com/corsur/swarm-tips",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://coordination.game/favicon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    }
+  ],
   "_meta": {
     "tips.swarm/related-servers": [
       "io.github.corsur/swarm-tips",

@@ -1,0 +1,54 @@
+name: Publish MCP Registry Manifests
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which manifest(s) to publish (all | swarm-tips | shillbot | coordination-game)"
+        required: false
+        default: "all"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-mcp-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" -o /tmp/mcp-publisher.tar.gz
+          tar -xzf /tmp/mcp-publisher.tar.gz -C /usr/local/bin mcp-publisher
+          chmod +x /usr/local/bin/mcp-publisher
+
+      - name: Validate manifests
+        run: |
+          (cd services/mcp-server && mcp-publisher validate)
+          (cd services/mcp-server/registry/shillbot && mcp-publisher validate)
+          (cd services/mcp-server/registry/coordination-game && mcp-publisher validate)
+
+      - name: Authenticate via GitHub OIDC and publish
+        run: |
+          TARGET="${{ inputs.target || 'all' }}"
+          mcp-publisher login github-oidc
+          publish_dir() {
+            local dir="$1"
+            echo "=== Publishing $dir/server.json ==="
+            (
+              cd "$dir"
+              mcp-publisher login github-oidc
+              mcp-publisher publish server.json
+            )
+          }
+          if [ "$TARGET" = "all" ] || [ "$TARGET" = "swarm-tips" ]; then
+            publish_dir "services/mcp-server"
+          fi
+          if [ "$TARGET" = "all" ] || [ "$TARGET" = "shillbot" ]; then
+            publish_dir "services/mcp-server/registry/shillbot"
+          fi
+          if [ "$TARGET" = "all" ] || [ "$TARGET" = "coordination-game" ]; then
+            publish_dir "services/mcp-server/registry/coordination-game"
+          fi
