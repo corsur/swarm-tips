@@ -13,7 +13,7 @@ programs/
 ├── coordination-game/       # 1v1 commit-reveal game with tournaments (incl. cross-chain xmatch)
 ├── shillbot/                # Task marketplace with escrow + oracle verification
 ├── extension-registry/      # Bonded vouch edge log (credit web)
-└── extension-credit/        # Permissionless funding layer (devnet-only)
+└── extension-credit/        # Permissionless recoupable rent-advance layer (mainnet + devnet)
 
 evm/                         # Foundry workspace: Solidity contracts (CoordinationGame v3/V4, CrossChainGame, ShillbotEscrow, SeasonPot, CertLib/VerifyLib) — own CI job
 

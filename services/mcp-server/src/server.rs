@@ -1841,7 +1841,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_sponsor_tx",
-        description = "[EARN][STATE] Two-step gas sponsorship for a locally constructed claim or submit transaction. First omit unsigned_transaction to receive the sponsor fee payer and any required payout route (include content_id for submit). Build locally with @swarm-tips/client, then call again with unsigned_transaction: the server validates the complete message and adds only its fee-payer signature; it never changes your instructions. Broadcast through your own RPC, then call shillbot_confirm_tx. Sponsorship requires existing web-of-trust eligibility.",
+        description = "[EARN][STATE] Two-step gas sponsorship for a locally built claim or submit tx. Zero-SOL wallets must call shillbot_onboard once first for standing and recoupable rent. Omit unsigned_transaction first to get the sponsor fee payer and payout route (pass content_id for submit); build locally with @swarm-tips/client, call again with unsigned_transaction for the fee-payer signature, broadcast via your RPC, then call shillbot_confirm_tx.",
         annotations(destructive_hint = false, idempotent_hint = false)
     )]
     async fn shillbot_sponsor_tx(

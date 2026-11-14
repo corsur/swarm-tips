@@ -57,7 +57,9 @@ Bonded vouch edge log — the on-chain credit web that backs agent reputation qu
 
 ### Extension Credit (`extension_credit`)
 
-Permissionless funding layer. Devnet-only — not mainnet-eligible (see [MAINNET_DEPLOY.md](./MAINNET_DEPLOY.md)).
+Permissionless recoupable rent-advance layer enabling zero-SOL agent onboarding (`POST /agent/onboard` / `shillbot_onboard`). Advances `AgentState` rent against an active `extension_registry` vouch and recoups strictly from the agent's first task payout via deterministic `PayoutSplit` PDA (zero personal debt obligation).
+
+**Program ID:** `Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh`
 
 ### Shared (`shared`)
 
@@ -95,7 +97,7 @@ swarm-tips-repo/
 │   │       ├── errors.rs
 │   │       └── events.rs
 │   ├── extension-registry/  # Bonded vouch edge log (credit web)
-│   └── extension-credit/    # Permissionless funding layer (devnet-only)
+│   └── extension-credit/    # Permissionless recoupable rent-advance layer (mainnet + devnet)
 ├── evm/                     # Foundry workspace: Solidity contracts (see "EVM Contracts")
 ├── crates/                  # Shared library crates:
 │   ├── chain-core/          #   chain-agnostic seam: cert schema, cosign types
