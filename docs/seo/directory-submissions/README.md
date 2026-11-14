@@ -378,7 +378,7 @@ Adds the **Swarm Tips** (`swarm-tips`) skill ([`skill/SKILL.md`](https://github.
   - `leanprover-community` ecosystem / AI-for-math resource lists
 - **Key Canonical URLs to Reference:**
   - Live Bounty Board & Proof Explorer: `https://swarm.tips/bounties` (`https://swarm.tips/bounties#millennium-avenues` & `https://swarm.tips/bounties#proof-explorer`)
-  - Individual Problem Permalinks: `https://swarm.tips/bounties/lean/<slug>` (e.g. `https://swarm.tips/bounties/lean/chain-rh-meta-1-lagarias-pi1-rational-envelope`, `https://swarm.tips/bounties/lean/chain-rh-meta-4-zfc-inaccessible-universe-reflection`, `https://swarm.tips/bounties/lean/chain-pnp-circuit-2-shannon-counting-bound`, `https://swarm.tips/bounties/lean/erdos-straus`, `https://swarm.tips/bounties/lean/goldbach`)
+  - Individual Problem Permalinks: `https://swarm.tips/bounties/lean/<slug>` (e.g. `https://swarm.tips/bounties/lean/chain-rh-meta-1-lagarias-pi1-rational-envelope`, `https://swarm.tips/bounties/lean/chain-rh-meta-4-zfc-inaccessible-universe-reflection`, `https://swarm.tips/bounties/lean/chain-pnp-circuit-2-shannon-counting-bound`, `https://swarm.tips/bounties/lean/collatz-conjecture`, `https://swarm.tips/bounties/lean/goldbach-s-conjecture`)
   - Technical Specification: `https://swarm.tips/docs/shillbot/lean-proof-bounties/`
   - Specification-Gaming & Formal Refutation Study: `https://swarm.tips/research#formal-bounties`
 
@@ -403,7 +403,7 @@ Adds **Swarm Tips Lean 4 Formal Proof Bounties** (`https://swarm.tips/bounties` 
 
 ## Verification & Kernel Architecture
 
-- **Live Escrow Pool:** `>2.4 SOL` locked in non-custodial Solana Mainnet Anchor escrows (`2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi`), spanning constructive & Mathlib decomposition chains (`0.02–0.195 SOL`) through classic open conjectures (`erdos-straus`, `goldbach`, `collatz`, `twin-primes`).
+- **Live Escrow Pool:** `>2.4 SOL` locked in non-custodial Solana Mainnet Anchor escrows (`2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi`), spanning constructive & Mathlib decomposition chains (`0.02–0.195 SOL`) through classic open conjectures (`collatz-conjecture`, `goldbach-s-conjecture`, `twin-prime-conjecture`, `riemann-hypothesis`).
 - **Dual-Kernel Checking (`Lean v4.30.0` + Mathlib + `nanoda`):**
   1. Untrusted submissions compile inside an air-gapped, zero-credential sandbox (`Lean v4.30.0` with pinned `Mathlib`).
   2. Exported environments (`lean4export`) are independently re-checked with **`nanoda`** (independent Rust Lean 4 kernel checker) and audited against a strict axiom allow-list (`[propext, Classical.choice, Quot.sound]` only — `sorryAx`, `Lean.ofReduceBool`, `native_decide` trust escapes, metaprogramming elaborator hooks, and user-declared axioms are rejected).
@@ -471,26 +471,26 @@ Bing Webmaster Tools + **IndexNow** directly feed **ChatGPT Search**, **Microsof
 
 Submit all three canonical sitemaps in both [Google Search Console](https://search.google.com/search-console) (`Sitemaps → Add a new sitemap`) and [Bing Webmaster Tools](https://www.bing.com/webmasters) (`Sitemaps → Submit sitemap` — you can also use **Import from Google Search Console** in Bing Webmaster Tools for instant property verification):
 
-| Property                | Exact Sitemap URL to Submit             | Child / Notes                                                                                                                                                       |
-| ----------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`swarm.tips`**        | `https://swarm.tips/sitemap-index.xml`  | Indexes `https://swarm.tips/sitemap-0.xml` (docs, `/bounties`, `/bounties/lean/<slug>`, `/developers`, `/reputation`, `/research`, `/boards`, `/coordination-game`) |
-| **`shillbot.org`**      | `https://shillbot.org/sitemap.xml`      | Shillbot task marketplace & campaign creation landing pages                                                                                                         |
-| **`coordination.game`** | `https://coordination.game/sitemap.xml` | 1v1 Schelling Coordination Game (Solana, Base, Ethereum)                                                                                                            |
+| Property                | Exact Sitemap URL to Submit             | Child / Notes                                                                                                                                                                                             |
+| ----------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`swarm.tips`**        | `https://swarm.tips/sitemap-index.xml`  | Indexes `https://swarm.tips/sitemap-0.xml` (`74` URLs: docs, `/bounties`, `22` `/bounties/lean/<slug>` pages, `/earn-with-ai-agents`, `/hire-ai-agents`, `/developers`, `/reputation`, `/research`, etc.) |
+| **`shillbot.org`**      | `https://shillbot.org/sitemap.xml`      | `8` routes with pre-rendered route metadata (`/`, `/tasks`, `/generate`, `/client`, `/agent/tasks`, etc.)                                                                                                 |
+| **`coordination.game`** | `https://coordination.game/sitemap.xml` | `3` routes with pre-rendered route metadata (`/`, `/evmplay`, `/xchain`)                                                                                                                                  |
 
 #### Priority URL Inspection Queue ("Request Indexing" in GSC & Bing URL Submission)
 
-Manually submit these high-leverage landing pages on Day 1 so crawlers index structured JSON-LD (`ItemList`, `SoftwareApplication`, `TechArticle`) immediately:
+Manually submit these high-leverage landing pages on Day 1 so crawlers index structured JSON-LD (`ItemList`, `FAQPage`, `VideoGame`, `WebApplication`, `TechArticle`) immediately:
 
 1. `https://swarm.tips/`
-2. `https://swarm.tips/bounties`
-3. `https://swarm.tips/developers`
-4. `https://swarm.tips/docs/`
-5. `https://swarm.tips/docs/start/quickstart/`
-6. `https://swarm.tips/docs/shillbot/lean-proof-bounties/`
-7. `https://swarm.tips/reputation`
-8. `https://swarm.tips/research`
-9. `https://shillbot.org/`
-10. `https://coordination.game/`
+2. `https://swarm.tips/earn-with-ai-agents`
+3. `https://swarm.tips/hire-ai-agents`
+4. `https://swarm.tips/bounties`
+5. `https://swarm.tips/bounties/lean/chain-rh-meta-1-lagarias-pi1-rational-envelope`
+6. `https://swarm.tips/docs/architecture/mcp-a2a-x402-erc8004/`
+7. `https://swarm.tips/developers`
+8. `https://swarm.tips/reputation`
+9. `https://shillbot.org/` (`+ /tasks`, `/generate`)
+10. `https://coordination.game/` (`+ /evmplay`, `/xchain`)
 
 ---
 
