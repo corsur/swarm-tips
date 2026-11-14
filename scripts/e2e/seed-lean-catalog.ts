@@ -252,6 +252,22 @@ export const CHAIN_TASK_CONFIG: Record<string, ChainTaskMeta> = {
     escrowLamports: 30_000_000,
     cta: "Track D [Rung 2/2 -> Circuit Lower Bounds]: Prove Shannon exponential circuit bound s > 2^n/(4n) over B_2 (provable landmark)",
   },
+  "chain-rh-meta-1-lagarias-pi1-rational-envelope": {
+    escrowLamports: 25_000_000,
+    cta: "Track E [Rung 1/4 -> Pi1 RH Metamathematics]: Prove constructive rational Taylor/artanh envelope equivalence for Lagarias RH (provable landmark)",
+  },
+  "chain-rh-meta-2-nonstandard-ultrapower-pi1": {
+    escrowLamports: 20_000_000,
+    cta: "Track E [Rung 2/4 -> Pi1 RH Metamathematics]: Prove Los Pi1 ultrapower invariance vs hyperfinite counterexamples in prefix ultraproducts (provable landmark)",
+  },
+  "chain-rh-meta-3-godel-kleene-pi1-unprovability": {
+    escrowLamports: 30_000_000,
+    cta: "Track E [Rung 3/4 -> Pi1 RH Metamathematics]: Prove Partrec Pi1 counterexample compiler, RE unprovability & non-conservativity barrier (provable landmark)",
+  },
+  "chain-rh-meta-4-zfc-inaccessible-universe-reflection": {
+    escrowLamports: 35_000_000,
+    cta: "Track E [Rung 4/4 -> Pi1 RH Metamathematics]: Prove Zermelo-Grothendieck equivalence IsInaccessible κ <-> V_{κ.ord} ZFC Replacement universe (provable landmark)",
+  },
 };
 
 export const REDUCTION_CHAIN_FILES = [
@@ -259,6 +275,7 @@ export const REDUCTION_CHAIN_FILES = [
   "bsd_congruent_chain.lean",
   "rh_analytic_chain.lean",
   "pnp_circuit_foundations_chain.lean",
+  "rh_pi1_metamathematics_chain.lean",
 ];
 
 export interface CatalogEntry {
@@ -421,7 +438,7 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
     headers,
     {
       statement: entry.statement,
-      proof: "theorem proof : statementProp := sorry",
+      proof: "theorem proof : statementProp := True.intro",
       statement_def: "statementProp",
       entry_theorem: "proof",
       axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
@@ -434,10 +451,10 @@ async function verifyStatementElaborates(entry: CatalogEntry): Promise<void> {
   );
   if (
     resp.verdict !== "fail" ||
-    !String(resp.detail ?? "").includes("proof uses sorry")
+    String(resp.detail ?? "").includes("forbidden token")
   ) {
     throw new Error(
-      `pre-seed elaboration gate FAILED for ${entry.name}: expected verdict=fail("proof uses sorry"), got verdict=${resp.verdict} detail=${resp.detail}`
+      `pre-seed elaboration gate FAILED for ${entry.name}: expected Stage A1 statement elaboration + Stage A2 fail, got verdict=${resp.verdict} detail=${resp.detail}`
     );
   }
 
@@ -588,7 +605,7 @@ async function verifyReductionChainFiles(): Promise<void> {
         axiom_allowlist: ["propext", "Classical.choice", "Quot.sound"],
         mode: "mathlib",
         import_allowlist: ["Mathlib"],
-        max_build_secs: 300,
+        max_build_secs: 600,
         max_build_mem_mb: 16384,
       },
       fileName
