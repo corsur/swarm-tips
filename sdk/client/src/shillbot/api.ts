@@ -93,10 +93,22 @@ export class ShillbotApiClient {
   }
 
   listTasks<TTask = unknown>(limit = 50) {
-    return this.get<TaskListResponse<TTask>>(`/tasks?limit=${encodeURIComponent(String(limit))}`);
+    return this.http.get<TaskListResponse<TTask>>(
+      `/tasks?limit=${encodeURIComponent(String(limit))}`,
+      null,
+    );
   }
-  getTask<TTask = unknown>(id: string) {
-    return this.get<TTask>(`/tasks/${encodeURIComponent(id)}`);
+  async getTask<TTask = unknown>(id: string, network?: "mainnet" | "devnet"): Promise<TTask> {
+    const trimmed = id.trim();
+    if (!trimmed) {
+      throw new SwarmClientError({
+        code: "INVALID_ARGUMENT",
+        operation: "shillbot.getTask",
+        message: "Task id is required",
+      });
+    }
+    const suffix = network ? `?network=${encodeURIComponent(network)}` : "";
+    return this.http.get<TTask>(`/tasks/${encodeURIComponent(trimmed)}${suffix}`, null);
   }
   listAgentTasks<TTask = unknown>() {
     return this.get<TaskListResponse<TTask> | TTask[]>("/agent/tasks");

@@ -27,7 +27,7 @@ const inbox = await agent.inbox.list({ status: "pending" });
 
 All signers keep private key material strictly in closure scope (redacted from `JSON.stringify`, `String()`, and `util.inspect`) and work in both browser and Node runtimes without Node built-ins:
 
-- `fromSolanaKeypair(keypair)` / `fromSolanaSecretKey(secret)` (`Uint8Array`, base58, or JSON byte array) / `fromSolanaWalletAdapter(adapter)`
+- `fromSolanaKeypair(keypairOrSecretBytes)` (`Keypair` or 64-byte `Uint8Array`) / `fromSolanaSecretKey(secret)` (`Uint8Array`, base58, or JSON byte array) / `fromSolanaWalletAdapter(adapter)`
 - `fromEvmPrivateKey(hex, { chainId, rpcUrl })` / `fromEvmWalletClient(walletClient)`
 
 ### Local Safety Guarantees (C1, C6, C9, C10)
@@ -44,9 +44,10 @@ The package installs `swarm` (plus `npx -y @swarm-tips/client`, `swarm-tx`, and 
 # Inspect wallet identity (keypair file must be chmod 600 on POSIX; raw --private-key flags are rejected)
 swarm auth whoami --keypair-file ~/.config/solana/id.json
 
-# Discover listings, tasks, and inbox messages (JSON auto-enabled when piped)
+# Discover listings, tasks, task details, and inbox messages (JSON auto-enabled when piped)
 swarm listings --limit 10
 swarm tasks list --limit 20
+swarm tasks get <task_id> --json
 swarm inbox list --status pending
 
 # Verify an unsigned Shillbot base64 transaction locally before signing (exit 0 = safe, exit 1 = rejected)

@@ -44,7 +44,7 @@ export class HttpClient {
     init: RequestInit & { token?: string | null; _retried?: boolean } = {},
   ): Promise<T> {
     const operation = `${init.method ?? "GET"} ${path}`;
-    const token = init.token ?? (await this.getToken?.());
+    const token = init.token !== undefined ? init.token : await this.getToken?.();
     const { token: _token, _retried, ...fetchInit } = init;
     const headers: Record<string, string> = {
       ...(fetchInit.headers as Record<string, string> | undefined),

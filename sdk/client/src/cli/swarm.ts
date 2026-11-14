@@ -125,7 +125,7 @@ Commands:
   auth whoami | token
   listings [--limit N] [--category CAT] [--chain CHAIN]
   reputation <wallet>
-  tasks list [--limit N] | mine | earnings | next <task-json-or-id>
+  tasks list [--limit N] | get <id> | mine | earnings | next <task-json-or-id>
   tasks claim <id> [--payout-to <pubkey>] [--no-exec]
   tasks submit <id> --content <str> [--payout-to <pubkey>] [--no-exec]
   tasks verify <id> [--no-exec]
@@ -369,6 +369,15 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         writeOutput(stdout, jsonMode, res);
         return 0;
       }
+      if (sub === "get") {
+        const id = rest[0]?.trim();
+        if (!id) {
+          throw new CliUsageError("Usage: swarm tasks get <task_id>");
+        }
+        const res = await agent.tasks.get(id);
+        writeOutput(stdout, jsonMode, res);
+        return 0;
+      }
       if (sub === "mine") {
         const tasks = await agent.tasks.mine();
         writeOutput(stdout, jsonMode, { tasks });
@@ -434,7 +443,7 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         return 0;
       }
       throw new CliUsageError(
-        "Usage: swarm tasks <list|mine|earnings|next|claim|submit|verify|finalize> ...",
+        "Usage: swarm tasks <list|get|mine|earnings|next|claim|submit|verify|finalize> ...",
       );
     }
 

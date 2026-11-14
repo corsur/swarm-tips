@@ -54,19 +54,46 @@ export interface SolanaWalletAdapterLike {
 }
 
 /**
- * Create a browser-clean `SolanaSwarmSigner` from a `@solana/web3.js` `Keypair`.
+ * Create a browser-clean `SolanaSwarmSigner` from a `@solana/web3.js` `Keypair`
+ * or a raw 64-byte `Uint8Array` secret key (e.g. `Uint8Array.from(JSON.parse(...))`).
  * Secret key bytes stay trapped inside a private closure and are redacted from logs/JSON.
  */
-export function fromSolanaKeypair(keypair: Keypair): SolanaSwarmSigner {
-  if (!keypair?.secretKey || keypair.secretKey.length !== 64) {
-    throw new SwarmClientError({
-      code: "INVALID_ARGUMENT",
-      operation: "signer.fromSolanaKeypair",
-      message: "Expected a valid 64-byte Solana Keypair",
-    });
+export function fromSolanaKeypair(keypair: Keypair | Uint8Array): SolanaSwarmSigner {
+  let resolved: Keypair;
+  if (keypair instanceof Uint8Array) {
+    if (keypair.length !== 64) {
+      throw new SwarmClientError({
+        code: "INVALID_ARGUMENT",
+        operation: "signer.fromSolanaKeypair",
+        message: `Expected 64-byte Solana secret key, received ${keypair.length} bytes`,
+      });
+    }
+    try {
+      resolved = Keypair.fromSecretKey(new Uint8Array(keypair));
+    } catch {
+      throw new SwarmClientError({
+        code: "INVALID_ARGUMENT",
+        operation: "signer.fromSolanaKeypair",
+        message: "Invalid Solana Ed25519 secret key bytes",
+      });
+    }
+  } else {
+    if (
+      !keypair?.secretKey ||
+      keypair.secretKey.length !== 64 ||
+      !keypair.publicKey ||
+      typeof keypair.publicKey.toBase58 !== "function"
+    ) {
+      throw new SwarmClientError({
+        code: "INVALID_ARGUMENT",
+        operation: "signer.fromSolanaKeypair",
+        message: "Expected a valid 64-byte Solana Keypair or Uint8Array",
+      });
+    }
+    resolved = keypair;
   }
-  const secretBytes = new Uint8Array(keypair.secretKey);
-  const address = keypair.publicKey.toBase58();
+  const secretBytes = new Uint8Array(resolved.secretKey);
+  const address = resolved.publicKey.toBase58();
 
   return redactSigner<SolanaSwarmSigner>({
     chain: "solana",

@@ -219,7 +219,7 @@ export class SwarmAgent {
 
   readonly tasks: {
     listAvailable: <TTask = unknown>(limit?: number) => Promise<TaskListResponse<TTask>>;
-    get: <TTask = unknown>(id: string) => Promise<TTask>;
+    get: <TTask = unknown>(id: string, network?: SwarmNetwork) => Promise<TTask>;
     mine: <TTask = unknown>() => Promise<TTask[]>;
     earnings: <TResponse = unknown>() => Promise<TResponse>;
     onboard: <TResponse = unknown>() => Promise<TResponse>;
@@ -406,7 +406,7 @@ export class SwarmAgent {
 
     this.tasks = {
       listAvailable: (limit = 50) => self.shillbotClient.listTasks(limit),
-      get: (id) => self.shillbotClient.getTask(id),
+      get: (id, net) => self.shillbotClient.getTask(id, net),
       async mine<TTask = unknown>(): Promise<TTask[]> {
         const res = await self.shillbotClient.listAgentTasks<TTask>();
         return Array.isArray(res) ? res : (res.tasks ?? []);

@@ -589,37 +589,12 @@ fn build_router(
     // expensive call can't block every agent.
     let inflight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    let mut router = axum::Router::new()
-        // Liveness: trivial — proves the process/event-loop is alive. It MUST NOT
-        // make outbound calls: a slow game-api or Solana RPC must never get a
-        // healthy pod killed. Depending on those here was the Exit-137 liveness
-        // restart loop that periodically dropped every agent's streamable-http
-        // session (the intermittent MCP auth failures).
-        .route(
-            "/health",
-            axum::routing::get(|| async { (axum::http::StatusCode::OK, "ok") }),
-        )
+    let mut router = attach_public_discovery_routes(axum::Router::new())
         // Human-facing root. swarm.tips links to this host in its nav, and the
         // MCP protocol endpoint lives at /mcp — without this route a browser
         // visit to the bare domain is an empty 404.
         .route("/", axum::routing::get(root_page))
         .route("/related-servers", axum::routing::get(related_servers_page))
-        .route(
-            "/.well-known/openapi.json",
-            openapi::well_known_openapi_handler(),
-        )
-        .route(
-            "/.well-known/agent.json",
-            openapi::well_known_agent_card_handler(),
-        )
-        .route(
-            "/.well-known/agent-card.json",
-            openapi::well_known_agent_card_handler(),
-        )
-        .route(
-            "/.well-known/client.json",
-            openapi::well_known_client_manifest_handler(),
-        )
         .route(
             "/internal/inbox/list",
             inbox_http::list_handler(Arc::clone(&inbox_http_state)),
@@ -1084,6 +1059,44 @@ fn build_readiness_handler(
             (axum::http::StatusCode::OK, "ok")
         })
     }
+}
+
+const HEALTH_CORS: [(&str, &str); 3] = [
+    ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, OPTIONS"),
+    ("Access-Control-Max-Age", "3600"),
+];
+
+/// Liveness: trivial — proves the process/event-loop is alive without making
+/// outbound calls (a slow game-api or Solana RPC must never get a healthy pod
+/// killed). Includes browser CORS headers + `204` `OPTIONS` preflight so
+/// `https://swarm.tips/health` can probe `mcp.swarm.tips`,
+/// `mcp.coordination.game`, and `mcp.shillbot.org` directly from browser JS.
+fn health_handler() -> axum::routing::MethodRouter {
+    axum::routing::get(|| async { (axum::http::StatusCode::OK, HEALTH_CORS, "ok") })
+        .options(|| async { (axum::http::StatusCode::NO_CONTENT, HEALTH_CORS) })
+}
+
+fn attach_public_discovery_routes(router: axum::Router) -> axum::Router {
+    router
+        .route("/health", health_handler())
+        .route(
+            "/.well-known/openapi.json",
+            openapi::well_known_openapi_handler(),
+        )
+        .route("/openapi.json", openapi::well_known_openapi_handler())
+        .route(
+            "/.well-known/agent.json",
+            openapi::well_known_agent_card_handler(),
+        )
+        .route(
+            "/.well-known/agent-card.json",
+            openapi::well_known_agent_card_handler(),
+        )
+        .route(
+            "/.well-known/client.json",
+            openapi::well_known_client_manifest_handler(),
+        )
 }
 
 const BUILD_VERIFY_CORS: [(&str, &str); 3] = [
@@ -1855,5 +1868,102 @@ mod readiness_tests {
             .await
             .unwrap();
         assert_eq!(tampered_resp.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn health_and_openapi_routes_include_browser_cors_headers() {
+        let app = super::attach_public_discovery_routes(axum::Router::new());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::new();
+
+        // 1. GET /health -> 200 OK "ok" + Access-Control-Allow-Origin: *
+        let health_get = client.get(format!("{base}/health")).send().await.unwrap();
+        assert_eq!(health_get.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            health_get
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+        assert_eq!(
+            health_get
+                .headers()
+                .get("access-control-allow-methods")
+                .and_then(|v| v.to_str().ok()),
+            Some("GET, OPTIONS")
+        );
+        assert_eq!(health_get.text().await.unwrap(), "ok");
+
+        // 2. OPTIONS /health -> 204 No Content + Access-Control-Allow-Origin: *
+        let health_opt = client
+            .request(reqwest::Method::OPTIONS, format!("{base}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health_opt.status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(
+            health_opt
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+        assert_eq!(
+            health_opt
+                .headers()
+                .get("access-control-allow-methods")
+                .and_then(|v| v.to_str().ok()),
+            Some("GET, OPTIONS")
+        );
+
+        // 3. GET /openapi.json & GET /.well-known/openapi.json -> 200 OK JSON + CORS
+        let openapi_alias = client
+            .get(format!("{base}/openapi.json"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(openapi_alias.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            openapi_alias
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+        let alias_json: serde_json::Value = openapi_alias.json().await.unwrap();
+        assert!(alias_json["openapi"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("3.1.")));
+
+        let well_known_json: serde_json::Value = client
+            .get(format!("{base}/.well-known/openapi.json"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(alias_json, well_known_json);
+
+        let openapi_opt = client
+            .request(reqwest::Method::OPTIONS, format!("{base}/openapi.json"))
+            .send()
+            .await
+            .unwrap();
+        assert!(openapi_opt.status().is_success());
+        assert_eq!(
+            openapi_opt
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
     }
 }

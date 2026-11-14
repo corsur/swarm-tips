@@ -93,12 +93,12 @@ function mockConnection(txSig = "5MockSig11111111111111111111111111111111111111"
 }
 
 describe("Version sync & multi-bin package contract", () => {
-  it("exports CLIENT_VERSION matching package.json 0.4.3 and registers both swarm and client bins", () => {
+  it("exports CLIENT_VERSION matching package.json 0.4.4 and registers both swarm and client bins", () => {
     const pkg = JSON.parse(readFileSync(resolve(clientRoot, "package.json"), "utf8")) as {
       version: string;
       bin: Record<string, string>;
     };
-    expect(pkg.version).toBe("0.4.3");
+    expect(pkg.version).toBe("0.4.4");
     expect(CLIENT_VERSION).toBe(pkg.version);
     expect(pkg.bin.swarm).toBe("./dist/cli/swarm.js");
     expect(pkg.bin.client).toBe("./dist/cli/swarm.js");
@@ -129,7 +129,7 @@ describe("Version sync & multi-bin package contract", () => {
       );
       expect(res.error).toBeUndefined();
       expect(res.status, res.stderr).toBe(0);
-      expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.3" });
+      expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.4" });
     } finally {
       rmSync(cliBundle, { force: true });
     }
@@ -161,21 +161,34 @@ describe("Pluggable signers & C6 redaction", () => {
     const kp = Keypair.generate();
     const b58Secret = bs58.encode(kp.secretKey);
     const jsonSecret = JSON.stringify(Array.from(kp.secretKey));
+    const rawUint8 = Uint8Array.from(JSON.parse(jsonSecret) as number[]);
 
     const s1 = fromSolanaKeypair(kp);
+    const s1Raw = fromSolanaKeypair(rawUint8);
     const s2 = fromSolanaSecretKey(kp.secretKey);
     const s3 = fromSolanaSecretKey(b58Secret);
     const s4 = fromSolanaSecretKey(jsonSecret);
 
     expect(s1.address).toBe(kp.publicKey.toBase58());
+    expect(s1Raw.address).toBe(s1.address);
     expect(s2.address).toBe(s1.address);
     expect(s3.address).toBe(s1.address);
     expect(s4.address).toBe(s1.address);
 
+    // Invalid-length Uint8Array passed to fromSolanaKeypair fails closed with INVALID_ARGUMENT
+    expect(() => fromSolanaKeypair(new Uint8Array(32))).toThrow(SwarmClientError);
+    try {
+      fromSolanaKeypair(new Uint8Array(32));
+    } catch (err) {
+      expect((err as SwarmClientError).code).toBe("INVALID_ARGUMENT");
+    }
+
     const msg = new TextEncoder().encode("swarm-auth-nonce-123");
     const sig1 = await s1.signMessage(msg);
+    const sig1Raw = await s1Raw.signMessage(msg);
     const sig3 = await s3.signMessage(msg);
     expect(sig1).toHaveLength(64);
+    expect(Buffer.from(sig1).equals(Buffer.from(sig1Raw))).toBe(true);
     expect(Buffer.from(sig1).equals(Buffer.from(sig3))).toBe(true);
 
     // Verify signature with WebCrypto Ed25519
@@ -204,7 +217,7 @@ describe("Pluggable signers & C6 redaction", () => {
     expect(adapterSigner.address).toBe(s1.address);
 
     // C6 Redaction: never serialize or inspect secret key material
-    for (const signer of [s1, s2, s3, s4, adapterSigner]) {
+    for (const signer of [s1, s1Raw, s2, s3, s4, adapterSigner]) {
       expect(JSON.parse(JSON.stringify(signer))).toEqual({
         chain: "solana",
         address: kp.publicKey.toBase58(),
@@ -1882,3 +1895,132 @@ describe("Phase 5.1 Security Hardening (HIGH-02, HIGH-03, HIGH-37, MED-09)", () 
     expect(tsFeed.topic_id).toBe("town-square");
   });
 });
+
+describe("Public task inspection: ShillbotApiClient.getTask, agent.tasks.get, and CLI `tasks get`", () => {
+  it("fetches GET /tasks/{id} (with optional ?network=) via ShillbotApiClient.getTask and agent.tasks.get without auth handshakes", async () => {
+    const seenRequests: Array<{ url: string; auth: string | null }> = [];
+    const sampleTask = {
+      id: "camp-1:uuid-2",
+      platform: "website",
+      state: "open",
+      escrow_lamports: 50_000_000,
+      brief: "Place verified footer badge on a public docs site",
+    };
+
+    const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      seenRequests.push({ url, auth: headers.get("Authorization") });
+      if (url.includes("/auth/")) {
+        throw new Error(`Unexpected auth handshake on public GET /tasks/{id}: ${url}`);
+      }
+      return jsonResponse(sampleTask);
+    });
+
+    // 1. Unauthenticated SwarmAgent
+    const anonAgent = createSwarmAgent({
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    const resMainnet = await anonAgent.tasks.get("camp-1:uuid-2");
+    expect(resMainnet).toEqual(sampleTask);
+    expect(seenRequests[0]).toEqual({
+      url: "https://api.shillbot.org/tasks/camp-1%3Auuid-2",
+      auth: null,
+    });
+
+    // 2. Explicit network parameter on agent.tasks.get(id, "devnet")
+    await anonAgent.tasks.get("camp-1:uuid-2", "devnet");
+    expect(seenRequests[1]).toEqual({
+      url: "https://api.shillbot.org/tasks/camp-1%3Auuid-2?network=devnet",
+      auth: null,
+    });
+
+    // 3. Signer-equipped SwarmAgent still skips /auth/challenge on public getTask & listTasks
+    const kp = Keypair.generate();
+    const signedAgent = createSwarmAgent({
+      signer: fromSolanaKeypair(kp.secretKey),
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    await signedAgent.tasks.get("task-abc");
+    expect(seenRequests[2]).toEqual({
+      url: "https://api.shillbot.org/tasks/task-abc",
+      auth: null,
+    });
+
+    // 4. Direct ShillbotApiClient.getTask validation on empty id
+    const api = new ShillbotApiClient({
+      baseUrl: "https://api.shillbot.org",
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    await expect(api.getTask("   ")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
+
+  it("supports `swarm tasks get <id> --json` without authentication and documents `get <id>` in --help", async () => {
+    const sampleTask = {
+      id: "075c55ca-e86d-40f6-ba70-ae98143a0be1:80f9b86c-32bb-4e85-b66c-ab29a2eb9f40",
+      platform: "website",
+      state: "claimed",
+      website_instructions: {
+        html: '<a href="https://swarm.tips" data-task-nonce="0123456789abcdef0123456789abcdef">Swarm</a>',
+      },
+    };
+    const seenUrls: string[] = [];
+    const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seenUrls.push(url);
+      expect(new Headers(init?.headers).get("Authorization")).toBeNull();
+      return jsonResponse(sampleTask);
+    });
+
+    // 1. Unauthenticated `tasks get <id> --json` (mainnet default)
+    let out = "";
+    const code = await runSwarmCli(["tasks", "get", sampleTask.id, "--json"], {
+      stdout: { write: (s) => ((out += s), true), isTTY: false },
+      stderr: { write: () => true },
+      env: {},
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(out)).toEqual(sampleTask);
+    expect(seenUrls[0]).toBe(
+      `https://api.shillbot.org/tasks/${encodeURIComponent(sampleTask.id)}`,
+    );
+
+    // 2. Unauthenticated `tasks get <id> --network devnet --json`
+    let devOut = "";
+    const devCode = await runSwarmCli(
+      ["tasks", "get", "dev-task-1", "--network", "devnet", "--json"],
+      {
+        stdout: { write: (s) => ((devOut += s), true), isTTY: false },
+        stderr: { write: () => true },
+        env: {},
+        fetch: mockFetch as unknown as typeof fetch,
+      },
+    );
+    expect(devCode).toBe(0);
+    expect(JSON.parse(devOut)).toEqual(sampleTask);
+    expect(seenUrls[1]).toBe("https://api.shillbot.org/tasks/dev-task-1?network=devnet");
+
+    // 3. Missing <task_id> exits with usage error code 2
+    let errOut = "";
+    const missingIdCode = await runSwarmCli(["tasks", "get", "--json"], {
+      stdout: { write: (s) => ((errOut += s), true), isTTY: false },
+      stderr: { write: (s) => ((errOut += s), true) },
+      env: {},
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    expect(missingIdCode).toBe(2);
+    expect(errOut).toContain("Usage: swarm tasks get <task_id>");
+
+    // 4. `--help` advertises `get <id>`
+    let helpOut = "";
+    const helpCode = await runSwarmCli(["--help"], {
+      stdout: { write: (s) => ((helpOut += s), true), isTTY: true },
+      stderr: { write: () => true },
+      env: {},
+    });
+    expect(helpCode).toBe(0);
+    expect(helpOut).toContain("get <id>");
+  });
+});
+

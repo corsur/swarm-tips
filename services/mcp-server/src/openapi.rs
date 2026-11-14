@@ -2,13 +2,14 @@
 //! endpoints for `mcp.swarm.tips`.
 //!
 //! Exposes:
-//! - `GET /.well-known/openapi.json` — serves `openapi.merged.json` (or
-//!   `OPENAPI_MERGED_PATH`) when bundled on disk, otherwise the typed
-//!   `mcp-server` OpenAPI 3.1 document generated from Rust types below.
+//! - `GET /.well-known/openapi.json` & `GET /openapi.json` — serves
+//!   `openapi.merged.json` (or `OPENAPI_MERGED_PATH`) when bundled on disk,
+//!   otherwise the typed `mcp-server` OpenAPI 3.1 document generated from Rust
+//!   types below.
 //! - `GET /.well-known/agent.json` & `GET /.well-known/agent-card.json` —
 //!   machine-readable Swarm / A2A agent card advertising stateless REST,
-//!   `@swarm-tips/client@0.4.2`, A2A `/a2a`, and Streamable HTTP MCP fallback.
-//! - `GET /.well-known/client.json` — pinned `@swarm-tips/client@0.4.2` manifest.
+//!   `@swarm-tips/client@0.4.4`, A2A `/a2a`, and Streamable HTTP MCP fallback.
+//! - `GET /.well-known/client.json` — pinned `@swarm-tips/client@0.4.4` manifest.
 
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -746,7 +747,7 @@ impl Modify for SwarmSecurityAddon {
                     .scheme(HttpAuthScheme::Bearer)
                     .bearer_format("JWT")
                     .description(Some(
-                        "Stateless user JWT (`typ: \"user\"`, `aud` containing `\"mcp\"`) minted via `/auth/challenge` + `/auth/verify` (or `npx -y @swarm-tips/client auth token`). Never send alongside `X-Inbox-Session`.",
+                        "Stateless user JWT (`typ: \"user\"`, `aud: [\"shillbot\", \"game\", \"mcp\"]`) minted via `/auth/challenge` + `/auth/verify` (or `npx -y @swarm-tips/client auth token`). Never send alongside `X-Inbox-Session`.",
                     ))
                     .build(),
             ),
@@ -765,8 +766,8 @@ impl Modify for SwarmSecurityAddon {
 #[openapi(
     info(
         title = "Swarm Tips Unified Agent HTTP API",
-        version = "0.4.2",
-        description = "Stateless HTTP REST + A2A surface for Swarm Tips (`mcp.swarm.tips`). Pairs with `api.shillbot.org` and `api.coordination.game` for complete CLI/SDK parity (`@swarm-tips/client@0.4.2`)."
+        version = "0.4.4",
+        description = "Stateless HTTP REST + A2A surface for Swarm Tips (`mcp.swarm.tips`). Pairs with `api.shillbot.org` and `api.coordination.game` for complete CLI/SDK parity (`@swarm-tips/client@0.4.4`)."
     ),
     servers(
         (url = "https://mcp.swarm.tips", description = "Primary Swarm Tips HTTP & MCP surface")
@@ -854,9 +855,10 @@ pub fn openapi_spec() -> utoipa::openapi::OpenApi {
 const BUNDLED_MERGED_OPENAPI: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/openapi.merged.json"));
 
-/// Resolve the JSON payload served at `GET /.well-known/openapi.json`:
-/// prefers an explicit `OPENAPI_MERGED_PATH` override when valid JSON on disk,
-/// otherwise serves the compiled-in canonical 3-host `openapi.merged.json`.
+/// Resolve the JSON payload served at `GET /.well-known/openapi.json` and
+/// `GET /openapi.json`: prefers an explicit `OPENAPI_MERGED_PATH` override when
+/// valid JSON on disk, otherwise serves the compiled-in canonical 3-host
+/// `openapi.merged.json`.
 pub fn openapi_json_string() -> String {
     if let Ok(candidate) = std::env::var("OPENAPI_MERGED_PATH") {
         if let Ok(raw) = std::fs::read_to_string(&candidate) {
@@ -877,14 +879,14 @@ pub fn agent_card_json() -> serde_json::Value {
         "name": "Swarm Tips",
         "description": "Non-custodial earning, messaging, reputation, and coordination network for autonomous agents. Prefer `@swarm-tips/client` CLI/SDK (`npx @swarm-tips/client <cmd> --json`) when shell/Node is available; use Streamable HTTP MCP when sandboxed.",
         "url": "https://mcp.swarm.tips/a2a",
-        "version": "0.4.2",
+        "version": "0.4.4",
         "documentationUrl": "https://swarm.tips/skill.md",
         "openapiUrl": "https://mcp.swarm.tips/.well-known/openapi.json",
         "clientManifestUrl": "https://mcp.swarm.tips/.well-known/client.json",
         "preferredTransport": "cli-or-rest",
         "cli": {
             "package": "@swarm-tips/client",
-            "version": "0.4.2",
+            "version": "0.4.4",
             "invoke": "npx -y @swarm-tips/client <command> --json"
         },
         "mcp": {
@@ -899,7 +901,8 @@ pub fn agent_card_json() -> serde_json::Value {
         },
         "authentication": {
             "schemes": ["Bearer", "X-Inbox-Session"],
-            "credentials": "Obtain a stateless Bearer JWT via POST https://api.coordination.game/auth/challenge + /auth/verify (or `npx -y @swarm-tips/client auth token`). Never send Authorization and X-Inbox-Session together."
+            "aud": ["shillbot", "game", "mcp"],
+            "credentials": "Obtain a stateless Bearer JWT (`typ: \"user\"`, `aud: [\"shillbot\", \"game\", \"mcp\"]`) via POST https://api.coordination.game/auth/challenge + /auth/verify (or `npx -y @swarm-tips/client auth token`). Never send Authorization and X-Inbox-Session together."
         },
         "defaultInputModes": ["application/json", "text/plain"],
         "defaultOutputModes": ["application/json", "text/plain"],
@@ -980,7 +983,7 @@ mod tests {
             "expected OpenAPI 3.1.x, got {:?}",
             v["openapi"]
         );
-        assert_eq!(v["info"]["version"], "0.4.2");
+        assert_eq!(v["info"]["version"], "0.4.4");
 
         let schemes = &v["components"]["securitySchemes"];
         assert_eq!(schemes["bearer_jwt"]["type"], "http");
@@ -1021,6 +1024,7 @@ mod tests {
     async fn well_known_discovery_routes_serve_200_json_with_cors() {
         let app = axum::Router::new()
             .route("/.well-known/openapi.json", well_known_openapi_handler())
+            .route("/openapi.json", well_known_openapi_handler())
             .route("/.well-known/agent.json", well_known_agent_card_handler())
             .route(
                 "/.well-known/agent-card.json",
@@ -1043,6 +1047,7 @@ mod tests {
 
         for route in [
             "/.well-known/openapi.json",
+            "/openapi.json",
             "/.well-known/agent.json",
             "/.well-known/agent-card.json",
             "/.well-known/client.json",
@@ -1064,6 +1069,26 @@ mod tests {
             assert!(body.is_object(), "{route}");
         }
 
+        let card = agent_card_json();
+        assert_eq!(card["version"], "0.4.4");
+        assert_eq!(card["cli"]["version"], "0.4.4");
+        assert_eq!(
+            card["openapiUrl"],
+            "https://mcp.swarm.tips/.well-known/openapi.json"
+        );
+        assert_eq!(
+            card["authentication"]["aud"],
+            serde_json::json!(["shillbot", "game", "mcp"])
+        );
+        assert!(card["authentication"]["credentials"]
+            .as_str()
+            .unwrap()
+            .contains("[\"shillbot\", \"game\", \"mcp\"]"));
+        assert!(!card["authentication"]["credentials"]
+            .as_str()
+            .unwrap()
+            .contains("\"swarm-tips\""));
+
         let client_manifest: serde_json::Value = client
             .get(format!("{base}/.well-known/client.json"))
             .send()
@@ -1072,6 +1097,6 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(client_manifest["version"], "0.4.2");
+        assert_eq!(client_manifest["version"], "0.4.4");
     }
 }

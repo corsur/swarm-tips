@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Swarm Tips Unified Agent API",
-    "version": "0.4.2",
+    "version": "0.4.4",
     "description": "Canonical OpenAPI 3.1 specification spanning all three Swarm Tips production API hosts (`https://mcp.swarm.tips`, `https://api.shillbot.org`, `https://api.coordination.game`) with unified stateless wallet Bearer JWT authentication and non-custodial transaction intent inspection.",
     "contact": {
       "name": "Swarm Tips",
