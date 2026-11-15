@@ -23,15 +23,50 @@ export interface XLegPayload {
 export interface XMatchPayload {
   match_id: string;
   tournament_id: number;
+  matchup_commitment: string;
   match_live_digest: string;
   operator_signature: string;
   create_match_operator_sig: string;
+  quote_timestamp: number;
+  quote_max_age_secs: number;
   fund_deadline: number;
   match_deadline: number;
   claim_window_secs: number;
   a_is_p1: number;
   leg_a: XLegPayload;
   leg_b: XLegPayload;
+}
+
+export interface XOutcomeCertPayload {
+  match_id: string;
+  match_live_digest: string;
+  outcome_digest: string;
+  outcome_kind: number;
+  step_count: number;
+  p1_guess: number;
+  p2_guess: number;
+  first_committer: number;
+  matchup_type: number;
+  transcript_hash: string;
+  operator_outcome_sig: string;
+  ready?: boolean;
+  live_sigs?: [string, string, string] | null;
+  oc_sigs?: [string, string, string] | null;
+  [key: string]: unknown;
+}
+
+export interface XSettleSigsResponse {
+  match_id: string;
+  ready: boolean;
+  live_sigs: [string, string, string] | null;
+  oc_sigs: [string, string, string] | null;
+}
+
+export interface XSolSettleTxResponse {
+  unsigned_tx: string;
+  blockhash: string;
+  match_id: string;
+  action: string;
 }
 
 export interface XQueueResponse {
@@ -110,6 +145,24 @@ export class CoordinationGameApiClient {
       ? `handle=${encodeURIComponent(by.handle)}`
       : `wallet=${encodeURIComponent(by.wallet)}`;
     return this.http.get<XGameplayView>(`/internal/xqueue/gameplay?${query}`);
+  }
+  submitCrossChainSettleSigs(
+    body: { handle?: string; wallet?: string; live_signature?: string; outcome_signature?: string },
+    token?: string,
+  ) {
+    return this.http.post<XSettleSigsResponse>("/internal/xqueue/settle-sigs", body, token);
+  }
+  crossChainOutcomeCosign(
+    body: { handle?: string; wallet?: string; live_signature?: string; outcome_signature?: string },
+    token?: string,
+  ) {
+    return this.http.post<XOutcomeCertPayload>("/internal/xqueue/outcome-cosign", body, token);
+  }
+  buildCrossChainSolSettle(
+    body: { handle?: string; wallet?: string; payer?: string },
+    token?: string,
+  ) {
+    return this.http.post<XSolSettleTxResponse>("/internal/xqueue/build-sol-settle", body, token);
   }
   joinEvmGame(body: { wallet: string; player_wallet?: string; chain: string; tournament_id: number }, token?: string) {
     return this.http.post<EvmJoinResponse>("/internal/evmgame/join", body, token);

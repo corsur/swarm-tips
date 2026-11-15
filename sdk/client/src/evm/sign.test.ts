@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { recoverAddress } from "viem";
-import { signDigestForRelay } from "./sign.js";
+import { signDigest, signDigestForRelay } from "./sign.js";
 import { e2eTestModeEnabled, E2E_TEST_MODE_KEY } from "./testing.js";
 
 const KEY = `0x${"11".repeat(32)}` as const;
@@ -27,6 +27,19 @@ describe("signDigestForRelay", () => {
       16
     )}` as `0x${string}`;
     const recovered = await recoverAddress({ hash: DIGEST, signature: evmSig });
+    expect(recovered.toLowerCase()).toBe(
+      privateKeyToAccount(KEY).address.toLowerCase()
+    );
+  });
+});
+
+describe("signDigest", () => {
+  it("emits EVM ecrecover v = 27 | 28 and recovers the signer directly", async () => {
+    const sig = await signDigest(KEY, DIGEST);
+    expect(sig).toMatch(/^0x[0-9a-f]{130}$/);
+    const v = parseInt(sig.slice(-2), 16);
+    expect([27, 28]).toContain(v);
+    const recovered = await recoverAddress({ hash: DIGEST, signature: sig });
     expect(recovered.toLowerCase()).toBe(
       privateKeyToAccount(KEY).address.toLowerCase()
     );

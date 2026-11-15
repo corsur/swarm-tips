@@ -752,17 +752,116 @@ impl GameApiClient {
         wallet: &str,
         handle: Option<&str>,
     ) -> Result<serde_json::Value, GameApiError> {
+        self.xqueue_outcome_cosign_with_sigs(wallet, handle, None, None)
+            .await
+    }
+
+    /// `POST /internal/xqueue/outcome-cosign` with optional player session-key
+    /// `live_signature` and `outcome_signature` piggybacked for the settle-sig
+    /// relay. Omitting both signatures behaves identically to
+    /// [`Self::xqueue_outcome_cosign`].
+    pub async fn xqueue_outcome_cosign_with_sigs(
+        &self,
+        wallet: &str,
+        handle: Option<&str>,
+        live_signature: Option<&str>,
+        outcome_signature: Option<&str>,
+    ) -> Result<serde_json::Value, GameApiError> {
         #[derive(Serialize)]
         struct Body<'a> {
             wallet: &'a str,
             #[serde(skip_serializing_if = "Option::is_none")]
             handle: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            live_signature: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            outcome_signature: Option<&'a str>,
         }
         let url = format!("{}/internal/xqueue/outcome-cosign", self.base_url);
         let resp = self
             .inner
             .post(&url)
-            .json(&Body { wallet, handle })
+            .json(&Body {
+                wallet,
+                handle,
+                live_signature,
+                outcome_signature,
+            })
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `POST /internal/xqueue/settle-sigs` — submit (or poll) the player's
+    /// session-key `live_signature` (`match_live_digest`) and
+    /// `outcome_signature` (`outcome_digest`), returning the 3-sig `live_sigs`
+    /// and `oc_sigs` arrays once both players + operator are assembled.
+    pub async fn xqueue_settle_sigs(
+        &self,
+        wallet: &str,
+        handle: Option<&str>,
+        live_signature: Option<&str>,
+        outcome_signature: Option<&str>,
+    ) -> Result<serde_json::Value, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            handle: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            live_signature: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            outcome_signature: Option<&'a str>,
+        }
+        let url = format!("{}/internal/xqueue/settle-sigs", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body {
+                wallet,
+                handle,
+                live_signature,
+                outcome_signature,
+            })
+            .send()
+            .await?;
+        Self::check_status(resp)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `POST /internal/xqueue/build-sol-settle` — build an unsigned permissionless
+    /// Solana `settle_xmatch` transaction once all 6 settle signatures are ready.
+    /// Returns `{ unsigned_tx, blockhash, match_id, action }`.
+    pub async fn xqueue_build_sol_settle(
+        &self,
+        wallet: &str,
+        handle: Option<&str>,
+        payer: Option<&str>,
+    ) -> Result<serde_json::Value, GameApiError> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            wallet: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            handle: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            payer: Option<&'a str>,
+        }
+        let url = format!("{}/internal/xqueue/build-sol-settle", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&Body {
+                wallet,
+                handle,
+                payer,
+            })
             .send()
             .await?;
         Self::check_status(resp)
@@ -1499,6 +1598,116 @@ mod tests {
                 }
                 other => panic!("wrong error variant: {other:?}"),
             }
+        }
+    }
+
+    mod xqueue_settle {
+        use super::*;
+        use serde_json::json;
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn xqueue_settle_sigs_posts_optional_sigs_and_omits_none_fields() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/internal/xqueue/settle-sigs"))
+                .and(body_json(json!({
+                    "wallet": "0xPlayer",
+                    "handle": "h-1",
+                    "live_signature": "0xlive",
+                    "outcome_signature": "0xoc",
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "status": "ready",
+                    "ready": true,
+                    "live_sigs": ["0x1", "0x2", "0x3"],
+                    "oc_sigs": ["0x4", "0x5", "0x6"],
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            // Poll-only call (no signatures) omits live_signature & outcome_signature.
+            Mock::given(method("POST"))
+                .and(path("/internal/xqueue/settle-sigs"))
+                .and(body_json(json!({
+                    "wallet": "0xPlayer",
+                    "handle": "h-2",
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "status": "pending",
+                    "ready": false,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = GameApiClient::new(&server.uri()).unwrap();
+            let ready = client
+                .xqueue_settle_sigs("0xPlayer", Some("h-1"), Some("0xlive"), Some("0xoc"))
+                .await
+                .unwrap();
+            assert_eq!(ready["ready"], true);
+
+            let pending = client
+                .xqueue_settle_sigs("0xPlayer", Some("h-2"), None, None)
+                .await
+                .unwrap();
+            assert_eq!(pending["ready"], false);
+        }
+
+        #[tokio::test]
+        async fn xqueue_build_sol_settle_and_outcome_cosign_with_sigs_post_expected_bodies() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/internal/xqueue/build-sol-settle"))
+                .and(body_json(json!({
+                    "wallet": "SolWallet111",
+                    "handle": "h-sol",
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "unsigned_tx": "base64tx",
+                    "blockhash": "bh",
+                    "match_id": "0xaa",
+                    "action": "settle_xmatch",
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            Mock::given(method("POST"))
+                .and(path("/internal/xqueue/outcome-cosign"))
+                .and(body_json(json!({
+                    "wallet": "SolWallet111",
+                    "handle": "h-sol",
+                    "live_signature": "0xlive",
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "match_id": "0xaa",
+                    "outcome_kind": 4,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = GameApiClient::new(&server.uri()).unwrap();
+            let tx = client
+                .xqueue_build_sol_settle("SolWallet111", Some("h-sol"), None)
+                .await
+                .unwrap();
+            assert_eq!(tx["action"], "settle_xmatch");
+
+            let oc = client
+                .xqueue_outcome_cosign_with_sigs(
+                    "SolWallet111",
+                    Some("h-sol"),
+                    Some("0xlive"),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(oc["outcome_kind"], 4);
         }
     }
 }

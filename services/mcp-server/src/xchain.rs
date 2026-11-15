@@ -253,28 +253,40 @@ pub fn build_evm_create_match_call(payload: &Value) -> Result<Value, String> {
     }))
 }
 
-/// Build the unsigned EVM permissionless `lockTranche` call from a matched relay
-/// payload. The operator's match-live signature (`operator_signature`, produced
-/// at pairing) authorizes the lock — no new operator action — and the cert is
-/// reconstructed from the payload (chain tags recomputed as `keccak256(chain id)`,
-/// matching game-api's `chain_tag`). The locked amount is `legB.tranche`. The
-/// client submits + pays gas. Returns the same client-ready shape as the fund
-/// builder.
-pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
+fn str_at(v: &Value, k: &str) -> Result<String, String> {
+    v.get(k)
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| format!("missing string field {k}"))
+}
+
+fn u64_at(v: &Value, k: &str) -> Result<u64, String> {
+    v.get(k)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("missing u64 field {k}"))
+}
+
+fn u8_at(v: &Value, k: &str) -> Result<u8, String> {
+    u8::try_from(u64_at(v, k)?).map_err(|_| format!("{k} overflow"))
+}
+
+fn decode_evm_sig(sig_hex: &str) -> Result<[u8; 65], String> {
+    let mut sig = decode_0x::<65>(sig_hex)?;
+    // The relay stores signatures with v normalized to 0/1 (the form the
+    // Solana program and game-api verify); the EVM contract's ECDSA.recover
+    // demands 27/28. Tolerate both forms so neither storage convention reverts
+    // with ECDSAInvalidSignature (0xf645eedf).
+    if sig[64] < 27 {
+        sig[64] = sig[64].saturating_add(27);
+    }
+    Ok(sig)
+}
+
+fn parse_cert_parts_and_verify_leg_b(
+    payload: &Value,
+) -> Result<(String, [u8; 20], evm_chain::CertParts), String> {
     let leg_a = payload.get("leg_a").ok_or("payload missing leg_a")?;
     let leg_b = payload.get("leg_b").ok_or("payload missing leg_b")?;
-    let str_at = |v: &Value, k: &str| -> Result<String, String> {
-        v.get(k)
-            .and_then(|x| x.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| format!("missing string field {k}"))
-    };
-    let u64_at = |k: &str| -> Result<u64, String> {
-        payload
-            .get(k)
-            .and_then(Value::as_u64)
-            .ok_or_else(|| format!("missing u64 field {k}"))
-    };
     let leg_parts = |leg: &Value| -> Result<evm_chain::LegParts, String> {
         Ok(evm_chain::LegParts {
             // chain_tag isn't carried in the payload; recompute it the same way
@@ -295,31 +307,34 @@ pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
 
     let cert = evm_chain::CertParts {
         match_id: decode_0x::<32>(&str_at(payload, "match_id")?)?,
-        tournament_id: u64_at("tournament_id")?,
+        tournament_id: u64_at(payload, "tournament_id")?,
         matchup_commitment: decode_0x::<32>(&str_at(payload, "matchup_commitment")?)?,
         leg_a: leg_parts(leg_a)?,
         leg_b: leg_parts(leg_b)?,
-        quote_timestamp: u64_at("quote_timestamp")?,
-        quote_max_age_secs: u32::try_from(u64_at("quote_max_age_secs")?)
+        quote_timestamp: u64_at(payload, "quote_timestamp")?,
+        quote_max_age_secs: u32::try_from(u64_at(payload, "quote_max_age_secs")?)
             .map_err(|_| "quote_max_age overflow".to_string())?,
-        match_deadline: u64_at("match_deadline")?,
-        claim_window_secs: u32::try_from(u64_at("claim_window_secs")?)
+        match_deadline: u64_at(payload, "match_deadline")?,
+        claim_window_secs: u32::try_from(u64_at(payload, "claim_window_secs")?)
             .map_err(|_| "claim_window overflow".to_string())?,
-        a_is_p1: u8::try_from(u64_at("a_is_p1")?).map_err(|_| "a_is_p1 overflow".to_string())?,
+        a_is_p1: u8_at(payload, "a_is_p1")?,
     };
     let chain_id = str_at(leg_b, "chain")?;
     let contract = decode_0x::<20>(&str_at(leg_b, "contract")?)?;
     verify_leg_b_against_registry(&chain_id, contract, Some(cert.leg_b.stake))?;
-    let mut operator_sig = decode_0x::<65>(&str_at(payload, "operator_signature")?)?;
-    // The relay stores signatures with v normalized to 0/1 (the form the
-    // Solana program and game-api verify); the EVM contract's ECDSA.recover
-    // demands 27/28. Passing the relay form through verbatim made EVERY
-    // lockTranche revert ECDSAInvalidSignature (0xf645eedf) — found live on
-    // Base Sepolia 2026-08-30; the v+27 patched call landed. Tolerate both
-    // forms here so neither storage convention can brick the lock.
-    if operator_sig[64] < 27 {
-        operator_sig[64] = operator_sig[64].saturating_add(27);
-    }
+    Ok((chain_id, contract, cert))
+}
+
+/// Build the unsigned EVM permissionless `lockTranche` call from a matched relay
+/// payload. The operator's match-live signature (`operator_signature`, produced
+/// at pairing) authorizes the lock — no new operator action — and the cert is
+/// reconstructed from the payload (chain tags recomputed as `keccak256(chain id)`,
+/// matching game-api's `chain_tag`). The locked amount is `legB.tranche`. The
+/// client submits + pays gas. Returns the same client-ready shape as the fund
+/// builder.
+pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
+    let (chain_id, contract, cert) = parse_cert_parts_and_verify_leg_b(payload)?;
+    let operator_sig = decode_evm_sig(&str_at(payload, "operator_signature")?)?;
 
     let call = evm_chain::build_lock_tranche_parts(contract, cert, operator_sig);
     let (to, data, value) = call.to_hex_parts();
@@ -333,6 +348,73 @@ pub fn build_evm_lock_call(payload: &Value) -> Result<Value, String> {
             with your EVM wallet (fill gas/nonce/chainId locally) and submit it to \
             lock your leg's tranche. value_wei is 0; you pay only gas. The operator \
             signature in the call authorizes it — no operator action needed.",
+    }))
+}
+
+/// Build the unsigned EVM permissionless `settle` call from a matched relay
+/// payload (`match_payload`), the operator-cosigned outcome (`outcome_payload`),
+/// and the 3-party `[legA_session, legB_session, operator]` `live_sigs` and
+/// `oc_sigs`. Verifies `leg_b` against `chain_registry` and checks `match_id`
+/// (and `match_live_digest` when present on `match_payload`) consistency before
+/// encoding calldata.
+pub fn build_evm_settle_call(
+    match_payload: &Value,
+    outcome_payload: &Value,
+    live_sigs: &[String; 3],
+    oc_sigs: &[String; 3],
+) -> Result<Value, String> {
+    let (chain_id, contract, cert) = parse_cert_parts_and_verify_leg_b(match_payload)?;
+    let oc = evm_chain::OutcomeParts {
+        match_id: decode_0x::<32>(&str_at(outcome_payload, "match_id")?)?,
+        match_live_digest: decode_0x::<32>(&str_at(outcome_payload, "match_live_digest")?)?,
+        outcome_kind: u8_at(outcome_payload, "outcome_kind")?,
+        step_count: u8_at(outcome_payload, "step_count")?,
+        p1_guess: u8_at(outcome_payload, "p1_guess")?,
+        p2_guess: u8_at(outcome_payload, "p2_guess")?,
+        first_committer: u8_at(outcome_payload, "first_committer")?,
+        matchup_type: u8_at(outcome_payload, "matchup_type")?,
+        transcript_hash: decode_0x::<32>(&str_at(outcome_payload, "transcript_hash")?)?,
+    };
+    if oc.match_id != cert.match_id {
+        return Err("outcome_payload.match_id does not match match_payload.match_id".to_string());
+    }
+    if let Some(mp_digest_str) = match_payload
+        .get("match_live_digest")
+        .and_then(Value::as_str)
+    {
+        let mp_digest = decode_0x::<32>(mp_digest_str)?;
+        if oc.match_live_digest != mp_digest {
+            return Err(
+                "outcome_payload.match_live_digest does not match match_payload.match_live_digest"
+                    .to_string(),
+            );
+        }
+    }
+
+    let live_sigs_bytes = [
+        decode_evm_sig(&live_sigs[0])?,
+        decode_evm_sig(&live_sigs[1])?,
+        decode_evm_sig(&live_sigs[2])?,
+    ];
+    let oc_sigs_bytes = [
+        decode_evm_sig(&oc_sigs[0])?,
+        decode_evm_sig(&oc_sigs[1])?,
+        decode_evm_sig(&oc_sigs[2])?,
+    ];
+
+    let call = evm_chain::build_settle_parts(contract, cert, oc, live_sigs_bytes, oc_sigs_bytes);
+    let (to, data, value) = call.to_hex_parts();
+    Ok(json!({
+        "action": "settle",
+        "chain": chain_id,
+        "to": to,
+        "data": data,
+        "value_wei": value,
+        "match_id": str_at(match_payload, "match_id")?,
+        "instructions": "Permissionless settle: sign this as an EIP-1559 transaction \
+            with your EVM wallet (fill gas/nonce/chainId locally) and submit it to \
+            settle your leg (value_wei is 0). Call withdraw() afterwards if you have \
+            pull-payment winnings to realize.",
     }))
 }
 
@@ -750,5 +832,66 @@ mod tests {
         bad_stake["leg_b"]["stake_base_units"] = json!("999999999999999999");
         let err = build_evm_create_match_call(&bad_stake).unwrap_err();
         assert!(err.contains("chain_registry stake"), "{err}");
+    }
+
+    fn settle_outcome_test_payload() -> Value {
+        json!({
+            "match_id": format!("0x{}", "aa".repeat(32)),
+            "match_live_digest": format!("0x{}", "cc".repeat(32)),
+            "outcome_kind": 4u64,
+            "step_count": 4u64,
+            "p1_guess": 1u64,
+            "p2_guess": 0u64,
+            "first_committer": 1u64,
+            "matchup_type": 1u64,
+            "transcript_hash": format!("0x{}", "dd".repeat(32)),
+        })
+    }
+
+    #[test]
+    fn build_evm_settle_call_encodes_calldata_and_normalizes_v() {
+        let mut mp = lock_test_payload();
+        mp["match_live_digest"] = json!(format!("0x{}", "cc".repeat(32)));
+        let oc = settle_outcome_test_payload();
+        let make_sig = |byte: u8, v: u8| -> String {
+            let mut b = vec![byte; 65];
+            b[64] = v;
+            format!("0x{}", hex::encode(b))
+        };
+        let live_sigs = [make_sig(0x11, 0), make_sig(0x22, 1), make_sig(0x33, 27)];
+        let oc_sigs = [make_sig(0x44, 0), make_sig(0x55, 28), make_sig(0x66, 1)];
+
+        let call =
+            build_evm_settle_call(&mp, &oc, &live_sigs, &oc_sigs).expect("valid settle payload");
+        assert_eq!(call["action"], "settle");
+        assert_eq!(call["value_wei"], "0");
+        assert_eq!(call["chain"], "eip155:84532");
+        assert_eq!(
+            call["to"].as_str().unwrap().to_lowercase(),
+            format!("0x{}", base_sepolia_contract_hex40())
+        );
+        let data = call["data"].as_str().unwrap();
+        assert!(data.starts_with("0x"));
+        assert!(
+            data.len() > 2 + 400 * 2,
+            "settle calldata unexpectedly short"
+        );
+    }
+
+    #[test]
+    fn build_evm_settle_call_rejects_mismatched_match_id_or_tampered_contract() {
+        let mp = lock_test_payload();
+        let mut bad_oc = settle_outcome_test_payload();
+        bad_oc["match_id"] = json!(format!("0x{}", "ff".repeat(32)));
+        let sig = format!("0x{}", "11".repeat(65));
+        let sigs = [sig.clone(), sig.clone(), sig];
+        let err = build_evm_settle_call(&mp, &bad_oc, &sigs, &sigs).unwrap_err();
+        assert!(err.contains("match_id"), "{err}");
+
+        let mut bad_mp = lock_test_payload();
+        bad_mp["leg_b"]["contract"] = json!(format!("0x{:0>64}", "99".repeat(20)));
+        let oc = settle_outcome_test_payload();
+        let err = build_evm_settle_call(&bad_mp, &oc, &sigs, &sigs).unwrap_err();
+        assert!(err.contains("chain_registry contract"), "{err}");
     }
 }

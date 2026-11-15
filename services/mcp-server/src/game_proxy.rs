@@ -309,6 +309,49 @@ impl GameApiProxy {
             .map_err(map_game_api_error)
     }
 
+    /// Get the operator-cosigned cross-chain outcome while optionally relaying
+    /// the player's `live_signature` and `outcome_signature`.
+    pub async fn xqueue_outcome_cosign_with_sigs(
+        &self,
+        wallet: &str,
+        handle: Option<&str>,
+        live_signature: Option<&str>,
+        outcome_signature: Option<&str>,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_outcome_cosign_with_sigs(wallet, handle, live_signature, outcome_signature)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Submit (or poll) cross-chain `live_signature` and `outcome_signature`,
+    /// returning 3-sig `live_sigs` and `oc_sigs` arrays when ready.
+    pub async fn xqueue_settle_sigs(
+        &self,
+        wallet: &str,
+        handle: Option<&str>,
+        live_signature: Option<&str>,
+        outcome_signature: Option<&str>,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_settle_sigs(wallet, handle, live_signature, outcome_signature)
+            .await
+            .map_err(map_game_api_error)
+    }
+
+    /// Build the unsigned permissionless Solana `settle_xmatch` transaction.
+    pub async fn xqueue_build_sol_settle(
+        &self,
+        wallet: &str,
+        handle: Option<&str>,
+        payer: Option<&str>,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        self.client
+            .xqueue_build_sol_settle(wallet, handle, payer)
+            .await
+            .map_err(map_game_api_error)
+    }
+
     /// Get the unsigned Solana refund tx (permissionless) for the player.
     pub async fn xqueue_build_sol_refund(
         &self,
@@ -719,6 +762,8 @@ mod tests {
         for (p, m) in [
             ("/internal/xqueue/build-sol-lock", "POST"),
             ("/internal/xqueue/outcome-cosign", "POST"),
+            ("/internal/xqueue/settle-sigs", "POST"),
+            ("/internal/xqueue/build-sol-settle", "POST"),
             ("/internal/xqueue/gameplay", "GET"),
         ] {
             Mock::given(method(m))
@@ -732,8 +777,21 @@ mod tests {
         let p = proxy(&server);
         let lock = p.xqueue_build_sol_lock("w", None).await.expect("ok");
         assert_eq!(lock["endpoint"], "/internal/xqueue/build-sol-lock");
-        let cosign = p.xqueue_outcome_cosign("w", None).await.expect("ok");
+        let cosign = p
+            .xqueue_outcome_cosign_with_sigs("w", Some("h"), Some("0x1"), None)
+            .await
+            .expect("ok");
         assert_eq!(cosign["endpoint"], "/internal/xqueue/outcome-cosign");
+        let settle_sigs = p
+            .xqueue_settle_sigs("w", Some("h"), Some("0x1"), Some("0x2"))
+            .await
+            .expect("ok");
+        assert_eq!(settle_sigs["endpoint"], "/internal/xqueue/settle-sigs");
+        let sol_settle = p
+            .xqueue_build_sol_settle("w", Some("h"), None)
+            .await
+            .expect("ok");
+        assert_eq!(sol_settle["endpoint"], "/internal/xqueue/build-sol-settle");
         let gameplay = p.xqueue_gameplay("w", None).await.expect("ok");
         assert_eq!(gameplay["endpoint"], "/internal/xqueue/gameplay");
     }

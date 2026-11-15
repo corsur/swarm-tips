@@ -327,6 +327,45 @@ impl GameTxBuilder {
         self.build_unsigned(&[ix]).await
     }
 
+    /// Build the unsigned permissionless `settle_xmatch` transaction (Solana leg) —
+    /// settles a locked cross-chain match using the 3 match-live signatures and
+    /// 3 outcome co-signatures. Reads `GlobalConfig` on-chain to resolve the live
+    /// `treasury` account; `self.player` is the permissionless fee/rent payer
+    /// (`cranker`), while `sol_player` is the recorded Solana leg player
+    /// (`xmatch.player`).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn build_settle_xmatch(
+        &self,
+        cert_no_a: coordination::cert::MatchLiveCertNoA,
+        outcome: coordination::cert::OutcomeCertArg,
+        live_sigs: [[u8; 65]; 3],
+        oc_sigs: [[u8; 65]; 3],
+        sol_player: &Pubkey,
+    ) -> Result<UnsignedTx> {
+        anyhow::ensure!(
+            cert_no_a.tournament_id > 0,
+            "tournament_id must be non-zero"
+        );
+        let (global_config_pda, _) = pda::global_config_pda();
+        let global_config_account = self
+            .rpc
+            .get_account(&global_config_pda)
+            .await
+            .context("failed to fetch GlobalConfig account")?;
+        let global_config = GlobalConfig::try_deserialize(&mut global_config_account.data.as_ref())
+            .context("failed to deserialize GlobalConfig")?;
+        let ix = instructions::build_settle_xmatch(
+            cert_no_a,
+            outcome,
+            live_sigs,
+            oc_sigs,
+            sol_player,
+            &global_config.treasury,
+            &self.player,
+        );
+        self.build_unsigned(&[ix]).await
+    }
+
     /// Build the unsigned `refund_xmatch_timeout` transaction (Solana leg) —
     /// permissionless; the player (`self.player`) is the fee payer + refund
     /// recipient. Reclaims the stake and releases any locked tranche after the
@@ -550,6 +589,40 @@ impl GameTxBuilder {
         anyhow::bail!("timed out waiting for game {game_id} to reach state {target:?}")
     }
 
+    /// Read and deserialize a cross-chain match account (`XChainMatch`) by
+    /// `match_id` at `confirmed` commitment, returning `Ok(None)` when the
+    /// account does not exist (not yet created or already closed).
+    pub async fn read_xmatch(
+        &self,
+        match_id: [u8; 32],
+    ) -> Result<Option<coordination::state::XChainMatch>> {
+        let (pda, _) = pda::xmatch_pda(&match_id);
+        match self
+            .rpc
+            .get_account_with_commitment(&pda, CommitmentConfig::confirmed())
+            .await
+        {
+            Ok(response) => match response.value {
+                Some(account) => {
+                    let xm = coordination::state::XChainMatch::try_deserialize(
+                        &mut account.data.as_ref(),
+                    )
+                    .context("failed to deserialize XChainMatch")?;
+                    Ok(Some(xm))
+                }
+                None => Ok(None),
+            },
+            Err(e) => {
+                let msg = format!("{e}");
+                if msg.contains("AccountNotFound") || msg.contains("could not find account") {
+                    Ok(None)
+                } else {
+                    Err(anyhow::anyhow!(e).context("failed to fetch XChainMatch account"))
+                }
+            }
+        }
+    }
+
     // -- Internal helpers ------------------------------------------------------
 
     /// Build an unsigned transaction from instructions.
@@ -721,5 +794,50 @@ mod tests {
             err.contains("deserialize"),
             "error must mention deserialization, got: {err}"
         );
+    }
+
+    #[test]
+    fn build_settle_xmatch_rejects_zero_tournament_before_rpc() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let builder = GameTxBuilder::new("http://localhost:8899", Pubkey::new_unique());
+        let cert_no_a = coordination::cert::MatchLiveCertNoA {
+            match_id: [0xAB; 32],
+            tournament_id: 0,
+            matchup_commitment: [0; 32],
+            leg_b: coordination::cert::CertLegArg {
+                chain_tag: [0; 32],
+                contract: [0; 32],
+                player: [0; 32],
+                session_key: [0; 20],
+                stake: 0,
+                tranche: 0,
+            },
+            quote_timestamp: 0,
+            quote_max_age_secs: 0,
+            match_deadline: 0,
+            claim_window_secs: 0,
+            a_is_p1: 1,
+        };
+        let outcome = coordination::cert::OutcomeCertArg {
+            match_id: [0xAB; 32],
+            match_live_digest: [0; 32],
+            outcome_kind: 4,
+            step_count: 4,
+            p1_guess: 0,
+            p2_guess: 0,
+            first_committer: 1,
+            matchup_type: 0,
+            transcript_hash: [0; 32],
+        };
+        let err = rt
+            .block_on(builder.build_settle_xmatch(
+                cert_no_a,
+                outcome,
+                [[0u8; 65]; 3],
+                [[0u8; 65]; 3],
+                &Pubkey::new_unique(),
+            ))
+            .expect_err("zero tournament_id must fail");
+        assert!(err.to_string().contains("tournament_id must be non-zero"));
     }
 }

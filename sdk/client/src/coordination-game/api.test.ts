@@ -21,6 +21,40 @@ describe("CoordinationGameApiClient", () => {
     const api = new CoordinationGameApiClient({ baseUrl: "https://game.test", fetch: async () => new Response(JSON.stringify({ message: "down" }), { status: 503 }) });
     await expect(api.authChallenge({ wallet: "w" })).rejects.toMatchObject({ code: "HTTP_ERROR", retryable: true, status: 503 } satisfies Partial<SwarmClientError>);
   });
+
+  it("posts cross-chain settle signatures, outcome cosign, and Solana settle builds", async () => {
+    const calls: Array<{ url: string; method?: string; body: unknown }> = [];
+    const api = new CoordinationGameApiClient({
+      baseUrl: "https://game.test",
+      fetch: async (input, init) => {
+        calls.push({
+          url: String(input),
+          method: init?.method,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(JSON.stringify({ ready: true, match_id: "0x01", live_sigs: ["0xa", "0xb", "0xc"], oc_sigs: ["0xd", "0xe", "0xf"], unsigned_tx: "AQID", blockhash: "Bh", action: "settle_xmatch" }), { status: 200 });
+      },
+    });
+    await api.submitCrossChainSettleSigs({ handle: "ph-1", live_signature: "0x11", outcome_signature: "0x22" });
+    await api.crossChainOutcomeCosign({ handle: "ph-1", live_signature: "0x11", outcome_signature: "0x22" });
+    await api.buildCrossChainSolSettle({ handle: "ph-1", wallet: "Sol111" });
+
+    expect(calls[0]).toEqual({
+      url: "https://game.test/internal/xqueue/settle-sigs",
+      method: "POST",
+      body: { handle: "ph-1", live_signature: "0x11", outcome_signature: "0x22" },
+    });
+    expect(calls[1]).toEqual({
+      url: "https://game.test/internal/xqueue/outcome-cosign",
+      method: "POST",
+      body: { handle: "ph-1", live_signature: "0x11", outcome_signature: "0x22" },
+    });
+    expect(calls[2]).toEqual({
+      url: "https://game.test/internal/xqueue/build-sol-settle",
+      method: "POST",
+      body: { handle: "ph-1", wallet: "Sol111" },
+    });
+  });
 });
 
 describe("CoordinationGameWebSocketClient", () => {

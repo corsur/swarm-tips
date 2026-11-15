@@ -339,6 +339,56 @@ pub fn build_settle(
     call(contract, data, U256::ZERO)
 }
 
+/// Raw (alloy-free) outcome cert — the `settle` calldata input for callers
+/// (e.g. the MCP server) holding payload bytes without an alloy dependency.
+#[derive(Debug, Clone)]
+pub struct OutcomeParts {
+    pub match_id: [u8; 32],
+    pub match_live_digest: [u8; 32],
+    pub outcome_kind: u8,
+    pub step_count: u8,
+    pub p1_guess: u8,
+    pub p2_guess: u8,
+    pub first_committer: u8,
+    pub matchup_type: u8,
+    pub transcript_hash: [u8; 32],
+}
+
+impl OutcomeParts {
+    fn to_sol(&self) -> OutcomeCert {
+        OutcomeCert {
+            matchId: self.match_id.into(),
+            matchLiveDigest: self.match_live_digest.into(),
+            outcomeKind: self.outcome_kind,
+            stepCount: self.step_count,
+            p1Guess: self.p1_guess,
+            p2Guess: self.p2_guess,
+            firstCommitter: self.first_committer,
+            matchupType: self.matchup_type,
+            transcriptHash: self.transcript_hash.into(),
+        }
+    }
+}
+
+/// Byte-array variant of [`build_settle`] for callers that hold raw cert,
+/// outcome, and 65-byte signature bytes and don't want an alloy dependency.
+/// Permissionless: the caller submits + pays gas; the 6 co-signatures authorize.
+pub fn build_settle_parts(
+    contract: [u8; 20],
+    cert: CertParts,
+    oc: OutcomeParts,
+    live_sigs: [[u8; 65]; 3],
+    oc_sigs: [[u8; 65]; 3],
+) -> UnsignedEvmCall {
+    build_settle(
+        Address::from(contract),
+        cert.to_sol(),
+        oc.to_sol(),
+        live_sigs.map(|s| s.to_vec()),
+        oc_sigs.map(|s| s.to_vec()),
+    )
+}
+
 /// Build an unsigned `refundNoCert` call (permissionless).
 pub fn build_refund_no_cert(contract: Address, match_id: [u8; 32]) -> UnsignedEvmCall {
     let data = CrossChainGame::refundNoCertCall {
@@ -938,6 +988,74 @@ mod tests {
         let tx = build_settle(C, cert, oc, sigs(), sigs());
         assert_eq!(tx.value, U256::ZERO);
         assert_eq!(&tx.data[..4], &CrossChainGame::settleCall::SELECTOR[..]);
+    }
+
+    #[test]
+    fn settle_parts_matches_typed_builder() {
+        let cert_parts = CertParts {
+            match_id: [0xAA; 32],
+            tournament_id: 7,
+            matchup_commitment: [0xBB; 32],
+            leg_a: LegParts {
+                chain_tag: [0x10; 32],
+                contract: [0x11; 32],
+                player: [0x12; 32],
+                session_key: [0x13; 20],
+                stake: 1,
+                tranche: 2,
+            },
+            leg_b: LegParts {
+                chain_tag: [0x20; 32],
+                contract: [0x21; 32],
+                player: [0x22; 32],
+                session_key: [0x23; 20],
+                stake: 1,
+                tranche: 2,
+            },
+            quote_timestamp: 1,
+            quote_max_age_secs: 2,
+            match_deadline: 3,
+            claim_window_secs: 4,
+            a_is_p1: 1,
+        };
+        let oc_parts = OutcomeParts {
+            match_id: [0xAA; 32],
+            match_live_digest: [0xCC; 32],
+            outcome_kind: 4,
+            step_count: 4,
+            p1_guess: 1,
+            p2_guess: 0,
+            first_committer: 1,
+            matchup_type: 1,
+            transcript_hash: [0xDD; 32],
+        };
+        let live_sigs = [[1u8; 65], [2u8; 65], [3u8; 65]];
+        let oc_sigs = [[4u8; 65], [5u8; 65], [6u8; 65]];
+        let via_parts = build_settle_parts([0x11; 20], cert_parts, oc_parts, live_sigs, oc_sigs);
+        let typed = build_settle(
+            Address::from([0x11u8; 20]),
+            sample_cert(),
+            OutcomeCert {
+                matchId: [0xAA; 32].into(),
+                matchLiveDigest: [0xCC; 32].into(),
+                outcomeKind: 4,
+                stepCount: 4,
+                p1Guess: 1,
+                p2Guess: 0,
+                firstCommitter: 1,
+                matchupType: 1,
+                transcriptHash: [0xDD; 32].into(),
+            },
+            [vec![1u8; 65], vec![2u8; 65], vec![3u8; 65]],
+            [vec![4u8; 65], vec![5u8; 65], vec![6u8; 65]],
+        );
+        assert_eq!(via_parts.data, typed.data);
+        assert_eq!(via_parts.value, U256::ZERO);
+        assert_eq!(via_parts.to, typed.to);
+        assert_eq!(
+            &via_parts.data[..4],
+            &CrossChainGame::settleCall::SELECTOR[..]
+        );
     }
 
     #[test]

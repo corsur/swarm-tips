@@ -25,3 +25,23 @@ export async function signDigestForRelay(
   if (v >= 27) v -= 27; // 27|28 -> 0|1 for the relay's k256 recover_address
   return `0x${rs}${v.toString(16).padStart(2, "0")}`;
 }
+
+/**
+ * Sign a `0x` 32-byte digest with an EVM private key, returning a `0x` 65-byte
+ * `[r||s||v]` secp256k1 signature with `v = 27 | 28` (the EVM `ecrecover` /
+ * OpenZeppelin `ECDSA.recover` convention verified by on-chain EVM contracts).
+ */
+export async function signDigest(
+  privateKey: Hex,
+  digestHex: Hex
+): Promise<Hex> {
+  const serialized = await sign({ hash: digestHex, privateKey, to: "hex" });
+  const body = serialized.slice(2); // 130 hex chars: r(64) || s(64) || v(2)
+  if (body.length !== 130) {
+    throw new Error(`unexpected signature length: ${serialized}`);
+  }
+  const rs = body.slice(0, 128);
+  let v = parseInt(body.slice(128, 130), 16);
+  if (v < 27) v += 27;
+  return `0x${rs}${v.toString(16).padStart(2, "0")}`;
+}

@@ -1,11 +1,10 @@
 /**
  * Minimal CrossChainGame ABI for client-side EVM-leg calls (viem
  * encodeFunctionData). Vendored from the Foundry artifact
- * (swarm-tips-repo/evm/out/CrossChainGame.sol/CrossChainGame.json) — only the
- * functions the cross-chain match UX needs: fund (createMatch), refund
- * (refundTimeout/refundNoCert), and the read views (stakeWei, CHAIN_TAG,
- * matches). Settle is permissionless and operator/harness-driven, so it is not
- * vendored here. Regenerate if the contract ABI changes.
+ * (swarm-tips-repo/evm/out/CrossChainGame.sol/CrossChainGame.json) — covers
+ * fund (createMatch), lock (lockTranche), settle, refund
+ * (refundTimeout/refundNoCert), and the read views (stakeWei, poolFree,
+ * CHAIN_TAG, matches). Regenerate if the contract ABI changes.
  */
 export const CROSS_CHAIN_GAME_ABI = [
   {
@@ -63,6 +62,140 @@ export const CROSS_CHAIN_GAME_ABI = [
     ],
     "outputs": [],
     "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "lockTranche",
+    "inputs": [
+      {
+        "name": "cert",
+        "type": "tuple",
+        "internalType": "struct CertLib.MatchLiveCert",
+        "components": [
+          {
+            "name": "matchId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "tournamentId",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "matchupCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "legA",
+            "type": "tuple",
+            "internalType": "struct CertLib.Leg",
+            "components": [
+              {
+                "name": "chainTag",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "contractId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "player",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "sessionKey",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "stake",
+                "type": "uint128",
+                "internalType": "uint128"
+              },
+              {
+                "name": "tranche",
+                "type": "uint128",
+                "internalType": "uint128"
+              }
+            ]
+          },
+          {
+            "name": "legB",
+            "type": "tuple",
+            "internalType": "struct CertLib.Leg",
+            "components": [
+              {
+                "name": "chainTag",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "contractId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "player",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "sessionKey",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "stake",
+                "type": "uint128",
+                "internalType": "uint128"
+              },
+              {
+                "name": "tranche",
+                "type": "uint128",
+                "internalType": "uint128"
+              }
+            ]
+          },
+          {
+            "name": "quoteTimestamp",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "quoteMaxAgeSecs",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "matchDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "claimWindowSecs",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "aIsP1",
+            "type": "uint8",
+            "internalType": "uint8"
+          }
+        ]
+      },
+      {
+        "name": "operatorSig",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -154,6 +287,24 @@ export const CROSS_CHAIN_GAME_ABI = [
         "name": "bestOutcomeKind",
         "type": "uint8",
         "internalType": "uint8"
+      },
+      {
+        "name": "timeoutOpensAt",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "poolFree",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -179,6 +330,197 @@ export const CROSS_CHAIN_GAME_ABI = [
         "name": "matchId",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "settle",
+    "inputs": [
+      {
+        "name": "cert",
+        "type": "tuple",
+        "internalType": "struct CertLib.MatchLiveCert",
+        "components": [
+          {
+            "name": "matchId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "tournamentId",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "matchupCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "legA",
+            "type": "tuple",
+            "internalType": "struct CertLib.Leg",
+            "components": [
+              {
+                "name": "chainTag",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "contractId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "player",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "sessionKey",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "stake",
+                "type": "uint128",
+                "internalType": "uint128"
+              },
+              {
+                "name": "tranche",
+                "type": "uint128",
+                "internalType": "uint128"
+              }
+            ]
+          },
+          {
+            "name": "legB",
+            "type": "tuple",
+            "internalType": "struct CertLib.Leg",
+            "components": [
+              {
+                "name": "chainTag",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "contractId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "player",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "sessionKey",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "stake",
+                "type": "uint128",
+                "internalType": "uint128"
+              },
+              {
+                "name": "tranche",
+                "type": "uint128",
+                "internalType": "uint128"
+              }
+            ]
+          },
+          {
+            "name": "quoteTimestamp",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "quoteMaxAgeSecs",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "matchDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "claimWindowSecs",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "aIsP1",
+            "type": "uint8",
+            "internalType": "uint8"
+          }
+        ]
+      },
+      {
+        "name": "oc",
+        "type": "tuple",
+        "internalType": "struct CertLib.OutcomeCert",
+        "components": [
+          {
+            "name": "matchId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "matchLiveDigest",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "outcomeKind",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "stepCount",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "p1Guess",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "p2Guess",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "firstCommitter",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "matchupType",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "transcriptHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      },
+      {
+        "name": "liveSigs",
+        "type": "bytes[3]",
+        "internalType": "bytes[3]"
+      },
+      {
+        "name": "ocSigs",
+        "type": "bytes[3]",
+        "internalType": "bytes[3]"
       }
     ],
     "outputs": [],

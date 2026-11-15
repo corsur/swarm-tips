@@ -8,3 +8,10 @@ export * from "./outcome-oracle.js";
 export * from "./battery.js";
 export * from "./protocol.js";
 export * from "./chains.js";
+export type {
+  XLegPayload,
+  XMatchPayload,
+  XOutcomeCertPayload,
+  XSettleSigsResponse,
+  XSolSettleTxResponse,
+} from "./api.js";

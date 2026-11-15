@@ -25,5 +25,6 @@ pub mod pda;
 /// get it from `client::GameChainClient::stake_lamports()`; `build_create_game`
 /// reads it internally so the value cannot be supplied wrongly at all.
 /// Keeping this un-exported makes the compiler the enforcement.
+pub use coordination::cert::{CertLegArg, MatchLiveCertArg, MatchLiveCertNoA, OutcomeCertArg};
 pub use coordination::instructions::xchain::CreateXMatchArgs;
-pub use coordination::state::{Game, GameState, GlobalConfig};
+pub use coordination::state::{Game, GameState, GlobalConfig, XChainMatch, XChainStatus};

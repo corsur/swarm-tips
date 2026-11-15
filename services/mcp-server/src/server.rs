@@ -336,9 +336,19 @@ pub(crate) fn default_tournament_id(network: Option<&str>) -> u64 {
     chain_registry::active_tournament_id(is_mainnet)
 }
 
+/// Resolve the active cross-chain tournament ID (`3` on mainnet, `1003` on
+/// testnet) from the caller's CAIP-2 `chain` via `chain_registry`.
+pub(crate) fn default_xchain_tournament_id_for_chain(chain: &str) -> Result<u64, McpError> {
+    let cid = chain_core::ChainId::parse(chain)
+        .map_err(|e| invalid_input(&format!("invalid chain {chain}: {e}")))?;
+    let entry = chain_registry::entry(&cid)
+        .ok_or_else(|| invalid_input(&format!("unregistered chain {chain}")))?;
+    Ok(chain_registry::active_tournament_id(entry.is_mainnet))
+}
+
 #[cfg(test)]
 mod default_tournament_tests {
-    use super::default_tournament_id;
+    use super::{default_tournament_id, default_xchain_tournament_id_for_chain};
 
     /// The default must track the registry, not a literal. Before this landed
     /// the server answered 1 — a tournament that ended 2026-05-01 — so the
@@ -361,6 +371,29 @@ mod default_tournament_tests {
         );
         // The specific regression this guards: never the dead T1.
         assert_ne!(default_tournament_id(None), 1, "T1 ended 2026-05-01");
+    }
+
+    #[test]
+    fn default_xchain_tournament_maps_mainnet_and_testnet_chains() {
+        for mainnet_chain in [
+            "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            "eip155:8453",
+            "eip155:1",
+        ] {
+            assert_eq!(
+                default_xchain_tournament_id_for_chain(mainnet_chain).expect("mainnet chain"),
+                chain_registry::ACTIVE_TOURNAMENT_MAINNET,
+                "{mainnet_chain} must resolve to mainnet tournament"
+            );
+        }
+        for testnet_chain in ["solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", "eip155:84532"] {
+            assert_eq!(
+                default_xchain_tournament_id_for_chain(testnet_chain).expect("testnet chain"),
+                chain_registry::ACTIVE_TOURNAMENT_DEVNET,
+                "{testnet_chain} must resolve to testnet tournament (1003)"
+            );
+        }
+        assert!(default_xchain_tournament_id_for_chain("eip155:999999").is_err());
     }
 }
 
@@ -837,7 +870,8 @@ pub struct XchainFindMatchArgs {
     /// 0x eth address of your per-match secp256k1 session key. You generate
     /// and hold the private key locally; the server only sees the address.
     pub session_key: String,
-    /// Tournament ID to join. Defaults to 1.
+    /// Optional tournament ID. Omit to automatically join the active tournament
+    /// for your wallet's network (3 on mainnet, 1003 on testnet).
     pub tournament_id: Option<u64>,
 }
 
@@ -979,8 +1013,27 @@ macro_rules! poll_handle_args {
     };
 }
 poll_handle_args!(XchainBuildCreateXmatchArgs);
-poll_handle_args!(XchainBuildSettleArgs);
 poll_handle_args!(XchainBuildLockXmatchArgs);
+
+#[derive(Debug, Default, serde::Deserialize, JsonSchema)]
+pub struct XchainBuildSettleArgs {
+    /// The poll_handle returned by xchain_find_match. Pass it so the server acts
+    /// by an unguessable secret, not your public wallet. Optional during rollout.
+    #[serde(default)]
+    pub poll_handle: Option<String>,
+    /// Optional 0x 65-byte session-key signature over `match_live_digest` for
+    /// the settle-sig relay.
+    #[serde(default)]
+    pub live_signature: Option<String>,
+    /// Optional 0x 65-byte session-key signature over `outcome_digest` for the
+    /// settle-sig relay.
+    #[serde(default)]
+    pub outcome_signature: Option<String>,
+    /// Optional `match` payload from `xchain_find_match` / `xchain_match_status`.
+    /// Pass on the EVM leg so the server can also return `evm_settle_call`.
+    #[serde(default, alias = "match")]
+    pub match_payload: Option<serde_json::Value>,
+}
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct XchainRevealArgs {
@@ -2820,7 +2873,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_find_match",
-        description = "[STATE] Join the cross-chain Coordination Game queue (Solana <-> EVM). Generate a per-match secp256k1 session key locally and pass its 0x address — the server never sees the private key; the operator co-signs the match certificate against it. Requires register_wallet (Solana base58 or EVM 0x). Returns 'waiting' (poll xchain_match_status) or 'matched' with the co-signed payload used to fund your leg and settle. Testnet only (Solana devnet <-> Base Sepolia).",
+        description = "[STATE] Join the cross-chain Coordination Game queue (Solana <-> EVM), live on Mainnet (Solana <-> Base / Ethereum) and Testnet (Solana Devnet <-> Base Sepolia). Generate a per-match secp256k1 session key locally and pass its 0x address — the server never sees the private key. Requires register_wallet (Solana base58 or EVM 0x). Returns 'waiting' (poll xchain_match_status; backup AI auto-matches within ~20-55s if no live peer joins) or 'matched' with the co-signed payload.",
         annotations(destructive_hint = true)
     )]
     async fn xchain_find_match(
@@ -2835,9 +2888,10 @@ impl SwarmTipsMcp {
         let (chain, address) = bound.to_xchain_native().ok_or_else(|| {
             invalid_input("registered wallet is not a cross-chain wallet (Solana base58 or EVM 0x)")
         })?;
-        let tournament_id = args
-            .tournament_id
-            .unwrap_or_else(|| default_tournament_id(None));
+        let tournament_id = match args.tournament_id {
+            Some(tid) => tid,
+            None => default_xchain_tournament_id_for_chain(&chain)?,
+        };
 
         let resp = self
             .state
@@ -3196,7 +3250,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_build_settle",
-        description = "[READ] Get the operator-cosigned OUTCOME of your finished cross-chain match, ready to settle. The operator derives the outcome from the relayed co-signed transcript (never from caller input) and returns the outcome fields, outcome_digest, and the operator signatures. Sign outcome_digest with your per-match session key, combine with the counterparty's sig, and settle both legs permissionlessly (Solana: game_submit_tx action='settle_xmatch'; EVM: settle from your wallet). Equivocated matches are rejected — use the contested claim path.",
+        description = "[READ] Fetch the operator-cosigned outcome of your finished cross-chain match and assemble unsigned settle transactions. Call once to get outcome_digest, then re-call with your session-key live_signature and outcome_signature (plus match_payload on EVM) to relay co-signatures. Once ready, returns 3-party live_sigs and oc_sigs plus solana_settle_tx (broadcast via game_submit_tx action='settle_xmatch') or evm_settle_call (sign and submit from your EVM wallet). Equivocated matches are rejected.",
         annotations(read_only_hint = true)
     )]
     async fn xchain_build_settle(
@@ -3204,23 +3258,25 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<XchainBuildSettleArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
-        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
-            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
-
-        let outcome = self
-            .state
-            .game_api
-            .xqueue_outcome_cosign(&address, args.poll_handle.as_deref())
-            .await
-            .map_err(|e| {
-                McpError::internal_error(format!("outcome cosign fetch failed: {e}"), None)
-            })?;
-
-        Ok(text_result(&serde_json::json!({
-            "outcome": outcome,
-            "instructions": "Sign `outcome_digest` with your per-match session key to produce your leg's outcome signature (oc_sigs for your seat). Assemble settle with [legA session, legB session, operator] sigs over the outcome digest plus the match-live signatures; submit the Solana settle_xmatch via game_submit_tx with action='settle_xmatch' (permissionless) and the EVM settle from your own wallet.",
-        })))
+        let submitting_sigs = args.live_signature.is_some() || args.outcome_signature.is_some();
+        let (chain, address) = if submitting_sigs {
+            let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
+            crate::xchain::resolve_xchain_wallet(bound.as_str())
+                .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?
+        } else {
+            let bound = self.require_bound_wallet(Some(&parts)).await?;
+            crate::xchain::resolve_xchain_wallet(&bound)
+                .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?
+        };
+        let body = execute_xchain_build_settle(
+            &self.state.game_api,
+            &chain,
+            &address,
+            &args,
+            submitting_sigs,
+        )
+        .await?;
+        Ok(text_result(&body))
     }
 
     #[tool(
@@ -5208,6 +5264,119 @@ impl SwarmTipsMcp {
     }
 }
 
+async fn execute_xchain_build_settle(
+    game_api: &GameApiProxy,
+    chain: &str,
+    address: &str,
+    args: &XchainBuildSettleArgs,
+    submitting_sigs: bool,
+) -> Result<serde_json::Value, McpError> {
+    let (outcome, mut settle_resp) = if submitting_sigs {
+        let resp = game_api
+            .xqueue_settle_sigs(
+                address,
+                args.poll_handle.as_deref(),
+                args.live_signature.as_deref(),
+                args.outcome_signature.as_deref(),
+            )
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("settle signature relay failed: {e}"), None)
+            })?;
+        let outcome = game_api
+            .xqueue_outcome_cosign_with_sigs(
+                address,
+                args.poll_handle.as_deref(),
+                args.live_signature.as_deref(),
+                args.outcome_signature.as_deref(),
+            )
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("outcome cosign fetch failed: {e}"), None)
+            })?;
+        (outcome, Some(resp))
+    } else {
+        let outcome = game_api
+            .xqueue_outcome_cosign(address, args.poll_handle.as_deref())
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("outcome cosign fetch failed: {e}"), None)
+            })?;
+        (outcome, None)
+    };
+
+    let extract_sig_triple = |v: &serde_json::Value, key: &str| -> Option<[String; 3]> {
+        let arr = v.get(key)?.as_array()?;
+        if arr.len() != 3 {
+            return None;
+        }
+        let s0 = arr[0].as_str().filter(|s| !s.is_empty())?.to_string();
+        let s1 = arr[1].as_str().filter(|s| !s.is_empty())?.to_string();
+        let s2 = arr[2].as_str().filter(|s| !s.is_empty())?.to_string();
+        Some([s0, s1, s2])
+    };
+
+    if settle_resp.is_none()
+        && (extract_sig_triple(&outcome, "live_sigs").is_none()
+            || extract_sig_triple(&outcome, "oc_sigs").is_none())
+    {
+        settle_resp = game_api
+            .xqueue_settle_sigs(address, args.poll_handle.as_deref(), None, None)
+            .await
+            .ok();
+    }
+
+    let live_sigs = settle_resp
+        .as_ref()
+        .and_then(|r| extract_sig_triple(r, "live_sigs"))
+        .or_else(|| extract_sig_triple(&outcome, "live_sigs"));
+    let oc_sigs = settle_resp
+        .as_ref()
+        .and_then(|r| extract_sig_triple(r, "oc_sigs"))
+        .or_else(|| extract_sig_triple(&outcome, "oc_sigs"));
+    let ready = live_sigs.is_some() && oc_sigs.is_some();
+
+    let mut body = serde_json::json!({
+        "outcome": outcome,
+        "ready": ready,
+        "live_sigs": live_sigs,
+        "oc_sigs": oc_sigs,
+    });
+
+    let instructions = if let (Some(ls), Some(os)) = (&live_sigs, &oc_sigs) {
+        if chain.starts_with("solana:") {
+            let sol_tx = game_api
+                .xqueue_build_sol_settle(address, args.poll_handle.as_deref(), None)
+                .await
+                .map_err(|e| {
+                    McpError::internal_error(format!("Solana settle-tx build failed: {e}"), None)
+                })?;
+            body["solana_settle_tx"] = sol_tx;
+            "All 6 co-signatures are ready. Sign solana_settle_tx.unsigned_tx with your Solana wallet and broadcast via game_submit_tx with action='settle_xmatch'."
+        } else if chain.starts_with("eip155:") {
+            if let Some(ref mp) = args.match_payload {
+                let evm_call = crate::xchain::build_evm_settle_call(mp, &body["outcome"], ls, os)
+                    .map_err(|e| {
+                    invalid_input(&format!(
+                        "invalid match/outcome payload for EVM settle: {e}"
+                    ))
+                })?;
+                body["evm_settle_call"] = evm_call;
+                "All 6 co-signatures are ready. Sign evm_settle_call as an EIP-1559 transaction with your EVM wallet (value_wei is 0) and submit it; call withdraw() afterwards if you have pull-payment winnings."
+            } else {
+                "All 6 co-signatures are ready. Re-call xchain_build_settle with match_payload (from xchain_find_match/xchain_match_status) to receive the unsigned evm_settle_call, or encode CrossChainGame.settle directly."
+            }
+        } else {
+            "All 6 co-signatures are ready. Settle your leg on-chain."
+        }
+    } else {
+        "Sign match_live_digest (from your match payload) and outcome.outcome_digest with your per-match session key, then re-call xchain_build_settle with {poll_handle, live_signature, outcome_signature} (plus match_payload on EVM) and poll until ready is true."
+    };
+    body["instructions"] = serde_json::json!(instructions);
+
+    Ok(body)
+}
+
 // -- Constants --
 
 // -- Error helpers --
@@ -6704,5 +6873,262 @@ mod tests {
             hint.contains("~14 days"),
             "empty expiry uses the fallback wording: {hint}"
         );
+    }
+
+    #[tokio::test]
+    async fn xchain_build_settle_solana_relays_sigs_and_attaches_solana_settle_tx() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let sig = format!("0x{}", "11".repeat(65));
+        let sigs = serde_json::json!([sig, sig, sig]);
+
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/settle-sigs"))
+            .and(body_partial_json(serde_json::json!({
+                "wallet": "SolWallet111",
+                "handle": "ph-sol",
+                "live_signature": sig,
+                "outcome_signature": sig,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "match_id": format!("0x{}", "aa".repeat(32)),
+                "ready": true,
+                "live_sigs": sigs,
+                "oc_sigs": sigs,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/outcome-cosign"))
+            .and(body_partial_json(serde_json::json!({
+                "wallet": "SolWallet111",
+                "handle": "ph-sol",
+                "live_signature": sig,
+                "outcome_signature": sig,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "match_id": format!("0x{}", "aa".repeat(32)),
+                "match_live_digest": format!("0x{}", "cc".repeat(32)),
+                "outcome_digest": format!("0x{}", "ee".repeat(32)),
+                "outcome_kind": 4,
+                "step_count": 4,
+                "p1_guess": 1,
+                "p2_guess": 0,
+                "first_committer": 1,
+                "matchup_type": 1,
+                "transcript_hash": format!("0x{}", "dd".repeat(32)),
+                "operator_outcome_sig": sig,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/build-sol-settle"))
+            .and(body_partial_json(serde_json::json!({
+                "wallet": "SolWallet111",
+                "handle": "ph-sol",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "action": "settle_xmatch",
+                "unsigned_tx": "AQID",
+                "blockhash": "Bh111",
+                "match_id": format!("0x{}", "aa".repeat(32)),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let game_api = GameApiProxy::new(server.uri()).expect("proxy builds");
+        let args = XchainBuildSettleArgs {
+            poll_handle: Some("ph-sol".to_string()),
+            live_signature: Some(sig.clone()),
+            outcome_signature: Some(sig),
+            match_payload: None,
+        };
+        let resp = execute_xchain_build_settle(
+            &game_api,
+            "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            "SolWallet111",
+            &args,
+            true,
+        )
+        .await
+        .expect("settle succeeds");
+
+        assert_eq!(resp["ready"], true);
+        assert_eq!(resp["solana_settle_tx"]["action"], "settle_xmatch");
+        assert_eq!(resp["solana_settle_tx"]["unsigned_tx"], "AQID");
+        assert!(resp["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("settle_xmatch"));
+    }
+
+    #[tokio::test]
+    async fn xchain_build_settle_evm_relays_sigs_and_encodes_evm_settle_call() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let mut sig_bytes = vec![0x22u8; 65];
+        sig_bytes[64] = 0; // relay v=0 -> must normalize to 27 inside build_evm_settle_call
+        let sig = format!("0x{}", hex::encode(&sig_bytes));
+        let sigs = serde_json::json!([sig, sig, sig]);
+
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/settle-sigs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "match_id": format!("0x{}", "aa".repeat(32)),
+                "ready": true,
+                "live_sigs": sigs,
+                "oc_sigs": sigs,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/outcome-cosign"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "match_id": format!("0x{}", "aa".repeat(32)),
+                "match_live_digest": format!("0x{}", "cc".repeat(32)),
+                "outcome_digest": format!("0x{}", "ee".repeat(32)),
+                "outcome_kind": 4,
+                "step_count": 4,
+                "p1_guess": 1,
+                "p2_guess": 0,
+                "first_committer": 1,
+                "matchup_type": 1,
+                "transcript_hash": format!("0x{}", "dd".repeat(32)),
+                "operator_outcome_sig": sig,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let bs = chain_registry::all()
+            .find(|e| e.chain_id == "eip155:84532")
+            .expect("base sepolia");
+        let contract_hex40 = bs
+            .game_contract
+            .expect("Base Sepolia contract registered")
+            .trim_start_matches("0x")
+            .to_lowercase();
+        let stake_str = bs.stake_base_units.to_string();
+        let match_payload = serde_json::json!({
+            "match_id": format!("0x{}", "aa".repeat(32)),
+            "tournament_id": 2u64,
+            "matchup_commitment": format!("0x{}", "bb".repeat(32)),
+            "match_live_digest": format!("0x{}", "cc".repeat(32)),
+            "match_deadline": 1_765_007_200u64,
+            "claim_window_secs": 3600u64,
+            "quote_timestamp": 1_765_000_000u64,
+            "quote_max_age_secs": 600u64,
+            "a_is_p1": 1,
+            "operator_signature": sig,
+            "leg_a": {
+                "chain": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+                "contract": format!("0x{}", "11".repeat(32)),
+                "player": format!("0x{}", "22".repeat(32)),
+                "session_key": format!("0x{}", "13".repeat(20)),
+                "stake_base_units": stake_str,
+                "tranche_base_units": stake_str,
+            },
+            "leg_b": {
+                "chain": "eip155:84532",
+                "contract": format!("0x{:0>64}", contract_hex40),
+                "player": format!("0x{}", "22".repeat(32)),
+                "session_key": format!("0x{}", "23".repeat(20)),
+                "stake_base_units": stake_str,
+                "tranche_base_units": stake_str,
+            },
+        });
+
+        let game_api = GameApiProxy::new(server.uri()).expect("proxy builds");
+        let args = XchainBuildSettleArgs {
+            poll_handle: Some("ph-evm".to_string()),
+            live_signature: Some(sig.clone()),
+            outcome_signature: Some(sig),
+            match_payload: Some(match_payload),
+        };
+        let resp = execute_xchain_build_settle(
+            &game_api,
+            "eip155:84532",
+            "0x996213ed4099707059b8b5d7489fff23dac9770d",
+            &args,
+            true,
+        )
+        .await
+        .expect("evm settle succeeds");
+
+        assert_eq!(resp["ready"], true);
+        assert_eq!(resp["evm_settle_call"]["action"], "settle");
+        assert_eq!(resp["evm_settle_call"]["value_wei"], "0");
+        assert_eq!(
+            resp["evm_settle_call"]["to"]
+                .as_str()
+                .unwrap()
+                .to_lowercase(),
+            format!("0x{contract_hex40}")
+        );
+    }
+
+    #[tokio::test]
+    async fn xchain_build_settle_read_only_returns_pending_when_sigs_incomplete() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/outcome-cosign"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "match_id": format!("0x{}", "aa".repeat(32)),
+                "outcome_digest": format!("0x{}", "ee".repeat(32)),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/internal/xqueue/settle-sigs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "match_id": format!("0x{}", "aa".repeat(32)),
+                "ready": false,
+                "live_sigs": null,
+                "oc_sigs": null,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let game_api = GameApiProxy::new(server.uri()).expect("proxy builds");
+        let args = XchainBuildSettleArgs {
+            poll_handle: Some("ph-wait".to_string()),
+            live_signature: None,
+            outcome_signature: None,
+            match_payload: None,
+        };
+        let resp = execute_xchain_build_settle(
+            &game_api,
+            "eip155:84532",
+            "0x996213ed4099707059b8b5d7489fff23dac9770d",
+            &args,
+            false,
+        )
+        .await
+        .expect("pending settle succeeds");
+
+        assert_eq!(resp["ready"], false);
+        assert!(resp.get("evm_settle_call").is_none());
+        assert!(resp.get("solana_settle_tx").is_none());
+        assert!(resp["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("live_signature"));
     }
 }

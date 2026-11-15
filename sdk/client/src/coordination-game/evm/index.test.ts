@@ -1,16 +1,23 @@
 import { describe, expect, it } from "vitest";
+import { decodeFunctionData, keccak256, toBytes } from "viem";
 import {
   buildEvmFundCall,
+  buildEvmLockTrancheCall,
+  buildEvmSettleCall,
+  certTupleFromMatchPayload,
   conservativeBalance,
+  CROSS_CHAIN_GAME_ABI,
   deriveResumeState,
   evmGameResult,
   getStoredEvmSession,
+  normalizeEvmSigV,
   revealMatchupArg,
   storeEvmSession,
   timeoutClaimableAt,
   verifyEvmFundTarget,
   ZERO_BYTES32,
   type SessionStorageLike,
+  type XMatchPayload,
 } from "./index.js";
 
 class MemoryStorage implements SessionStorageLike {
@@ -20,12 +27,19 @@ class MemoryStorage implements SessionStorageLike {
   removeItem(key: string) { this.values.delete(key); }
 }
 
-const match = {
+const relaySig0 = `0x${"aa".repeat(64)}00`;
+const relaySig1 = `0x${"bb".repeat(64)}01`;
+const evmSig27 = `0x${"cc".repeat(64)}1b`;
+
+const match: XMatchPayload = {
   match_id: `0x${"11".repeat(32)}`,
   tournament_id: 1,
+  matchup_commitment: `0x${"99".repeat(32)}`,
   match_live_digest: `0x${"22".repeat(32)}`,
-  operator_signature: "0x",
+  operator_signature: relaySig0,
   create_match_operator_sig: "0x1234",
+  quote_timestamp: 1_765_000_000,
+  quote_max_age_secs: 600,
   fund_deadline: 10,
   match_deadline: 20,
   claim_window_secs: 30,
@@ -62,5 +76,66 @@ describe("coordination-game EVM", () => {
       { stakeWei: async () => 3201n, matchStatus: async () => 0 },
     ])).rejects.toThrow(/disagree/);
     expect(conservativeBalance([5n, 3n, 4n])).toBe(3n);
+  });
+
+  it("reconstructs cert tuples, normalizes v, and encodes lockTranche and settle", () => {
+    const pin = { contract: `0x${"34".repeat(20)}` as const, stakeWei: 3200n };
+    expect(normalizeEvmSigV(relaySig0)).toBe(`0x${"aa".repeat(64)}1b`);
+    expect(normalizeEvmSigV(relaySig1)).toBe(`0x${"bb".repeat(64)}1c`);
+    expect(normalizeEvmSigV(evmSig27)).toBe(evmSig27);
+
+    const cert = certTupleFromMatchPayload(match);
+    expect(cert.legA.chainTag).toBe(keccak256(toBytes("solana:x")));
+    expect(cert.legB.chainTag).toBe(keccak256(toBytes("eip155:84532")));
+    expect(cert.legB.sessionKey).toBe(`0x${"78".repeat(20)}`);
+
+    const lockCall = buildEvmLockTrancheCall(match, pin);
+    expect(lockCall).toMatchObject({ to: pin.contract, value: 0n });
+    const decodedLock = decodeFunctionData({
+      abi: CROSS_CHAIN_GAME_ABI,
+      data: lockCall.data,
+    });
+    expect(decodedLock.functionName).toBe("lockTranche");
+    expect(decodedLock.args[1]).toBe(`0x${"aa".repeat(64)}1b`);
+
+    const bundle = {
+      outcome: {
+        match_id: match.match_id,
+        match_live_digest: match.match_live_digest,
+        outcome_kind: 4,
+        step_count: 4,
+        p1_guess: 1,
+        p2_guess: 0,
+        first_committer: 1,
+        matchup_type: 1,
+        transcript_hash: `0x${"dd".repeat(32)}`,
+      },
+      live_sigs: [relaySig0, relaySig1, evmSig27] as const,
+      oc_sigs: [relaySig1, relaySig0, evmSig27] as const,
+    };
+
+    const settleCall = buildEvmSettleCall(match, bundle, pin);
+    expect(settleCall).toMatchObject({ to: pin.contract, value: 0n });
+    const decodedSettle = decodeFunctionData({
+      abi: CROSS_CHAIN_GAME_ABI,
+      data: settleCall.data,
+    });
+    expect(decodedSettle.functionName).toBe("settle");
+    expect(decodedSettle.args[2]).toEqual([
+      `0x${"aa".repeat(64)}1b`,
+      `0x${"bb".repeat(64)}1c`,
+      evmSig27,
+    ]);
+
+    expect(() =>
+      buildEvmSettleCall(
+        match,
+        {
+          ...bundle,
+          outcome: { ...bundle.outcome, match_id: `0x${"ff".repeat(32)}` },
+        },
+        pin,
+      ),
+    ).toThrow(/match_id/);
   });
 });

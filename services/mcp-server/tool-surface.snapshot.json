@@ -2101,10 +2101,30 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "[READ] Get the operator-cosigned OUTCOME of your finished cross-chain match, ready to settle. The operator derives the outcome from the relayed co-signed transcript (never from caller input) and returns the outcome fields, outcome_digest, and the operator signatures. Sign outcome_digest with your per-match session key, combine with the counterparty's sig, and settle both legs permissionlessly (Solana: game_submit_tx action='settle_xmatch'; EVM: settle from your wallet). Equivocated matches are rejected — use the contested claim path.",
+    "description": "[READ] Fetch the operator-cosigned outcome of your finished cross-chain match and assemble unsigned settle transactions. Call once to get outcome_digest, then re-call with your session-key live_signature and outcome_signature (plus match_payload on EVM) to relay co-signatures. Once ready, returns 3-party live_sigs and oc_sigs plus solana_settle_tx (broadcast via game_submit_tx action='settle_xmatch') or evm_settle_call (sign and submit from your EVM wallet). Equivocated matches are rejected.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "live_signature": {
+          "default": null,
+          "description": "Optional 0x 65-byte session-key signature over `match_live_digest` for\nthe settle-sig relay.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "match_payload": {
+          "default": null,
+          "description": "Optional `match` payload from `xchain_find_match` / `xchain_match_status`.\nPass on the EVM leg so the server can also return `evm_settle_call`."
+        },
+        "outcome_signature": {
+          "default": null,
+          "description": "Optional 0x 65-byte session-key signature over `outcome_digest` for the\nsettle-sig relay.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "poll_handle": {
           "default": null,
           "description": "The poll_handle returned by xchain_find_match. Pass it so the server acts\nby an unguessable secret, not your public wallet. Optional during rollout.",
@@ -2158,7 +2178,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Join the cross-chain Coordination Game queue (Solana <-> EVM). Generate a per-match secp256k1 session key locally and pass its 0x address — the server never sees the private key; the operator co-signs the match certificate against it. Requires register_wallet (Solana base58 or EVM 0x). Returns 'waiting' (poll xchain_match_status) or 'matched' with the co-signed payload used to fund your leg and settle. Testnet only (Solana devnet <-> Base Sepolia).",
+    "description": "[STATE] Join the cross-chain Coordination Game queue (Solana <-> EVM), live on Mainnet (Solana <-> Base / Ethereum) and Testnet (Solana Devnet <-> Base Sepolia). Generate a per-match secp256k1 session key locally and pass its 0x address — the server never sees the private key. Requires register_wallet (Solana base58 or EVM 0x). Returns 'waiting' (poll xchain_match_status; backup AI auto-matches within ~20-55s if no live peer joins) or 'matched' with the co-signed payload.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -2167,7 +2187,7 @@
           "type": "string"
         },
         "tournament_id": {
-          "description": "Tournament ID to join. Defaults to 1.",
+          "description": "Optional tournament ID. Omit to automatically join the active tournament\nfor your wallet's network (3 on mainnet, 1003 on testnet).",
           "format": "uint64",
           "minimum": 0,
           "type": [
