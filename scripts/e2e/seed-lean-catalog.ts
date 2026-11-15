@@ -802,7 +802,9 @@ async function main(): Promise<void> {
     );
     if (String(taskDoc.escrow_lamports) !== String(entryEscrow)) {
       throw new Error(
-        `[escrow parity failed] task ${fund.task_id}: expected escrow_lamports="${entryEscrow}", got ${JSON.stringify(
+        `[escrow parity failed] task ${
+          fund.task_id
+        }: expected escrow_lamports="${entryEscrow}", got ${JSON.stringify(
           taskDoc.escrow_lamports
         )}`
       );
@@ -813,7 +815,9 @@ async function main(): Promise<void> {
       taskDoc.estimated_payment_lamports > entryEscrow
     ) {
       throw new Error(
-        `[escrow parity failed] task ${fund.task_id}: estimated_payment_lamports=${JSON.stringify(
+        `[escrow parity failed] task ${
+          fund.task_id
+        }: estimated_payment_lamports=${JSON.stringify(
           taskDoc.estimated_payment_lamports
         )} must be in (0, ${entryEscrow}]`
       );
