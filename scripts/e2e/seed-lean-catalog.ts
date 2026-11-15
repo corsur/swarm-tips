@@ -764,10 +764,10 @@ async function main(): Promise<void> {
         cta: entry.customCta ?? `Prove: ${entry.name} (${entry.kind})`,
         utm_link: "https://swarm.tips",
       },
-      budget_lamports: entryEscrow * 2,
+      budget_lamports: entryEscrow,
       platform: LEAN_PROOF_PLATFORM,
       statement_lean: entry.statement,
-      lean_policy: 3,
+      lean_policy: 4,
     });
     const campaignId = camp.campaign_id as string;
 
@@ -792,8 +792,32 @@ async function main(): Promise<void> {
         tx_signature: sig,
         action: "create",
         task_pda: fund.task_pda,
+        escrow_lamports: entryEscrow,
       }
     );
+    const taskDoc = await api(
+      "GET",
+      `/tasks/${encodeURIComponent(String(fund.task_id))}?network=${network}`,
+      bearer
+    );
+    if (String(taskDoc.escrow_lamports) !== String(entryEscrow)) {
+      throw new Error(
+        `[escrow parity failed] task ${fund.task_id}: expected escrow_lamports="${entryEscrow}", got ${JSON.stringify(
+          taskDoc.escrow_lamports
+        )}`
+      );
+    }
+    if (
+      typeof taskDoc.estimated_payment_lamports !== "number" ||
+      taskDoc.estimated_payment_lamports <= 0 ||
+      taskDoc.estimated_payment_lamports > entryEscrow
+    ) {
+      throw new Error(
+        `[escrow parity failed] task ${fund.task_id}: estimated_payment_lamports=${JSON.stringify(
+          taskDoc.estimated_payment_lamports
+        )} must be in (0, ${entryEscrow}]`
+      );
+    }
     console.log(
       `  [${network}] seeded ${entry.kind}/${entry.name} (${(
         entryEscrow / LAMPORTS_PER_SOL
