@@ -815,61 +815,56 @@ pub fn validate(
                     ));
                 }
             }
+        } else if secp_indices.is_empty() && switchboard_indices.is_empty() {
+            let oracle_index = lifecycle.accounts.get(2).copied().ok_or_else(|| {
+                ValidationError::Rejected("verify instruction has too few accounts".into())
+            })?;
+            if usize::from(oracle_index) >= required {
+                return Err(ValidationError::Rejected(
+                    "verify oracle authority account must be a required signer".into(),
+                ));
+            }
+            if let Some(feed) = expected_feed {
+                let oracle_key = keys
+                    .get(usize::from(oracle_index))
+                    .copied()
+                    .ok_or_else(|| {
+                        ValidationError::Rejected("verify oracle account index is invalid".into())
+                    })?;
+                if oracle_key != feed {
+                    return Err(ValidationError::Rejected(
+                        "verify oracle authority differs from expected authority".into(),
+                    ));
+                }
+            }
         } else {
             if expected.network == "mainnet" {
                 return Err(ValidationError::Rejected(
-                    "legacy verify_task is restricted to devnet".into(),
+                    "Switchboard pull-feed verify_task is restricted to devnet".into(),
                 ));
             }
-            if secp_indices.is_empty() && switchboard_indices.is_empty() {
-                let oracle_index = lifecycle.accounts.get(2).copied().ok_or_else(|| {
-                    ValidationError::Rejected("verify instruction has too few accounts".into())
-                })?;
-                if usize::from(oracle_index) >= required {
+            if secp_indices.len() != 1 || switchboard_indices.len() != 1 {
+                return Err(ValidationError::Rejected(
+                    "verify requires exactly one secp256k1 and one Switchboard instruction".into(),
+                ));
+            }
+            if secp_indices[0].saturating_add(1) != switchboard_indices[0]
+                || switchboard_indices[0] >= lifecycle_index
+            {
+                return Err(ValidationError::Rejected(
+                    "Switchboard verification instructions have an unsafe order".into(),
+                ));
+            }
+            if let Some(feed) = expected_feed {
+                let switchboard_ix = &instructions(&tx.message)[switchboard_indices[0]];
+                let includes_feed = switchboard_ix.accounts.iter().any(|index| {
+                    keys.get(usize::from(*index))
+                        .is_some_and(|key| *key == feed)
+                });
+                if !includes_feed {
                     return Err(ValidationError::Rejected(
-                        "verify oracle authority account must be a required signer".into(),
+                        "Switchboard instruction targets a different feed".into(),
                     ));
-                }
-                if let Some(feed) = expected_feed {
-                    let oracle_key =
-                        keys.get(usize::from(oracle_index))
-                            .copied()
-                            .ok_or_else(|| {
-                                ValidationError::Rejected(
-                                    "verify oracle account index is invalid".into(),
-                                )
-                            })?;
-                    if oracle_key != feed {
-                        return Err(ValidationError::Rejected(
-                            "verify oracle authority differs from expected authority".into(),
-                        ));
-                    }
-                }
-            } else {
-                if secp_indices.len() != 1 || switchboard_indices.len() != 1 {
-                    return Err(ValidationError::Rejected(
-                        "verify requires exactly one secp256k1 and one Switchboard instruction"
-                            .into(),
-                    ));
-                }
-                if secp_indices[0].saturating_add(1) != switchboard_indices[0]
-                    || switchboard_indices[0] >= lifecycle_index
-                {
-                    return Err(ValidationError::Rejected(
-                        "Switchboard verification instructions have an unsafe order".into(),
-                    ));
-                }
-                if let Some(feed) = expected_feed {
-                    let switchboard_ix = &instructions(&tx.message)[switchboard_indices[0]];
-                    let includes_feed = switchboard_ix.accounts.iter().any(|index| {
-                        keys.get(usize::from(*index))
-                            .is_some_and(|key| *key == feed)
-                    });
-                    if !includes_feed {
-                        return Err(ValidationError::Rejected(
-                            "Switchboard instruction targets a different feed".into(),
-                        ));
-                    }
                 }
             }
         }
@@ -1664,13 +1659,38 @@ mod tests {
         expected.switchboard_feed = Some(attester.to_string());
         validate(&pass_tx, &expected).unwrap();
 
-        // Legacy verify_task must be rejected on mainnet
-        let legacy_ix = verify_task_co_signed_instruction(task, attester, 900_000, [7; 32]);
-        let legacy_tx = transaction(vec![legacy_ix.clone()], &payer);
-        let mut legacy_expected = exact_request(Action::Verify, payer, task, &legacy_ix);
-        legacy_expected.network = "mainnet".into();
-        legacy_expected.switchboard_feed = Some(attester.to_string());
-        assert!(validate(&legacy_tx, &legacy_expected)
+        // Oracle-co-signed verify_task (vk=0 social/referral/website/gameplay) succeeds on mainnet
+        let cosigned_ix = verify_task_co_signed_instruction(task, attester, 900_000, [7; 32]);
+        let cosigned_tx = transaction(vec![cosigned_ix.clone()], &payer);
+        let mut cosigned_expected = exact_request(Action::Verify, payer, task, &cosigned_ix);
+        cosigned_expected.network = "mainnet".into();
+        cosigned_expected.switchboard_feed = Some(attester.to_string());
+        validate(&cosigned_tx, &cosigned_expected).unwrap();
+
+        // Unsigned (non-oracle-signer) verify_task is rejected on mainnet
+        let unsigned_ix = verify_task_instruction(task, attester, 900_000, [7; 32]);
+        let unsigned_tx = transaction(vec![unsigned_ix.clone()], &payer);
+        let mut unsigned_expected = exact_request(Action::Verify, payer, task, &unsigned_ix);
+        unsigned_expected.network = "mainnet".into();
+        unsigned_expected.switchboard_feed = Some(attester.to_string());
+        assert!(validate(&unsigned_tx, &unsigned_expected)
+            .unwrap_err()
+            .to_string()
+            .contains("required signer"));
+
+        // Switchboard pull-feed companion verify_task is rejected on mainnet
+        let secp_ix = Instruction {
+            program_id: Pubkey::from_str(SECP256K1_PROGRAM).unwrap(),
+            accounts: vec![],
+            data: vec![1, 0, 0, 0],
+        };
+        let sb_ix = Instruction {
+            program_id: Pubkey::from_str(SWITCHBOARD_MAINNET).unwrap(),
+            accounts: vec![AccountMeta::new_readonly(attester, false)],
+            data: discriminator("pull_feed_submit_response_consensus").to_vec(),
+        };
+        let sb_tx = transaction(vec![secp_ix, sb_ix, unsigned_ix.clone()], &payer);
+        assert!(validate(&sb_tx, &unsigned_expected)
             .unwrap_err()
             .to_string()
             .contains("restricted to devnet"));

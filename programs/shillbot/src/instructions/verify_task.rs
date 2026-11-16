@@ -27,7 +27,7 @@ pub fn verify_task(
     // Checks
     require!(!global.paused, ShillbotError::ProtocolPaused);
     validate_verify_inputs(task, composite_score, verification_hash)?;
-    validate_devnet_gate(global)?;
+    validate_devnet_gate(task, global)?;
     validate_attestation_staleness(task, global, clock.unix_timestamp)?;
     require!(
         is_authorized_oracle_account(global, &ctx.accounts.switchboard_feed)
@@ -71,9 +71,14 @@ pub fn verify_task(
     Ok(())
 }
 
-/// Gate legacy `verify_task` strictly to devnet (`GlobalState.devnet_enabled`).
-pub(crate) fn validate_devnet_gate(global: &GlobalState) -> Result<()> {
-    require!(global.devnet_enabled, ShillbotError::DevnetOnly);
+/// Gate kind-0 `OnChainAction` (`platform == 11`) `verify_task` strictly to
+/// devnet (`GlobalState.devnet_enabled`), matching `create_task.rs`. Standard
+/// `platform < 10` (`verification_kind == 0`) social/referral/website/gameplay
+/// tasks use oracle-co-signed `verify_task` on both devnet and mainnet.
+pub(crate) fn validate_devnet_gate(task: &Task, global: &GlobalState) -> Result<()> {
+    if task.platform == shared::PlatformType::OnChainAction.discriminant() {
+        require!(global.devnet_enabled, ShillbotError::DevnetOnly);
+    }
     Ok(())
 }
 
@@ -313,10 +318,44 @@ mod tests {
             _reserved: [0; 3],
             bump: 255,
         };
-        assert!(validate_devnet_gate(&global).is_err());
+        let social_task = Task {
+            task_id: 1,
+            client: Pubkey::new_unique(),
+            agent: Pubkey::new_unique(),
+            state: TaskState::Submitted,
+            platform: shared::PlatformType::Referral.discriminant(),
+            escrow_lamports: 15_000_000,
+            content_hash: [0; 32],
+            content_id_hash: [0; 32],
+            task_nonce: [0; 16],
+            composite_score: 0,
+            payment_amount: 0,
+            fee_amount: 0,
+            deadline: 100_000,
+            submit_margin: 3_600,
+            claim_buffer: 14_400,
+            created_at: 1_000,
+            submitted_at: 2_000,
+            verified_at: 0,
+            challenge_deadline: 0,
+            attestation_delay_override: 0,
+            challenge_window_override: 0,
+            verification_timeout_override: 0,
+            verification_hash: [0; 32],
+            requires_approval: 0,
+            verification_kind: 0,
+            _reserved: [0; 18],
+            bump: 254,
+            payout_to: Pubkey::default(),
+        };
+        let mut onchain_action_task = social_task.clone();
+        onchain_action_task.platform = shared::PlatformType::OnChainAction.discriminant();
+
+        assert!(validate_devnet_gate(&social_task, &global).is_ok());
+        assert!(validate_devnet_gate(&onchain_action_task, &global).is_err());
         let mut devnet_global = global.clone();
         devnet_global.devnet_enabled = true;
-        assert!(validate_devnet_gate(&devnet_global).is_ok());
+        assert!(validate_devnet_gate(&onchain_action_task, &devnet_global).is_ok());
         assert!(is_authorized_oracle_pubkey(&global, &oracle_authority));
         assert!(is_authorized_oracle_pubkey(&global, &authority));
         assert!(!is_authorized_oracle_pubkey(&global, &feed));

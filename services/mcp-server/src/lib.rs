@@ -1294,15 +1294,6 @@ async fn build_verify_tx_handler(
             .into_response();
     };
 
-    if validation_network == "mainnet" {
-        return (
-            StatusCode::BAD_REQUEST,
-            BUILD_VERIFY_CORS,
-            "legacy verify_task is restricted to devnet; mainnet tasks settle via VOW v1 verify_task_attested",
-        )
-            .into_response();
-    }
-
     let client = state.orchestrator.authenticated(token.to_owned());
     let vdata = match client
         .get_verification_data(&task_id, &payer, net_opt)
@@ -1676,7 +1667,7 @@ mod readiness_tests {
 
     #[tokio::test]
     async fn build_verify_tx_handler_one_hop_forwards_caller_bearer_and_returns_intent() {
-        use wiremock::matchers::{header, method, path, query_param};
+        use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let orchestrator_mock = MockServer::start().await;
@@ -1699,7 +1690,6 @@ mod readiness_tests {
         // Orchestrator MUST receive the caller's exact Bearer JWT (no minted internal token).
         Mock::given(method("POST"))
             .and(path("/tasks/task-42/build-verify"))
-            .and(query_param("network", "devnet"))
             .and(header("authorization", format!("Bearer {user_jwt}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "task_id": "task-42",
@@ -1709,7 +1699,7 @@ mod readiness_tests {
                 "global_state": global_state,
                 "switchboard_feed": switchboard_feed,
             })))
-            .expect(2)
+            .expect(3)
             .mount(&orchestrator_mock)
             .await;
 
@@ -1742,7 +1732,20 @@ mod readiness_tests {
             rpc_url_devnet: rpc_mock.uri(),
         };
 
-        // Mainnet legacy verify_task is retired -> 400 Bad Request upfront.
+        // Unknown network is rejected -> 400 Bad Request upfront.
+        let bad_net_resp = super::build_verify_tx_handler(
+            bearer_headers(&user_jwt),
+            axum::Json(serde_json::json!({
+                "task_id": "task-42",
+                "payer": payer,
+                "network": "testnet",
+            })),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(bad_net_resp.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        // Mainnet oracle-co-signed verify_task (vk=0 social/referral/website/gameplay) succeeds -> 200 OK.
         let mainnet_resp = super::build_verify_tx_handler(
             bearer_headers(&user_jwt),
             axum::Json(serde_json::json!({
@@ -1753,7 +1756,7 @@ mod readiness_tests {
             state.clone(),
         )
         .await;
-        assert_eq!(mainnet_resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(mainnet_resp.status(), axum::http::StatusCode::OK);
 
         // 1-hop devnet body: omit task_pda, score, and hash!
         let resp = super::build_verify_tx_handler(
