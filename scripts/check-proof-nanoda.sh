@@ -30,14 +30,8 @@ if [[ -n "$fixture_namespace" ]]; then inventory_args+=("$fixture_namespace"); f
 (cd "$package_root" && lake env lean --run "$script_root/proof-declaration-inventory.lean" "${inventory_args[@]}" > "$inventory_file")
 # Use every declaration owned by every promoted module, including private and
 # generated helpers. The exporter recursively emits their logical dependencies.
-python3 - "$package_root" "$work_root/lean4export/.lake/build/bin/lean4export" "$module_name" "$inventory_file" "$export_file" <<'PY'
-import json, subprocess, sys
-package, exporter, module, inventory, output = sys.argv[1:]
-roots = [item["name"] for item in json.load(open(inventory))["declarations"]]
-with open(output, "w") as stream:
-    subprocess.run(["lake", "env", exporter, module, "--", *roots], cwd=package, stdout=stream, check=True)
-PY
-python3 "$script_root/check-proof-export-coverage.py" "$inventory_file" "$export_file" "$report_root/coverage.json"
+cargo xtask export-proof-declarations "$package_root" "$work_root/lean4export/.lake/build/bin/lean4export" "$module_name" "$inventory_file" "$export_file"
+cargo xtask check-proof-export-coverage "$inventory_file" "$export_file" "$report_root/coverage.json"
 
 config_file="$work_root/nanoda.json"
 printf '%s\n' \
@@ -53,21 +47,4 @@ printf '%s\n' \
   '}' > "$config_file"
 
 "$work_root/nanoda/target/release/nanoda_bin" "$config_file"
-python3 - "$report_root" "$lean4export_revision" "$nanoda_revision" <<'PY'
-import hashlib, json, pathlib, sys
-root = pathlib.Path(sys.argv[1])
-coverage = json.loads((root / "coverage.json").read_text())
-receipt = {
-    "schema": "swarm.lean-independent-verification/v1",
-    "independent_kernel": True,
-    "lean4export_revision": sys.argv[2],
-    "nanoda_revision": sys.argv[3],
-    "allowed_axioms": ["propext", "Classical.choice", "Quot.sound"],
-    "coverage_sha256": hashlib.sha256((root / "coverage.json").read_bytes()).hexdigest(),
-    "inventory_sha256": coverage["inventory_sha256"],
-    "export_sha256": coverage["export_sha256"],
-    "root_count": len(coverage["roots"]),
-    "checked_declaration_count": len(coverage["exported_declarations"]),
-}
-(root / "verification.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
-PY
+cargo xtask write-proof-verification-receipt "$report_root" "$lean4export_revision" "$nanoda_revision"

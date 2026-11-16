@@ -24,8 +24,10 @@ crates/
 ├── evm-chain/               # EVM tx building via alloy (unsigned calls)
 ├── game-chain/              # Tx builder helpers: PDA derivation, instruction building, RPC client for coordination game
 ├── game-api-client/         # HTTP/WS client for off-chain game-api backend
+├── proof-registry/          # Canonical schemas, hashes, and validator for Lean proof catalog
 ├── reputation-indexer/      # Pure assembly layer: settlement edges → reputation records
-└── shillbot-scorer/         # Composite-score computation: normalization, screening, anti-gaming
+├── shillbot-scorer/         # Composite-score computation: normalization, screening, anti-gaming
+└── xtask/                   # Internal CLI tooling, CI proof-audit gates, and ops subcommands (`cargo xtask`)
 
 services/
 ├── mcp-server/              # Unified MCP server exposing tools for AI agents (see its own CLAUDE.md)
@@ -68,17 +70,20 @@ Write clean, minimal code. Complexity is a liability — every line of code is a
 **Rule 1 — No recursion.** Solana BPF has a 4KB call stack. Recursive functions are banned. All iteration must be explicit and bounded.
 
 **Rule 2 — Bounded loops.** Every loop iterating over instruction input must check its bound BEFORE entry:
+
 ```rust
 require!(remaining_accounts.len() <= MAX_PLAYERS, TooManyAccounts);
 for account_info in ctx.remaining_accounts.iter() {
     // safe: bounded by the check above
 }
 ```
+
 Never trust `remaining_accounts.len()` — an attacker chooses how many accounts to pass.
 
 **Rule 3 — No unbounded resource consumption.** Collection sizes must be statically bounded. Never use `Vec::with_capacity(n)` where `n` comes from instruction input. Every PDA account has a fixed, known size. If a collection grows with usage, use separate PDA accounts per entry, not a growing Vec in one account.
 
 **Rule 4 — Instruction handlers ≤60 lines.** Handlers validate, delegate to a pure function, and emit an event. The rule applies to new and substantially-modified handlers; existing >60-line bodies are not retroactively in violation but become candidates for split when next touched.
+
 ```rust
 pub fn reveal_guess(ctx: Context<RevealGuess>, r: [u8; 32]) -> Result<()> {
     let game = &mut ctx.accounts.game;
@@ -99,6 +104,7 @@ pub fn reveal_guess(ctx: Context<RevealGuess>, r: [u8; 32]) -> Result<()> {
 ```
 
 **Rule 5 — Assert invariants (minimum 2 per function).** Every instruction handler: preconditions on entry, postconditions on exit. Pure functions called by handlers also assert.
+
 ```rust
 // Precondition: correct state
 require!(game.state == GameState::Verified, InvalidTaskState);
@@ -115,20 +121,23 @@ require!(total_out == task.escrow_lamports, PaymentExceedsEscrow);
 **Rule 8 — No unsafe.** Zero `unsafe` in smart contract code.
 
 **Rule 9 — Warnings as errors.** Every program crate:
+
 ```rust
 #![deny(warnings)]
 #![deny(clippy::all)]
 #![deny(clippy::arithmetic_side_effects)]
 ```
+
 `clippy::arithmetic_side_effects` rejects `+`, `-`, `*`, `/` on integers — you MUST use `checked_*` variants. Non-negotiable for code handling lamports, scores, and fees.
 
 **Rule 10 — Release mode for production.** BPF builds are always release mode. Debug overflow checks don't exist in production. Every arithmetic safety check must be explicit (`checked_*`), never reliant on debug assertions. This is the #1 source of Solana exploits.
 
 **Rule 11 — CEI (Checks-Effects-Interactions).** Instruction handlers follow this order exactly:
+
 1. **Checks** — all `require!()` validations.
 2. **Effects** — all `account.field = value` mutations.
 3. **Interactions** — all lamport transfers and CPIs.
-Never transfer lamports before state is committed. Never CPI before all account mutations are done.
+   Never transfer lamports before state is committed. Never CPI before all account mutations are done.
 
 ### Solana Security Rules
 
@@ -155,6 +164,10 @@ Use `init` exclusively (prevents PDA account resurrection attacks), with these e
 
 `anchor deploy` from a local machine is forbidden on mainnet. All mainnet deployments go through CI. Devnet deployments from local machines are acceptable during development.
 
+### Internal Tooling (`crates/xtask`)
+
+All internal tooling, CI checks, release gates, proof-audit/mirror scripts, verification fixtures, and ops utilities MUST be written in Rust inside `crates/xtask` (run via `cargo xtask <subcommand>`), never Python. Python is permitted ONLY for external user-facing SDKs and examples (`sdk/vow-verifier-py/`, `examples/python-safe-recipe/`) and offline research paper scripts (`research/wide-but-shallow/scripts/`). Enforced by `cargo test --locked -p xtask` (`no_internal_python_scripts_or_invocations`).
+
 ---
 
 ## Testing
@@ -162,6 +175,7 @@ Use `init` exclusively (prevents PDA account resurrection attacks), with these e
 **Unit tests:** Every pure function (payoff resolution, scoring computation, payment calculation) must have exhaustive unit tests in `#[cfg(test)]` modules. Test boundary conditions: zero values, maximum values, overflow scenarios.
 
 **End-to-end tests:** Full instruction flows against a local validator using Anchor's test harness. Cover:
+
 - Every instruction in every valid state
 - Every error path (invalid state transitions, unauthorized callers, expired deadlines)
 - Every state transition in the state machine
@@ -194,6 +208,7 @@ npx tsx scripts/account-survey.ts \
 ```
 
 The script lists distinct `dataLen` buckets with sample pubkeys. If the survey finds multiple sizes:
+
 - The PR must either ship a migration instruction handling each non-current size, OR
 - The bytewise-compatibility claim is rescinded and the extension takes the realloc path.
 

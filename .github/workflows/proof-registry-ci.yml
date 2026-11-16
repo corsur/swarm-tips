@@ -9,18 +9,24 @@ on:
   pull_request:
     paths:
       - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/config.toml"
       - "proofs/SwarmProofs/**"
       - "proofs/fixtures/**"
       - "crates/proof-registry/**"
+      - "crates/xtask/**"
       - "scripts/*proof*"
       - ".github/workflows/proof-registry-*.yml"
   push:
     branches: [main]
     paths:
       - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/config.toml"
       - "proofs/SwarmProofs/**"
       - "proofs/fixtures/**"
       - "crates/proof-registry/**"
+      - "crates/xtask/**"
       - "scripts/*proof*"
       - ".github/workflows/proof-registry-*.yml"
 
@@ -35,10 +41,14 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proof-registry
       - name: Validate canonical registry
-        run: cargo run -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
+        run: cargo run --locked -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
       - name: Prepare ephemeral audit umbrella
-        run: python3 scripts/prepare-proof-promotion-audit.py
+        run: cargo run --locked -p xtask -- prepare-proof-promotion-audit
       - name: Install pinned Lean environment
         uses: leanprover/lean-action@v1
         with:
@@ -51,7 +61,7 @@ jobs:
       - name: Parse source policy before compiling promoted modules
         run: |
           bash scripts/test-proof-source-policy.sh
-          python3 -B scripts/check-proof-sources.py
+          cargo run --locked -p xtask -- check-proof-sources
       - name: Build promoted modules
         working-directory: proofs/SwarmProofs
         run: lake build SwarmProofs PromotionAudit
@@ -59,8 +69,7 @@ jobs:
         run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs PromotionAudit
       - name: Reject omitted helpers, forbidden axioms, and namespace escapes
         run: |
-          python3 -B scripts/test-proof-export-coverage.py
-          python3 -B scripts/test-proof-publication.py
+          cargo test --locked -p xtask
           bash scripts/test-proof-declaration-inventory.sh
       - name: Independently check reusable definition and private helper fixture
         run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs Reusable proofs/SwarmProofs/.lake/fixture-audit SwarmProofs.Generated.Fixture
@@ -77,9 +86,8 @@ jobs:
           if-no-files-found: error
       - name: Audit exported declaration axioms
         run: |
-          cd proofs/SwarmProofs
-          lake env lean PromotionAudit.lean 2>&1 | tee /tmp/swarm-proof-axioms.txt
-          python3 ../../scripts/check-proof-axiom-audit.py /tmp/swarm-proof-axioms.txt registry.json
+          (cd proofs/SwarmProofs && lake env lean PromotionAudit.lean) 2>&1 | tee /tmp/swarm-proof-axioms.txt
+          cargo run --locked -p xtask -- check-proof-axiom-audit /tmp/swarm-proof-axioms.txt proofs/SwarmProofs/registry.json
       - name: Restore non-umbrella public package root
         if: always()
         run: |
