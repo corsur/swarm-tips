@@ -5879,11 +5879,11 @@
             "type": "string"
           },
           "is_ai": {
-            "description": "Whether the joiner is an AI (the grok-agent or an external MCP agent). The\nmatchup is derived at pairing from `is_ai(joiner) XOR is_ai(waiter)`.\nDefault false (human via /evmplay) preserves the prior homogeneous behavior.",
+            "description": "Whether the joiner is an autonomous AI agent.",
             "type": "boolean"
           },
           "is_internal": {
-            "description": "True only for the internal house grok-agent (gates the AI fallback so it\ncan't self-trigger). Humans + external agents leave this false.",
+            "description": "Reserved internal service flag; external callers leave this false.",
             "type": "boolean"
           },
           "player_wallet": {
@@ -6536,17 +6536,18 @@
       "QueueRequest": {
         "properties": {
           "agent_version": {
-            "description": "Model + prompt version tag sent by AI agents (e.g. \"grok-4/prompt-v2\").\nStored on the session for A/B cohort attribution. Ignored for human players.",
+            "description": "Optional agent version tag (e.g. \"agent-v2\") for cohort attribution.",
             "type": [
               "string",
               "null"
             ]
           },
           "is_ai": {
+            "description": "Whether the joiner is an autonomous AI agent.",
             "type": "boolean"
           },
           "is_internal": {
-            "description": "True for the built-in grok-agent (internal house agent).\nExternal agents and humans set this to false.",
+            "description": "Reserved internal service flag; external callers leave this false.",
             "type": "boolean"
           },
           "is_test": {

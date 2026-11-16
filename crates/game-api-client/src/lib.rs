@@ -59,7 +59,7 @@ pub struct QueueJoinRequest<'a> {
     pub tournament_id: u64,
     pub is_ai: bool,
     pub agent_version: &'a str,
-    /// True for the built-in grok-agent. External agents set false.
+    /// Reserved internal service flag; external agents set false.
     /// game-api defaults this to false server-side when absent.
     pub is_internal: bool,
 }
@@ -127,13 +127,12 @@ pub struct EvmGameJoinRequest<'a> {
     /// CAIP-2 chain id, e.g. `eip155:84532`.
     pub chain: &'a str,
     pub tournament_id: u64,
-    /// Whether the joiner is an AI. game-api derives the matchup from
-    /// `is_ai(joiner) XOR is_ai(waiter)` (same as Solana's `QueueJoinRequest`),
+    /// Whether the joiner is an autonomous AI agent. game-api derives the matchup
+    /// from `is_ai(joiner) XOR is_ai(waiter)` (same as Solana's `QueueJoinRequest`),
     /// so an MCP agent (AI) vs a browser (human) pairs heterogeneous. Defaults
     /// false server-side (`#[serde(default)]`), preserving the browser path.
     pub is_ai: bool,
-    /// True only for the internal house grok-agent (gates the AI fallback).
-    /// External MCP agents leave this false.
+    /// Reserved internal service flag; external MCP agents leave this false.
     pub is_internal: bool,
 }
 
@@ -147,6 +146,13 @@ pub struct XQueueJoinRequest<'a> {
     /// `0x` eth address of the player's per-match secp256k1 session key.
     pub session_key: &'a str,
     pub tournament_id: u64,
+    /// Whether the joiner is an autonomous AI agent. When omitted (`None`),
+    /// `game-api` defaults this to `false` server-side (`#[serde(default)]`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_ai: Option<bool>,
+    /// Reserved internal service flag; external MCP agents set `Some(false)`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_internal: Option<bool>,
 }
 
 /// Response from the cross-chain join/status endpoints: `status` is `waiting`
@@ -183,7 +189,7 @@ pub struct XSolFundResponse {
 
 /// HTTP client for the coordination game backend API.
 ///
-/// Covers all endpoints used by grok-agent and mcp-server.
+/// Covers all endpoints used by autonomous agents and mcp-server.
 /// Auth endpoints (`request_challenge`, `verify_challenge`) do not require a
 /// bearer token; all other endpoints take `token: &str`.
 ///
@@ -1385,6 +1391,8 @@ mod tests {
             chain: "solana:x",
             session_key: "k",
             tournament_id: 1,
+            is_ai: Some(true),
+            is_internal: Some(false),
         };
         client.evmgame_join_as(&join, Some("tok")).await.unwrap();
         client.evmgame_status_as("0xP", Some("tok")).await.unwrap();
@@ -1392,6 +1400,42 @@ mod tests {
         // Without a token the request has no Authorization header, so the
         // bearer-matching mocks don't match and wiremock returns 404.
         assert!(client.evmgame_join(&join).await.is_err());
+    }
+
+    #[test]
+    fn xqueue_join_request_serializes_ai_and_internal_flags_when_present() {
+        let mcp_body = serde_json::to_value(XQueueJoinRequest {
+            wallet: "So1Wallet",
+            chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            session_key: "0x1111111111111111111111111111111111111111",
+            tournament_id: 3,
+            is_ai: Some(true),
+            is_internal: Some(false),
+        })
+        .expect("serialize MCP xqueue join");
+        assert_eq!(mcp_body["wallet"], "So1Wallet");
+        assert_eq!(mcp_body["chain"], "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp");
+        assert_eq!(
+            mcp_body["session_key"],
+            "0x1111111111111111111111111111111111111111"
+        );
+        assert_eq!(mcp_body["tournament_id"], 3);
+        assert_eq!(mcp_body["is_ai"], true);
+        assert_eq!(mcp_body["is_internal"], false);
+
+        // Omitted flags stay absent from the wire JSON so legacy callers keep
+        // server-side #[serde(default)] semantics.
+        let omitted_body = serde_json::to_value(XQueueJoinRequest {
+            wallet: "0xBrowser",
+            chain: "eip155:8453",
+            session_key: "0x2222222222222222222222222222222222222222",
+            tournament_id: 3,
+            is_ai: None,
+            is_internal: None,
+        })
+        .expect("serialize omitted-flags xqueue join");
+        assert!(omitted_body.get("is_ai").is_none());
+        assert!(omitted_body.get("is_internal").is_none());
     }
 
     #[test]

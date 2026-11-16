@@ -2858,7 +2858,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_supported_chains",
-        description = "[READ] List the chains a cross-chain Coordination Game match can run on: CAIP-2 id, native coin, per-match stake, tranche clamp, claim window, contract address, plus a plain-language staking/settlement model. Call BEFORE register_wallet to choose Solana (base58) vs EVM (0x). No wallet required. Testnet only today.",
+        description = "[READ] List the chains a cross-chain Coordination Game match can run on: CAIP-2 id, native coin, per-match stake, tranche clamp, claim window, contract address, plus a plain-language staking/settlement model. Live on Mainnet (Solana, Base, Ethereum — prefer Base over Ethereum L1, as L1 gas can exceed the ~$5 stake) and Testnet (Solana Devnet, Base Sepolia). Call BEFORE register_wallet to choose Solana (base58) vs EVM (0x). No wallet required.",
         annotations(read_only_hint = true)
     )]
     async fn xchain_supported_chains(&self) -> Result<CallToolResult, McpError> {
@@ -2873,7 +2873,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_find_match",
-        description = "[STATE] Join the cross-chain Coordination Game queue (Solana <-> EVM), live on Mainnet (Solana <-> Base / Ethereum) and Testnet (Solana Devnet <-> Base Sepolia). Generate a per-match secp256k1 session key locally and pass its 0x address — the server never sees the private key. Requires register_wallet (Solana base58 or EVM 0x). Returns 'waiting' (poll xchain_match_status; backup AI auto-matches within ~20-55s if no live peer joins) or 'matched' with the co-signed payload.",
+        description = "[STATE] Join the cross-chain Coordination Game queue (Solana <-> EVM), live on Mainnet (Solana <-> Base / Ethereum) and Testnet (Solana Devnet <-> Base Sepolia). Prefer Base (eip155:8453) over Ethereum L1 (eip155:1) for ~$5 stakes, as L1 gas across createMatch, lockTranche, settle, and withdraw can exceed the stake. Generate a per-match secp256k1 session key locally and pass its 0x address — the server never sees the private key. Requires register_wallet (Solana base58 or EVM 0x). Returns 'waiting' (poll xchain_match_status until matched with an opponent) or 'matched' with the co-signed payload.",
         annotations(destructive_hint = true)
     )]
     async fn xchain_find_match(
@@ -2958,7 +2958,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "game_find_evm_match",
-        description = "[STATE] Join the same-chain EVM Coordination Game queue (EVM vs EVM — no session key or float pool; both players stake into one CoordinationGame contract, resolved from the chain registry). Requires a registered EVM (0x) wallet. Returns 'waiting' (poll game_evm_match_status) or 'matched' with two unsigned calls {create_call, join_call} — the waiting player sends createGame, the joiner joinGame. Testnet only (Base Sepolia).",
+        description = "[STATE] Join the same-chain EVM Coordination Game queue (EVM vs EVM — no session key or float pool; both players stake into one CoordinationGame contract, resolved from the chain registry). Live on Mainnet (Base, Ethereum — prefer Base over Ethereum L1 for ~$5 stakes) and Testnet (Base Sepolia). Requires a registered EVM (0x) wallet. Returns 'waiting' (poll game_evm_match_status) or 'matched' with two unsigned calls {create_call, join_call} — the waiting player sends createGame, the joiner joinGame.",
         annotations(destructive_hint = true)
     )]
     async fn game_find_evm_match(
@@ -3250,8 +3250,8 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "xchain_build_settle",
-        description = "[READ] Fetch the operator-cosigned outcome of your finished cross-chain match and assemble unsigned settle transactions. Call once to get outcome_digest, then re-call with your session-key live_signature and outcome_signature (plus match_payload on EVM) to relay co-signatures. Once ready, returns 3-party live_sigs and oc_sigs plus solana_settle_tx (broadcast via game_submit_tx action='settle_xmatch') or evm_settle_call (sign and submit from your EVM wallet). Equivocated matches are rejected.",
-        annotations(read_only_hint = true)
+        description = "[STATE] Fetch the operator-cosigned outcome of your finished cross-chain match, relay session-key settlement signatures, and assemble unsigned settle transactions. Call once to get outcome_digest, then re-call with live_signature and outcome_signature (plus match_payload on EVM) to record co-signatures on the relay. Once ready, returns 3-party live_sigs and oc_sigs plus solana_settle_tx (broadcast via game_submit_tx action='settle_xmatch') or evm_settle_call (sign and submit from your EVM wallet). If an opponent goes offline without co-signing terminal settlement, on-chain openClaim / refundTimeout paths protect staked funds; equivocated matches are rejected.",
+        annotations(read_only_hint = false)
     )]
     async fn xchain_build_settle(
         &self,

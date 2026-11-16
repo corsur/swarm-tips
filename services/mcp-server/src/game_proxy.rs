@@ -172,6 +172,11 @@ impl GameApiProxy {
             chain,
             session_key,
             tournament_id,
+            // The MCP surface serves external AI agents, so the cross-chain
+            // join is is_ai=true, is_internal=false — mirroring `evmgame_join`
+            // and Solana `join_queue_after_stake`.
+            is_ai: Some(true),
+            is_internal: Some(false),
         };
         let bearer = self.internal_bearer(wallet);
         self.client
@@ -609,6 +614,8 @@ mod tests {
                 "chain": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
                 "session_key": "0x1111111111111111111111111111111111111111",
                 "tournament_id": 2,
+                "is_ai": true,
+                "is_internal": false,
             })))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(
@@ -620,6 +627,7 @@ mod tests {
             .await;
 
         let resp = proxy(&server)
+            .with_internal_jwt_secret(Some("test-internal-secret".to_string()))
             .xqueue_join(
                 &crate::session_binding::VerifiedWallet::new_for_test("So1Wallet"),
                 "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
@@ -630,6 +638,17 @@ mod tests {
             .expect("ok");
         assert_eq!(resp.status, "matched");
         assert_eq!(resp.match_payload.expect("payload")["match_id"], "0xabc");
+        let received = server.received_requests().await.expect("received requests");
+        assert_eq!(received.len(), 1);
+        let auth_hdr = received[0]
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            auth_hdr.starts_with("Bearer "),
+            "xqueue_join must attach internal bearer when secret is configured, got: {auth_hdr}"
+        );
     }
 
     #[tokio::test]

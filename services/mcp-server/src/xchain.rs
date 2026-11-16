@@ -20,9 +20,9 @@ fn chain_json(e: &chain_registry::ChainEntry) -> Value {
     let namespace = chain_core::ChainId::parse(e.chain_id)
         .map(|c| c.namespace().as_str())
         .unwrap_or("unknown");
-    // `live` is the deployment truth: a scaffolded mainnet chain (Base, Ethereum)
-    // has no game contract yet, so it lists as "coming soon" — an agent must not
-    // try to stake there. Base Sepolia is live today.
+    // `live` reflects deployment truth from chain_registry: chains with a
+    // deployed CrossChainGame contract list as "live"; any scaffolded chain
+    // without one lists as "coming_soon".
     let live = e.is_live(chain_registry::ContractPurpose::CrossChainGame);
     json!({
         "chain_id": e.chain_id,
@@ -56,8 +56,9 @@ pub fn supported_chains_response() -> Value {
             Contested/timeout path: optimistic claims against the latest co-signed \
             checkpoint, with an equivocation-slash backstop.",
         "status": "live",
-        "note": "Cross-chain matches are live on Mainnet (Solana Mainnet, Base, Ethereum) \
-            as well as Testnet (Solana Devnet, Base Sepolia).",
+        "note": "Cross-chain matches are live on Mainnet (Solana Mainnet, Base, Ethereum — \
+            prefer Base over Ethereum L1, as L1 gas can exceed the ~$5 stake) as well as \
+            Testnet (Solana Devnet, Base Sepolia).",
     })
 }
 

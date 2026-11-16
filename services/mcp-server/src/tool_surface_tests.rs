@@ -1285,3 +1285,104 @@ fn skill_md_copies_are_byte_identical() {
         );
     }
 }
+
+#[test]
+fn public_surface_scrubs_internal_agent_disclosures_and_stale_xchain_metadata() {
+    const FORBIDDEN: &[&str] = &[
+        "grok-agent",
+        "grok-4",
+        "backup ai",
+        "ai fallback",
+        "ai-fallback",
+        "20-55s",
+        "20–55s",
+    ];
+    const MCP_STRICT_FORBIDDEN: &[&str] = &["grok", "20-55", "20–55"];
+
+    let tools = all_tools();
+    for tool in &tools {
+        let serialized = serde_json::to_string(&tool_json(tool))
+            .expect("serialize tool")
+            .to_lowercase();
+        for needle in FORBIDDEN.iter().chain(MCP_STRICT_FORBIDDEN.iter()) {
+            assert!(
+                !serialized.contains(needle),
+                "declared tool `{}` leaked forbidden substring `{needle}`",
+                tool.name
+            );
+        }
+    }
+
+    for surface in Surface::ALL {
+        let instructions = crate::instructions::for_surface(surface).to_lowercase();
+        for needle in FORBIDDEN.iter().chain(MCP_STRICT_FORBIDDEN.iter()) {
+            assert!(
+                !instructions.contains(needle),
+                "instructions for `{}` leaked forbidden substring `{needle}`",
+                surface.host()
+            );
+        }
+    }
+
+    let openapi = crate::openapi::openapi_json_string().to_lowercase();
+    for needle in FORBIDDEN {
+        assert!(
+            !openapi.contains(needle),
+            "openapi.merged.json leaked forbidden substring `{needle}`"
+        );
+    }
+
+    let game_theory_doc = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/coordination-game-game-theory.md"
+    ))
+    .to_lowercase();
+    for needle in FORBIDDEN {
+        assert!(
+            !game_theory_doc.contains(needle),
+            "docs/coordination-game-game-theory.md leaked forbidden substring `{needle}`"
+        );
+    }
+
+    let supported_chains = tools
+        .iter()
+        .find(|t| t.name == "xchain_supported_chains")
+        .expect("xchain_supported_chains declared");
+    let supported_desc = supported_chains
+        .description
+        .as_deref()
+        .expect("xchain_supported_chains description");
+    assert!(
+        !supported_desc.to_lowercase().contains("testnet only"),
+        "xchain_supported_chains must not say 'testnet only': {supported_desc}"
+    );
+    assert!(
+        supported_desc.contains("Mainnet"),
+        "xchain_supported_chains must advertise Mainnet support: {supported_desc}"
+    );
+
+    let build_settle = tools
+        .iter()
+        .find(|t| t.name == "xchain_build_settle")
+        .expect("xchain_build_settle declared");
+    let settle_desc = build_settle
+        .description
+        .as_deref()
+        .expect("xchain_build_settle description");
+    assert!(
+        settle_desc.starts_with("[STATE]"),
+        "xchain_build_settle must start with [STATE]: {settle_desc}"
+    );
+    assert_eq!(
+        build_settle
+            .annotations
+            .as_ref()
+            .and_then(|a| a.read_only_hint),
+        Some(false),
+        "xchain_build_settle must set read_only_hint = false"
+    );
+    assert!(
+        settle_desc.contains("openClaim") && settle_desc.contains("refundTimeout"),
+        "xchain_build_settle must note openClaim / refundTimeout protection: {settle_desc}"
+    );
+}
