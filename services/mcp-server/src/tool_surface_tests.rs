@@ -1385,4 +1385,21 @@ fn public_surface_scrubs_internal_agent_disclosures_and_stale_xchain_metadata() 
         settle_desc.contains("openClaim") && settle_desc.contains("refundTimeout"),
         "xchain_build_settle must note openClaim / refundTimeout protection: {settle_desc}"
     );
+
+    let verify_task = tools
+        .iter()
+        .find(|t| t.name == "shillbot_verify_task")
+        .expect("shillbot_verify_task declared");
+    let verify_desc = verify_task
+        .description
+        .as_deref()
+        .expect("shillbot_verify_task description");
+    assert!(
+        !verify_desc.to_lowercase().contains("switchboard"),
+        "shillbot_verify_task must not reference stale Switchboard copy: {verify_desc}"
+    );
+    assert!(
+        verify_desc.contains("oracle-co-signed") && verify_desc.contains("fee payer"),
+        "shillbot_verify_task must describe oracle-co-signed tx with caller as fee payer: {verify_desc}"
+    );
 }

@@ -4501,7 +4501,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Verification tuple for constructing a Switchboard crank + verify_task tx",
+            "description": "Verification tuple for constructing an oracle-co-signed verify_task tx",
             "content": {
               "application/json": {
                 "schema": {
@@ -7713,7 +7713,7 @@
         "type": "object"
       },
       "VerificationDataResponse": {
-        "description": "Verification data needed to build a bundled crank+verify transaction.\nThe MCP server uses this to spawn a TS script that builds the Switchboard IX.",
+        "description": "Verification data needed to construct an oracle-co-signed verify_task transaction.",
         "properties": {
           "composite_score": {
             "format": "int64",

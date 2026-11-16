@@ -1803,6 +1803,218 @@ mod readiness_tests {
     }
 
     #[tokio::test]
+    async fn build_verify_tx_mainnet_vk0_happy_path_asserts_exact_ixs_accounts_signers_and_fee_payer(
+    ) {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let orchestrator_mock = MockServer::start().await;
+        let rpc_mock = MockServer::start().await;
+
+        let caller_kp = solana_sdk::signature::Keypair::new();
+        let caller_pk = caller_kp.pubkey();
+        let caller = caller_pk.to_string();
+        let oracle_kp = std::sync::Arc::new(solana_sdk::signature::Keypair::new());
+        let oracle_pk = oracle_kp.pubkey();
+        let task_pk = solana_sdk::pubkey::Pubkey::new_unique();
+        let task_pda = task_pk.to_string();
+        let expected_global_pk = shillbot_chain::global_state_pda();
+        let expected_score = 850_000_u64;
+        let expected_hash_bytes = [0x5a_u8; 32];
+        let verification_hash = hex::encode(expected_hash_bytes);
+
+        let user_jwt = crate::jwt::mint_user_jwt_for_test(
+            &caller,
+            TEST_JWT_SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/mainnet-vk0-task/build-verify"))
+            .and(header("authorization", format!("Bearer {user_jwt}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "mainnet-vk0-task",
+                "task_pda": task_pda,
+                "composite_score": expected_score,
+                "verification_hash": verification_hash,
+                "global_state": expected_global_pk.to_string(),
+                "switchboard_feed": oracle_pk.to_string(),
+            })))
+            .expect(1)
+            .mount(&orchestrator_mock)
+            .await;
+
+        let recent_bh = solana_sdk::hash::Hash::new_unique();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "context": { "slot": 99 },
+                    "value": {
+                        "blockhash": recent_bh.to_string(),
+                        "lastValidBlockHeight": 999
+                    }
+                }
+            })))
+            .mount(&rpc_mock)
+            .await;
+
+        let state = super::BuildVerifyState {
+            oracle_keypair: Some(oracle_kp),
+            orchestrator: crate::OrchestratorProxy::new(
+                orchestrator_mock.uri(),
+                orchestrator_mock.uri(),
+            ),
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            rpc_client: reqwest::Client::new(),
+            rpc_url_mainnet: rpc_mock.uri(),
+            rpc_url_devnet: "http://127.0.0.1:1".to_string(),
+        };
+
+        let resp = super::build_verify_tx_handler(
+            bearer_headers(&user_jwt),
+            axum::Json(serde_json::json!({
+                "task_id": "mainnet-vk0-task",
+                "payer": caller,
+                "network": "mainnet",
+            })),
+            state,
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["task_pda"], task_pda);
+        assert_eq!(json["transaction_intent"]["action"], "verify");
+        assert_eq!(json["transaction_intent"]["network"], "mainnet");
+        assert_eq!(json["transaction_intent"]["fee_payer"], caller);
+        assert_ne!(
+            json["transaction_intent"]["fee_payer"],
+            oracle_pk.to_string(),
+            "oracle authority must NEVER be fee payer"
+        );
+
+        let tx_b64 = json["transaction"].as_str().expect("base64 transaction");
+        let mut vtx = shillbot_chain::decode_base64(tx_b64).expect("decode VersionedTransaction");
+
+        // 1. Exact signers & fee payer in compiled v0 message header.
+        let keys = vtx.message.static_account_keys();
+        let header = vtx.message.header();
+        assert_eq!(header.num_required_signatures, 2);
+        assert_eq!(
+            keys[0], caller_pk,
+            "account_keys[0] (fee_payer) must be caller"
+        );
+        assert_eq!(
+            keys[1], oracle_pk,
+            "account_keys[1] must be co-signing oracle authority"
+        );
+
+        // 2. Exact signature slots: caller slot unsigned, oracle partial sig valid over message.
+        assert_eq!(vtx.signatures.len(), 2);
+        assert_eq!(
+            vtx.signatures[0],
+            solana_sdk::signature::Signature::default(),
+            "caller fee-payer signature slot must remain empty for local signing"
+        );
+        assert_ne!(
+            vtx.signatures[1],
+            solana_sdk::signature::Signature::default(),
+            "oracle partial signature must be populated"
+        );
+        let msg_bytes = vtx.message.serialize();
+        assert!(
+            vtx.signatures[1].verify(oracle_pk.as_ref(), &msg_bytes),
+            "oracle partial signature must cryptographically verify over the v0 message"
+        );
+
+        // 3. Exact VerifyTask instruction, accounts, writable/signer flags, and serialized args.
+        let expected_verify_ix = shillbot_chain::verify_task_co_signed_instruction(
+            task_pk,
+            oracle_pk,
+            expected_score,
+            expected_hash_bytes,
+        );
+        let compute_budget_id: solana_sdk::pubkey::Pubkey =
+            "ComputeBudget111111111111111111111111111111"
+                .parse()
+                .unwrap();
+        let program_ixs: Vec<_> = vtx
+            .message
+            .instructions()
+            .iter()
+            .filter(|ix| keys[usize::from(ix.program_id_index)] != compute_budget_id)
+            .collect();
+        assert_eq!(
+            program_ixs.len(),
+            1,
+            "must contain exactly one non-ComputeBudget instruction (VerifyTask)"
+        );
+        let verify_ix = program_ixs[0];
+        assert_eq!(
+            keys[usize::from(verify_ix.program_id_index)],
+            expected_verify_ix.program_id
+        );
+        assert_eq!(
+            verify_ix.accounts.len(),
+            3,
+            "VerifyTask takes [task, global_state, oracle_authority]"
+        );
+
+        let task_idx = usize::from(verify_ix.accounts[0]);
+        let global_idx = usize::from(verify_ix.accounts[1]);
+        let oracle_idx = usize::from(verify_ix.accounts[2]);
+        assert_eq!(keys[task_idx], task_pk);
+        assert!(vtx.message.is_maybe_writable(task_idx, None));
+        assert!(!vtx.message.is_signer(task_idx));
+
+        assert_eq!(keys[global_idx], expected_global_pk);
+        assert!(!vtx.message.is_maybe_writable(global_idx, None));
+        assert!(!vtx.message.is_signer(global_idx));
+
+        assert_eq!(keys[oracle_idx], oracle_pk);
+        assert!(!vtx.message.is_maybe_writable(oracle_idx, None));
+        assert!(vtx.message.is_signer(oracle_idx));
+
+        let expected_disc = &sha2::Sha256::digest(b"global:verify_task")[..8];
+        assert_eq!(verify_ix.data.len(), 48);
+        assert_eq!(&verify_ix.data[..8], expected_disc);
+        assert_eq!(&verify_ix.data[8..16], &expected_score.to_le_bytes());
+        assert_eq!(&verify_ix.data[16..48], &expected_hash_bytes);
+        assert_eq!(verify_ix.data, expected_verify_ix.data);
+
+        // 4. Caller adds slot-0 signature -> full signed mainnet tx validates cleanly.
+        vtx.signatures[0] = caller_kp.sign_message(&msg_bytes);
+        vtx.verify_and_hash_message()
+            .expect("both caller and oracle signatures must verify");
+        let signed_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&vtx).expect("serialize signed vtx"));
+        let val_req = shillbot_chain::ValidationRequest {
+            action: shillbot_chain::Action::Verify,
+            network: "mainnet".to_string(),
+            wallet: caller,
+            task_pda,
+            escrow_lamports: None,
+            content_id: None,
+            sponsor: None,
+            expected_accounts: None,
+            expected_data: None,
+            allowed_payout_to: None,
+            require_payout_routing: false,
+            switchboard_feed: Some(oracle_pk.to_string()),
+        };
+        shillbot_chain::validate_signed_base64(&signed_b64, &val_req)
+            .expect("signed mainnet vk=0 verify_task tx must pass shillbot_chain validation");
+    }
+
+    #[tokio::test]
     async fn mcp_session_id_middleware_signs_and_rejects_unissued_tokens() {
         let key = std::sync::Arc::new(super::derive_mcp_session_key(Some(TEST_JWT_SECRET)));
         let app = axum::Router::new()
