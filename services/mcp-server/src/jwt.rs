@@ -19,6 +19,12 @@ type HmacSha256 = Hmac<Sha256>;
 /// Lifetime of a minted internal service token (seconds).
 pub const INTERNAL_TOKEN_TTL_SECS: u64 = 60;
 
+/// Lifetime of a minted/refreshed verified-wallet session JWT (`24h`).
+pub const USER_TOKEN_TTL_SECS: u64 = 86_400;
+
+/// Minimum remaining validity window (`60s`) before a stored session JWT is refreshed.
+pub const USER_TOKEN_REFRESH_LEEWAY_SECS: u64 = 60;
+
 const SVC_KEY_DOMAIN: &[u8] = b"swarm:jwt:svc:v1";
 
 /// Normalize a wallet identifier via [`chain_core::CanonicalWallet`]: lowercases
@@ -98,9 +104,85 @@ pub fn mint_svc_token(
     Some(format!("{signing_input}.{sig}"))
 }
 
+/// Mint a 24h HS256 user wallet JWT (`typ: "user"`, `aud: ["shillbot", "game", "mcp"]`,
+/// plus `sub`, `wallet`, `iat`, `exp` matching `module_transport::wallet`) for an
+/// ownership-proven [`crate::session_binding::VerifiedWallet`].
+pub fn mint_user_jwt(
+    wallet: &crate::session_binding::VerifiedWallet,
+    jwt_secret: &str,
+) -> Option<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    mint_user_jwt_at(wallet, jwt_secret, now)
+}
+
+pub fn mint_user_jwt_at(
+    wallet: &crate::session_binding::VerifiedWallet,
+    jwt_secret: &str,
+    now: u64,
+) -> Option<String> {
+    if wallet.as_str().is_empty() || jwt_secret.is_empty() {
+        return None;
+    }
+    let exp = now.checked_add(USER_TOKEN_TTL_SECS)?;
+    let raw = wallet.as_str();
+    let native = raw.rsplit(':').next().unwrap_or(raw);
+    let canonical = normalize_wallet(native);
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let claims = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&serde_json::json!({
+            "sub": canonical,
+            "wallet": canonical,
+            "iat": now,
+            "exp": exp,
+            "typ": "user",
+            "aud": ["shillbot", "game", "mcp"],
+        }))
+        .ok()?,
+    );
+    let signing_input = format!("{header}.{claims}");
+    let mut mac = HmacSha256::new_from_slice(jwt_secret.as_bytes()).ok()?;
+    mac.update(signing_input.as_bytes());
+    let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    Some(format!("{signing_input}.{sig}"))
+}
+
+/// Returns `true` when `token` is absent, unparseable, missing `exp`, or expires
+/// at or before `now + leeway_secs` (e.g. `60` seconds).
+pub fn jwt_needs_refresh(token: Option<&str>, leeway_secs: u64) -> bool {
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return true;
+    };
+    jwt_needs_refresh_at(token, now.as_secs(), leeway_secs)
+}
+
+pub fn jwt_needs_refresh_at(token: Option<&str>, now: u64, leeway_secs: u64) -> bool {
+    let Some(raw) = token.map(str::trim).filter(|t| !t.is_empty()) else {
+        return true;
+    };
+    let mut parts = raw.split('.');
+    let (Some(_h), Some(claims_b64), Some(_s), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return true;
+    };
+    let Ok(claims_bytes) = URL_SAFE_NO_PAD.decode(claims_b64) else {
+        return true;
+    };
+    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&claims_bytes) else {
+        return true;
+    };
+    let Some(exp) = claims.get("exp").and_then(serde_json::Value::as_u64) else {
+        return true;
+    };
+    exp <= now.saturating_add(leeway_secs)
+}
+
 /// Verify an end-user HS256 JWT signed with raw `jwt_secret.as_bytes()`,
-/// enforcing `exp > now` (0 leeway), non-empty `wallet`, `typ == "user"`, and
-/// `expected_aud` in `aud` (`MED-10`: legacy `typ: None` tokens are retired).
+/// enforcing `exp > now` (0 leeway), non-empty `wallet` (or `sub`), `typ == "user"`,
+/// and `expected_aud` in `aud` (`MED-10`: legacy `typ: None` tokens are retired).
 pub fn verify_user_jwt(
     token: &str,
     jwt_secret: &str,
@@ -172,6 +254,7 @@ pub fn verify_user_jwt_at(
 
     let wallet = obj
         .get("wallet")
+        .or_else(|| obj.get("sub"))
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|w| !w.is_empty())
@@ -289,6 +372,42 @@ mod tests {
                 .is_err(),
             "raw user secret must NOT verify svc token"
         );
+    }
+
+    #[test]
+    fn mint_user_jwt_sets_24h_claims_and_refresh_window_detects_expiring_tokens() {
+        let now = 1_795_000_000_u64;
+        let verified = VerifiedWallet::new_for_test(SOL_WALLET);
+        let token = mint_user_jwt_at(&verified, SECRET, now).expect("mints 24h user jwt");
+        for aud in ["mcp", "shillbot", "game"] {
+            assert_eq!(
+                verify_user_jwt_at(&token, SECRET, aud, now).expect("verifies"),
+                SOL_WALLET
+            );
+        }
+
+        let parts: Vec<&str> = token.split('.').collect();
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        assert_eq!(claims["sub"], SOL_WALLET);
+        assert_eq!(claims["wallet"], SOL_WALLET);
+        assert_eq!(claims["iat"], now);
+        assert_eq!(claims["exp"], now.saturating_add(86_400));
+
+        assert!(jwt_needs_refresh_at(None, now, 60));
+        assert!(jwt_needs_refresh_at(Some(""), now, 60));
+        assert!(!jwt_needs_refresh_at(Some(&token), now, 60));
+        assert!(!jwt_needs_refresh_at(
+            Some(&token),
+            now.saturating_add(86_339),
+            60
+        ));
+        // Exactly 60s left -> refresh!
+        assert!(jwt_needs_refresh_at(
+            Some(&token),
+            now.saturating_add(86_340),
+            60
+        ));
     }
 
     #[test]

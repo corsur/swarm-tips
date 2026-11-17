@@ -251,13 +251,14 @@ fn inbox_next_step_text(solana: bool) -> String {
         ""
     };
     format!(
-        "To send from and receive messages at this address, prove ownership: sign \
-         verify_nonce with your wallet key (any ed25519 keypair works — no funded \
-         on-chain wallet needed for messaging) and call register_wallet AGAIN with \
-         {{pubkey, nonce, signature}} — you'll come back verified in that one \
-         call.{memo_clause} agent_verify_wallet is the standalone equivalent. You can \
-         message the Swarm Tips team right now without verifying — agent_send_message \
-         with no to_wallet."
+        "To authenticate private Shillbot task actions, EVM/cross-chain matchmaking, and the \
+         agent inbox, prove ownership: sign verify_nonce with your wallet key (any ed25519 \
+         keypair works — no funded on-chain wallet needed for messaging) and call \
+         register_wallet AGAIN with {{pubkey, nonce, signature}} — you'll come back verified \
+         in that one call.{memo_clause} agent_verify_wallet is the standalone equivalent. \
+         Same-chain game_find_match works right away (landing deposit_stake verifies you \
+         on-chain), and you can message the Swarm Tips team right now without verifying — \
+         agent_send_message with no to_wallet."
     )
 }
 
@@ -445,6 +446,9 @@ pub struct SharedState {
     /// used to co-sign `verify_task` transactions so callers pay only base
     /// Solana fees without depending on the external Switchboard crossbar.
     pub oracle_keypair: Option<Arc<solana_sdk::signature::Keypair>>,
+    /// Shared HS256 user-JWT secret (`jwt-secret`), used for stateless
+    /// `Authorization: Bearer <jwt>` `/mcp` authentication and 24h session refresh.
+    pub jwt_secret: Option<String>,
 }
 
 /// The Swarm Tips MCP server — unified interface for all DAO verticals.
@@ -556,8 +560,7 @@ pub struct CreateCampaignArgs {
     /// LeanProof (10): `Statement.lean` source.
     #[serde(default)]
     pub statement_lean: Option<String>,
-    // Note: policy 3 (mathlib-heavy 600s) is also supported.
-    /// LeanProof (10): policy 1 self-contained (default) or 2 mathlib.
+    /// LeanProof (10): policy 1 self-contained (default), 2 mathlib, 3 mathlib-heavy, or 4 mathlib-open.
     #[serde(default)]
     pub lean_policy: Option<u32>,
     /// OnChainAction (11): predicate spec JSON.
@@ -587,13 +590,14 @@ pub struct GetAttestationArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct SubmitWorkArgs {
-    /// The unique task identifier (format: `<campaign_id>:<task_uuid>`).
+    /// Task ID (`<campaign_id>:<task_uuid>`).
     pub task_id: String,
-    // For LeanProof (platform 10), an HTTPS URL to a `.lean` file defining
-    // either `theorem proof : statementProp` or `theorem proof/disproof : ¬ statementProp`.
-    /// The content ID of the completed work (YouTube video ID, tweet ID,
-    /// game session ID, etc.).
+    /// Work proof ID (video/tweet ID, game_id, URL, or `<caip2>:<tx>:<idx>[:sig:<sig>]`). Optional if `proof_lean` is set.
+    #[serde(default)]
     pub content_id: String,
+    /// LeanProof (10): raw `.lean` source (`content_id` optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_lean: Option<String>,
     #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
@@ -601,20 +605,16 @@ pub struct SubmitWorkArgs {
 
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct ShillbotSubmitTxArgs {
-    /// The task identifier the signed tx applies to.
+    /// Task ID the signed tx applies to.
     pub task_id: String,
-    /// One of "create", "claim", "submit", "approve", "verify", "finalize" —
-    /// matching the build tool that produced the unsigned tx.
+    /// Action matching the builder tool: "create" | "claim" | "submit" | "approve" | "verify" | "finalize".
     pub action: String,
-    /// Base64 signed Solana transaction (built by the matching tool, signed
-    /// locally).
+    /// Base64 locally-signed Solana transaction.
     pub signed_transaction: String,
-    /// On-chain Task PDA (base58). REQUIRED for action="create" (pass back
-    /// shillbot_create_campaign's task_pda); ignored otherwise.
+    /// Base58 Task PDA (required for action="create"; ignored otherwise).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_pda: Option<String>,
-    /// "mainnet" (default) or "devnet" — must match the network the unsigned
-    /// tx was built on, or the broadcast lands on the wrong cluster.
+    /// "mainnet" (default) or "devnet" — must match the unsigned tx cluster.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 }
@@ -709,7 +709,7 @@ pub struct AgentVerifyWalletArgs {
     pub nonce: Option<String>,
     /// Phase 2, free path: signature over the nonce — base58 ed25519 for a
     /// Solana wallet, 0x EIP-191 personal_sign for an EVM wallet. Grants the
-    /// session-verified tier (5 inbox sends/day).
+    /// session-verified tier (25 inbox sends/day).
     #[serde(default)]
     pub signature: Option<String>,
     /// Phase 2, on-chain path (Solana only): signature of a confirmed
@@ -733,8 +733,8 @@ pub struct AgentSendMessageArgs {
     #[serde(default)]
     pub thread_id: Option<String>,
     /// Optional structured intent: "game_invite" | "task_offer" |
-    /// "task_clarification". Money intents reference existing flows by id —
-    /// a message carries a pointer, never a transaction.
+    /// "task_clarification" | "bug_report". Money intents reference existing
+    /// flows by id — a message carries a pointer, never a transaction.
     #[serde(default)]
     pub intent: Option<String>,
     /// Retry key (1–128 ASCII letters, digits, _, -). Reuse with identical content.
@@ -1471,7 +1471,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_submit_work",
-        description = "[EARN: SOL] Submit work for a Shillbot task; sign and send via shillbot_submit_tx action=\"submit\". content_id by platform: 11=<caip2>:<tx>:<idx>[:sig:<hex>] (atomic claim+submit on Open task, ~1m); 10=lean4:proof:<base64> or gist URL (~5m); 5=game_id (~5m); 4=campaign_id (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
+        description = "[EARN: SOL] Submit work for a Shillbot task; sign and send via shillbot_submit_tx action=\"submit\". content_id by platform: 11=<caip2>:<tx>:<idx>[:sig:<b64url_or_0xhex>] (atomic claim+submit on Open task, ~1m); 10=lean4:proof:<base64>, HTTPS .lean URL, or pass raw source in proof_lean (~5m); 5=game_id (~5m); 4=campaign_id (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_work(
@@ -1479,68 +1479,13 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<SubmitWorkArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        if args.task_id.is_empty() {
-            return Err(invalid_input("task_id is required"));
-        }
-        if args.content_id.is_empty() {
-            return Err(invalid_input("content_id is required"));
-        }
-        let network = parse_network_arg(args.network.as_deref())?;
-
         let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
-
-        let response = orchestrator
-            .submit_task(
-                normalize_task_id(&args.task_id),
-                &wallet_pubkey,
-                &args.content_id,
-                network,
-            )
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        tracing::info!(
-            event = "shillbot_submit_work",
-            task_id = %args.task_id,
-            content_id = %args.content_id,
-            wallet = %wallet_pubkey,
-            network = network.unwrap_or("mainnet"),
-            "submit_work: unsigned tx built"
-        );
-
-        let unsigned_tx = response
-            .transaction
-            .as_deref()
-            .ok_or_else(|| invalid_input("submit response omitted unsigned transaction"))?;
-        let task_pda = response
-            .task_pda
-            .as_deref()
-            .ok_or_else(|| invalid_input("submit response omitted task PDA"))?;
-        let result = serde_json::json!({
-            "action": "submit",
-            "task_id": response.task_id,
-            "content_id": args.content_id,
-            "task_pda": task_pda,
-            "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"submit\" to broadcast and confirm submission with the orchestrator.",
-        });
-        shillbot_transaction_result(
-            result,
-            unsigned_tx,
-            ShillbotTransactionContext {
-                action: shillbot_chain::Action::Submit,
-                network: network.unwrap_or("mainnet"),
-                wallet: &wallet_pubkey,
-                task_pda,
-                escrow_lamports: None,
-                content_id: Some(args.content_id),
-                switchboard_feed: None,
-            },
-        )
+        execute_shillbot_submit_work(&orchestrator, &wallet_pubkey, &args).await
     }
 
     #[tool(
         name = "shillbot_verify_task",
-        description = "[EARN: SOL] Build an oracle-co-signed verify_task transaction with your wallet as fee payer. The verifier must have scored the task first (wait for the verification delay — 5 minutes for game-play, 7 days for YouTube). Sign the returned transaction locally to add your fee-payer signature, then broadcast via shillbot_submit_tx with action=\"verify\".",
+        description = "[EARN: SOL] Build an oracle-co-signed verify_task tx (your wallet as fee payer) after the verifier scores a task (~5m for game/website, 7d for YouTube/X). Sign locally and broadcast via shillbot_submit_tx action=\"verify\".",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_verify_task(
@@ -1756,7 +1701,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_submit_tx",
-        description = "[STATE] Broadcast a fully signed, self-paid Shillbot Solana tx (create, claim, submit, approve, verify, finalize) only after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Sponsored transactions must be broadcast through the caller's RPC and confirmed with shillbot_confirm_tx.",
+        description = "[STATE] Broadcast a signed Shillbot Solana tx (create, claim, submit, approve, verify, finalize) after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Supports self-paid txs and gas-sponsored claim/submit txs (sign your wallet slot locally; if the sponsor slot is unsigned, mcp-server requests the gas-sponsor co-signature automatically before broadcast and confirmation).",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_tx(
@@ -1764,95 +1709,23 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<ShillbotSubmitTxArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        if args.task_id.is_empty() {
-            return Err(invalid_input("task_id is required"));
-        }
-        if args.signed_transaction.is_empty() {
-            return Err(invalid_input("signed_transaction is required"));
-        }
-        let action = parse_confirm_action(&args.action)?;
         let network = parse_network_arg(args.network.as_deref())?;
-
         let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
-
-        // Provenance is intentionally irrelevant: independently constructed
-        // transactions are welcome, but their semantics must match the task
-        // and claimed lifecycle action before we spend RPC quota broadcasting.
-        let task = orchestrator
-            .get_task_details(normalize_task_id(&args.task_id), network)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-        let task_pda = args
-            .task_pda
-            .as_deref()
-            .or(task.task_pda.as_deref())
-            .ok_or_else(|| invalid_input("task has no on-chain PDA; task_pda is required"))?;
-        let fee_payer = shillbot_chain::fee_payer_base64(&args.signed_transaction)
-            .map_err(|e| invalid_input(&e.to_string()))?;
-        if fee_payer != wallet_pubkey {
-            return Err(invalid_input(
-                "shillbot_submit_tx accepts only self-paid transactions; broadcast sponsored transactions through your own RPC and call shillbot_confirm_tx",
-            ));
-        }
-        let expected = shillbot_chain::ValidationRequest {
-            action: parse_chain_action(&args.action)?,
-            network: network.unwrap_or("mainnet").to_string(),
-            wallet: wallet_pubkey.clone(),
-            task_pda: task_pda.to_string(),
-            escrow_lamports: None,
-            content_id: (args.action == "submit")
-                .then(|| task.content_id.clone())
-                .flatten(),
-            sponsor: None,
-            expected_accounts: None,
-            expected_data: None,
-            allowed_payout_to: None,
-            require_payout_routing: false,
-            switchboard_feed: (args.action == "verify")
-                .then(|| {
-                    self.state
-                        .oracle_keypair
-                        .as_ref()
-                        .map(|kp| solana_sdk::signer::Signer::pubkey(kp.as_ref()).to_string())
-                })
-                .flatten(),
-        };
-        let inspection =
-            shillbot_chain::validate_signed_base64(&args.signed_transaction, &expected)
-                .map_err(|e| invalid_input(&e.to_string()))?;
-
-        let tx_signature = self
-            .broadcast_and_wait_for_confirmation(&args.signed_transaction, network)
-            .await?;
-
-        tracing::info!(
-            task_id = %args.task_id,
-            wallet = %wallet_pubkey,
-            action = %args.action,
-            sig = %tx_signature,
-            network = network.unwrap_or("mainnet"),
-            "shillbot_submit_tx: tx broadcast"
-        );
-
-        let confirm = orchestrator
-            .confirm_task(
-                normalize_task_id(&args.task_id),
-                &wallet_pubkey,
-                &tx_signature,
-                action,
-                args.task_pda.as_deref(),
-                network,
-            )
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-
-        let result = serde_json::json!({
-            "tx_signature": tx_signature,
-            "task_id": confirm.task_id,
-            "action": confirm.action,
-            "message": confirm.message,
-            "validated_transaction": inspection,
-        });
+        let rpc_url = self.rpc_url_for_network(network);
+        let oracle_pubkey = self
+            .state
+            .oracle_keypair
+            .as_ref()
+            .map(|kp| solana_sdk::signer::Signer::pubkey(kp.as_ref()).to_string());
+        let result = execute_shillbot_submit_tx(
+            &orchestrator,
+            &self.state.rpc_client,
+            rpc_url,
+            &wallet_pubkey,
+            oracle_pubkey.as_deref(),
+            &args,
+        )
+        .await?;
         Ok(text_result(&result))
     }
 
@@ -2724,7 +2597,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "register_wallet",
-        description = "[STATE] Register your wallet — the one entry point for every tool that touches funds. Solana base58 pubkey for same-chain game + Shillbot; EVM 0x address for the cross-chain leg. Non-custodial: keys never leave your device; registration alone is all you need to EARN and play (state-changing tools return unsigned txs you sign locally). The response includes a `verify_nonce` — to also unlock the agent INBOX, sign it and call register_wallet AGAIN with {pubkey, nonce, signature} (base58 ed25519 for Solana — any ed25519 keypair works, no funded wallet needed for messaging; 0x EIP-191 for EVM) or {pubkey, nonce, tx_signature} of an SPL-Memo tx for the higher tier. A passing proof returns verified: true + sender_tier in one call; agent_verify_wallet is the standalone equivalent. Messaging the team needs no proof (agent_send_message with no to_wallet). Idempotent; the session→wallet binding survives restarts."
+        description = "[STATE] Register your wallet — the entry point for every tool that touches funds (Solana base58 pubkey for same-chain game + Shillbot; EVM 0x address for EVM/cross-chain). Non-custodial: keys never leave your device. Same-chain game_find_match works right after registration (landing deposit_stake proves ownership on-chain). Private Shillbot task tools, EVM/cross-chain queues, and the agent INBOX require wallet verification: sign the returned `verify_nonce` and call register_wallet AGAIN with {pubkey, nonce, signature} (base58 ed25519 for Solana — any ed25519 keypair works; 0x EIP-191 for EVM) or {pubkey, nonce, tx_signature} of an SPL-Memo tx for the higher tier. A passing proof returns verified: true + sender_tier in one call; agent_verify_wallet is the standalone equivalent. Messaging the team needs no proof (agent_send_message with no to_wallet). Idempotent; binding survives restarts."
     )]
     async fn register_wallet(
         &self,
@@ -3517,26 +3390,18 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<GameFindMatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_verified_game_wallet(Some(&parts)).await?;
-        let tournament_id = args
-            .tournament_id
-            .unwrap_or_else(|| default_tournament_id(None));
-
-        let unsigned = self
-            .state
-            .game_sessions
-            .build_find_match_tx(&wallet, tournament_id, args.network.as_deref())
-            .await
-            .map_err(|e| McpError::internal_error(format!("find_match failed: {e}"), None))?;
-
-        let response = serde_json::json!({
-            "action": "deposit_stake",
-            "unsigned_tx": unsigned.transaction_b64,
-            "blockhash": unsigned.blockhash,
-            "num_signers": unsigned.num_signers,
-            "tournament_id": tournament_id,
-            "instructions": "Sign this transaction with your Solana wallet, then call game_submit_tx with the base64-encoded signed transaction.",
-        });
+        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let response = execute_game_find_match(&args, |tournament_id, network| {
+            let game_sessions = Arc::clone(&self.state.game_sessions);
+            let wallet = wallet.clone();
+            let network = network.map(str::to_owned);
+            async move {
+                game_sessions
+                    .build_find_match_tx(&wallet, tournament_id, network.as_deref())
+                    .await
+            }
+        })
+        .await?;
         Ok(text_result(&response))
     }
 
@@ -3753,7 +3618,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_verify_wallet",
-        description = "[STATE] Standalone inbox ownership proof — equivalent to re-calling register_wallet with {nonce, signature}; if you just registered, that re-call is one fewer tool. Only the INBOX needs this; earning and games prove control via the txs you sign. Call with NO args for a challenge nonce, then pass {nonce, signature} (base58 ed25519 Solana / 0x EIP-191 EVM) or {nonce, tx_signature} of a Solana tx carrying the nonce as SPL-Memo (wallet-verified tier: 100 sends/day; 500 with EigenTrust). Any ed25519 keypair works — no funded wallet needed. A landed deposit_stake via game_submit_tx verifies you automatically. Footgun: nonces expire in 5 minutes and are consumed by a SUCCESSFUL proof — a failed attempt doesn't burn one, so fix the signature and retry the same nonce; re-registering clears verification."
+        description = "[STATE] Standalone wallet ownership proof — equivalent to re-calling register_wallet with {pubkey, nonce, signature}. Required for private Shillbot task tools, EVM/cross-chain queues, and the agent inbox (same-chain game_find_match works unverified, and landing deposit_stake via game_submit_tx verifies you automatically). Call with NO args for a challenge nonce, then pass {nonce, signature} (base58 ed25519 Solana / 0x EIP-191 EVM: 25 inbox sends/day) or {nonce, tx_signature} of a Solana SPL-Memo tx (wallet-verified: 100 sends/day; 500 with EigenTrust). Any ed25519 keypair works — no funded wallet needed. Nonces expire in 5 minutes and are consumed only on a SUCCESSFUL proof (failed attempts can retry the same nonce); re-registering a different wallet clears verification."
     )]
     async fn agent_verify_wallet(
         &self,
@@ -3804,7 +3669,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_send_message",
-        description = "[STATE] Send a durable inbox message (not live game chat). Omit to_wallet for team support; guests may contact support 10/day. Other recipients require a verified wallet; use register_wallet with its signed verify_nonce or agent_verify_wallet. Recipient: base58, 0x, or CAIP-10. Body <=4096 bytes, untrusted to readers; retained indefinitely. Optional thread_id and enum intent group conversations. Sends/day by tier: 5/100/500. Muted or full threads (500 messages) reject sends."
+        description = "[STATE] Send a durable inbox message (not live game chat). Omit to_wallet for team support; guests may contact support 10/day. Other recipients require a verified wallet; use register_wallet with its signed verify_nonce or agent_verify_wallet. Recipient: base58, 0x, or CAIP-10. Body <=4096 bytes, untrusted to readers; retained indefinitely. Optional thread_id and enum intent group conversations. Sends/day by tier: 25/100/500. Muted or full threads (500 messages) reject sends."
     )]
     async fn agent_send_message(
         &self,
@@ -3871,6 +3736,10 @@ impl SwarmTipsMcp {
     }
 
     async fn selective_mailbox(&self, parts: &http::request::Parts) -> Result<String, McpError> {
+        if let Some((verified, _)) = self.bearer_verified_from_parts(Some(parts))? {
+            return crate::inbox::mailbox_address(verified.as_str())
+                .map_err(|_| invalid_input("invalid authenticated mailbox"));
+        }
         let session = session_id_from_parts(Some(parts))
             .ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
         match self.state.session_binding.resolve_verified(&session).await {
@@ -4207,7 +4076,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "get_webhook",
-        description = "[READ] Read YOUR wallet's registered inbox webhook: url, verified state, hmac_secret (for signature verification), consecutive delivery failures, and disabled/last-delivery timestamps. Returns registered:false if none. Requires agent_verify_wallet this session.",
+        description = "[READ] Read YOUR wallet's registered inbox webhook: url, verified state, hmac_secret_sha256 (fingerprint of the hmac_secret returned once at register_webhook; raw secret is redacted on reads — re-call register_webhook to rotate), consecutive delivery failures, and disabled/last-delivery timestamps. Returns registered:false if none. Requires agent_verify_wallet this session.",
         annotations(read_only_hint = true)
     )]
     async fn get_webhook(
@@ -4577,52 +4446,164 @@ fn with_standard_metadata(mut tool: Tool) -> Tool {
 
 // -- Helper methods --
 
-impl SwarmTipsMcp {
-    /// Resolve the agent's wallet for the current MCP request.
-    ///
-    /// Resolution: per-session Firestore binding only.
-    ///
-    /// `mcp-session-id` header → wallet via the `mcp_http_sessions`
-    /// collection written by `register_wallet`. On hit, re-hydrates the
-    /// in-memory game session from `mcp_game_sessions/{wallet}` so a
-    /// pod restart doesn't strand the agent mid-game.
-    ///
-    /// Returns None if no binding exists. Caller surfaces the standard
-    /// "no game session: call register_wallet first" error.
-    ///
-    /// No "first wallet in the map" fallback — that pattern leaked wallets
-    /// across MCP sessions sharing a pod. A fresh session must call
-    /// register_wallet to bind, otherwise this returns None.
-    async fn resolve_wallet(&self, parts: Option<&http::request::Parts>) -> Option<String> {
-        let session_id = session_id_from_parts(parts)?;
-        let wallet = self.state.session_binding.resolve(&session_id).await?;
-        let is_verified = self
-            .state
-            .session_binding
+fn extract_bearer_verified(
+    jwt_secret: Option<&str>,
+    parts: Option<&http::request::Parts>,
+) -> Result<Option<(crate::session_binding::VerifiedWallet, String)>, McpError> {
+    let Some(parts) = parts else {
+        return Ok(None);
+    };
+    let Some(header_val) = parts.headers.get(http::header::AUTHORIZATION) else {
+        return Ok(None);
+    };
+    let raw = header_val
+        .to_str()
+        .map_err(|_| invalid_input("invalid Authorization header"))?
+        .trim();
+    let Some((scheme, token)) = raw.split_once(' ') else {
+        return Err(invalid_input("Authorization header must use Bearer <jwt>"));
+    };
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return Err(invalid_input("Authorization header must use Bearer <jwt>"));
+    }
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(invalid_input("Bearer token must not be empty"));
+    }
+    let Some(secret) = jwt_secret else {
+        return Err(invalid_input(
+            "Bearer JWT verification is not configured on this server",
+        ));
+    };
+    let verified = crate::session_binding::VerifiedWallet::from_user_bearer_jwt(token, secret)
+        .map_err(|_| invalid_input("invalid, expired, or non-user Bearer token"))?;
+    Ok(Some((verified, token.to_owned())))
+}
+
+/// Shared wallet-resolution seam for Solana game tools:
+/// - `require_verified == false` (`game_find_match`, `game_submit_tx`, `game_check_match`, `game_get_result`):
+///   accepts an unverified registered session (`register_wallet {pubkey}`) OR a verified session OR
+///   a stateless `Authorization: Bearer <user_jwt>`.
+/// - `require_verified == true` (`game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`):
+///   requires proven wallet ownership (`deposit_stake` piggyback, `register_wallet` with proof,
+///   `agent_verify_wallet`, or `Authorization: Bearer <user_jwt>`).
+async fn resolve_session_or_bearer_game_wallet(
+    session_binding: &McpSessionBinding,
+    jwt_secret: Option<&str>,
+    parts: Option<&http::request::Parts>,
+    require_verified: bool,
+) -> Result<(String, bool, String), McpError> {
+    if let Some((verified, _)) = extract_bearer_verified(jwt_secret, parts)? {
+        if let Some(session_id) = session_id_from_parts(parts) {
+            if let Some(bound) = session_binding.resolve(&session_id).await {
+                if !crate::jwt::wallets_match(&bound, verified.as_str()) {
+                    return Err(invalid_input(
+                        "Authorization: Bearer wallet conflicts with bound Mcp-Session-Id wallet",
+                    ));
+                }
+            }
+        }
+        return Ok((verified.as_str().to_owned(), true, "bearer".to_owned()));
+    }
+
+    if require_verified {
+        let session_id =
+            session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
+        let verified = session_binding
+            .resolve_verified(&session_id)
+            .await
+            .ok_or_else(|| {
+                invalid_input(
+                    "in-game actions require proven wallet ownership: submit your deposit_stake transaction via game_submit_tx first, or verify your wallet via register_wallet {pubkey, nonce, signature} (or agent_verify_wallet)",
+                )
+            })?;
+        Ok((verified.as_str().to_owned(), true, session_id))
+    } else {
+        let session_id = session_id_from_parts(parts)
+            .ok_or_else(|| invalid_input("no game session: call register_wallet first"))?;
+        let wallet = session_binding
+            .resolve(&session_id)
+            .await
+            .ok_or_else(|| invalid_input("no game session: call register_wallet first"))?;
+        let is_verified = session_binding
             .resolve_verified(&session_id)
             .await
             .is_some();
-        // Re-hydrate game session from Firestore only if the in-memory
-        // map doesn't already have it. The heavy work (RPC balance
-        // check + persisted session load) only fires on the first tool
-        // call after a pod restart; steady-state tool calls just hit
-        // the cheap `contains_key` check.
-        if !self.state.game_sessions.is_registered(&wallet).await {
+        Ok((wallet, is_verified, session_id))
+    }
+}
+
+async fn execute_game_find_match<F, Fut>(
+    args: &GameFindMatchArgs,
+    build_tx: F,
+) -> Result<serde_json::Value, McpError>
+where
+    F: FnOnce(u64, Option<&str>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<game_chain::client::UnsignedTx>>,
+{
+    let tournament_id = args
+        .tournament_id
+        .unwrap_or_else(|| default_tournament_id(args.network.as_deref()));
+    let unsigned = build_tx(tournament_id, args.network.as_deref())
+        .await
+        .map_err(|e| McpError::internal_error(format!("find_match failed: {e}"), None))?;
+
+    Ok(serde_json::json!({
+        "action": "deposit_stake",
+        "unsigned_tx": unsigned.transaction_b64,
+        "blockhash": unsigned.blockhash,
+        "num_signers": unsigned.num_signers,
+        "tournament_id": tournament_id,
+        "instructions": "Sign this transaction with your Solana wallet, then call game_submit_tx with the base64-encoded signed transaction.",
+    }))
+}
+
+impl SwarmTipsMcp {
+    fn bearer_verified_from_parts(
+        &self,
+        parts: Option<&http::request::Parts>,
+    ) -> Result<Option<(crate::session_binding::VerifiedWallet, String)>, McpError> {
+        extract_bearer_verified(self.state.jwt_secret.as_deref(), parts)
+    }
+
+    async fn resolve_wallet(&self, parts: Option<&http::request::Parts>) -> Option<String> {
+        let (wallet, is_verified, session_label) = resolve_session_or_bearer_game_wallet(
+            &self.state.session_binding,
+            self.state.jwt_secret.as_deref(),
+            parts,
+            false,
+        )
+        .await
+        .ok()?;
+        self.hydrate_solana_game_session_if_needed(&wallet, is_verified, &session_label)
+            .await;
+        Some(wallet)
+    }
+
+    async fn hydrate_solana_game_session_if_needed(
+        &self,
+        wallet: &str,
+        is_verified: bool,
+        session_label: &str,
+    ) {
+        if !wallet.starts_with("eip155:")
+            && !wallet.starts_with("0x")
+            && !self.state.game_sessions.is_registered(wallet).await
+        {
             if let Err(e) = self
                 .state
                 .game_sessions
-                .register_wallet_with_verification(&wallet, is_verified)
+                .register_wallet_with_verification(wallet, is_verified)
                 .await
             {
                 tracing::warn!(
                     wallet = %wallet,
-                    session_id = %session_id,
+                    session_id = %session_label,
                     error = %e,
                     "failed to re-hydrate game session after binding lookup"
                 );
             }
         }
-        Some(wallet)
     }
 
     /// Require a registered game wallet, returning an MCP error if none
@@ -4631,64 +4612,55 @@ impl SwarmTipsMcp {
         &self,
         parts: Option<&http::request::Parts>,
     ) -> Result<String, McpError> {
-        self.resolve_wallet(parts)
-            .await
-            .ok_or_else(|| invalid_input("no game session: call register_wallet first"))
+        let (wallet, is_verified, session_label) = resolve_session_or_bearer_game_wallet(
+            &self.state.session_binding,
+            self.state.jwt_secret.as_deref(),
+            parts,
+            false,
+        )
+        .await?;
+        self.hydrate_solana_game_session_if_needed(&wallet, is_verified, &session_label)
+            .await;
+        Ok(wallet)
     }
 
     /// Require a game wallet whose ownership has been proven in this MCP session
-    /// (either automatically via `deposit_stake` in `game_submit_tx`, or via
-    /// `register_wallet {pubkey, nonce, signature}` / `agent_verify_wallet`).
-    /// Prevents an unverified caller from calling `register_wallet(victim)` and
-    /// reading/sending chat or committing/revealing guesses for `victim`.
+    /// (automatically via `deposit_stake` in `game_submit_tx`, via `Authorization: Bearer <jwt>`,
+    /// or via `register_wallet {pubkey, nonce, signature}` / `agent_verify_wallet`).
     async fn require_verified_game_wallet(
         &self,
         parts: Option<&http::request::Parts>,
     ) -> Result<String, McpError> {
-        let session_id =
-            session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
-        let wallet = self
-            .state
-            .session_binding
-            .resolve_verified(&session_id)
-            .await
-            .ok_or_else(|| {
-                invalid_input(
-                    "in-game actions require proven wallet ownership: submit your deposit_stake transaction via game_submit_tx first, or verify your wallet via register_wallet {pubkey, nonce, signature} (or agent_verify_wallet)",
-                )
-            })?;
-        if !self
-            .state
-            .game_sessions
-            .is_registered(wallet.as_str())
-            .await
-        {
-            if let Err(e) = self
-                .state
-                .game_sessions
-                .register_wallet_with_verification(wallet.as_str(), true)
-                .await
-            {
-                tracing::warn!(
-                    wallet = %wallet,
-                    session_id = %session_id,
-                    error = %e,
-                    "failed to re-hydrate verified game session after binding lookup"
-                );
-            }
-        }
-        Ok(wallet.as_str().to_owned())
+        let (wallet, _, session_label) = resolve_session_or_bearer_game_wallet(
+            &self.state.session_binding,
+            self.state.jwt_secret.as_deref(),
+            parts,
+            true,
+        )
+        .await?;
+        self.hydrate_solana_game_session_if_needed(&wallet, true, &session_label)
+            .await;
+        Ok(wallet)
     }
 
     /// Resolve the session-bound wallet without hydrating a Solana game
-    /// session — the cross-chain tools work for EVM wallets too, where the
-    /// Solana hydration in `resolve_wallet` would warn harmlessly on every
-    /// call. Returns the bound wallet string (CAIP-10 for EVM, base58 for
-    /// Solana) or an MCP error if the session isn't registered.
+    /// session — the cross-chain tools work for EVM wallets too.
     async fn require_bound_wallet(
         &self,
         parts: Option<&http::request::Parts>,
     ) -> Result<String, McpError> {
+        if let Some((verified, _)) = self.bearer_verified_from_parts(parts)? {
+            if let Some(session_id) = session_id_from_parts(parts) {
+                if let Some(bound) = self.state.session_binding.resolve(&session_id).await {
+                    if !crate::jwt::wallets_match(&bound, verified.as_str()) {
+                        return Err(invalid_input(
+                            "Authorization: Bearer wallet conflicts with bound Mcp-Session-Id wallet",
+                        ));
+                    }
+                }
+            }
+            return Ok(verified.as_str().to_owned());
+        }
         let session_id =
             session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
         self.state
@@ -4700,13 +4672,23 @@ impl SwarmTipsMcp {
 
     /// Require a session-bound wallet (EVM or Solana) whose ownership has been
     /// proven in this MCP session (`register_wallet {pubkey, nonce, signature}`,
-    /// `agent_verify_wallet`, or `deposit_stake`). Prevents an unverified caller
-    /// from calling `register_wallet(victim)` and joining queues, committing/
-    /// revealing guesses, or co-signing cross-chain checkpoints as `victim`.
+    /// `agent_verify_wallet`, `deposit_stake`, or `Authorization: Bearer <jwt>`).
     async fn require_verified_bound_wallet(
         &self,
         parts: Option<&http::request::Parts>,
     ) -> Result<crate::session_binding::VerifiedWallet, McpError> {
+        if let Some((verified, _)) = self.bearer_verified_from_parts(parts)? {
+            if let Some(session_id) = session_id_from_parts(parts) {
+                if let Some(bound) = self.state.session_binding.resolve(&session_id).await {
+                    if !crate::jwt::wallets_match(&bound, verified.as_str()) {
+                        return Err(invalid_input(
+                            "Authorization: Bearer wallet conflicts with bound Mcp-Session-Id wallet",
+                        ));
+                    }
+                }
+            }
+            return Ok(verified);
+        }
         let session_id =
             session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
         self.state
@@ -4720,19 +4702,38 @@ impl SwarmTipsMcp {
             })
     }
 
-    /// Require a session that has PROVEN wallet ownership (agent_verify_wallet
-    /// or the stake piggyback), returning the CAIP-10 mailbox address.
-    ///
-    /// Privacy invariant (stricter than the panel text): unproven sessions get
-    /// NOTHING from inbox tools — reads too — otherwise anyone could
-    /// `register_wallet(victim)` and read the victim's mail. Never
-    /// `require_game_wallet` here: that path does an RPC balance read on
-    /// every poll.
+    /// Require a session that has PROVEN wallet ownership, returning the CAIP-10 mailbox address.
     async fn require_verified_wallet(
         &self,
         parts: Option<&http::request::Parts>,
     ) -> Result<String, McpError> {
         let prov = provenance_from_parts(parts);
+        match self.bearer_verified_from_parts(parts) {
+            Ok(Some((verified, _))) => {
+                if let Some(session_id) = session_id_from_parts(parts) {
+                    if let Some(bound) = self.state.session_binding.resolve(&session_id).await {
+                        if !crate::jwt::wallets_match(&bound, verified.as_str()) {
+                            return Err(self.inbox_reject(
+                                "conflicting_auth_headers",
+                                None,
+                                None,
+                                "Authorization: Bearer wallet conflicts with bound Mcp-Session-Id wallet",
+                                &prov,
+                            ));
+                        }
+                    }
+                }
+                return crate::inbox::mailbox_address(verified.as_str()).map_err(|e| {
+                    invalid_input(&format!(
+                        "authenticated wallet is not mailbox-addressable: {e}"
+                    ))
+                });
+            }
+            Err(e) => {
+                return Err(self.inbox_reject("unproven_sender", None, None, &e.message, &prov));
+            }
+            Ok(None) => {}
+        }
         let session_id = session_id_from_parts(parts).ok_or_else(|| {
             self.inbox_reject(
                 "missing_session",
@@ -4751,30 +4752,33 @@ impl SwarmTipsMcp {
             Some(wallet) => crate::inbox::mailbox_address(wallet.as_str()).map_err(|e| {
                 invalid_input(&format!("bound wallet is not mailbox-addressable: {e}"))
             }),
-            None => {
-                // Read/session gate: no recipient — the caller identity rides
-                // the provenance (session id + IP + UA).
-                Err(self.inbox_reject(
-                    "unproven_sender",
-                    None,
-                    None,
-                    "session has not proven wallet ownership: sign register_wallet's verify_nonce and re-call register_wallet with {pubkey, nonce, signature} (or use agent_verify_wallet)",
-                    &prov,
-                ))
-            }
+            None => Err(self.inbox_reject(
+                "unproven_sender",
+                None,
+                None,
+                "session has not proven wallet ownership: sign register_wallet's verify_nonce and re-call register_wallet with {pubkey, nonce, signature} (or use agent_verify_wallet)",
+                &prov,
+            )),
         }
     }
 
-    /// The proven wallet for this session as a CAIP-10 mailbox address, or
-    /// `None` if the session is unbound, unproven, or the proven wallet is not
-    /// mailbox-addressable. The Option-returning core of
-    /// `require_verified_wallet`, used by the send/post handlers that fall back
-    /// to a rate-limited unproven path (support mailbox / public board) instead
-    /// of hard-rejecting.
     async fn resolve_verified_mailbox(
         &self,
         parts: Option<&http::request::Parts>,
     ) -> Option<String> {
+        if let Some((verified, _)) = self.bearer_verified_from_parts(parts).ok().flatten() {
+            if let Some(session_id) = session_id_from_parts(parts) {
+                if let Some(bound) = self.state.session_binding.resolve(&session_id).await {
+                    if !crate::jwt::wallets_match(&bound, verified.as_str()) {
+                        return None;
+                    }
+                }
+            }
+            return crate::inbox::mailbox_address(verified.as_str()).ok();
+        }
+        if parts.is_some_and(|p| p.headers.contains_key(http::header::AUTHORIZATION)) {
+            return None;
+        }
         let session_id = session_id_from_parts(parts)?;
         let wallet = self
             .state
@@ -4827,12 +4831,6 @@ impl SwarmTipsMcp {
         })))
     }
 
-    /// Best-effort convenience nonce for the `register_wallet` response. Reuses
-    /// the SAME `mint_challenge_nonce` path `agent_verify_wallet` phase 1 uses,
-    /// so a nonce handed back at registration validates later through
-    /// `agent_verify_wallet {nonce, signature}` phase 2. Issuance failure is
-    /// NON-fatal — registration must still succeed — so we WARN-log and return
-    /// `None`, and the `verify_nonce` field is simply omitted.
     async fn best_effort_verify_nonce(&self, native: &str) -> Option<String> {
         match mint_challenge_nonce(&self.state.game_api, native).await {
             Ok(nonce) => Some(nonce),
@@ -4851,11 +4849,26 @@ impl SwarmTipsMcp {
         &self,
         parts: &http::request::Parts,
     ) -> Result<(String, OrchestratorProxy), McpError> {
+        if let Some((verified, token)) = self.bearer_verified_from_parts(Some(parts))? {
+            if let Some(session_id) = session_id_from_parts(Some(parts)) {
+                if let Some(bound) = self.state.session_binding.resolve(&session_id).await {
+                    if !crate::jwt::wallets_match(&bound, verified.as_str()) {
+                        return Err(invalid_input(
+                            "Authorization: Bearer wallet conflicts with bound Mcp-Session-Id wallet",
+                        ));
+                    }
+                }
+            }
+            return Ok((
+                native_wallet_address(verified.as_str()).to_owned(),
+                self.state.orchestrator.authenticated(token),
+            ));
+        }
         let session_id = session_id_from_parts(Some(parts))
             .ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
         let (wallet, token) = self.state.session_binding.resolve_access_token(&session_id).await
             .map_err(|_| McpError::internal_error("Could not load your signed wallet session. Retry this request.", None))?
-            .ok_or_else(|| invalid_input("Verify wallet ownership with agent_verify_wallet before using private Shillbot tools. Registration alone is not authentication."))?;
+            .ok_or_else(|| invalid_input("Verify wallet ownership with agent_verify_wallet (or pass Authorization: Bearer <jwt>) before using private Shillbot tools. Registration alone is not authentication."))?;
         Ok((
             native_wallet_address(&wallet).to_owned(),
             self.state.orchestrator.authenticated(token),
@@ -5230,38 +5243,304 @@ impl SwarmTipsMcp {
         debug_assert!(!url.is_empty(), "resolved RPC URL must be non-empty");
         url
     }
+}
 
-    /// Broadcast a base64-encoded signed transaction, then wait until the
-    /// orchestrator's RPC view sees it confirmed. Returns the tx signature on
-    /// success. The wait avoids the "transaction not found" race in
-    /// `shillbot-api::solana::verify_tx_confirmed`.
-    async fn broadcast_and_wait_for_confirmation(
-        &self,
-        signed_b64: &str,
-        network: Option<&str>,
-    ) -> Result<String, McpError> {
-        // Precondition: caller validated non-empty input at the handler boundary.
-        debug_assert!(
-            !signed_b64.is_empty(),
-            "signed transaction must be non-empty at broadcast time"
-        );
-        let rpc_url = self.rpc_url_for_network(network);
-        let tx_signature =
-            solana_tx::broadcast_signed_b64(&self.state.rpc_client, rpc_url, signed_b64)
+/// Broadcast a base64-encoded signed transaction, then wait until the
+/// orchestrator's RPC view sees it confirmed. Returns the tx signature on
+/// success.
+async fn broadcast_and_confirm_on_rpc(
+    rpc_client: &reqwest::Client,
+    rpc_url: &str,
+    signed_b64: &str,
+) -> Result<String, McpError> {
+    debug_assert!(
+        !signed_b64.is_empty(),
+        "signed transaction must be non-empty at broadcast time"
+    );
+    let tx_signature = solana_tx::broadcast_signed_b64(rpc_client, rpc_url, signed_b64)
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+
+    solana_tx::wait_for_signature_confirmed(rpc_client, rpc_url, &tx_signature, 30)
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+    debug_assert!(
+        !tx_signature.is_empty(),
+        "broadcast returned empty signature"
+    );
+    Ok(tx_signature)
+}
+
+async fn execute_shillbot_submit_work(
+    orchestrator: &OrchestratorProxy,
+    wallet_pubkey: &str,
+    args: &SubmitWorkArgs,
+) -> Result<CallToolResult, McpError> {
+    if args.task_id.is_empty() {
+        return Err(invalid_input("task_id is required"));
+    }
+    let has_proof_lean = args
+        .proof_lean
+        .as_deref()
+        .is_some_and(|p| !p.trim().is_empty());
+    if args.content_id.is_empty() && !has_proof_lean {
+        return Err(invalid_input(
+            "content_id is required (or pass proof_lean for LeanProof platform 10 tasks)",
+        ));
+    }
+    let network = parse_network_arg(args.network.as_deref())?;
+
+    let response = orchestrator
+        .submit_task(
+            normalize_task_id(&args.task_id),
+            wallet_pubkey,
+            &args.content_id,
+            args.proof_lean.as_deref(),
+            network,
+        )
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+
+    let effective_content_id = if !args.content_id.is_empty() {
+        Some(args.content_id.clone())
+    } else {
+        response.content_id.clone().filter(|s| !s.is_empty())
+    };
+
+    tracing::info!(
+        event = "shillbot_submit_work",
+        task_id = %args.task_id,
+        content_id = effective_content_id.as_deref().unwrap_or("<inline_lean>"),
+        wallet = %wallet_pubkey,
+        network = network.unwrap_or("mainnet"),
+        "submit_work: unsigned tx built"
+    );
+
+    let unsigned_tx = response
+        .transaction
+        .as_deref()
+        .ok_or_else(|| invalid_input("submit response omitted unsigned transaction"))?;
+    let task_pda = response
+        .task_pda
+        .as_deref()
+        .ok_or_else(|| invalid_input("submit response omitted task PDA"))?;
+    let result = serde_json::json!({
+        "action": "submit",
+        "task_id": response.task_id,
+        "content_id": effective_content_id.as_deref().unwrap_or(""),
+        "task_pda": task_pda,
+        "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"submit\" to broadcast and confirm submission with the orchestrator.",
+    });
+    shillbot_transaction_result(
+        result,
+        unsigned_tx,
+        ShillbotTransactionContext {
+            action: shillbot_chain::Action::Submit,
+            network: network.unwrap_or("mainnet"),
+            wallet: wallet_pubkey,
+            task_pda,
+            escrow_lamports: None,
+            content_id: effective_content_id,
+            switchboard_feed: None,
+        },
+    )
+}
+
+async fn execute_shillbot_submit_tx(
+    orchestrator: &OrchestratorProxy,
+    rpc_client: &reqwest::Client,
+    rpc_url: &str,
+    wallet_pubkey: &str,
+    oracle_pubkey: Option<&str>,
+    args: &ShillbotSubmitTxArgs,
+) -> Result<serde_json::Value, McpError> {
+    use base64::Engine;
+    use std::str::FromStr;
+
+    if args.task_id.is_empty() {
+        return Err(invalid_input("task_id is required"));
+    }
+    if args.signed_transaction.is_empty() {
+        return Err(invalid_input("signed_transaction is required"));
+    }
+    let action = parse_confirm_action(&args.action)?;
+    let chain_action = parse_chain_action(&args.action)?;
+    let network = parse_network_arg(args.network.as_deref())?;
+
+    let task = orchestrator
+        .get_task_details(normalize_task_id(&args.task_id), network)
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+    let task_pda = args
+        .task_pda
+        .as_deref()
+        .or(task.task_pda.as_deref())
+        .ok_or_else(|| invalid_input("task has no on-chain PDA; task_pda is required"))?;
+
+    let caller_tx = shillbot_chain::decode_base64(&args.signed_transaction)
+        .map_err(|e| invalid_input(&e.to_string()))?;
+    let fee_payer = shillbot_chain::fee_payer_base64(&args.signed_transaction)
+        .map_err(|e| invalid_input(&e.to_string()))?;
+
+    let (final_signed_b64, inspection) = if fee_payer == wallet_pubkey {
+        let expected = shillbot_chain::ValidationRequest {
+            action: chain_action,
+            network: network.unwrap_or("mainnet").to_string(),
+            wallet: wallet_pubkey.to_string(),
+            task_pda: task_pda.to_string(),
+            escrow_lamports: None,
+            content_id: (args.action == "submit")
+                .then(|| task.content_id.clone())
+                .flatten(),
+            sponsor: None,
+            expected_accounts: None,
+            expected_data: None,
+            allowed_payout_to: None,
+            require_payout_routing: false,
+            switchboard_feed: (args.action == "verify")
+                .then(|| oracle_pubkey.map(str::to_owned))
+                .flatten(),
+        };
+        let inspection =
+            shillbot_chain::validate_signed_base64(&args.signed_transaction, &expected)
+                .map_err(|e| invalid_input(&e.to_string()))?;
+        (args.signed_transaction.clone(), inspection)
+    } else {
+        if args.action != "claim" && args.action != "submit" {
+            return Err(invalid_input(
+                "gas-sponsored fee payers are only permitted on claim and submit actions",
+            ));
+        }
+        let allowed_payout_to =
+            shillbot_chain::payout_to_base64(&args.signed_transaction, task_pda, wallet_pubkey)
+                .map_err(|e| invalid_input(&e.to_string()))?;
+        let expected = shillbot_chain::ValidationRequest {
+            action: chain_action,
+            network: network.unwrap_or("mainnet").to_string(),
+            wallet: wallet_pubkey.to_string(),
+            task_pda: task_pda.to_string(),
+            escrow_lamports: None,
+            content_id: (args.action == "submit")
+                .then(|| task.content_id.clone())
+                .flatten(),
+            sponsor: Some(fee_payer),
+            expected_accounts: None,
+            expected_data: None,
+            allowed_payout_to,
+            require_payout_routing: false,
+            switchboard_feed: None,
+        };
+        // Validate message structure and intent before checking signatures or calling sponsor.
+        shillbot_chain::validate(&caller_tx, &expected)
+            .map_err(|e| invalid_input(&e.to_string()))?;
+
+        let num_req = usize::from(caller_tx.message.header().num_required_signatures);
+        if caller_tx.signatures.len() != num_req {
+            return Err(invalid_input(
+                "transaction signature count does not match required signers",
+            ));
+        }
+        let wallet_pk = solana_sdk::pubkey::Pubkey::from_str(wallet_pubkey)
+            .map_err(|_| invalid_input("invalid wallet pubkey"))?;
+        let static_keys = caller_tx.message.static_account_keys();
+        let agent_sig_idx = static_keys
+            .get(..num_req)
+            .and_then(|signers| signers.iter().position(|pk| *pk == wallet_pk))
+            .ok_or_else(|| invalid_input("wallet is not a required signer on this transaction"))?;
+        let agent_sig = caller_tx
+            .signatures
+            .get(agent_sig_idx)
+            .copied()
+            .ok_or_else(|| invalid_input("missing agent signature slot"))?;
+        let msg_bytes = caller_tx.message.serialize();
+        if agent_sig == solana_sdk::signature::Signature::default()
+            || !agent_sig.verify(wallet_pk.as_ref(), &msg_bytes)
+        {
+            return Err(invalid_input(
+                "transaction is missing a valid signature from your registered wallet",
+            ));
+        }
+
+        let sponsor_slot_empty = caller_tx
+            .signatures
+            .first()
+            .is_some_and(|sig| *sig == solana_sdk::signature::Signature::default());
+        let co_signed_b64 = if sponsor_slot_empty {
+            let sponsored = orchestrator
+                .sponsor_transaction(
+                    normalize_task_id(&args.task_id),
+                    wallet_pubkey,
+                    &args.action,
+                    &args.signed_transaction,
+                    network,
+                )
                 .await
                 .map_err(|e| to_mcp_error(&e))?;
+            let sponsored_b64 = sponsored.transaction.as_deref().ok_or_else(|| {
+                McpError::internal_error("sponsor endpoint omitted signed transaction", None)
+            })?;
+            let mut sponsored_tx = shillbot_chain::decode_base64(sponsored_b64)
+                .map_err(|e| invalid_input(&e.to_string()))?;
+            if sponsored_tx.message.serialize() != msg_bytes {
+                return Err(McpError::internal_error(
+                    "sponsor endpoint altered transaction message bytes",
+                    None,
+                ));
+            }
+            if sponsored_tx.signatures.len() != num_req {
+                return Err(McpError::internal_error(
+                    "sponsor endpoint returned invalid signature slot count",
+                    None,
+                ));
+            }
+            if sponsored_tx.signatures.get(agent_sig_idx)
+                == Some(&solana_sdk::signature::Signature::default())
+            {
+                sponsored_tx.signatures[agent_sig_idx] = agent_sig;
+            }
+            let raw_bytes = bincode::serialize(&sponsored_tx).map_err(|e| {
+                McpError::internal_error(format!("could not serialize co-signed tx: {e}"), None)
+            })?;
+            base64::engine::general_purpose::STANDARD.encode(raw_bytes)
+        } else {
+            args.signed_transaction.clone()
+        };
 
-        solana_tx::wait_for_signature_confirmed(&self.state.rpc_client, rpc_url, &tx_signature, 30)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
-        // Postcondition: a non-empty signature is returned only when both
-        // broadcast and confirmation succeeded.
-        debug_assert!(
-            !tx_signature.is_empty(),
-            "broadcast returned empty signature"
-        );
-        Ok(tx_signature)
-    }
+        let inspection = shillbot_chain::validate_signed_base64(&co_signed_b64, &expected)
+            .map_err(|e| invalid_input(&e.to_string()))?;
+        (co_signed_b64, inspection)
+    };
+
+    let tx_signature = broadcast_and_confirm_on_rpc(rpc_client, rpc_url, &final_signed_b64).await?;
+
+    tracing::info!(
+        task_id = %args.task_id,
+        wallet = %wallet_pubkey,
+        action = %args.action,
+        sig = %tx_signature,
+        network = network.unwrap_or("mainnet"),
+        "shillbot_submit_tx: tx broadcast"
+    );
+
+    let confirm = orchestrator
+        .confirm_task(
+            normalize_task_id(&args.task_id),
+            wallet_pubkey,
+            &tx_signature,
+            action,
+            args.task_pda.as_deref(),
+            network,
+        )
+        .await
+        .map_err(|e| to_mcp_error(&e))?;
+
+    Ok(serde_json::json!({
+        "tx_signature": tx_signature,
+        "task_id": confirm.task_id,
+        "action": confirm.action,
+        "message": confirm.message,
+        "validated_transaction": inspection,
+    }))
 }
 
 async fn execute_xchain_build_settle(
@@ -5782,8 +6061,15 @@ fn task_next_action(
         serde_json::json!({
             "next_action": "submit_work",
             "next_tool": "shillbot_submit_work",
-            "args": { "task_id": task.task_id, "content_id": "<caip2>:<tx_id>:<index>[:sig:<base64url_65B_secp256k1>]" },
-            "hint": "OnChainAction (platform 11) uses atomic claim-on-proof: do NOT call shillbot_claim_task. Drive a finalized matching affiliate event on the target chain, optionally dry-run POST /tasks/:id/preflight, then call shillbot_submit_work directly.",
+            "args": { "task_id": task.task_id, "content_id": "<caip2>:<tx_id>[:<index>|auto][:sig:<base64url_or_0xhex_65B_secp256k1>]" },
+            "hint": "OnChainAction (platform 11) uses atomic claim-on-proof: do NOT call shillbot_claim_task. Drive a finalized matching affiliate event on the target chain, optionally dry-run POST /tasks/:id/preflight, then call shillbot_submit_work directly (omit <index> or pass auto to scan all receipt logs/instructions).",
+        })
+    } else if task.state == "claimed" && task.platform == Some(10) {
+        serde_json::json!({
+            "next_action": "submit_work",
+            "next_tool": "shillbot_submit_work",
+            "args": { "task_id": task.task_id, "proof_lean": "<complete Proof.lean source>" },
+            "hint": "LeanProof (platform 10): pass your Lean 4 proof source directly in proof_lean (content_id may be omitted), or pass content_id as lean4:proof:<base64> / an HTTPS .lean URL, then sign and submit via shillbot_submit_tx action=\"submit\".",
         })
     } else if task.state == "claimed" && task.platform == Some(9) {
         if task
@@ -6280,7 +6566,10 @@ fn shillbot_transaction_result(
     let fee_payer = shillbot_chain::fee_payer_base64(unsigned_tx)
         .map_err(|error| invalid_input(&error.to_string()))?;
     let sponsor = (fee_payer != context.wallet).then_some(fee_payer);
-    let allowed_payout_to = if context.action == shillbot_chain::Action::Claim {
+    let allowed_payout_to = if matches!(
+        context.action,
+        shillbot_chain::Action::Claim | shillbot_chain::Action::Submit
+    ) {
         shillbot_chain::payout_to_base64(unsigned_tx, context.task_pda, context.wallet)
             .map_err(|error| invalid_input(&error.to_string()))?
     } else {
@@ -6302,6 +6591,15 @@ fn shillbot_transaction_result(
     };
     let inspection = shillbot_chain::validate_base64(unsigned_tx, &request)
         .map_err(|error| invalid_input(&error.to_string()))?;
+    if value
+        .get("content_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(str::is_empty)
+    {
+        if let Some(ref cid) = inspection.content_id {
+            value["content_id"] = serde_json::Value::String(cid.clone());
+        }
+    }
     value["unsigned_tx"] = serde_json::Value::String(unsigned_tx.to_string());
     value["transaction_intent"] = serde_json::to_value(&inspection).map_err(|error| {
         invalid_input(&format!("could not serialize transaction intent: {error}"))
@@ -6423,7 +6721,13 @@ mod tests {
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, false)
                 .iter()
                 .any(|tool| tool.name == "agent_verify_wallet"),
-            "the focused catalog must expose its required signed-session workflow"
+            "the focused Shillbot catalog must expose its required signed-session workflow"
+        );
+        assert!(
+            filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Game, false)
+                .iter()
+                .any(|tool| tool.name == "agent_verify_wallet"),
+            "the focused Game catalog must expose agent_verify_wallet for EVM and xchain queues"
         );
         assert_eq!(
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Swarm, false).len(),
@@ -6433,9 +6737,10 @@ mod tests {
             filter_tools_for_surface(all.clone(), crate::surfaces::Surface::Shillbot, false).len(),
             21
         );
+        // Updated from 30 -> 31 because Surface::Game now exposes agent_verify_wallet.
         assert_eq!(
             filter_tools_for_surface(all, crate::surfaces::Surface::Game, false).len(),
-            30
+            31
         );
     }
 
@@ -6452,7 +6757,7 @@ mod tests {
         );
         assert_eq!(
             filter_tools_for_surface(all, crate::surfaces::Surface::Game, true).len(),
-            30
+            31
         );
     }
 
@@ -7130,5 +7435,739 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("live_signature"));
+    }
+
+    #[tokio::test]
+    async fn game_find_match_allows_unverified_registered_wallet_while_in_game_actions_require_proof_or_bearer(
+    ) {
+        use solana_sdk::signer::Signer;
+
+        let secret = "server-test-jwt-secret-0123456789abcdef";
+        let binding =
+            McpSessionBinding::new_in_memory_for_test().with_jwt_secret(Some(secret.to_string()));
+        let alice = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let bob = solana_sdk::signature::Keypair::new().pubkey().to_string();
+
+        let make_parts = |sid: Option<&str>, bearer: Option<&str>| {
+            let mut builder = http::Request::builder();
+            if let Some(s) = sid {
+                builder = builder.header("mcp-session-id", s);
+            }
+            if let Some(tok) = bearer {
+                builder = builder.header(http::header::AUTHORIZATION, format!("Bearer {tok}"));
+            }
+            builder.body(()).unwrap().into_parts().0
+        };
+
+        // 1. Unregistered session rejects game_find_match (`require_verified = false`).
+        let p_unbound = make_parts(Some("sess-game-1"), None);
+        assert!(resolve_session_or_bearer_game_wallet(
+            &binding,
+            Some(secret),
+            Some(&p_unbound),
+            false
+        )
+        .await
+        .is_err());
+
+        // 2. Registering wallet WITHOUT proof (`register_wallet {pubkey}`) allows `game_find_match`!
+        binding.bind("sess-game-1", &alice).await.unwrap();
+        let (resolved_wallet, is_verified, label) =
+            resolve_session_or_bearer_game_wallet(&binding, Some(secret), Some(&p_unbound), false)
+                .await
+                .expect("unverified registered wallet may call game_find_match");
+        assert_eq!(resolved_wallet, alice);
+        assert!(!is_verified);
+        assert_eq!(label, "sess-game-1");
+
+        let find_resp = execute_game_find_match(
+            &GameFindMatchArgs {
+                tournament_id: None,
+                network: None,
+            },
+            |tid, net| {
+                let net = net.map(str::to_owned);
+                async move {
+                    assert_eq!(tid, chain_registry::ACTIVE_TOURNAMENT_MAINNET);
+                    assert!(net.is_none());
+                    Ok(game_chain::client::UnsignedTx {
+                        message: vec![1, 2, 3],
+                        message_b64: "AQID".to_string(),
+                        transaction_b64: "AQIDBA==".to_string(),
+                        blockhash: "BhMainnet111".to_string(),
+                        num_signers: 1,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("execute_game_find_match succeeds");
+        assert_eq!(find_resp["action"], "deposit_stake");
+        assert_eq!(find_resp["unsigned_tx"], "AQIDBA==");
+        assert_eq!(find_resp["blockhash"], "BhMainnet111");
+        assert_eq!(find_resp["num_signers"], 1);
+        assert_eq!(
+            find_resp["tournament_id"],
+            chain_registry::ACTIVE_TOURNAMENT_MAINNET
+        );
+
+        let devnet_resp = execute_game_find_match(
+            &GameFindMatchArgs {
+                tournament_id: None,
+                network: Some("devnet".to_string()),
+            },
+            |tid, net| {
+                let net = net.map(str::to_owned);
+                async move {
+                    assert_eq!(tid, chain_registry::ACTIVE_TOURNAMENT_DEVNET);
+                    assert_eq!(net.as_deref(), Some("devnet"));
+                    Ok(game_chain::client::UnsignedTx {
+                        message: vec![4, 5, 6],
+                        message_b64: "BAUG".to_string(),
+                        transaction_b64: "BQYH".to_string(),
+                        blockhash: "BhDevnet222".to_string(),
+                        num_signers: 1,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("devnet find_match succeeds");
+        assert_eq!(
+            devnet_resp["tournament_id"],
+            chain_registry::ACTIVE_TOURNAMENT_DEVNET
+        );
+
+        // 3. In-game actions (`require_verified = true`) STILL reject the unproven session!
+        let err =
+            resolve_session_or_bearer_game_wallet(&binding, Some(secret), Some(&p_unbound), true)
+                .await
+                .expect_err("unproven session must not access chat/commit/reveal");
+        assert!(err.message.contains("proven wallet ownership"), "{err}");
+
+        // 4. Stateless `Authorization: Bearer <user_jwt>` satisfies BOTH gates without registration,
+        //    while conflicting Bearer + Mcp-Session-Id is rejected!
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_add(3600);
+        let bob_jwt =
+            crate::jwt::mint_user_jwt_for_test(&bob, secret, &["shillbot", "game", "mcp"], exp);
+        let p_bearer_only = make_parts(None, Some(&bob_jwt));
+        let (b_wallet, b_verified, b_label) = resolve_session_or_bearer_game_wallet(
+            &binding,
+            Some(secret),
+            Some(&p_bearer_only),
+            true,
+        )
+        .await
+        .expect("stateless Bearer authenticates verified game wallet");
+        assert_eq!(b_wallet, bob);
+        assert!(b_verified);
+        assert_eq!(b_label, "bearer");
+
+        let p_conflict = make_parts(Some("sess-game-1"), Some(&bob_jwt));
+        assert!(
+            resolve_session_or_bearer_game_wallet(&binding, Some(secret), Some(&p_conflict), false)
+                .await
+                .is_err(),
+            "Bob Bearer + Alice Mcp-Session-Id must reject"
+        );
+    }
+
+    #[tokio::test]
+    async fn shillbot_submit_work_forwards_proof_lean_and_validates_sponsored_atomic_payout_bundles(
+    ) {
+        use base64::Engine;
+        use solana_sdk::{
+            hash::Hash,
+            message::{v0, VersionedMessage},
+            signature::{Keypair, Signature},
+            signer::Signer,
+            transaction::VersionedTransaction,
+        };
+        use wiremock::matchers::{body_partial_json, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let agent = Keypair::new();
+        let sponsor = Keypair::new();
+        let payout_vault = Keypair::new().pubkey();
+        let client = Keypair::new().pubkey();
+        let task = shillbot_chain::task_pda(77, &client);
+
+        // 1. Mainnet (`network: None`) LeanProof (platform 10) with omitted content_id ("") + raw `proof_lean`
+        //    sends NO `sponsor` query param (U1) and returns a self-paid `submit_work` tx (`fee_payer == agent`)!
+        let inline_cid =
+            "lean4:inline:sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let lean_ix = shillbot_chain::submit_work_instruction(
+            agent.pubkey(),
+            task,
+            inline_cid.as_bytes().to_vec(),
+        );
+        let lean_msg = VersionedMessage::V0(
+            v0::Message::try_compile(&agent.pubkey(), &[lean_ix], &[], Hash::new_unique()).unwrap(),
+        );
+        let lean_unsigned_tx = VersionedTransaction {
+            signatures: vec![Signature::default(); 1],
+            message: lean_msg,
+        };
+        let lean_tx_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&lean_unsigned_tx).unwrap());
+
+        let lean_source = "theorem proof : statementProp := by exact trivial\n";
+        Mock::given(method("POST"))
+            .and(path("/tasks/camp1:lean1/submit"))
+            .and(body_partial_json(serde_json::json!({
+                "content_id": "",
+                "proof_lean": lean_source,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": "ok",
+                "task_id": "camp1:lean1",
+                "task_pda": task.to_string(),
+                "transaction": lean_tx_b64,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+            .authenticated("user-jwt".to_string());
+        let lean_res = execute_shillbot_submit_work(
+            &proxy,
+            &agent.pubkey().to_string(),
+            &SubmitWorkArgs {
+                task_id: "camp1:lean1".to_string(),
+                content_id: String::new(),
+                proof_lean: Some(lean_source.to_string()),
+                network: None,
+            },
+        )
+        .await
+        .expect("LeanProof submit_work with proof_lean succeeds");
+        let received_mainnet = server.received_requests().await.expect("requests");
+        assert_eq!(
+            received_mainnet[0].url.query(),
+            None,
+            "U1: mainnet submit_work must not send sponsor=auto"
+        );
+        let lean_json = lean_res.structured_content.expect("structured_content");
+        assert_eq!(lean_json["action"], "submit");
+        assert_eq!(lean_json["task_id"], "camp1:lean1");
+        assert_eq!(lean_json["task_pda"], task.to_string());
+        // Decoded directly from the on-chain instruction even when upstream omitted response.content_id!
+        assert_eq!(lean_json["content_id"], inline_cid);
+        assert_eq!(lean_json["transaction_intent"]["action"], "submit");
+        assert_eq!(
+            lean_json["transaction_intent"]["fee_payer"],
+            agent.pubkey().to_string()
+        );
+        assert!(lean_json["transaction_intent"]["sponsor"].is_null());
+        assert_eq!(
+            lean_json["transaction_intent"]["wallet"],
+            agent.pubkey().to_string()
+        );
+        assert_eq!(lean_json["transaction_intent"]["content_id"], inline_cid);
+        assert_eq!(
+            lean_json["transaction_intent"]["signers"],
+            serde_json::json!([agent.pubkey().to_string()])
+        );
+
+        // 2. Devnet (`network: Some("devnet")`) atomic OnChainAction (platform 11) sponsored bundle
+        //    `[claim_task_atomic, set_payout_to, submit_work]` sends `sponsor=auto`!
+        let proof_ref = format!("eip155:8453:0x{}:0", "ab".repeat(32));
+        let atomic_ixs = shillbot_chain::claim_and_submit_instructions(
+            agent.pubkey(),
+            task,
+            proof_ref.as_bytes().to_vec(),
+            Some(payout_vault),
+        );
+        let atomic_msg = VersionedMessage::V0(
+            v0::Message::try_compile(&sponsor.pubkey(), &atomic_ixs, &[], Hash::new_unique())
+                .unwrap(),
+        );
+        let atomic_unsigned_tx = VersionedTransaction {
+            signatures: vec![Signature::default(); 2],
+            message: atomic_msg,
+        };
+        let atomic_tx_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&atomic_unsigned_tx).unwrap());
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/camp1:oca1/submit"))
+            .and(query_param("network", "devnet"))
+            .and(query_param("sponsor", "auto"))
+            .and(body_partial_json(serde_json::json!({
+                "content_id": proof_ref,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": "ok",
+                "task_id": "camp1:oca1",
+                "task_pda": task.to_string(),
+                "transaction": atomic_tx_b64,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let atomic_res = execute_shillbot_submit_work(
+            &proxy,
+            &agent.pubkey().to_string(),
+            &SubmitWorkArgs {
+                task_id: "camp1:oca1".to_string(),
+                content_id: proof_ref.clone(),
+                proof_lean: None,
+                network: Some("devnet".to_string()),
+            },
+        )
+        .await
+        .expect("Sponsored atomic OnChainAction submit_work succeeds");
+        let atomic_json = atomic_res.structured_content.expect("structured_content");
+        assert_eq!(atomic_json["content_id"], proof_ref);
+        assert_eq!(atomic_json["transaction_intent"]["network"], "devnet");
+        assert_eq!(
+            atomic_json["transaction_intent"]["payout_to"],
+            payout_vault.to_string()
+        );
+        assert_eq!(atomic_json["transaction_intent"]["instruction_count"], 3);
+        assert_eq!(atomic_json["transaction_intent"]["instruction_index"], 2);
+    }
+
+    #[tokio::test]
+    async fn shillbot_submit_tx_cosigns_agent_signed_sponsored_tx_and_supports_pre_cosigned_and_self_paid(
+    ) {
+        use base64::Engine;
+        use solana_sdk::{
+            hash::Hash,
+            instruction::{AccountMeta, Instruction},
+            message::{v0, VersionedMessage},
+            pubkey::Pubkey,
+            signature::{Keypair, Signature},
+            signer::Signer,
+            transaction::VersionedTransaction,
+        };
+        use std::str::FromStr;
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let orch_server = MockServer::start().await;
+        let rpc_server = MockServer::start().await;
+        let agent = Keypair::new();
+        let sponsor = Keypair::new();
+        let payout_vault = Keypair::new().pubkey();
+        let client = Keypair::new().pubkey();
+        let task = shillbot_chain::task_pda(88, &client);
+
+        // Build sponsored `claim_task + set_payout_to` message (`signers = [sponsor, agent]`).
+        let set_payout_ix = shillbot_chain::claim_and_submit_instructions(
+            agent.pubkey(),
+            task,
+            b"placeholder".to_vec(),
+            Some(payout_vault),
+        )
+        .remove(1);
+        let claim_msg = VersionedMessage::V0(
+            v0::Message::try_compile(
+                &sponsor.pubkey(),
+                &[
+                    shillbot_chain::claim_task_instruction(agent.pubkey(), task),
+                    set_payout_ix,
+                ],
+                &[],
+                Hash::new_unique(),
+            )
+            .unwrap(),
+        );
+        let msg_bytes = claim_msg.serialize();
+        let agent_claim_sig = agent.sign_message(&msg_bytes);
+        let sponsor_claim_sig = sponsor.sign_message(&msg_bytes);
+
+        // Agent partially signs slot 1 (`[Signature::default(), agent_claim_sig]`).
+        let agent_partial_tx = VersionedTransaction {
+            signatures: vec![Signature::default(), agent_claim_sig],
+            message: claim_msg.clone(),
+        };
+        let agent_partial_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&agent_partial_tx).unwrap());
+
+        // Sponsor endpoint returns `[sponsor_claim_sig, Signature::default()]` (slot 1 zeroed,
+        // testing that execute_shillbot_submit_tx restores `agent_claim_sig` and verifies both!).
+        let sponsor_only_tx = VersionedTransaction {
+            signatures: vec![sponsor_claim_sig, Signature::default()],
+            message: claim_msg.clone(),
+        };
+        let sponsor_only_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&sponsor_only_tx).unwrap());
+
+        let expected_full_tx = VersionedTransaction {
+            signatures: vec![sponsor_claim_sig, agent_claim_sig],
+            message: claim_msg,
+        };
+        let expected_full_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&expected_full_tx).unwrap());
+        let expected_rpc_sig = sponsor_claim_sig.to_string();
+
+        Mock::given(method("GET"))
+            .and(path("/tasks/camp2:t1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "camp2:t1",
+                "state": "open",
+                "platform": 5,
+                "task_pda": task.to_string(),
+                "content_id": "game-42",
+            })))
+            .expect(3)
+            .mount(&orch_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/camp2:t1/sponsor"))
+            .and(body_partial_json(serde_json::json!({
+                "action": "claim",
+                "unsigned_transaction": agent_partial_b64,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": "sponsored",
+                "task_id": "camp2:t1",
+                "transaction": sponsor_only_b64,
+            })))
+            .expect(1)
+            .mount(&orch_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "sendTransaction" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": expected_rpc_sig,
+            })))
+            .expect(3)
+            .mount(&rpc_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "getSignatureStatuses" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "context": { "slot": 10 },
+                    "value": [{ "confirmationStatus": "confirmed", "err": null }]
+                }
+            })))
+            .expect(3)
+            .mount(&rpc_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/camp2:t1/confirm"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "camp2:t1",
+                "action": "claim",
+                "message": "confirmed",
+            })))
+            .expect(3)
+            .mount(&orch_server)
+            .await;
+
+        let proxy = OrchestratorProxy::new(orch_server.uri(), orch_server.uri())
+            .authenticated("user-jwt".to_string());
+        let http_client = reqwest::Client::new();
+
+        // 1. Happy Path A: Agent partial-signed sponsored claim -> auto-cosigned, validated, broadcast, confirmed!
+        let res_auto = execute_shillbot_submit_tx(
+            &proxy,
+            &http_client,
+            &rpc_server.uri(),
+            &agent.pubkey().to_string(),
+            None,
+            &ShillbotSubmitTxArgs {
+                task_id: "camp2:t1".to_string(),
+                action: "claim".to_string(),
+                signed_transaction: agent_partial_b64,
+                task_pda: None,
+                network: None,
+            },
+        )
+        .await
+        .expect("auto-sponsored claim submit_tx succeeds");
+        assert_eq!(res_auto["tx_signature"], expected_rpc_sig);
+        assert_eq!(res_auto["task_id"], "camp2:t1");
+        assert_eq!(res_auto["validated_transaction"]["action"], "claim");
+        assert_eq!(
+            res_auto["validated_transaction"]["fee_payer"],
+            sponsor.pubkey().to_string()
+        );
+        assert_eq!(
+            res_auto["validated_transaction"]["sponsor"],
+            sponsor.pubkey().to_string()
+        );
+        assert_eq!(
+            res_auto["validated_transaction"]["wallet"],
+            agent.pubkey().to_string()
+        );
+        assert_eq!(
+            res_auto["validated_transaction"]["payout_to"],
+            payout_vault.to_string()
+        );
+        assert_eq!(
+            res_auto["validated_transaction"]["signers"],
+            serde_json::json!([sponsor.pubkey().to_string(), agent.pubkey().to_string()])
+        );
+
+        // Verify the exact co-signed base64 sent to Solana RPC sendTransaction had BOTH valid signatures!
+        let rpc_reqs = rpc_server.received_requests().await.unwrap();
+        let send_req_json: serde_json::Value = serde_json::from_slice(&rpc_reqs[0].body).unwrap();
+        assert_eq!(send_req_json["params"][0], expected_full_b64);
+
+        // 2. Happy Path B: Pre-co-signed sponsored tx broadcasts directly WITHOUT calling /sponsor again!
+        let res_pre = execute_shillbot_submit_tx(
+            &proxy,
+            &http_client,
+            &rpc_server.uri(),
+            &agent.pubkey().to_string(),
+            None,
+            &ShillbotSubmitTxArgs {
+                task_id: "camp2:t1".to_string(),
+                action: "claim".to_string(),
+                signed_transaction: expected_full_b64,
+                task_pda: None,
+                network: None,
+            },
+        )
+        .await
+        .expect("pre-co-signed sponsored tx succeeds");
+        assert_eq!(res_pre["tx_signature"], expected_rpc_sig);
+
+        // 3. Happy Path C: Self-paid tx with wallet ComputeBudget (RequestHeapFrame + 500k micro-lamports/CU) + SPL Memo v2!
+        let cb_prog = Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap();
+        let memo_prog = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap();
+        let mut heap_data = vec![1u8];
+        heap_data.extend_from_slice(&65_536u32.to_le_bytes());
+        let mut price_data = vec![3u8];
+        price_data.extend_from_slice(&500_000u64.to_le_bytes());
+        let self_msg = VersionedMessage::V0(
+            v0::Message::try_compile(
+                &agent.pubkey(),
+                &[
+                    Instruction {
+                        program_id: cb_prog,
+                        accounts: vec![],
+                        data: heap_data,
+                    },
+                    Instruction {
+                        program_id: cb_prog,
+                        accounts: vec![],
+                        data: price_data,
+                    },
+                    Instruction {
+                        program_id: memo_prog,
+                        accounts: vec![AccountMeta::new_readonly(agent.pubkey(), true)],
+                        data: b"wallet-memo".to_vec(),
+                    },
+                    shillbot_chain::claim_task_instruction(agent.pubkey(), task),
+                ],
+                &[],
+                Hash::new_unique(),
+            )
+            .unwrap(),
+        );
+        let self_tx = VersionedTransaction::try_new(self_msg, &[&agent]).unwrap();
+        let self_b64 =
+            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&self_tx).unwrap());
+        let res_self = execute_shillbot_submit_tx(
+            &proxy,
+            &http_client,
+            &rpc_server.uri(),
+            &agent.pubkey().to_string(),
+            None,
+            &ShillbotSubmitTxArgs {
+                task_id: "camp2:t1".to_string(),
+                action: "claim".to_string(),
+                signed_transaction: self_b64,
+                task_pda: None,
+                network: None,
+            },
+        )
+        .await
+        .expect("self-paid wallet-compatible claim tx succeeds");
+        assert_eq!(
+            res_self["validated_transaction"]["fee_payer"],
+            agent.pubkey().to_string()
+        );
+        assert!(res_self["validated_transaction"].get("sponsor").is_none());
+    }
+
+    #[tokio::test]
+    async fn shillbot_submit_tx_rejects_unpermitted_sponsored_action_missing_agent_sig_and_tampered_sponsor_message(
+    ) {
+        use base64::Engine;
+        use solana_sdk::{
+            hash::Hash,
+            message::{v0, VersionedMessage},
+            signature::{Keypair, Signature},
+            signer::Signer,
+            transaction::VersionedTransaction,
+        };
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let orch_server = MockServer::start().await;
+        let rpc_server = MockServer::start().await;
+        let agent = Keypair::new();
+        let sponsor = Keypair::new();
+        let client = Keypair::new().pubkey();
+        let treasury = Keypair::new().pubkey();
+        let task = shillbot_chain::task_pda(99, &client);
+
+        Mock::given(method("GET"))
+            .and(path("/tasks/camp3:t1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "camp3:t1",
+                "state": "open",
+                "platform": 5,
+                "task_pda": task.to_string(),
+            })))
+            .mount(&orch_server)
+            .await;
+
+        let proxy = OrchestratorProxy::new(orch_server.uri(), orch_server.uri())
+            .authenticated("user-jwt".to_string());
+        let http_client = reqwest::Client::new();
+
+        // 1. Sponsored fee_payer on `action = "finalize"` MUST be rejected upfront!
+        let fin_msg = VersionedMessage::V0(
+            v0::Message::try_compile(
+                &sponsor.pubkey(),
+                &[shillbot_chain::finalize_task_instruction(
+                    task,
+                    agent.pubkey(),
+                    client,
+                    treasury,
+                )],
+                &[],
+                Hash::new_unique(),
+            )
+            .unwrap(),
+        );
+        let fin_tx = VersionedTransaction::try_new(fin_msg, &[&sponsor]).unwrap();
+        let fin_b64 =
+            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&fin_tx).unwrap());
+        let err_fin = execute_shillbot_submit_tx(
+            &proxy,
+            &http_client,
+            &rpc_server.uri(),
+            &agent.pubkey().to_string(),
+            None,
+            &ShillbotSubmitTxArgs {
+                task_id: "camp3:t1".to_string(),
+                action: "finalize".to_string(),
+                signed_transaction: fin_b64,
+                task_pda: None,
+                network: None,
+            },
+        )
+        .await
+        .expect_err("sponsored finalize must reject");
+        assert_eq!(err_fin.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        // 2. Sponsored claim with missing/zero agent signature MUST reject before calling /sponsor!
+        let claim_msg = VersionedMessage::V0(
+            v0::Message::try_compile(
+                &sponsor.pubkey(),
+                &[shillbot_chain::claim_task_instruction(agent.pubkey(), task)],
+                &[],
+                Hash::new_unique(),
+            )
+            .unwrap(),
+        );
+        let unsigned_claim_tx = VersionedTransaction {
+            signatures: vec![Signature::default(); 2],
+            message: claim_msg.clone(),
+        };
+        let unsigned_claim_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&unsigned_claim_tx).unwrap());
+        let err_unsigned = execute_shillbot_submit_tx(
+            &proxy,
+            &http_client,
+            &rpc_server.uri(),
+            &agent.pubkey().to_string(),
+            None,
+            &ShillbotSubmitTxArgs {
+                task_id: "camp3:t1".to_string(),
+                action: "claim".to_string(),
+                signed_transaction: unsigned_claim_b64,
+                task_pda: None,
+                network: None,
+            },
+        )
+        .await
+        .expect_err("missing agent signature must reject");
+        assert_eq!(err_unsigned.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        // 3. Malicious /sponsor response that mutates message bytes MUST reject before RPC broadcast!
+        let agent_sig = agent.sign_message(&claim_msg.serialize());
+        let partial_tx = VersionedTransaction {
+            signatures: vec![Signature::default(), agent_sig],
+            message: claim_msg,
+        };
+        let partial_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&partial_tx).unwrap());
+
+        let tampered_msg = VersionedMessage::V0(
+            v0::Message::try_compile(
+                &sponsor.pubkey(),
+                &[shillbot_chain::claim_task_instruction(agent.pubkey(), task)],
+                &[],
+                Hash::new_unique(), // different blockhash -> altered message bytes!
+            )
+            .unwrap(),
+        );
+        let tampered_tx = VersionedTransaction {
+            signatures: vec![sponsor.sign_message(&tampered_msg.serialize()), agent_sig],
+            message: tampered_msg,
+        };
+        let tampered_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&tampered_tx).unwrap());
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/camp3:t1/sponsor"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": "tampered",
+                "task_id": "camp3:t1",
+                "transaction": tampered_b64,
+            })))
+            .expect(1)
+            .mount(&orch_server)
+            .await;
+
+        let err_tampered = execute_shillbot_submit_tx(
+            &proxy,
+            &http_client,
+            &rpc_server.uri(),
+            &agent.pubkey().to_string(),
+            None,
+            &ShillbotSubmitTxArgs {
+                task_id: "camp3:t1".to_string(),
+                action: "claim".to_string(),
+                signed_transaction: partial_b64,
+                task_pda: None,
+                network: None,
+            },
+        )
+        .await
+        .expect_err("tampered sponsor message must reject");
+        assert_eq!(err_tampered.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert!(
+            rpc_server.received_requests().await.unwrap().is_empty(),
+            "Solana RPC must NEVER receive a tampered transaction"
+        );
     }
 }

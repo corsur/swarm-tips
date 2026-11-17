@@ -3,7 +3,7 @@
 
 use crate::caip::{ChainId, Namespace};
 use crate::onchain_action::crypto::{
-    decode_0x_hex_exact, decode_base58_exact, decode_base64url_sig65, sha256,
+    decode_0x_hex_exact, decode_base58_exact, decode_sig65, sha256,
 };
 use crate::onchain_action::{
     MAX_PROOF_CONTENT_ID_BYTES, MAX_RECEIPT_LOGS_SCANNED, MAX_SOLANA_IX_SCANNED,
@@ -31,7 +31,7 @@ pub enum ProofParseError {
 }
 
 /// Parsed, canonicalized `content_id` proof reference:
-/// `<caip2_ns>:<caip2_ref>:<tx_id>:<index>[:sig:<base64url_65B>]`
+/// `<caip2_ns>:<caip2_ref>:<tx_id>[:<index>|auto][:sig:<base64url_65B_or_hex>]`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnChainProofRef {
     pub chain_id: ChainId,
@@ -40,15 +40,35 @@ pub struct OnChainProofRef {
     pub tx_id: String,
     /// Log index within the EVM receipt (`0..MAX_RECEIPT_LOGS_SCANNED`) or
     /// matched event/instruction index within the Solana transaction (`0..MAX_SOLANA_IX_SCANNED`).
+    /// `0` prior to verifier auto-discovery when `auto_index == true`.
     pub index: u32,
+    /// True when the caller omitted `<index>` or passed `"auto"` so the verifier
+    /// scans the transaction logs/instructions to locate the unique matching event.
+    pub auto_index: bool,
     /// Optional 65-byte `[r(32) || s(32) || v(1)]` EIP-191 signature binding an EVM
     /// referral address to the Solana `task.agent` pubkey (`M2a`).
     pub attribution_sig: Option<[u8; 65]>,
 }
 
 impl OnChainProofRef {
-    /// Parse and validate a raw `content_id` string in pure CPU (`0` RPC / DB calls).
+    /// Parse and validate a raw `content_id` string requiring an explicit `<u32>`
+    /// log/instruction index (`<ns>:<ref>:<tx_id>:<u32>[:sig:<sig>]`).
+    ///
+    /// Note (`U2`): Kept strict by default so `swarm-tips sync` never accepts `:auto`
+    /// in downstream verifiers before `OnChainProofLockSet::precheck_keys` + auto-scan
+    /// opt into [`Self::parse_allowing_auto`] atomically.
     pub fn parse(content_id: &str) -> Result<Self, ProofParseError> {
+        Self::parse_inner(content_id, false)
+    }
+
+    /// Parse and validate a raw `content_id` string allowing omitted or `"auto"` index
+    /// (`<ns>:<ref>:<tx_id>[:<u32>|auto][:sig:<sig>]`) for verifiers that resolve
+    /// `auto_index` via [`Self::with_resolved_index`].
+    pub fn parse_allowing_auto(content_id: &str) -> Result<Self, ProofParseError> {
+        Self::parse_inner(content_id, true)
+    }
+
+    fn parse_inner(content_id: &str, allow_auto: bool) -> Result<Self, ProofParseError> {
         let trimmed = content_id.trim();
         if trimmed.is_empty() {
             return Err(ProofParseError::Empty);
@@ -58,26 +78,37 @@ impl OnChainProofRef {
         }
 
         let parts: Vec<&str> = trimmed.split(':').collect();
-        if parts.len() != 4 && parts.len() != 6 {
-            return Err(ProofParseError::InvalidFormat);
-        }
+        let (index_raw, sig_raw): (Option<&str>, Option<&str>) = match parts.as_slice() {
+            [_, _, _] if allow_auto => (None, None),
+            [_, _, _, idx] => (Some(*idx), None),
+            [_, _, _, "sig", sig] if allow_auto => (None, Some(*sig)),
+            [_, _, _, idx, "sig", sig] => (Some(*idx), Some(*sig)),
+            _ => return Err(ProofParseError::InvalidFormat),
+        };
 
         let caip2_str = format!("{}:{}", parts[0], parts[1]);
         let chain_id = ChainId::parse(&caip2_str).map_err(|_| ProofParseError::InvalidChainId)?;
 
-        let index: u32 = parts[3]
-            .parse()
-            .map_err(|_| ProofParseError::InvalidIndex)?;
         let max_idx = match chain_id.namespace() {
             Namespace::Eip155 => MAX_RECEIPT_LOGS_SCANNED,
             Namespace::Solana => MAX_SOLANA_IX_SCANNED,
         };
-        if (index as usize) >= max_idx {
-            return Err(ProofParseError::IndexOutOfBounds {
-                index,
-                max: max_idx,
-            });
-        }
+        let (index, auto_index) = match index_raw {
+            None | Some("auto") if allow_auto => (0u32, true),
+            None => return Err(ProofParseError::InvalidFormat),
+            Some(explicit) => {
+                let parsed: u32 = explicit
+                    .parse()
+                    .map_err(|_| ProofParseError::InvalidIndex)?;
+                if (parsed as usize) >= max_idx {
+                    return Err(ProofParseError::IndexOutOfBounds {
+                        index: parsed,
+                        max: max_idx,
+                    });
+                }
+                (parsed, false)
+            }
+        };
 
         let tx_id = match chain_id.namespace() {
             Namespace::Eip155 => {
@@ -92,18 +123,15 @@ impl OnChainProofRef {
             }
         };
 
-        let attribution_sig = if parts.len() == 6 {
-            if parts[4] != "sig" {
-                return Err(ProofParseError::InvalidFormat);
+        let attribution_sig = match sig_raw {
+            Some(raw_sig) => {
+                if chain_id.namespace() != Namespace::Eip155 {
+                    return Err(ProofParseError::AttributionSigNotAllowedOnSolana);
+                }
+                let sig = decode_sig65(raw_sig).ok_or(ProofParseError::InvalidAttributionSig)?;
+                Some(sig)
             }
-            if chain_id.namespace() != Namespace::Eip155 {
-                return Err(ProofParseError::AttributionSigNotAllowedOnSolana);
-            }
-            let sig =
-                decode_base64url_sig65(parts[5]).ok_or(ProofParseError::InvalidAttributionSig)?;
-            Some(sig)
-        } else {
-            None
+            None => None,
         };
 
         debug_assert!(!tx_id.is_empty());
@@ -111,23 +139,48 @@ impl OnChainProofRef {
             chain_id,
             tx_id,
             index,
+            auto_index,
             attribution_sig,
         })
     }
 
+    /// Return a copy of this proof reference bound to a concrete `resolved_index`
+    /// (`auto_index = false`), used after the verifier scans receipt logs or Solana
+    /// instructions for an `auto` proof reference.
+    pub fn with_resolved_index(&self, resolved_index: u32) -> Self {
+        Self {
+            chain_id: self.chain_id.clone(),
+            tx_id: self.tx_id.clone(),
+            index: resolved_index,
+            auto_index: false,
+            attribution_sig: self.attribution_sig,
+        }
+    }
+
     /// Per-event/instruction replay-lock key (`M1b`):
-    /// `sha256("{caip2}:{canonical_target}:{canonical_tx_id}:{index}")`.
+    /// `sha256("{caip2}:{canonical_target}:{canonical_tx_id}:{index}")`
+    /// (or `...:auto` prior to `with_resolved_index` so an unresolved `auto_index`
+    /// never collides falsely with explicit index `0`).
     ///
     /// For `eip155`, `canonical_target` is lowercase `0x` + 40 hex chars; for `solana`,
     /// `canonical_target` is exact base58 program ID (never lowercased!).
     pub fn replay_lock_id(&self, canonical_target: &str) -> [u8; 32] {
-        let preimage = format!(
-            "{}:{}:{}:{}",
-            self.chain_id.as_str(),
-            canonical_target,
-            self.tx_id,
-            self.index
-        );
+        let preimage = if self.auto_index {
+            format!(
+                "{}:{}:{}:auto",
+                self.chain_id.as_str(),
+                canonical_target,
+                self.tx_id,
+            )
+        } else {
+            format!(
+                "{}:{}:{}:{}",
+                self.chain_id.as_str(),
+                canonical_target,
+                self.tx_id,
+                self.index
+            )
+        };
         sha256(preimage.as_bytes())
     }
 

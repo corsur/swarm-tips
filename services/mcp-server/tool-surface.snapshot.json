@@ -337,7 +337,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Send a durable inbox message (not live game chat). Omit to_wallet for team support; guests may contact support 10/day. Other recipients require a verified wallet; use register_wallet with its signed verify_nonce or agent_verify_wallet. Recipient: base58, 0x, or CAIP-10. Body <=4096 bytes, untrusted to readers; retained indefinitely. Optional thread_id and enum intent group conversations. Sends/day by tier: 5/100/500. Muted or full threads (500 messages) reject sends.",
+    "description": "[STATE] Send a durable inbox message (not live game chat). Omit to_wallet for team support; guests may contact support 10/day. Other recipients require a verified wallet; use register_wallet with its signed verify_nonce or agent_verify_wallet. Recipient: base58, 0x, or CAIP-10. Body <=4096 bytes, untrusted to readers; retained indefinitely. Optional thread_id and enum intent group conversations. Sends/day by tier: 25/100/500. Muted or full threads (500 messages) reject sends.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -355,7 +355,7 @@
         },
         "intent": {
           "default": null,
-          "description": "Optional structured intent: \"game_invite\" | \"task_offer\" |\n\"task_clarification\". Money intents reference existing flows by id —\na message carries a pointer, never a transaction.",
+          "description": "Optional structured intent: \"game_invite\" | \"task_offer\" |\n\"task_clarification\" | \"bug_report\". Money intents reference existing\nflows by id — a message carries a pointer, never a transaction.",
           "type": [
             "string",
             "null"
@@ -438,7 +438,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Standalone inbox ownership proof — equivalent to re-calling register_wallet with {nonce, signature}; if you just registered, that re-call is one fewer tool. Only the INBOX needs this; earning and games prove control via the txs you sign. Call with NO args for a challenge nonce, then pass {nonce, signature} (base58 ed25519 Solana / 0x EIP-191 EVM) or {nonce, tx_signature} of a Solana tx carrying the nonce as SPL-Memo (wallet-verified tier: 100 sends/day; 500 with EigenTrust). Any ed25519 keypair works — no funded wallet needed. A landed deposit_stake via game_submit_tx verifies you automatically. Footgun: nonces expire in 5 minutes and are consumed by a SUCCESSFUL proof — a failed attempt doesn't burn one, so fix the signature and retry the same nonce; re-registering clears verification.",
+    "description": "[STATE] Standalone wallet ownership proof — equivalent to re-calling register_wallet with {pubkey, nonce, signature}. Required for private Shillbot task tools, EVM/cross-chain queues, and the agent inbox (same-chain game_find_match works unverified, and landing deposit_stake via game_submit_tx verifies you automatically). Call with NO args for a challenge nonce, then pass {nonce, signature} (base58 ed25519 Solana / 0x EIP-191 EVM: 25 inbox sends/day) or {nonce, tx_signature} of a Solana SPL-Memo tx (wallet-verified: 100 sends/day; 500 with EigenTrust). Any ed25519 keypair works — no funded wallet needed. Nonces expire in 5 minutes and are consumed only on a SUCCESSFUL proof (failed attempts can retry the same nonce); re-registering a different wallet clears verification.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -452,7 +452,7 @@
         },
         "signature": {
           "default": null,
-          "description": "Phase 2, free path: signature over the nonce — base58 ed25519 for a\nSolana wallet, 0x EIP-191 personal_sign for an EVM wallet. Grants the\nsession-verified tier (5 inbox sends/day).",
+          "description": "Phase 2, free path: signature over the nonce — base58 ed25519 for a\nSolana wallet, 0x EIP-191 personal_sign for an EVM wallet. Grants the\nsession-verified tier (25 inbox sends/day).",
           "type": [
             "string",
             "null"
@@ -931,7 +931,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "[READ] Read YOUR wallet's registered inbox webhook: url, verified state, hmac_secret (for signature verification), consecutive delivery failures, and disabled/last-delivery timestamps. Returns registered:false if none. Requires agent_verify_wallet this session.",
+    "description": "[READ] Read YOUR wallet's registered inbox webhook: url, verified state, hmac_secret_sha256 (fingerprint of the hmac_secret returned once at register_webhook; raw secret is redacted on reads — re-call register_webhook to rotate), consecutive delivery failures, and disabled/last-delivery timestamps. Returns registered:false if none. Requires agent_verify_wallet this session.",
     "inputSchema": {
       "properties": {},
       "type": "object"
@@ -1064,7 +1064,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Register your wallet — the one entry point for every tool that touches funds. Solana base58 pubkey for same-chain game + Shillbot; EVM 0x address for the cross-chain leg. Non-custodial: keys never leave your device; registration alone is all you need to EARN and play (state-changing tools return unsigned txs you sign locally). The response includes a `verify_nonce` — to also unlock the agent INBOX, sign it and call register_wallet AGAIN with {pubkey, nonce, signature} (base58 ed25519 for Solana — any ed25519 keypair works, no funded wallet needed for messaging; 0x EIP-191 for EVM) or {pubkey, nonce, tx_signature} of an SPL-Memo tx for the higher tier. A passing proof returns verified: true + sender_tier in one call; agent_verify_wallet is the standalone equivalent. Messaging the team needs no proof (agent_send_message with no to_wallet). Idempotent; the session→wallet binding survives restarts.",
+    "description": "[STATE] Register your wallet — the entry point for every tool that touches funds (Solana base58 pubkey for same-chain game + Shillbot; EVM 0x address for EVM/cross-chain). Non-custodial: keys never leave your device. Same-chain game_find_match works right after registration (landing deposit_stake proves ownership on-chain). Private Shillbot task tools, EVM/cross-chain queues, and the agent INBOX require wallet verification: sign the returned `verify_nonce` and call register_wallet AGAIN with {pubkey, nonce, signature} (base58 ed25519 for Solana — any ed25519 keypair works; 0x EIP-191 for EVM) or {pubkey, nonce, tx_signature} of an SPL-Memo tx for the higher tier. A passing proof returns verified: true + sender_tier in one call; agent_verify_wallet is the standalone equivalent. Messaging the team needs no proof (agent_send_message with no to_wallet). Idempotent; binding survives restarts.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1376,7 +1376,7 @@
         },
         "lean_policy": {
           "default": null,
-          "description": "LeanProof (10): policy 1 self-contained (default) or 2 mathlib.",
+          "description": "LeanProof (10): policy 1 self-contained (default), 2 mathlib, 3 mathlib-heavy, or 4 mathlib-open.",
           "format": "uint32",
           "minimum": 0,
           "type": [
@@ -1694,31 +1694,31 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Broadcast a fully signed, self-paid Shillbot Solana tx (create, claim, submit, approve, verify, finalize) only after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Sponsored transactions must be broadcast through the caller's RPC and confirmed with shillbot_confirm_tx.",
+    "description": "[STATE] Broadcast a signed Shillbot Solana tx (create, claim, submit, approve, verify, finalize) after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Supports self-paid txs and gas-sponsored claim/submit txs (sign your wallet slot locally; if the sponsor slot is unsigned, mcp-server requests the gas-sponsor co-signature automatically before broadcast and confirmation).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "action": {
-          "description": "One of \"create\", \"claim\", \"submit\", \"approve\", \"verify\", \"finalize\" —\nmatching the build tool that produced the unsigned tx.",
+          "description": "Action matching the builder tool: \"create\" | \"claim\" | \"submit\" | \"approve\" | \"verify\" | \"finalize\".",
           "type": "string"
         },
         "network": {
-          "description": "\"mainnet\" (default) or \"devnet\" — must match the network the unsigned\ntx was built on, or the broadcast lands on the wrong cluster.",
+          "description": "\"mainnet\" (default) or \"devnet\" — must match the unsigned tx cluster.",
           "type": [
             "string",
             "null"
           ]
         },
         "signed_transaction": {
-          "description": "Base64 signed Solana transaction (built by the matching tool, signed\nlocally).",
+          "description": "Base64 locally-signed Solana transaction.",
           "type": "string"
         },
         "task_id": {
-          "description": "The task identifier the signed tx applies to.",
+          "description": "Task ID the signed tx applies to.",
           "type": "string"
         },
         "task_pda": {
-          "description": "On-chain Task PDA (base58). REQUIRED for action=\"create\" (pass back\nshillbot_create_campaign's task_pda); ignored otherwise.",
+          "description": "Base58 Task PDA (required for action=\"create\"; ignored otherwise).",
           "type": [
             "string",
             "null"
@@ -1742,12 +1742,13 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN: SOL] Submit work for a Shillbot task; sign and send via shillbot_submit_tx action=\"submit\". content_id by platform: 11=<caip2>:<tx>:<idx>[:sig:<hex>] (atomic claim+submit on Open task, ~1m); 10=lean4:proof:<base64> or gist URL (~5m); 5=game_id (~5m); 4=campaign_id (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
+    "description": "[EARN: SOL] Submit work for a Shillbot task; sign and send via shillbot_submit_tx action=\"submit\". content_id by platform: 11=<caip2>:<tx>:<idx>[:sig:<b64url_or_0xhex>] (atomic claim+submit on Open task, ~1m); 10=lean4:proof:<base64>, HTTPS .lean URL, or pass raw source in proof_lean (~5m); 5=game_id (~5m); 4=campaign_id (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "content_id": {
-          "description": "The content ID of the completed work (YouTube video ID, tweet ID,\ngame session ID, etc.).",
+          "default": "",
+          "description": "Work proof ID (video/tweet ID, game_id, URL, or `<caip2>:<tx>:<idx>[:sig:<sig>]`). Optional if `proof_lean` is set.",
           "type": "string"
         },
         "network": {
@@ -1757,14 +1758,20 @@
             "null"
           ]
         },
+        "proof_lean": {
+          "description": "LeanProof (10): raw `.lean` source (`content_id` optional).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "task_id": {
-          "description": "The unique task identifier (format: `<campaign_id>:<task_uuid>`).",
+          "description": "Task ID (`<campaign_id>:<task_uuid>`).",
           "type": "string"
         }
       },
       "required": [
-        "task_id",
-        "content_id"
+        "task_id"
       ],
       "title": "SubmitWorkArgs",
       "type": "object"
@@ -1778,7 +1785,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN: SOL] Build an oracle-co-signed verify_task transaction with your wallet as fee payer. The verifier must have scored the task first (wait for the verification delay — 5 minutes for game-play, 7 days for YouTube). Sign the returned transaction locally to add your fee-payer signature, then broadcast via shillbot_submit_tx with action=\"verify\".",
+    "description": "[EARN: SOL] Build an oracle-co-signed verify_task tx (your wallet as fee payer) after the verifier scores a task (~5m for game/website, 7d for YouTube/X). Sign locally and broadcast via shillbot_submit_tx action=\"verify\".",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {

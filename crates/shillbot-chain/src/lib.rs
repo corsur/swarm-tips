@@ -18,9 +18,13 @@ use solana_sdk::{
 use std::str::FromStr;
 
 const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
+const SPL_MEMO_PROGRAM_V2: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+const SPL_MEMO_PROGRAM_V1: &str = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo";
 const SECP256K1_PROGRAM: &str = "KeccakSecp256k11111111111111111111111111111";
 const SWITCHBOARD_MAINNET: &str = "SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv";
 const SWITCHBOARD_DEVNET: &str = "Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2";
+pub const MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS: u64 = 100_000;
+pub const SELF_PAID_MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS: u64 = 5_000_000;
 const MAX_SCORE: u64 = 1_000_000;
 const ONCHAIN_ACTION_PLATFORM: u8 = 11;
 
@@ -482,8 +486,41 @@ pub fn validate_signed_base64(
     Ok(inspection)
 }
 
-fn validate_compute_budget(data: &[u8]) -> Result<(), ValidationError> {
+fn validate_compute_budget(data: &[u8], is_sponsored: bool) -> Result<usize, ValidationError> {
     match data.first().copied() {
+        Some(0) if !is_sponsored && data.len() == 9 => {
+            let unit_bytes: [u8; 4] = data[1..5].try_into().map_err(|_| {
+                ValidationError::Rejected("unsupported compute-budget instruction".into())
+            })?;
+            let units = u32::from_le_bytes(unit_bytes);
+            if units == 0 || units > 1_400_000 {
+                return Err(ValidationError::Rejected(
+                    "compute-unit limit is outside the accepted bound".into(),
+                ));
+            }
+            let fee_bytes: [u8; 4] = data[5..9].try_into().map_err(|_| {
+                ValidationError::Rejected("unsupported compute-budget instruction".into())
+            })?;
+            let additional_fee = u32::from_le_bytes(fee_bytes);
+            if additional_fee > 1_000_000 {
+                return Err(ValidationError::Rejected(
+                    "compute-unit price is outside the accepted bound".into(),
+                ));
+            }
+            Ok(0)
+        }
+        Some(1) if !is_sponsored && data.len() == 5 => {
+            let heap_bytes: [u8; 4] = data[1..5].try_into().map_err(|_| {
+                ValidationError::Rejected("unsupported compute-budget instruction".into())
+            })?;
+            let bytes = u32::from_le_bytes(heap_bytes);
+            if !(32 * 1024..=256 * 1024).contains(&bytes) || !bytes.is_multiple_of(1024) {
+                return Err(ValidationError::Rejected(
+                    "heap frame size is outside the accepted bound".into(),
+                ));
+            }
+            Ok(1)
+        }
         Some(2) if data.len() == 5 => {
             let unit_bytes: [u8; 4] = data[1..5].try_into().map_err(|_| {
                 ValidationError::Rejected("unsupported compute-budget instruction".into())
@@ -494,25 +531,41 @@ fn validate_compute_budget(data: &[u8]) -> Result<(), ValidationError> {
                     "compute-unit limit is outside the accepted bound".into(),
                 ));
             }
+            Ok(2)
         }
         Some(3) if data.len() == 9 => {
             let price_bytes: [u8; 8] = data[1..9].try_into().map_err(|_| {
                 ValidationError::Rejected("unsupported compute-budget instruction".into())
             })?;
             let price = u64::from_le_bytes(price_bytes);
-            if price > 100_000 {
+            let max_price = if is_sponsored {
+                MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS
+            } else {
+                SELF_PAID_MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS
+            };
+            if price > max_price {
                 return Err(ValidationError::Rejected(
                     "compute-unit price is outside the accepted bound".into(),
                 ));
             }
+            Ok(3)
         }
-        _ => {
-            return Err(ValidationError::Rejected(
-                "unsupported compute-budget instruction".into(),
-            ));
+        Some(4) if !is_sponsored && data.len() == 5 => {
+            let size_bytes: [u8; 4] = data[1..5].try_into().map_err(|_| {
+                ValidationError::Rejected("unsupported compute-budget instruction".into())
+            })?;
+            let bytes_limit = u32::from_le_bytes(size_bytes);
+            if bytes_limit == 0 || bytes_limit > 64 * 1024 * 1024 {
+                return Err(ValidationError::Rejected(
+                    "loaded accounts data size limit is outside the accepted bound".into(),
+                ));
+            }
+            Ok(4)
         }
+        _ => Err(ValidationError::Rejected(
+            "unsupported compute-budget instruction".into(),
+        )),
     }
-    Ok(())
 }
 
 fn is_static_account_writable(message: &VersionedMessage, index: u8) -> bool {
@@ -590,6 +643,7 @@ pub fn validate(
         return Err(ValidationError::Rejected("unexpected fee payer".into()));
     }
 
+    let is_sponsored = sponsor.is_some();
     let shillbot_program = shillbot::ID;
     let expected_disc = discriminator(expected.action.instruction_name());
     let verify_attested_disc = discriminator("verify_task_attested");
@@ -598,6 +652,10 @@ pub fn validate(
     let switchboard_submit_disc = discriminator("pull_feed_submit_response_consensus");
     let compute_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM)
         .map_err(|_| ValidationError::Transaction("invalid compute budget program id".into()))?;
+    let memo_v2_program = Pubkey::from_str(SPL_MEMO_PROGRAM_V2)
+        .map_err(|_| ValidationError::Transaction("invalid memo v2 program id".into()))?;
+    let memo_v1_program = Pubkey::from_str(SPL_MEMO_PROGRAM_V1)
+        .map_err(|_| ValidationError::Transaction("invalid memo v1 program id".into()))?;
     let secp_program = Pubkey::from_str(SECP256K1_PROGRAM)
         .map_err(|_| ValidationError::Transaction("invalid secp256k1 program id".into()))?;
     let switchboard_program = Pubkey::from_str(if expected.network == "devnet" {
@@ -614,7 +672,7 @@ pub fn validate(
     let mut payout_routing = 0_usize;
     let mut secp_indices = Vec::new();
     let mut switchboard_indices = Vec::new();
-    let mut compute_kinds = [false; 2];
+    let mut compute_kinds = [false; 5];
     for (position, ix) in instructions(&tx.message).iter().enumerate() {
         let program = keys.get(usize::from(ix.program_id_index)).ok_or_else(|| {
             ValidationError::Rejected("instruction program index is invalid".into())
@@ -703,16 +761,30 @@ pub fn validate(
             }
         } else {
             let allowed = if *program == compute_program {
-                validate_compute_budget(&ix.data)?;
-                let kind = usize::from(ix.data[0].checked_sub(2).ok_or_else(|| {
-                    ValidationError::Rejected("invalid compute-budget instruction kind".into())
-                })?);
+                let kind = validate_compute_budget(&ix.data, is_sponsored)?;
                 if compute_kinds[kind] {
                     return Err(ValidationError::Rejected(
                         "duplicate compute-budget instruction".into(),
                     ));
                 }
                 compute_kinds[kind] = true;
+                true
+            } else if !is_sponsored && (*program == memo_v2_program || *program == memo_v1_program)
+            {
+                if ix.data.len() > 1024 {
+                    return Err(ValidationError::Rejected(
+                        "SPL Memo companion data exceeds 1024 bytes".into(),
+                    ));
+                }
+                if ix
+                    .accounts
+                    .iter()
+                    .any(|acct_idx| usize::from(*acct_idx) >= required)
+                {
+                    return Err(ValidationError::Rejected(
+                        "SPL Memo companion may only reference required signer accounts".into(),
+                    ));
+                }
                 true
             } else if expected.action == Action::Verify && *program == secp_program {
                 if ix.data.first().copied().unwrap_or(0) == 0 {
@@ -982,28 +1054,39 @@ pub fn validate(
             }
         }
     }
-    if expected.action == Action::Submit {
-        if let Some(content_id) = expected.content_id.as_deref() {
-            let raw = lifecycle.data.get(8..).ok_or_else(|| {
-                ValidationError::Rejected("submit instruction data is truncated".into())
-            })?;
-            let len_bytes: [u8; 4] = raw
-                .get(..4)
-                .ok_or_else(|| ValidationError::Rejected("content id length is missing".into()))?
-                .try_into()
-                .map_err(|_| ValidationError::Rejected("content id length is invalid".into()))?;
-            let len = usize::try_from(u32::from_le_bytes(len_bytes))
-                .map_err(|_| ValidationError::Rejected("content id is too large".into()))?;
-            let content_end = 4usize.checked_add(len).ok_or_else(|| {
-                ValidationError::Rejected("content id length overflows transaction data".into())
-            })?;
-            if raw.len() != content_end || raw.get(4..content_end) != Some(content_id.as_bytes()) {
+    let decoded_content_id = if expected.action == Action::Submit {
+        let raw = lifecycle.data.get(8..).ok_or_else(|| {
+            ValidationError::Rejected("submit instruction data is truncated".into())
+        })?;
+        let len_bytes: [u8; 4] = raw
+            .get(..4)
+            .ok_or_else(|| ValidationError::Rejected("content id length is missing".into()))?
+            .try_into()
+            .map_err(|_| ValidationError::Rejected("content id length is invalid".into()))?;
+        let len = usize::try_from(u32::from_le_bytes(len_bytes))
+            .map_err(|_| ValidationError::Rejected("content id is too large".into()))?;
+        let content_end = 4usize.checked_add(len).ok_or_else(|| {
+            ValidationError::Rejected("content id length overflows transaction data".into())
+        })?;
+        if raw.len() != content_end {
+            return Err(ValidationError::Rejected(
+                "submit instruction data has trailing bytes".into(),
+            ));
+        }
+        let cid_bytes = raw.get(4..content_end).ok_or_else(|| {
+            ValidationError::Rejected("submit instruction data is truncated".into())
+        })?;
+        if let Some(expected_cid) = expected.content_id.as_deref() {
+            if cid_bytes != expected_cid.as_bytes() {
                 return Err(ValidationError::Rejected(
                     "content id differs from intent".into(),
                 ));
             }
         }
-    }
+        std::str::from_utf8(cid_bytes).ok().map(str::to_owned)
+    } else {
+        None
+    };
 
     let intent_json = serde_json::to_vec(&("swarm.shillbot.transaction-intent/v1", expected))
         .map_err(|error| ValidationError::Transaction(error.to_string()))?;
@@ -1022,7 +1105,7 @@ pub fn validate(
             None
         },
         escrow_lamports: expected.escrow_lamports.map(|amount| amount.to_string()),
-        content_id: expected.content_id.clone(),
+        content_id: decoded_content_id.or_else(|| expected.content_id.clone()),
         required_signers: keys[..required].iter().map(ToString::to_string).collect(),
         accounts: lifecycle_accounts,
         movements: match expected.action {
@@ -1455,12 +1538,26 @@ mod tests {
             .to_string()
             .contains("network"));
 
-        let compute = Instruction {
+        let sponsor = Keypair::new().pubkey();
+        let sponsor_compute = Instruction {
             program_id: Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).unwrap(),
             accounts: vec![],
             data: [vec![3], 100_001_u64.to_le_bytes().to_vec()].concat(),
         };
-        let tx = transaction(vec![compute, ix], &wallet);
+        let sponsor_tx = transaction(vec![sponsor_compute, ix.clone()], &sponsor);
+        let mut sponsor_req = request(Action::Claim, wallet, task);
+        sponsor_req.sponsor = Some(sponsor.to_string());
+        assert!(validate(&sponsor_tx, &sponsor_req)
+            .unwrap_err()
+            .to_string()
+            .contains("compute-unit price"));
+
+        let self_compute = Instruction {
+            program_id: Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).unwrap(),
+            accounts: vec![],
+            data: [vec![3], 5_000_001_u64.to_le_bytes().to_vec()].concat(),
+        };
+        let tx = transaction(vec![self_compute, ix], &wallet);
         assert!(validate(&tx, &request(Action::Claim, wallet, task))
             .unwrap_err()
             .to_string()
@@ -1767,5 +1864,117 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("minimum campaign escrow"));
+    }
+
+    #[test]
+    fn sponsor_strictness_vs_self_paid_wallet_compatibility() {
+        let wallet = Keypair::new().pubkey();
+        let sponsor = Keypair::new().pubkey();
+        let task = Pubkey::new_unique();
+        let cb_prog = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).unwrap();
+        let memo_v2 = Pubkey::from_str(SPL_MEMO_PROGRAM_V2).unwrap();
+        let memo_v1 = Pubkey::from_str(SPL_MEMO_PROGRAM_V1).unwrap();
+        let claim_ix = claim_task_instruction(wallet, task);
+
+        let heap_ix = Instruction {
+            program_id: cb_prog,
+            accounts: vec![],
+            data: [vec![1], (64_u32 * 1024).to_le_bytes().to_vec()].concat(),
+        };
+        let cu_limit_ix = Instruction {
+            program_id: cb_prog,
+            accounts: vec![],
+            data: [vec![2], 250_000_u32.to_le_bytes().to_vec()].concat(),
+        };
+        let cu_price_500k_ix = Instruction {
+            program_id: cb_prog,
+            accounts: vec![],
+            data: [vec![3], 500_000_u64.to_le_bytes().to_vec()].concat(),
+        };
+        let loaded_data_limit_ix = Instruction {
+            program_id: cb_prog,
+            accounts: vec![],
+            data: [vec![4], (64_u32 * 1024).to_le_bytes().to_vec()].concat(),
+        };
+        let memo_v2_ix = Instruction {
+            program_id: memo_v2,
+            accounts: vec![AccountMeta::new_readonly(wallet, true)],
+            data: b"phantom-wallet-note".to_vec(),
+        };
+        let memo_v1_ix = Instruction {
+            program_id: memo_v1,
+            accounts: vec![],
+            data: b"legacy-memo".to_vec(),
+        };
+
+        // (a) Sponsor-paid txs STILL reject > 100_000 micro-lamports/CU, tag 4, tag 1, and SPL Memo!
+        let mut sponsor_expected = exact_request(Action::Claim, wallet, task, &claim_ix);
+        sponsor_expected.sponsor = Some(sponsor.to_string());
+
+        for bad_companion in [
+            cu_price_500k_ix.clone(),
+            loaded_data_limit_ix.clone(),
+            heap_ix.clone(),
+            memo_v2_ix.clone(),
+            memo_v1_ix.clone(),
+        ] {
+            let bad_sponsored_tx = transaction(vec![bad_companion, claim_ix.clone()], &sponsor);
+            assert!(
+                validate(&bad_sponsored_tx, &sponsor_expected).is_err(),
+                "sponsor-paid tx must reject self-paid-only companion instruction"
+            );
+        }
+
+        // (b) Self-paid txs ACCEPT 500_000 micro-lamports/CU, SetLoadedAccountsDataSizeLimit (tag 4),
+        // RequestHeapFrame (tag 1), and SPL Memo v2 & v1!
+        let self_expected = exact_request(Action::Claim, wallet, task, &claim_ix);
+        let self_wallet_tx = transaction(
+            vec![
+                heap_ix,
+                cu_limit_ix,
+                cu_price_500k_ix,
+                loaded_data_limit_ix,
+                memo_v2_ix,
+                memo_v1_ix,
+                claim_ix.clone(),
+            ],
+            &wallet,
+        );
+        let inspected = validate(&self_wallet_tx, &self_expected)
+            .expect("self-paid wallet tx with priority fee + data limit + SPL Memo must pass");
+        assert_eq!(inspected.fee_payer, wallet.to_string());
+        assert_eq!(inspected.instruction_index, 6);
+
+        // Self-paid txs STILL reject rogue SystemProgram::Transfer and arbitrary program IDs!
+        let attacker = Pubkey::new_unique();
+        let rogue_transfer = Instruction {
+            program_id: solana_system_interface::program::ID,
+            accounts: vec![
+                AccountMeta::new(wallet, true),
+                AccountMeta::new(attacker, false),
+            ],
+            data: [
+                2_u32.to_le_bytes().to_vec(),
+                1_000_000_u64.to_le_bytes().to_vec(),
+            ]
+            .concat(),
+        };
+        let drain_tx = transaction(vec![claim_ix.clone(), rogue_transfer], &wallet);
+        assert!(validate(&drain_tx, &self_expected)
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected companion program"));
+
+        // Self-paid SPL Memo referencing a non-signer account is also rejected!
+        let bad_memo = Instruction {
+            program_id: memo_v2,
+            accounts: vec![AccountMeta::new(attacker, false)],
+            data: b"smuggled-writable".to_vec(),
+        };
+        let bad_memo_tx = transaction(vec![bad_memo, claim_ix], &wallet);
+        assert!(validate(&bad_memo_tx, &self_expected)
+            .unwrap_err()
+            .to_string()
+            .contains("required signer"));
     }
 }

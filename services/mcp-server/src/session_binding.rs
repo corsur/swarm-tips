@@ -48,21 +48,27 @@ pub struct McpHttpSessionDoc {
     /// before this field existed still deserialize.
     #[serde(default)]
     pub verified_at: Option<firestore::FirestoreTimestamp>,
-    /// Opaque signed Game API session. Never serialize into tool responses or logs.
+    /// Opaque signed Game/Shillbot API session JWT. Never serialize into tool responses or logs.
     #[serde(default)]
     access_token: Option<String>,
 }
 
 pub struct McpSessionBinding {
-    db: Arc<FirestoreDb>,
+    db: Option<Arc<FirestoreDb>>,
     collection: &'static str,
+    jwt_secret: Option<String>,
+    #[cfg(test)]
+    mem: std::sync::Mutex<std::collections::HashMap<String, McpHttpSessionDoc>>,
 }
 
 impl McpSessionBinding {
     pub fn new(db: Arc<FirestoreDb>) -> Self {
         Self {
-            db,
+            db: Some(db),
             collection: MCP_HTTP_SESSIONS_COLLECTION,
+            jwt_secret: None,
+            #[cfg(test)]
+            mem: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -71,9 +77,30 @@ impl McpSessionBinding {
     /// sessions cannot cross-contaminate (`CRIT-07`).
     pub fn new_inbox(db: Arc<FirestoreDb>) -> Self {
         Self {
-            db,
+            db: Some(db),
             collection: INBOX_HTTP_SESSIONS_COLLECTION,
+            jwt_secret: None,
+            #[cfg(test)]
+            mem: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    #[cfg(test)]
+    pub fn new_in_memory_for_test() -> Self {
+        Self {
+            db: None,
+            collection: MCP_HTTP_SESSIONS_COLLECTION,
+            jwt_secret: None,
+            mem: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Attach `jwt-secret` so `resolve_access_token` can mint/refresh 24h HS256
+    /// user JWTs for already-verified sessions (e.g. after `piggyback_stake_verification`
+    /// or once an earlier JWT nears expiry).
+    pub fn with_jwt_secret(mut self, jwt_secret: Option<String>) -> Self {
+        self.jwt_secret = jwt_secret.filter(|s| !s.trim().is_empty());
+        self
     }
 
     /// Persist `session_id → wallet`. Idempotent — re-binding the same
@@ -89,9 +116,20 @@ impl McpSessionBinding {
             anyhow::bail!("wallet must not be empty");
         }
         let canonical = crate::jwt::normalize_wallet(wallet);
+        let now = firestore::FirestoreTimestamp(chrono::Utc::now());
 
-        let existing: Option<McpHttpSessionDoc> = self
-            .db
+        let Some(ref db) = self.db else {
+            #[cfg(test)]
+            {
+                let mut map = self.mem.lock().unwrap_or_else(|p| p.into_inner());
+                let existing = map.get(session_id).cloned();
+                let doc = build_bound_session_doc(existing, session_id, &canonical, now);
+                map.insert(session_id.to_owned(), doc);
+            }
+            return Ok(());
+        };
+
+        let existing: Option<McpHttpSessionDoc> = db
             .fluent()
             .select()
             .by_id_in(self.collection)
@@ -101,11 +139,9 @@ impl McpSessionBinding {
             .ok()
             .flatten();
 
-        let now = firestore::FirestoreTimestamp(chrono::Utc::now());
         let doc = build_bound_session_doc(existing, session_id, &canonical, now);
 
-        if let Err(e) = self
-            .db
+        if let Err(e) = db
             .fluent()
             .update()
             .in_col(self.collection)
@@ -139,6 +175,48 @@ impl McpSessionBinding {
         Ok(())
     }
 
+    /// Atomically bind and mark `(session_id, wallet, access_token)` as verified
+    /// (used when a stateless client authenticates directly with `Authorization: Bearer <jwt>`).
+    pub async fn bind_verified_with_token(
+        &self,
+        session_id: &str,
+        verified: &VerifiedWallet,
+        token: &str,
+    ) -> Result<()> {
+        if session_id.trim().is_empty() || session_id.contains('/') {
+            anyhow::bail!("invalid session_id");
+        }
+        let canonical = crate::jwt::normalize_wallet(verified.as_str());
+        let now = firestore::FirestoreTimestamp(chrono::Utc::now());
+        let doc = McpHttpSessionDoc {
+            session_id: session_id.to_owned(),
+            wallet: canonical.clone(),
+            created_at: now.clone(),
+            last_seen_at: now.clone(),
+            verified_wallet: Some(canonical),
+            verified_at: Some(now),
+            access_token: (!token.is_empty()).then(|| token.to_owned()),
+        };
+        let Some(ref db) = self.db else {
+            #[cfg(test)]
+            {
+                self.mem
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(session_id.to_owned(), doc);
+            }
+            return Ok(());
+        };
+        db.fluent()
+            .update()
+            .in_col(self.collection)
+            .document_id(session_id)
+            .object(&doc)
+            .execute::<McpHttpSessionDoc>()
+            .await?;
+        Ok(())
+    }
+
     /// Look up the wallet bound to `session_id`. Returns `None` if no
     /// binding exists or the lookup fails — in either case the caller falls
     /// back to its own resolution path.
@@ -146,9 +224,23 @@ impl McpSessionBinding {
         if session_id.is_empty() {
             return None;
         }
+        let Some(ref db) = self.db else {
+            #[cfg(test)]
+            {
+                return self
+                    .mem
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(session_id)
+                    .map(|d| crate::jwt::normalize_wallet(&d.wallet));
+            }
+            #[cfg(not(test))]
+            {
+                return None;
+            }
+        };
 
-        let doc: Option<McpHttpSessionDoc> = self
-            .db
+        let doc: Option<McpHttpSessionDoc> = db
             .fluent()
             .select()
             .by_id_in(self.collection)
@@ -191,86 +283,139 @@ impl McpSessionBinding {
             "missing session identity"
         );
         let canonical = crate::jwt::normalize_wallet(wallet);
+        let Some(ref db) = self.db else {
+            #[cfg(test)]
+            {
+                let mut map = self.mem.lock().unwrap_or_else(|p| p.into_inner());
+                let Some(doc) = map
+                    .get_mut(session_id)
+                    .filter(|doc| crate::jwt::wallets_match(&doc.wallet, &canonical))
+                else {
+                    anyhow::bail!("session binding changed during verification");
+                };
+                let now = firestore::FirestoreTimestamp(chrono::Utc::now());
+                doc.wallet = canonical.clone();
+                doc.verified_wallet = Some(canonical);
+                doc.verified_at = Some(now.clone());
+                doc.last_seen_at = now;
+                if let Some(token) = token {
+                    doc.access_token = Some(token.to_owned());
+                }
+            }
+            return Ok(());
+        };
         let collection = self.collection;
-        self.db
-            .run_transaction_with_options(
-                |tx_db, tx| {
-                    let session_id = session_id.to_owned();
-                    let wallet = canonical.clone();
-                    let token = token.map(str::to_owned);
-                    Box::pin(async move {
-                        let doc: Option<McpHttpSessionDoc> = tx_db
-                            .fluent()
-                            .select()
-                            .by_id_in(collection)
-                            .obj()
-                            .one(&session_id)
-                            .await
-                            .map_err(backoff::Error::Permanent)?;
-                        let Some(mut doc) =
-                            doc.filter(|doc| crate::jwt::wallets_match(&doc.wallet, &wallet))
-                        else {
-                            return Err(backoff::Error::Permanent(
-                                firestore::errors::FirestoreError::DataConflictError(
-                                    firestore::errors::FirestoreDataConflictError::new(
-                                        firestore::errors::FirestoreErrorPublicGenericDetails::new(
-                                            "session_changed".into(),
-                                        ),
-                                        "session binding changed during verification".into(),
+        db.run_transaction_with_options(
+            |tx_db, tx| {
+                let session_id = session_id.to_owned();
+                let wallet = canonical.clone();
+                let token = token.map(str::to_owned);
+                Box::pin(async move {
+                    let doc: Option<McpHttpSessionDoc> = tx_db
+                        .fluent()
+                        .select()
+                        .by_id_in(collection)
+                        .obj()
+                        .one(&session_id)
+                        .await
+                        .map_err(backoff::Error::Permanent)?;
+                    let Some(mut doc) =
+                        doc.filter(|doc| crate::jwt::wallets_match(&doc.wallet, &wallet))
+                    else {
+                        return Err(backoff::Error::Permanent(
+                            firestore::errors::FirestoreError::DataConflictError(
+                                firestore::errors::FirestoreDataConflictError::new(
+                                    firestore::errors::FirestoreErrorPublicGenericDetails::new(
+                                        "session_changed".into(),
                                     ),
+                                    "session binding changed during verification".into(),
                                 ),
-                            ));
-                        };
-                        let now = firestore::FirestoreTimestamp(chrono::Utc::now());
-                        doc.wallet = wallet.clone();
-                        doc.verified_wallet = Some(wallet);
-                        doc.verified_at = Some(now.clone());
-                        doc.last_seen_at = now;
-                        if let Some(token) = token {
-                            doc.access_token = Some(token);
-                        }
-                        tx_db
-                            .fluent()
-                            .update()
-                            .in_col(collection)
-                            .document_id(session_id)
-                            .object(&doc)
-                            .add_to_transaction(tx)
-                            .map_err(backoff::Error::Permanent)?;
-                        Ok(())
-                    })
-                },
-                firestore::FirestoreTransactionOptions::new()
-                    .with_max_elapsed_time(chrono::Duration::seconds(15)),
-            )
-            .await?;
+                            ),
+                        ));
+                    };
+                    let now = firestore::FirestoreTimestamp(chrono::Utc::now());
+                    doc.wallet = wallet.clone();
+                    doc.verified_wallet = Some(wallet);
+                    doc.verified_at = Some(now.clone());
+                    doc.last_seen_at = now;
+                    if let Some(token) = token {
+                        doc.access_token = Some(token);
+                    }
+                    tx_db
+                        .fluent()
+                        .update()
+                        .in_col(collection)
+                        .document_id(session_id)
+                        .object(&doc)
+                        .add_to_transaction(tx)
+                        .map_err(backoff::Error::Permanent)?;
+                    Ok(())
+                })
+            },
+            firestore::FirestoreTransactionOptions::new()
+                .with_max_elapsed_time(chrono::Duration::seconds(15)),
+        )
+        .await?;
         Ok(())
     }
 
-    /// Returns only a token tied to this session's current proven wallet.
+    /// Returns a valid signed JWT tied to this session's current proven wallet.
+    ///
+    /// When the session is already ownership-proven (`verified_wallet == wallet`)
+    /// and its stored `access_token` is absent (e.g. after `piggyback_stake_verification`)
+    /// OR expired / expiring within 60s, automatically mints a fresh 24h HS256
+    /// user JWT using `self.jwt_secret` and persists it back to the session doc.
     pub async fn resolve_access_token(&self, session_id: &str) -> Result<Option<(String, String)>> {
         anyhow::ensure!(
             !session_id.is_empty() && !session_id.contains('/'),
             "invalid session identifier"
         );
-        let doc: Option<McpHttpSessionDoc> = self
-            .db
-            .fluent()
-            .select()
-            .by_id_in(self.collection)
-            .obj()
-            .one(session_id)
-            .await?;
-        Ok(doc.and_then(|doc| {
-            let verified = doc.verified_wallet.as_deref()?;
-            if !crate::jwt::wallets_match(verified, &doc.wallet) {
-                return None;
+        let doc: Option<McpHttpSessionDoc> = match self.db {
+            Some(ref db) => {
+                db.fluent()
+                    .select()
+                    .by_id_in(self.collection)
+                    .obj()
+                    .one(session_id)
+                    .await?
             }
-            let canonical = crate::jwt::normalize_wallet(&doc.wallet);
-            doc.access_token
-                .filter(|token| !token.is_empty())
-                .map(|token| (canonical, token))
-        }))
+            None => {
+                #[cfg(test)]
+                {
+                    self.mem
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(session_id)
+                        .cloned()
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            }
+        };
+        let Some(doc) = doc else {
+            return Ok(None);
+        };
+        let Some((verified, token, refreshed)) =
+            resolve_or_refresh_session_jwt(&doc, self.jwt_secret.as_deref())
+        else {
+            return Ok(None);
+        };
+        if refreshed {
+            if let Err(e) = self
+                .mark_verified_with_token(session_id, verified.as_str(), Some(&token))
+                .await
+            {
+                tracing::warn!(
+                    session_id = %session_id,
+                    wallet = %verified,
+                    error = %e,
+                    "failed to persist refreshed 24h session JWT (continuing with in-memory token)"
+                );
+            }
+        }
+        Ok(Some((verified.as_str().to_owned(), token)))
     }
 
     /// The wallet this session has PROVEN, or `None` if the session is
@@ -280,25 +425,40 @@ impl McpSessionBinding {
         if session_id.is_empty() {
             return None;
         }
-        let doc: Option<McpHttpSessionDoc> = self
-            .db
-            .fluent()
-            .select()
-            .by_id_in(self.collection)
-            .obj()
-            .one(session_id)
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    session_id = %session_id,
-                    collection = self.collection,
-                    error = %e,
-                    "http session verified lookup failed"
-                );
-                e
-            })
-            .ok()
-            .flatten();
+        let doc: Option<McpHttpSessionDoc> = match self.db {
+            Some(ref db) => db
+                .fluent()
+                .select()
+                .by_id_in(self.collection)
+                .obj()
+                .one(session_id)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        collection = self.collection,
+                        error = %e,
+                        "http session verified lookup failed"
+                    );
+                    e
+                })
+                .ok()
+                .flatten(),
+            None => {
+                #[cfg(test)]
+                {
+                    self.mem
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(session_id)
+                        .cloned()
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            }
+        };
         let doc = doc?;
         match doc.verified_wallet {
             Some(v) if crate::jwt::wallets_match(&v, &doc.wallet) && !doc.wallet.is_empty() => {
@@ -312,13 +472,26 @@ impl McpSessionBinding {
 /// Cryptographically proven wallet identity.
 ///
 /// The inner string is private to `session_binding` (constructed only after
-/// Firestore session-proof verification, or via `#[cfg(test)] new_for_test`),
-/// so an unverified wallet string can never mint an internal service token
-/// (`jwt::mint_svc_token` / `GameApiProxy::internal_bearer`) at compile time.
+/// Firestore session-proof verification, cryptographic HS256 user-JWT verification,
+/// or via `#[cfg(test)] new_for_test`), so an unverified wallet string can never
+/// mint an internal service token (`jwt::mint_svc_token` / `GameApiProxy::internal_bearer`)
+/// at compile time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedWallet(String);
 
 impl VerifiedWallet {
+    /// Construct a [`VerifiedWallet`] by cryptographically verifying an HS256 user
+    /// Bearer JWT (`typ: "user"`, `aud` containing `"mcp"`).
+    pub fn from_user_bearer_jwt(token: &str, jwt_secret: &str) -> Result<Self, &'static str> {
+        let wallet = crate::jwt::verify_user_jwt(token, jwt_secret, "mcp")?;
+        let canonical = if wallet.starts_with("0x") {
+            crate::xchain::evm_account_id(&wallet).unwrap_or(wallet)
+        } else {
+            wallet
+        };
+        Ok(Self(crate::jwt::normalize_wallet(&canonical)))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -346,6 +519,67 @@ impl std::fmt::Display for VerifiedWallet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// Pure session-token resolution + 24h auto-refresh helper:
+/// - Rejects unproven or mismatched session docs (`None`).
+/// - Returns `(verified_wallet, existing_token, false)` if `access_token` is present
+///   and valid for more than 60 seconds.
+/// - Mints a fresh 24h HS256 user JWT `(verified_wallet, fresh_token, true)` when
+///   `access_token` is `None` (e.g. after `piggyback_stake_verification`) or expiring
+///   within 60s and `jwt_secret` is configured.
+pub(crate) fn resolve_or_refresh_session_jwt(
+    doc: &McpHttpSessionDoc,
+    jwt_secret: Option<&str>,
+) -> Option<(VerifiedWallet, String, bool)> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    resolve_or_refresh_session_jwt_at(doc, jwt_secret, now)
+}
+
+pub(crate) fn resolve_or_refresh_session_jwt_at(
+    doc: &McpHttpSessionDoc,
+    jwt_secret: Option<&str>,
+    now: u64,
+) -> Option<(VerifiedWallet, String, bool)> {
+    let verified_raw = doc.verified_wallet.as_deref()?;
+    if doc.wallet.is_empty() || !crate::jwt::wallets_match(verified_raw, &doc.wallet) {
+        return None;
+    }
+    let verified = VerifiedWallet(crate::jwt::normalize_wallet(&doc.wallet));
+
+    if let Some(existing) = doc.access_token.as_deref().filter(|t| !t.is_empty()) {
+        if !crate::jwt::jwt_needs_refresh_at(
+            Some(existing),
+            now,
+            crate::jwt::USER_TOKEN_REFRESH_LEEWAY_SECS,
+        ) {
+            return Some((verified, existing.to_owned(), false));
+        }
+    }
+
+    if let Some(secret) = jwt_secret.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(fresh) = crate::jwt::mint_user_jwt_at(&verified, secret, now) {
+            return Some((verified, fresh, true));
+        }
+    } else {
+        tracing::warn!(
+            session_id = %doc.session_id,
+            wallet = %verified,
+            "verified session missing or expiring access_token, and jwt-secret is unavailable to refresh it"
+        );
+        // If a non-JWT opaque test token (e.g. wiremock unit test) or still-unexpired
+        // (<60s left) token is stored without jwt_secret configured, preserve fallback usability.
+        if let Some(existing) = doc.access_token.as_deref().filter(|t| !t.is_empty()) {
+            if !existing.contains('.') || !crate::jwt::jwt_needs_refresh_at(Some(existing), now, 0)
+            {
+                return Some((verified, existing.to_owned(), false));
+            }
+        }
+    }
+    None
 }
 
 /// Build the `McpHttpSessionDoc` to persist on `bind(session_id, wallet)`.
@@ -485,5 +719,130 @@ mod tests {
         assert_eq!(rebound.wallet, lower);
         assert_eq!(rebound.verified_wallet.as_deref(), Some(lower));
         assert_eq!(rebound.access_token.as_deref(), Some("tok-evm"));
+    }
+
+    #[test]
+    fn resolve_or_refresh_mints_24h_jwt_after_stake_piggyback_and_on_near_expiry() {
+        let ts = firestore::FirestoreTimestamp(chrono::Utc::now());
+        let now = 1_795_000_000_u64;
+        let secret = "test-jwt-secret-key-32-bytes-min";
+        let sol_wallet = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+
+        // 1. Unproven session NEVER mints a JWT even with jwt_secret configured!
+        let unproven = McpHttpSessionDoc {
+            session_id: "sess-unproven".to_string(),
+            wallet: sol_wallet.to_string(),
+            created_at: ts.clone(),
+            last_seen_at: ts.clone(),
+            verified_wallet: None,
+            verified_at: None,
+            access_token: None,
+        };
+        assert!(resolve_or_refresh_session_jwt_at(&unproven, Some(secret), now).is_none());
+
+        // 2. Stake-piggybacked verified session (`access_token == None`) mints a fresh 24h JWT!
+        let piggybacked = McpHttpSessionDoc {
+            session_id: "sess-stake".to_string(),
+            wallet: sol_wallet.to_string(),
+            created_at: ts.clone(),
+            last_seen_at: ts.clone(),
+            verified_wallet: Some(sol_wallet.to_string()),
+            verified_at: Some(ts.clone()),
+            access_token: None,
+        };
+        let (vw, minted, did_refresh) =
+            resolve_or_refresh_session_jwt_at(&piggybacked, Some(secret), now)
+                .expect("mints token for stake-verified session");
+        assert!(did_refresh);
+        assert_eq!(vw.as_str(), sol_wallet);
+        assert_eq!(
+            crate::jwt::verify_user_jwt_at(&minted, secret, "shillbot", now).unwrap(),
+            sol_wallet
+        );
+
+        // 3. Fresh stored JWT (> 60s left) is reused without re-minting.
+        let active_doc = McpHttpSessionDoc {
+            access_token: Some(minted.clone()),
+            ..piggybacked.clone()
+        };
+        let (_, reused, did_refresh_active) =
+            resolve_or_refresh_session_jwt_at(&active_doc, Some(secret), now.saturating_add(3600))
+                .expect("reuses active token");
+        assert!(!did_refresh_active);
+        assert_eq!(reused, minted);
+
+        // 4. Token expiring within 60s (e.g. 30s left) is refreshed to a new 24h JWT!
+        let near_exp_now = now.saturating_add(86_370);
+        let (_, rotated, did_rotate) =
+            resolve_or_refresh_session_jwt_at(&active_doc, Some(secret), near_exp_now)
+                .expect("rotates expiring token");
+        assert!(did_rotate);
+        assert_ne!(rotated, minted);
+        assert_eq!(
+            crate::jwt::verify_user_jwt_at(
+                &rotated,
+                secret,
+                "shillbot",
+                near_exp_now.saturating_add(3600)
+            )
+            .unwrap(),
+            sol_wallet
+        );
+    }
+
+    #[tokio::test]
+    async fn async_resolve_access_token_persists_minted_jwt_and_reuses_it() {
+        let secret = "test-jwt-secret-key-32-bytes-min";
+        let sol_wallet = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+        let binding =
+            McpSessionBinding::new_in_memory_for_test().with_jwt_secret(Some(secret.to_string()));
+
+        // Unbound / unproven session resolves None.
+        binding.bind("sess-p1", sol_wallet).await.expect("bind");
+        assert_eq!(
+            binding.resolve("sess-p1").await.as_deref(),
+            Some(sol_wallet)
+        );
+        assert!(binding.resolve_verified("sess-p1").await.is_none());
+        assert!(binding
+            .resolve_access_token("sess-p1")
+            .await
+            .expect("ok")
+            .is_none());
+
+        // Stake-piggybacked verification marks verified without an access_token.
+        binding
+            .mark_verified("sess-p1", sol_wallet)
+            .await
+            .expect("mark_verified");
+        let verified = binding
+            .resolve_verified("sess-p1")
+            .await
+            .expect("verified wallet");
+        assert_eq!(verified.as_str(), sol_wallet);
+
+        // First resolve_access_token mints and persists a 24h JWT; second call reuses it verbatim!
+        let (w1, tok1) = binding
+            .resolve_access_token("sess-p1")
+            .await
+            .expect("ok")
+            .expect("minted token");
+        assert_eq!(w1, sol_wallet);
+        assert_eq!(
+            crate::jwt::verify_user_jwt(&tok1, secret, "mcp").expect("valid mcp jwt"),
+            sol_wallet
+        );
+        assert_eq!(
+            crate::jwt::verify_user_jwt(&tok1, secret, "shillbot").expect("valid shillbot jwt"),
+            sol_wallet
+        );
+
+        let (w2, tok2) = binding
+            .resolve_access_token("sess-p1")
+            .await
+            .expect("ok")
+            .expect("reused token");
+        assert_eq!(w2, sol_wallet);
+        assert_eq!(tok2, tok1);
     }
 }

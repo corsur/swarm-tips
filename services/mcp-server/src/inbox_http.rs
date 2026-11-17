@@ -380,7 +380,7 @@ fn conflicting_auth_headers_response() -> axum::response::Response {
     json_error(
         StatusCode::BAD_REQUEST,
         "conflicting_auth_headers",
-        "conflicting auth headers: provide either Authorization: Bearer <jwt> or X-Inbox-Session, never both",
+        "conflicting auth headers: Authorization: Bearer and X-Inbox-Session do not authenticate the same wallet",
     )
 }
 
@@ -714,7 +714,7 @@ fn session_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
-fn has_conflicting_auth_headers(headers: &axum::http::HeaderMap) -> bool {
+fn has_both_auth_headers(headers: &axum::http::HeaderMap) -> bool {
     headers.contains_key(axum::http::header::AUTHORIZATION)
         && headers.contains_key(INBOX_SESSION_HEADER)
 }
@@ -960,20 +960,51 @@ async fn handle_session(state: &InboxHttpState, raw: &str) -> axum::response::Re
 }
 
 /// Per-request guard — the REST twin of `require_verified_wallet`: accepts
-/// either `Authorization: Bearer <user_jwt>` (`aud: "mcp"`, `typ: "user"`,
-/// rejecting `svc` tokens) OR `X-Inbox-Session` resolved through
-/// `resolve_verified`, while rejecting requests carrying BOTH headers (`400`,
-/// C1). Unverified or unknown callers get a structured-logged `401` and
-/// NOTHING else (reads included — same privacy invariant as the tools).
+/// `Authorization: Bearer <user_jwt>` (`aud: "mcp"`, `typ: "user"`, rejecting
+/// `svc` tokens) and/or `X-Inbox-Session` resolved through `resolve_verified`.
+/// When BOTH headers are sent, both are verified and normalized via
+/// `inbox::mailbox_address`: if they authenticate the **exact same canonical
+/// wallet**, the request succeeds; if they disagree (different wallets, or one
+/// valid and one invalid/unknown), the request is rejected with `400`
+/// `conflicting_auth_headers` (C1). Unverified or unknown callers get a
+/// structured-logged `401` and NOTHING else.
 async fn require_verified_mailbox<B: InboxBackend>(
     state: &B,
     headers: &axum::http::HeaderMap,
 ) -> Result<String, axum::response::Response> {
     let prov = provenance_from_headers(headers);
-    if has_conflicting_auth_headers(headers) {
-        inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
-        return Err(conflicting_auth_headers_response());
+    if has_both_auth_headers(headers) {
+        let bearer_mailbox = match bearer_token_from_headers(headers) {
+            Ok(Some(token)) => state
+                .jwt_secret()
+                .and_then(|secret| crate::jwt::verify_user_jwt(token, secret, "mcp").ok())
+                .and_then(|w| inbox::mailbox_address(&w).ok()),
+            _ => None,
+        };
+        let session_mailbox = match session_id_from_headers(headers) {
+            Some(session_id) => state
+                .resolve_verified_session(&session_id)
+                .await
+                .and_then(|w| inbox::mailbox_address(w.as_str()).ok()),
+            None => None,
+        };
+        return match (bearer_mailbox, session_mailbox) {
+            (Some(b), Some(s)) if b == s => Ok(b),
+            (None, None) => {
+                inbox::log_rejection("unproven_sender", None, None, &prov);
+                Err(json_error(
+                    StatusCode::UNAUTHORIZED,
+                    "unproven_sender",
+                    "neither Authorization: Bearer nor X-Inbox-Session carries a valid wallet proof",
+                ))
+            }
+            _ => {
+                inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
+                Err(conflicting_auth_headers_response())
+            }
+        };
     }
+
     match bearer_token_from_headers(headers) {
         Ok(Some(token)) => {
             let Some(secret) = state.jwt_secret() else {
@@ -1573,10 +1604,14 @@ async fn handle_a2a<B: InboxBackend>(
     raw: &str,
 ) -> axum::response::Response {
     let prov = provenance_from_headers(headers);
-    if has_conflicting_auth_headers(headers) {
-        inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
-        return conflicting_auth_headers_response();
-    }
+    let preverified_me = if has_both_auth_headers(headers) {
+        match require_verified_mailbox(state, headers).await {
+            Ok(m) => Some(m),
+            Err(resp) => return resp,
+        }
+    } else {
+        None
+    };
     let req = match a2a::parse_request(raw) {
         Ok(r) => r,
         Err((code, message)) => {
@@ -1589,9 +1624,12 @@ async fn handle_a2a<B: InboxBackend>(
             );
         }
     };
-    let me = match require_verified_mailbox(state, headers).await {
-        Ok(m) => m,
-        Err(resp) => return resp,
+    let me = match preverified_me {
+        Some(m) => m,
+        None => match require_verified_mailbox(state, headers).await {
+            Ok(m) => m,
+            Err(resp) => return resp,
+        },
     };
     match req.method.as_str() {
         "message/send" => a2a_message_send(state, &me, &req, &prov).await,
@@ -1666,10 +1704,10 @@ fn list_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRou
             let state = state.clone();
             async move {
                 let prov = provenance_from_headers(&headers);
-                if has_conflicting_auth_headers(&headers) {
-                    inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
-                    return conflicting_auth_headers_response();
-                }
+                let me = match require_verified_mailbox(state.as_ref(), &headers).await {
+                    Ok(m) => m,
+                    Err(r) => return r,
+                };
                 let args = match parse_selective_query(&q) {
                     Ok(a) => a,
                     Err(e) => {
@@ -1684,10 +1722,6 @@ fn list_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRou
                 if let Err(e) = args.validate() {
                     return inbox_error_response(e, None, None, &prov);
                 }
-                let me = match require_verified_mailbox(state.as_ref(), &headers).await {
-                    Ok(m) => m,
-                    Err(r) => return r,
-                };
                 match state.list_messages(&me, &args).await {
                     Ok(v) => json_ok(v),
                     Err(e) => inbox_error_response(e, None, None, &prov),
@@ -1710,10 +1744,10 @@ fn open_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRou
         let state = state.clone();
         async move {
             let prov = provenance_from_headers(&headers);
-            if has_conflicting_auth_headers(&headers) {
-                inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
-                return conflicting_auth_headers_response();
-            }
+            let me = match require_verified_mailbox(state.as_ref(), &headers).await {
+                Ok(m) => m,
+                Err(r) => return r,
+            };
             let args = match serde_json::from_str::<inbox::OpenMessagesArgs>(&body) {
                 Ok(a) => a,
                 Err(_) => {
@@ -1728,10 +1762,6 @@ fn open_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::MethodRou
             if let Err(e) = args.validate() {
                 return inbox_error_response(e, None, None, &prov);
             }
-            let me = match require_verified_mailbox(state.as_ref(), &headers).await {
-                Ok(m) => m,
-                Err(r) => return r,
-            };
             match state.open_messages(&me, args).await {
                 Ok(v) => json_ok(v),
                 Err(e) => inbox_error_response(e, None, None, &prov),
@@ -1753,10 +1783,10 @@ fn ack_ids_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::Method
         let state = state.clone();
         async move {
             let prov = provenance_from_headers(&headers);
-            if has_conflicting_auth_headers(&headers) {
-                inbox::log_rejection("conflicting_auth_headers", None, None, &prov);
-                return conflicting_auth_headers_response();
-            }
+            let me = match require_verified_mailbox(state.as_ref(), &headers).await {
+                Ok(m) => m,
+                Err(r) => return r,
+            };
             let args = match serde_json::from_str::<inbox::AckMessageIdsArgs>(&body) {
                 Ok(a) => a,
                 Err(_) => {
@@ -1774,10 +1804,6 @@ fn ack_ids_handler_with<B: InboxBackend>(state: Arc<B>) -> axum::routing::Method
             if let Err(e) = args.validate() {
                 return inbox_error_response(e, None, None, &prov);
             }
-            let me = match require_verified_mailbox(state.as_ref(), &headers).await {
-                Ok(m) => m,
-                Err(r) => return r,
-            };
             match state.ack_message_ids(&me, args).await {
                 Ok(v) => json_ok(v),
                 Err(e) => inbox_error_response(e, None, None, &prov),
@@ -3004,10 +3030,19 @@ mod bearer_and_mute_router_tests {
 
     #[tokio::test]
     async fn c1_conflicting_bearer_and_inbox_session_headers_rejected_with_400() {
+        // Security invariant (C1): when Authorization: Bearer and X-Inbox-Session
+        // authenticate DIFFERENT wallets (or one is valid and the other is unknown/invalid),
+        // every route MUST reject with 400 conflicting_auth_headers.
         let backend = FakeInboxBackend::new();
         let base = spawn_router(test_router(backend)).await;
         let client = reqwest::Client::new();
-        let user_jwt = crate::jwt::mint_user_jwt_for_test(
+        let bob_jwt = crate::jwt::mint_user_jwt_for_test(
+            BOB_SOL,
+            SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+        let alice_jwt = crate::jwt::mint_user_jwt_for_test(
             ALICE_SOL,
             SECRET,
             &["shillbot", "game", "mcp"],
@@ -3020,7 +3055,7 @@ mod bearer_and_mute_router_tests {
             (
                 "POST",
                 "/internal/inbox/open",
-                Some(json!({ "message_ids": ["00000000000000000001_00000001"] })),
+                Some(json!({ "messages": [{ "msg_id": "00000000000000000001_00000001" }] })),
             ),
             (
                 "POST",
@@ -3053,15 +3088,19 @@ mod bearer_and_mute_router_tests {
                 })),
             ),
         ] {
-            let req = if method == "GET" {
-                client.get(format!("{base}{path}"))
-            } else {
-                client
-                    .post(format!("{base}{path}"))
-                    .json(&body.expect("body"))
+            let build_req = || {
+                if method == "GET" {
+                    client.get(format!("{base}{path}"))
+                } else {
+                    client
+                        .post(format!("{base}{path}"))
+                        .json(body.as_ref().expect("body"))
+                }
             };
-            let resp = req
-                .bearer_auth(&user_jwt)
+
+            // 1. Bob's valid Bearer + Alice's valid X-Inbox-Session -> 400 conflicting_auth_headers
+            let resp = build_req()
+                .bearer_auth(&bob_jwt)
                 .header(INBOX_SESSION_HEADER, SESSION_OK)
                 .send()
                 .await
@@ -3073,6 +3112,158 @@ mod bearer_and_mute_router_tests {
                 err_json["reason"], "conflicting_auth_headers",
                 "{method} {path}: {err_json}"
             );
+
+            // 2. Alice's valid Bearer + unknown X-Inbox-Session -> 400 conflicting_auth_headers
+            let resp_half = build_req()
+                .bearer_auth(&alice_jwt)
+                .header(INBOX_SESSION_HEADER, "sess-unknown")
+                .send()
+                .await
+                .expect("send half-valid");
+            assert_no_set_cookie(&resp_half);
+            assert_eq!(
+                resp_half.status(),
+                StatusCode::BAD_REQUEST,
+                "{method} {path} half-valid"
+            );
+            let half_json: serde_json::Value = resp_half.json().await.expect("json");
+            assert_eq!(
+                half_json["reason"], "conflicting_auth_headers",
+                "{method} {path}: {half_json}"
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn same_wallet_bearer_and_inbox_session_headers_succeed_across_all_inbox_routes() {
+        // Usability happy path: HTTP client wrappers that attach a global
+        // Authorization: Bearer <jwt> alongside X-Inbox-Session for the SAME
+        // canonical wallet succeed on every route with exact owner attribution.
+        let backend = FakeInboxBackend::new();
+        let base = spawn_router(test_router(Arc::clone(&backend))).await;
+        let client = reqwest::Client::new();
+        let alice_jwt = crate::jwt::mint_user_jwt_for_test(
+            ALICE_SOL,
+            SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+        let alice_caip10 = inbox::mailbox_address(ALICE_SOL).expect("caip10");
+
+        let list_resp = client
+            .get(format!("{base}/internal/inbox/list"))
+            .bearer_auth(&alice_jwt)
+            .header(INBOX_SESSION_HEADER, SESSION_OK)
+            .send()
+            .await
+            .expect("list");
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_json: serde_json::Value = list_resp.json().await.expect("json");
+        assert_eq!(list_json["owner"], alice_caip10);
+        assert_eq!(list_json["count"], 0);
+
+        let msgs_resp = client
+            .get(format!("{base}/internal/inbox/messages"))
+            .bearer_auth(&alice_jwt)
+            .header(INBOX_SESSION_HEADER, SESSION_OK)
+            .send()
+            .await
+            .expect("messages");
+        assert_eq!(msgs_resp.status(), StatusCode::OK);
+        let msgs_json: serde_json::Value = msgs_resp.json().await.expect("json");
+        assert_eq!(msgs_json["messages"], json!([]));
+
+        let open_resp = client
+            .post(format!("{base}/internal/inbox/open"))
+            .bearer_auth(&alice_jwt)
+            .header(INBOX_SESSION_HEADER, SESSION_OK)
+            .json(&json!({ "messages": [{ "msg_id": "00000000000000000001_00000001" }] }))
+            .send()
+            .await
+            .expect("open");
+        assert_eq!(open_resp.status(), StatusCode::OK);
+        let open_json: serde_json::Value = open_resp.json().await.expect("json");
+        assert_eq!(open_json["owner"], alice_caip10);
+        assert_eq!(
+            open_json["opened"][0]["msg_id"],
+            "00000000000000000001_00000001"
+        );
+
+        let ack_ids_resp = client
+            .post(format!("{base}/internal/inbox/ack-ids"))
+            .bearer_auth(&alice_jwt)
+            .header(INBOX_SESSION_HEADER, SESSION_OK)
+            .json(&json!({ "message_ids": ["00000000000000000001_00000001"] }))
+            .send()
+            .await
+            .expect("ack-ids");
+        assert_eq!(ack_ids_resp.status(), StatusCode::OK);
+        let ack_ids_json: serde_json::Value = ack_ids_resp.json().await.expect("json");
+        assert_eq!(ack_ids_json["owner"], alice_caip10);
+        assert_eq!(
+            ack_ids_json["acknowledged"],
+            json!(["00000000000000000001_00000001"])
+        );
+
+        let send_resp = client
+            .post(format!("{base}/internal/inbox/send"))
+            .bearer_auth(&alice_jwt)
+            .header(INBOX_SESSION_HEADER, SESSION_OK)
+            .json(&json!({ "to_wallet": BOB_SOL, "body": "dual-header ping" }))
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(send_resp.status(), StatusCode::OK);
+        let send_json: serde_json::Value = send_resp.json().await.expect("json");
+        assert_eq!(send_json["sent"], true);
+        assert_eq!(send_json["msg_id"], "00000000000000000001_00000001");
+
+        let mute_resp = client
+            .post(format!("{base}/internal/inbox/mute"))
+            .bearer_auth(&alice_jwt)
+            .header(INBOX_SESSION_HEADER, SESSION_OK)
+            .json(&json!({ "thread_id": "task:77", "report": false }))
+            .send()
+            .await
+            .expect("mute");
+        assert_eq!(mute_resp.status(), StatusCode::OK);
+        let mute_json: serde_json::Value = mute_resp.json().await.expect("json");
+        assert_eq!(mute_json["muted"], true);
+        assert_eq!(mute_json["thread_id"], "task:77");
+        assert_eq!(
+            backend.muted_calls.lock().expect("lock").as_slice(),
+            &[(alice_caip10.clone(), "task:77".to_string(), false)]
+        );
+
+        let pub_resp = client
+            .post(format!("{base}/internal/topics/publish"))
+            .bearer_auth(&alice_jwt)
+            .header(INBOX_SESSION_HEADER, SESSION_OK)
+            .json(&json!({ "topic_id": "town-square", "body": "dual-header post" }))
+            .send()
+            .await
+            .expect("publish");
+        assert_eq!(pub_resp.status(), StatusCode::OK);
+        let pub_json: serde_json::Value = pub_resp.json().await.expect("json");
+        assert_eq!(pub_json["published"], true);
+        assert_eq!(pub_json["topic_id"], "town-square");
+
+        let a2a_resp = client
+            .post(format!("{base}/a2a"))
+            .bearer_auth(&alice_jwt)
+            .header(INBOX_SESSION_HEADER, SESSION_OK)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "dual-1",
+                "method": "tasks/get",
+                "params": { "id": "task:77" }
+            }))
+            .send()
+            .await
+            .expect("a2a");
+        assert_eq!(a2a_resp.status(), StatusCode::OK);
+        let a2a_json: serde_json::Value = a2a_resp.json().await.expect("json");
+        assert_eq!(a2a_json["id"], "dual-1");
+        assert_eq!(a2a_json["result"]["id"], "task:77");
     }
 }

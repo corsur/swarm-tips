@@ -10,9 +10,10 @@
 //!    byte order for all ASCII keys).
 
 use crate::onchain_action::{
-    ActionMode, EvmAttributionSource, EvmFieldPredicate, EvmFieldRef, EvmLogPredicate,
-    OnChainActionSpec, PredicateOp, SolanaAttributionSource, SolanaEventMatcher,
-    SolanaProgramPredicate, SolanaSliceEncoding, SolanaSlicePredicate, TargetPredicate,
+    canonicalize_solidity_event_signature, normalize_uint256_value_hex, ActionMode,
+    EvmAttributionSource, EvmFieldPredicate, EvmFieldRef, EvmLogPredicate, OnChainActionSpec,
+    PredicateOp, SolanaAttributionSource, SolanaEventMatcher, SolanaProgramPredicate,
+    SolanaSliceEncoding, SolanaSlicePredicate, TargetPredicate,
 };
 
 /// Escape and append a JSON string per RFC 8785 §3.2.2.2.
@@ -92,7 +93,9 @@ fn push_evm_predicate_item(out: &mut String, item: &EvmFieldPredicate) {
     out.push_str(",\"op\":");
     push_op(out, item.op);
     out.push_str(",\"value_hex\":");
-    push_jcs_str(out, &item.value_hex.to_ascii_lowercase());
+    let normalized = normalize_uint256_value_hex(&item.value_hex)
+        .unwrap_or_else(|| item.value_hex.to_ascii_lowercase());
+    push_jcs_str(out, &normalized);
     out.push('}');
 }
 
@@ -106,7 +109,8 @@ fn push_evm_log_predicate(out: &mut String, p: &EvmLogPredicate) {
     push_evm_attribution(out, &p.agent_attribution);
     if let Some(sig) = &p.event_signature {
         out.push_str(",\"event_signature\":");
-        push_jcs_str(out, sig);
+        let canon = canonicalize_solidity_event_signature(sig).unwrap_or_else(|_| sig.clone());
+        push_jcs_str(out, &canon);
     }
     out.push_str(",\"field_predicates\":[");
     for (idx, fp) in p.field_predicates.iter().enumerate() {

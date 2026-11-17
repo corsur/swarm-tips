@@ -2,8 +2,8 @@
 //!
 //! Protects public HTTP endpoints on `mcp-server` from abusive polling,
 //! credential-stuffing, and unbounded map-growth OOMs:
-//! - `GET` endpoints: 120 requests / 60s per caller key
-//! - `POST` / `DELETE` / write endpoints: 60 requests / 60s per caller key
+//! - `GET` / `HEAD` and `/mcp` JSON-RPC endpoints: 600 requests / 60s per caller key
+//! - `POST` / `DELETE` / REST write endpoints: 60 requests / 60s per caller key
 //! - Hard cap of [`MAX_BUCKETS`] (10,000) distinct keys in memory: on collision
 //!   at capacity, expired buckets are swept first; if [`MAX_BUCKETS`] active
 //!   callers remain, new callers **fail closed** with `429 Too Many Requests`
@@ -20,10 +20,14 @@ use std::time::{Duration, Instant};
 /// Hard ceiling on in-memory rate-limit buckets (C8 OOM guard).
 pub const MAX_BUCKETS: usize = 10_000;
 
-/// Public HTTP read limit (`GET`): 120 requests per minute.
-pub const PUBLIC_GET_PER_MINUTE: usize = 120;
+/// Public HTTP read & `/mcp` JSON-RPC limit: 600 requests per minute (10 req/s per IP),
+/// allowing `game_check_match` polling and multi-agent cohorts behind one NAT IP without 429s.
+pub const PUBLIC_READ_PER_MINUTE: usize = 600;
 
-/// Public HTTP write limit (`POST`, `DELETE`, etc.): 60 requests per minute.
+/// Alias retained for callers referencing the `GET` read bucket constant.
+pub const PUBLIC_GET_PER_MINUTE: usize = PUBLIC_READ_PER_MINUTE;
+
+/// Public HTTP write limit (`POST`, `DELETE`, etc. on REST write routes): 60 requests per minute.
 pub const PUBLIC_WRITE_PER_MINUTE: usize = 60;
 
 const WINDOW_SECS: u64 = 60;
@@ -239,6 +243,10 @@ pub fn too_many_requests_response(retry_after_secs: u64) -> Response {
     resp
 }
 
+fn uses_read_or_rpc_bucket(method: &Method, path: &str) -> bool {
+    *method == Method::GET || *method == Method::HEAD || path == "/mcp" || path.starts_with("/mcp/")
+}
+
 /// Axum middleware enforcing C8 bounded rate limits across public HTTP routes.
 pub async fn enforce_http_rate_limit(
     State(limiters): State<HttpRateLimiters>,
@@ -252,7 +260,7 @@ pub async fn enforce_http_rate_limit(
     }
 
     let key = caller_rate_key(req.headers());
-    let limiter = if *method == Method::GET || *method == Method::HEAD {
+    let limiter = if uses_read_or_rpc_bucket(method, path) {
         &limiters.read
     } else {
         &limiters.write
@@ -459,5 +467,81 @@ mod tests {
             .await
             .expect("options");
         assert_eq!(preflight.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn post_mcp_uses_read_rpc_bucket_instead_of_write_bucket() {
+        assert_eq!(PUBLIC_READ_PER_MINUTE, 600);
+        assert_eq!(PUBLIC_GET_PER_MINUTE, 600);
+        assert_eq!(PUBLIC_WRITE_PER_MINUTE, 60);
+
+        // Configure read/RPC bucket capacity = 3, write bucket capacity = 1.
+        let limiters = HttpRateLimiters {
+            read: Arc::new(RateLimiter::with_max_buckets(
+                3,
+                Duration::from_secs(60),
+                16,
+            )),
+            write: Arc::new(RateLimiter::with_max_buckets(
+                1,
+                Duration::from_secs(60),
+                16,
+            )),
+        };
+
+        let app = axum::Router::new()
+            .route("/mcp", axum::routing::post(|| async { "rpc-ok" }))
+            .route(
+                "/internal/listings",
+                axum::routing::post(|| async { "write-ok" }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                limiters,
+                enforce_http_rate_limit,
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::new();
+
+        // Exhaust the 1-req/min REST write bucket first.
+        let w1 = client
+            .post(format!("{base}/internal/listings"))
+            .header("x-forwarded-for", "198.51.100.42")
+            .send()
+            .await
+            .expect("write 1");
+        assert_eq!(w1.status(), StatusCode::OK);
+        let w2 = client
+            .post(format!("{base}/internal/listings"))
+            .header("x-forwarded-for", "198.51.100.42")
+            .send()
+            .await
+            .expect("write 2");
+        assert_eq!(w2.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // Even with REST write exhausted, POST /mcp uses the separate read/RPC bucket (3 allowed, 4th 429).
+        for i in 0..3u8 {
+            let r = client
+                .post(format!("{base}/mcp"))
+                .header("x-forwarded-for", "198.51.100.42")
+                .send()
+                .await
+                .expect("post /mcp");
+            assert_eq!(r.status(), StatusCode::OK, "POST /mcp #{i} must succeed");
+        }
+        let r4 = client
+            .post(format!("{base}/mcp"))
+            .header("x-forwarded-for", "198.51.100.42")
+            .send()
+            .await
+            .expect("post /mcp 4");
+        assert_eq!(r4.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 }

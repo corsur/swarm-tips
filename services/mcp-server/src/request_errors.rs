@@ -51,7 +51,7 @@ pub(crate) fn recovery(reason: &str, read_only: bool) -> (&'static str, &'static
     match reason {
         "unproven_sender" => ("after_correction", "Sign the nonce from register_wallet locally, then call register_wallet with pubkey, nonce and signature in this same session. For team support without verification, omit to_wallet in agent_send_message."),
         "missing_session" => ("after_correction", "MCP: initialize and retain Mcp-Session-Id. HTTP: pass Authorization: Bearer <jwt> or obtain X-Inbox-Session via POST /internal/inbox/session and send it on subsequent requests."),
-        "conflicting_auth_headers" => ("after_correction", "Send either Authorization: Bearer <jwt> or X-Inbox-Session, never both headers on the same request."),
+        "conflicting_auth_headers" => ("after_correction", "Send a single auth header (Authorization: Bearer <jwt> or X-Inbox-Session), or ensure both headers authenticate the exact same wallet."),
         "invalid_request" | "invalid_arguments" => ("after_correction", "Correct the request before retrying. For tools, inspect its inputSchema in tools/list; retain the same session."),
         "unknown_tool" => ("after_correction", "Call tools/list for this endpoint. Use list_related_servers to find a focused endpoint with the needed catalog; initialize a separate session there."),
         "unknown_resource" => ("after_correction", "Call resources/list and copy a returned URI exactly. Resources are available on https://mcp.swarm.tips/mcp."),

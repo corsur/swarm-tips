@@ -177,7 +177,10 @@ pub fn listed_on(name: &str, surface: Surface, show_testnet: bool) -> bool {
                 Category::ShillbotEarn | Category::ShillbotClient | Category::Video
             ) || matches!(name, "register_wallet" | "agent_verify_wallet")
         }
-        Surface::Game => cap.category == Category::Game || name == "register_wallet",
+        Surface::Game => {
+            cap.category == Category::Game
+                || matches!(name, "register_wallet" | "agent_verify_wallet")
+        }
     }
 }
 
@@ -201,6 +204,8 @@ mod tests {
             assert!(!listed_on(name, Surface::Swarm, false));
             assert!(!listed_on(name, Surface::Swarm, true));
         }
+        assert!(listed_on("register_wallet", Surface::Game, false));
+        assert!(listed_on("agent_verify_wallet", Surface::Game, false));
     }
 
     #[test]

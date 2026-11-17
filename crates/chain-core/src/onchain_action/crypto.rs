@@ -126,9 +126,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     out
 }
 
-/// Decode a `0x`-prefixed lowercase or mixed-case hex string of exact byte length `N`.
-pub fn decode_0x_hex_exact<const N: usize>(input: &str) -> Option<[u8; N]> {
-    let hex_body = input.strip_prefix("0x")?;
+fn decode_hex_body_exact<const N: usize>(hex_body: &str) -> Option<[u8; N]> {
     if hex_body.len() != N.checked_mul(2)? {
         return None;
     }
@@ -144,13 +142,19 @@ pub fn decode_0x_hex_exact<const N: usize>(input: &str) -> Option<[u8; N]> {
     Some(out)
 }
 
+/// Decode a `0x`-prefixed lowercase or mixed-case hex string of exact byte length `N`.
+pub fn decode_0x_hex_exact<const N: usize>(input: &str) -> Option<[u8; N]> {
+    let hex_body = input.strip_prefix("0x")?;
+    decode_hex_body_exact::<N>(hex_body)
+}
+
 /// Decode a `0x`-prefixed hex string of `1..=MAX_BYTES` bytes.
 pub fn decode_0x_hex_bounded(input: &str, max_bytes: usize) -> Option<Vec<u8>> {
     let hex_body = input.strip_prefix("0x")?;
-    if hex_body.is_empty() || hex_body.len() % 2 != 0 {
+    if hex_body.is_empty() || hex_body.len() & 1 != 0 {
         return None;
     }
-    let byte_len = hex_body.len() / 2;
+    let byte_len = hex_body.len() >> 1;
     if byte_len > max_bytes {
         return None;
     }
@@ -178,7 +182,7 @@ pub fn encode_0x_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn hex_nibble(b: u8) -> Option<u8> {
+pub(crate) fn hex_nibble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b.saturating_sub(b'0')),
         b'a'..=b'f' => Some(b.saturating_sub(b'a').saturating_add(10)),
@@ -234,7 +238,7 @@ const B64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
 
 /// Encode bytes as RFC 4648 §5 URL-safe base64 without `=` padding.
 pub fn encode_base64url_nopad(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().saturating_mul(4).saturating_add(2) / 3);
+    let mut out = String::with_capacity(data.len().saturating_mul(4).saturating_add(2).div_ceil(3));
     let mut chunks = data.chunks_exact(3);
     for c in &mut chunks {
         let n = (u32::from(c[0]) << 16) | (u32::from(c[1]) << 8) | u32::from(c[2]);
@@ -301,4 +305,21 @@ pub fn decode_base64url_sig65(input: &str) -> Option<[u8; 65]> {
     out[63] = ((n >> 16) & 0xff) as u8;
     out[64] = ((n >> 8) & 0xff) as u8;
     Some(out)
+}
+
+/// Decode a 65-byte `[r(32) || s(32) || v(1)]` signature from either:
+/// - 87-char unpadded `base64url` (`decode_base64url_sig65`),
+/// - `0x`-prefixed 132-char hex (`0x` + 130 hex chars), or
+/// - raw 130-char hex.
+pub fn decode_sig65(input: &str) -> Option<[u8; 65]> {
+    if let Some(hex_body) = input
+        .strip_prefix("0x")
+        .or_else(|| input.strip_prefix("0X"))
+    {
+        return decode_hex_body_exact::<65>(hex_body);
+    }
+    if input.len() == 130 {
+        return decode_hex_body_exact::<65>(input);
+    }
+    decode_base64url_sig65(input)
 }

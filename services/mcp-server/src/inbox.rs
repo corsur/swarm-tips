@@ -69,7 +69,7 @@ pub mod limits {
     /// MCP session id. Every OTHER recipient stays at `SENDS_PER_DAY_UNPROVEN`
     /// (0) — agent-to-agent messaging is still fully proof-gated.
     pub const SENDS_PER_DAY_UNPROVEN_SUPPORT: u32 = 10;
-    pub const SENDS_PER_DAY_SESSION_VERIFIED: u32 = 5;
+    pub const SENDS_PER_DAY_SESSION_VERIFIED: u32 = 25;
     pub const SENDS_PER_DAY_WALLET_VERIFIED: u32 = 100;
     pub const SENDS_PER_DAY_REPUTABLE: u32 = 500;
     /// Full (non-fast-path) reads per wallet per day — cost telemetry backstop.
@@ -91,7 +91,7 @@ pub mod limits {
     /// on their MCP session id. Non-public topics stay at
     /// `POSTS_PER_DAY_UNPROVEN` (0).
     pub const POSTS_PER_DAY_UNPROVEN_PUBLIC: u32 = 10;
-    pub const POSTS_PER_DAY_SESSION_VERIFIED: u32 = 5;
+    pub const POSTS_PER_DAY_SESSION_VERIFIED: u32 = 25;
     pub const POSTS_PER_DAY_WALLET_VERIFIED: u32 = 50;
     pub const POSTS_PER_DAY_REPUTABLE: u32 = 200;
     /// Distinct reporters that auto-hide a board post pending review.

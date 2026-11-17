@@ -174,17 +174,23 @@ pub async fn initialize_with_dependencies(
         game_sessions = game_sessions.with_realtime(Arc::clone(connector));
     }
     let game_sessions = Arc::new(game_sessions.with_shutdown(ct.child_token()));
-    let session_binding = Arc::new(McpSessionBinding::new(Arc::clone(&game_db)));
-    let inbox_session_binding = Arc::new(McpSessionBinding::new_inbox(Arc::clone(&game_db)));
 
     // game-api's session secret: lets /internal/* calls carry a short-lived
     // token for the MCP-verified wallet (required once game-api enforces
-    // INTERNAL_AUTH_REQUIRED) and keys deterministic webhook secret derivation
-    // and cross-pod Mcp-Session-Id HMAC verification.
+    // INTERNAL_AUTH_REQUIRED), keys deterministic webhook secret derivation
+    // and cross-pod Mcp-Session-Id HMAC verification, enables 24h session JWT
+    // minting/auto-refresh, and authenticates stateless Bearer /mcp calls.
     let game_jwt_secret = config::load_optional_secret(&cfg.gcp_project_id, "jwt-secret").await;
     if game_jwt_secret.is_none() {
-        tracing::warn!("jwt-secret unavailable — game-api /internal/* calls go unauthenticated");
+        tracing::warn!("jwt-secret unavailable — game-api /internal/* calls go unauthenticated, Bearer /mcp auth disabled, and session JWT auto-refresh disabled");
     }
+
+    let session_binding = Arc::new(
+        McpSessionBinding::new(Arc::clone(&game_db)).with_jwt_secret(game_jwt_secret.clone()),
+    );
+    let inbox_session_binding = Arc::new(
+        McpSessionBinding::new_inbox(Arc::clone(&game_db)).with_jwt_secret(game_jwt_secret.clone()),
+    );
 
     // This service's public base URL, handed to the delivery workflow for
     // its POST /internal/webhooks/delivery-result callback. Empty → the
@@ -236,6 +242,7 @@ pub async fn initialize_with_dependencies(
         orchestrator = orchestrator.with_transport(Arc::clone(transport));
     }
     let oracle_keypair = load_oracle_keypair(&cfg.gcp_project_id).await;
+    let mcp_session_binding = Arc::clone(&session_binding);
     let shared = Arc::new(SharedState {
         orchestrator: orchestrator.clone(),
         game_api: game_proxy(&cfg.game_api_url, &dependencies, game_jwt_secret.clone())?,
@@ -251,6 +258,7 @@ pub async fn initialize_with_dependencies(
         inbox_seed_wallets,
         show_testnet_tools,
         oracle_keypair: oracle_keypair.clone(),
+        jwt_secret: game_jwt_secret.clone(),
     });
 
     // Stateless transport: the rmcp session is otherwise pod-local (in-memory
@@ -294,6 +302,7 @@ pub async fn initialize_with_dependencies(
         rpc_url_devnet,
         verify_state,
         inbox_http_state,
+        mcp_session_binding,
         services,
         ct.clone(),
     );
@@ -576,10 +585,15 @@ fn build_router(
     rpc_url_devnet: String,
     verify_state: BuildVerifyState,
     inbox_http_state: Arc<inbox_http::InboxHttpState>,
+    session_binding: Arc<McpSessionBinding>,
     mcp_services: McpServices,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> axum::Router {
-    let mcp_session_key = Arc::new(derive_mcp_session_key(verify_state.jwt_secret.as_deref()));
+    let mcp_session_state = Arc::new(McpSessionMiddlewareState {
+        key: derive_mcp_session_key(verify_state.jwt_secret.as_deref()),
+        jwt_secret: verify_state.jwt_secret.clone(),
+        session_binding: Some(session_binding),
+    });
     let verify_state_get = verify_state.clone();
     let verify_state_post = verify_state;
 
@@ -787,7 +801,7 @@ fn build_router(
         // Thread a server-signed Mcp-Session-Id on /mcp and reject unissued or
         // forged Mcp-Session-Id headers with 404 before dispatching tool calls.
         .layer(axum::middleware::from_fn_with_state(
-            mcp_session_key,
+            mcp_session_state,
             ensure_mcp_session_id,
         ))
         // HTTP rate limit wraps EVERYTHING (including /mcp) so public MCP
@@ -932,16 +946,43 @@ fn derive_mcp_session_key(jwt_secret: Option<&str>) -> [u8; 32] {
     fallback
 }
 
-/// Mint a signed `{uuid_v4}.{hmac_sha256_hex}` `Mcp-Session-Id` token.
-pub(crate) fn mint_signed_mcp_session_id(key: &[u8; 32]) -> String {
+fn sign_mcp_session_uuid(id: &str, key: &[u8; 32]) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
-    let id = uuid::Uuid::new_v4().to_string();
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(b"mcp-session-v1:");
     mac.update(id.as_bytes());
     let tag = hex::encode(mac.finalize().into_bytes());
     format!("{id}.{tag}")
+}
+
+/// Mint a signed `{uuid_v4}.{hmac_sha256_hex}` `Mcp-Session-Id` token.
+pub(crate) fn mint_signed_mcp_session_id(key: &[u8; 32]) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    sign_mcp_session_uuid(&id, key)
+}
+
+/// Derive a deterministic RFC 4122 UUID-v4-shaped signed `Mcp-Session-Id` from
+/// `(key, canonical_wallet)` so stateless `Authorization: Bearer <jwt>` MCP
+/// clients correlate to the same session across pods and calls without tracking
+/// `Mcp-Session-Id`.
+pub(crate) fn mint_deterministic_bearer_mcp_session_id(
+    key: &[u8; 32],
+    canonical_wallet: &str,
+) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let canonical = crate::jwt::normalize_wallet(canonical_wallet);
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(b"mcp-bearer-uuid-v1:");
+    mac.update(canonical.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let id = uuid::Uuid::from_bytes(bytes).to_string();
+    sign_mcp_session_uuid(&id, key)
 }
 
 /// Verify a signed `{uuid}.{hmac_sha256_hex}` `Mcp-Session-Id` token in constant time.
@@ -963,12 +1004,24 @@ pub(crate) fn verify_signed_mcp_session_id(token: &str, key: &[u8; 32]) -> bool 
     mac.verify_slice(&tag_bytes).is_ok()
 }
 
-/// Ensure every `/mcp` request carries a server-issued, HMAC-signed `Mcp-Session-Id`.
-/// Unissued or tampered `Mcp-Session-Id` headers on `/mcp` are rejected with
-/// `404 Not Found` per the MCP Streamable HTTP specification so clients cannot
-/// pre-fixate predictable session IDs or probe another caller's session.
+#[derive(Clone)]
+pub(crate) struct McpSessionMiddlewareState {
+    pub key: [u8; 32],
+    pub jwt_secret: Option<String>,
+    pub session_binding: Option<Arc<McpSessionBinding>>,
+}
+
+/// Ensure every `/mcp` request carries a server-issued, HMAC-signed `Mcp-Session-Id`,
+/// and authenticate stateless `Authorization: Bearer <user_jwt>` `/mcp` callers:
+/// - Unissued or tampered `Mcp-Session-Id` headers on `/mcp` are rejected with `404 Not Found`.
+/// - Malformed, invalid, expired, or `typ: "svc"` `Authorization: Bearer` headers on `/mcp`
+///   fail fast with `401 Unauthorized`.
+/// - Valid `Authorization: Bearer <user_jwt>` headers derive a deterministic signed
+///   `Mcp-Session-Id` (when omitted) and persist the verified wallet + token on the
+///   session binding, while rejecting `400 Bad Request` if paired with an `Mcp-Session-Id`
+///   already bound to a different wallet.
 async fn ensure_mcp_session_id(
-    axum::extract::State(key): axum::extract::State<Arc<[u8; 32]>>,
+    axum::extract::State(state): axum::extract::State<Arc<McpSessionMiddlewareState>>,
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -980,6 +1033,47 @@ async fn ensure_mcp_session_id(
         return next.run(req).await;
     }
 
+    let bearer_auth = if req
+        .headers()
+        .contains_key(axum::http::header::AUTHORIZATION)
+    {
+        let Some(token) = extract_bearer_token(req.headers()).map(str::to_owned) else {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": "invalid_bearer_token",
+                    "message": "Authorization header must use Bearer <jwt>.",
+                })),
+            )
+                .into_response();
+        };
+        let Some(secret) = state.jwt_secret.as_deref() else {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": "bearer_auth_unavailable",
+                    "message": "Bearer JWT verification is not configured on this server.",
+                })),
+            )
+                .into_response();
+        };
+        let Ok(verified) =
+            crate::session_binding::VerifiedWallet::from_user_bearer_jwt(&token, secret)
+        else {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": "invalid_bearer_token",
+                    "message": "Invalid, expired, or non-user Bearer token.",
+                })),
+            )
+                .into_response();
+        };
+        Some((verified, token))
+    } else {
+        None
+    };
+
     let provided = req
         .headers()
         .get(&header)
@@ -988,9 +1082,9 @@ async fn ensure_mcp_session_id(
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
 
-    let session_value = match provided {
+    let (session_id, session_value) = match provided {
         Some(existing) => {
-            if !verify_signed_mcp_session_id(&existing, &key) {
+            if !verify_signed_mcp_session_id(&existing, &state.key) {
                 return (
                     axum::http::StatusCode::NOT_FOUND,
                     axum::Json(serde_json::json!({
@@ -1000,17 +1094,50 @@ async fn ensure_mcp_session_id(
                 )
                     .into_response();
             }
-            axum::http::HeaderValue::from_str(&existing).ok()
+            let val = axum::http::HeaderValue::from_str(&existing).ok();
+            (existing, val)
         }
         None => {
-            let minted = mint_signed_mcp_session_id(&key);
+            let minted = match bearer_auth {
+                Some((ref verified, _)) => {
+                    mint_deterministic_bearer_mcp_session_id(&state.key, verified.as_str())
+                }
+                None => mint_signed_mcp_session_id(&state.key),
+            };
             let val = axum::http::HeaderValue::from_str(&minted).ok();
             if let Some(ref v) = val {
                 req.headers_mut().insert(header.clone(), v.clone());
             }
-            val
+            (minted, val)
         }
     };
+
+    if let (Some((ref verified, ref token)), Some(ref sb)) = (&bearer_auth, &state.session_binding)
+    {
+        if let Some(bound_wallet) = sb.resolve(&session_id).await {
+            if !crate::jwt::wallets_match(&bound_wallet, verified.as_str()) {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({
+                        "error": "conflicting_auth_headers",
+                        "message": "Authorization: Bearer wallet conflicts with bound Mcp-Session-Id wallet.",
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        let needs_bind = match sb.resolve_access_token(&session_id).await {
+            Ok(Some((w, existing_tok))) => {
+                !crate::jwt::wallets_match(&w, verified.as_str()) || existing_tok != *token
+            }
+            _ => true,
+        };
+        if needs_bind {
+            let _ = sb
+                .bind_verified_with_token(&session_id, verified, token)
+                .await;
+        }
+    }
 
     let mut resp = next.run(req).await;
     if !resp.headers().contains_key(&header) {
@@ -2016,7 +2143,12 @@ mod readiness_tests {
 
     #[tokio::test]
     async fn mcp_session_id_middleware_signs_and_rejects_unissued_tokens() {
-        let key = std::sync::Arc::new(super::derive_mcp_session_key(Some(TEST_JWT_SECRET)));
+        let key = super::derive_mcp_session_key(Some(TEST_JWT_SECRET));
+        let mw_state = std::sync::Arc::new(super::McpSessionMiddlewareState {
+            key,
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            session_binding: None,
+        });
         let app = axum::Router::new()
             .route(
                 "/mcp",
@@ -2030,7 +2162,7 @@ mod readiness_tests {
                 }),
             )
             .layer(axum::middleware::from_fn_with_state(
-                key.clone(),
+                mw_state,
                 super::ensure_mcp_session_id,
             ));
 
@@ -2083,6 +2215,146 @@ mod readiness_tests {
             .await
             .unwrap();
         assert_eq!(tampered_resp.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn mcp_session_id_middleware_authenticates_stateless_bearer_and_rejects_forged_or_conflicting_tokens(
+    ) {
+        let key = super::derive_mcp_session_key(Some(TEST_JWT_SECRET));
+        let binding = std::sync::Arc::new(
+            crate::session_binding::McpSessionBinding::new_in_memory_for_test()
+                .with_jwt_secret(Some(TEST_JWT_SECRET.to_string())),
+        );
+        let mw_state = std::sync::Arc::new(super::McpSessionMiddlewareState {
+            key,
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            session_binding: Some(std::sync::Arc::clone(&binding)),
+        });
+        let app = axum::Router::new()
+            .route(
+                "/mcp",
+                axum::routing::post(|headers: axum::http::HeaderMap| async move {
+                    let sid = headers
+                        .get("mcp-session-id")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    (axum::http::StatusCode::OK, sid)
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                mw_state,
+                super::ensure_mcp_session_id,
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/mcp");
+
+        let alice = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let bob = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let alice_jwt = crate::jwt::mint_user_jwt_for_test(
+            &alice,
+            TEST_JWT_SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+        let bob_jwt = crate::jwt::mint_user_jwt_for_test(
+            &bob,
+            TEST_JWT_SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+
+        // 1. Happy path: stateless POST /mcp with valid user Bearer JWT derives a deterministic
+        //    signed Mcp-Session-Id AND auto-persists verified wallet + access_token on McpSessionBinding!
+        let r1 = client
+            .post(&url)
+            .bearer_auth(&alice_jwt)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), reqwest::StatusCode::OK);
+        let sid_1 = r1.text().await.unwrap();
+        assert!(super::verify_signed_mcp_session_id(&sid_1, &key));
+        assert_eq!(
+            sid_1,
+            super::mint_deterministic_bearer_mcp_session_id(&key, &alice)
+        );
+        assert_eq!(
+            binding
+                .resolve_verified(&sid_1)
+                .await
+                .expect("verified")
+                .as_str(),
+            alice
+        );
+        assert_eq!(
+            binding
+                .resolve_access_token(&sid_1)
+                .await
+                .unwrap()
+                .expect("token"),
+            (alice.clone(), alice_jwt.clone())
+        );
+
+        // 2. Second stateless call with Alice's Bearer reuses the EXACT same deterministic session ID.
+        let r2 = client
+            .post(&url)
+            .bearer_auth(&alice_jwt)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), reqwest::StatusCode::OK);
+        assert_eq!(r2.text().await.unwrap(), sid_1);
+
+        // 3. Invalid / forged / typ=svc Bearer token fails fast with 401 Unauthorized!
+        let bad_resp = client
+            .post(&url)
+            .bearer_auth("forged.jwt.token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let svc_jwt = crate::jwt::mint_svc_token(
+            &crate::session_binding::VerifiedWallet::new_for_test(&alice),
+            TEST_JWT_SECRET,
+        )
+        .unwrap();
+        let svc_resp = client
+            .post(&url)
+            .bearer_auth(&svc_jwt)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(svc_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // 4. Bob's valid Bearer + Alice's bound Mcp-Session-Id rejects with 400 conflicting_auth_headers!
+        let conflict_resp = client
+            .post(&url)
+            .bearer_auth(&bob_jwt)
+            .header("mcp-session-id", &sid_1)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(conflict_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        let conflict_json: serde_json::Value = conflict_resp.json().await.unwrap();
+        assert_eq!(conflict_json["error"], "conflicting_auth_headers");
+        // Alice's session binding MUST remain untouched!
+        assert_eq!(
+            binding
+                .resolve_verified(&sid_1)
+                .await
+                .expect("still alice")
+                .as_str(),
+            alice
+        );
     }
 
     #[tokio::test]

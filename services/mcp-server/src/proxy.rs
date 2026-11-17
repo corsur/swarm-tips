@@ -241,6 +241,8 @@ pub struct TransactionResponse {
     pub transaction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_pda: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
 }
 
 /// VOW v1 attestation — mirrors orchestrator
@@ -733,7 +735,10 @@ impl OrchestratorProxy {
             ));
         }
 
-        let qs = network_query_suffix(network);
+        let mut qs = network_query_suffix(network);
+        if network == Some("devnet") {
+            qs.push_str("&sponsor=auto");
+        }
         let url = format!("{}/tasks/{encoded_task_id}/claim{qs}", self.base_url);
         let response = self.bodyless_post(&url)
             .send()
@@ -760,12 +765,15 @@ impl OrchestratorProxy {
 
     /// Request the orchestrator build an unsigned `submit_work` Solana
     /// transaction. The orchestrator persists the content_id on the task doc
-    /// before returning so it survives the confirm round-trip.
+    /// before returning so it survives the confirm round-trip. For LeanProof
+    /// (platform 10) tasks, `proof_lean` may be passed directly with an empty
+    /// `content_id`.
     pub async fn submit_task(
         &self,
         task_id: &str,
         wallet_pubkey: &str,
         content_id: &str,
+        proof_lean: Option<&str>,
         network: Option<&str>,
     ) -> Result<TransactionResponse, McpServiceError> {
         if task_id.is_empty() {
@@ -779,15 +787,25 @@ impl OrchestratorProxy {
                 "wallet_pubkey must not be empty".to_string(),
             ));
         }
-        if content_id.is_empty() {
+        let has_proof_lean = proof_lean.is_some_and(|p| !p.trim().is_empty());
+        if content_id.is_empty() && !has_proof_lean {
             return Err(McpServiceError::InvalidInput(
-                "content_id must not be empty".to_string(),
+                "content_id (or proof_lean for LeanProof tasks) must not be empty".to_string(),
             ));
         }
 
-        let qs = network_query_suffix(network);
+        let mut qs = network_query_suffix(network);
+        if network == Some("devnet") {
+            qs.push_str("&sponsor=auto");
+        }
         let url = format!("{}/tasks/{encoded_task_id}/submit{qs}", self.base_url);
-        let body = serde_json::json!({ "content_id": content_id });
+        let body = match proof_lean {
+            Some(proof) if !proof.trim().is_empty() => serde_json::json!({
+                "content_id": content_id,
+                "proof_lean": proof,
+            }),
+            _ => serde_json::json!({ "content_id": content_id }),
+        };
         let response = self
             .client
             .post(&url)

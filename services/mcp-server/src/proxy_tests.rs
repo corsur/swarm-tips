@@ -352,6 +352,7 @@ mod network_flow_tests {
         Mock::given(method("POST"))
             .and(path("/tasks/c:t/claim"))
             .and(query_param("network", "devnet"))
+            .and(query_param("sponsor", "auto"))
             .and(header("authorization", "Bearer test-signed-session"))
             .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
             .expect(1)
@@ -365,6 +366,7 @@ mod network_flow_tests {
             .await
             .expect("ok");
         assert_eq!(resp.task_id, "c:t");
+        assert_eq!(resp.transaction.as_deref(), Some("AAAA"));
     }
 
     #[tokio::test]
@@ -528,6 +530,10 @@ mod network_flow_tests {
         Mock::given(method("POST"))
             .and(path("/tasks/c:t/submit"))
             .and(query_param("network", "devnet"))
+            .and(query_param("sponsor", "auto"))
+            .and(body_partial_json(
+                serde_json::json!({ "content_id": "yt-abc" }),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
             .expect(1)
             .mount(&server)
@@ -536,10 +542,94 @@ mod network_flow_tests {
         let proxy = OrchestratorProxy::new(server.uri(), server.uri())
             .authenticated("test-signed-session".into());
         let resp = proxy
-            .submit_task("c:t", "wallet1", "yt-abc", Some("devnet"))
+            .submit_task("c:t", "wallet1", "yt-abc", None, Some("devnet"))
             .await
             .expect("ok");
         assert_eq!(resp.task_id, "c:t");
+        assert_eq!(resp.transaction.as_deref(), Some("AAAA"));
+    }
+
+    #[tokio::test]
+    async fn claim_and_submit_omit_sponsor_on_mainnet_and_forward_lean_proof_body() {
+        let server = MockServer::start().await;
+        let lean_src = "import Mathlib\ntheorem t : True := trivial\n";
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/c:lean/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:lean")))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/c:lean/submit"))
+            .and(body_partial_json(serde_json::json!({
+                "content_id": "",
+                "proof_lean": lean_src,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": "ok",
+                "task_id": "c:lean",
+                "transaction": "BBBB",
+                "content_id": "lean4:inline:sha256:0123456789abcdef",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+            .authenticated("test-signed-session".into());
+
+        // 1. Default-mainnet (`None`) and explicit `"mainnet"` claims send NO `sponsor` param (U1).
+        let claim_resp = proxy
+            .claim_task("c:lean", "wallet1", None)
+            .await
+            .expect("default mainnet claim ok");
+        assert_eq!(claim_resp.task_id, "c:lean");
+        assert_eq!(claim_resp.transaction.as_deref(), Some("AAAA"));
+
+        let explicit_mainnet_claim = proxy
+            .claim_task("c:lean", "wallet1", Some("mainnet"))
+            .await
+            .expect("explicit mainnet claim ok");
+        assert_eq!(explicit_mainnet_claim.task_id, "c:lean");
+
+        // 2. LeanProof submit on mainnet forwards verbatim `proof_lean` body & NO `sponsor` param.
+        let submit_resp = proxy
+            .submit_task("c:lean", "wallet1", "", Some(lean_src), None)
+            .await
+            .expect("lean submit ok");
+        assert_eq!(submit_resp.task_id, "c:lean");
+        assert_eq!(submit_resp.transaction.as_deref(), Some("BBBB"));
+        assert_eq!(
+            submit_resp.content_id.as_deref(),
+            Some("lean4:inline:sha256:0123456789abcdef")
+        );
+
+        let received = server.received_requests().await.expect("requests");
+        assert_eq!(received.len(), 3);
+        assert_eq!(
+            received[0].url.query(),
+            None,
+            "default mainnet must omit sponsor"
+        );
+        assert_eq!(
+            received[1].url.query(),
+            Some("network=mainnet"),
+            "explicit mainnet must omit sponsor"
+        );
+        assert_eq!(
+            received[2].url.query(),
+            None,
+            "default mainnet submit must omit sponsor"
+        );
+
+        // 3. Reject when BOTH content_id and proof_lean are empty/whitespace without hitting HTTP.
+        let err = proxy
+            .submit_task("c:lean", "wallet1", "", Some("   "), None)
+            .await
+            .expect_err("empty content_id + whitespace proof_lean must reject");
+        assert!(matches!(err, McpServiceError::InvalidInput(_)));
     }
 
     #[tokio::test]
@@ -733,6 +823,7 @@ mod network_flow_tests {
         Mock::given(method("POST"))
             .and(path("/tasks/c:t/claim"))
             .and(query_param("network", "devnet"))
+            .and(query_param("sponsor", "auto"))
             .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
             .expect(1)
             .mount(&server)
@@ -740,6 +831,7 @@ mod network_flow_tests {
         Mock::given(method("POST"))
             .and(path("/tasks/c:t/submit"))
             .and(query_param("network", "devnet"))
+            .and(query_param("sponsor", "auto"))
             .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:t")))
             .expect(1)
             .mount(&server)
@@ -773,7 +865,7 @@ mod network_flow_tests {
             .await
             .expect("claim ok");
         proxy
-            .submit_task("c:t", "wallet1", "yt-id", Some("devnet"))
+            .submit_task("c:t", "wallet1", "yt-id", None, Some("devnet"))
             .await
             .expect("submit ok");
         proxy

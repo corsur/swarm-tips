@@ -368,7 +368,9 @@ fn tier_matrix_and_send_limits() {
         assert_eq!(resolve_tier(s, w, r), want, "({s},{w},{r})");
     }
     assert_eq!(SenderTier::Unproven.send_limit(), 0);
-    assert_eq!(SenderTier::SessionVerified.send_limit(), 5);
+    // Raised from 5 -> 25 in usability audit S5 so signature-verified sessions can
+    // collaborate on active tasks without requiring an on-chain SPL Memo tx first.
+    assert_eq!(SenderTier::SessionVerified.send_limit(), 25);
     assert_eq!(SenderTier::WalletVerified.send_limit(), 100);
     assert_eq!(SenderTier::Reputable.send_limit(), 500);
 }
@@ -378,7 +380,8 @@ fn tier_post_limits_ladder() {
     // The board ladder mirrors the send ladder: proof raises the cap,
     // unproven cannot post at all, and each rung strictly dominates.
     assert_eq!(SenderTier::Unproven.post_limit(), 0);
-    assert_eq!(SenderTier::SessionVerified.post_limit(), 5);
+    // Raised from 5 -> 25 in usability audit S5 (still strictly < WalletVerified = 50).
+    assert_eq!(SenderTier::SessionVerified.post_limit(), 25);
     assert_eq!(SenderTier::WalletVerified.post_limit(), 50);
     assert_eq!(SenderTier::Reputable.post_limit(), 200);
     assert!(SenderTier::SessionVerified.post_limit() < SenderTier::WalletVerified.post_limit());
@@ -430,9 +433,10 @@ fn limits_are_the_locked_values() {
     assert_eq!(limits::PAGE_MAX, 50);
     assert_eq!(limits::THREAD_MESSAGE_CAP, 500);
     assert_eq!(limits::QUOTA_TTL_DAYS, 3);
-    // W3 board dials (tunable, but a change must be deliberate).
+    // W3 board & session dials (tunable, but a change must be deliberate).
+    assert_eq!(limits::SENDS_PER_DAY_SESSION_VERIFIED, 25);
     assert_eq!(limits::POSTS_PER_DAY_UNPROVEN, 0);
-    assert_eq!(limits::POSTS_PER_DAY_SESSION_VERIFIED, 5);
+    assert_eq!(limits::POSTS_PER_DAY_SESSION_VERIFIED, 25);
     assert_eq!(limits::POSTS_PER_DAY_WALLET_VERIFIED, 50);
     assert_eq!(limits::POSTS_PER_DAY_REPUTABLE, 200);
     // Reach-the-org openness dials (unproven → support / public board).
@@ -998,31 +1002,34 @@ fn topic_post_doc_roundtrip_and_moderation_defaults() {
 #[test]
 fn webhook_url_ssrf_rejection_matrix() {
     let rejected = [
-        "http://example.com/hook",                              // non-https
-        "https://10.0.0.1/hook",                                // rfc1918
-        "https://172.16.5.5/hook",                              // rfc1918
-        "https://172.31.255.255/hook",                          // rfc1918 upper edge
-        "https://192.168.1.1/hook",                             // rfc1918
-        "https://127.0.0.1/hook",                               // loopback
-        "https://169.254.169.254/latest",                       // metadata IP
-        "https://0.0.0.0/hook",                                 // unspecified
-        "https://0.1.2.3/hook",                                 // 0.0.0.0/8
-        "https://100.64.0.1/hook",                              // CGNAT
-        "https://100.127.255.255/hook",                         // CGNAT upper edge
-        "https://192.0.0.9/hook",                               // 192.0.0.0/24
-        "https://[::1]/hook",                                   // v6 loopback
-        "https://[fc00::1]/hook",                               // v6 unique-local
-        "https://[fdab::1]/hook",                               // v6 unique-local
-        "https://[fe80::1]/hook",                               // v6 link-local
-        "https://[::ffff:10.0.0.1]/hook",                       // v4-mapped private
-        "https://localhost/hook",                               // loopback name
-        "https://foo.localhost/hook",                           // *.localhost
-        "https://my-svc.run.app/hook",                          // *.run.app
-        "https://mcp-server-abc123.a.run.app/hook",             // *.run.app
-        "https://db.internal/hook",                             // *.internal
+        "http://example.com/hook",        // non-https
+        "https://10.0.0.1/hook",          // rfc1918
+        "https://172.16.5.5/hook",        // rfc1918
+        "https://172.31.255.255/hook",    // rfc1918 upper edge
+        "https://192.168.1.1/hook",       // rfc1918
+        "https://127.0.0.1/hook",         // loopback
+        "https://169.254.169.254/latest", // metadata IP
+        "https://0.0.0.0/hook",           // unspecified
+        "https://0.1.2.3/hook",           // 0.0.0.0/8
+        "https://100.64.0.1/hook",        // CGNAT
+        "https://100.127.255.255/hook",   // CGNAT upper edge
+        "https://192.0.0.9/hook",         // 192.0.0.0/24
+        "https://[::1]/hook",             // v6 loopback
+        "https://[fc00::1]/hook",         // v6 unique-local
+        "https://[fdab::1]/hook",         // v6 unique-local
+        "https://[fe80::1]/hook",         // v6 link-local
+        "https://[::ffff:10.0.0.1]/hook", // v4-mapped private
+        "https://localhost/hook",         // loopback name
+        "https://foo.localhost/hook",     // *.localhost
+        // Usability audit S2: narrowed from blanket `*.run.app` to our own GCP project
+        // Cloud Run suffix so external developers can host MCP webhooks on Cloud Run
+        // while internal service self-loops remain blocked (including trailing dot).
+        "https://mcp-server-wjucctfqta-uc.a.run.app/hook", // own-project Cloud Run
+        "https://shillbot-api-wjucctfqta-uc.a.run.app./hook", // own-project trailing dot
+        "https://db.internal/hook",                        // *.internal
         "https://metadata.google.internal/computeMetadata/v1/", // metadata
-        "https://printer.local/hook",                           // *.local
-        "https://user:pass@example.com/hook",                   // embedded creds
+        "https://printer.local/hook",                      // *.local
+        "https://user:pass@example.com/hook",              // embedded creds
         "not a url",
         "",
     ];
@@ -1035,9 +1042,10 @@ fn webhook_url_ssrf_rejection_matrix() {
     let accepted = [
         "https://example.com/hook",
         "https://agent.example.com/inbox/webhook?token=abc",
-        "https://8.8.8.8/hook",     // public IP literal is fine
-        "https://172.32.0.1/hook",  // just past the 172.16/12 block
-        "https://100.128.0.1/hook", // just past CGNAT
+        "https://my-external-agent-abc123-uc.a.run.app/hook", // external Cloud Run webhook allowed
+        "https://8.8.8.8/hook",                               // public IP literal is fine
+        "https://172.32.0.1/hook",                            // just past the 172.16/12 block
+        "https://100.128.0.1/hook",                           // just past CGNAT
     ];
     for url in accepted {
         assert!(

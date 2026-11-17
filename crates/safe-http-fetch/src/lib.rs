@@ -18,6 +18,7 @@ use std::time::Duration;
 use url::{Host, Url};
 
 pub const DEFAULT_MAX_URL_BYTES: usize = 2048;
+pub const DEFAULT_MAX_REDIRECTS: usize = 3;
 pub const DEFAULT_ALLOWED_PORTS: &[u16] = &[443];
 pub const DEFAULT_FORBIDDEN_HOSTS: &[&str] = &[
     "localhost",
@@ -26,7 +27,7 @@ pub const DEFAULT_FORBIDDEN_HOSTS: &[&str] = &[
     "instance-data",
 ];
 pub const DEFAULT_FORBIDDEN_HOST_SUFFIXES: &[&str] = &[
-    ".run.app",
+    "-wjucctfqta-uc.a.run.app",
     ".internal",
     ".localhost",
     ".local",
@@ -38,6 +39,7 @@ pub const DEFAULT_FORBIDDEN_HOST_SUFFIXES: &[&str] = &[
 #[derive(Debug, Clone)]
 pub struct FetchPolicy {
     pub max_url_bytes: usize,
+    pub max_redirects: usize,
     pub allow_public_ip_literals: bool,
     pub allowed_ports: &'static [u16],
     pub forbidden_hosts: &'static [&'static str],
@@ -56,10 +58,11 @@ impl Default for FetchPolicy {
 impl FetchPolicy {
     /// Strict policy for untrusted external proof/context/listing URLs:
     /// HTTPS on port 443, registered domain names only (no raw IP literals),
-    /// DNS-pinned public IPs, no redirects, and bounded body reads.
+    /// DNS-pinned public IPs, up to 3 validated HTTPS redirects, and bounded body reads.
     pub const fn strict_domain_only(max_response_bytes: usize) -> Self {
         Self {
             max_url_bytes: DEFAULT_MAX_URL_BYTES,
+            max_redirects: DEFAULT_MAX_REDIRECTS,
             allow_public_ip_literals: false,
             allowed_ports: DEFAULT_ALLOWED_PORTS,
             forbidden_hosts: DEFAULT_FORBIDDEN_HOSTS,
@@ -72,10 +75,11 @@ impl FetchPolicy {
 
     /// Policy for agent webhook endpoints: HTTPS on port 443, public domain or
     /// public IP literal allowed, trailing-dot and internal suffixes blocked,
-    /// DNS-pinned public IPs, no redirects, and bounded handshake response reads.
+    /// DNS-pinned public IPs, up to 3 validated HTTPS redirects, and bounded handshake response reads.
     pub const fn webhook(max_response_bytes: usize, timeout_secs: u64) -> Self {
         Self {
             max_url_bytes: DEFAULT_MAX_URL_BYTES,
+            max_redirects: DEFAULT_MAX_REDIRECTS,
             allow_public_ip_literals: true,
             allowed_ports: DEFAULT_ALLOWED_PORTS,
             forbidden_hosts: DEFAULT_FORBIDDEN_HOSTS,
@@ -84,6 +88,12 @@ impl FetchPolicy {
             total_timeout: Duration::from_secs(timeout_secs),
             max_response_bytes,
         }
+    }
+
+    /// Override the maximum number of validated, DNS-pinned HTTPS redirect hops (`0` disables redirects).
+    pub const fn with_max_redirects(mut self, max_redirects: usize) -> Self {
+        self.max_redirects = max_redirects;
+        self
     }
 }
 
@@ -113,6 +123,10 @@ pub enum SafeFetchError {
     DnsResolutionFailed(String),
     #[error("host resolved to no addresses")]
     EmptyDnsResolution,
+    #[error("redirect limit exceeded (max {max})")]
+    TooManyRedirects { max: usize },
+    #[error("invalid redirect location: {0}")]
+    InvalidRedirectLocation(String),
     #[error("http client error: {0}")]
     HttpClient(String),
     #[error("response body exceeds {max} bytes")]
@@ -303,6 +317,43 @@ pub fn validate_public_url(
     }
 }
 
+/// Resolve a redirect `Location` header relative to `base_url` without validating policy yet,
+/// returning `InvalidRedirectLocation` if `location` is empty or unparseable.
+pub fn join_redirect_location(base_url: &Url, location: &str) -> Result<Url, SafeFetchError> {
+    let trimmed = location.trim();
+    if trimmed.is_empty() {
+        return Err(SafeFetchError::InvalidRedirectLocation(
+            "empty Location header".to_string(),
+        ));
+    }
+    base_url
+        .join(trimmed)
+        .map_err(|e| SafeFetchError::InvalidRedirectLocation(e.to_string()))
+}
+
+fn pin_resolved_addrs(
+    validated: ValidatedUrl,
+    resolved: impl IntoIterator<Item = SocketAddr>,
+) -> Result<PinnedPublicTarget, SafeFetchError> {
+    let mut addrs = Vec::with_capacity(16);
+    for addr in resolved.into_iter().take(16) {
+        if ip_is_non_global(addr.ip()) {
+            return Err(SafeFetchError::ForbiddenAddress(addr.ip()));
+        }
+        addrs.push(addr);
+    }
+    if addrs.is_empty() {
+        return Err(SafeFetchError::EmptyDnsResolution);
+    }
+    Ok(PinnedPublicTarget {
+        url: validated.url,
+        host: validated.host,
+        port: validated.port,
+        addrs,
+        needs_dns_pin: true,
+    })
+}
+
 /// Validate `raw_url`, resolve DNS once under `policy.connect_timeout`, verify every
 /// returned address is globally routable, and return socket addresses ready for pinning.
 pub async fn resolve_and_pin_public_url(
@@ -326,34 +377,23 @@ pub async fn resolve_and_pin_public_url(
     }
 
     let lookup_fut = tokio::net::lookup_host((validated.host.as_str(), validated.port));
-    let resolved = tokio::time::timeout(policy.connect_timeout, lookup_fut)
+    let resolved: Vec<SocketAddr> = tokio::time::timeout(policy.connect_timeout, lookup_fut)
         .await
         .map_err(|_| SafeFetchError::DnsResolutionFailed("dns lookup timed out".to_string()))?
-        .map_err(|e| SafeFetchError::DnsResolutionFailed(e.to_string()))?;
+        .map_err(|e| SafeFetchError::DnsResolutionFailed(e.to_string()))?
+        .take(16)
+        .collect();
 
-    let mut addrs = Vec::with_capacity(16);
-    for addr in resolved.take(16) {
-        if ip_is_non_global(addr.ip()) {
-            return Err(SafeFetchError::ForbiddenAddress(addr.ip()));
-        }
-        addrs.push(addr);
-    }
-    if addrs.is_empty() {
-        return Err(SafeFetchError::EmptyDnsResolution);
-    }
-
-    Ok(PinnedPublicTarget {
-        url: validated.url,
-        host: validated.host,
-        port: validated.port,
-        addrs,
-        needs_dns_pin: true,
-    })
+    pin_resolved_addrs(validated, resolved)
 }
 
 #[cfg(feature = "reqwest")]
 pub mod reqwest_client {
-    use super::{resolve_and_pin_public_url, FetchPolicy, PinnedPublicTarget, SafeFetchError};
+    use super::{
+        join_redirect_location, resolve_and_pin_public_url, FetchPolicy, PinnedPublicTarget,
+        SafeFetchError,
+    };
+    use std::future::Future;
 
     #[derive(Debug)]
     pub struct SafeResponse {
@@ -424,20 +464,82 @@ pub mod reqwest_client {
         })
     }
 
-    /// Perform a full SSRF-screened, DNS-pinned, redirect-disabled `GET` with bounded body read.
+    fn is_redirect_status(status: u16) -> bool {
+        matches!(status, 301 | 302 | 303 | 307 | 308)
+    }
+
+    pub(crate) async fn execute_hop_loop<R, RFut, S, SFut>(
+        raw_url: &str,
+        policy: &FetchPolicy,
+        mut resolve_fn: R,
+        mut send_fn: S,
+    ) -> Result<SafeResponse, SafeFetchError>
+    where
+        R: FnMut(String) -> RFut,
+        RFut: Future<Output = Result<PinnedPublicTarget, SafeFetchError>>,
+        S: FnMut(PinnedPublicTarget) -> SFut,
+        SFut: Future<Output = Result<SafeResponse, SafeFetchError>>,
+    {
+        let mut current_url = raw_url.to_string();
+        for hop in 0..=policy.max_redirects {
+            let target = resolve_fn(current_url).await?;
+            let target_url = target.url.clone();
+            let resp = send_fn(target).await?;
+            if is_redirect_status(resp.status) {
+                if hop == policy.max_redirects {
+                    return Err(SafeFetchError::TooManyRedirects {
+                        max: policy.max_redirects,
+                    });
+                }
+                let loc_val = resp.headers.get(reqwest::header::LOCATION).ok_or_else(|| {
+                    SafeFetchError::InvalidRedirectLocation("missing Location header".to_string())
+                })?;
+                let loc_str = loc_val.to_str().map_err(|_| {
+                    SafeFetchError::InvalidRedirectLocation("non-ASCII Location header".to_string())
+                })?;
+                let next = join_redirect_location(&target_url, loc_str)?;
+                current_url = next.to_string();
+                continue;
+            }
+            return Ok(resp);
+        }
+        Err(SafeFetchError::TooManyRedirects {
+            max: policy.max_redirects,
+        })
+    }
+
+    /// Perform an SSRF-screened, DNS-pinned `GET` with bounded body read, following
+    /// up to `policy.max_redirects` validated HTTPS redirect hops (with reqwest's own
+    /// automatic redirect following strictly disabled so every hop is re-validated
+    /// and DNS-pinned before socket connect).
     pub async fn safe_get_bytes(
         raw_url: &str,
         policy: &FetchPolicy,
         user_agent: Option<&str>,
     ) -> Result<SafeResponse, SafeFetchError> {
-        let target = resolve_and_pin_public_url(raw_url, policy).await?;
-        let client = build_pinned_client(&target, policy, user_agent)?;
-        let resp = client
-            .get(target.url.as_str())
-            .send()
-            .await
-            .map_err(|e| SafeFetchError::HttpClient(e.to_string()))?;
-        read_response_bounded(resp, policy.max_response_bytes).await
+        execute_hop_loop(
+            raw_url,
+            policy,
+            |url| async move { resolve_and_pin_public_url(&url, policy).await },
+            |target| async move {
+                let client = build_pinned_client(&target, policy, user_agent)?;
+                let resp = client
+                    .get(target.url.as_str())
+                    .send()
+                    .await
+                    .map_err(|e| SafeFetchError::HttpClient(e.to_string()))?;
+                if is_redirect_status(resp.status().as_u16()) {
+                    Ok(SafeResponse {
+                        status: resp.status().as_u16(),
+                        headers: resp.headers().clone(),
+                        body: Vec::new(),
+                    })
+                } else {
+                    read_response_bounded(resp, policy.max_response_bytes).await
+                }
+            },
+        )
+        .await
     }
 }
 
@@ -453,6 +555,8 @@ mod tests {
             "https://example.com./hook",
             "https://metadata.google.internal./computeMetadata/v1/",
             "https://mcp-server-xyz.a.run.app./hook",
+            "https://shillbot-api-wjucctfqta-uc.a.run.app/tasks",
+            "https://shillbot-api-wjucctfqta-uc.a.run.app./tasks",
             "https://localhost./hook",
             "https://foo.local./hook",
             "https://127.0.0.1.nip.io/hook",
@@ -486,6 +590,49 @@ mod tests {
         assert!(validate_public_url("https://agent.example.com/hook", &strict_policy).is_ok());
     }
 
+    #[test]
+    fn external_cloud_run_allowed_while_own_project_run_app_suffix_is_blocked() {
+        let webhook_policy = FetchPolicy::webhook(16 * 1024, 10);
+        let strict_policy = FetchPolicy::strict_domain_only(1024 * 1024);
+
+        for allowed in [
+            "https://my-agent-abc-uc.a.run.app/webhook",
+            "https://agent-hook-99999-ew.a.run.app/v1/inbox",
+            "https://external-service.run.app/proof.lean",
+        ] {
+            assert!(
+                validate_public_url(allowed, &webhook_policy).is_ok(),
+                "{allowed} must be allowed under webhook policy"
+            );
+            assert!(
+                validate_public_url(allowed, &strict_policy).is_ok(),
+                "{allowed} must be allowed under strict policy"
+            );
+        }
+
+        for blocked in [
+            "https://shillbot-api-wjucctfqta-uc.a.run.app/internal/tasks",
+            "https://mcp-server-wjucctfqta-uc.a.run.app/mcp",
+            "https://game-api-wjucctfqta-uc.a.run.app./health",
+            "https://SHILLBOT-API-WJUCCtfQTA-UC.A.RUN.APP/hook",
+        ] {
+            assert!(
+                matches!(
+                    validate_public_url(blocked, &webhook_policy),
+                    Err(SafeFetchError::ForbiddenHost(_))
+                ),
+                "{blocked} must fail with ForbiddenHost"
+            );
+            assert!(
+                matches!(
+                    validate_public_url(blocked, &strict_policy),
+                    Err(SafeFetchError::ForbiddenHost(_))
+                ),
+                "{blocked} must fail with ForbiddenHost under strict policy"
+            );
+        }
+    }
+
     #[cfg(feature = "reqwest")]
     #[tokio::test]
     async fn bounded_reader_enforces_hard_byte_ceiling() {
@@ -503,5 +650,248 @@ mod tests {
             .await
             .expect_err("must reject > 1024 bytes");
         assert_eq!(err, SafeFetchError::ResponseTooLarge { max: 1024 });
+    }
+
+    #[cfg(feature = "reqwest")]
+    #[tokio::test]
+    async fn hop_by_hop_redirects_pin_each_hop_and_block_ssrf_downgrades() {
+        use reqwest::header::{HeaderMap, HeaderValue, LOCATION};
+        use std::net::Ipv4Addr;
+
+        let public_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+        let strict = FetchPolicy::strict_domain_only(64 * 1024);
+        assert_eq!(strict.max_redirects, 3);
+
+        let resolve_public = |url: String| {
+            let policy = strict.clone();
+            async move {
+                let validated = validate_public_url(&url, &policy)?;
+                pin_resolved_addrs(validated, [public_addr])
+            }
+        };
+
+        // 1. Valid 3-hop chain (gist -> relative -> external Cloud Run -> final 200) succeeds.
+        let mut seen_urls = Vec::new();
+        let ok_resp = reqwest_client::execute_hop_loop(
+            "https://gist.github.com/user/abc/raw",
+            &strict,
+            resolve_public,
+            |target| {
+                seen_urls.push(target.url.to_string());
+                async move {
+                    let mut headers = HeaderMap::new();
+                    match target.url.as_str() {
+                        "https://gist.github.com/user/abc/raw" => {
+                            headers.insert(LOCATION, HeaderValue::from_static("/user/abc/raw/v2"));
+                            Ok(reqwest_client::SafeResponse {
+                                status: 302,
+                                headers,
+                                body: Vec::new(),
+                            })
+                        }
+                        "https://gist.github.com/user/abc/raw/v2" => {
+                            headers.insert(
+                                LOCATION,
+                                HeaderValue::from_static(
+                                    "https://my-agent-abc-uc.a.run.app/proof.lean",
+                                ),
+                            );
+                            Ok(reqwest_client::SafeResponse {
+                                status: 301,
+                                headers,
+                                body: Vec::new(),
+                            })
+                        }
+                        "https://my-agent-abc-uc.a.run.app/proof.lean" => {
+                            headers.insert(
+                                LOCATION,
+                                HeaderValue::from_static(
+                                    "https://raw.githubusercontent.com/user/abc/Proof.lean",
+                                ),
+                            );
+                            Ok(reqwest_client::SafeResponse {
+                                status: 307,
+                                headers,
+                                body: Vec::new(),
+                            })
+                        }
+                        "https://raw.githubusercontent.com/user/abc/Proof.lean" => {
+                            Ok(reqwest_client::SafeResponse {
+                                status: 200,
+                                headers,
+                                body: b"theorem proof : True := trivial".to_vec(),
+                            })
+                        }
+                        other => panic!("unexpected hop url: {other}"),
+                    }
+                }
+            },
+        )
+        .await
+        .expect("3 safe HTTPS redirect hops must succeed");
+        assert_eq!(ok_resp.status, 200);
+        assert_eq!(ok_resp.body, b"theorem proof : True := trivial");
+        assert_eq!(seen_urls.len(), 4);
+
+        // 2. Redirect to http:// fails closed with NonHttpsScheme.
+        let http_downgrade = reqwest_client::execute_hop_loop(
+            "https://example.com/start",
+            &strict,
+            resolve_public,
+            |_| async move {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    LOCATION,
+                    HeaderValue::from_static("http://169.254.169.254/latest/meta-data/"),
+                );
+                Ok(reqwest_client::SafeResponse {
+                    status: 302,
+                    headers,
+                    body: Vec::new(),
+                })
+            },
+        )
+        .await
+        .expect_err("http:// redirect must fail");
+        assert_eq!(http_downgrade, SafeFetchError::NonHttpsScheme);
+
+        // 3. Redirect to https://127.0.0.1 or https://169.254.169.254 fails closed under both strict & webhook policies.
+        let webhook = FetchPolicy::webhook(16 * 1024, 10);
+        for bad_loc in ["https://127.0.0.1/admin", "https://169.254.169.254/latest"] {
+            let strict_err = reqwest_client::execute_hop_loop(
+                "https://example.com/start",
+                &strict,
+                resolve_public,
+                |_| async move {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(LOCATION, HeaderValue::from_str(bad_loc).unwrap());
+                    Ok(reqwest_client::SafeResponse {
+                        status: 302,
+                        headers,
+                        body: Vec::new(),
+                    })
+                },
+            )
+            .await
+            .expect_err("strict policy must reject IP redirect");
+            assert_eq!(strict_err, SafeFetchError::IpLiteralDisallowed);
+
+            let webhook_err = reqwest_client::execute_hop_loop(
+                "https://example.com/start",
+                &webhook,
+                |url| {
+                    let policy = webhook.clone();
+                    async move {
+                        let validated = validate_public_url(&url, &policy)?;
+                        if !validated.is_domain {
+                            let ip: IpAddr = validated.host.parse().unwrap();
+                            return Ok(PinnedPublicTarget {
+                                url: validated.url,
+                                host: validated.host,
+                                port: validated.port,
+                                addrs: vec![SocketAddr::new(ip, validated.port)],
+                                needs_dns_pin: false,
+                            });
+                        }
+                        pin_resolved_addrs(validated, [public_addr])
+                    }
+                },
+                |_| async move {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(LOCATION, HeaderValue::from_str(bad_loc).unwrap());
+                    Ok(reqwest_client::SafeResponse {
+                        status: 302,
+                        headers,
+                        body: Vec::new(),
+                    })
+                },
+            )
+            .await
+            .expect_err("webhook policy must reject loopback/metadata IP redirect");
+            assert!(matches!(webhook_err, SafeFetchError::ForbiddenAddress(_)));
+        }
+
+        // 4. Redirect to domain whose DNS resolves to non-global IP (DNS rebinding hop) fails with ForbiddenAddress.
+        let dns_rebind_err = reqwest_client::execute_hop_loop(
+            "https://example.com/start",
+            &strict,
+            |url| {
+                let policy = strict.clone();
+                async move {
+                    let validated = validate_public_url(&url, &policy)?;
+                    let ip = if validated.host == "rebind.example.org" {
+                        Ipv4Addr::new(169, 254, 169, 254)
+                    } else {
+                        Ipv4Addr::new(93, 184, 216, 34)
+                    };
+                    pin_resolved_addrs(validated, [SocketAddr::new(IpAddr::V4(ip), 443)])
+                }
+            },
+            |_| async move {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    LOCATION,
+                    HeaderValue::from_static("https://rebind.example.org/secret"),
+                );
+                Ok(reqwest_client::SafeResponse {
+                    status: 302,
+                    headers,
+                    body: Vec::new(),
+                })
+            },
+        )
+        .await
+        .expect_err("redirect target resolving to metadata IP must fail");
+        assert_eq!(
+            dns_rebind_err,
+            SafeFetchError::ForbiddenAddress(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)))
+        );
+
+        // 5. Exceeding max_redirects fails with TooManyRedirects.
+        let capped = strict.clone().with_max_redirects(2);
+        let too_many = reqwest_client::execute_hop_loop(
+            "https://example.com/hop0",
+            &capped,
+            |url| {
+                let policy = capped.clone();
+                async move {
+                    let validated = validate_public_url(&url, &policy)?;
+                    pin_resolved_addrs(validated, [public_addr])
+                }
+            },
+            |target| async move {
+                let mut headers = HeaderMap::new();
+                let next_path = format!("{}x", target.url.path());
+                headers.insert(LOCATION, HeaderValue::from_str(&next_path).unwrap());
+                Ok(reqwest_client::SafeResponse {
+                    status: 302,
+                    headers,
+                    body: Vec::new(),
+                })
+            },
+        )
+        .await
+        .expect_err("3rd redirect under max_redirects=2 must fail");
+        assert_eq!(too_many, SafeFetchError::TooManyRedirects { max: 2 });
+
+        // 6. Missing Location header on redirect fails with InvalidRedirectLocation.
+        let missing_loc = reqwest_client::execute_hop_loop(
+            "https://example.com/start",
+            &strict,
+            resolve_public,
+            |_| async move {
+                Ok(reqwest_client::SafeResponse {
+                    status: 302,
+                    headers: HeaderMap::new(),
+                    body: Vec::new(),
+                })
+            },
+        )
+        .await
+        .expect_err("302 without Location must fail");
+        assert!(matches!(
+            missing_loc,
+            SafeFetchError::InvalidRedirectLocation(_)
+        ));
     }
 }

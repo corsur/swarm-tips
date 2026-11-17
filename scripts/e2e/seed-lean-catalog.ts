@@ -736,6 +736,24 @@ async function main(): Promise<void> {
 
   const skipPrecheck = process.argv.includes("--skip-precheck");
   const forceReseed = process.argv.includes("--force");
+  const leanPolicy = (() => {
+    const eqArg = process.argv.find((a) => a.startsWith("--lean-policy="));
+    const idx = process.argv.indexOf("--lean-policy");
+    const raw = eqArg
+      ? eqArg.slice("--lean-policy=".length).trim()
+      : idx >= 0 && idx + 1 < process.argv.length
+      ? process.argv[idx + 1].trim()
+      : undefined;
+    if (!raw) return 3;
+    const parsed = Number(raw);
+    if (![1, 2, 3, 4].includes(parsed)) {
+      throw new Error(
+        `Invalid --lean-policy value '${raw}'; expected 1, 2, 3, or 4`
+      );
+    }
+    return parsed as 1 | 2 | 3 | 4;
+  })();
+  console.log(`lean_policy: ${leanPolicy}`);
   const already = forceReseed
     ? new Set<string>()
     : await existingOpenTopics(bearer, network);
@@ -767,7 +785,7 @@ async function main(): Promise<void> {
       budget_lamports: entryEscrow,
       platform: LEAN_PROOF_PLATFORM,
       statement_lean: entry.statement,
-      lean_policy: 4,
+      lean_policy: leanPolicy,
     });
     const campaignId = camp.campaign_id as string;
 

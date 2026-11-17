@@ -197,6 +197,7 @@ fn tool_name_manifest_is_exact() {
         "shillbot_verify_task",
     ];
     const GAME: &[&str] = &[
+        "agent_verify_wallet",
         "game_check_match",
         "game_commit_guess",
         "game_evm_commit_guess",
