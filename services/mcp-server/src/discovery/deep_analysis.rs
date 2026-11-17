@@ -39,8 +39,8 @@ const USER_AGENT: &str = "SwarmTipsDiscovery/0.1 (+https://swarm.tips)";
 /// Run a Layer 3 pass over the top earning candidates, write results back
 /// to Firestore. Caller is responsible for picking which servers to analyze
 /// — see `select_top_candidates`.
-pub async fn run_deep_analysis(
-    db: &FirestoreDb,
+async fn run_deep_analysis_opt(
+    db: Option<&FirestoreDb>,
     http: &reqwest::Client,
     candidates: &[EnrichedServer],
     github_token: Option<&str>,
@@ -62,22 +62,24 @@ pub async fn run_deep_analysis(
             addresses_found = addresses_found.saturating_add(analysis.extracted_addresses.len());
         }
 
-        let mut updated = server.clone();
-        updated.layer3_analysis = Some(analysis);
-        let slug = updated.slug();
-        match db
-            .fluent()
-            .update()
-            .in_col(MCP_SERVERS_COLLECTION)
-            .document_id(&slug)
-            .object(&updated)
-            .execute::<()>()
-            .await
-        {
-            Ok(_) => writes = writes.saturating_add(1),
-            Err(e) => {
-                write_errors = write_errors.saturating_add(1);
-                tracing::warn!(slug, error = %e, "layer3 write failed");
+        if let Some(db_ref) = db {
+            let mut updated = server.clone();
+            updated.layer3_analysis = Some(analysis);
+            let slug = updated.slug();
+            match db_ref
+                .fluent()
+                .update()
+                .in_col(MCP_SERVERS_COLLECTION)
+                .document_id(&slug)
+                .object(&updated)
+                .execute::<()>()
+                .await
+            {
+                Ok(_) => writes = writes.saturating_add(1),
+                Err(e) => {
+                    write_errors = write_errors.saturating_add(1);
+                    tracing::warn!(slug, error = %e, "layer3 write failed");
+                }
             }
         }
     }
@@ -445,12 +447,21 @@ pub struct DeepAnalysisSummary {
 pub async fn run_layer3_pass(
     state: &Arc<crate::discovery::DiscoveryState>,
 ) -> Result<DeepAnalysisSummary> {
-    let all_servers = crate::discovery::load_from_firestore(&state.db)
-        .await
-        .context("load discovery index for layer 3")?;
+    let all_servers = match state.db.get() {
+        Some(db_ref) => crate::discovery::load_from_firestore(db_ref)
+            .await
+            .context("load discovery index for layer 3")?,
+        None => state
+            .cache
+            .lock()
+            .await
+            .as_ref()
+            .map(|c| c.servers.clone())
+            .unwrap_or_default(),
+    };
     let candidates = select_top_candidates(all_servers, MAX_SERVERS_PER_CYCLE);
-    let summary = run_deep_analysis(
-        &state.db,
+    let summary = run_deep_analysis_opt(
+        state.db.get(),
         &state.http,
         &candidates,
         state.github_token.as_deref(),

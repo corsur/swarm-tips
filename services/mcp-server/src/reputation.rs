@@ -418,28 +418,6 @@ pub struct RecordBountyRequest {
     pub anchors: Option<Vec<String>>,
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-fn bearer_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>) -> bool {
-    let provided = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "));
-    matches!(
-        (expected_key, provided),
-        (Some(exp), Some(got)) if !exp.is_empty() && constant_time_eq(got.as_bytes(), exp.as_bytes())
-    )
-}
-
 fn rebuild_status(summary: &RebuildSummary) -> axum::http::StatusCode {
     if summary.firestore_write_errors == 0 {
         axum::http::StatusCode::OK
@@ -451,20 +429,26 @@ fn rebuild_status(summary: &RebuildSummary) -> axum::http::StatusCode {
 /// POST /internal/reputation/rebuild → RebuildSummary.
 /// Uses the `REPUTATION_ANCHORS` env var (caller-supplied anchors are ignored).
 ///
-/// Gated on the shared `shillbot-api-key` Bearer (the settlement-finalize path in
-/// shillbot-api sends it). Fail-closed: with no configured key the route rejects
-/// everything, so it can never be a public unauthenticated recompute trigger.
+/// Gated on either the verified in-process `combined-api` OIDC callback header
+/// (`/_internal/*`) or the shared internal Bearer key.
 pub fn rebuild_handler(
     db: Arc<FirestoreDb>,
+    expected_key: Option<String>,
+) -> axum::routing::MethodRouter {
+    rebuild_router_opt(Some(db), expected_key)
+}
+
+fn rebuild_router_opt(
+    db: Option<Arc<FirestoreDb>>,
     expected_key: Option<String>,
 ) -> axum::routing::MethodRouter {
     use axum::response::IntoResponse;
     axum::routing::post(
         move |headers: axum::http::HeaderMap, body: Option<axum::Json<RebuildRequest>>| {
-            let db = Arc::clone(&db);
+            let db = db.clone();
             let expected_key = expected_key.clone();
             async move {
-                if !bearer_authorized(&headers, expected_key.as_deref()) {
+                if !crate::internal_admin_authorized(&headers, expected_key.as_deref()) {
                     tracing::warn!("reputation rebuild rejected: missing or invalid internal key");
                     return (
                         axum::http::StatusCode::UNAUTHORIZED,
@@ -480,6 +464,19 @@ pub fn rebuild_handler(
                     )
                         .into_response();
                 }
+                let Some(db) = db else {
+                    return axum::Json(RebuildSummary {
+                        edges: 0,
+                        duplicate_edges_dropped: 0,
+                        agents: 0,
+                        converged: true,
+                        iterations: 0,
+                        firestore_writes: 0,
+                        firestore_write_errors: 0,
+                        elapsed_ms: 0,
+                    })
+                    .into_response();
+                };
                 match rebuild(&db, &anchors).await {
                     Ok(summary) => (rebuild_status(&summary), axum::Json(summary)).into_response(),
                     Err(e) => {
@@ -548,13 +545,20 @@ pub fn record_bounty_handler(
     db: Arc<FirestoreDb>,
     expected_key: Option<String>,
 ) -> axum::routing::MethodRouter {
+    record_bounty_router_opt(Some(db), expected_key)
+}
+
+fn record_bounty_router_opt(
+    db: Option<Arc<FirestoreDb>>,
+    expected_key: Option<String>,
+) -> axum::routing::MethodRouter {
     use axum::response::IntoResponse;
     axum::routing::post(
         move |headers: axum::http::HeaderMap, axum::Json(req): axum::Json<RecordBountyRequest>| {
-            let db = Arc::clone(&db);
+            let db = db.clone();
             let expected_key = expected_key.clone();
             async move {
-                if !bearer_authorized(&headers, expected_key.as_deref()) {
+                if !crate::internal_admin_authorized(&headers, expected_key.as_deref()) {
                     tracing::warn!("record_bounty rejected: missing or invalid internal key");
                     return (
                         axum::http::StatusCode::UNAUTHORIZED,
@@ -569,6 +573,16 @@ pub fn record_bounty_handler(
                         return (status, axum::Json(serde_json::json!({"error": msg})))
                             .into_response()
                     }
+                };
+                let Some(db) = db else {
+                    return (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "recorded": true,
+                            "edge": doc,
+                        })),
+                    )
+                        .into_response();
                 };
                 if let Err(e) = db
                     .fluent()
@@ -742,6 +756,108 @@ mod tests {
             ..mainnet_edge
         };
         assert!(!is_mainnet_trust_edge(&canary_edge));
+    }
+
+    #[tokio::test]
+    async fn reputation_admin_handlers_accept_verified_callback_and_reject_unauthenticated() {
+        let app = axum::Router::new()
+            .route(
+                "/internal/reputation/rebuild",
+                rebuild_router_opt(None, Some("internal-secret".into())),
+            )
+            .route(
+                "/internal/reputation/record-bounty",
+                record_bounty_router_opt(None, Some("internal-secret".into())),
+            )
+            .route(
+                "/internal/reputation/backfill",
+                backfill_router_opt(
+                    None,
+                    reqwest::Client::new(),
+                    "http://127.0.0.1:9".into(),
+                    Some("internal-secret".into()),
+                ),
+            )
+            .layer(axum::middleware::from_fn(
+                |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                    if req.headers().contains_key("x-test-in-process") {
+                        let caller = api_transport::Caller {
+                            peer: "127.0.0.1:4321".parse().unwrap(),
+                            user_agent: None,
+                        };
+                        api_transport::with_caller(caller, next.run(req)).await
+                    } else {
+                        next.run(req).await
+                    }
+                },
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::new();
+
+        let bounty_body = serde_json::json!({
+            "reporter_wallet": "0x1111111111111111111111111111111111111111",
+            "patch_commit": "abcdef1234567",
+            "severity": "medium",
+        })
+        .to_string();
+
+        for (route, body) in [
+            ("/internal/reputation/rebuild", "{}"),
+            ("/internal/reputation/record-bounty", bounty_body.as_str()),
+            ("/internal/reputation/backfill", ""),
+        ] {
+            // 1. Unauthenticated -> 401.
+            let unauth_resp = client
+                .post(format!("{base}{route}"))
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.to_owned())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                unauth_resp.status(),
+                reqwest::StatusCode::UNAUTHORIZED,
+                "{route} must reject unauthenticated requests"
+            );
+
+            // 2. External spoofed x-combined-callback-verified: 1 (no CallerContext) -> 401.
+            let spoofed_resp = client
+                .post(format!("{base}{route}"))
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .header(crate::COMBINED_CALLBACK_VERIFIED_HEADER, "1")
+                .body(body.to_owned())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                spoofed_resp.status(),
+                reqwest::StatusCode::UNAUTHORIZED,
+                "{route} must reject external spoofed callback headers"
+            );
+
+            // 3. Trusted in-process combined-api callback (`with_caller` + `x-combined-callback-verified: 1`)
+            //    passes the 401 gate (200 on backfill, 200 or 422 no-anchors on rebuild/record-bounty).
+            let verified_resp = client
+                .post(format!("{base}{route}"))
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .header("x-test-in-process", "1")
+                .header(crate::COMBINED_CALLBACK_VERIFIED_HEADER, "1")
+                .body(body.to_owned())
+                .send()
+                .await
+                .unwrap();
+            assert_ne!(
+                verified_resp.status(),
+                reqwest::StatusCode::UNAUTHORIZED,
+                "verified in-process callback must pass auth on {route}"
+            );
+        }
     }
 }
 
@@ -1232,14 +1348,23 @@ pub fn backfill_handler(
     rpc_url: String,
     expected_key: Option<String>,
 ) -> axum::routing::MethodRouter {
+    backfill_router_opt(Some(db), http, rpc_url, expected_key)
+}
+
+fn backfill_router_opt(
+    db: Option<Arc<FirestoreDb>>,
+    http: reqwest::Client,
+    rpc_url: String,
+    expected_key: Option<String>,
+) -> axum::routing::MethodRouter {
     use axum::response::IntoResponse;
     axum::routing::post(move |headers: axum::http::HeaderMap| {
-        let db = Arc::clone(&db);
+        let db = db.clone();
         let http = http.clone();
         let rpc_url = rpc_url.clone();
         let expected_key = expected_key.clone();
         async move {
-            if !bearer_authorized(&headers, expected_key.as_deref()) {
+            if !crate::internal_admin_authorized(&headers, expected_key.as_deref()) {
                 tracing::warn!("reputation backfill rejected: missing or invalid internal key");
                 return (
                     axum::http::StatusCode::UNAUTHORIZED,
@@ -1247,6 +1372,18 @@ pub fn backfill_handler(
                 )
                     .into_response();
             }
+            let Some(db) = db else {
+                return axum::Json(BackfillSummary {
+                    signatures_scanned: 0,
+                    finalized_edges: 0,
+                    challenge_edges: 0,
+                    skipped_incomplete: 0,
+                    firestore_writes: 0,
+                    firestore_write_errors: 0,
+                    elapsed_ms: 0,
+                })
+                .into_response();
+            };
             match backfill(&db, &http, &rpc_url).await {
                 Ok(summary) => axum::Json(summary).into_response(),
                 Err(e) => {

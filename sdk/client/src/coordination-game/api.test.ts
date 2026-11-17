@@ -88,3 +88,89 @@ it("submits the ownership proof without using a wallet address as bearer", async
   expect(requests[0]?.url).toBe("https://identity.example/auth/verify");
   expect(new Headers(requests[0]?.init?.headers).has("Authorization")).toBe(false);
 });
+
+it("P2-8: forwards optional token and isAi -> is_ai across EVM and cross-chain endpoints", async () => {
+  const seen: Array<{ url: string; method?: string; auth: string | null; body: unknown }> = [];
+  const api = new CoordinationGameApiClient({
+    baseUrl: "https://game.test",
+    getToken: () => "default-bearer",
+    fetch: async (input, init) => {
+      seen.push({
+        url: String(input),
+        method: init?.method,
+        auth: new Headers(init?.headers).get("Authorization"),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      return new Response(
+        JSON.stringify({
+          status: "waiting",
+          both_committed: false,
+          both_revealed: false,
+          relayed: true,
+          r_matchup: null,
+          match_id: "0x01",
+          matched: false,
+        }),
+        { status: 200 },
+      );
+    },
+  });
+
+  await api.joinQueue({ tournament_id: 3, isAi: true });
+  await api.joinCrossChainQueue(
+    { wallet: "0xabc", chain: "eip155:8453", session_key: "0xdef", tournament_id: 3, isAi: true },
+    "xchain-jwt",
+  );
+  await api.crossChainCommit({ wallet: "0xabc", commit: "0x11", handle: "h1" }, "xchain-jwt");
+  await api.crossChainSign({ wallet: "0xabc", step: 1, signature: "0x22", handle: "h1" }, "xchain-jwt");
+  await api.crossChainReveal({ wallet: "0xabc", preimage: "0x33", handle: "h1" }, "xchain-jwt");
+  await api.crossChainGameplay({ handle: "h1" }, "xchain-jwt");
+  await api.joinEvmGame(
+    { wallet: "0xdef", player_wallet: "0xabc", chain: "eip155:8453", tournament_id: 3, isAi: true },
+    "evm-jwt",
+  );
+  await api.evmGameCommitted({ game_id: "0x99", wallet: "0xdef" }, "evm-jwt");
+  await api.evmGameStaked({ game_id: "0x99", wallet: "0xdef" }, "evm-jwt");
+
+  expect(seen[0]).toEqual({
+    url: "https://game.test/queue/join",
+    method: "POST",
+    auth: "Bearer default-bearer",
+    body: { tournament_id: 3, is_ai: true },
+  });
+  expect(seen[1]).toEqual({
+    url: "https://game.test/internal/xqueue/join",
+    method: "POST",
+    auth: "Bearer xchain-jwt",
+    body: {
+      wallet: "0xabc",
+      chain: "eip155:8453",
+      session_key: "0xdef",
+      tournament_id: 3,
+      is_ai: true,
+    },
+  });
+  expect(seen[2]?.auth).toBe("Bearer xchain-jwt");
+  expect(seen[3]?.auth).toBe("Bearer xchain-jwt");
+  expect(seen[4]?.auth).toBe("Bearer xchain-jwt");
+  expect(seen[5]).toEqual({
+    url: "https://game.test/internal/xqueue/gameplay?handle=h1",
+    method: "GET",
+    auth: "Bearer xchain-jwt",
+    body: undefined,
+  });
+  expect(seen[6]).toEqual({
+    url: "https://game.test/internal/evmgame/join",
+    method: "POST",
+    auth: "Bearer evm-jwt",
+    body: {
+      wallet: "0xdef",
+      player_wallet: "0xabc",
+      chain: "eip155:8453",
+      tournament_id: 3,
+      is_ai: true,
+    },
+  });
+  expect(seen[7]?.auth).toBe("Bearer evm-jwt");
+  expect(seen[8]?.auth).toBe("Bearer evm-jwt");
+});

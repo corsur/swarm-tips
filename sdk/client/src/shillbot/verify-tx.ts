@@ -1,7 +1,7 @@
 import { Buffer } from "buffer";
 import { ComputeBudgetProgram, PublicKey, Secp256k1Program } from "@solana/web3.js";
 import { SHILLBOT_PROGRAM_ID, shillbotInstructionDiscriminator } from "../contracts/index.js";
-import { SwarmClientError } from "../errors.js";
+import { SwarmClientError, TransactionMismatchError } from "../errors.js";
 import {
   EXTENSION_CREDIT_PROGRAM_ID,
   advancePda,
@@ -11,6 +11,9 @@ import {
   type Network,
   type TransactionInspection,
 } from "./index.js";
+
+/** Alias for `advancePda` (`seeds = [b"advance", sponsorPubkey, agentPubkey]`). */
+export const deriveAdvancePda = advancePda;
 
 /** Default maximum allowed Solana priority fee price per compute unit (`100_000` micro-lamports/CU). */
 export const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 100_000n;
@@ -284,10 +287,13 @@ export interface VerifyBuiltTransactionExpectation {
   wallet: string;
   taskPda?: string;
   feePayer?: string;
+  /** Optional alias for `feePayer` when pinning a known gas sponsor pubkey. */
+  sponsor?: string;
   /**
    * Explicit authorized payout destination pubkey (base58).
-   * Required whenever a `set_payout_to` instruction is present; otherwise any
-   * `set_payout_to` instruction is rejected fail-closed.
+   * Required whenever a `set_payout_to` instruction is present on self-paid transactions;
+   * on sponsored `claim`/`submit` (`fee_payer !== wallet`), deterministic
+   * `advancePda(fee_payer, wallet)` is also authorized.
    */
   payoutTo?: string;
   /**
@@ -303,9 +309,8 @@ export interface VerifyBuiltTransactionExpectation {
   allowedProgramIds?: string[];
 }
 
-function txMismatch(operation: string, message: string): SwarmClientError {
-  return new SwarmClientError({
-    code: "TRANSACTION_MISMATCH",
+function txMismatch(operation: string, message: string): TransactionMismatchError {
+  return new TransactionMismatchError({
     operation,
     message,
   });
@@ -545,7 +550,7 @@ function verifyInstructionAuthorityAndShape(
     );
   }
 
-  const expectedFeePayer = expected.feePayer ?? expected.wallet;
+  const expectedFeePayer = expected.feePayer ?? expected.sponsor ?? expected.wallet;
   if (!spec.allowsSponsoredFeePayer && inspected.fee_payer !== expectedFeePayer) {
     throw txMismatch(
       operation,
@@ -662,6 +667,20 @@ export function verifyBuiltTransaction(
   if (expected.feePayer !== undefined) {
     parseValidatedPubkey(expected.feePayer, "feePayer", operation);
   }
+  if (expected.sponsor !== undefined) {
+    parseValidatedPubkey(expected.sponsor, "sponsor", operation);
+  }
+  if (
+    expected.feePayer !== undefined &&
+    expected.sponsor !== undefined &&
+    expected.feePayer !== expected.sponsor
+  ) {
+    throw invalidArg(
+      operation,
+      "expected.feePayer and expected.sponsor must match when both are provided",
+    );
+  }
+  const explicitFeePayer = expected.feePayer ?? expected.sponsor;
   if (expected.oracleAuthority !== undefined) {
     parseValidatedPubkey(expected.oracleAuthority, "oracleAuthority", operation);
   }
@@ -689,7 +708,7 @@ export function verifyBuiltTransaction(
   if (!inspected.signers.includes(expected.wallet)) {
     throw txMismatch(operation, "Wallet is not a required signer");
   }
-  if (expected.feePayer && inspected.fee_payer !== expected.feePayer) {
+  if (explicitFeePayer && inspected.fee_payer !== explicitFeePayer) {
     throw txMismatch(operation, "Fee payer differs from expectation");
   }
 
@@ -937,6 +956,40 @@ export function verifyBuiltTransaction(
     primary.spec.name === "verify_task" ||
     primary.spec.name === "verify_task_attested";
 
+  const isSponsoredClaimOrSubmit =
+    (isClaimLifecycle || isSubmitLifecycle) && inspected.fee_payer !== expected.wallet;
+  const derivedAdvancePda = isSponsoredClaimOrSubmit
+    ? advancePda(inspected.fee_payer, expected.wallet)
+    : undefined;
+  const requiresAdvancePayout = isSponsoredClaimOrSubmit && explicitFeePayer === undefined;
+
+  if (
+    inspected.fee_payer !== expected.wallet &&
+    explicitFeePayer === undefined &&
+    !isSponsoredClaimOrSubmit &&
+    !(primary.spec.name === "verify_task_attested" && primary.ix.accounts[2] === expected.wallet)
+  ) {
+    throw txMismatch(
+      operation,
+      `Fee payer ${inspected.fee_payer} differs from expected wallet ${expected.wallet}`,
+    );
+  }
+
+  if (
+    requiresAdvancePayout &&
+    expectedPayoutPubkey &&
+    !expectedPayoutPubkey.equals(derivedAdvancePda!)
+  ) {
+    throw txMismatch(
+      operation,
+      `set_payout_to destination pubkey ${expectedPayoutPubkey.toBase58()} differs from deterministic Advance PDA ${derivedAdvancePda!.toBase58()}`,
+    );
+  }
+
+  const authorizedPayoutPubkey = requiresAdvancePayout
+    ? derivedAdvancePda
+    : (expectedPayoutPubkey ?? derivedAdvancePda);
+
   if (companions.length === 0) {
     if (
       expectedPayoutPubkey &&
@@ -970,21 +1023,24 @@ export function verifyBuiltTransaction(
   }
 
   if (
-    isClaimLifecycle &&
+    (isClaimLifecycle || isSubmitLifecycle) &&
     companions.length === 1 &&
     companions[0].spec.name === "set_payout_to"
   ) {
-    if (primary.spec.name !== "claim_task") {
+    if (isClaimLifecycle && primary.spec.name !== "claim_task") {
       throw txMismatch(operation, "set_payout_to companion requires direct agent claim_task");
     }
-    if (companions[0].txIndex <= primary.txIndex) {
+    if (isSubmitLifecycle && primary.spec.name !== "submit_work") {
+      throw txMismatch(operation, "set_payout_to companion requires direct agent submit_work");
+    }
+    if (isClaimLifecycle && companions[0].txIndex <= primary.txIndex) {
       throw txMismatch(operation, "payout route must follow claim");
     }
     validateSetPayoutToInstruction(
       companions[0],
       expected.wallet,
       primary.ix.accounts[0],
-      expectedPayoutPubkey,
+      authorizedPayoutPubkey,
       operation,
     );
     return inspected;
@@ -1060,10 +1116,15 @@ export function verifyBuiltTransaction(
     submitCompanions[0].spec.name === "claim_task" &&
     submitCompanions[1].spec.name === "set_payout_to"
   ) {
+    const isClaimPayoutSubmit =
+      submitCompanions[1].txIndex === submitCompanions[0].txIndex + 1 &&
+      primary.txIndex === submitCompanions[1].txIndex + 1;
+    const isClaimSubmitPayout =
+      primary.txIndex === submitCompanions[0].txIndex + 1 &&
+      submitCompanions[1].txIndex === primary.txIndex + 1;
     if (
       primary.spec.name !== "submit_work" ||
-      submitCompanions[1].txIndex !== submitCompanions[0].txIndex + 1 ||
-      primary.txIndex !== submitCompanions[1].txIndex + 1 ||
+      (!isClaimPayoutSubmit && !isClaimSubmitPayout) ||
       !validateClaimCompanion(submitCompanions[0])
     ) {
       throw txMismatch(operation, "Expected exactly one matching Shillbot lifecycle instruction");
@@ -1072,7 +1133,7 @@ export function verifyBuiltTransaction(
       submitCompanions[1],
       expected.wallet,
       primary.ix.accounts[0],
-      expectedPayoutPubkey,
+      authorizedPayoutPubkey,
       operation,
     );
     return inspected;

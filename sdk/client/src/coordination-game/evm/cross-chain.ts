@@ -8,6 +8,7 @@ import {
 } from "viem";
 import type {
   CoordinationGameApiClient,
+  EvmMatchPayload,
   XLegPayload,
   XMatchPayload,
   XOutcomeCertPayload,
@@ -41,24 +42,99 @@ export interface CrossChainMatchResult {
   handle: string | undefined;
 }
 
+export interface FindCrossChainMatchInput {
+  wallet: string;
+  sessionKeyAddress: string;
+  tournamentId: number;
+  chain: string;
+  isAi?: boolean;
+  is_ai?: boolean;
+  token?: string;
+}
+
+export interface FindMatchPollOptions {
+  pollMs?: number;
+  maxPolls?: number;
+  sleep?: (ms: number) => Promise<void>;
+  token?: string;
+  isAi?: boolean;
+}
+
 export async function findCrossChainMatch(
   api: CoordinationGameApiClient,
-  input: { wallet: string; sessionKeyAddress: string; tournamentId: number; chain: string },
-  options: { pollMs?: number; maxPolls?: number; sleep?: (ms: number) => Promise<void> } = {},
+  input: FindCrossChainMatchInput,
+  options: FindMatchPollOptions = {},
 ): Promise<CrossChainMatchResult> {
-  const joined = await api.joinCrossChainQueue({
-    wallet: input.wallet,
-    chain: input.chain,
-    session_key: input.sessionKeyAddress,
-    tournament_id: input.tournamentId,
-  });
+  const resolvedToken = options.token ?? input.token;
+  const resolvedIsAi = options.isAi ?? input.isAi ?? input.is_ai;
+  const joined = await api.joinCrossChainQueue(
+    {
+      wallet: input.wallet,
+      chain: input.chain,
+      session_key: input.sessionKeyAddress,
+      tournament_id: input.tournamentId,
+      ...(resolvedIsAi !== undefined ? { is_ai: resolvedIsAi } : {}),
+    },
+    resolvedToken,
+  );
   const handle = joined.poll_handle;
   if (joined.status === "matched" && joined.match) return { match: joined.match, handle };
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => globalThis.setTimeout(resolve, ms)));
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => globalThis.setTimeout(resolve, ms)));
   for (let index = 0; index < (options.maxPolls ?? 60); index += 1) {
     await sleep(options.pollMs ?? 4_000);
-    const next = await api.crossChainStatus(handle ? { handle } : { wallet: input.wallet });
+    const next = await api.crossChainStatus(
+      handle ? { handle } : { wallet: input.wallet },
+      resolvedToken,
+    );
     if (next.status === "matched" && next.match) return { match: next.match, handle };
+  }
+  throw new Error("no opponent found before timeout");
+}
+
+export interface FindEvmMatchInput {
+  wallet: string;
+  playerWallet?: string;
+  tournamentId: number;
+  chain: string;
+  isAi?: boolean;
+  is_ai?: boolean;
+  token?: string;
+}
+
+export interface EvmMatchResult {
+  match: EvmMatchPayload;
+  sessionId: string | undefined;
+}
+
+export async function findEvmMatch(
+  api: CoordinationGameApiClient,
+  input: FindEvmMatchInput,
+  options: FindMatchPollOptions = {},
+): Promise<EvmMatchResult> {
+  const resolvedToken = options.token ?? input.token;
+  const resolvedIsAi = options.isAi ?? input.isAi ?? input.is_ai;
+  const joined = await api.joinEvmGame(
+    {
+      wallet: input.wallet,
+      ...(input.playerWallet ? { player_wallet: input.playerWallet } : {}),
+      chain: input.chain,
+      tournament_id: input.tournamentId,
+      ...(resolvedIsAi !== undefined ? { is_ai: resolvedIsAi } : {}),
+    },
+    resolvedToken,
+  );
+  if (joined.status === "matched" && joined.match) {
+    return { match: joined.match, sessionId: joined.session_id };
+  }
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => globalThis.setTimeout(resolve, ms)));
+  for (let index = 0; index < (options.maxPolls ?? 60); index += 1) {
+    await sleep(options.pollMs ?? 4_000);
+    const next = await api.evmGameStatus(input.wallet, resolvedToken);
+    if (next.status === "matched" && next.match) {
+      return { match: next.match, sessionId: next.session_id ?? joined.session_id };
+    }
   }
   throw new Error("no opponent found before timeout");
 }

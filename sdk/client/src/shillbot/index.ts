@@ -783,6 +783,7 @@ export {
   MAX_COMPUTE_UNIT_LIMIT,
   MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
   SHILLBOT_INSTRUCTION_SPECS,
+  deriveAdvancePda,
   validateComputeBudgetInstruction,
   validateComputeBudgetInstructions,
   verifyBuiltTransaction,

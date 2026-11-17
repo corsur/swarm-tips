@@ -121,8 +121,20 @@ export class ShillbotApiClient {
   listAgentTasks<TTask = unknown>() {
     return this.get<TaskListResponse<TTask> | TTask[]>("/agent/tasks");
   }
-  listPendingApproval<TTask = unknown>() {
-    return this.get<TaskListResponse<TTask> | TTask[]>("/tasks?status=pending_approval");
+  listPendingApproval<TTask = unknown>(
+    networkOrOpts?: "mainnet" | "devnet" | { network?: "mainnet" | "devnet"; token?: string },
+  ) {
+    const network =
+      typeof networkOrOpts === "string" ? networkOrOpts : networkOrOpts?.network;
+    const token =
+      typeof networkOrOpts === "object" && networkOrOpts !== null
+        ? networkOrOpts.token
+        : undefined;
+    const suffix = network ? `?network=${encodeURIComponent(network)}` : "";
+    return this.http.get<TaskListResponse<TTask> | TTask[]>(
+      `/client/pending-approval${suffix}`,
+      token,
+    );
   }
   listCampaigns<TCampaign = unknown>() {
     return this.get<CampaignListResponse<TCampaign> | TCampaign[]>("/campaigns");
@@ -261,6 +273,7 @@ import {
   MAX_COMPUTE_UNIT_LIMIT,
   MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
   SHILLBOT_INSTRUCTION_SPECS,
+  deriveAdvancePda,
   validateComputeBudgetInstruction,
   validateComputeBudgetInstructions,
   verifyBuiltTransaction,
@@ -272,9 +285,11 @@ import {
 } from "./verify-tx.js";
 
 export {
+  EXTENSION_CREDIT_PROGRAM_ID,
   MAX_COMPUTE_UNIT_LIMIT,
   MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
   SHILLBOT_INSTRUCTION_SPECS,
+  deriveAdvancePda,
   validateComputeBudgetInstruction,
   validateComputeBudgetInstructions,
   verifyBuiltTransaction,
@@ -291,6 +306,7 @@ export interface PreparedTransactionExpectation {
   wallet: string;
   taskPda?: string;
   feePayer?: string;
+  sponsor?: string;
   payoutTo?: string;
   expireTaskState?: ExpireTaskState;
   oracleAuthority?: string;

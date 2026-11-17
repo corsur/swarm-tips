@@ -72,18 +72,40 @@ export function readSecureKeypairFile(filePath: string): string {
 export interface LoadCliSignerOptions {
   keypairFile?: string;
   env?: Record<string, string | undefined>;
-  evmChainId?: number;
+  evmChainId?: number | string;
   evmRpcUrl?: string;
 }
 
 /**
- * Load a non-custodial `SwarmSigner` from `--keypair-file` or `SWARM_*` environment variables.
+ * Load a non-custodial `SwarmSigner` from `--keypair-file` (Solana JSON/base58 or
+ * `0x`-prefixed 32-byte hex EVM private key) or `SWARM_*` environment variables.
  */
 export function loadSignerFromCliOrEnv(options: LoadCliSignerOptions = {}): SwarmSigner | undefined {
   const env = options.env ?? process.env;
-  const keyfilePath = options.keypairFile ?? env.SWARM_SOLANA_KEYPAIR_PATH;
+  const resolvedEvmChainId = options.evmChainId ?? env.SWARM_EVM_CHAIN_ID?.trim();
+  const resolvedEvmRpcUrl = options.evmRpcUrl ?? env.SWARM_EVM_RPC_URL?.trim();
+
+  const keyfilePath =
+    options.keypairFile ?? env.SWARM_SOLANA_KEYPAIR_PATH ?? env.SWARM_EVM_KEYPAIR_PATH;
   if (keyfilePath) {
     const raw = readSecureKeypairFile(keyfilePath);
+    if (/^0x/i.test(raw)) {
+      if (!/^0x[0-9a-fA-F]{64}$/.test(raw)) {
+        throw new CliUsageError(
+          `Invalid EVM private key in ${resolve(keyfilePath)}: Expected a 0x-prefixed 32-byte hex EVM private key`,
+        );
+      }
+      try {
+        return fromEvmPrivateKey(raw as `0x${string}`, {
+          chainId: resolvedEvmChainId,
+          rpcUrl: resolvedEvmRpcUrl,
+        });
+      } catch (err) {
+        throw new CliUsageError(
+          `Invalid EVM private key in ${resolve(keyfilePath)}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     try {
       return fromSolanaSecretKey(raw);
     } catch (err) {
@@ -109,8 +131,8 @@ export function loadSignerFromCliOrEnv(options: LoadCliSignerOptions = {}): Swar
     const normalized = (evmPriv.startsWith("0x") ? evmPriv : `0x${evmPriv}`) as `0x${string}`;
     try {
       return fromEvmPrivateKey(normalized, {
-        chainId: options.evmChainId,
-        rpcUrl: options.evmRpcUrl,
+        chainId: resolvedEvmChainId,
+        rpcUrl: resolvedEvmRpcUrl,
       });
     } catch (err) {
       throw new CliUsageError(

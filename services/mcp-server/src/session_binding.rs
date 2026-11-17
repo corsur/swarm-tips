@@ -39,6 +39,12 @@ pub struct McpHttpSessionDoc {
     pub wallet: String,
     pub created_at: firestore::FirestoreTimestamp,
     pub last_seen_at: firestore::FirestoreTimestamp,
+    /// Active challenge nonce issued by `register_wallet` (or `agent_verify_wallet`
+    /// phase 1) so `agent_verify_wallet` can omit `nonce` and automatically use
+    /// the session's pending challenge. Cleared once consumed or when re-binding
+    /// to a different wallet.
+    #[serde(default)]
+    pub pending_nonce: Option<String>,
     /// The wallet this session has PROVEN ownership of (signed nonce or
     /// on-chain memo tx via game-api's auth endpoints). `None` = merely
     /// registered, never proven.
@@ -109,6 +115,17 @@ impl McpSessionBinding {
     /// when an agent calls `game_register_wallet` with a different pubkey
     /// in the same MCP session, which is a legitimate operation).
     pub async fn bind(&self, session_id: &str, wallet: &str) -> Result<()> {
+        self.bind_with_nonce(session_id, wallet, None).await
+    }
+
+    /// Persist `session_id → wallet` together with an optional active challenge
+    /// `pending_nonce` so `agent_verify_wallet` can omit `nonce`.
+    pub async fn bind_with_nonce(
+        &self,
+        session_id: &str,
+        wallet: &str,
+        pending_nonce: Option<&str>,
+    ) -> Result<()> {
         if session_id.trim().is_empty() {
             anyhow::bail!("session_id must not be empty");
         }
@@ -116,6 +133,7 @@ impl McpSessionBinding {
             anyhow::bail!("wallet must not be empty");
         }
         let canonical = crate::jwt::normalize_wallet(wallet);
+        let nonce_clean = pending_nonce.map(str::trim).filter(|s| !s.is_empty());
         let now = firestore::FirestoreTimestamp(chrono::Utc::now());
 
         let Some(ref db) = self.db else {
@@ -123,7 +141,13 @@ impl McpSessionBinding {
             {
                 let mut map = self.mem.lock().unwrap_or_else(|p| p.into_inner());
                 let existing = map.get(session_id).cloned();
-                let doc = build_bound_session_doc(existing, session_id, &canonical, now);
+                let doc = build_bound_session_doc_with_nonce(
+                    existing,
+                    session_id,
+                    &canonical,
+                    nonce_clean,
+                    now,
+                );
                 map.insert(session_id.to_owned(), doc);
             }
             return Ok(());
@@ -139,7 +163,8 @@ impl McpSessionBinding {
             .ok()
             .flatten();
 
-        let doc = build_bound_session_doc(existing, session_id, &canonical, now);
+        let doc =
+            build_bound_session_doc_with_nonce(existing, session_id, &canonical, nonce_clean, now);
 
         if let Err(e) = db
             .fluent()
@@ -193,6 +218,7 @@ impl McpSessionBinding {
             wallet: canonical.clone(),
             created_at: now.clone(),
             last_seen_at: now.clone(),
+            pending_nonce: None,
             verified_wallet: Some(canonical),
             verified_at: Some(now),
             access_token: (!token.is_empty()).then(|| token.to_owned()),
@@ -215,6 +241,54 @@ impl McpSessionBinding {
             .execute::<McpHttpSessionDoc>()
             .await?;
         Ok(())
+    }
+
+    /// Record a freshly issued `pending_nonce` on an already-bound session
+    /// (used by `agent_verify_wallet` phase 1 when called with no args).
+    pub async fn set_pending_nonce(
+        &self,
+        session_id: &str,
+        wallet: &str,
+        nonce: &str,
+    ) -> Result<()> {
+        let nonce = nonce.trim();
+        if session_id.trim().is_empty() || wallet.trim().is_empty() || nonce.is_empty() {
+            return Ok(());
+        }
+        self.bind_with_nonce(session_id, wallet, Some(nonce)).await
+    }
+
+    /// Look up the active `pending_nonce` stored for `session_id`, if any.
+    pub async fn resolve_pending_nonce(&self, session_id: &str) -> Option<String> {
+        if session_id.is_empty() {
+            return None;
+        }
+        let doc: Option<McpHttpSessionDoc> = match self.db {
+            Some(ref db) => db
+                .fluent()
+                .select()
+                .by_id_in(self.collection)
+                .obj()
+                .one(session_id)
+                .await
+                .ok()
+                .flatten(),
+            None => {
+                #[cfg(test)]
+                {
+                    self.mem
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(session_id)
+                        .cloned()
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            }
+        };
+        doc?.pending_nonce.filter(|n| !n.trim().is_empty())
     }
 
     /// Look up the wallet bound to `session_id`. Returns `None` if no
@@ -295,6 +369,7 @@ impl McpSessionBinding {
                 };
                 let now = firestore::FirestoreTimestamp(chrono::Utc::now());
                 doc.wallet = canonical.clone();
+                doc.pending_nonce = None;
                 doc.verified_wallet = Some(canonical);
                 doc.verified_at = Some(now.clone());
                 doc.last_seen_at = now;
@@ -335,6 +410,7 @@ impl McpSessionBinding {
                     };
                     let now = firestore::FirestoreTimestamp(chrono::Utc::now());
                     doc.wallet = wallet.clone();
+                    doc.pending_nonce = None;
                     doc.verified_wallet = Some(wallet);
                     doc.verified_at = Some(now.clone());
                     doc.last_seen_at = now;
@@ -496,6 +572,12 @@ impl VerifiedWallet {
         &self.0
     }
 
+    /// Construct a `VerifiedWallet` after `GameSessionManager::after_deposit_stake`
+    /// has verified on-chain `deposit_stake` SPL-Memo ownership via `/auth/session`.
+    pub(crate) fn from_stake_verified(wallet: &str) -> Self {
+        Self(crate::jwt::normalize_wallet(wallet))
+    }
+
     /// Extract the CAIP-2 chain ID and chain-native address while preserving
     /// compile-time proof that the extracted address belongs to this verified wallet.
     pub fn to_xchain_native(&self) -> Option<(String, Self)> {
@@ -589,19 +671,32 @@ pub(crate) fn resolve_or_refresh_session_jwt_at(
 /// canonicalizes `wallet` / `verified_wallet` while preserving `created_at` and
 /// any existing ownership proof. Re-binding to a different wallet resets the
 /// proof so the new wallet cannot inherit the previous wallet's verification.
+#[cfg(test)]
 fn build_bound_session_doc(
     existing: Option<McpHttpSessionDoc>,
     session_id: &str,
     wallet: &str,
     now: firestore::FirestoreTimestamp,
 ) -> McpHttpSessionDoc {
+    build_bound_session_doc_with_nonce(existing, session_id, wallet, None, now)
+}
+
+fn build_bound_session_doc_with_nonce(
+    existing: Option<McpHttpSessionDoc>,
+    session_id: &str,
+    wallet: &str,
+    pending_nonce: Option<&str>,
+    now: firestore::FirestoreTimestamp,
+) -> McpHttpSessionDoc {
     let canonical = crate::jwt::normalize_wallet(wallet);
+    let next_nonce = pending_nonce.map(str::to_string);
     if let Some(prev) = existing.filter(|d| crate::jwt::wallets_match(&d.wallet, &canonical)) {
         McpHttpSessionDoc {
             session_id: session_id.to_string(),
             wallet: canonical.clone(),
             created_at: prev.created_at,
             last_seen_at: now,
+            pending_nonce: next_nonce.or(prev.pending_nonce),
             verified_wallet: prev
                 .verified_wallet
                 .filter(|v| crate::jwt::wallets_match(v, &canonical))
@@ -615,6 +710,7 @@ fn build_bound_session_doc(
             wallet: canonical,
             created_at: now.clone(),
             last_seen_at: now,
+            pending_nonce: next_nonce,
             verified_wallet: None,
             verified_at: None,
             access_token: None,
@@ -634,6 +730,7 @@ mod tests {
             wallet: "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY".to_string(),
             created_at: now.clone(),
             last_seen_at: now.clone(),
+            pending_nonce: Some("nonce-1".to_string()),
             verified_wallet: Some("CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY".to_string()),
             verified_at: Some(now),
             access_token: None,
@@ -678,6 +775,7 @@ mod tests {
             wallet: w1.to_string(),
             created_at: t0.clone(),
             last_seen_at: t0.clone(),
+            pending_nonce: Some("pending-abc".to_string()),
             verified_wallet: Some(w1.to_string()),
             verified_at: Some(t0.clone()),
             access_token: Some("tok-123".to_string()),
@@ -710,6 +808,7 @@ mod tests {
             wallet: mixed.to_string(),
             created_at: t0.clone(),
             last_seen_at: t0.clone(),
+            pending_nonce: None,
             verified_wallet: Some(mixed.to_string()),
             verified_at: Some(t0),
             access_token: Some("tok-evm".to_string()),
@@ -734,6 +833,7 @@ mod tests {
             wallet: sol_wallet.to_string(),
             created_at: ts.clone(),
             last_seen_at: ts.clone(),
+            pending_nonce: None,
             verified_wallet: None,
             verified_at: None,
             access_token: None,
@@ -746,6 +846,7 @@ mod tests {
             wallet: sol_wallet.to_string(),
             created_at: ts.clone(),
             last_seen_at: ts.clone(),
+            pending_nonce: None,
             verified_wallet: Some(sol_wallet.to_string()),
             verified_at: Some(ts.clone()),
             access_token: None,

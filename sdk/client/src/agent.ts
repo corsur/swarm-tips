@@ -55,6 +55,15 @@ export type SwarmNetwork = "mainnet" | "devnet";
 /** Default EVM gas price ceiling (`maxFeePerGas` = 50 gwei). */
 export const DEFAULT_MAX_NETWORK_FEE_WEI = 50_000_000_000n;
 
+/** Recoupable SOL advance (`0.0031 SOL` = `3_100_000` lamports = `3_000_000` rent + `100_000` first-task gas budget) fronted by `/agent/onboard`. */
+export const ONBOARD_ADVANCE_LAMPORTS = 3_100_000;
+
+/** Minimum SOL balance (`0.003 SOL` = `3_000_000` lamports) required for self-paid `AgentState` initialization + lifecycle fees. */
+export const MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS = 3_000_000;
+
+/** Minimum SOL balance (`50_000` lamports) required for standalone post-claim `submit_work` fee payment. */
+const MIN_POST_CLAIM_SUBMIT_SOLANA_BALANCE_LAMPORTS = 50_000;
+
 export interface SwarmAgentOptions {
   signer?: SwarmSigner;
   token?: string | (() => Promise<string | undefined>);
@@ -63,6 +72,8 @@ export interface SwarmAgentOptions {
   shillbotUrl?: string;
   gameUrl?: string;
   mcpUrl?: string;
+  /** Automatically call `onboard()` when a Solana wallet lacks SOL for self-paid claim/submit; default `true`. */
+  autoOnboard?: boolean;
   /** Maximum SOL escrow spend allowed per task creation; default `0n` (C9). */
   maxEscrowSpendLamports?: bigint;
   /** Maximum ETH/EVM escrow spend allowed per task creation; default `0n` (C9). */
@@ -97,7 +108,11 @@ export interface ExecutedTaskResult<TConfirm = unknown> {
 
 export interface ExecuteTaskOptions {
   sponsor?: "auto" | "true" | "none";
+  /** Automatically call `onboard()` if `?sponsor=auto` returns self-paid on an underfunded wallet; default `true`. */
+  autoOnboard?: boolean;
   connection?: Connection;
+  /** Optional explicit sponsor fee payer pubkey (base58). */
+  feePayer?: string;
   /** Explicit authorized payout destination pubkey (base58) when `set_payout_to` is expected. */
   payoutTo?: string;
   extra?: Record<string, unknown>;
@@ -190,6 +205,7 @@ export class SwarmAgent {
   readonly shillbotUrl: string;
   readonly gameUrl: string;
   readonly mcpUrl: string;
+  readonly autoOnboard: boolean;
   readonly maxEscrowSpendLamports: bigint;
   readonly maxEscrowSpendWei: bigint;
   readonly maxNetworkFeeLamports: bigint;
@@ -202,6 +218,7 @@ export class SwarmAgent {
   private readonly swarmClient: SwarmClient;
   private readonly inboxClient: InboxClient;
   private readonly gameClient: CoordinationGameApiClient;
+  private autoOnboardAttempted = false;
 
   readonly auth: {
     getToken: () => Promise<string | undefined>;
@@ -267,6 +284,9 @@ export class SwarmAgent {
     get: <TCampaign = unknown>(id: string) => Promise<TCampaign>;
     tasks: <TTask = unknown>(id: string) => Promise<TaskListResponse<TTask>>;
     metrics: <TMetrics = unknown>(id: string) => Promise<TMetrics>;
+    pendingApproval: <TTask = unknown>(
+      network?: SwarmNetwork,
+    ) => Promise<TaskListResponse<TTask> | TTask[]>;
     create: <TResponse = { campaign_id: string }>(body: unknown) => Promise<TResponse>;
     fund: (id: string, body: unknown) => Promise<PreparedTransactionResponse>;
     fundAndExecute: (
@@ -331,6 +351,7 @@ export class SwarmAgent {
     this.shillbotUrl = (options.shillbotUrl ?? "https://api.shillbot.org").replace(/\/$/, "");
     this.gameUrl = (options.gameUrl ?? "https://api.coordination.game").replace(/\/$/, "");
     this.mcpUrl = (options.mcpUrl ?? "https://mcp.swarm.tips").replace(/\/$/, "");
+    this.autoOnboard = options.autoOnboard ?? true;
     this.maxEscrowSpendLamports = options.maxEscrowSpendLamports ?? 0n;
     this.maxEscrowSpendWei = options.maxEscrowSpendWei ?? 0n;
     this.maxNetworkFeeLamports = options.maxNetworkFeeLamports ?? 100_000n;
@@ -425,7 +446,7 @@ export class SwarmAgent {
         return Array.isArray(res) ? res : (res.tasks ?? []);
       },
       earnings: () => self.shillbotClient.earnings(),
-      onboard: () => self.shillbotClient.onboard(),
+      onboard: () => self.onboard(),
       claim: (id, sponsor = "auto") => self.shillbotClient.claimTask(id, sponsor),
       claimAndExecute: (id, opts) => self.executeClaimOrSubmit(id, "claim", undefined, opts),
       submit: (id, body) => self.shillbotClient.submitTask(id, body),
@@ -482,6 +503,7 @@ export class SwarmAgent {
       get: (id) => self.shillbotClient.campaign(id),
       tasks: (id) => self.shillbotClient.campaignTasks(id),
       metrics: (id) => self.shillbotClient.campaignMetrics(id),
+      pendingApproval: (net) => self.shillbotClient.listPendingApproval(net),
       create: (body) => self.shillbotClient.createCampaign(body),
       fund: (id, body) => self.shillbotClient.fundCampaignTask(id, body),
       async fundAndExecute(id, body, opts) {
@@ -581,6 +603,25 @@ export class SwarmAgent {
     };
   }
 
+  /** Bootstrap a zero-funds Solana agent wallet via recoupable Advance PDA fronting (`3_100_000` lamports). */
+  onboard<TResponse = unknown>(): Promise<TResponse> {
+    return this.shillbotClient.onboard<TResponse>();
+  }
+
+  /** Claim a task and execute the prepared transaction (with automatic `$0` wallet onboarding when enabled). */
+  claimTask(id: string, opts?: ExecuteTaskOptions): Promise<ExecutedTaskResult> {
+    return this.executeClaimOrSubmit(id, "claim", undefined, opts);
+  }
+
+  /** Submit work for a task and execute the prepared transaction (with automatic `$0` wallet onboarding when enabled). */
+  submitWork(
+    id: string,
+    contentId: string,
+    opts?: ExecuteTaskOptions,
+  ): Promise<ExecutedTaskResult> {
+    return this.executeClaimOrSubmit(id, "submit", contentId, opts);
+  }
+
   private requireSigner(): SwarmSigner {
     if (!this.signer) {
       throw new SwarmClientError({
@@ -601,36 +642,36 @@ export class SwarmAgent {
     const sponsorMode = opts?.sponsor ?? "auto";
     const sponsorQuery =
       sponsorMode === "none" ? "false" : sponsorMode === "true" ? "true" : "auto";
+    const shouldAutoOnboard = (opts?.autoOnboard ?? this.autoOnboard) !== false;
+
+    const requestPrepared = (query: string): Promise<PreparedTransactionResponse> => {
+      if (action === "claim") {
+        return this.shillbotClient.claimTask(id, query);
+      }
+      const suffix = sponsorMode !== "none" ? `?sponsor=${encodeURIComponent(query)}` : "";
+      return this.shillbotClient.post<PreparedTransactionResponse>(
+        `/tasks/${encodeURIComponent(id)}/submit${suffix}`,
+        { content_id: contentId, ...(opts?.extra ?? {}) },
+      );
+    };
 
     let prepared: PreparedTransactionResponse;
     try {
-      if (action === "claim") {
-        prepared = await this.shillbotClient.claimTask(id, sponsorQuery);
-      } else {
-        const suffix = sponsorMode !== "none" ? `?sponsor=${encodeURIComponent(sponsorQuery)}` : "";
-        prepared = await this.shillbotClient.post<PreparedTransactionResponse>(
-          `/tasks/${encodeURIComponent(id)}/submit${suffix}`,
-          { content_id: contentId, ...(opts?.extra ?? {}) },
-        );
-      }
+      prepared = await requestPrepared(sponsorQuery);
     } catch (err) {
       if (
         (action === "claim" || action === "submit") &&
         sponsorMode !== "none" &&
+        shouldAutoOnboard &&
+        !this.autoOnboardAttempted &&
         err instanceof SwarmClientError &&
         err.code === "HTTP_ERROR" &&
         (err.status === 400 || err.status === 403 || err.status === 412) &&
         /onboard|agent_state|bootstrap/i.test(err.message)
       ) {
-        await this.shillbotClient.onboard();
-        if (action === "claim") {
-          prepared = await this.shillbotClient.claimTask(id, sponsorQuery);
-        } else {
-          prepared = await this.shillbotClient.post<PreparedTransactionResponse>(
-            `/tasks/${encodeURIComponent(id)}/submit?sponsor=${encodeURIComponent(sponsorQuery)}`,
-            { content_id: contentId, ...(opts?.extra ?? {}) },
-          );
-        }
+        this.autoOnboardAttempted = true;
+        await this.onboard();
+        prepared = await requestPrepared(sponsorQuery);
       } else {
         throw err;
       }
@@ -640,6 +681,52 @@ export class SwarmAgent {
       this.signer?.chain === "solana"
         ? (opts?.connection ?? new Connection(this.rpcUrl, "confirmed"))
         : opts?.connection;
+
+    // When a Solana wallet holds less than MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS (3_000_000 lamports
+    // for claim / atomic claim+submit) or MIN_POST_CLAIM_SUBMIT_SOLANA_BALANCE_LAMPORTS (50_000 lamports
+    // for standalone submit) and receives a self-paid HTTP 200 transaction, onboard once and re-request.
+    if (
+      prepared.transaction &&
+      sponsorMode !== "none" &&
+      shouldAutoOnboard &&
+      !this.autoOnboardAttempted &&
+      connection &&
+      this.signer?.chain === "solana" &&
+      typeof connection.getBalance === "function"
+    ) {
+      let initialFeePayer: string | undefined;
+      let bundlesClaim = action === "claim";
+      try {
+        const initialInspected = inspectTransaction(prepared.transaction);
+        initialFeePayer = initialInspected.fee_payer;
+        if (!bundlesClaim) {
+          const claimDisc = shillbotInstructionDiscriminator("claim_task");
+          const claimSessionDisc = shillbotInstructionDiscriminator("claim_task_session");
+          bundlesClaim = initialInspected.instructions.some((ix) => {
+            if (ix.program_id !== SHILLBOT_PROGRAM_ID_B58) return false;
+            const d = Buffer.from(ix.data_base64, "base64");
+            return (
+              d.length >= 8 &&
+              (d.subarray(0, 8).equals(claimDisc) || d.subarray(0, 8).equals(claimSessionDisc))
+            );
+          });
+        }
+      } catch {
+        // Malformed transaction will fail closed during validation below.
+      }
+      if (initialFeePayer === this.signer.address) {
+        const balanceLamports = await connection.getBalance(new PublicKey(this.signer.address));
+        const minRequiredLamports = bundlesClaim
+          ? MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS
+          : MIN_POST_CLAIM_SUBMIT_SOLANA_BALANCE_LAMPORTS;
+        if (balanceLamports < minRequiredLamports) {
+          this.autoOnboardAttempted = true;
+          await this.onboard();
+          prepared = await requestPrepared("auto");
+        }
+      }
+    }
+
     let resolvedPayoutTo =
       connection && this.signer?.chain === "solana"
         ? await SwarmAgent.resolveVerifiedAdvancePayoutTo(
@@ -663,6 +750,7 @@ export class SwarmAgent {
         network: this.network,
         wallet: this.signer.address,
         taskPda: prepared.task_pda,
+        ...(opts?.feePayer !== undefined ? { feePayer: opts.feePayer } : {}),
         ...(resolvedPayoutTo !== undefined ? { payoutTo: resolvedPayoutTo } : {}),
       });
       if (
@@ -688,6 +776,7 @@ export class SwarmAgent {
 
     return this.executePreparedAction(id, action, prepared, {
       connection,
+      feePayer: opts?.feePayer,
       payoutTo: resolvedPayoutTo,
       payoutToResolved,
     });
@@ -759,6 +848,7 @@ export class SwarmAgent {
       connection?: Connection;
       chain?: string;
       expectedEscrowLamports?: bigint;
+      feePayer?: string;
       payoutTo?: string;
       payoutToResolved?: boolean;
     },
@@ -852,6 +942,7 @@ export class SwarmAgent {
     opts: {
       connection?: Connection;
       expectedEscrowLamports?: bigint;
+      feePayer?: string;
       payoutTo?: string;
       payoutToResolved?: boolean;
     },
@@ -909,6 +1000,7 @@ export class SwarmAgent {
       network: this.network,
       wallet: signer.address,
       taskPda: prepared.task_pda,
+      ...(opts.feePayer !== undefined ? { feePayer: opts.feePayer } : {}),
       ...(resolvedPayoutTo !== undefined ? { payoutTo: resolvedPayoutTo } : {}),
       ...(action === "create" && opts.expectedEscrowLamports !== undefined
         ? { escrowLamports: opts.expectedEscrowLamports }

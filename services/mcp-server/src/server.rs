@@ -235,6 +235,12 @@ enum RegistrationOutcome {
     },
 }
 
+/// Guidance appended whenever a session-scoped tool cannot resolve a bound wallet
+/// (missing `Mcp-Session-Id` header or unknown/expired session ID).
+const MCP_SESSION_HINT: &str = "Ensure your MCP client echoes the Mcp-Session-Id header returned by initialize, then call register_wallet and agent_verify_wallet.";
+
+const MISSING_MCP_SESSION_MSG: &str = "missing Mcp-Session-Id. Ensure your MCP client echoes the Mcp-Session-Id header returned by initialize, then call register_wallet and agent_verify_wallet.";
+
 /// Success text once ownership is proven — mirrors agent_verify_wallet's.
 const INBOX_UNLOCKED_TEXT: &str = "Inbox unlocked: agent_list_messages → agent_open_messages → agent_ack_message_ids. Opening does not acknowledge. Message the team with agent_send_message (omit to_wallet).";
 
@@ -710,8 +716,9 @@ pub struct GameRegisterWalletArgs {
 
 #[derive(Debug, Default, serde::Deserialize, JsonSchema)]
 pub struct AgentVerifyWalletArgs {
-    /// Phase 2: the nonce returned by phase 1. Omit ALL args for phase 1
-    /// (challenge issuance).
+    /// Challenge nonce from register_wallet or phase-1 agent_verify_wallet.
+    /// Optional in phase 2 when register_wallet or phase 1 stored a pending
+    /// nonce on this MCP session; omit ALL args to mint a fresh challenge.
     #[serde(default)]
     pub nonce: Option<String>,
     /// Phase 2, free path: signature over the nonce — base58 ed25519 for a
@@ -2671,15 +2678,26 @@ impl SwarmTipsMcp {
             return Err(invalid_input("pubkey is required"));
         }
 
+        let effective_nonce = match args.nonce.as_deref().filter(|s| !s.is_empty()) {
+            Some(n) => Some(n.to_string()),
+            None if args.signature.as_deref().is_some_and(|s| !s.is_empty())
+                || args.tx_signature.as_deref().is_some_and(|s| !s.is_empty()) =>
+            {
+                match session_id_from_parts(Some(&parts)) {
+                    Some(sid) => self.state.session_binding.resolve_pending_nonce(&sid).await,
+                    None => None,
+                }
+            }
+            None => None,
+        };
+
         // Optional verify-before-bind: when proof args are supplied the
         // verification must PASS before bind() runs — a bad proof rejects
-        // WITHOUT binding (reject at the boundary). Hard enforcement lives at
-        // the inbox tools, not here: registration without proof stays valid
-        // for every non-inbox tool.
+        // WITHOUT binding (reject at the boundary).
         let proof = self
             .verify_wallet_proof(
                 &args.pubkey,
-                args.nonce.as_deref(),
+                effective_nonce.as_deref(),
                 args.signature.as_deref(),
                 args.tx_signature.as_deref(),
             )
@@ -2691,19 +2709,6 @@ impl SwarmTipsMcp {
         if args.pubkey.starts_with("0x") {
             let account_id = crate::xchain::evm_account_id(&args.pubkey)
                 .map_err(|e| invalid_input(&format!("invalid EVM address: {e}")))?;
-            if let Some(session_id) = session_id_from_parts(Some(&parts)) {
-                // Best-effort like the Solana path below: a binding write
-                // failure is WARN-logged inside McpSessionBinding::bind and
-                // the agent can simply re-call register_wallet to retry.
-                let _ = self
-                    .state
-                    .session_binding
-                    .bind(&session_id, &account_id)
-                    .await;
-            }
-            // Demand signal for the mainnet-EVM gate (decision.md §6): now that
-            // testnet accepts EVM wallets, the signal graduated from the old
-            // register_wallet_bounce rejection to this acceptance event.
             tracing::info!(
                 event = "register_wallet_evm",
                 account = %account_id,
@@ -2711,6 +2716,13 @@ impl SwarmTipsMcp {
             );
             let outcome = match proof {
                 Some((method, proof_sig, access_token)) => {
+                    if let Some(session_id) = session_id_from_parts(Some(&parts)) {
+                        let _ = self
+                            .state
+                            .session_binding
+                            .bind(&session_id, &account_id)
+                            .await;
+                    }
                     self.finalize_wallet_verification(
                         Some(&parts),
                         &account_id,
@@ -2725,14 +2737,19 @@ impl SwarmTipsMcp {
                         sender_tier: self.caller_tier_str(&account_id).await,
                     }
                 }
-                // Unproven: hand back a convenience verify_nonce (best-effort)
-                // plus the one-tool-loop next step. The EVM verify path is
-                // signature-only (no SPL-Memo tier).
-                None => RegistrationOutcome::Unproven {
-                    verify_nonce: self
+                None => {
+                    let verify_nonce = self
                         .best_effort_verify_nonce(native_wallet_address(&account_id))
-                        .await,
-                },
+                        .await;
+                    if let Some(session_id) = session_id_from_parts(Some(&parts)) {
+                        let _ = self
+                            .state
+                            .session_binding
+                            .bind_with_nonce(&session_id, &account_id, verify_nonce.as_deref())
+                            .await;
+                    }
+                    RegistrationOutcome::Unproven { verify_nonce }
+                }
             };
             let mut response = crate::xchain::evm_registration_response(&account_id);
             apply_registration_outcome(&mut response, &outcome, false);
@@ -2746,17 +2763,6 @@ impl SwarmTipsMcp {
             .await
             .map_err(|e| McpError::internal_error(format!("registration failed: {e}"), None))?;
 
-        // Persist the streamable HTTP session → wallet binding so a pod
-        // restart doesn't strand the agent. The next tool call from the
-        // same `Mcp-Session-Id` resolves the wallet via Firestore even if
-        // the in-memory game session map was wiped by the restart.
-        if let Some(session_id) = session_id_from_parts(Some(&parts)) {
-            // Best-effort: a binding write failure is logged inside
-            // McpSessionBinding::bind and the agent can simply re-call
-            // register_wallet to retry.
-            let _ = self.state.session_binding.bind(&session_id, &wallet).await;
-        }
-
         tracing::info!(
             event = "register_wallet_solana",
             wallet = %wallet,
@@ -2766,6 +2772,9 @@ impl SwarmTipsMcp {
 
         let outcome = match proof {
             Some((method, proof_sig, access_token)) => {
+                if let Some(session_id) = session_id_from_parts(Some(&parts)) {
+                    let _ = self.state.session_binding.bind(&session_id, &wallet).await;
+                }
                 self.finalize_wallet_verification(
                     Some(&parts),
                     &wallet,
@@ -2780,13 +2789,17 @@ impl SwarmTipsMcp {
                     sender_tier: self.caller_tier_str(&wallet).await,
                 }
             }
-            // Unproven: hand the agent a challenge nonce up front so proving
-            // ownership is a single re-call of THIS tool. Best-effort: a mint
-            // failure omits `verify_nonce` but never fails registration (the
-            // non-custodial bind above already succeeded).
-            None => RegistrationOutcome::Unproven {
-                verify_nonce: self.best_effort_verify_nonce(&wallet).await,
-            },
+            None => {
+                let verify_nonce = self.best_effort_verify_nonce(&wallet).await;
+                if let Some(session_id) = session_id_from_parts(Some(&parts)) {
+                    let _ = self
+                        .state
+                        .session_binding
+                        .bind_with_nonce(&session_id, &wallet, verify_nonce.as_deref())
+                        .await;
+                }
+                RegistrationOutcome::Unproven { verify_nonce }
+            }
         };
         let response = solana_registration_response(&wallet, balance, &outcome);
         Ok(text_result(&response))
@@ -3681,7 +3694,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "agent_verify_wallet",
-        description = "[STATE] Standalone wallet ownership proof — equivalent to re-calling register_wallet with {pubkey, nonce, signature}. Required for private Shillbot task tools, EVM/cross-chain queues, and the agent inbox (same-chain game_find_match works unverified, and landing deposit_stake via game_submit_tx verifies you automatically). Call with NO args for a challenge nonce, then pass {nonce, signature} (base58 ed25519 Solana / 0x EIP-191 EVM: 25 inbox sends/day) or {nonce, tx_signature} of a Solana SPL-Memo tx (wallet-verified: 100 sends/day; 500 with EigenTrust). Any ed25519 keypair works — no funded wallet needed. Nonces expire in 5 minutes and are consumed only on a SUCCESSFUL proof (failed attempts can retry the same nonce); re-registering a different wallet clears verification."
+        description = "[STATE] Standalone wallet ownership proof — equivalent to re-calling register_wallet with {pubkey, nonce, signature}. Unlocks private Shillbot task tools, shillbot_onboard, EVM/cross-chain queues, and the agent inbox (same-chain game_find_match works unverified; landing deposit_stake via game_submit_tx verifies automatically). Sign register_wallet's `verify_nonce` and pass {signature} (nonce is auto-filled from your session if omitted; base58 ed25519 Solana / 0x EIP-191 EVM: 25 inbox sends/day) or {tx_signature} of a Solana SPL-Memo tx (100 sends/day; 500 with EigenTrust). Call with NO args for a fresh challenge (5m TTL; failed attempts do not burn it)."
     )]
     async fn agent_verify_wallet(
         &self,
@@ -3690,19 +3703,28 @@ impl SwarmTipsMcp {
     ) -> Result<CallToolResult, McpError> {
         let bound = self.require_bound_wallet(Some(&parts)).await?;
         if args.nonce.is_none() && args.signature.is_none() && args.tx_signature.is_none() {
-            return self.issue_verify_challenge(&bound).await;
+            return self.issue_verify_challenge(Some(&parts), &bound).await;
         }
+        let effective_nonce = match args.nonce.as_deref().filter(|s| !s.is_empty()) {
+            Some(n) => Some(n.to_string()),
+            None => match session_id_from_parts(Some(&parts)) {
+                Some(sid) => self.state.session_binding.resolve_pending_nonce(&sid).await,
+                None => None,
+            },
+        };
         let native = native_wallet_address(&bound);
         let (method, proof_sig, access_token) = self
             .verify_wallet_proof(
                 native,
-                args.nonce.as_deref(),
+                effective_nonce.as_deref(),
                 args.signature.as_deref(),
                 args.tx_signature.as_deref(),
             )
             .await?
             .ok_or_else(|| {
-                invalid_input("phase 2 requires `nonce` plus `signature` or `tx_signature`")
+                invalid_input(
+                    "phase 2 requires `signature` or `tx_signature` (plus `nonce` if no pending nonce is stored on this session)",
+                )
             })?;
         self.finalize_wallet_verification(
             Some(&parts),
@@ -4571,7 +4593,7 @@ async fn resolve_session_or_bearer_game_wallet(
 
     if require_verified {
         let session_id =
-            session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
+            session_id_from_parts(parts).ok_or_else(|| invalid_input(MISSING_MCP_SESSION_MSG))?;
         let verified = session_binding
             .resolve_verified(&session_id)
             .await
@@ -4582,12 +4604,13 @@ async fn resolve_session_or_bearer_game_wallet(
             })?;
         Ok((verified.as_str().to_owned(), true, session_id))
     } else {
-        let session_id = session_id_from_parts(parts)
-            .ok_or_else(|| invalid_input("no game session: call register_wallet first"))?;
-        let wallet = session_binding
-            .resolve(&session_id)
-            .await
-            .ok_or_else(|| invalid_input("no game session: call register_wallet first"))?;
+        let session_id =
+            session_id_from_parts(parts).ok_or_else(|| invalid_input(MISSING_MCP_SESSION_MSG))?;
+        let wallet = session_binding.resolve(&session_id).await.ok_or_else(|| {
+            invalid_input(&format!(
+                "no game session: call register_wallet first. {MCP_SESSION_HINT}"
+            ))
+        })?;
         let is_verified = session_binding
             .resolve_verified(&session_id)
             .await
@@ -4725,12 +4748,16 @@ impl SwarmTipsMcp {
             return Ok(verified.as_str().to_owned());
         }
         let session_id =
-            session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
+            session_id_from_parts(parts).ok_or_else(|| invalid_input(MISSING_MCP_SESSION_MSG))?;
         self.state
             .session_binding
             .resolve(&session_id)
             .await
-            .ok_or_else(|| invalid_input("no wallet registered: call register_wallet first"))
+            .ok_or_else(|| {
+                invalid_input(&format!(
+                    "no wallet registered: call register_wallet first. {MCP_SESSION_HINT}"
+                ))
+            })
     }
 
     /// Require a session-bound wallet (EVM or Solana) whose ownership has been
@@ -4753,16 +4780,29 @@ impl SwarmTipsMcp {
             return Ok(verified);
         }
         let session_id =
-            session_id_from_parts(parts).ok_or_else(|| invalid_input("missing Mcp-Session-Id"))?;
-        self.state
+            session_id_from_parts(parts).ok_or_else(|| invalid_input(MISSING_MCP_SESSION_MSG))?;
+        match self
+            .state
             .session_binding
             .resolve_verified(&session_id)
             .await
-            .ok_or_else(|| {
-                invalid_input(
-                    "in-game actions require proven wallet ownership: verify your wallet via register_wallet {pubkey, nonce, signature} (or agent_verify_wallet) first",
-                )
-            })
+        {
+            Some(wallet) => Ok(wallet),
+            None => {
+                let has_bound = self
+                    .state
+                    .session_binding
+                    .resolve(&session_id)
+                    .await
+                    .is_some();
+                let base = "verify wallet ownership first: call register_wallet({pubkey}) then agent_verify_wallet({signature}) ($0 off-chain signature)";
+                Err(if has_bound {
+                    invalid_input(base)
+                } else {
+                    invalid_input(&format!("{base}. {MCP_SESSION_HINT}"))
+                })
+            }
+        }
     }
 
     /// Require a session that has PROVEN wallet ownership, returning the CAIP-10 mailbox address.
@@ -4878,19 +4918,31 @@ impl SwarmTipsMcp {
     }
 
     /// Phase 1 of agent_verify_wallet: proxy a challenge nonce from game-api's
-    /// nonce machine (Solana or EVM route by wallet shape).
-    async fn issue_verify_challenge(&self, bound: &str) -> Result<CallToolResult, McpError> {
+    /// nonce machine (Solana or EVM route by wallet shape) and cache it as the
+    /// session's pending nonce so phase 2 can omit `nonce`.
+    async fn issue_verify_challenge(
+        &self,
+        parts: Option<&http::request::Parts>,
+        bound: &str,
+    ) -> Result<CallToolResult, McpError> {
         let native = native_wallet_address(bound);
         let nonce = mint_challenge_nonce(&self.state.game_api, native)
             .await
             .map_err(|e| {
                 McpError::internal_error(format!("challenge issuance failed: {e}"), None)
             })?;
+        if let Some(session_id) = session_id_from_parts(parts) {
+            let _ = self
+                .state
+                .session_binding
+                .set_pending_nonce(&session_id, bound, &nonce)
+                .await;
+        }
         Ok(text_result(&serde_json::json!({
             "phase": "challenge",
             "wallet": native,
             "nonce": nonce,
-            "next": "EITHER sign this nonce with your wallet key and call agent_verify_wallet {nonce, signature} (base58 ed25519 for Solana, 0x EIP-191 personal_sign for EVM), OR (Solana, stronger tier) land a transaction carrying the nonce as an SPL-Memo and call agent_verify_wallet {nonce, tx_signature}.",
+            "next": "EITHER sign this nonce with your wallet key and call agent_verify_wallet {signature} (nonce is auto-filled from your session if omitted; base58 ed25519 for Solana, 0x EIP-191 personal_sign for EVM), OR (Solana, stronger tier) land a transaction carrying the nonce as an SPL-Memo and call agent_verify_wallet {tx_signature}.",
         })))
     }
 
@@ -8283,5 +8335,141 @@ mod tests {
             rpc_server.received_requests().await.unwrap().is_empty(),
             "Solana RPC must NEVER receive a tampered transaction"
         );
+    }
+
+    fn build_test_mcp_instance(
+        orchestrator_url: String,
+        game_api_url: String,
+        rpc_url: String,
+    ) -> SwarmTipsMcp {
+        let rpc_client = reqwest::Client::new();
+        let game_sessions = Arc::new(GameSessionManager::new_for_test(
+            game_api_url.clone(),
+            rpc_url.clone(),
+        ));
+        let shared = Arc::new(SharedState {
+            orchestrator: OrchestratorProxy::new(orchestrator_url, "http://127.0.0.1:9".into()),
+            game_api: GameApiProxy::new(game_api_url).expect("valid test game_api url"),
+            solana_rpc_url: rpc_url.clone(),
+            solana_rpc_url_mainnet: rpc_url.clone(),
+            solana_rpc_url_devnet: rpc_url,
+            rpc_client,
+            game_sessions,
+            session_binding: Arc::new(McpSessionBinding::new_in_memory_for_test()),
+            listings: Arc::new(ListingsState::new_for_test()),
+            discovery: None,
+            inbox: Arc::new(crate::inbox::Inbox::new_for_test()),
+            inbox_seed_wallets: std::collections::HashSet::new(),
+            show_testnet_tools: false,
+            oracle_keypair: None,
+            jwt_secret: None,
+        });
+        SwarmTipsMcp::new(shared, crate::surfaces::Surface::Swarm)
+    }
+
+    #[tokio::test]
+    async fn register_wallet_then_agent_verify_wallet_without_nonce_uses_pending_nonce_and_echo_hint(
+    ) {
+        use solana_sdk::signer::Signer;
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let orch = MockServer::start().await;
+        let game_api = MockServer::start().await;
+        let rpc = MockServer::start().await;
+
+        let agent = solana_sdk::signature::Keypair::new();
+        let pubkey_str = agent.pubkey().to_string();
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":0}}),
+            ))
+            .mount(&rpc)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/auth/challenge"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "nonce": "auto-session-nonce-99" })),
+            )
+            .expect(1)
+            .mount(&game_api)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/auth/verify"))
+            .and(body_partial_json(serde_json::json!({
+                "wallet": pubkey_str,
+                "nonce": "auto-session-nonce-99",
+                "signature": "sig-over-nonce-99",
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "token": "verified-jwt-99" })),
+            )
+            .expect(1)
+            .mount(&game_api)
+            .await;
+
+        let mcp = build_test_mcp_instance(orch.uri(), game_api.uri(), rpc.uri());
+        let make_parts = || {
+            http::Request::builder()
+                .header(MCP_SESSION_ID_HEADER, "sess-auto-nonce")
+                .body(())
+                .unwrap()
+                .into_parts()
+                .0
+        };
+
+        // Missing Mcp-Session-Id surfaces the echo-header guidance.
+        let missing_parts = http::Request::builder().body(()).unwrap().into_parts().0;
+        let missing_err = mcp
+            .agent_verify_wallet(
+                Parameters(AgentVerifyWalletArgs::default()),
+                Extension(missing_parts),
+            )
+            .await
+            .expect_err("missing Mcp-Session-Id must fail");
+        assert!(
+            missing_err
+                .message
+                .contains("Ensure your MCP client echoes the Mcp-Session-Id header"),
+            "got: {}",
+            missing_err.message
+        );
+
+        // 1. register_wallet returns verify_nonce and caches it as pending_nonce on the session.
+        let reg_res = mcp
+            .register_wallet(
+                Parameters(GameRegisterWalletArgs {
+                    pubkey: pubkey_str.clone(),
+                    nonce: None,
+                    signature: None,
+                    tx_signature: None,
+                }),
+                Extension(make_parts()),
+            )
+            .await
+            .expect("register_wallet succeeds");
+        let reg_json = reg_res.structured_content.expect("structured");
+        assert_eq!(reg_json["verify_nonce"], "auto-session-nonce-99");
+
+        // 2. agent_verify_wallet WITHOUT passing `nonce` auto-fills pending_nonce from session!
+        let verify_res = mcp
+            .agent_verify_wallet(
+                Parameters(AgentVerifyWalletArgs {
+                    nonce: None,
+                    signature: Some("sig-over-nonce-99".into()),
+                    tx_signature: None,
+                }),
+                Extension(make_parts()),
+            )
+            .await
+            .expect("agent_verify_wallet without explicit nonce must use pending_nonce");
+        let verify_json = verify_res.structured_content.expect("structured");
+        assert_eq!(verify_json["status"], "verified");
+        assert_eq!(verify_json["wallet"], pubkey_str);
     }
 }

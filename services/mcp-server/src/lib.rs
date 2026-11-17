@@ -160,13 +160,24 @@ pub async fn initialize_with_dependencies(
     let game_db = Arc::new(open_firestore(&cfg.gcp_project_id).await);
     let database_id = game_db.get_options().database_id.clone();
     let (rpc_url_mainnet, rpc_url_devnet) = load_per_network_rpcs(&cfg).await;
+    // game-api's session secret: lets /internal/* calls (and post-stake queue
+    // joins in GameSessionManager) carry a short-lived svc token preserving
+    // `is_ai: true` for MCP agents, keys deterministic webhook secret derivation
+    // and cross-pod Mcp-Session-Id HMAC verification, enables 24h session JWT
+    // minting/auto-refresh, and authenticates stateless Bearer /mcp calls.
+    let game_jwt_secret = config::load_optional_secret(&cfg.gcp_project_id, "jwt-secret").await;
+    if game_jwt_secret.is_none() {
+        tracing::warn!("jwt-secret unavailable — game-api /internal/* calls go unauthenticated, Bearer /mcp auth disabled, and session JWT auto-refresh disabled");
+    }
+
     let mut game_sessions = GameSessionManager::new(
         cfg.game_api_url.clone(),
         cfg.solana_rpc_url.clone(),
         rpc_url_mainnet.clone(),
         rpc_url_devnet.clone(),
         Arc::clone(&game_db),
-    );
+    )
+    .with_internal_jwt_secret(game_jwt_secret.clone());
     if let Some(transport) = &dependencies.game {
         game_sessions = game_sessions.with_transport(Arc::clone(transport));
     }
@@ -174,16 +185,6 @@ pub async fn initialize_with_dependencies(
         game_sessions = game_sessions.with_realtime(Arc::clone(connector));
     }
     let game_sessions = Arc::new(game_sessions.with_shutdown(ct.child_token()));
-
-    // game-api's session secret: lets /internal/* calls carry a short-lived
-    // token for the MCP-verified wallet (required once game-api enforces
-    // INTERNAL_AUTH_REQUIRED), keys deterministic webhook secret derivation
-    // and cross-pod Mcp-Session-Id HMAC verification, enables 24h session JWT
-    // minting/auto-refresh, and authenticates stateless Bearer /mcp calls.
-    let game_jwt_secret = config::load_optional_secret(&cfg.gcp_project_id, "jwt-secret").await;
-    if game_jwt_secret.is_none() {
-        tracing::warn!("jwt-secret unavailable — game-api /internal/* calls go unauthenticated, Bearer /mcp auth disabled, and session JWT auto-refresh disabled");
-    }
 
     let session_binding = Arc::new(
         McpSessionBinding::new(Arc::clone(&game_db)).with_jwt_secret(game_jwt_secret.clone()),
@@ -848,11 +849,15 @@ impl McpServices {
     async fn handle(&self, req: axum::extract::Request) -> axum::response::Response {
         use axum::response::IntoResponse;
 
+        if *req.method() == axum::http::Method::OPTIONS {
+            return mcp_preflight_response(req.headers());
+        }
+        let req_headers = req.headers().clone();
         let (parts, body) = req.into_parts();
         let bytes = match axum::body::to_bytes(body, MAX_MCP_REQUEST_BYTES).await {
             Ok(b) => b,
             Err(_) => {
-                return (
+                let mut resp = (
                     axum::http::StatusCode::PAYLOAD_TOO_LARGE,
                     axum::Json(serde_json::json!({
                         "error": "payload_too_large",
@@ -860,6 +865,8 @@ impl McpServices {
                     })),
                 )
                     .into_response();
+                attach_mcp_cors_headers(&req_headers, resp.headers_mut());
+                return resp;
             }
         };
         let req = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
@@ -874,7 +881,9 @@ impl McpServices {
             surfaces::Surface::Shillbot => self.shillbot.handle(req).await,
             surfaces::Surface::Game => self.game.handle(req).await,
         };
-        response.map(axum::body::Body::new)
+        let mut resp = response.map(axum::body::Body::new);
+        attach_mcp_cors_headers(&req_headers, resp.headers_mut());
+        resp
     }
 }
 
@@ -1004,6 +1013,148 @@ pub(crate) fn verify_signed_mcp_session_id(token: &str, key: &[u8; 32]) -> bool 
     mac.verify_slice(&tag_bytes).is_ok()
 }
 
+/// Internal header set by `combined-api` ONLY after verifying a Google OIDC
+/// callback token on `/_internal/*` (and stripped from all public requests).
+pub(crate) const COMBINED_CALLBACK_VERIFIED_HEADER: &str = "x-combined-callback-verified";
+
+fn constant_time_eq_bytes(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+pub(crate) fn bearer_authorized(
+    headers: &axum::http::HeaderMap,
+    expected_key: Option<&str>,
+) -> bool {
+    let provided = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+    matches!(
+        (expected_key, provided),
+        (Some(exp), Some(got)) if !exp.is_empty() && constant_time_eq_bytes(got.as_bytes(), exp.as_bytes())
+    )
+}
+
+/// Shared authorization gate for internal admin and Google Cloud Workflows /
+/// Scheduler callback routes:
+/// 1. Trusts `x-combined-callback-verified: 1` ONLY when dispatched in-process
+///    by `combined-api` (`api_transport::current_caller().is_some()`), so an
+///    external HTTP caller can never spoof the header (`CRIT-15`).
+/// 2. Otherwise requires `Authorization: Bearer <internal_api_key>` (constant-time,
+///    fail-closed when unset or empty).
+pub(crate) fn internal_admin_authorized(
+    headers: &axum::http::HeaderMap,
+    expected_key: Option<&str>,
+) -> bool {
+    if api_transport::current_caller().is_some()
+        && headers
+            .get(COMBINED_CALLBACK_VERIFIED_HEADER)
+            .and_then(|v| v.to_str().ok())
+            == Some("1")
+    {
+        return true;
+    }
+    bearer_authorized(headers, expected_key)
+}
+
+const ALLOWED_FIRST_PARTY_ORIGINS: &[&str] = &[
+    "https://swarm.tips",
+    "https://www.swarm.tips",
+    "https://mcp.swarm.tips",
+    "https://shillbot.org",
+    "https://www.shillbot.org",
+    "https://mcp.shillbot.org",
+    "https://coordination.game",
+    "https://www.coordination.game",
+    "https://mcp.coordination.game",
+];
+
+fn is_valid_loopback_port(port_str: &str) -> bool {
+    !port_str.is_empty()
+        && port_str.len() <= 5
+        && port_str.bytes().all(|b| b.is_ascii_digit())
+        && port_str.parse::<u16>().is_ok_and(|p| p > 0)
+}
+
+fn is_allowed_loopback_origin(origin: &str) -> bool {
+    for host in ["http://localhost", "http://127.0.0.1", "http://[::1]"] {
+        if origin == host {
+            return true;
+        }
+        if let Some(rest) = origin.strip_prefix(host) {
+            if let Some(port) = rest.strip_prefix(':') {
+                if is_valid_loopback_port(port) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Validate a browser `Origin` header against the strict first-party + loopback
+/// allowlist (`P1-6`). Never returns `*` or reflects untrusted origins.
+pub(crate) fn allowed_browser_origin(
+    headers: &axum::http::HeaderMap,
+) -> Option<axum::http::HeaderValue> {
+    let raw = headers
+        .get(axum::http::header::ORIGIN)?
+        .to_str()
+        .ok()?
+        .trim();
+    if ALLOWED_FIRST_PARTY_ORIGINS.contains(&raw) || is_allowed_loopback_origin(raw) {
+        axum::http::HeaderValue::from_str(raw).ok()
+    } else {
+        None
+    }
+}
+
+/// Attach strict allowlisted CORS headers onto a `/mcp` response (`P1-6`).
+/// Always sets `Vary: Origin`; emits `Access-Control-Allow-Origin` and
+/// `Access-Control-Expose-Headers: mcp-session-id` ONLY for allowlisted origins.
+pub(crate) fn attach_mcp_cors_headers(
+    req_headers: &axum::http::HeaderMap,
+    resp_headers: &mut axum::http::HeaderMap,
+) {
+    resp_headers.insert(
+        axum::http::header::VARY,
+        axum::http::HeaderValue::from_static("Origin"),
+    );
+    if let Some(origin_val) = allowed_browser_origin(req_headers) {
+        resp_headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin_val);
+        resp_headers.insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+            axum::http::HeaderValue::from_static("GET, POST, DELETE, OPTIONS"),
+        );
+        resp_headers.insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+            axum::http::HeaderValue::from_static(
+                "authorization, content-type, accept, mcp-session-id, mcp-protocol-version, last-event-id",
+            ),
+        );
+        resp_headers.insert(
+            axum::http::header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            axum::http::HeaderValue::from_static("mcp-session-id"),
+        );
+    }
+}
+
+pub(crate) fn mcp_preflight_response(
+    req_headers: &axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut resp = axum::http::StatusCode::NO_CONTENT.into_response();
+    attach_mcp_cors_headers(req_headers, resp.headers_mut());
+    resp
+}
+
 #[derive(Clone)]
 pub(crate) struct McpSessionMiddlewareState {
     pub key: [u8; 32],
@@ -1028,46 +1179,62 @@ async fn ensure_mcp_session_id(
     use axum::response::IntoResponse;
 
     let header = axum::http::HeaderName::from_static("mcp-session-id");
-    let is_mcp = req.uri().path().starts_with("/mcp");
+    let is_mcp = req.uri().path() == "/mcp" || req.uri().path().starts_with("/mcp/");
     if !is_mcp {
         return next.run(req).await;
     }
+
+    if *req.method() == axum::http::Method::OPTIONS {
+        return mcp_preflight_response(req.headers());
+    }
+
+    let req_headers = req.headers().clone();
+    let with_cors = |mut resp: axum::response::Response| {
+        attach_mcp_cors_headers(&req_headers, resp.headers_mut());
+        resp
+    };
 
     let bearer_auth = if req
         .headers()
         .contains_key(axum::http::header::AUTHORIZATION)
     {
         let Some(token) = extract_bearer_token(req.headers()).map(str::to_owned) else {
-            return (
-                axum::http::StatusCode::UNAUTHORIZED,
-                axum::Json(serde_json::json!({
-                    "error": "invalid_bearer_token",
-                    "message": "Authorization header must use Bearer <jwt>.",
-                })),
-            )
-                .into_response();
+            return with_cors(
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    axum::Json(serde_json::json!({
+                        "error": "invalid_bearer_token",
+                        "message": "Authorization header must use Bearer <jwt>.",
+                    })),
+                )
+                    .into_response(),
+            );
         };
         let Some(secret) = state.jwt_secret.as_deref() else {
-            return (
-                axum::http::StatusCode::UNAUTHORIZED,
-                axum::Json(serde_json::json!({
-                    "error": "bearer_auth_unavailable",
-                    "message": "Bearer JWT verification is not configured on this server.",
-                })),
-            )
-                .into_response();
+            return with_cors(
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    axum::Json(serde_json::json!({
+                        "error": "bearer_auth_unavailable",
+                        "message": "Bearer JWT verification is not configured on this server.",
+                    })),
+                )
+                    .into_response(),
+            );
         };
         let Ok(verified) =
             crate::session_binding::VerifiedWallet::from_user_bearer_jwt(&token, secret)
         else {
-            return (
-                axum::http::StatusCode::UNAUTHORIZED,
-                axum::Json(serde_json::json!({
-                    "error": "invalid_bearer_token",
-                    "message": "Invalid, expired, or non-user Bearer token.",
-                })),
-            )
-                .into_response();
+            return with_cors(
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    axum::Json(serde_json::json!({
+                        "error": "invalid_bearer_token",
+                        "message": "Invalid, expired, or non-user Bearer token.",
+                    })),
+                )
+                    .into_response(),
+            );
         };
         Some((verified, token))
     } else {
@@ -1085,14 +1252,16 @@ async fn ensure_mcp_session_id(
     let (session_id, session_value) = match provided {
         Some(existing) => {
             if !verify_signed_mcp_session_id(&existing, &state.key) {
-                return (
-                    axum::http::StatusCode::NOT_FOUND,
-                    axum::Json(serde_json::json!({
-                        "error": "invalid_mcp_session",
-                        "message": "Invalid or unissued Mcp-Session-Id; initialize without Mcp-Session-Id to obtain a server-signed session.",
-                    })),
-                )
-                    .into_response();
+                return with_cors(
+                    (
+                        axum::http::StatusCode::NOT_FOUND,
+                        axum::Json(serde_json::json!({
+                            "error": "invalid_mcp_session",
+                            "message": "Invalid or unissued Mcp-Session-Id; initialize without Mcp-Session-Id to obtain a server-signed session. Ensure your MCP client echoes the Mcp-Session-Id header returned by initialize, then call register_wallet and agent_verify_wallet.",
+                        })),
+                    )
+                        .into_response(),
+                );
             }
             let val = axum::http::HeaderValue::from_str(&existing).ok();
             (existing, val)
@@ -1116,14 +1285,16 @@ async fn ensure_mcp_session_id(
     {
         if let Some(bound_wallet) = sb.resolve(&session_id).await {
             if !crate::jwt::wallets_match(&bound_wallet, verified.as_str()) {
-                return (
-                    axum::http::StatusCode::BAD_REQUEST,
-                    axum::Json(serde_json::json!({
-                        "error": "conflicting_auth_headers",
-                        "message": "Authorization: Bearer wallet conflicts with bound Mcp-Session-Id wallet.",
-                    })),
-                )
-                    .into_response();
+                return with_cors(
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        axum::Json(serde_json::json!({
+                            "error": "conflicting_auth_headers",
+                            "message": "Authorization: Bearer wallet conflicts with bound Mcp-Session-Id wallet.",
+                        })),
+                    )
+                        .into_response(),
+                );
             }
         }
         let needs_bind = match sb.resolve_access_token(&session_id).await {
@@ -1145,6 +1316,7 @@ async fn ensure_mcp_session_id(
             resp.headers_mut().insert(header, value);
         }
     }
+    attach_mcp_cors_headers(&req_headers, resp.headers_mut());
     resp
 }
 
@@ -2735,5 +2907,151 @@ mod readiness_tests {
             "0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c"
         );
         assert_eq!(json3["evm_call"]["value_wei"], "0");
+    }
+
+    #[tokio::test]
+    async fn mcp_cors_preflight_and_post_allow_first_party_origins_and_reject_untrusted_origins() {
+        let state = std::sync::Arc::new(super::McpSessionMiddlewareState {
+            key: super::derive_mcp_session_key(Some(TEST_JWT_SECRET)),
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            session_binding: None,
+        });
+        let app = axum::Router::new()
+            .route(
+                "/mcp",
+                axum::routing::any(|req: axum::extract::Request| async move {
+                    if *req.method() == axum::http::Method::OPTIONS {
+                        return super::mcp_preflight_response(req.headers());
+                    }
+                    use axum::response::IntoResponse;
+                    (axum::http::StatusCode::OK, "ok").into_response()
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                super::ensure_mcp_session_id,
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let url = format!("http://{addr}/mcp");
+        let client = reqwest::Client::new();
+
+        // 1. Allowlisted first-party origin (`https://swarm.tips`) gets 204 preflight + full MCP CORS headers.
+        let preflight = client
+            .request(reqwest::Method::OPTIONS, &url)
+            .header("Origin", "https://swarm.tips")
+            .header("Access-Control-Request-Method", "POST")
+            .header(
+                "Access-Control-Request-Headers",
+                "content-type, mcp-session-id, mcp-protocol-version",
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(preflight.status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(
+            preflight
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("https://swarm.tips")
+        );
+        assert_eq!(
+            preflight
+                .headers()
+                .get("access-control-allow-methods")
+                .and_then(|v| v.to_str().ok()),
+            Some("GET, POST, DELETE, OPTIONS")
+        );
+        let allow_headers = preflight
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(allow_headers.contains("mcp-session-id"));
+        assert!(allow_headers.contains("mcp-protocol-version"));
+        assert_eq!(
+            preflight
+                .headers()
+                .get("access-control-expose-headers")
+                .and_then(|v| v.to_str().ok()),
+            Some("mcp-session-id")
+        );
+        assert_eq!(
+            preflight
+                .headers()
+                .get("vary")
+                .and_then(|v| v.to_str().ok()),
+            Some("Origin")
+        );
+        assert!(
+            preflight.headers().get("mcp-session-id").is_none(),
+            "OPTIONS preflight must not mint a throwaway Mcp-Session-Id"
+        );
+
+        // 2. Actual POST /mcp from allowlisted localhost dev origin exposes mcp-session-id.
+        let post_ok = client
+            .post(&url)
+            .header("Origin", "http://localhost:5173")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(post_ok.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            post_ok
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("http://localhost:5173")
+        );
+        assert_eq!(
+            post_ok
+                .headers()
+                .get("access-control-expose-headers")
+                .and_then(|v| v.to_str().ok()),
+            Some("mcp-session-id")
+        );
+        assert!(post_ok.headers().contains_key("mcp-session-id"));
+
+        // 3. Untrusted origins (including localhost-prefix subdomain spoofing) NEVER receive Access-Control-Allow-Origin.
+        for bad_origin in [
+            "https://evil.example",
+            "http://localhost.evil.example",
+            "https://swarm.tips.evil.example",
+        ] {
+            let bad_opt = client
+                .request(reqwest::Method::OPTIONS, &url)
+                .header("Origin", bad_origin)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(bad_opt.status(), reqwest::StatusCode::NO_CONTENT);
+            assert!(
+                bad_opt
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .is_none(),
+                "untrusted origin {bad_origin} must not receive Access-Control-Allow-Origin"
+            );
+
+            let bad_post = client
+                .post(&url)
+                .header("Origin", bad_origin)
+                .send()
+                .await
+                .unwrap();
+            assert!(
+                bad_post
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .is_none(),
+                "POST from untrusted origin {bad_origin} must not receive Access-Control-Allow-Origin"
+            );
+        }
     }
 }

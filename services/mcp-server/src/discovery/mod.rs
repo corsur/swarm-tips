@@ -42,9 +42,8 @@ pub const AUTO_REFRESH_STALE_HOURS: i64 = 24;
 /// Minimum cooldown (seconds) between auto-refresh triggers so concurrent
 /// searches while the refresh workflow runs (~30-60s) do not stampede.
 pub const AUTO_REFRESH_COOLDOWN_SECS: i64 = 3600;
-/// Internal header set by `combined-api` only after verifying a Google OIDC
-/// callback token on `/_internal/mcp/*` (and stripped from all public requests).
-pub const COMBINED_CALLBACK_VERIFIED_HEADER: &str = "x-combined-callback-verified";
+#[cfg(test)]
+const COMBINED_CALLBACK_VERIFIED_HEADER: &str = crate::COMBINED_CALLBACK_VERIFIED_HEADER;
 
 /// Cached enriched index. Refreshed by the daily/on-demand refresh handler;
 /// served by the earning-candidates endpoint. In-memory cache is fine —
@@ -55,9 +54,27 @@ pub struct DiscoveryCache {
     pub last_refreshed_at: chrono::DateTime<chrono::Utc>,
 }
 
+pub struct DiscoveryDb(Option<FirestoreDb>);
+
+impl DiscoveryDb {
+    pub fn get(&self) -> Option<&FirestoreDb> {
+        self.0.as_ref()
+    }
+}
+
+impl std::ops::Deref for DiscoveryDb {
+    type Target = FirestoreDb;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("FirestoreDb configured on DiscoveryState")
+    }
+}
+
 /// Discovery state attached to the mcp-server router.
 pub struct DiscoveryState {
-    pub db: FirestoreDb,
+    pub db: DiscoveryDb,
     pub http: reqwest::Client,
     pub cache: Mutex<Option<DiscoveryCache>>,
     /// BM25 search index over the cached catalog. Rebuilt inside
@@ -88,12 +105,29 @@ impl DiscoveryState {
         github_token: Option<String>,
     ) -> Self {
         Self {
-            db,
+            db: DiscoveryDb(Some(db)),
             http,
             cache: Mutex::new(None),
             search_index: Mutex::new(None),
             llm,
             github_token,
+            workflows: None,
+            last_refresh_triggered_at: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(servers: Vec<EnrichedServer>) -> Self {
+        Self {
+            db: DiscoveryDb(None),
+            http: reqwest::Client::new(),
+            cache: Mutex::new(Some(DiscoveryCache {
+                servers,
+                last_refreshed_at: chrono::Utc::now(),
+            })),
+            search_index: Mutex::new(None),
+            llm: None,
+            github_token: None,
             workflows: None,
             last_refresh_triggered_at: Mutex::new(None),
         }
@@ -908,12 +942,46 @@ pub async fn load_from_firestore(db: &FirestoreDb) -> Result<Vec<EnrichedServer>
 
 use axum::response::IntoResponse;
 
+fn attach_discovery_read_cors(
+    req_headers: &axum::http::HeaderMap,
+    resp_headers: &mut axum::http::HeaderMap,
+) {
+    resp_headers.insert(
+        axum::http::header::VARY,
+        axum::http::HeaderValue::from_static("Origin"),
+    );
+    resp_headers.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+        axum::http::HeaderValue::from_static("GET, OPTIONS"),
+    );
+    resp_headers.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+        axum::http::HeaderValue::from_static("content-type, authorization"),
+    );
+    if req_headers.contains_key(axum::http::header::ORIGIN) {
+        if let Some(allowed) = crate::allowed_browser_origin(req_headers) {
+            resp_headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, allowed);
+        }
+    } else {
+        resp_headers.insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            axum::http::HeaderValue::from_static("*"),
+        );
+    }
+}
+
+fn discovery_read_preflight(req_headers: axum::http::HeaderMap) -> axum::response::Response {
+    let mut resp = axum::http::StatusCode::NO_CONTENT.into_response();
+    attach_discovery_read_cors(&req_headers, resp.headers_mut());
+    resp
+}
+
 /// GET /internal/mcp/earning-candidates → Vec<EnrichedServer>
 ///
 /// Returns servers Layer 1 flagged as earning opportunities. Cache-backed,
 /// served from in-memory if fresh, falls back to Firestore on cold start.
 pub fn earning_candidates_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {
-    axum::routing::get(move || {
+    axum::routing::get(move |req_headers: axum::http::HeaderMap| {
         let state = state.clone();
         async move {
             let candidates = get_earning_candidates(&state).await;
@@ -921,8 +989,13 @@ pub fn earning_candidates_handler(state: Arc<DiscoveryState>) -> axum::routing::
                 count = candidates.len(),
                 "served /internal/mcp/earning-candidates"
             );
-            axum::Json(candidates).into_response()
+            let mut resp = axum::Json(candidates).into_response();
+            attach_discovery_read_cors(&req_headers, resp.headers_mut());
+            resp
         }
+    })
+    .options(|req_headers: axum::http::HeaderMap| async move {
+        discovery_read_preflight(req_headers)
     })
 }
 
@@ -1007,44 +1080,8 @@ pub fn search_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter
     )
 }
 
-fn constant_time_eq_str(a: &str, b: &str) -> bool {
-    let ab = a.as_bytes();
-    let bb = b.as_bytes();
-    if ab.len() != bb.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (&x, &y) in ab.iter().zip(bb.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-fn bearer_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>) -> bool {
-    let provided = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "));
-    matches!(
-        (expected_key, provided),
-        (Some(exp), Some(got)) if !exp.is_empty() && constant_time_eq_str(got, exp)
-    )
-}
-
 fn refresh_authorized(headers: &axum::http::HeaderMap, expected_key: Option<&str>) -> bool {
-    // Only trust `x-combined-callback-verified: 1` when dispatched in-process by
-    // `combined-api` (`api_transport::current_caller().is_some()`). External HTTP
-    // requests to standalone `mcp.swarm.tips` have `current_caller().is_none()`
-    // and MUST NOT bypass authentication with a forged header (`CRIT-15`).
-    if api_transport::current_caller().is_some()
-        && headers
-            .get(COMBINED_CALLBACK_VERIFIED_HEADER)
-            .and_then(|v| v.to_str().ok())
-            == Some("1")
-    {
-        return true;
-    }
-    bearer_authorized(headers, expected_key)
+    crate::internal_admin_authorized(headers, expected_key)
 }
 
 /// POST /internal/mcp/refresh → trigger a fresh pull + classify cycle.
@@ -1087,13 +1124,18 @@ pub fn refresh_handler(
 /// dependency`). Tier-2 priority — these are the building blocks other
 /// agents can compose into earning loops.
 pub fn primitives_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter {
-    axum::routing::get(move || {
+    axum::routing::get(move |req_headers: axum::http::HeaderMap| {
         let state = state.clone();
         async move {
             let primitives = get_primitives(&state).await;
             tracing::info!(count = primitives.len(), "served /internal/mcp/primitives");
-            axum::Json(primitives).into_response()
+            let mut resp = axum::Json(primitives).into_response();
+            attach_discovery_read_cors(&req_headers, resp.headers_mut());
+            resp
         }
+    })
+    .options(|req_headers: axum::http::HeaderMap| async move {
+        discovery_read_preflight(req_headers)
     })
 }
 
@@ -1109,7 +1151,7 @@ pub fn deep_analyze_handler(
         let state = state.clone();
         let expected_key = expected_key.clone();
         async move {
-            if !bearer_authorized(&headers, expected_key.as_deref()) {
+            if !crate::internal_admin_authorized(&headers, expected_key.as_deref()) {
                 return (
                     axum::http::StatusCode::UNAUTHORIZED,
                     "{\"error\": \"unauthorized\"}".to_string(),
@@ -1144,7 +1186,7 @@ pub fn llm_classify_handler(
         let state = state.clone();
         let expected_key = expected_key.clone();
         async move {
-            if !bearer_authorized(&headers, expected_key.as_deref()) {
+            if !crate::internal_admin_authorized(&headers, expected_key.as_deref()) {
                 return (
                     axum::http::StatusCode::UNAUTHORIZED,
                     "{\"error\": \"unauthorized\"}".to_string(),
@@ -1368,5 +1410,146 @@ mod tests {
         );
         assert!(refresh_authorized(&h2, Some("secret-key")));
         assert!(!refresh_authorized(&h2, Some("wrong-key")));
+    }
+
+    #[tokio::test]
+    async fn earning_candidates_and_primitives_serve_cors_and_options_preflight() {
+        let state = Arc::new(DiscoveryState::new_for_test(vec![srv("a/1")]));
+        let app = axum::Router::new()
+            .route(
+                "/internal/mcp/earning-candidates",
+                earning_candidates_handler(state.clone()),
+            )
+            .route("/internal/mcp/primitives", primitives_handler(state));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::new();
+
+        for route in [
+            "/internal/mcp/earning-candidates",
+            "/internal/mcp/primitives",
+        ] {
+            let opt_resp = client
+                .request(reqwest::Method::OPTIONS, format!("{base}{route}"))
+                .header("Origin", "https://swarm.tips")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(opt_resp.status(), reqwest::StatusCode::NO_CONTENT);
+            assert_eq!(
+                opt_resp
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some("https://swarm.tips")
+            );
+            assert_eq!(
+                opt_resp
+                    .headers()
+                    .get("access-control-allow-methods")
+                    .and_then(|v| v.to_str().ok()),
+                Some("GET, OPTIONS")
+            );
+
+            let get_resp = client
+                .get(format!("{base}{route}"))
+                .header("Origin", "https://swarm.tips")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(get_resp.status(), reqwest::StatusCode::OK);
+            assert_eq!(
+                get_resp
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some("https://swarm.tips")
+            );
+
+            let bad_resp = client
+                .get(format!("{base}{route}"))
+                .header("Origin", "https://evil.example")
+                .send()
+                .await
+                .unwrap();
+            assert!(
+                bad_resp
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .is_none(),
+                "untrusted origin must not receive Access-Control-Allow-Origin on {route}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn deep_analyze_and_llm_classify_handlers_accept_verified_callback_and_reject_unauthenticated(
+    ) {
+        let state = Arc::new(DiscoveryState::new_for_test(Vec::new()));
+        let app = axum::Router::new()
+            .route(
+                "/internal/mcp/deep-analyze",
+                deep_analyze_handler(state.clone(), Some("internal-secret".into())),
+            )
+            .route(
+                "/internal/mcp/llm-classify",
+                llm_classify_handler(state, Some("internal-secret".into())),
+            )
+            .layer(axum::middleware::from_fn(
+                |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                    if req.headers().contains_key("x-test-in-process") {
+                        let caller = api_transport::Caller {
+                            peer: "127.0.0.1:4321".parse().unwrap(),
+                            user_agent: None,
+                        };
+                        api_transport::with_caller(caller, next.run(req)).await
+                    } else {
+                        next.run(req).await
+                    }
+                },
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::new();
+
+        for route in ["/internal/mcp/deep-analyze", "/internal/mcp/llm-classify"] {
+            // 1. Unauthenticated -> 401.
+            let unauth_resp = client.post(format!("{base}{route}")).send().await.unwrap();
+            assert_eq!(unauth_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+            // 2. External spoofed x-combined-callback-verified: 1 (no CallerContext) -> 401.
+            let spoofed_resp = client
+                .post(format!("{base}{route}"))
+                .header(COMBINED_CALLBACK_VERIFIED_HEADER, "1")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(spoofed_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+            // 3. Trusted in-process combined-api callback (`with_caller` + `x-combined-callback-verified: 1`)
+            //    passes the 401 gate (200 on deep-analyze, 503 XAI_API_KEY unset on llm-classify).
+            let verified_resp = client
+                .post(format!("{base}{route}"))
+                .header("x-test-in-process", "1")
+                .header(COMBINED_CALLBACK_VERIFIED_HEADER, "1")
+                .send()
+                .await
+                .unwrap();
+            assert_ne!(
+                verified_resp.status(),
+                reqwest::StatusCode::UNAUTHORIZED,
+                "verified in-process callback must pass auth on {route}"
+            );
+        }
     }
 }

@@ -193,14 +193,47 @@ def make_finalize_ix(task: str, recipient: str) -> tuple[str, list[str], bytes]:
     return (vst.SHILLBOT_ID, accts, vst.anchor_disc("finalize_task"))
 
 
-def make_verify_attested_ix(task: str, attester: str) -> tuple[str, list[str], bytes]:
-    data = vst.anchor_disc("verify_task_attested") + struct.pack("<Q", 9_000) + (b"\x33" * 32)
+def make_verify_ix(
+    task: str, feed: str | None = None, score: int = 9_000
+) -> tuple[str, list[str], bytes]:
+    data = vst.anchor_disc("verify_task") + struct.pack("<Q", score) + (b"\x33" * 32)
+    accts = [
+        task,
+        pubkey_from_seed(101),          # [1] global_state
+        feed or pubkey_from_seed(107),  # [2] switchboard_feed
+    ]
+    return (vst.SHILLBOT_ID, accts, data)
+
+
+def make_verify_attested_ix(
+    task: str, attester: str, score: int = 9_000
+) -> tuple[str, list[str], bytes]:
+    data = vst.anchor_disc("verify_task_attested") + struct.pack("<Q", score) + (b"\x33" * 32)
     accts = [
         task,
         pubkey_from_seed(101),  # [1] global_state
         attester,               # [2] attester signer
     ]
     return (vst.SHILLBOT_ID, accts, data)
+
+
+def make_expire_ix(
+    task: str, client: str, claimed_agent_state: str | None = None
+) -> tuple[str, list[str], bytes]:
+    accts = [task, pubkey_from_seed(101), client]
+    if claimed_agent_state is not None:
+        accts.append(claimed_agent_state)
+    return (vst.SHILLBOT_ID, accts, vst.anchor_disc("expire_task"))
+
+
+def make_route_and_recoup_ix(
+    advance: str, backer: str, recipient: str
+) -> tuple[str, list[str], bytes]:
+    return (
+        vst.EXTENSION_CREDIT_PROGRAM_ID,
+        [advance, backer, recipient],
+        vst.anchor_disc("route_and_recoup"),
+    )
 
 
 class VerifyShillbotTxHardeningTests(unittest.TestCase):
@@ -496,6 +529,171 @@ class VerifyShillbotTxHardeningTests(unittest.TestCase):
             code = vst.main()
         self.assertEqual(code, 0)
         self.assertTrue(json.loads(out_ok.getvalue())["ok"])
+
+    def test_derive_advance_pda_and_devnet_sponsored_advance_pda_guard(self) -> None:
+        advance_pda = vst.derive_advance_pda(self.sponsor, self.wallet)
+        self.assertFalse(vst.is_on_ed25519_curve(vst.b58decode(advance_pda)))
+
+        # Sponsored [claim_task, set_payout_to(advance_pda)] passes without --payout-to
+        sponsored_claim = build_wire_tx(
+            signers=[self.sponsor, self.wallet],
+            instructions=[
+                make_claim_ix(self.task, self.wallet),
+                make_set_payout_ix(self.task, self.wallet, advance_pda),
+            ],
+        )
+        res = vst.verify_tx(sponsored_claim, "claim", self.wallet, task_pda=self.task)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["fee_payer"], self.sponsor)
+
+        # Malicious sponsored hijack to attacker rejected
+        hijack = build_wire_tx(
+            signers=[self.sponsor, self.wallet],
+            instructions=[
+                make_claim_ix(self.task, self.wallet),
+                make_set_payout_ix(self.task, self.wallet, self.attacker),
+            ],
+        )
+        with self.assertRaisesRegex(vst.TransactionMismatchError, "does not match authorized payout"):
+            vst.verify_tx(hijack, "claim", self.wallet, task_pda=self.task)
+
+    def test_gas_policy_phase1_expire_route_and_recoup_verify_backstop_and_reopen_parity(self) -> None:
+        advance_pda = vst.derive_advance_pda(self.sponsor, self.wallet)
+
+        # 1. expire_task: 3 accounts for open/submitted/approved vs 4 accounts for claimed
+        exp_open = build_wire_tx(
+            signers=[self.wallet],
+            instructions=[make_expire_ix(self.task, self.wallet)],
+        )
+        for state in ("open", "submitted", "approved"):
+            self.assertTrue(
+                vst.verify_tx(
+                    exp_open,
+                    "expire",
+                    self.wallet,
+                    task_pda=self.task,
+                    expire_task_state=state,
+                )["ok"]
+            )
+        with self.assertRaisesRegex(vst.TransactionMismatchError, "exact 4 accounts"):
+            vst.verify_tx(
+                exp_open,
+                "expire",
+                self.wallet,
+                task_pda=self.task,
+                expire_task_state="claimed",
+            )
+
+        exp_claimed = build_wire_tx(
+            signers=[self.wallet],
+            instructions=[make_expire_ix(self.task, self.wallet, pubkey_from_seed(108))],
+        )
+        self.assertTrue(
+            vst.verify_tx(
+                exp_claimed,
+                "expire",
+                self.wallet,
+                task_pda=self.task,
+                expire_task_state="claimed",
+            )["ok"]
+        )
+        with self.assertRaisesRegex(vst.TransactionMismatchError, "exact 3 accounts"):
+            vst.verify_tx(
+                exp_claimed,
+                "expire",
+                self.wallet,
+                task_pda=self.task,
+                expire_task_state="submitted",
+            )
+
+        # 2. finalize_task + atomic route_and_recoup (and recipient hijack rejection)
+        fin_recoup = build_wire_tx(
+            signers=[self.wallet],
+            instructions=[
+                make_finalize_ix(self.task, advance_pda),
+                make_route_and_recoup_ix(advance_pda, self.sponsor, self.wallet),
+            ],
+        )
+        self.assertTrue(
+            vst.verify_tx(
+                fin_recoup,
+                "finalize",
+                self.wallet,
+                task_pda=self.task,
+                payout_to=advance_pda,
+            )["ok"]
+        )
+
+        fin_hijack = build_wire_tx(
+            signers=[self.wallet],
+            instructions=[
+                make_finalize_ix(self.task, advance_pda),
+                make_route_and_recoup_ix(advance_pda, self.sponsor, self.attacker),
+            ],
+        )
+        with self.assertRaisesRegex(vst.TransactionMismatchError, "must equal caller wallet"):
+            vst.verify_tx(
+                fin_hijack,
+                "finalize",
+                self.wallet,
+                task_pda=self.task,
+                payout_to=advance_pda,
+            )
+
+        # 3. [set_payout_to(advance_pda), verify_task] backstop
+        verify_backstop = build_wire_tx(
+            signers=[self.wallet],
+            instructions=[
+                make_set_payout_ix(self.task, self.wallet, advance_pda),
+                make_verify_ix(self.task, self.payout),
+            ],
+        )
+        self.assertTrue(
+            vst.verify_tx(
+                verify_backstop,
+                "verify",
+                self.wallet,
+                task_pda=self.task,
+                payout_to=advance_pda,
+                oracle_authority=self.payout,
+            )["ok"]
+        )
+
+        # 4. Competing-agent score-0 reopen bundle [verify_task_attested(0), claim_task, submit_work]
+        reopen_ok = build_wire_tx(
+            signers=[self.wallet, self.sponsor],
+            instructions=[
+                make_verify_attested_ix(self.task, self.sponsor, score=0),
+                make_claim_ix(self.task, self.wallet),
+                make_submit_ix(self.task, self.wallet, "eip155:8453:0x" + "aa" * 32 + ":0"),
+            ],
+        )
+        self.assertTrue(
+            vst.verify_tx(
+                reopen_ok,
+                "submit",
+                self.wallet,
+                task_pda=self.task,
+                oracle_authority=self.sponsor,
+            )["ok"]
+        )
+
+        reopen_bad_score = build_wire_tx(
+            signers=[self.wallet, self.sponsor],
+            instructions=[
+                make_verify_attested_ix(self.task, self.sponsor, score=1_000_000),
+                make_claim_ix(self.task, self.wallet),
+                make_submit_ix(self.task, self.wallet, "eip155:8453:0x" + "aa" * 32 + ":0"),
+            ],
+        )
+        with self.assertRaisesRegex(vst.TransactionMismatchError, "composite_score === 0"):
+            vst.verify_tx(
+                reopen_bad_score,
+                "submit",
+                self.wallet,
+                task_pda=self.task,
+                oracle_authority=self.sponsor,
+            )
 
 
 if __name__ == "__main__":

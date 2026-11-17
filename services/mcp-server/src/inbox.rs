@@ -989,6 +989,55 @@ pub fn reputation_qualifies_for_reputable_tier(
     eigentrust_score > 1e-12 || bug_bounties_received > 0
 }
 
+/// True when `wallet` (CAIP-10 `eip155:...` or bare `0x...`) is an EVM address.
+pub fn is_evm_wallet(wallet: &str) -> bool {
+    let trimmed = wallet.trim();
+    trimmed.starts_with("eip155:") || trimmed.starts_with("0x") || trimmed.starts_with("0X")
+}
+
+/// True when a Mainnet `AgentReputation` record proves real on-chain settlement
+/// activity for an EVM wallet (which cannot submit a Solana SPL-Memo tx).
+pub fn evm_reputation_proves_wallet(rep: &reputation_indexer::AgentReputation) -> bool {
+    reputation_qualifies_for_reputable_tier(rep.eigentrust_score, rep.bug_bounties_received)
+        || rep.settlements_received > 0
+        || rep.settlements_paid > 0
+}
+
+/// Pure check for whether a session-verified wallet satisfies on-chain proof
+/// gates (webhook registration, post reporting, and tier advancement):
+/// Solana SPL-Memo / stake verification doc OR settled Mainnet EVM reputation.
+pub fn has_onchain_wallet_proof_from_signals(
+    caip10: &str,
+    has_wallet_verification_doc: bool,
+    reputation: Option<&reputation_indexer::AgentReputation>,
+) -> bool {
+    has_wallet_verification_doc
+        || (is_evm_wallet(caip10) && reputation.is_some_and(evm_reputation_proves_wallet))
+}
+
+/// Pure sender-tier resolver across both Solana (`wallet_verification` doc) and
+/// EVM (`0x` / `eip155:` settled Mainnet reputation parity).
+pub fn resolve_sender_tier_from_signals(
+    caip10: &str,
+    session_verified: bool,
+    has_wallet_verification_doc: bool,
+    reputation: Option<&reputation_indexer::AgentReputation>,
+) -> SenderTier {
+    if !session_verified {
+        return SenderTier::Unproven;
+    }
+    if is_support_sender(caip10) {
+        return SenderTier::Reputable;
+    }
+    let wallet_verified =
+        has_onchain_wallet_proof_from_signals(caip10, has_wallet_verification_doc, reputation);
+    let has_reputation = wallet_verified
+        && reputation.is_some_and(|r| {
+            reputation_qualifies_for_reputable_tier(r.eigentrust_score, r.bug_bounties_received)
+        });
+    resolve_tier(session_verified, wallet_verified, has_reputation)
+}
+
 // ---------------------------------------------------------------------------
 // Pure page-merge + filter seams (unit-tested without Firestore)
 // ---------------------------------------------------------------------------
@@ -1926,6 +1975,7 @@ pub struct PostPage {
     pub filtered_below_min_trust: usize,
 }
 
+#[derive(Debug)]
 pub struct ReportOutcome {
     pub topic_id: String,
     pub post_id: String,
@@ -1944,8 +1994,24 @@ pub struct ReportOutcome {
 /// interactions, both explicitly ordered: `register_webhook`'s ownership
 /// handshake (an egress-shaped CHECK, before any write) and `send_message`'s
 /// webhook workflow trigger (a best-effort INTERACTION, after all effects).
+struct InboxDb(Option<Arc<FirestoreDb>>);
+
+impl InboxDb {
+    fn get(&self) -> Option<&FirestoreDb> {
+        self.0.as_deref()
+    }
+}
+
+impl std::ops::Deref for InboxDb {
+    type Target = FirestoreDb;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("FirestoreDb configured on Inbox")
+    }
+}
+
 pub struct Inbox {
-    db: Arc<FirestoreDb>,
+    db: InboxDb,
     /// Client for internal trusted notifications (support/board responder).
     http: reqwest::Client,
     /// Workflow trigger for durable webhook delivery. None (or an
@@ -1969,6 +2035,15 @@ pub struct Inbox {
     /// Server-side Secret Manager pepper for deterministic HMAC-PRF derivation
     /// of per-registration `whsec_` keys so Firestore never stores raw secrets.
     webhook_pepper: String,
+    #[cfg(test)]
+    test_reputations:
+        std::sync::Mutex<std::collections::HashMap<String, reputation_indexer::AgentReputation>>,
+    #[cfg(test)]
+    test_webhooks: std::sync::Mutex<std::collections::HashMap<String, WebhookDoc>>,
+    #[cfg(test)]
+    test_posts: std::sync::Mutex<std::collections::HashMap<(String, String), TopicPostDoc>>,
+    #[cfg(test)]
+    test_allow_loopback_webhooks: bool,
 }
 
 impl Inbox {
@@ -1989,7 +2064,7 @@ impl Inbox {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(random_hex_32);
         Self {
-            db,
+            db: InboxDb(Some(db)),
             http,
             workflows,
             self_url,
@@ -1997,7 +2072,70 @@ impl Inbox {
             board_webhook_url,
             responder_secret,
             webhook_pepper,
+            #[cfg(test)]
+            test_reputations: std::sync::Mutex::new(std::collections::HashMap::new()),
+            #[cfg(test)]
+            test_webhooks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            #[cfg(test)]
+            test_posts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            #[cfg(test)]
+            test_allow_loopback_webhooks: false,
         }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test() -> Self {
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("redirect-disabled reqwest client must build");
+        Self {
+            db: InboxDb(None),
+            http,
+            workflows: None,
+            self_url: String::new(),
+            responder_url: String::new(),
+            board_webhook_url: String::new(),
+            responder_secret: None,
+            webhook_pepper: "test-webhook-pepper-0123456789abcdef".to_string(),
+            test_reputations: std::sync::Mutex::new(std::collections::HashMap::new()),
+            test_webhooks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            test_posts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            test_allow_loopback_webhooks: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_test_reputation(
+        self,
+        wallet: &str,
+        rep: reputation_indexer::AgentReputation,
+    ) -> Self {
+        let key = if wallet.starts_with("0x") || wallet.starts_with("0X") {
+            wallet.to_ascii_lowercase()
+        } else {
+            wallet.to_string()
+        };
+        self.test_reputations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key, rep);
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_test_post(self, topic_id: &str, post: TopicPostDoc) -> Self {
+        self.test_posts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((topic_id.to_string(), post.post_id.clone()), post);
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_test_loopback_webhooks(mut self) -> Self {
+        self.test_allow_loopback_webhooks = true;
+        self
     }
 
     pub fn with_board_webhook_url(mut self, url: String) -> Self {
@@ -2049,8 +2187,8 @@ impl Inbox {
     // -- wallet verification ------------------------------------------------
 
     pub async fn wallet_verification(&self, caip10: &str) -> Option<WalletVerificationDoc> {
-        match self
-            .db
+        let db = self.db.get()?;
+        match db
             .fluent()
             .select()
             .by_id_in(INBOX_WALLET_VERIFICATIONS_COLLECTION)
@@ -2064,6 +2202,46 @@ impl Inbox {
                 None
             }
         }
+    }
+
+    async fn lookup_agent_reputation(
+        &self,
+        caip10: &str,
+    ) -> Option<reputation_indexer::AgentReputation> {
+        let raw_addr = caip10_address(caip10);
+        let lookup_key = if raw_addr.starts_with("0x") || raw_addr.starts_with("0X") {
+            raw_addr.to_ascii_lowercase()
+        } else {
+            raw_addr.to_string()
+        };
+        #[cfg(test)]
+        {
+            if let Some(found) = self
+                .test_reputations
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&lookup_key)
+                .cloned()
+            {
+                return Some(found);
+            }
+        }
+        let db = self.db.get()?;
+        crate::reputation::get_agent_reputation(db, &lookup_key).await
+    }
+
+    /// True when `caip10` holds an on-chain ownership/activity proof: either a
+    /// Solana SPL-Memo / stake verification doc OR settled Mainnet EVM
+    /// reputation (`agent_reputation/{0x...}`).
+    pub async fn has_onchain_wallet_proof(&self, caip10: &str) -> bool {
+        if self.wallet_verification(caip10).await.is_some() {
+            return true;
+        }
+        if is_evm_wallet(caip10) {
+            let rep = self.lookup_agent_reputation(caip10).await;
+            return has_onchain_wallet_proof_from_signals(caip10, false, rep.as_ref());
+        }
+        false
     }
 
     /// Record an on-chain ownership proof. First proof wins — an existing doc
@@ -2080,6 +2258,9 @@ impl Inbox {
             method == "memo_tx" || method == "stake_tx",
             "unknown verification method {method}"
         );
+        let Some(db) = self.db.get() else {
+            return Ok(false);
+        };
         if self.wallet_verification(caip10).await.is_some() {
             return Ok(false);
         }
@@ -2089,8 +2270,7 @@ impl Inbox {
             proof_sig: proof_sig.to_string(),
             first_verified_at: FirestoreTimestamp(chrono::Utc::now()),
         };
-        self.db
-            .fluent()
+        db.fluent()
             .update()
             .in_col(INBOX_WALLET_VERIFICATIONS_COLLECTION)
             .document_id(caip10)
@@ -2102,35 +2282,22 @@ impl Inbox {
     }
 
     /// Resolve the sender tier for a session-proven wallet: on-chain proof doc
-    /// + EigenTrust record (read-only — CONDITION 2: never writes trust data).
+    /// (Solana) or settled Mainnet reputation (EVM `0x` parity) + EigenTrust
+    /// record (read-only — CONDITION 2: never writes trust data).
     pub async fn resolve_sender_tier(&self, caip10: &str, session_verified: bool) -> SenderTier {
         if !session_verified {
             return SenderTier::Unproven;
         }
-        // The org support mailbox (the telegram-bridge wallet) answers
-        // support threads and mirrors Telegram conversations — all sends
-        // from this one wallet. At the signed-nonce session tier its 5/day
-        // cap starved both paths (seen live 2026-08-26). Reputable keeps a
-        // real ceiling (500/day) instead of an unlimited bypass; the wallet
-        // is still session-proven like any other sender.
         if is_support_sender(caip10) {
             return SenderTier::Reputable;
         }
-        let wallet_verified = self.wallet_verification(caip10).await.is_some();
-        let has_reputation = if wallet_verified {
-            crate::reputation::get_agent_reputation(&self.db, caip10_address(caip10))
-                .await
-                .map(|r| {
-                    reputation_qualifies_for_reputable_tier(
-                        r.eigentrust_score,
-                        r.bug_bounties_received,
-                    )
-                })
-                .unwrap_or(false)
+        let has_doc = self.wallet_verification(caip10).await.is_some();
+        let reputation = if has_doc || is_evm_wallet(caip10) {
+            self.lookup_agent_reputation(caip10).await
         } else {
-            false
+            None
         };
-        resolve_tier(session_verified, wallet_verified, has_reputation)
+        resolve_sender_tier_from_signals(caip10, session_verified, has_doc, reputation.as_ref())
     }
 
     // -- quota --------------------------------------------------------------
@@ -3238,8 +3405,45 @@ impl Inbox {
         // Sybil censorship defense: 3 $0 `SessionVerified` nonces must NEVER
         // auto-hide an honest board post. Require an on-chain wallet proof
         // (`WalletVerified`+) unless the caller is an org support wallet.
-        if !is_support_sender(me) && self.wallet_verification(me).await.is_none() {
+        if !is_support_sender(me) && !self.has_onchain_wallet_proof(me).await {
             return Err(InboxRejection::WalletProofRequired.into());
+        }
+
+        #[cfg(test)]
+        if self.db.get().is_none() {
+            let mut guard = self.test_posts.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(post) = guard
+                .get(&(topic_id.to_string(), post_id.to_string()))
+                .cloned()
+            else {
+                return Err(InboxRejection::PostNotFound.into());
+            };
+            let Some((reporters, reported_count, hidden)) =
+                apply_report(&post.reporters, post.reported_count, me)
+            else {
+                return Ok(ReportOutcome {
+                    topic_id: topic_id.to_string(),
+                    post_id: post_id.to_string(),
+                    reported_count: post.reported_count,
+                    hidden: post.hidden,
+                    already_reported: true,
+                });
+            };
+            let updated = TopicPostDoc {
+                reporters,
+                reported_count,
+                hidden: hidden || post.hidden,
+                ..post
+            };
+            let out_hidden = updated.hidden;
+            guard.insert((topic_id.to_string(), post_id.to_string()), updated);
+            return Ok(ReportOutcome {
+                topic_id: topic_id.to_string(),
+                post_id: post_id.to_string(),
+                reported_count,
+                hidden: out_hidden,
+                already_reported: false,
+            });
         }
 
         let parent = self.topic_parent(topic_id)?;
@@ -3301,6 +3505,15 @@ impl Inbox {
     // -- webhook push registration (W4) --------------------------------------
 
     pub async fn webhook(&self, caip10: &str) -> Option<WebhookDoc> {
+        #[cfg(test)]
+        if self.db.get().is_none() {
+            return self
+                .test_webhooks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(caip10)
+                .cloned();
+        }
         match self
             .db
             .fluent()
@@ -3331,36 +3544,61 @@ impl Inbox {
     ) -> Result<WebhookDoc, InboxError> {
         // -- CHECKS --
         assert!(!me.is_empty(), "owner must be resolved upstream");
-        if self.wallet_verification(me).await.is_none() {
+        if !self.has_onchain_wallet_proof(me).await {
             return Err(InboxRejection::WalletProofRequired.into());
         }
-        let mut policy = webhook_fetch_policy();
-        policy.max_url_bytes = limits::MAX_WEBHOOK_URL_BYTES;
-        let pinned = safe_http_fetch::resolve_and_pin_public_url(raw_url, &policy)
-            .await
-            .map_err(|e| InboxRejection::InvalidWebhookUrl(e.to_string()))?;
+        let (target_url, target_host, challenge_http) = {
+            #[cfg(test)]
+            let allow_loopback = self.test_allow_loopback_webhooks;
+            #[cfg(not(test))]
+            let allow_loopback = false;
+
+            if allow_loopback {
+                if raw_url.len() > limits::MAX_WEBHOOK_URL_BYTES {
+                    return Err(InboxRejection::InvalidWebhookUrl(
+                        "webhook URL exceeds max length".to_string(),
+                    )
+                    .into());
+                }
+                let parsed = url::Url::parse(raw_url)
+                    .map_err(|e| InboxRejection::InvalidWebhookUrl(e.to_string()))?;
+                let host = parsed
+                    .host_str()
+                    .ok_or_else(|| {
+                        InboxRejection::InvalidWebhookUrl("webhook URL missing host".to_string())
+                    })?
+                    .to_ascii_lowercase();
+                (parsed.to_string(), host, self.http.clone())
+            } else {
+                let mut policy = webhook_fetch_policy();
+                policy.max_url_bytes = limits::MAX_WEBHOOK_URL_BYTES;
+                let pinned = safe_http_fetch::resolve_and_pin_public_url(raw_url, &policy)
+                    .await
+                    .map_err(|e| InboxRejection::InvalidWebhookUrl(e.to_string()))?;
+                // Fail closed on client construction — never fall back to an unpinned client.
+                let pinned_http = safe_http_fetch::reqwest_client::build_pinned_client(
+                    &pinned,
+                    &policy,
+                    Some("swarm-mcp-webhook/1.0"),
+                )
+                .map_err(|e| InboxRejection::InvalidWebhookUrl(e.to_string()))?;
+                (pinned.url.to_string(), pinned.host, pinned_http)
+            }
+        };
 
         // Amplification / fan-out bound (`HIGH-12`): cap active distinct-wallet
         // webhook registrations targeting the same canonical host.
-        let active_on_host = self.active_webhooks_for_host(&pinned.host, me).await?;
+        let active_on_host = self.active_webhooks_for_host(&target_host, me).await?;
         if active_on_host >= limits::MAX_WEBHOOKS_PER_HOST {
             return Err(InboxRejection::WebhookHostQuotaExceeded {
-                host: pinned.host,
+                host: target_host,
                 limit: limits::MAX_WEBHOOKS_PER_HOST,
             }
             .into());
         }
 
-        // Fail closed on client construction — never fall back to an unpinned client.
-        let pinned_http = safe_http_fetch::reqwest_client::build_pinned_client(
-            &pinned,
-            &policy,
-            Some("swarm-mcp-webhook/1.0"),
-        )
-        .map_err(|e| InboxRejection::InvalidWebhookUrl(e.to_string()))?;
-
         let challenge_token = random_hex_32();
-        perform_challenge_handshake(&pinned_http, pinned.url.as_str(), &challenge_token)
+        perform_challenge_handshake(&challenge_http, target_url.as_str(), &challenge_token)
             .await
             .map_err(InboxRejection::WebhookChallengeFailed)?;
 
@@ -3371,11 +3609,11 @@ impl Inbox {
         // -- EFFECTS: store only after the echo passed; never persist raw secret. --
         let stored_doc = WebhookDoc {
             wallet: me.to_string(),
-            url: pinned.url.to_string(),
+            url: target_url,
             hmac_secret: String::new(),
             secret_salt,
             hmac_secret_sha256,
-            webhook_host: pinned.host,
+            webhook_host: target_host,
             challenge_token,
             verified: true,
             consecutive_failures: 0,
@@ -3384,15 +3622,29 @@ impl Inbox {
             pending_delivery_id: String::new(),
             created_at: FirestoreTimestamp(chrono::Utc::now()),
         };
-        self.db
-            .fluent()
-            .update()
-            .in_col(INBOX_WEBHOOKS_COLLECTION)
-            .document_id(me)
-            .object(&stored_doc)
-            .execute::<WebhookDoc>()
-            .await
-            .context("write webhook doc")?;
+        #[cfg(test)]
+        let stored_in_memory = if self.db.get().is_none() {
+            self.test_webhooks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(me.to_string(), stored_doc.clone());
+            true
+        } else {
+            false
+        };
+        #[cfg(not(test))]
+        let stored_in_memory = false;
+        if !stored_in_memory {
+            self.db
+                .fluent()
+                .update()
+                .in_col(INBOX_WEBHOOKS_COLLECTION)
+                .document_id(me)
+                .object(&stored_doc)
+                .execute::<WebhookDoc>()
+                .await
+                .context("write webhook doc")?;
+        }
         // Postcondition: never store an unverified webhook or plaintext secret.
         debug_assert!(stored_doc.verified, "stored webhooks are echo-verified");
         debug_assert!(
@@ -3410,6 +3662,21 @@ impl Inbox {
         host: &str,
         exclude_wallet: &str,
     ) -> anyhow::Result<usize> {
+        #[cfg(test)]
+        if self.db.get().is_none() {
+            return Ok(self
+                .test_webhooks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .values()
+                .filter(|d| {
+                    d.webhook_host == host
+                        && d.wallet != exclude_wallet
+                        && d.verified
+                        && d.disabled_at.is_none()
+                })
+                .count());
+        }
         let query_cap =
             u32::try_from(limits::MAX_WEBHOOKS_PER_HOST.saturating_add(8)).unwrap_or(16);
         let docs: Vec<WebhookDoc> = self
@@ -3432,6 +3699,14 @@ impl Inbox {
     /// Delete the caller's webhook registration. Idempotent.
     pub async fn delete_webhook(&self, me: &str) -> Result<(), InboxError> {
         assert!(!me.is_empty(), "owner must be resolved upstream");
+        #[cfg(test)]
+        if self.db.get().is_none() {
+            self.test_webhooks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(me);
+            return Ok(());
+        }
         self.db
             .fluent()
             .delete()

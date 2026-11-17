@@ -21,11 +21,15 @@ import {
   DEFAULT_MAX_NETWORK_FEE_WEI,
   DEFAULT_MAX_VOW_BYTES,
   MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS,
+  ONBOARD_ADVANCE_LAMPORTS,
   SwarmAgent,
   SwarmClientError,
+  TransactionMismatchError,
   VALID_TOPICS,
   buildOnChainActionProofRef,
   createSwarmAgent,
+  deriveAdvancePda,
   estimateSolanaNetworkFeeLamports,
   extractCreateEscrowLamports,
   fetchVowAttestationJson,
@@ -57,9 +61,11 @@ import {
   advancePda,
   buildClaim,
   buildCreate,
+  buildExpire,
   buildFinalize,
   buildInstruction,
   buildShillbotInstruction,
+  buildSubmit,
   buildVerify,
   decodeExtensionCreditAdvance,
   inspectTransaction,
@@ -2189,4 +2195,391 @@ describe("P1-2: On-chain extension-credit Advance RPC verification before auto-a
   });
 });
 
+describe("Onboarding, Devnet Advance PDA, 0x EVM CLI keyfiles, and Python 8aa4003 parity", () => {
+  it("routes campaigns.pendingApproval to GET /client/pending-approval and validates Devnet sponsored Advance PDAs", async () => {
+    const seenUrls: string[] = [];
+    const kp = Keypair.generate();
+    const signer = fromSolanaKeypair(kp);
+    const jwt = makeJwt(signer.address, Math.floor(Date.now() / 1000) + 3600);
+    const agent = createSwarmAgent({
+      signer,
+      token: jwt,
+      fetch: (async (input: RequestInfo | URL) => {
+        seenUrls.push(String(input));
+        return jsonResponse({ tasks: [{ id: "pa-1", state: "pending_approval" }] });
+      }) as typeof fetch,
+    });
+    const pending = await agent.campaigns.pendingApproval("devnet");
+    expect(seenUrls).toEqual(["https://api.shillbot.org/client/pending-approval?network=devnet"]);
+    expect(pending).toEqual({ tasks: [{ id: "pa-1", state: "pending_approval" }] });
 
+    // Devnet sponsored [claim_task, set_payout_to(advance_pda)] + Python 8aa4003 parity check
+    const sponsorKp = Keypair.generate();
+    const attackerKp = Keypair.generate();
+    const taskPk = Keypair.generate().publicKey;
+    const wallet = kp.publicKey.toBase58();
+    const sponsor = sponsorKp.publicKey.toBase58();
+    const taskKey = taskPk.toBase58();
+    const adv = deriveAdvancePda(sponsorKp.publicKey, kp.publicKey);
+    const blockhash = "11111111111111111111111111111111";
+
+    const sponsoredClaim = buildClaim({
+      wallet,
+      sponsor,
+      payoutTo: adv.toBase58(),
+      network: "devnet",
+      recentBlockhash: blockhash,
+      taskPda: taskKey,
+    });
+    expect(
+      verifyBuiltTransaction(sponsoredClaim.unsigned_tx, {
+        action: "claim",
+        network: "devnet",
+        wallet,
+        taskPda: taskKey,
+      }).fee_payer,
+    ).toBe(sponsor);
+
+    const hijackedSponsored = buildClaim({
+      wallet,
+      sponsor,
+      payoutTo: attackerKp.publicKey.toBase58(),
+      network: "devnet",
+      recentBlockhash: blockhash,
+      taskPda: taskKey,
+    });
+    expect(() =>
+      verifyBuiltTransaction(hijackedSponsored.unsigned_tx, {
+        action: "claim",
+        network: "devnet",
+        wallet,
+        taskPda: taskKey,
+      }),
+    ).toThrow(TransactionMismatchError);
+
+    // Cross-check Python verify_shillbot_tx.py on expire + finalize(route_and_recoup) + sponsored claim
+    const pyScript = resolve(repoRoot, "examples/python-safe-recipe/verify_shillbot_tx.py");
+    const expBuilt = buildExpire({
+      wallet,
+      network: "mainnet",
+      recentBlockhash: blockhash,
+      taskPda: taskKey,
+    });
+    const pyExpOk = spawnSync(
+      "python3",
+      [
+        pyScript,
+        "--action",
+        "expire",
+        "--wallet",
+        wallet,
+        "--task-pda",
+        taskKey,
+        "--expire-task-state",
+        "submitted",
+      ],
+      { input: expBuilt.unsigned_tx, encoding: "utf8" },
+    );
+    expect(pyExpOk.status).toBe(0);
+
+    const finRecoup = buildFinalize({
+      wallet,
+      network: "mainnet",
+      recentBlockhash: blockhash,
+      taskPda: taskKey,
+      agent: adv.toBase58(),
+      client: Keypair.generate().publicKey.toBase58(),
+      treasury: Keypair.generate().publicKey.toBase58(),
+      agentStateOwner: wallet,
+      recoupBacker: sponsor,
+      recoupRecipient: wallet,
+    });
+    const pyFinOk = spawnSync(
+      "python3",
+      [
+        pyScript,
+        "--action",
+        "finalize",
+        "--wallet",
+        wallet,
+        "--task-pda",
+        taskKey,
+        "--payout-to",
+        adv.toBase58(),
+      ],
+      { input: finRecoup.unsigned_tx, encoding: "utf8" },
+    );
+    expect(pyFinOk.status).toBe(0);
+  });
+
+  it("auto-onboards an underfunded Solana wallet (3.1M advance) and verifies on-chain Advance PDA on Mainnet", async () => {
+    expect(ONBOARD_ADVANCE_LAMPORTS).toBe(3_100_000);
+    expect(MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS).toBe(3_000_000);
+
+    const agentKp = Keypair.generate();
+    const backerKp = Keypair.generate();
+    const taskKey = Keypair.generate().publicKey.toBase58();
+    const signer = fromSolanaKeypair(agentKp);
+    const wallet = signer.address;
+    const backer = backerKp.publicKey.toBase58();
+    const advPk = advancePda(backerKp.publicKey, agentKp.publicKey);
+    const jwt = makeJwt(wallet, Math.floor(Date.now() / 1000) + 3600);
+    const blockhash = "11111111111111111111111111111111";
+
+    const preOnboardClaim = buildClaim({
+      wallet,
+      network: "mainnet",
+      recentBlockhash: blockhash,
+      taskPda: taskKey,
+    });
+    const postOnboardClaim = buildClaim({
+      wallet,
+      payoutTo: advPk.toBase58(),
+      network: "mainnet",
+      recentBlockhash: blockhash,
+      taskPda: taskKey,
+    });
+    const postOnboardSubmit = buildSubmit({
+      wallet,
+      contentId: "proof-post-claim",
+      network: "mainnet",
+      recentBlockhash: blockhash,
+      taskPda: taskKey,
+    });
+
+    const advanceAcctData = encodeAdvanceAccountData({
+      backer: backerKp.publicKey,
+      recipient: agentKp.publicKey,
+      advanceLamports: BigInt(ONBOARD_ADVANCE_LAMPORTS),
+      recoupedLamports: 0n,
+    });
+
+    const events: string[] = [];
+    let balance = 0;
+    let claimCalls = 0;
+    const conn = {
+      getBalance: async () => {
+        events.push(`balance:${balance}`);
+        return balance;
+      },
+      getAccountInfo: async (pk: PublicKey) => {
+        expect(pk.toBase58()).toBe(advPk.toBase58());
+        events.push("getAccountInfo:advance");
+        return {
+          data: advanceAcctData,
+          executable: false,
+          lamports: 1_672_080,
+          owner: EXTENSION_CREDIT_PROGRAM_ID,
+        };
+      },
+      sendRawTransaction: async () => {
+        events.push("broadcast");
+        return "5OnboardedMainnetSig1111111111111111111111111111";
+      },
+      confirmTransaction: async () => ({ value: { err: null } }),
+    } as unknown as Connection;
+
+    const agent = createSwarmAgent({
+      signer,
+      token: jwt,
+      network: "mainnet",
+      fetch: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://api.shillbot.org/tasks/t-zero/claim?sponsor=auto") {
+          claimCalls += 1;
+          events.push(`claim:${claimCalls}`);
+          if (claimCalls === 1) {
+            return jsonResponse({ transaction: preOnboardClaim.unsigned_tx, task_pda: taskKey });
+          }
+          return jsonResponse({
+            transaction: postOnboardClaim.unsigned_tx,
+            task_pda: taskKey,
+            payout_to: advPk.toBase58(),
+            advance_backer: backer,
+          });
+        }
+        if (url === "https://api.shillbot.org/agent/onboard") {
+          events.push("onboard");
+          balance = ONBOARD_ADVANCE_LAMPORTS;
+          return jsonResponse({
+            onboarded: true,
+            wallet,
+            advance_pda: advPk.toBase58(),
+            advance_backer: backer,
+            advance_lamports: ONBOARD_ADVANCE_LAMPORTS,
+          });
+        }
+        if (url === "https://api.shillbot.org/tasks/t-zero/submit?sponsor=auto") {
+          events.push("submit");
+          return jsonResponse({ transaction: postOnboardSubmit.unsigned_tx, task_pda: taskKey });
+        }
+        if (url === "https://api.shillbot.org/tasks/t-zero/confirm") {
+          events.push("confirm");
+          return jsonResponse({ ok: true });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      }) as typeof fetch,
+    });
+
+    await agent.claimTask("t-zero", { connection: conn });
+    // Post-claim wallet holds ~1_535_000 lamports after AgentState rent: standalone submitWork does NOT re-onboard
+    balance = 1_535_000;
+    await agent.submitWork("t-zero", "proof-post-claim", { connection: conn });
+
+    expect(events).toEqual([
+      "claim:1",
+      "balance:0",
+      "onboard",
+      "claim:2",
+      "getAccountInfo:advance",
+      "broadcast",
+      "confirm",
+      "submit",
+      "broadcast",
+      "confirm",
+    ]);
+  });
+
+  it("supports `swarm onboard`, 0x-prefixed EVM hex keyfiles, `--evm-rpc-url`, and `SWARM_EVM_RPC_URL`", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "swarm-evm-cli-test-"));
+    const { createServer } = await import("node:http");
+    const rpcRequests: Array<{ method: string; params: unknown[] }> = [];
+    const rpcServer = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(Buffer.from(c)));
+      req.on("end", () => {
+        const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as
+          | { id: number; method: string; params: unknown[] }
+          | Array<{ id: number; method: string; params: unknown[] }>;
+        const handleOne = (item: { id: number; method: string; params: unknown[] }) => {
+          rpcRequests.push({ method: item.method, params: item.params });
+          let result: unknown = "0x1";
+          if (item.method === "eth_chainId") result = "0x14a34";
+          else if (item.method === "eth_getTransactionCount") result = "0x0";
+          else if (item.method === "eth_estimateGas") result = "0x5208";
+          else if (item.method === "eth_gasPrice") result = "0x3b9aca00";
+          else if (item.method === "eth_maxPriorityFeePerGas") result = "0x3b9aca00";
+          else if (item.method === "eth_getBlockByNumber") {
+            result = { baseFeePerGas: "0x3b9aca00", number: "0x1", timestamp: "0x1" };
+          } else if (item.method === "eth_sendRawTransaction") {
+            result = `0x${"cd".repeat(32)}`;
+          }
+          return { jsonrpc: "2.0", id: item.id, result };
+        };
+        const out = Array.isArray(payload) ? payload.map(handleOne) : handleOne(payload);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(out));
+      });
+    });
+
+    await new Promise<void>((resolveListen) => rpcServer.listen(0, "127.0.0.1", resolveListen));
+    const port = (rpcServer.address() as { port: number }).port;
+    const localRpcUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const evmPrivKey =
+        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
+      const expectedEvmAddress = privateKeyToAccount(evmPrivKey).address;
+      const evmKeyPath = resolve(dir, "evm.key");
+      writeFileSync(evmKeyPath, `${evmPrivKey}\n`, { mode: 0o600 });
+      if (process.platform !== "win32") chmodSync(evmKeyPath, 0o600);
+
+      let whoamiOut = "";
+      const whoamiCode = await runSwarmCli(
+        ["auth", "whoami", "--keypair-file", evmKeyPath, "--json"],
+        {
+          stdout: { write: (s) => ((whoamiOut += s), true), isTTY: false },
+          stderr: { write: () => true },
+          env: {},
+        },
+      );
+      expect(whoamiCode).toBe(0);
+      expect(JSON.parse(whoamiOut)).toEqual({
+        wallet: expectedEvmAddress,
+        chain: "evm",
+        network: "mainnet",
+      });
+
+      const solKp = Keypair.generate();
+      const solKeyPath = resolve(dir, "sol.json");
+      writeFileSync(solKeyPath, JSON.stringify(Array.from(solKp.secretKey)), { mode: 0o600 });
+      if (process.platform !== "win32") chmodSync(solKeyPath, 0o600);
+      const solJwt = makeJwt(solKp.publicKey.toBase58(), Math.floor(Date.now() / 1000) + 3600);
+
+      let onboardOut = "";
+      const onboardCode = await runSwarmCli(
+        ["onboard", "--keypair-file", solKeyPath, "--json"],
+        {
+          stdout: { write: (s) => ((onboardOut += s), true), isTTY: false },
+          stderr: { write: () => true },
+          env: { SWARM_AUTH_TOKEN: solJwt },
+          fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+            expect(String(input)).toBe("https://api.shillbot.org/agent/onboard");
+            expect(init?.method).toBe("POST");
+            return jsonResponse({
+              onboarded: true,
+              wallet: solKp.publicKey.toBase58(),
+              advance_lamports: ONBOARD_ADVANCE_LAMPORTS,
+            });
+          }) as typeof fetch,
+        },
+      );
+      expect(onboardCode).toBe(0);
+      expect(JSON.parse(onboardOut)).toEqual({
+        onboarded: true,
+        wallet: solKp.publicKey.toBase58(),
+        advance_lamports: 3_100_000,
+      });
+
+      const evmJwt = makeJwt(expectedEvmAddress, Math.floor(Date.now() / 1000) + 3600);
+      const canonicalEscrow = SHILLBOT_ESCROW_DEPLOYMENTS["eip155:84532"];
+      const validClaimData = `${SHILLBOT_EVM_SELECTORS.claim}${"00".repeat(32)}` as const;
+
+      let evmClaimOut = "";
+      const evmClaimCode = await runSwarmCli(
+        [
+          "tasks",
+          "claim",
+          "evm-task-1",
+          "--keypair-file",
+          evmKeyPath,
+          "--evm-rpc-url",
+          localRpcUrl,
+          "--json",
+        ],
+        {
+          stdout: { write: (s) => ((evmClaimOut += s), true), isTTY: false },
+          stderr: { write: () => true },
+          env: { SWARM_AUTH_TOKEN: evmJwt },
+          fetch: (async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.includes("/tasks/evm-task-1/claim")) {
+              return jsonResponse({
+                transaction: "",
+                evm_call: {
+                  to: canonicalEscrow,
+                  data: validClaimData,
+                  value_wei: "0",
+                  chain: "eip155:84532",
+                },
+              });
+            }
+            if (url.endsWith("/tasks/evm-task-1/confirm")) {
+              return jsonResponse({ task_id: "evm-task-1", action: "claim", message: "confirmed" });
+            }
+            throw new Error(`Unexpected URL: ${url}`);
+          }) as typeof fetch,
+        },
+      );
+      expect(evmClaimCode).toBe(0);
+      expect(JSON.parse(evmClaimOut)).toMatchObject({
+        task_id: "evm-task-1",
+        signature: `0x${"cd".repeat(32)}`,
+      });
+      expect(rpcRequests.some((r) => r.method === "eth_sendRawTransaction")).toBe(true);
+    } finally {
+      await new Promise<void>((resolveClose) => rpcServer.close(() => resolveClose()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

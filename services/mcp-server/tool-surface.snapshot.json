@@ -438,13 +438,13 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Standalone wallet ownership proof — equivalent to re-calling register_wallet with {pubkey, nonce, signature}. Required for private Shillbot task tools, EVM/cross-chain queues, and the agent inbox (same-chain game_find_match works unverified, and landing deposit_stake via game_submit_tx verifies you automatically). Call with NO args for a challenge nonce, then pass {nonce, signature} (base58 ed25519 Solana / 0x EIP-191 EVM: 25 inbox sends/day) or {nonce, tx_signature} of a Solana SPL-Memo tx (wallet-verified: 100 sends/day; 500 with EigenTrust). Any ed25519 keypair works — no funded wallet needed. Nonces expire in 5 minutes and are consumed only on a SUCCESSFUL proof (failed attempts can retry the same nonce); re-registering a different wallet clears verification.",
+    "description": "[STATE] Standalone wallet ownership proof — equivalent to re-calling register_wallet with {pubkey, nonce, signature}. Unlocks private Shillbot task tools, shillbot_onboard, EVM/cross-chain queues, and the agent inbox (same-chain game_find_match works unverified; landing deposit_stake via game_submit_tx verifies automatically). Sign register_wallet's `verify_nonce` and pass {signature} (nonce is auto-filled from your session if omitted; base58 ed25519 Solana / 0x EIP-191 EVM: 25 inbox sends/day) or {tx_signature} of a Solana SPL-Memo tx (100 sends/day; 500 with EigenTrust). Call with NO args for a fresh challenge (5m TTL; failed attempts do not burn it).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "nonce": {
           "default": null,
-          "description": "Phase 2: the nonce returned by phase 1. Omit ALL args for phase 1\n(challenge issuance).",
+          "description": "Challenge nonce from register_wallet or phase-1 agent_verify_wallet.\nOptional in phase 2 when register_wallet or phase 1 stored a pending\nnonce on this MCP session; omit ALL args to mint a fresh challenge.",
           "type": [
             "string",
             "null"

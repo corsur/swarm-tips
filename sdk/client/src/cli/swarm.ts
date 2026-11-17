@@ -127,11 +127,12 @@ Usage:
 
 Commands:
   auth whoami | token
+  onboard
   listings [--limit N] [--category CAT] [--chain CHAIN]
   reputation <wallet>
-  tasks list [--limit N] | get <id> | mine | earnings | next <task-json-or-id>
-  tasks claim <id> [--payout-to <pubkey>] [--no-exec]
-  tasks submit <id> --content <str> [--payout-to <pubkey>] [--no-exec]
+  tasks list [--limit N] | get <id> | mine | earnings | onboard | next <task-json-or-id>
+  tasks claim <id> [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]
+  tasks submit <id> --content <str> [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]
   tasks verify <id> [--no-exec]
   tasks finalize <id> [--no-exec]
   tasks expire <id> [--no-exec]              (client escrow refund past claim/submit deadline or past submitted_at + verification_timeout)
@@ -149,8 +150,10 @@ Commands:
 Global Options:
   --json                     Output structured JSON (auto-enabled when stdout is non-TTY)
   --network <mainnet|devnet> Target network (default: mainnet)
-  --keypair-file <path>      Solana keypair file (must be chmod 600 on POSIX)
+  --keypair-file <path>      Solana keypair or 0x-prefixed 32-byte EVM hex key file (chmod 600 on POSIX)
   --rpc-url <url>            Override Solana RPC URL
+  --evm-rpc-url <url>        Override EVM JSON-RPC URL
+  --evm-chain-id <id>        Optional EVM chain ID or CAIP-2 identifier (e.g. 84532, eip155:8453)
   --max-spend-lamports <n>   Max SOL escrow spend cap (default: 0)
   --max-spend-wei <n>        Max EVM escrow spend cap (default: 0)
   --help, -h                 Show this help text
@@ -159,7 +162,9 @@ Global Options:
 Environment Variables:
   SWARM_SOLANA_KEYPAIR_PATH  Path to chmod 600 Solana keypair JSON/base58 file
   SWARM_SOLANA_SECRET_KEY    Base58 or JSON 64-byte Solana secret key
+  SWARM_EVM_KEYPAIR_PATH     Path to chmod 600 0x-prefixed 32-byte EVM hex private key file
   SWARM_EVM_PRIVATE_KEY      0x-prefixed 32-byte EVM private key
+  SWARM_EVM_RPC_URL          EVM JSON-RPC URL for EVM transaction broadcast
   SWARM_AUTH_TOKEN           Pre-minted Bearer JWT
 `;
 
@@ -284,6 +289,7 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         }
         const taskPda = getStringFlag(flags, "--task-pda");
         const feePayer = getStringFlag(flags, "--fee-payer");
+        const sponsor = getStringFlag(flags, "--sponsor");
         const payoutTo = getStringFlag(flags, "--payout-to");
         const rawExpireState = getStringFlag(flags, "--expire-task-state")?.trim().toLowerCase();
         if (
@@ -304,6 +310,7 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
             wallet,
             ...(taskPda ? { taskPda } : {}),
             ...(feePayer ? { feePayer } : {}),
+            ...(sponsor ? { sponsor } : {}),
             ...(payoutTo ? { payoutTo } : {}),
             ...(expireTaskState ? { expireTaskState } : {}),
             ...(oracleAuthority ? { oracleAuthority } : {}),
@@ -321,10 +328,13 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
       throw new CliUsageError("Usage: swarm tx <inspect|verify> [options]");
     }
 
+    const evmRpcUrl = getStringFlag(flags, "--evm-rpc-url") ?? env.SWARM_EVM_RPC_URL;
+    const evmChainId = getStringFlag(flags, "--evm-chain-id") ?? env.SWARM_EVM_CHAIN_ID;
     const signer = loadSignerFromCliOrEnv({
       keypairFile: getStringFlag(flags, "--keypair-file"),
       env,
-      evmRpcUrl: env.SWARM_EVM_RPC_URL,
+      evmRpcUrl,
+      evmChainId,
     });
 
     const agent = new SwarmAgent({
@@ -339,6 +349,17 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
       maxEscrowSpendWei,
       fetch: io.fetch,
     });
+
+    if (cmd === "onboard") {
+      if (!signer && !agent.auth.walletAddress && !env.SWARM_AUTH_TOKEN) {
+        throw new CliUsageError(
+          "No wallet configured. Pass --keypair-file <path> (chmod 600) or set SWARM_SOLANA_KEYPAIR_PATH, SWARM_SOLANA_SECRET_KEY, or SWARM_EVM_PRIVATE_KEY.",
+        );
+      }
+      const res = await agent.onboard();
+      writeOutput(stdout, jsonMode, res);
+      return 0;
+    }
 
     if (cmd === "auth") {
       if (sub === "whoami") {
@@ -412,6 +433,11 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         writeOutput(stdout, jsonMode, res);
         return 0;
       }
+      if (sub === "onboard") {
+        const res = await agent.onboard();
+        writeOutput(stdout, jsonMode, res);
+        return 0;
+      }
       if (sub === "next") {
         const arg = rest[0] ?? (await readStdinText(io));
         if (!arg) {
@@ -425,11 +451,20 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
       }
       if (sub === "claim") {
         const id = rest[0];
-        if (!id) throw new CliUsageError("Usage: swarm tasks claim <task_id> [--payout-to <pubkey>] [--no-exec]");
+        if (!id) {
+          throw new CliUsageError(
+            "Usage: swarm tasks claim <task_id> [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]",
+          );
+        }
         const payoutTo = getStringFlag(flags, "--payout-to");
+        const feePayer = getStringFlag(flags, "--fee-payer");
+        const execOpts =
+          payoutTo || feePayer
+            ? { ...(payoutTo ? { payoutTo } : {}), ...(feePayer ? { feePayer } : {}) }
+            : undefined;
         const res = noExec
           ? await agent.tasks.claim(id)
-          : await agent.tasks.claimAndExecute(id, payoutTo ? { payoutTo } : undefined);
+          : await agent.tasks.claimAndExecute(id, execOpts);
         writeOutput(stdout, jsonMode, res);
         return 0;
       }
@@ -438,13 +473,18 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         const content = getStringFlag(flags, "--content");
         if (!id || !content) {
           throw new CliUsageError(
-            "Usage: swarm tasks submit <task_id> --content <str> [--payout-to <pubkey>] [--no-exec]",
+            "Usage: swarm tasks submit <task_id> --content <str> [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]",
           );
         }
         const payoutTo = getStringFlag(flags, "--payout-to");
+        const feePayer = getStringFlag(flags, "--fee-payer");
+        const execOpts =
+          payoutTo || feePayer
+            ? { ...(payoutTo ? { payoutTo } : {}), ...(feePayer ? { feePayer } : {}) }
+            : undefined;
         const res = noExec
           ? await agent.tasks.submit(id, { content_id: content })
-          : await agent.tasks.submitAndExecute(id, content, payoutTo ? { payoutTo } : undefined);
+          : await agent.tasks.submitAndExecute(id, content, execOpts);
         writeOutput(stdout, jsonMode, res);
         return 0;
       }
@@ -476,7 +516,7 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         return 0;
       }
       throw new CliUsageError(
-        "Usage: swarm tasks <list|get|mine|earnings|next|claim|submit|verify|finalize|expire> ...",
+        "Usage: swarm tasks <list|get|mine|earnings|onboard|next|claim|submit|verify|finalize|expire> ...",
       );
     }
 

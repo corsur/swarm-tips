@@ -61,7 +61,7 @@ struct SourceBackoff {
 
 /// State for the listings subsystem, added to SharedState.
 pub struct ListingsState {
-    pub db: FirestoreDb,
+    db: Option<FirestoreDb>,
     pub http_client: reqwest::Client,
     shillbot_client: api_transport::Client,
     shillbot_url: String,
@@ -71,6 +71,15 @@ pub struct ListingsState {
 
 impl ListingsState {
     pub fn new(db: FirestoreDb, _rpc_client: reqwest::Client) -> Self {
+        Self::build(Some(db))
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test() -> Self {
+        Self::build(None)
+    }
+
+    fn build(db: Option<FirestoreDb>) -> Self {
         // Build a dedicated scrape client with browser-like default headers.
         // The caller's rpc_client (generic reqwest with shorter timeouts) is
         // accepted for API compatibility but not used — we want one client
@@ -232,20 +241,24 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
         return Ok(cached);
     }
 
+    let Some(db) = state.db.as_ref() else {
+        return Ok(Vec::new());
+    };
+
     let fetch_results = fetch_all_sources(state).await;
     update_backoff(state, &fetch_results).await;
 
-    let config = load_ingestion_config(&state.db).await;
+    let config = load_ingestion_config(db).await;
     let all_raw = dedupe_raw_listings(&fetch_results);
     tracing::info!(
         total_fetched = all_raw.len(),
         "fetched from external sources"
     );
 
-    let existing = load_existing_listings(&state.db).await;
+    let existing = load_existing_listings(db).await;
     let now = Utc::now();
     let (mut result_listings, active_doc_ids) =
-        upsert_active_listings(&state.db, &all_raw, &existing, &config, now).await;
+        upsert_active_listings(db, &all_raw, &existing, &config, now).await;
 
     let successful_sources: HashSet<&str> = fetch_results
         .iter()
@@ -253,14 +266,7 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
         .map(|r| r.source.as_str())
         .collect();
 
-    sweep_disappeared(
-        &state.db,
-        &existing,
-        &active_doc_ids,
-        &successful_sources,
-        now,
-    )
-    .await;
+    sweep_disappeared(db, &existing, &active_doc_ids, &successful_sources, now).await;
     keep_failed_source_listings(
         &existing,
         &active_doc_ids,
@@ -269,7 +275,7 @@ pub async fn get_listings(state: &Arc<ListingsState>) -> Result<Vec<AgentJob>, a
     );
 
     for result in &fetch_results {
-        record_source_health(&state.db, &result.source, &result.health).await;
+        record_source_health(db, &result.source, &result.health).await;
     }
 
     // Drop listings whose source last responded successfully more than

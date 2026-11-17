@@ -39,6 +39,13 @@ export class SwarmClientError extends Error {
   }
 }
 
+/** Specialized `SwarmClientError` (`code === "TRANSACTION_MISMATCH"`) thrown by transaction verifiers. */
+export class TransactionMismatchError extends SwarmClientError {
+  constructor(options: Omit<SwarmClientErrorOptions, "code">) {
+    super({ ...options, code: "TRANSACTION_MISMATCH" });
+  }
+}
+
 export function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }

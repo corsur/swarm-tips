@@ -42,4 +42,60 @@ describe("ShillbotApiClient", () => {
     expect(() => validatePreparedTransaction(built.unsigned_tx, { action: "create", network: "devnet", wallet, escrowLamports: 1n })).toThrow(/Escrow amount/);
     expect(() => validatePreparedTransaction(built.unsigned_tx, { action: "claim", network: "devnet", wallet })).toThrow(/exactly one/);
   });
+
+  it("P1-8: routes listPendingApproval to GET /client/pending-approval with auth headers and optional network param", async () => {
+    const seen: Array<{ url: string; method?: string; auth: string | null }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({
+        url: String(input),
+        method: init?.method,
+        auth: new Headers(init?.headers).get("Authorization"),
+      });
+      return new Response(JSON.stringify({ tasks: [{ task_id: "pending-1" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const mainnetApi = new ShillbotApiClient({
+      baseUrl: "https://shill.test",
+      fetch: fetchImpl as typeof fetch,
+      network: "mainnet",
+      getToken: () => "client-jwt",
+    });
+    const res1 = await mainnetApi.listPendingApproval();
+    expect(res1).toEqual({ tasks: [{ task_id: "pending-1" }] });
+    expect(seen[0]).toEqual({
+      url: "https://shill.test/client/pending-approval",
+      method: "GET",
+      auth: "Bearer client-jwt",
+    });
+
+    await mainnetApi.listPendingApproval("devnet");
+    expect(seen[1]).toEqual({
+      url: "https://shill.test/client/pending-approval?network=devnet",
+      method: "GET",
+      auth: "Bearer client-jwt",
+    });
+
+    const devnetApi = new ShillbotApiClient({
+      baseUrl: "https://shill.test",
+      fetch: fetchImpl as typeof fetch,
+      network: "devnet",
+      getToken: () => "dev-jwt",
+    });
+    await devnetApi.listPendingApproval();
+    expect(seen[2]).toEqual({
+      url: "https://shill.test/client/pending-approval?network=devnet",
+      method: "GET",
+      auth: "Bearer dev-jwt",
+    });
+
+    await devnetApi.listPendingApproval({ network: "mainnet", token: "override-jwt" });
+    expect(seen[3]).toEqual({
+      url: "https://shill.test/client/pending-approval?network=mainnet",
+      method: "GET",
+      auth: "Bearer override-jwt",
+    });
+  });
 });

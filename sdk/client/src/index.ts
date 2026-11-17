@@ -2,11 +2,13 @@
 export { CLIENT_VERSION } from "./version.js";
 export const CLIENT_MANIFEST_SCHEMA = "swarm.client-manifest/v1" as const;
 
-export { SwarmClientError } from "./errors.js";
+export { SwarmClientError, TransactionMismatchError } from "./errors.js";
 export type { SwarmClientErrorCode, SwarmClientErrorOptions } from "./errors.js";
 
 export {
   DEFAULT_MAX_NETWORK_FEE_WEI,
+  MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS,
+  ONBOARD_ADVANCE_LAMPORTS,
   SwarmAgent,
   createSwarmAgent,
   extractCreateEscrowLamports,
@@ -48,6 +50,7 @@ export {
   SHILLBOT_EVM_SELECTORS,
   SHILLBOT_INSTRUCTION_SPECS,
   buildOnChainActionProofRef,
+  deriveAdvancePda,
   estimateSolanaNetworkFeeLamports,
   formatOnChainActionAttributionMessage,
   normalizeEvmChainId,

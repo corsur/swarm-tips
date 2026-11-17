@@ -274,7 +274,8 @@ pub struct GameSessionManager {
     solana_rpc_url: String,
     solana_rpc_url_mainnet: String,
     solana_rpc_url_devnet: String,
-    db: Arc<FirestoreDb>,
+    internal_jwt_secret: Option<String>,
+    db: Option<Arc<FirestoreDb>>,
 }
 
 /// Inputs assembled from the in-memory session for `build_reveal_tx`.
@@ -817,8 +818,33 @@ impl GameSessionManager {
             solana_rpc_url,
             solana_rpc_url_mainnet,
             solana_rpc_url_devnet,
-            db,
+            internal_jwt_secret: None,
+            db: Some(db),
         }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(game_api_url: String, solana_rpc_url: String) -> Self {
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            ws_sinks: RwLock::new(HashMap::new()),
+            tx_builders: RwLock::new(HashMap::new()),
+            ws_cancel_tokens: RwLock::new(HashMap::new()),
+            game_api_url,
+            request_transport: None,
+            realtime: Arc::new(game_api_client::ws::WebSocketConnector),
+            shutdown: CancellationToken::new(),
+            solana_rpc_url: solana_rpc_url.clone(),
+            solana_rpc_url_mainnet: solana_rpc_url.clone(),
+            solana_rpc_url_devnet: solana_rpc_url,
+            internal_jwt_secret: None,
+            db: None,
+        }
+    }
+
+    pub fn with_internal_jwt_secret(mut self, secret: Option<String>) -> Self {
+        self.internal_jwt_secret = secret.filter(|s| !s.is_empty());
+        self
     }
 
     pub fn with_transport(mut self, transport: Arc<dyn api_transport::RequestTransport>) -> Self {
@@ -885,10 +911,12 @@ impl GameSessionManager {
     /// losing the preimage means the agent can't reveal after a pod restart.
     /// For other states, Firestore failures are logged but non-fatal.
     async fn persist_session(&self, session: &GameSession) -> Result<()> {
+        let Some(db) = self.db.as_ref() else {
+            return Ok(());
+        };
         let has_preimage = session.commit_preimage.is_some();
         let doc = build_persisted_doc(session);
-        if let Err(e) = self
-            .db
+        if let Err(e) = db
             .fluent()
             .update()
             .in_col(MCP_SESSIONS_COLLECTION)
@@ -932,6 +960,9 @@ impl GameSessionManager {
         let canonical_wallet = chain_core::CanonicalWallet::parse(wallet)
             .map(|c| c.as_str().to_owned())
             .map_err(|e| anyhow::anyhow!("invalid wallet address for EVM preimage: {e}"))?;
+        let Some(db) = self.db.as_ref() else {
+            return Ok(preimage);
+        };
         if let Some(existing) = self.load_evm_preimage(&canonical_wallet, game_id).await? {
             if (existing[31] & 1) != (preimage[31] & 1) {
                 anyhow::bail!(
@@ -947,8 +978,7 @@ impl GameSessionManager {
             preimage_hex: hex::encode(preimage),
             updated_at: firestore::FirestoreTimestamp(chrono::Utc::now()),
         };
-        self.db
-            .fluent()
+        db.fluent()
             .update()
             .in_col(MCP_EVM_PREIMAGES_COLLECTION)
             .document_id(&doc.id)
@@ -966,10 +996,12 @@ impl GameSessionManager {
     /// Checks the canonicalized (lowercase EVM) document key first and falls back
     /// to the raw caller string so pre-existing mixed-case documents still resolve.
     pub async fn load_evm_preimage(&self, wallet: &str, game_id: &str) -> Result<Option<[u8; 32]>> {
+        let Some(db) = self.db.as_ref() else {
+            return Ok(None);
+        };
         let canonical = crate::jwt::normalize_wallet(wallet);
         let primary_key = format!("{canonical}:{game_id}");
-        let mut doc: Option<EvmPreimageDoc> = self
-            .db
+        let mut doc: Option<EvmPreimageDoc> = db
             .fluent()
             .select()
             .by_id_in(MCP_EVM_PREIMAGES_COLLECTION)
@@ -980,8 +1012,7 @@ impl GameSessionManager {
         if doc.is_none() {
             let fallback_key = format!("{wallet}:{game_id}");
             if fallback_key != primary_key {
-                doc = self
-                    .db
+                doc = db
                     .fluent()
                     .select()
                     .by_id_in(MCP_EVM_PREIMAGES_COLLECTION)
@@ -1009,8 +1040,10 @@ impl GameSessionManager {
     /// (`Ok(None)`) from transport failure (`Err`), so fresh registration still
     /// happens for a genuinely absent doc.
     async fn load_persisted_session(&self, wallet: &str) -> Result<Option<PersistedGameSession>> {
-        self.db
-            .fluent()
+        let Some(db) = self.db.as_ref() else {
+            return Ok(None);
+        };
+        db.fluent()
             .select()
             .by_id_in(MCP_SESSIONS_COLLECTION)
             .obj::<PersistedGameSession>()
@@ -1021,8 +1054,10 @@ impl GameSessionManager {
 
     /// Delete the persisted session document.
     async fn delete_persisted_session(&self, wallet: &str) {
-        if let Err(e) = self
-            .db
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        if let Err(e) = db
             .fluent()
             .delete()
             .from(MCP_SESSIONS_COLLECTION)
@@ -1934,14 +1969,26 @@ impl GameSessionManager {
             );
         }
 
-        // Join queue.
+        // Join queue. When `internal_jwt_secret` is configured, authenticate
+        // with a short-lived `typ == "svc"`, `aud == ["game-internal"]` service
+        // token (matching `GameApiProxy::evmgame_join` / `xqueue_join`) so
+        // `game-api` preserves `is_ai: true` instead of treating a `typ == "user"`
+        // token as a human browser (`is_ai: false`).
         let request = game_api_client::QueueJoinRequest {
             tournament_id,
             is_ai: true,
             agent_version: "mcp-agent/v1",
             is_internal: false, // external agents are NOT internal
         };
-        api_client.join_queue(jwt, &request).await?;
+        let join_bearer = self
+            .internal_jwt_secret
+            .as_deref()
+            .and_then(|secret| {
+                let verified = crate::session_binding::VerifiedWallet::from_stake_verified(wallet);
+                crate::jwt::mint_svc_token(&verified, secret)
+            })
+            .unwrap_or_else(|| jwt.to_string());
+        api_client.join_queue(&join_bearer, &request).await?;
 
         // Update session state.
         let session = self
@@ -2561,7 +2608,7 @@ async fn ws_listener_with_reconnect(
     game_api_url: String,
     realtime: Arc<dyn game_api_client::ws::RealtimeConnector>,
     cancel: CancellationToken,
-    db: Arc<FirestoreDb>,
+    db: Option<Arc<FirestoreDb>>,
 ) {
     let wallet = session.lock().await.wallet.clone();
     tracing::info!(wallet = %wallet, "ws_listener started");
@@ -2577,7 +2624,7 @@ async fn ws_listener_with_reconnect(
         // Run the read loop until disconnect.
         tokio::select! {
             _ = cancel.cancelled() => return,
-            _ = run_ws_read_loop(&session, &mut stream, &sink, &wallet, &db) => {}
+            _ = run_ws_read_loop(&session, &mut stream, &sink, &wallet, db.as_deref()) => {}
         }
 
         if cancel.is_cancelled() {
@@ -2644,7 +2691,7 @@ async fn run_ws_read_loop(
     stream: &mut game_api_client::ws::WsStream,
     sink: &Arc<Mutex<WsSink>>,
     wallet: &str,
-    db: &FirestoreDb,
+    db: Option<&FirestoreDb>,
 ) {
     use futures_util::StreamExt;
     use game_api_client::ws::WsMessage;
@@ -2698,13 +2745,17 @@ async fn run_ws_read_loop(
                                 matchup_commitment,
                                 tournament_id,
                             });
-                            persist_ws_transition(db, &s, "match_found").await;
+                            if let Some(db) = db {
+                                persist_ws_transition(db, &s, "match_found").await;
+                            }
                         }
                     }
                     ServerMessage::GameReady { game_id } => {
                         tracing::info!(wallet = %wallet, game_id, "ws: game_ready");
                         s.game_ready = Some(game_id);
-                        persist_ws_transition(db, &s, "game_ready").await;
+                        if let Some(db) = db {
+                            persist_ws_transition(db, &s, "game_ready").await;
+                        }
                     }
                     ServerMessage::RevealData { r_matchup } => {
                         tracing::info!(wallet = %wallet, "ws: reveal_data");

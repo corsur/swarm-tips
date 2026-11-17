@@ -1009,9 +1009,7 @@ pub fn validate(
                 preceding_claim_pos = Some(position);
             } else if disc == set_payout_disc
                 && (expected.action == Action::Claim
-                    || (expected.action == Action::Submit
-                        && preceding_claim_pos.is_some()
-                        && matched.is_none())
+                    || expected.action == Action::Submit
                     || (expected.action == Action::Verify && matched.is_none()))
             {
                 if expected.action == Action::Claim && matched.is_none() {
@@ -1020,9 +1018,15 @@ pub fn validate(
                     ));
                 }
                 if let Some(claim_pos) = preceding_claim_pos {
-                    if position != claim_pos.saturating_add(1) {
+                    let follows_claim =
+                        position == claim_pos.saturating_add(1) && matched.is_none();
+                    let follows_atomic_submit = matched.is_some_and(|(sub_pos, _)| {
+                        sub_pos == claim_pos.saturating_add(1)
+                            && position == sub_pos.saturating_add(1)
+                    });
+                    if !follows_claim && !follows_atomic_submit {
                         return Err(ValidationError::Rejected(
-                            "payout-routing instruction must immediately follow claim_task".into(),
+                            "payout-routing instruction must immediately follow claim_task or submit_work".into(),
                         ));
                     }
                 }
@@ -2770,5 +2774,44 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("only score-0 reopen verify"));
+    }
+
+    #[test]
+    fn standalone_and_post_submit_set_payout_to_validate_advance_pda_and_reject_unauthorized() {
+        let agent = Pubkey::new_unique();
+        let backer = Pubkey::new_unique();
+        let attacker = Pubkey::new_unique();
+        let task = Pubkey::new_unique();
+        let adv = advance_pda(&backer, &agent);
+
+        let claim_ix =
+            claim_and_submit_instructions(agent, task, b"proof-standalone".to_vec(), None)
+                .remove(0);
+        let submit_ix = submit_work_instruction(agent, task, b"proof-standalone".to_vec());
+        let route_ix = set_payout_to_instruction(agent, task, adv);
+
+        // Standalone [submit_work, set_payout_to(adv)] passes when allowed_payout_to == Some(adv)
+        let standalone_tx = transaction(vec![submit_ix.clone(), route_ix.clone()], &agent);
+        let mut expected = request(Action::Submit, agent, task);
+        expected.content_id = Some("proof-standalone".into());
+        assert!(validate(&standalone_tx, &expected).is_err());
+        expected.allowed_payout_to = Some(adv.to_string());
+        let inspected = validate(&standalone_tx, &expected).unwrap();
+        assert_eq!(inspected.payout_to, Some(adv.to_string()));
+
+        // Wrong route destination fails closed
+        let hijack_tx = transaction(
+            vec![
+                submit_ix.clone(),
+                set_payout_to_instruction(agent, task, attacker),
+            ],
+            &agent,
+        );
+        assert!(validate(&hijack_tx, &expected).is_err());
+
+        // Atomic [claim_task, submit_work, set_payout_to(adv)] also passes when authorized
+        let atomic_post_tx = transaction(vec![claim_ix, submit_ix, route_ix], &agent);
+        let atomic_inspected = validate(&atomic_post_tx, &expected).unwrap();
+        assert_eq!(atomic_inspected.payout_to, Some(adv.to_string()));
     }
 }

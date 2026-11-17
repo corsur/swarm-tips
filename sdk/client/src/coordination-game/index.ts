@@ -9,9 +9,11 @@ export * from "./battery.js";
 export * from "./protocol.js";
 export * from "./chains.js";
 export type {
+  EvmGameJoinInput,
   XLegPayload,
   XMatchPayload,
   XOutcomeCertPayload,
+  XQueueJoinInput,
   XSettleSigsResponse,
   XSolSettleTxResponse,
 } from "./api.js";

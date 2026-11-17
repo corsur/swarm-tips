@@ -902,3 +902,137 @@ fn c8_push_bounded_chat_caps_buffer_size() {
     }
     assert_eq!(buf, vec!["m2", "m3", "m4"]);
 }
+
+#[tokio::test]
+async fn join_queue_after_stake_sends_svc_token_preserving_is_ai_when_secret_configured() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let mock_api = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/queue/leave"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ok": true })))
+        .mount(&mock_api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/queue/join"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({ "matched": false, "status": "queued", "position": 1 }),
+        ))
+        .expect(2)
+        .mount(&mock_api)
+        .await;
+
+    let wallet = "CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY";
+    let secret = "game-internal-test-secret-0123456789abcdef";
+
+    // 1. With internal_jwt_secret configured -> sends typ == "svc", aud == ["game-internal"]
+    let manager = GameSessionManager::new_for_test(mock_api.uri(), mock_api.uri())
+        .with_internal_jwt_secret(Some(secret.to_string()));
+    manager.sessions.write().await.insert(
+        wallet.to_string(),
+        Arc::new(Mutex::new(GameSession {
+            wallet: wallet.to_string(),
+            jwt: "user-session-jwt".to_string(),
+            state: GameSessionState::Connected,
+            game_id: None,
+            tournament_id: Some(3),
+            session_id: None,
+            role: None,
+            chat_buffer: Vec::new(),
+            match_found: None,
+            matchup_commitment: None,
+            commit_preimage: None,
+            game_ready: None,
+            reveal_data: None,
+            network: None,
+        })),
+    );
+    manager
+        .join_queue_after_stake(wallet, "user-session-jwt", 3)
+        .await
+        .expect("join_queue_after_stake must succeed");
+
+    // 2. Fallback without internal_jwt_secret -> forwards user jwt
+    let fallback_mgr = GameSessionManager::new_for_test(mock_api.uri(), mock_api.uri());
+    fallback_mgr.sessions.write().await.insert(
+        wallet.to_string(),
+        Arc::new(Mutex::new(GameSession {
+            wallet: wallet.to_string(),
+            jwt: "user-session-jwt".to_string(),
+            state: GameSessionState::Connected,
+            game_id: None,
+            tournament_id: Some(3),
+            session_id: None,
+            role: None,
+            chat_buffer: Vec::new(),
+            match_found: None,
+            matchup_commitment: None,
+            commit_preimage: None,
+            game_ready: None,
+            reveal_data: None,
+            network: None,
+        })),
+    );
+    fallback_mgr
+        .join_queue_after_stake(wallet, "user-session-jwt", 3)
+        .await
+        .expect("fallback join_queue_after_stake must succeed");
+
+    let received = mock_api.received_requests().await.expect("requests");
+    let join_reqs: Vec<_> = received
+        .iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/queue/join")
+        .collect();
+    assert_eq!(join_reqs.len(), 2);
+
+    // Inspect request #1 (with internal_jwt_secret)
+    let auth_hdr = join_reqs[0]
+        .headers
+        .get("authorization")
+        .expect("authorization header")
+        .to_str()
+        .expect("utf8");
+    let bearer = auth_hdr.strip_prefix("Bearer ").expect("Bearer scheme");
+    assert_ne!(
+        bearer, "user-session-jwt",
+        "must mint svc token instead of forwarding user jwt"
+    );
+
+    let segments: Vec<&str> = bearer.split('.').collect();
+    assert_eq!(segments.len(), 3, "valid 3-part JWT");
+    let signing_input = format!("{}.{}", segments[0], segments[1]);
+    let svc_key = crate::jwt::derive_svc_key(secret).expect("svc key");
+    let mut mac = Hmac::<Sha256>::new_from_slice(&svc_key).expect("hmac");
+    mac.update(signing_input.as_bytes());
+    let sig_bytes = URL_SAFE_NO_PAD.decode(segments[2]).expect("sig base64url");
+    mac.verify_slice(&sig_bytes)
+        .expect("svc token signature must verify under derive_svc_key");
+
+    let claims_bytes = URL_SAFE_NO_PAD
+        .decode(segments[1])
+        .expect("claims base64url");
+    let claims: serde_json::Value = serde_json::from_slice(&claims_bytes).expect("claims json");
+    assert_eq!(claims["typ"], "svc");
+    assert_eq!(claims["aud"], serde_json::json!(["game-internal"]));
+    assert_eq!(claims["wallet"], wallet);
+
+    let body_json: serde_json::Value =
+        serde_json::from_slice(&join_reqs[0].body).expect("join body json");
+    assert_eq!(body_json["tournament_id"], 3);
+    assert_eq!(body_json["is_ai"], true);
+    assert_eq!(body_json["is_internal"], false);
+
+    // Inspect request #2 (fallback without internal_jwt_secret)
+    assert_eq!(
+        join_reqs[1]
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok()),
+        Some("Bearer user-session-jwt")
+    );
+}

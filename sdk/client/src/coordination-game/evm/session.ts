@@ -1,17 +1,15 @@
 /**
  * Ephemeral EVM session key — the Base-game analog of the Solana session
  * keypair (`session.ts`). One main-wallet popup funds the session address with
- * stake + gas; the session key then signs createGame/joinGame/commitGuess/
- * revealGuess locally.
+ * gas (while stake is escrowed to the player's on-chain ledger); the session key
+ * then signs createGame/joinGame/commitGuess/revealGuess locally.
  *
- * Under the shipped v3 WALLET-AS-PLAYER design the session key is a gas-only
- * DELEGATE, not the player: the wallet is `game.player1/2` on-chain, and the
- * payout is credited to the wallet and realized with `withdrawFor`. There is
- * therefore NO sweep, and no `evm-sweep.ts` — that file never existed under v3.
- *
- * The private key lives in sessionStorage (cleared on tab close) bound to the
- * main wallet, with a 24h TTL — same guards as the Solana session. Only gas
- * dust ever sits on the session address.
+ * Persistence invariant (`P1-5`): active EVM session keys are persisted in
+ * `localStorage` first (mirroring to `sessionStorage`, and falling back to
+ * `sessionStorage` when `localStorage` is unavailable) and retained until the
+ * delegate's on-chain ETH balance is swept to `0`, so closing and reopening a
+ * browser tab never orphans funded ETH in an ephemeral EVM session key. Legacy
+ * keys stored only in `sessionStorage` are transparently migrated to `localStorage`.
  */
 
 import {
@@ -21,6 +19,7 @@ import {
   fallback,
   hexToBytes,
   http,
+  type Account,
   type Chain,
   type Hex,
   type PublicClient,
@@ -28,14 +27,25 @@ import {
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
-const SESSION_KEY = "coordination-evm-session";
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const EVM_SESSION_STORAGE_KEY = "coordination-evm-session";
+const SESSION_KEY = EVM_SESSION_STORAGE_KEY;
 
 export interface SessionStorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
 }
+
+export interface EvmSessionStoragePair {
+  localStorage?: SessionStorageLike | null;
+  sessionStorage?: SessionStorageLike | null;
+}
+
+export type EvmSessionStorageInput =
+  | SessionStorageLike
+  | EvmSessionStoragePair
+  | null
+  | undefined;
 
 interface StoredEvmSession {
   privateKey: Hex;
@@ -45,129 +55,390 @@ interface StoredEvmSession {
 
 const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
 
+function isStorageLike(candidate: unknown): candidate is SessionStorageLike {
+  return (
+    Boolean(candidate) &&
+    typeof candidate === "object" &&
+    typeof (candidate as SessionStorageLike).getItem === "function" &&
+    typeof (candidate as SessionStorageLike).setItem === "function" &&
+    typeof (candidate as SessionStorageLike).removeItem === "function"
+  );
+}
+
+function getSafeGlobalStorage(kind: "localStorage" | "sessionStorage"): SessionStorageLike | null {
+  try {
+    if (
+      typeof (globalThis as Record<string, unknown>).window === "undefined" &&
+      typeof process !== "undefined" &&
+      Boolean(process.versions?.node) &&
+      Object.getOwnPropertyDescriptor(globalThis, kind)?.get &&
+      !process.execArgv.some((arg) => arg.startsWith("--localstorage-file="))
+    ) {
+      return null;
+    }
+    const candidate = (globalThis as Record<string, unknown>)[kind];
+    if (!isStorageLike(candidate)) return null;
+    // Probe read access (Safari/Firefox private mode may throw on storage access).
+    candidate.getItem("__swarm_evm_session_probe__");
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+function resolveStoragePair(input?: EvmSessionStorageInput): {
+  local: SessionStorageLike | null;
+  session: SessionStorageLike | null;
+} {
+  if (input === undefined || input === null) {
+    return {
+      local: getSafeGlobalStorage("localStorage"),
+      session: getSafeGlobalStorage("sessionStorage"),
+    };
+  }
+  if (!isStorageLike(input)) {
+    return {
+      local: input.localStorage !== undefined ? input.localStorage : getSafeGlobalStorage("localStorage"),
+      session:
+        input.sessionStorage !== undefined
+          ? input.sessionStorage
+          : getSafeGlobalStorage("sessionStorage"),
+    };
+  }
+  const globalSession = getSafeGlobalStorage("sessionStorage");
+  const globalLocal = getSafeGlobalStorage("localStorage");
+  if (globalSession && input === globalSession) {
+    return { local: globalLocal, session: input };
+  }
+  if (globalLocal && input === globalLocal) {
+    return { local: input, session: globalSession };
+  }
+  return { local: input, session: null };
+}
+
+function safeGetItem(storage: SessionStorageLike | null, key: string): string | null {
+  if (!storage) return null;
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetItem(storage: SessionStorageLike | null, key: string, value: string): boolean {
+  if (!storage) return false;
+  try {
+    storage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeRemoveItem(storage: SessionStorageLike | null, key: string): void {
+  if (!storage) return;
+  try {
+    storage.removeItem(key);
+  } catch {
+    // Ignore storage removal errors.
+  }
+}
+
+function parseStoredEvmSession(raw: string): StoredEvmSession | null {
+  let parsed: StoredEvmSession;
+  try {
+    parsed = JSON.parse(raw) as StoredEvmSession;
+  } catch {
+    return null;
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    typeof parsed.privateKey !== "string" ||
+    !PRIVATE_KEY_RE.test(parsed.privateKey) ||
+    typeof parsed.createdAt !== "number" ||
+    typeof parsed.wallet !== "string"
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
 /** Generate a fresh ephemeral secp256k1 private key for session signing. */
 export function generateEvmSessionKey(): Hex {
   return generatePrivateKey();
 }
 
 /**
- * Read the session key from sessionStorage. Returns null if no session
- * exists, the session has expired (24h TTL), or it belongs to a different
- * main wallet. Any invalid stored value is removed.
+ * Read the persisted EVM session key from `localStorage` first, falling back to
+ * `sessionStorage` and migrating legacy `sessionStorage`-only keys into `localStorage`.
+ * Retains valid keys across tab closes and past 24h until explicitly cleared after
+ * on-chain ETH balance is swept to `0`.
  */
 export function getStoredEvmSession(
-  storage: SessionStorageLike,
+  storage?: EvmSessionStorageInput,
   walletAddress?: string,
-  now: () => number = Date.now,
+  _now: () => number = Date.now,
 ): Hex | null {
-  const raw = storage.getItem(SESSION_KEY);
-  if (raw === null) return null;
+  const { local, session } = resolveStoragePair(storage);
 
-  let stored: StoredEvmSession;
-  try {
-    stored = JSON.parse(raw) as StoredEvmSession;
-  } catch {
-    storage.removeItem(SESSION_KEY);
-    return null;
+  const rawLocal = safeGetItem(local, SESSION_KEY);
+  if (rawLocal !== null) {
+    const parsedLocal = parseStoredEvmSession(rawLocal);
+    if (!parsedLocal) {
+      safeRemoveItem(local, SESSION_KEY);
+    } else if (
+      !walletAddress ||
+      parsedLocal.wallet.toLowerCase() === walletAddress.toLowerCase()
+    ) {
+      if (session && safeGetItem(session, SESSION_KEY) !== rawLocal) {
+        safeSetItem(session, SESSION_KEY, rawLocal);
+      }
+      return parsedLocal.privateKey;
+    }
   }
 
-  if (
-    typeof stored.privateKey !== "string" ||
-    !PRIVATE_KEY_RE.test(stored.privateKey) ||
-    typeof stored.createdAt !== "number" ||
-    typeof stored.wallet !== "string"
-  ) {
-    storage.removeItem(SESSION_KEY);
-    return null;
+  const rawSession = safeGetItem(session, SESSION_KEY);
+  if (rawSession !== null) {
+    const parsedSession = parseStoredEvmSession(rawSession);
+    if (!parsedSession) {
+      safeRemoveItem(session, SESSION_KEY);
+      return null;
+    }
+    if (
+      walletAddress &&
+      parsedSession.wallet.toLowerCase() !== walletAddress.toLowerCase()
+    ) {
+      return null;
+    }
+    // Migrate legacy sessionStorage key into localStorage so tab close cannot orphan ETH.
+    if (local && rawLocal === null) {
+      safeSetItem(local, SESSION_KEY, rawSession);
+    }
+    return parsedSession.privateKey;
   }
 
-  if (
-    walletAddress &&
-    stored.wallet.toLowerCase() !== walletAddress.toLowerCase()
-  ) {
-    storage.removeItem(SESSION_KEY);
-    return null;
-  }
-
-  if (now() - stored.createdAt > SESSION_TTL_MS) {
-    storage.removeItem(SESSION_KEY);
-    return null;
-  }
-
-  return stored.privateKey;
+  return null;
 }
 
-/** Persist the session key in sessionStorage, bound to the main wallet. */
+/**
+ * Ergonomic loader for persisted EVM session keys (`localStorage` primary,
+ * `sessionStorage` fallback + legacy migration).
+ */
+export function loadSessionKey(
+  walletAddress?: string,
+  storage?: EvmSessionStorageInput,
+): Hex | null;
+export function loadSessionKey(
+  storage: EvmSessionStorageInput,
+  walletAddress?: string,
+): Hex | null;
+export function loadSessionKey(
+  walletOrStorage?: string | EvmSessionStorageInput,
+  optionsOrWallet?: EvmSessionStorageInput | string,
+): Hex | null {
+  if (typeof walletOrStorage === "string" || walletOrStorage === undefined) {
+    const storage =
+      typeof optionsOrWallet === "object" ? optionsOrWallet : undefined;
+    return getStoredEvmSession(storage, walletOrStorage);
+  }
+  const walletAddress =
+    typeof optionsOrWallet === "string" ? optionsOrWallet : undefined;
+  return getStoredEvmSession(walletOrStorage, walletAddress);
+}
+
+/**
+ * Persist the EVM session key in `localStorage` first, mirroring to `sessionStorage`
+ * (and falling back to `sessionStorage` when `localStorage` is unavailable).
+ */
 export function storeEvmSession(
-  storage: SessionStorageLike,
+  storage: EvmSessionStorageInput,
   privateKey: Hex,
   walletAddress: string,
   now: () => number = Date.now,
 ): void {
-  const stored: StoredEvmSession = {
+  const { local, session } = resolveStoragePair(storage);
+  const serialized = JSON.stringify({
     privateKey,
     createdAt: now(),
     wallet: walletAddress,
-  };
-  storage.setItem(SESSION_KEY, JSON.stringify(stored));
+  } satisfies StoredEvmSession);
+  const wroteLocal = safeSetItem(local, SESSION_KEY, serialized);
+  const wroteSession = safeSetItem(session, SESSION_KEY, serialized);
+  if (!wroteLocal && !wroteSession) {
+    console.warn("[evm-session] failed to persist EVM session key in localStorage/sessionStorage");
+  }
 }
 
-/** Remove the session key from sessionStorage. */
-export function clearEvmSession(storage: SessionStorageLike): void {
-  storage.removeItem(SESSION_KEY);
+/** Ergonomic helper to persist an EVM session key in `localStorage` + `sessionStorage`. */
+export function saveSessionKey(
+  privateKey: Hex,
+  walletAddress: string,
+  options?: EvmSessionStoragePair & { now?: () => number },
+): void {
+  storeEvmSession(options, privateKey, walletAddress, options?.now);
+}
+
+/** Remove the EVM session key from both `localStorage` and `sessionStorage`. */
+export function clearEvmSession(storage?: EvmSessionStorageInput): void {
+  const { local, session } = resolveStoragePair(storage);
+  safeRemoveItem(local, SESSION_KEY);
+  safeRemoveItem(session, SESSION_KEY);
+}
+
+/** A plain native-ETH transfer uses 21,000 gas. */
+export const SWEEP_GAS_LIMIT = 21_000n;
+
+/**
+ * Compute the native ETH amount to sweep from a session key back to the main wallet:
+ * `balance - 1.25 * (21_000 * maxFeePerGas)`, clamped at `0n`.
+ */
+export function sweepValueWei(balance: bigint, maxFeePerGas: bigint): bigint {
+  if (balance <= 0n || maxFeePerGas <= 0n) return 0n;
+  const cost = SWEEP_GAS_LIMIT * maxFeePerGas;
+  const reserve = cost + cost / 4n;
+  const value = balance - reserve;
+  return value > 0n ? value : 0n;
+}
+
+export interface SweepEvmSessionOptions {
+  storage?: EvmSessionStorageInput;
+  /** When `true`, deduct exact `21_000 * maxFeePerGas` with `maxPriorityFeePerGas = maxFeePerGas` so EIP-1559 drains to `0n`. */
+  exact?: boolean;
+  readClient?: {
+    getBalance: (args: { address: Hex }) => Promise<bigint>;
+    estimateFeesPerGas?: () => Promise<{
+      maxFeePerGas?: bigint;
+      maxPriorityFeePerGas?: bigint;
+    }>;
+    getGasPrice?: () => Promise<bigint>;
+    waitForTransactionReceipt: (args: { hash: Hex }) => Promise<{ status?: string }>;
+  };
+  walletClient?: {
+    account?: Account | Hex;
+    sendTransaction: (args: Record<string, unknown>) => Promise<Hex>;
+  };
+}
+
+/**
+ * Sweep leftover ETH from an EVM session key back to `mainWallet`, clearing
+ * persisted storage **only** once the session address's on-chain balance reaches `0n`.
+ * If the sweep fails or non-zero balance remains on-chain, the key is retained in
+ * `localStorage` so funded ETH is never orphaned.
+ */
+export async function sweepEvmSession(
+  sessionKey: Hex,
+  mainWallet: Hex,
+  chain: Chain,
+  rpcUrls: string[],
+  options: SweepEvmSessionOptions = {},
+): Promise<bigint> {
+  const pub = options.readClient ?? evmReadClient(chain, rpcUrls);
+  const sessionAddr = evmSessionAddress(sessionKey);
+  const balance = await pub.getBalance({ address: sessionAddr });
+  if (balance === 0n) {
+    clearEvmSession(options.storage);
+    return 0n;
+  }
+
+  const fees = pub.estimateFeesPerGas
+    ? await pub.estimateFeesPerGas()
+    : { maxFeePerGas: undefined, maxPriorityFeePerGas: undefined };
+  const maxFeePerGas =
+    fees.maxFeePerGas ?? (pub.getGasPrice ? await pub.getGasPrice() : 0n);
+  const exactCost = SWEEP_GAS_LIMIT * maxFeePerGas;
+  const value = options.exact
+    ? balance > exactCost && maxFeePerGas > 0n
+      ? balance - exactCost
+      : 0n
+    : sweepValueWei(balance, maxFeePerGas);
+
+  if (value > 0n) {
+    const maxPriorityFeePerGas = options.exact
+      ? maxFeePerGas
+      : (fees.maxPriorityFeePerGas ?? maxFeePerGas);
+    const hash = options.walletClient
+      ? await options.walletClient.sendTransaction({
+          account: options.walletClient.account ?? privateKeyToAccount(sessionKey),
+          chain: null,
+          to: mainWallet,
+          value,
+          gas: SWEEP_GAS_LIMIT,
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+        })
+      : await evmSessionClient(sessionKey, chain, rpcUrls).sendTransaction({
+          account: privateKeyToAccount(sessionKey),
+          chain: null,
+          to: mainWallet,
+          value,
+          gas: SWEEP_GAS_LIMIT,
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+        });
+    const receipt = await pub.waitForTransactionReceipt({ hash });
+    if (receipt?.status && receipt.status !== "success") {
+      throw new Error(`EVM session sweep reverted (tx ${hash}); retaining session key`);
+    }
+  }
+
+  const remaining = await pub.getBalance({ address: sessionAddr });
+  if (remaining === 0n) {
+    clearEvmSession(options.storage);
+  }
+  return value;
 }
 
 // --- Committed-guess preimage persistence (the EVM analog of the Solana
-//     pendingR store). The preimage R is generated at commit and needed again at
-//     reveal; keeping it only in a React ref means a page reload mid-game strands
-//     the reveal. Persist it (keyed by gameId so a stale one from a prior game is
-//     never reused) in sessionStorage — same tab lifetime as the session key,
-//     and it never leaves the browser, so the commit-reveal anonymity barrier
-//     holds. ---
+//     pendingR store). Mirrored to localStorage + sessionStorage so neither a
+//     reload nor a tab close mid-game strands a committed reveal. ---
 
 const PENDING_GUESS_KEY = "coordination-evm-pending-guess";
 
-/** Persist the committed guess preimage for `gameId` so a reload can still reveal. */
+/** Persist the committed guess preimage for `gameId` so a reload/reopen can still reveal. */
 export function persistEvmGuess(
-  storage: SessionStorageLike,
+  storage: EvmSessionStorageInput,
   gameId: string,
   r: Uint8Array,
 ): void {
-  try {
-    storage.setItem(
-      PENDING_GUESS_KEY,
-      JSON.stringify({ gameId, r: bytesToHex(r) }),
-    );
-  } catch (e) {
-    console.warn("[evm-session] guess persist failed (in-memory only)", e);
+  const { local, session } = resolveStoragePair(storage);
+  const serialized = JSON.stringify({ gameId, r: bytesToHex(r) });
+  const wroteLocal = safeSetItem(local, PENDING_GUESS_KEY, serialized);
+  const wroteSession = safeSetItem(session, PENDING_GUESS_KEY, serialized);
+  if (!wroteLocal && !wroteSession) {
+    console.warn("[evm-session] guess persist failed (in-memory only)");
   }
 }
 
-/** The persisted preimage for `gameId`, or null (missing / different game /
- *  unreadable). A mismatched gameId guards against revealing a stale guess. */
+/** The persisted preimage for `gameId`, or null (missing / different game / unreadable). */
 export function loadEvmGuess(
-  storage: SessionStorageLike,
+  storage: EvmSessionStorageInput,
   gameId: string,
 ): Uint8Array | null {
-  try {
-    const raw = storage.getItem(PENDING_GUESS_KEY);
-    if (raw === null) return null;
-    const stored = JSON.parse(raw) as { gameId?: string; r?: string };
-    if (stored.gameId !== gameId || typeof stored.r !== "string") return null;
-    return hexToBytes(stored.r as Hex);
-  } catch (e) {
-    console.warn("[evm-session] guess load failed", e);
-    return null;
+  const { local, session } = resolveStoragePair(storage);
+  for (const candidate of [local, session]) {
+    const raw = safeGetItem(candidate, PENDING_GUESS_KEY);
+    if (raw === null) continue;
+    try {
+      const stored = JSON.parse(raw) as { gameId?: string; r?: string };
+      if (stored.gameId === gameId && typeof stored.r === "string") {
+        if (candidate === session && local && safeGetItem(local, PENDING_GUESS_KEY) === null) {
+          safeSetItem(local, PENDING_GUESS_KEY, raw);
+        }
+        return hexToBytes(stored.r as Hex);
+      }
+    } catch (e) {
+      console.warn("[evm-session] guess load failed", e);
+    }
   }
+  return null;
 }
 
 /** Drop the persisted guess once the game is done. */
-export function clearEvmGuess(storage: SessionStorageLike): void {
-  try {
-    storage.removeItem(PENDING_GUESS_KEY);
-  } catch (e) {
-    console.debug("[evm-session] guess clear failed", e);
-  }
+export function clearEvmGuess(storage?: EvmSessionStorageInput): void {
+  const { local, session } = resolveStoragePair(storage);
+  safeRemoveItem(local, PENDING_GUESS_KEY);
+  safeRemoveItem(session, PENDING_GUESS_KEY);
 }
 
 /** 0x address of a session private key. */

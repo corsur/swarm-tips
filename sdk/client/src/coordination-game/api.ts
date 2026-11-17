@@ -7,7 +7,12 @@ export interface VerifyRequest { wallet: string; nonce: string; signature: strin
 export interface VerifyResponse { token: string }
 export interface SessionAuthRequest { wallet: string; tx_signature: string; nonce: string }
 export interface SessionAuthResponse { token: string }
-export interface QueueRequest { tournament_id: number; is_ai?: boolean }
+export interface QueueRequest {
+  tournament_id: number;
+  is_ai?: boolean;
+  /** Ergonomic camelCase alias mapped to `is_ai` on the JSON wire. */
+  isAi?: boolean;
+}
 export type QueueJoinResponse = { matched: true; session_id: string } | { matched: false };
 export interface OkResponse { ok: boolean }
 
@@ -100,6 +105,37 @@ export interface EvmJoinResponse {
   session_id?: string;
 }
 
+export interface XQueueJoinInput {
+  wallet: string;
+  chain: string;
+  session_key: string;
+  tournament_id: number;
+  is_ai?: boolean;
+  /** Ergonomic camelCase alias mapped to `is_ai` on the JSON wire. */
+  isAi?: boolean;
+}
+
+export interface EvmGameJoinInput {
+  wallet: string;
+  player_wallet?: string;
+  chain: string;
+  tournament_id: number;
+  is_ai?: boolean;
+  /** Ergonomic camelCase alias mapped to `is_ai` on the JSON wire. */
+  isAi?: boolean;
+}
+
+function normalizeAiFlag<T extends { is_ai?: boolean; isAi?: boolean }>(
+  body: T,
+): Omit<T, "isAi"> {
+  const { isAi, is_ai, ...rest } = body;
+  const resolved = is_ai ?? isAi;
+  return {
+    ...rest,
+    ...(resolved !== undefined ? { is_ai: resolved } : {}),
+  } as Omit<T, "isAi">;
+}
+
 export class CoordinationGameApiClient {
   readonly http: HttpClient;
 
@@ -112,18 +148,28 @@ export class CoordinationGameApiClient {
   authSession(body: SessionAuthRequest) { return this.http.post<SessionAuthResponse>("/auth/session", body); }
   evmAuthChallenge(body: ChallengeRequest) { return this.http.post<ChallengeResponse>("/auth/evm/challenge", body); }
   evmAuthVerify(body: VerifyRequest) { return this.http.post<VerifyResponse>("/auth/evm/verify", body); }
-  joinQueue(body: QueueRequest, token: string) { return this.http.post<QueueJoinResponse>("/queue/join", body, token); }
-  leaveQueue(body: QueueRequest, token: string) { return this.http.post<OkResponse>("/queue/leave", body, token); }
-  gameStarted(body: { game_id: number; session_id: string }, token: string) { return this.http.post<OkResponse>("/games/started", body, token); }
-  gameJoined(body: { game_id: number; session_id: string }, token: string) { return this.http.post<OkResponse>("/games/joined", body, token); }
-  cosign(body: { session_id: string; message: string }, token: string) { return this.http.post<{ signature: string }>("/games/cosign", body, token); }
-  cosignJoin(body: { session_id: string; message: string }, token: string) { return this.http.post<{ signature: string }>("/games/cosign-join", body, token); }
-  committed(body: { session_id: string }, token: string) { return this.http.post<{ ok: boolean; both_committed: boolean }>("/games/committed", body, token); }
-  bothCommitted(body: { session_id: string }, token: string) { return this.http.post<{ r_matchup: string }>("/games/both-committed", body, token); }
-  resolved(body: Record<string, number>, token: string) { return this.http.post<OkResponse>("/games/resolved", body, token); }
+  joinQueue(body: QueueRequest, token?: string) {
+    return this.http.post<QueueJoinResponse>("/queue/join", normalizeAiFlag(body), token);
+  }
+  leaveQueue(body: QueueRequest, token?: string) {
+    return this.http.post<OkResponse>("/queue/leave", normalizeAiFlag(body), token);
+  }
+  gameStarted(body: { game_id: number; session_id: string }, token?: string) { return this.http.post<OkResponse>("/games/started", body, token); }
+  gameJoined(body: { game_id: number; session_id: string }, token?: string) { return this.http.post<OkResponse>("/games/joined", body, token); }
+  cosign(body: { session_id: string; message: string }, token?: string) { return this.http.post<{ signature: string }>("/games/cosign", body, token); }
+  cosignJoin(body: { session_id: string; message: string }, token?: string) { return this.http.post<{ signature: string }>("/games/cosign-join", body, token); }
+  committed(body: { session_id: string }, token?: string) { return this.http.post<{ ok: boolean; both_committed: boolean }>("/games/committed", body, token); }
+  bothCommitted(body: { session_id: string }, token?: string) { return this.http.post<{ r_matchup: string }>("/games/both-committed", body, token); }
+  resolved(body: Record<string, number>, token?: string) { return this.http.post<OkResponse>("/games/resolved", body, token); }
 
-  joinCrossChainQueue(body: { wallet: string; chain: string; session_key: string; tournament_id: number }, token?: string) {
-    return this.http.post<XQueueResponse>("/internal/xqueue/join", body, token);
+  joinCrossChainQueue(body: XQueueJoinInput, token?: string) {
+    return this.http.post<XQueueResponse>("/internal/xqueue/join", normalizeAiFlag(body), token);
+  }
+  leaveCrossChainQueue(
+    body: { wallet: string; tournament_id?: number; chain?: string; handle?: string },
+    token?: string,
+  ) {
+    return this.http.post<OkResponse>("/internal/xqueue/leave", body, token);
   }
   crossChainStatus(by: { handle: string } | { wallet: string }, token?: string) {
     const query = "handle" in by
@@ -131,20 +177,20 @@ export class CoordinationGameApiClient {
       : `wallet=${encodeURIComponent(by.wallet)}`;
     return this.http.get<XQueueResponse>(`/internal/xqueue/status?${query}`, token);
   }
-  crossChainCommit(body: { wallet: string; commit: string; handle?: string }) {
-    return this.http.post<{ status: string; both_committed: boolean }>("/internal/xqueue/commit", body);
+  crossChainCommit(body: { wallet: string; commit: string; handle?: string }, token?: string) {
+    return this.http.post<{ status: string; both_committed: boolean }>("/internal/xqueue/commit", body, token);
   }
-  crossChainSign(body: { wallet: string; step: number; signature: string; handle?: string }) {
-    return this.http.post<{ status: string; relayed: boolean; r_matchup: string | null }>("/internal/xqueue/sign", body);
+  crossChainSign(body: { wallet: string; step: number; signature: string; handle?: string }, token?: string) {
+    return this.http.post<{ status: string; relayed: boolean; r_matchup: string | null }>("/internal/xqueue/sign", body, token);
   }
-  crossChainReveal(body: { wallet: string; preimage: string; handle?: string }) {
-    return this.http.post<{ status: string; both_revealed: boolean }>("/internal/xqueue/reveal", body);
+  crossChainReveal(body: { wallet: string; preimage: string; handle?: string }, token?: string) {
+    return this.http.post<{ status: string; both_revealed: boolean }>("/internal/xqueue/reveal", body, token);
   }
-  crossChainGameplay(by: { handle: string } | { wallet: string }) {
+  crossChainGameplay(by: { handle: string } | { wallet: string }, token?: string) {
     const query = "handle" in by
       ? `handle=${encodeURIComponent(by.handle)}`
       : `wallet=${encodeURIComponent(by.wallet)}`;
-    return this.http.get<XGameplayView>(`/internal/xqueue/gameplay?${query}`);
+    return this.http.get<XGameplayView>(`/internal/xqueue/gameplay?${query}`, token);
   }
   submitCrossChainSettleSigs(
     body: { handle?: string; wallet?: string; live_signature?: string; outcome_signature?: string },
@@ -158,23 +204,47 @@ export class CoordinationGameApiClient {
   ) {
     return this.http.post<XOutcomeCertPayload>("/internal/xqueue/outcome-cosign", body, token);
   }
+  buildCrossChainSolFund(
+    body: { handle?: string; wallet?: string; payer?: string },
+    token?: string,
+  ) {
+    return this.http.post<XSolSettleTxResponse>("/internal/xqueue/build-sol-fund", body, token);
+  }
+  buildCrossChainSolLock(
+    body: { handle?: string; wallet?: string; payer?: string },
+    token?: string,
+  ) {
+    return this.http.post<XSolSettleTxResponse>("/internal/xqueue/build-sol-lock", body, token);
+  }
   buildCrossChainSolSettle(
     body: { handle?: string; wallet?: string; payer?: string },
     token?: string,
   ) {
     return this.http.post<XSolSettleTxResponse>("/internal/xqueue/build-sol-settle", body, token);
   }
-  joinEvmGame(body: { wallet: string; player_wallet?: string; chain: string; tournament_id: number }, token?: string) {
-    return this.http.post<EvmJoinResponse>("/internal/evmgame/join", body, token);
+  buildCrossChainSolRefund(
+    body: { handle?: string; wallet?: string; payer?: string },
+    token?: string,
+  ) {
+    return this.http.post<XSolSettleTxResponse>("/internal/xqueue/build-sol-refund", body, token);
   }
-  evmGameStatus(wallet: string, token?: string) {
-    return this.http.get<EvmJoinResponse>(`/internal/evmgame/status?wallet=${encodeURIComponent(wallet)}`, token);
+  joinEvmGame(body: EvmGameJoinInput, token?: string) {
+    return this.http.post<EvmJoinResponse>("/internal/evmgame/join", normalizeAiFlag(body), token);
   }
-  evmGameCommitted(body: { game_id: string; wallet: string }) {
-    return this.http.post<{ status: string; both_committed: boolean; r_matchup: string | null }>("/internal/evmgame/committed", body);
+  evmGameStatus(walletOrBy: string | { wallet?: string; handle?: string }, token?: string) {
+    const query =
+      typeof walletOrBy === "string"
+        ? `wallet=${encodeURIComponent(walletOrBy)}`
+        : walletOrBy.handle
+        ? `handle=${encodeURIComponent(walletOrBy.handle)}`
+        : `wallet=${encodeURIComponent(walletOrBy.wallet ?? "")}`;
+    return this.http.get<EvmJoinResponse>(`/internal/evmgame/status?${query}`, token);
   }
-  evmGameStaked(body: { game_id: string }) {
-    return this.http.post<{ status: string }>("/internal/evmgame/staked", body);
+  evmGameCommitted(body: { game_id: string; wallet: string }, token?: string) {
+    return this.http.post<{ status: string; both_committed: boolean; r_matchup: string | null }>("/internal/evmgame/committed", body, token);
+  }
+  evmGameStaked(body: { game_id: string; wallet?: string }, token?: string) {
+    return this.http.post<{ status: string }>("/internal/evmgame/staked", body, token);
   }
 }
 

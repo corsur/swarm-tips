@@ -1725,3 +1725,140 @@ fn board_responder_plans_external_posts_and_skips_seed_support_and_e2e_probes() 
     support_doc.author_wallet = support;
     assert!(plan_board_responder(&support_doc, SenderTier::Reputable, url, Some(secret)).is_none());
 }
+
+#[tokio::test]
+async fn evm_verified_wallets_with_settlements_or_eigentrust_advance_tier_register_webhook_and_report_post(
+) {
+    struct EchoChallengeResponder;
+    impl wiremock::Respond for EchoChallengeResponder {
+        fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            wiremock::ResponseTemplate::new(200)
+                .set_body_raw(request.body.clone(), "application/json")
+        }
+    }
+
+    let mock_server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/hook"))
+        .respond_with(EchoChallengeResponder)
+        .mount(&mock_server)
+        .await;
+
+    let evm_settled_raw = "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01";
+    let evm_reputable_raw = "0x1111111111111111111111111111111111111111";
+    let evm_unproven_raw = "0x2222222222222222222222222222222222222222";
+
+    let evm_settled = mailbox_address(evm_settled_raw).expect("valid EVM mailbox");
+    let evm_reputable = mailbox_address(evm_reputable_raw).expect("valid EVM mailbox");
+    let evm_unproven = mailbox_address(evm_unproven_raw).expect("valid EVM mailbox");
+
+    let settled_rep = reputation_indexer::AgentReputation {
+        wallet: caip10_address(&evm_settled).to_string(),
+        eigentrust_score: 0.0,
+        rank: 42,
+        rank_normalized: 0.0,
+        settlements_received: 2,
+        settlements_paid: 0,
+        bug_bounties_received: 0,
+        counterparty_count: 1,
+        computed_at: ts("2026-11-15T00:00:00Z").0,
+        newest_edge_settled_at: Some(ts("2026-11-15T00:00:00Z").0),
+    };
+    let reputable_rep = reputation_indexer::AgentReputation {
+        wallet: caip10_address(&evm_reputable).to_string(),
+        eigentrust_score: 0.12,
+        rank: 5,
+        rank_normalized: 0.85,
+        settlements_received: 3,
+        settlements_paid: 1,
+        bug_bounties_received: 0,
+        counterparty_count: 3,
+        computed_at: ts("2026-11-15T00:00:00Z").0,
+        newest_edge_settled_at: Some(ts("2026-11-15T00:00:00Z").0),
+    };
+
+    let sample_post = TopicPostDoc {
+        schema: MESSAGE_SCHEMA.to_string(),
+        post_id: "post-evm-1".to_string(),
+        topic_id: "town-square".to_string(),
+        author_wallet: evm_unproven.clone(),
+        body: "test board post".to_string(),
+        reply_to: None,
+        intent: None,
+        ref_id: None,
+        reported_count: 0,
+        reporters: Vec::new(),
+        hidden: false,
+        created_at: ts("2026-11-15T00:00:00Z"),
+        expires_at: ts("2026-12-15T00:00:00Z"),
+        seed: false,
+    };
+
+    let inbox = Inbox::new_for_test()
+        .with_test_loopback_webhooks()
+        .with_test_reputation(caip10_address(&evm_settled), settled_rep)
+        .with_test_reputation(caip10_address(&evm_reputable), reputable_rep)
+        .with_test_post("town-square", sample_post);
+
+    // 1. Session-verified EVM wallet with un-anchored settlements advances to WalletVerified.
+    assert_eq!(
+        inbox.resolve_sender_tier(&evm_settled, true).await,
+        SenderTier::WalletVerified
+    );
+    // 2. Session-verified EVM wallet with anchored EigenTrust score advances to Reputable.
+    assert_eq!(
+        inbox.resolve_sender_tier(&evm_reputable, true).await,
+        SenderTier::Reputable
+    );
+    // 3. Session-verified EVM wallet with zero settlements stays SessionVerified (25 sends/day preserved).
+    assert_eq!(limits::SENDS_PER_DAY_SESSION_VERIFIED, 25);
+    assert_eq!(
+        inbox.resolve_sender_tier(&evm_unproven, true).await,
+        SenderTier::SessionVerified
+    );
+    // 4. Unverified session (`session_verified == false`) stays Unproven even if reputation exists.
+    assert_eq!(
+        inbox.resolve_sender_tier(&evm_reputable, false).await,
+        SenderTier::Unproven
+    );
+
+    let hook_url = format!("{}/hook", mock_server.uri());
+
+    // 5. Settled and EigenTrust-backed EVM wallets pass the on-chain proof gate on register_webhook AND report_post.
+    let settled_hook = inbox
+        .register_webhook(&evm_settled, &hook_url)
+        .await
+        .expect("settled EVM wallet must be allowed to register_webhook");
+    assert!(settled_hook.verified);
+    assert!(settled_hook.hmac_secret.starts_with("whsec_"));
+
+    let reputable_hook = inbox
+        .register_webhook(&evm_reputable, &hook_url)
+        .await
+        .expect("EigenTrust EVM wallet must be allowed to register_webhook");
+    assert!(reputable_hook.verified);
+
+    let report_res = inbox
+        .report_post(&evm_settled, "town-square", "post-evm-1")
+        .await
+        .expect("settled EVM wallet must be allowed to report_post");
+    assert_eq!(report_res.reported_count, 1);
+
+    // 6. Zero-settlement EVM wallet without Solana SPL-Memo/stake proof is still rejected on both.
+    let err = inbox
+        .register_webhook(&evm_unproven, &hook_url)
+        .await
+        .expect_err("zero-settlement EVM wallet must fail WalletProofRequired on register_webhook");
+    assert!(matches!(
+        err,
+        InboxError::Rejected(InboxRejection::WalletProofRequired)
+    ));
+    let rep_err = inbox
+        .report_post(&evm_unproven, "town-square", "post-evm-1")
+        .await
+        .expect_err("zero-settlement EVM wallet must fail WalletProofRequired on report_post");
+    assert!(matches!(
+        rep_err,
+        InboxError::Rejected(InboxRejection::WalletProofRequired)
+    ));
+}
