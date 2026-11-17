@@ -50,13 +50,18 @@ import {
   ShillbotApiClient,
 } from "../src/shillbot/api.js";
 import {
+  ADVANCE_ACCOUNT_SPACE,
+  EXTENSION_CREDIT_PROGRAM_ID,
   SHILLBOT_PROGRAM_ID,
+  advanceAccountDiscriminator,
+  advancePda,
   buildClaim,
   buildCreate,
   buildFinalize,
   buildInstruction,
   buildShillbotInstruction,
   buildVerify,
+  decodeExtensionCreditAdvance,
   inspectTransaction,
   shillbotInstructionDiscriminator,
   verifyIntent,
@@ -2012,7 +2017,7 @@ describe("Public task inspection: ShillbotApiClient.getTask, agent.tasks.get, an
     expect(missingIdCode).toBe(2);
     expect(errOut).toContain("Usage: swarm tasks get <task_id>");
 
-    // 4. `--help` advertises `get <id>`
+    // 4. `--help` advertises `get <id>` and `submitted_at + verification_timeout` on `tasks expire`
     let helpOut = "";
     const helpCode = await runSwarmCli(["--help"], {
       stdout: { write: (s) => ((helpOut += s), true), isTTY: true },
@@ -2021,6 +2026,167 @@ describe("Public task inspection: ShillbotApiClient.getTask, agent.tasks.get, an
     });
     expect(helpCode).toBe(0);
     expect(helpOut).toContain("get <id>");
+    expect(helpOut).toContain("submitted_at + verification_timeout");
   });
 });
+
+function encodeAdvanceAccountData(params: {
+  backer: PublicKey;
+  recipient: PublicKey;
+  advanceLamports: bigint;
+  recoupedLamports: bigint;
+  createdAt?: bigint;
+  bump?: number;
+}): Buffer {
+  const buf = Buffer.alloc(ADVANCE_ACCOUNT_SPACE, 0);
+  advanceAccountDiscriminator().copy(buf, 0);
+  params.backer.toBuffer().copy(buf, 8);
+  params.recipient.toBuffer().copy(buf, 40);
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  view.setBigUint64(72, params.advanceLamports, true);
+  view.setBigUint64(80, params.recoupedLamports, true);
+  view.setBigInt64(88, params.createdAt ?? 1_700_000_000n, true);
+  buf[96] = params.bump ?? 255;
+  return buf;
+}
+
+describe("P1-2: On-chain extension-credit Advance RPC verification before auto-authorizing set_payout_to", () => {
+  it("accepts set_payout_to ONLY when getAccountInfo confirms a live unrecouped Advance owned by extension-credit for signer", async () => {
+    const agentKp = Keypair.generate();
+    const backerKp = Keypair.generate();
+    const taskPk = Keypair.generate().publicKey;
+    const signer = fromSolanaKeypair(agentKp);
+    const jwt = makeJwt(signer.address, Math.floor(Date.now() / 1000) + 3600);
+    const derivedAdv = advancePda(backerKp.publicKey, agentKp.publicKey);
+
+    const validData = encodeAdvanceAccountData({
+      backer: backerKp.publicKey,
+      recipient: agentKp.publicKey,
+      advanceLamports: 3_100_000n,
+      recoupedLamports: 0n,
+    });
+    const decoded = decodeExtensionCreditAdvance(validData);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.backer.toBase58()).toBe(backerKp.publicKey.toBase58());
+    expect(decoded!.recipient.toBase58()).toBe(agentKp.publicKey.toBase58());
+    expect(decoded!.advanceLamports).toBe(3_100_000n);
+    expect(decoded!.recoupedLamports).toBe(0n);
+
+    const builtClaim = buildClaim({
+      wallet: signer.address,
+      network: "mainnet",
+      recentBlockhash: "11111111111111111111111111111111",
+      taskPda: taskPk.toBase58(),
+      payoutTo: derivedAdv.toBase58(),
+    });
+
+    const mockFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/claim")) {
+        return jsonResponse({
+          task_id: "task-adv-1",
+          transaction: builtClaim.unsigned_tx,
+          task_pda: taskPk.toBase58(),
+          payout_to: derivedAdv.toBase58(),
+          advance_backer: backerKp.publicKey.toBase58(),
+        });
+      }
+      if (url.includes("/confirm")) {
+        return jsonResponse({ state: "claimed" });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    // (a) Valid unrecouped on-chain Advance -> succeeds with exact 1 RPC getAccountInfo read
+    const getAccountInfoOk = vi.fn(async (pk: PublicKey) => {
+      expect(pk.toBase58()).toBe(derivedAdv.toBase58());
+      return {
+        data: validData,
+        executable: false,
+        lamports: 1_672_080,
+        owner: EXTENSION_CREDIT_PROGRAM_ID,
+      };
+    });
+    const sendOk = vi.fn(async () => "5ValidAdvSig11111111111111111111111111111111111");
+    const okConn = {
+      getAccountInfo: getAccountInfoOk,
+      sendRawTransaction: sendOk,
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+    } as unknown as Connection;
+
+    const agent = createSwarmAgent({
+      signer,
+      token: jwt,
+      network: "mainnet",
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+
+    const res = await agent.tasks.claimAndExecute("task-adv-1", { connection: okConn });
+    expect(res.signature).toBe("5ValidAdvSig11111111111111111111111111111111111");
+    expect(getAccountInfoOk).toHaveBeenCalledTimes(1);
+    expect(sendOk).toHaveBeenCalledTimes(1);
+
+    // (b) Compromised API cases MUST all fail closed BEFORE signing or broadcasting:
+    const foreignRecipient = Keypair.generate().publicKey;
+    const rejectedCases: Array<{
+      label: string;
+      acct: { data: Buffer; executable: boolean; lamports: number; owner: PublicKey } | null;
+    }> = [
+      { label: "nonexistent Advance PDA", acct: null },
+      {
+        label: "wrong owner (SystemProgram instead of extension-credit)",
+        acct: {
+          data: validData,
+          executable: false,
+          lamports: 1_672_080,
+          owner: SystemProgram.programId,
+        },
+      },
+      {
+        label: "already repaid Advance (recouped_lamports == advance_lamports)",
+        acct: {
+          data: encodeAdvanceAccountData({
+            backer: backerKp.publicKey,
+            recipient: agentKp.publicKey,
+            advanceLamports: 3_100_000n,
+            recoupedLamports: 3_100_000n,
+          }),
+          executable: false,
+          lamports: 1_672_080,
+          owner: EXTENSION_CREDIT_PROGRAM_ID,
+        },
+      },
+      {
+        label: "foreign recipient Advance",
+        acct: {
+          data: encodeAdvanceAccountData({
+            backer: backerKp.publicKey,
+            recipient: foreignRecipient,
+            advanceLamports: 3_100_000n,
+            recoupedLamports: 0n,
+          }),
+          executable: false,
+          lamports: 1_672_080,
+          owner: EXTENSION_CREDIT_PROGRAM_ID,
+        },
+      },
+    ];
+
+    for (const testCase of rejectedCases) {
+      const sendNever = vi.fn(async () => "should-never-broadcast");
+      const badConn = {
+        getAccountInfo: vi.fn(async () => testCase.acct),
+        sendRawTransaction: sendNever,
+        confirmTransaction: vi.fn(),
+      } as unknown as Connection;
+
+      await expect(
+        agent.tasks.claimAndExecute("task-adv-1", { connection: badConn }),
+        `Expected ${testCase.label} to reject fail-closed`,
+      ).rejects.toThrow(/Unexpected set_payout_to instruction/);
+      expect(sendNever).not.toHaveBeenCalled();
+    }
+  });
+});
+
 

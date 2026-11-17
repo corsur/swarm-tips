@@ -1474,36 +1474,65 @@ async fn build_verify_tx_handler(
         }
     }
 
-    let (verified_task_pda, verified_score, verified_hash) = (
+    if let Some(evm_call) = vdata.evm_verify_call {
+        return (
+            StatusCode::OK,
+            BUILD_VERIFY_CORS,
+            axum::Json(serde_json::json!({
+                "task_id": task_id,
+                "transaction": "",
+                "task_pda": vdata.task_pda,
+                "evm_call": evm_call,
+            })),
+        )
+            .into_response();
+    }
+
+    let (
+        verified_task_pda,
+        verified_score,
+        verified_hash,
+        required_payout_to,
+        advance_backer,
+        pre_cosigned_tx,
+    ) = (
         vdata.task_pda,
         vdata.composite_score,
         vdata.verification_hash,
+        vdata.required_payout_to,
+        vdata.advance_backer,
+        vdata.co_signed_transaction,
     );
 
-    let tx = match solana_tx::build_co_signed_verify_tx(
-        &state.rpc_client,
-        rpc_url,
-        &payer,
-        &verified_task_pda,
-        verified_score,
-        &verified_hash,
-        oracle_kp,
-    )
-    .await
-    {
-        Ok(tx) => tx,
-        Err(e) => {
-            tracing::error!(
-                service = "mcp-server",
-                error = %e,
-                "co-signed build_verify_tx failed"
-            );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                BUILD_VERIFY_CORS,
-                "transaction builder failed",
-            )
-                .into_response();
+    let tx = if let Some(attester_tx) = pre_cosigned_tx.filter(|s| !s.trim().is_empty()) {
+        attester_tx
+    } else {
+        match solana_tx::build_co_signed_verify_tx(
+            &state.rpc_client,
+            rpc_url,
+            &payer,
+            &verified_task_pda,
+            verified_score,
+            &verified_hash,
+            required_payout_to.as_deref(),
+            oracle_kp,
+        )
+        .await
+        {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::error!(
+                    service = "mcp-server",
+                    error = %e,
+                    "co-signed build_verify_tx failed"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    BUILD_VERIFY_CORS,
+                    "transaction builder failed",
+                )
+                    .into_response();
+            }
         }
     };
 
@@ -1525,6 +1554,8 @@ async fn build_verify_tx_handler(
     };
     let sponsor = (fee_payer != payer).then_some(fee_payer);
     let expected_oracle = Some(solana_sdk::signer::Signer::pubkey(oracle_kp.as_ref()).to_string());
+    let require_payout_routing = verified_score > 0 && required_payout_to.is_some();
+    let allowed_payout_to = (verified_score > 0).then_some(required_payout_to).flatten();
     let validation_req = shillbot_chain::ValidationRequest {
         action: shillbot_chain::Action::Verify,
         network: validation_network.to_string(),
@@ -1535,9 +1566,12 @@ async fn build_verify_tx_handler(
         sponsor,
         expected_accounts: None,
         expected_data: None,
-        allowed_payout_to: None,
-        require_payout_routing: false,
+        allowed_payout_to: allowed_payout_to.clone(),
+        require_payout_routing,
         switchboard_feed: expected_oracle,
+        recoup_backer: None,
+        recoup_recipient: None,
+        expire_task_state: None,
     };
     let transaction_intent = match shillbot_chain::validate_base64(&tx, &validation_req) {
         Ok(intent) => intent,
@@ -1556,16 +1590,20 @@ async fn build_verify_tx_handler(
         }
     };
 
-    (
-        StatusCode::OK,
-        BUILD_VERIFY_CORS,
-        axum::Json(serde_json::json!({
-            "transaction": tx,
-            "task_pda": verified_task_pda,
-            "transaction_intent": transaction_intent,
-        })),
-    )
-        .into_response()
+    let mut payload = serde_json::json!({
+        "task_id": task_id,
+        "transaction": tx,
+        "task_pda": verified_task_pda,
+        "transaction_intent": transaction_intent,
+    });
+    if let Some(payout_to) = allowed_payout_to {
+        payload["payout_to"] = serde_json::Value::String(payout_to);
+    }
+    if let Some(backer) = advance_backer {
+        payload["advance_backer"] = serde_json::Value::String(backer);
+    }
+
+    (StatusCode::OK, BUILD_VERIFY_CORS, axum::Json(payload)).into_response()
 }
 
 static BUILDER_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
@@ -2136,6 +2174,9 @@ mod readiness_tests {
             allowed_payout_to: None,
             require_payout_routing: false,
             switchboard_feed: Some(oracle_pk.to_string()),
+            recoup_backer: None,
+            recoup_recipient: None,
+            expire_task_state: None,
         };
         shillbot_chain::validate_signed_base64(&signed_b64, &val_req)
             .expect("signed mainnet vk=0 verify_task tx must pass shillbot_chain validation");
@@ -2452,5 +2493,247 @@ mod readiness_tests {
                 .and_then(|v| v.to_str().ok()),
             Some("*")
         );
+    }
+
+    #[tokio::test]
+    async fn build_verify_tx_handler_prepends_set_payout_to_on_outstanding_advance_and_supports_attester_and_evm_passthrough(
+    ) {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        use solana_sdk::signer::Signer as _;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let orchestrator_mock = MockServer::start().await;
+        let rpc_mock = MockServer::start().await;
+
+        let caller_kp = solana_sdk::signature::Keypair::new();
+        let caller_pk = caller_kp.pubkey();
+        let caller = caller_pk.to_string();
+        let backer_pk = solana_sdk::signature::Keypair::new().pubkey();
+        let advance_pk = shillbot_chain::advance_pda(&backer_pk, &caller_pk);
+        let oracle_kp = std::sync::Arc::new(solana_sdk::signature::Keypair::new());
+        let oracle_pk = oracle_kp.pubkey();
+        let task_pk = solana_sdk::signature::Keypair::new().pubkey();
+        let task_pda = task_pk.to_string();
+        let expected_hash_bytes = [0x99u8; 32];
+        let expected_hash = hex::encode(expected_hash_bytes);
+        let user_jwt = crate::jwt::mint_user_jwt_for_test(
+            &caller,
+            TEST_JWT_SECRET,
+            &["shillbot", "game", "mcp"],
+            future_exp(),
+        );
+
+        let recent_bh = solana_sdk::hash::Hash::new_unique();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "context": { "slot": 100 },
+                    "value": {
+                        "blockhash": recent_bh.to_string(),
+                        "lastValidBlockHeight": 1000
+                    }
+                }
+            })))
+            .mount(&rpc_mock)
+            .await;
+
+        // Case 1: Outstanding advance on vk=0 verify -> [ComputeBudget, ComputeBudget, set_payout_to(advance_pk), VerifyTask]
+        Mock::given(method("POST"))
+            .and(path("/tasks/task-adv/build-verify"))
+            .and(header("authorization", format!("Bearer {user_jwt}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "task-adv",
+                "task_pda": task_pda,
+                "composite_score": 850_000_u64,
+                "verification_hash": expected_hash,
+                "global_state": shillbot_chain::global_state_pda().to_string(),
+                "switchboard_feed": oracle_pk.to_string(),
+                "required_payout_to": advance_pk.to_string(),
+                "advance_backer": backer_pk.to_string(),
+            })))
+            .expect(1)
+            .mount(&orchestrator_mock)
+            .await;
+
+        // Case 2: Attester pre-co-signed verify_task_attested (1a) passthrough
+        let attested_ix = shillbot_chain::verify_task_attested_instruction(
+            task_pk,
+            oracle_pk,
+            1_000_000,
+            expected_hash_bytes,
+            None,
+        );
+        let set_payout_ix =
+            shillbot_chain::set_payout_to_instruction(caller_pk, task_pk, advance_pk);
+        let msg = solana_sdk::message::v0::Message::try_compile(
+            &caller_pk,
+            &[set_payout_ix, attested_ix],
+            &[],
+            recent_bh,
+        )
+        .unwrap();
+        let vmsg = solana_sdk::message::VersionedMessage::V0(msg);
+        let mut attester_vtx = solana_sdk::transaction::VersionedTransaction {
+            signatures: vec![solana_sdk::signature::Signature::default(); 2],
+            message: vmsg,
+        };
+        let msg_bytes = attester_vtx.message.serialize();
+        attester_vtx.signatures[1] = oracle_kp.sign_message(&msg_bytes);
+        let attester_tx_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&attester_vtx).unwrap());
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/task-attested/build-verify"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "task-attested",
+                "task_pda": task_pda,
+                "composite_score": 1_000_000_u64,
+                "verification_hash": expected_hash,
+                "global_state": shillbot_chain::global_state_pda().to_string(),
+                "switchboard_feed": oracle_pk.to_string(),
+                "required_payout_to": advance_pk.to_string(),
+                "advance_backer": backer_pk.to_string(),
+                "verification_kind": 1,
+                "co_signed_transaction": attester_tx_b64,
+            })))
+            .expect(1)
+            .mount(&orchestrator_mock)
+            .await;
+
+        // Case 3: EVM verifyTaskAttested call (1b-EVM) passthrough
+        Mock::given(method("POST"))
+            .and(path("/tasks/task-evm/build-verify"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "task-evm",
+                "task_pda": "eip155:84532:0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c:7",
+                "composite_score": 1_000_000_u64,
+                "verification_hash": expected_hash,
+                "global_state": "",
+                "switchboard_feed": "",
+                "evm_verify_call": {
+                    "to": "0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c",
+                    "data": "0x3bae608b0000000000000000000000000000000000000000000000000000000000000007",
+                    "value_wei": "0",
+                    "chain": "eip155:84532"
+                }
+            })))
+            .expect(1)
+            .mount(&orchestrator_mock)
+            .await;
+
+        let state = super::BuildVerifyState {
+            oracle_keypair: Some(std::sync::Arc::clone(&oracle_kp)),
+            orchestrator: crate::OrchestratorProxy::new(
+                orchestrator_mock.uri(),
+                orchestrator_mock.uri(),
+            ),
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            rpc_client: reqwest::Client::new(),
+            rpc_url_mainnet: rpc_mock.uri(),
+            rpc_url_devnet: rpc_mock.uri(),
+        };
+
+        // Verify Case 1
+        let resp1 = super::build_verify_tx_handler(
+            bearer_headers(&user_jwt),
+            axum::Json(serde_json::json!({
+                "task_id": "task-adv",
+                "payer": caller,
+                "network": "mainnet",
+            })),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(resp1.status(), axum::http::StatusCode::OK);
+        let json1: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp1.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json1["payout_to"], advance_pk.to_string());
+        assert_eq!(json1["advance_backer"], backer_pk.to_string());
+        assert_eq!(json1["transaction_intent"]["fee_payer"], caller);
+        assert_ne!(
+            json1["transaction_intent"]["fee_payer"],
+            oracle_pk.to_string()
+        );
+        let vtx1 = shillbot_chain::decode_base64(json1["transaction"].as_str().unwrap()).unwrap();
+        let keys1 = vtx1.message.static_account_keys();
+        assert_eq!(keys1[0], caller_pk);
+        assert_eq!(keys1[1], oracle_pk);
+        let cb_id: solana_sdk::pubkey::Pubkey = "ComputeBudget111111111111111111111111111111"
+            .parse()
+            .unwrap();
+        let non_cb1: Vec<_> = vtx1
+            .message
+            .instructions()
+            .iter()
+            .filter(|ix| keys1[usize::from(ix.program_id_index)] != cb_id)
+            .collect();
+        assert_eq!(
+            non_cb1.len(),
+            2,
+            "must prepend set_payout_to before VerifyTask"
+        );
+        assert_eq!(
+            &non_cb1[0].data[..8],
+            &sha2::Sha256::digest(b"global:set_payout_to")[..8]
+        );
+        assert_eq!(&non_cb1[0].data[8..40], advance_pk.as_ref());
+        assert_eq!(
+            &non_cb1[1].data[..8],
+            &sha2::Sha256::digest(b"global:verify_task")[..8]
+        );
+
+        // Verify Case 2 (1a attester passthrough)
+        let resp2 = super::build_verify_tx_handler(
+            bearer_headers(&user_jwt),
+            axum::Json(serde_json::json!({
+                "task_id": "task-attested",
+                "payer": caller,
+                "network": "mainnet",
+            })),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(resp2.status(), axum::http::StatusCode::OK);
+        let json2: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp2.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json2["transaction"], attester_tx_b64);
+        assert_eq!(json2["payout_to"], advance_pk.to_string());
+        assert_eq!(json2["transaction_intent"]["fee_payer"], caller);
+
+        // Verify Case 3 (1b-EVM passthrough)
+        let resp3 = super::build_verify_tx_handler(
+            bearer_headers(&user_jwt),
+            axum::Json(serde_json::json!({
+                "task_id": "task-evm",
+                "payer": caller,
+                "network": "devnet",
+            })),
+            state,
+        )
+        .await;
+        assert_eq!(resp3.status(), axum::http::StatusCode::OK);
+        let json3: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp3.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json3["evm_call"]["to"],
+            "0xaFe061778f9A76fCe7da4124dC89DAF8309E5F3c"
+        );
+        assert_eq!(json3["evm_call"]["value_wei"], "0");
     }
 }

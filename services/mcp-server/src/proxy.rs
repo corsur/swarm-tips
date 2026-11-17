@@ -243,6 +243,12 @@ pub struct TransactionResponse {
     pub task_pda: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_call: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payout_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advance_backer: Option<String>,
 }
 
 /// VOW v1 attestation — mirrors orchestrator
@@ -284,6 +290,16 @@ pub struct VerificationDataResponse {
     pub verification_hash: String,
     pub global_state: String,
     pub switchboard_feed: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_payout_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advance_backer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_kind: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub co_signed_transaction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_verify_call: Option<serde_json::Value>,
 }
 
 /// Action discriminator for `POST /tasks/:id/confirm`. Mirrors
@@ -300,6 +316,7 @@ pub enum ConfirmAction {
     Approve,
     Verify,
     Finalize,
+    Expire,
 }
 
 /// Parameters for [`OrchestratorProxy::create_campaign`], bundled into a struct so
@@ -1009,6 +1026,47 @@ impl OrchestratorProxy {
 
         response.json().await.map_err(|e| {
             McpServiceError::OrchestratorError(format!("invalid build-finalize response: {e}"))
+        })
+    }
+
+    /// Request the orchestrator build an unsigned `expire_task` Solana
+    /// transaction (`fee_payer = campaign.client`) once the claim/submit or
+    /// verification deadline has elapsed.
+    pub async fn build_expire(
+        &self,
+        task_id: &str,
+        _wallet_pubkey: &str,
+        network: Option<&str>,
+    ) -> Result<TransactionResponse, McpServiceError> {
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
+
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{encoded_task_id}/build-expire{qs}", self.base_url);
+        let response = self.bodyless_post(&url)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator build-expire failed");
+                McpServiceError::OrchestratorError(format!("request failed: {e}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = api_transport::read_bounded_text(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
+            return Err(McpServiceError::OrchestratorError(format!(
+                "status {status}: {body}"
+            )));
+        }
+
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid build-expire response: {e}"))
         })
     }
 

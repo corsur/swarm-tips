@@ -3,7 +3,10 @@ import { ComputeBudgetProgram, PublicKey, Secp256k1Program } from "@solana/web3.
 import { SHILLBOT_PROGRAM_ID, shillbotInstructionDiscriminator } from "../contracts/index.js";
 import { SwarmClientError } from "../errors.js";
 import {
+  EXTENSION_CREDIT_PROGRAM_ID,
+  advancePda,
   inspectTransaction,
+  routeAndRecoupDiscriminator,
   type Action,
   type Network,
   type TransactionInspection,
@@ -272,6 +275,8 @@ const DISCRIMINATOR_TO_SPEC: ReadonlyMap<string, ShillbotInstructionSpec> = (() 
   return map;
 })();
 
+export type ExpireTaskState = "open" | "claimed" | "submitted" | "approved";
+
 export interface VerifyBuiltTransactionExpectation {
   action?: Action;
   instructionName?: ShillbotInstructionName;
@@ -285,6 +290,12 @@ export interface VerifyBuiltTransactionExpectation {
    * `set_payout_to` instruction is rejected fail-closed.
    */
   payoutTo?: string;
+  /**
+   * Optional task state when validating `expire_task`: enforces exact 3 accounts
+   * `[task, global_state, client]` on `open | submitted | approved` (rejecting the
+   * 4-account `AgentState` form) and exact 4 accounts on `claimed`.
+   */
+  expireTaskState?: ExpireTaskState;
   oracleAuthority?: string;
   escrowLamports?: bigint;
   contentId?: string;
@@ -444,6 +455,8 @@ function allowedInstructionNamesForAction(action: Action): readonly ShillbotInst
       return ["verify_task", "verify_task_attested"];
     case "finalize":
       return ["finalize_task"];
+    case "expire":
+      return ["expire_task"];
     default:
       return [];
   }
@@ -623,7 +636,8 @@ function verifyInstructionAuthorityAndShape(
  * Strict fail-closed local validator for built or server-prepared Shillbot Solana transactions.
  *
  * Enforces:
- * - Allowed program IDs (Shillbot + ComputeBudget, plus Switchboard + Secp256k1 only on `verify`).
+ * - Allowed program IDs (Shillbot + ComputeBudget, Switchboard + Secp256k1 on `verify` / score-0 reopen,
+ *   and `extension-credit` `route_and_recoup` strictly on `finalize`).
  * - Full loop validation of all `ComputeBudget` instructions (no early return on `RequestHeapFrame`),
  *   capping `SetComputeUnitPrice <= MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS` (`100_000` micro-lamports/CU).
  * - Exact Anchor account-index positions for `task` PDA and authority signer slots per discriminator.
@@ -683,13 +697,17 @@ export function verifyBuiltTransaction(
     expected.action === "verify" ||
     expected.instructionName === "verify_task" ||
     expected.instructionName === "verify_task_attested";
+  const isFinalizeContext =
+    expected.action === "finalize" || expected.instructionName === "finalize_task";
   const shillbotId = SHILLBOT_PROGRAM_ID.toBase58();
+  const extensionCreditId = EXTENSION_CREDIT_PROGRAM_ID.toBase58();
   const alwaysAllowed = new Set<string>([
     shillbotId,
     ComputeBudgetProgram.programId.toBase58(),
     ...(isVerifyContext
       ? [SWITCHBOARD_PROGRAM_IDS[expected.network], Secp256k1Program.programId.toBase58()]
       : []),
+    ...(isFinalizeContext ? [extensionCreditId] : []),
     ...(expected.allowedProgramIds ?? []),
   ]);
   const unrelated = inspected.instructions.find(
@@ -742,6 +760,59 @@ export function verifyBuiltTransaction(
 
   verifyInstructionAuthorityAndShape(primary, inspected, expected, operation);
 
+  // Validate optional `extension-credit::route_and_recoup` companion on `finalize`
+  const creditIxs = inspected.instructions
+    .map((ix, txIndex) => ({ ix, txIndex }))
+    .filter((entry) => entry.ix.program_id === extensionCreditId);
+  if (creditIxs.length > 0) {
+    if (!isFinalizeContext || primary.spec.name !== "finalize_task") {
+      throw txMismatch(operation, "extension-credit instruction only permitted on finalize_task");
+    }
+    if (creditIxs.length !== 1) {
+      throw txMismatch(operation, "At most one extension-credit instruction is permitted");
+    }
+    const { ix: creditIx, txIndex: creditTxIndex } = creditIxs[0];
+    if (creditTxIndex <= primary.txIndex) {
+      throw txMismatch(operation, "route_and_recoup must execute after finalize_task");
+    }
+    const creditData = Buffer.from(creditIx.data_base64, "base64");
+    if (creditData.length !== 8 || !creditData.equals(routeAndRecoupDiscriminator())) {
+      throw txMismatch(operation, "Unsupported or malformed extension-credit instruction");
+    }
+    if (creditIx.accounts.length !== 3) {
+      throw txMismatch(
+        operation,
+        `route_and_recoup requires exact 3 accounts [advance, backer, recipient], got ${creditIx.accounts.length}`,
+      );
+    }
+    const [advanceAcct, backerAcct, recipientAcct] = creditIx.accounts;
+    if (advanceAcct !== primary.ix.accounts[2]) {
+      throw txMismatch(
+        operation,
+        `route_and_recoup advance account (${advanceAcct}) must match finalize_task payout slot [2] (${primary.ix.accounts[2]})`,
+      );
+    }
+    if (expectedPayoutPubkey && advanceAcct !== expectedPayoutPubkey.toBase58()) {
+      throw txMismatch(
+        operation,
+        `route_and_recoup advance account (${advanceAcct}) differs from expected.payoutTo (${expectedPayoutPubkey.toBase58()})`,
+      );
+    }
+    if (recipientAcct !== expected.wallet) {
+      throw txMismatch(
+        operation,
+        `route_and_recoup recipient (${recipientAcct}) must equal caller wallet (${expected.wallet})`,
+      );
+    }
+    const derivedAdvance = advancePda(backerAcct, recipientAcct).toBase58();
+    if (advanceAcct !== derivedAdvance) {
+      throw txMismatch(
+        operation,
+        `route_and_recoup advance account (${advanceAcct}) does not match canonical Advance PDA (${derivedAdvance})`,
+      );
+    }
+  }
+
   // Instruction-specific payload validation
   if (primary.spec.name === "create_task") {
     if (primary.data.length < 24) {
@@ -789,6 +860,45 @@ export function verifyBuiltTransaction(
         `finalize_task payout recipient slot [2] (${primary.ix.accounts[2]}) differs from expected.payoutTo ${expectedPayoutPubkey.toBase58()}`,
       );
     }
+  } else if (primary.spec.name === "expire_task") {
+    if (primary.data.length !== 8) {
+      throw txMismatch(
+        operation,
+        `expire_task instruction data must be exact 8-byte discriminator, got ${primary.data.length}`,
+      );
+    }
+    if (primary.ix.accounts.length !== 3 && primary.ix.accounts.length !== 4) {
+      throw txMismatch(
+        operation,
+        `expire_task requires 3 accounts (or 4 when expiring a Claimed task), got ${primary.ix.accounts.length}`,
+      );
+    }
+    if (expected.expireTaskState !== undefined) {
+      if (
+        expected.expireTaskState === "open" ||
+        expected.expireTaskState === "submitted" ||
+        expected.expireTaskState === "approved"
+      ) {
+        if (primary.ix.accounts.length !== 3) {
+          throw txMismatch(
+            operation,
+            `expire_task on ${expected.expireTaskState} task requires exact 3 accounts [task, global_state, client], got ${primary.ix.accounts.length}`,
+          );
+        }
+      } else if (expected.expireTaskState === "claimed") {
+        if (primary.ix.accounts.length !== 4) {
+          throw txMismatch(
+            operation,
+            `expire_task on claimed task requires exact 4 accounts [task, global_state, client, agent_state], got ${primary.ix.accounts.length}`,
+          );
+        }
+      } else {
+        throw invalidArg(
+          operation,
+          `Unsupported expireTaskState: ${String(expected.expireTaskState)}`,
+        );
+      }
+    }
   }
 
   // Validate companion Shillbot instructions (strictly fail-closed)
@@ -822,6 +932,10 @@ export function verifyBuiltTransaction(
     expected.action === "submit" ||
     primary.spec.name === "submit_work" ||
     primary.spec.name === "submit_work_session";
+  const isVerifyLifecycle =
+    expected.action === "verify" ||
+    primary.spec.name === "verify_task" ||
+    primary.spec.name === "verify_task_attested";
 
   if (companions.length === 0) {
     if (
@@ -834,6 +948,24 @@ export function verifyBuiltTransaction(
         "Expected set_payout_to instruction matching expected.payoutTo, but none was present",
       );
     }
+    return inspected;
+  }
+
+  if (
+    isVerifyLifecycle &&
+    companions.length === 1 &&
+    companions[0].spec.name === "set_payout_to"
+  ) {
+    if (companions[0].txIndex >= primary.txIndex) {
+      throw txMismatch(operation, "set_payout_to must precede verify instruction");
+    }
+    validateSetPayoutToInstruction(
+      companions[0],
+      expected.wallet,
+      primary.ix.accounts[0],
+      expectedPayoutPubkey,
+      operation,
+    );
     return inspected;
   }
 
@@ -858,11 +990,54 @@ export function verifyBuiltTransaction(
     return inspected;
   }
 
+  // Optional leading score-0 reopen (`verify_task` or `verify_task_attested` with score == 0)
+  // before `[claim_task, (set_payout_to?), submit_work]` (1d / Q4).
+  let submitCompanions = companions;
   if (
     isSubmitLifecycle &&
-    companions.length === 1 &&
-    (companions[0].spec.name === "claim_task" ||
-      companions[0].spec.name === "claim_task_session")
+    (companions[0].spec.name === "verify_task" ||
+      companions[0].spec.name === "verify_task_attested")
+  ) {
+    const reopenIx = companions[0];
+    if (reopenIx.data.length !== 48 || reopenIx.ix.accounts.length < 3) {
+      throw txMismatch(operation, "Malformed score-0 reopen verify companion");
+    }
+    if (reopenIx.ix.accounts[0] !== primary.ix.accounts[0]) {
+      throw txMismatch(operation, "Score-0 reopen verify companion targets a different task PDA");
+    }
+    const scoreView = new DataView(
+      reopenIx.data.buffer,
+      reopenIx.data.byteOffset + 8,
+      8,
+    );
+    if (scoreView.getBigUint64(0, true) !== 0n) {
+      throw txMismatch(
+        operation,
+        "Reopen verify companion in submit bundle must have composite_score === 0",
+      );
+    }
+    if (reopenIx.spec.name === "verify_task_attested") {
+      const attester = reopenIx.ix.accounts[2];
+      if (!inspected.signers.includes(attester)) {
+        throw txMismatch(operation, "verify_task_attested reopen attester must be a signer");
+      }
+      if (expected.oracleAuthority && attester !== expected.oracleAuthority) {
+        throw txMismatch(operation, "verify_task_attested reopen attester mismatch");
+      }
+    } else if (expected.oracleAuthority && reopenIx.ix.accounts[2] !== expected.oracleAuthority) {
+      throw txMismatch(operation, "verify_task reopen oracle mismatch");
+    }
+    submitCompanions = companions.slice(1);
+    if (submitCompanions.length > 0 && reopenIx.txIndex >= submitCompanions[0].txIndex) {
+      throw txMismatch(operation, "Score-0 reopen verify must precede claim_task");
+    }
+  }
+
+  if (
+    isSubmitLifecycle &&
+    submitCompanions.length === 1 &&
+    (submitCompanions[0].spec.name === "claim_task" ||
+      submitCompanions[0].spec.name === "claim_task_session")
   ) {
     if (expectedPayoutPubkey) {
       throw txMismatch(
@@ -871,8 +1046,8 @@ export function verifyBuiltTransaction(
       );
     }
     if (
-      primary.txIndex !== companions[0].txIndex + 1 ||
-      !validateClaimCompanion(companions[0])
+      primary.txIndex !== submitCompanions[0].txIndex + 1 ||
+      !validateClaimCompanion(submitCompanions[0])
     ) {
       throw txMismatch(operation, "Expected exactly one matching Shillbot lifecycle instruction");
     }
@@ -881,20 +1056,20 @@ export function verifyBuiltTransaction(
 
   if (
     isSubmitLifecycle &&
-    companions.length === 2 &&
-    companions[0].spec.name === "claim_task" &&
-    companions[1].spec.name === "set_payout_to"
+    submitCompanions.length === 2 &&
+    submitCompanions[0].spec.name === "claim_task" &&
+    submitCompanions[1].spec.name === "set_payout_to"
   ) {
     if (
       primary.spec.name !== "submit_work" ||
-      companions[1].txIndex !== companions[0].txIndex + 1 ||
-      primary.txIndex !== companions[1].txIndex + 1 ||
-      !validateClaimCompanion(companions[0])
+      submitCompanions[1].txIndex !== submitCompanions[0].txIndex + 1 ||
+      primary.txIndex !== submitCompanions[1].txIndex + 1 ||
+      !validateClaimCompanion(submitCompanions[0])
     ) {
       throw txMismatch(operation, "Expected exactly one matching Shillbot lifecycle instruction");
     }
     validateSetPayoutToInstruction(
-      companions[1],
+      submitCompanions[1],
       expected.wallet,
       primary.ix.accounts[0],
       expectedPayoutPubkey,

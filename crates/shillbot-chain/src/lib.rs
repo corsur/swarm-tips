@@ -232,6 +232,44 @@ pub fn verify_task_attested_instruction(
     }
 }
 
+/// Canonical `extension-credit` program ID (`Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh`).
+pub const EXTENSION_CREDIT_PROGRAM_ID: Pubkey = shillbot::constants::EXTENSION_CREDIT_PROGRAM_ID;
+
+pub fn advance_pda(backer: &Pubkey, recipient: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"advance", backer.as_ref(), recipient.as_ref()],
+        &EXTENSION_CREDIT_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn set_payout_to_instruction(agent: Pubkey, task: Pubkey, payout_to: Pubkey) -> Instruction {
+    Instruction {
+        program_id: shillbot::ID,
+        accounts: vec![
+            AccountMeta::new(task, false),
+            AccountMeta::new_readonly(agent, true),
+        ],
+        data: shillbot::instruction::SetPayoutTo { payout_to }.data(),
+    }
+}
+
+pub fn route_and_recoup_instruction(
+    advance: Pubkey,
+    backer: Pubkey,
+    recipient: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id: EXTENSION_CREDIT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(advance, false),
+            AccountMeta::new(backer, false),
+            AccountMeta::new(recipient, false),
+        ],
+        data: discriminator("route_and_recoup").to_vec(),
+    }
+}
+
 pub fn finalize_task_instruction(
     task: Pubkey,
     agent: Pubkey,
@@ -251,6 +289,79 @@ pub fn finalize_task_instruction(
     }
 }
 
+/// Build `finalize_task` with `agent_state_pda(task_agent)` appended at
+/// `remaining_accounts[0]` so on-chain reputation counters (`total_completed`,
+/// `total_earned`, `total_score_sum`) accrue to `task_agent` even when
+/// `payout_recipient` is an `extension-credit` `Advance` vault PDA.
+pub fn finalize_task_with_agent_state_instruction(
+    task: Pubkey,
+    payout_recipient: Pubkey,
+    task_agent: Pubkey,
+    client: Pubkey,
+    treasury: Pubkey,
+) -> Instruction {
+    let mut ix = finalize_task_instruction(task, payout_recipient, client, treasury);
+    ix.accounts
+        .push(AccountMeta::new(agent_state_pda(&task_agent), false));
+    ix
+}
+
+/// Build the atomic `[FinalizeTask(agent=advance, remaining=[agent_state]), RouteAndRecoup]`
+/// bundle so the onboarding advance is repaid to `backer` and net SOL reaches
+/// `task_agent` in a single beneficiary-paid transaction (`1b` / Round 4 `A1`).
+pub fn finalize_and_recoup_instructions(
+    task: Pubkey,
+    task_agent: Pubkey,
+    client: Pubkey,
+    treasury: Pubkey,
+    advance: Pubkey,
+    backer: Pubkey,
+) -> Vec<Instruction> {
+    vec![
+        finalize_task_with_agent_state_instruction(task, advance, task_agent, client, treasury),
+        route_and_recoup_instruction(advance, backer, task_agent),
+    ]
+}
+
+/// Build `expire_task` (with `agent_state_pda(agent)` at `remaining_accounts[0]`
+/// when expiring a `Claimed` task so `claimed_count` is decremented).
+pub fn expire_task_instruction(
+    task: Pubkey,
+    client: Pubkey,
+    claimed_agent: Option<Pubkey>,
+) -> Instruction {
+    let mut accounts = vec![
+        AccountMeta::new(task, false),
+        AccountMeta::new_readonly(global_state_pda(), false),
+        AccountMeta::new(client, false),
+    ];
+    if let Some(agent) = claimed_agent {
+        accounts.push(AccountMeta::new(agent_state_pda(&agent), false));
+    }
+    Instruction {
+        program_id: shillbot::ID,
+        accounts,
+        data: shillbot::instruction::ExpireTask {}.data(),
+    }
+}
+
+/// Build a competing-agent `[verify(0), claim_task, (set_payout_to?), submit_work]`
+/// atomic reopen-and-claim bundle (`1d` / `Q4`).
+pub fn reopen_and_claim_and_submit_instructions(
+    reopen_verify_ix: Instruction,
+    agent: Pubkey,
+    task: Pubkey,
+    content_id: Vec<u8>,
+    payout_to: Option<Pubkey>,
+) -> Vec<Instruction> {
+    let mut out = Vec::with_capacity(4);
+    out.push(reopen_verify_ix);
+    out.extend(claim_and_submit_instructions(
+        agent, task, content_id, payout_to,
+    ));
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -260,6 +371,7 @@ pub enum Action {
     Approve,
     Verify,
     Finalize,
+    Expire,
 }
 
 impl Action {
@@ -271,13 +383,19 @@ impl Action {
             Self::Approve => "approve_task",
             Self::Verify => "verify_task",
             Self::Finalize => "finalize_task",
+            Self::Expire => "expire_task",
         }
     }
 
     fn task_account_position(self) -> usize {
         match self {
             Self::Create => 1,
-            Self::Claim | Self::Submit | Self::Approve | Self::Verify | Self::Finalize => 0,
+            Self::Claim
+            | Self::Submit
+            | Self::Approve
+            | Self::Verify
+            | Self::Finalize
+            | Self::Expire => 0,
         }
     }
 
@@ -285,7 +403,7 @@ impl Action {
         match self {
             Self::Create | Self::Claim | Self::Submit => Some(3),
             Self::Approve => Some(1),
-            Self::Verify | Self::Finalize => None,
+            Self::Verify | Self::Finalize | Self::Expire => None,
         }
     }
 }
@@ -313,17 +431,31 @@ pub struct ValidationRequest {
     /// database schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_data: Option<String>,
-    /// The only payout recipient accepted for an optional sponsored-claim
-    /// `set_payout_to` companion. Omit to forbid payout routing.
+    /// The only payout recipient accepted for an optional `set_payout_to` or
+    /// `route_and_recoup` advance companion. Omit to forbid payout routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_payout_to: Option<String>,
-    /// Require the authorized payout route to be present (rather than merely
-    /// allowing it) when an open sponsor advance must be repaid.
+    /// Require the authorized payout route / advance recoupment to be present
+    /// when an open sponsor advance must be repaid.
     #[serde(default)]
     pub require_payout_routing: bool,
-    /// Expected feed for the Switchboard crank bundled with verify.
+    /// Expected feed or oracle authority for `verify_task` / `verify_task_attested`
+    /// (including a score-0 reopen companion bundled before claim/submit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switchboard_feed: Option<String>,
+    /// Expected `backer` account for an optional/required `extension_credit::route_and_recoup`
+    /// companion bundled after `finalize_task`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recoup_backer: Option<String>,
+    /// Expected `recipient` (agent) account for `extension_credit::route_and_recoup`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recoup_recipient: Option<String>,
+    /// Optional task state (`"open"`, `"claimed"`, `"submitted"`, `"approved"`) when
+    /// validating `Action::Expire`. Enforces exact 3 accounts `[task, global_state, client]`
+    /// on `Open | Submitted | Approved` (rejecting the 4-account `AgentState` form) and
+    /// exact 4 accounts on `Claimed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expire_task_state: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,6 +607,46 @@ pub fn payout_to_base64(
     Ok(recipient.map(|key| key.to_string()))
 }
 
+/// Return `(advance_pda, backer, recipient)` encoded by an optional
+/// `extension_credit::route_and_recoup` companion instruction, verifying that
+/// `advance_pda` matches the canonical `["advance", backer, recipient]` PDA.
+pub fn route_and_recoup_accounts_base64(
+    value: &str,
+) -> Result<Option<(String, String, String)>, ValidationError> {
+    let tx = decode_base64(value)?;
+    ensure_no_lookups(&tx.message)?;
+    let keys = static_keys(&tx.message);
+    let disc = discriminator("route_and_recoup");
+    let mut found = None;
+    for ix in instructions(&tx.message) {
+        let program = keys.get(usize::from(ix.program_id_index));
+        if program != Some(&EXTENSION_CREDIT_PROGRAM_ID) {
+            continue;
+        }
+        if found.is_some() || ix.data.as_slice() != disc.as_slice() || ix.accounts.len() != 3 {
+            return Err(ValidationError::Rejected(
+                "invalid or repeated route_and_recoup instruction".into(),
+            ));
+        }
+        let adv = *keys
+            .get(usize::from(ix.accounts[0]))
+            .ok_or_else(|| ValidationError::Rejected("invalid route_and_recoup account".into()))?;
+        let backer = *keys
+            .get(usize::from(ix.accounts[1]))
+            .ok_or_else(|| ValidationError::Rejected("invalid route_and_recoup account".into()))?;
+        let recipient = *keys
+            .get(usize::from(ix.accounts[2]))
+            .ok_or_else(|| ValidationError::Rejected("invalid route_and_recoup account".into()))?;
+        if adv != advance_pda(&backer, &recipient) {
+            return Err(ValidationError::Rejected(
+                "route_and_recoup advance account does not match canonical Advance PDA".into(),
+            ));
+        }
+        found = Some((adv.to_string(), backer.to_string(), recipient.to_string()));
+    }
+    Ok(found)
+}
+
 pub fn validate_signed_base64(
     value: &str,
     expected: &ValidationRequest,
@@ -588,6 +760,75 @@ fn is_static_account_writable(message: &VersionedMessage, index: u8) -> bool {
     }
 }
 
+fn validate_score_zero_reopen_companion(
+    ix: &solana_sdk::instruction::CompiledInstruction,
+    message: &VersionedMessage,
+    keys: &[Pubkey],
+    required: usize,
+    task: &Pubkey,
+    expected_feed: Option<&Pubkey>,
+    is_attested: bool,
+) -> Result<(), ValidationError> {
+    if ix.data.len() != 48 {
+        return Err(ValidationError::Rejected(
+            "companion reopen verify instruction data has invalid length".into(),
+        ));
+    }
+    let score_bytes: [u8; 8] = ix.data[8..16].try_into().map_err(|_| {
+        ValidationError::Rejected("companion reopen verify score is invalid".into())
+    })?;
+    if u64::from_le_bytes(score_bytes) != 0 {
+        return Err(ValidationError::Rejected(
+            "only score-0 reopen verify may precede claim/submit in a bundle".into(),
+        ));
+    }
+    if ix.data.get(16..48) == Some([0u8; 32].as_slice()) {
+        return Err(ValidationError::Rejected(
+            "companion reopen verify verification_hash must be non-zero".into(),
+        ));
+    }
+    if is_attested {
+        if ix.accounts.len() != 3 && ix.accounts.len() != 4 {
+            return Err(ValidationError::Rejected(
+                "companion verify_task_attested must carry 3 or 4 accounts".into(),
+            ));
+        }
+        if ix.accounts.len() == 4 && !is_static_account_writable(message, ix.accounts[3]) {
+            return Err(ValidationError::Rejected(
+                "companion reopen AgentState account must be writable".into(),
+            ));
+        }
+    } else if ix.accounts.len() != 3 {
+        return Err(ValidationError::Rejected(
+            "companion verify_task must carry 3 accounts".into(),
+        ));
+    }
+    if keys.get(usize::from(ix.accounts[0])) != Some(task) {
+        return Err(ValidationError::Rejected(
+            "companion reopen verify targets a different task".into(),
+        ));
+    }
+    if keys.get(usize::from(ix.accounts[1])) != Some(&global_state_pda()) {
+        return Err(ValidationError::Rejected(
+            "companion reopen verify global_state differs from canonical PDA".into(),
+        ));
+    }
+    let oracle_idx = ix.accounts[2];
+    if usize::from(oracle_idx) >= required {
+        return Err(ValidationError::Rejected(
+            "companion reopen oracle authority must be a required signer".into(),
+        ));
+    }
+    if let Some(feed) = expected_feed {
+        if keys.get(usize::from(oracle_idx)) != Some(feed) {
+            return Err(ValidationError::Rejected(
+                "companion reopen oracle authority differs from expected authority".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn validate(
     tx: &VersionedTransaction,
     expected: &ValidationRequest,
@@ -620,6 +861,18 @@ pub fn validate(
         .map(Pubkey::from_str)
         .transpose()
         .map_err(|_| ValidationError::Request("switchboard_feed is not a Solana pubkey".into()))?;
+    let recoup_backer = expected
+        .recoup_backer
+        .as_deref()
+        .map(Pubkey::from_str)
+        .transpose()
+        .map_err(|_| ValidationError::Request("recoup_backer is not a Solana pubkey".into()))?;
+    let recoup_recipient = expected
+        .recoup_recipient
+        .as_deref()
+        .map(Pubkey::from_str)
+        .transpose()
+        .map_err(|_| ValidationError::Request("recoup_recipient is not a Solana pubkey".into()))?;
 
     let keys = static_keys(&tx.message);
     let required = required_signatures(&tx.message);
@@ -646,9 +899,11 @@ pub fn validate(
     let is_sponsored = sponsor.is_some();
     let shillbot_program = shillbot::ID;
     let expected_disc = discriminator(expected.action.instruction_name());
+    let verify_disc = discriminator("verify_task");
     let verify_attested_disc = discriminator("verify_task_attested");
     let claim_disc = discriminator("claim_task");
     let set_payout_disc = discriminator("set_payout_to");
+    let route_and_recoup_disc = discriminator("route_and_recoup");
     let switchboard_submit_disc = discriminator("pull_feed_submit_response_consensus");
     let compute_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM)
         .map_err(|_| ValidationError::Transaction("invalid compute budget program id".into()))?;
@@ -667,9 +922,11 @@ pub fn validate(
 
     let mut matched = None;
     let mut is_attested_verify = false;
+    let mut preceding_reopen_pos: Option<usize> = None;
     let mut preceding_claim_pos: Option<usize> = None;
     let mut payout_pos: Option<usize> = None;
     let mut payout_routing = 0_usize;
+    let mut recoup_accounts: Option<(Pubkey, Pubkey, Pubkey)> = None;
     let mut secp_indices = Vec::new();
     let mut switchboard_indices = Vec::new();
     let mut compute_kinds = [false; 5];
@@ -700,15 +957,53 @@ pub fn validate(
                         ));
                     }
                 }
-                if expected.action == Action::Verify && disc == verify_attested_disc {
-                    is_attested_verify = true;
+                if expected.action == Action::Verify {
+                    if let Some(p_pos) = payout_pos {
+                        if position != p_pos.saturating_add(1) {
+                            return Err(ValidationError::Rejected(
+                                "verify instruction must immediately follow set_payout_to".into(),
+                            ));
+                        }
+                    }
+                    if disc == verify_attested_disc {
+                        is_attested_verify = true;
+                    }
                 }
                 matched = Some((position, ix));
+            } else if matches!(expected.action, Action::Claim | Action::Submit)
+                && (disc == verify_disc || disc == verify_attested_disc)
+            {
+                if matched.is_some()
+                    || preceding_reopen_pos.is_some()
+                    || preceding_claim_pos.is_some()
+                    || payout_routing > 0
+                {
+                    return Err(ValidationError::Rejected(
+                        "score-0 reopen verify must appear once before claim_task".into(),
+                    ));
+                }
+                validate_score_zero_reopen_companion(
+                    ix,
+                    &tx.message,
+                    keys,
+                    required,
+                    &task,
+                    expected_feed.as_ref(),
+                    disc == verify_attested_disc,
+                )?;
+                preceding_reopen_pos = Some(position);
             } else if expected.action == Action::Submit && disc == claim_disc {
                 if matched.is_some() || preceding_claim_pos.is_some() || payout_routing > 0 {
                     return Err(ValidationError::Rejected(
                         "atomic claim_task must appear once before submit_work".into(),
                     ));
+                }
+                if let Some(reopen_pos) = preceding_reopen_pos {
+                    if position != reopen_pos.saturating_add(1) {
+                        return Err(ValidationError::Rejected(
+                            "claim_task must immediately follow score-0 reopen verify".into(),
+                        ));
+                    }
                 }
                 validate_companion_claim_ix(ix, keys, &task, &wallet)?;
                 preceding_claim_pos = Some(position);
@@ -716,7 +1011,8 @@ pub fn validate(
                 && (expected.action == Action::Claim
                     || (expected.action == Action::Submit
                         && preceding_claim_pos.is_some()
-                        && matched.is_none()))
+                        && matched.is_none())
+                    || (expected.action == Action::Verify && matched.is_none()))
             {
                 if expected.action == Action::Claim && matched.is_none() {
                     return Err(ValidationError::Rejected(
@@ -739,6 +1035,7 @@ pub fn validate(
                 if ix.accounts.len() != 2
                     || keys.get(usize::from(ix.accounts[0])) != Some(&task)
                     || keys.get(usize::from(ix.accounts[1])) != Some(&wallet)
+                    || usize::from(ix.accounts[1]) >= required
                     || ix.data.get(8..40)
                         != allowed_payout_to
                             .map(|p| p.to_bytes())
@@ -753,6 +1050,10 @@ pub fn validate(
             } else if disc == set_payout_disc && expected.action == Action::Claim {
                 return Err(ValidationError::Rejected(
                     "payout-routing instruction must follow claim".into(),
+                ));
+            } else if disc == set_payout_disc && expected.action == Action::Verify {
+                return Err(ValidationError::Rejected(
+                    "payout-routing instruction must precede verify".into(),
                 ));
             } else {
                 return Err(ValidationError::Rejected(
@@ -802,6 +1103,70 @@ pub fn validate(
                 }
                 switchboard_indices.push(position);
                 true
+            } else if expected.action == Action::Finalize && *program == EXTENSION_CREDIT_PROGRAM_ID
+            {
+                let Some((fin_pos, _)) = matched else {
+                    return Err(ValidationError::Rejected(
+                        "route_and_recoup must follow finalize_task".into(),
+                    ));
+                };
+                if recoup_accounts.is_some() || position != fin_pos.saturating_add(1) {
+                    return Err(ValidationError::Rejected(
+                        "route_and_recoup must appear once immediately after finalize_task".into(),
+                    ));
+                }
+                if ix.data.as_slice() != route_and_recoup_disc.as_slice() || ix.accounts.len() != 3
+                {
+                    return Err(ValidationError::Rejected(
+                        "unexpected extension-credit instruction".into(),
+                    ));
+                }
+                if !is_static_account_writable(&tx.message, ix.accounts[0])
+                    || !is_static_account_writable(&tx.message, ix.accounts[1])
+                    || !is_static_account_writable(&tx.message, ix.accounts[2])
+                {
+                    return Err(ValidationError::Rejected(
+                        "route_and_recoup accounts must be writable".into(),
+                    ));
+                }
+                let adv_key = *keys.get(usize::from(ix.accounts[0])).ok_or_else(|| {
+                    ValidationError::Rejected("route_and_recoup account index is invalid".into())
+                })?;
+                let backer_key = *keys.get(usize::from(ix.accounts[1])).ok_or_else(|| {
+                    ValidationError::Rejected("route_and_recoup account index is invalid".into())
+                })?;
+                let recipient_key = *keys.get(usize::from(ix.accounts[2])).ok_or_else(|| {
+                    ValidationError::Rejected("route_and_recoup account index is invalid".into())
+                })?;
+                if adv_key != advance_pda(&backer_key, &recipient_key) {
+                    return Err(ValidationError::Rejected(
+                        "route_and_recoup advance account does not match canonical Advance PDA"
+                            .into(),
+                    ));
+                }
+                if let Some(expected_adv) = allowed_payout_to {
+                    if adv_key != expected_adv {
+                        return Err(ValidationError::Rejected(
+                            "route_and_recoup advance differs from authorized payout route".into(),
+                        ));
+                    }
+                }
+                if let Some(expected_backer) = recoup_backer {
+                    if backer_key != expected_backer {
+                        return Err(ValidationError::Rejected(
+                            "route_and_recoup backer differs from expected backer".into(),
+                        ));
+                    }
+                }
+                if let Some(expected_recipient) = recoup_recipient {
+                    if recipient_key != expected_recipient {
+                        return Err(ValidationError::Rejected(
+                            "route_and_recoup recipient differs from expected task agent".into(),
+                        ));
+                    }
+                }
+                recoup_accounts = Some((adv_key, backer_key, recipient_key));
+                true
             } else {
                 false
             };
@@ -819,10 +1184,27 @@ pub fn validate(
             expected.action.instruction_name()
         ))
     })?;
-    if expected.require_payout_routing && payout_routing != 1 {
-        return Err(ValidationError::Rejected(
-            "required sponsor payout routing is missing".into(),
-        ));
+    if expected.require_payout_routing {
+        if expected.action == Action::Finalize {
+            if recoup_accounts.is_none() {
+                return Err(ValidationError::Rejected(
+                    "required advance recoupment instruction is missing".into(),
+                ));
+            }
+        } else if payout_routing != 1 {
+            return Err(ValidationError::Rejected(
+                "required sponsor payout routing is missing".into(),
+            ));
+        }
+    }
+    if expected.action == Action::Claim {
+        if let Some(reopen_pos) = preceding_reopen_pos {
+            if lifecycle_index != reopen_pos.saturating_add(1) {
+                return Err(ValidationError::Rejected(
+                    "claim_task must immediately follow score-0 reopen verify".into(),
+                ));
+            }
+        }
     }
     if expected.action == Action::Verify {
         if is_attested_verify {
@@ -849,6 +1231,11 @@ pub fn validate(
             if score != 0 && score != MAX_SCORE {
                 return Err(ValidationError::Rejected(
                     "verify_task_attested score must be 0 or MAX_SCORE".into(),
+                ));
+            }
+            if score == 0 && payout_routing > 0 {
+                return Err(ValidationError::Rejected(
+                    "set_payout_to cannot be bundled with a score-0 reopen verify".into(),
                 ));
             }
             if lifecycle.data.get(16..48) == Some([0u8; 32].as_slice()) {
@@ -888,6 +1275,16 @@ pub fn validate(
                 }
             }
         } else if secp_indices.is_empty() && switchboard_indices.is_empty() {
+            if lifecycle.data.len() == 48 {
+                let score_bytes: [u8; 8] = lifecycle.data[8..16].try_into().map_err(|_| {
+                    ValidationError::Rejected("verify_task score is invalid".into())
+                })?;
+                if u64::from_le_bytes(score_bytes) == 0 && payout_routing > 0 {
+                    return Err(ValidationError::Rejected(
+                        "set_payout_to cannot be bundled with a score-0 reopen verify".into(),
+                    ));
+                }
+            }
             let oracle_index = lifecycle.accounts.get(2).copied().ok_or_else(|| {
                 ValidationError::Rejected("verify instruction has too few accounts".into())
             })?;
@@ -963,6 +1360,70 @@ pub fn validate(
             return Err(ValidationError::Rejected(
                 "claim_task trailing account must be sysvar::instructions".into(),
             ));
+        }
+    }
+    if expected.action == Action::Expire {
+        if lifecycle.accounts.len() != 3 && lifecycle.accounts.len() != 4 {
+            return Err(ValidationError::Rejected(
+                "expire_task must carry 3 accounts (or 4 when expiring a Claimed task)".into(),
+            ));
+        }
+        if let Some(raw_state) = expected.expire_task_state.as_deref() {
+            match raw_state.trim().to_ascii_lowercase().as_str() {
+                "open" | "submitted" | "approved" => {
+                    if lifecycle.accounts.len() != 3 {
+                        return Err(ValidationError::Rejected(
+                            "expire_task on Open/Submitted/Approved task must carry exact 3 accounts [task, global_state, client]".into(),
+                        ));
+                    }
+                }
+                "claimed" => {
+                    if lifecycle.accounts.len() != 4 {
+                        return Err(ValidationError::Rejected(
+                            "expire_task on Claimed task must carry exact 4 accounts [task, global_state, client, agent_state]".into(),
+                        ));
+                    }
+                }
+                other => {
+                    return Err(ValidationError::Request(format!(
+                        "unsupported expire_task_state '{other}'"
+                    )));
+                }
+            }
+        }
+        if lifecycle.data.as_slice() != expected_disc.as_slice() {
+            return Err(ValidationError::Rejected(
+                "expire_task instruction data has unexpected payload".into(),
+            ));
+        }
+        if account_key(1)? != global_state_pda() {
+            return Err(ValidationError::Rejected(
+                "expire_task global_state differs from canonical PDA".into(),
+            ));
+        }
+        if !is_static_account_writable(&tx.message, lifecycle.accounts[0])
+            || !is_static_account_writable(&tx.message, lifecycle.accounts[2])
+        {
+            return Err(ValidationError::Rejected(
+                "expire_task task and client accounts must be writable".into(),
+            ));
+        }
+        if lifecycle.accounts.len() == 4
+            && !is_static_account_writable(&tx.message, lifecycle.accounts[3])
+        {
+            return Err(ValidationError::Rejected(
+                "expire_task Claimed AgentState account must be writable".into(),
+            ));
+        }
+    }
+    if expected.action == Action::Finalize {
+        if let Some((adv_key, _, _)) = recoup_accounts {
+            if account_key(2)? != adv_key {
+                return Err(ValidationError::Rejected(
+                    "finalize_task payout recipient differs from route_and_recoup advance PDA"
+                        .into(),
+                ));
+            }
         }
     }
     if account_key(expected.action.task_account_position())? != task {
@@ -1102,7 +1563,7 @@ pub fn validate(
         payout_to: if payout_routing == 1 {
             expected.allowed_payout_to.clone()
         } else {
-            None
+            recoup_accounts.map(|(adv, _, _)| adv.to_string())
         },
         escrow_lamports: expected.escrow_lamports.map(|amount| amount.to_string()),
         content_id: decoded_content_id.or_else(|| expected.content_id.clone()),
@@ -1119,7 +1580,11 @@ pub fn validate(
             Action::Finalize => vec![Movement {
                 asset: "SOL".into(),
                 from: task.to_string(),
-                to: "task agent, protocol treasury, and rent recipient".into(),
+                to: if recoup_accounts.is_some() {
+                    "advance vault (recouped to backer, remainder to task agent), protocol treasury, and rent recipient".into()
+                } else {
+                    "task agent, protocol treasury, and rent recipient".into()
+                },
                 amount: None,
                 condition: "program-calculated settlement".into(),
             }],
@@ -1130,6 +1595,13 @@ pub fn validate(
                 amount: None,
                 condition: "authorizes verification; does not transfer escrow immediately".into(),
             }],
+            Action::Expire => vec![Movement {
+                asset: "SOL".into(),
+                from: task.to_string(),
+                to: "task client".into(),
+                amount: expected.escrow_lamports,
+                condition: "deadline or verification-timeout refund".into(),
+            }],
             Action::Claim | Action::Submit | Action::Verify => Vec::new(),
         },
         task_pda: task.to_string(),
@@ -1138,7 +1610,7 @@ pub fn validate(
         intent_digest: hex::encode(digest),
         risk: match expected.action {
             Action::Create => "spend",
-            Action::Approve => "escrow_control",
+            Action::Approve | Action::Expire => "escrow_control",
             Action::Claim | Action::Submit | Action::Verify | Action::Finalize => "earn",
         }
         .into(),
@@ -1300,6 +1772,9 @@ mod tests {
             allowed_payout_to: None,
             require_payout_routing: false,
             switchboard_feed: None,
+            recoup_backer: None,
+            recoup_recipient: None,
+            expire_task_state: None,
         }
     }
 
@@ -1976,5 +2451,324 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("required signer"));
+    }
+
+    #[test]
+    fn finalize_with_default_payout_to_builds_single_self_paid_finalize_instruction() {
+        let agent_kp = Keypair::new();
+        let agent = agent_kp.pubkey();
+        let client = Pubkey::new_unique();
+        let treasury = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let oracle = Pubkey::new_unique();
+        let task = task_pda(7, &client);
+
+        let ix = finalize_task_with_agent_state_instruction(task, agent, agent, client, treasury);
+        assert_eq!(ix.program_id, shillbot::ID);
+        assert_eq!(ix.data, discriminator("finalize_task"));
+        assert_eq!(
+            ix.accounts,
+            vec![
+                AccountMeta::new(task, false),
+                AccountMeta::new_readonly(global_state_pda(), false),
+                AccountMeta::new(agent, false),
+                AccountMeta::new(client, false),
+                AccountMeta::new(treasury, false),
+                AccountMeta::new(agent_state_pda(&agent), false),
+            ]
+        );
+
+        let mut legacy = Transaction::new_with_payer(std::slice::from_ref(&ix), Some(&agent));
+        legacy.sign(&[&agent_kp], Hash::new_unique());
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&VersionedTransaction::from(legacy)).unwrap());
+
+        let mut expected = exact_request(Action::Finalize, agent, task, &ix);
+        expected.network = "mainnet".into();
+        let inspected = validate_signed_base64(&b64, &expected).unwrap();
+        assert_eq!(inspected.action, Action::Finalize);
+        assert_eq!(inspected.fee_payer, agent.to_string());
+        assert_ne!(inspected.fee_payer, authority.to_string());
+        assert_ne!(inspected.fee_payer, oracle.to_string());
+        assert_eq!(inspected.required_signers, vec![agent.to_string()]);
+        assert_eq!(inspected.instruction_count, 1);
+        assert_eq!(inspected.payout_to, None);
+    }
+
+    #[test]
+    fn finalize_with_advance_payout_to_bundles_finalize_and_route_and_recoup_atomically() {
+        let agent_kp = Keypair::new();
+        let agent = agent_kp.pubkey();
+        let backer = Pubkey::new_unique();
+        let client = Pubkey::new_unique();
+        let treasury = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let oracle = Pubkey::new_unique();
+        let task = task_pda(9, &client);
+        let adv = advance_pda(&backer, &agent);
+
+        let ixs = finalize_and_recoup_instructions(task, agent, client, treasury, adv, backer);
+        assert_eq!(ixs.len(), 2);
+        assert_eq!(ixs[0].program_id, shillbot::ID);
+        assert_eq!(
+            ixs[0].accounts,
+            vec![
+                AccountMeta::new(task, false),
+                AccountMeta::new_readonly(global_state_pda(), false),
+                AccountMeta::new(adv, false),
+                AccountMeta::new(client, false),
+                AccountMeta::new(treasury, false),
+                AccountMeta::new(agent_state_pda(&agent), false),
+            ]
+        );
+        assert_eq!(ixs[1].program_id, EXTENSION_CREDIT_PROGRAM_ID);
+        assert_eq!(ixs[1].data, discriminator("route_and_recoup"));
+        assert_eq!(
+            ixs[1].accounts,
+            vec![
+                AccountMeta::new(adv, false),
+                AccountMeta::new(backer, false),
+                AccountMeta::new(agent, false),
+            ]
+        );
+
+        let mut legacy = Transaction::new_with_payer(&ixs, Some(&agent));
+        legacy.sign(&[&agent_kp], Hash::new_unique());
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&VersionedTransaction::from(legacy)).unwrap());
+
+        assert_eq!(
+            route_and_recoup_accounts_base64(&b64).unwrap(),
+            Some((adv.to_string(), backer.to_string(), agent.to_string()))
+        );
+
+        let mut expected = exact_request(Action::Finalize, agent, task, &ixs[0]);
+        expected.network = "mainnet".into();
+        expected.allowed_payout_to = Some(adv.to_string());
+        expected.require_payout_routing = true;
+        expected.recoup_backer = Some(backer.to_string());
+        expected.recoup_recipient = Some(agent.to_string());
+
+        let inspected = validate_signed_base64(&b64, &expected).unwrap();
+        assert_eq!(inspected.action, Action::Finalize);
+        assert_eq!(inspected.fee_payer, agent.to_string());
+        assert_ne!(inspected.fee_payer, authority.to_string());
+        assert_ne!(inspected.fee_payer, oracle.to_string());
+        assert_eq!(inspected.required_signers, vec![agent.to_string()]);
+        assert_eq!(inspected.payout_to, Some(adv.to_string()));
+        assert_eq!(inspected.instruction_count, 2);
+        assert_eq!(inspected.instruction_index, 0);
+
+        // Omitting RouteAndRecoup when require_payout_routing == true must fail closed.
+        let lone_tx = transaction(vec![ixs[0].clone()], &agent);
+        assert!(validate(&lone_tx, &expected)
+            .unwrap_err()
+            .to_string()
+            .contains("required advance recoupment instruction is missing"));
+    }
+
+    #[test]
+    fn expire_task_builder_asserts_client_fee_payer_and_exact_accounts_open_and_claimed() {
+        let client_kp = Keypair::new();
+        let client = client_kp.pubkey();
+        let claimed_agent = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let oracle = Pubkey::new_unique();
+        let task = task_pda(15, &client);
+
+        // Open / Submitted expiry (3 accounts)
+        let open_ix = expire_task_instruction(task, client, None);
+        assert_eq!(open_ix.program_id, shillbot::ID);
+        assert_eq!(open_ix.data, discriminator("expire_task"));
+        assert_eq!(
+            open_ix.accounts,
+            vec![
+                AccountMeta::new(task, false),
+                AccountMeta::new_readonly(global_state_pda(), false),
+                AccountMeta::new(client, false),
+            ]
+        );
+        let mut open_legacy =
+            Transaction::new_with_payer(std::slice::from_ref(&open_ix), Some(&client));
+        open_legacy.sign(&[&client_kp], Hash::new_unique());
+        let open_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&VersionedTransaction::from(open_legacy)).unwrap());
+        let mut open_expected = exact_request(Action::Expire, client, task, &open_ix);
+        open_expected.network = "mainnet".into();
+        open_expected.escrow_lamports = Some(10_000_000);
+        let open_inspected = validate_signed_base64(&open_b64, &open_expected).unwrap();
+        assert_eq!(open_inspected.action, Action::Expire);
+        assert_eq!(open_inspected.fee_payer, client.to_string());
+        assert_ne!(open_inspected.fee_payer, authority.to_string());
+        assert_ne!(open_inspected.fee_payer, oracle.to_string());
+        assert_eq!(open_inspected.required_signers, vec![client.to_string()]);
+        assert_eq!(open_inspected.risk, "escrow_control");
+
+        // Claimed expiry (4 accounts with writable AgentState at remaining_accounts[0])
+        let claimed_ix = expire_task_instruction(task, client, Some(claimed_agent));
+        assert_eq!(claimed_ix.accounts.len(), 4);
+        assert_eq!(
+            claimed_ix.accounts[3],
+            AccountMeta::new(agent_state_pda(&claimed_agent), false)
+        );
+        let claimed_tx = transaction(vec![claimed_ix.clone()], &client);
+        let mut claimed_expected = exact_request(Action::Expire, client, task, &claimed_ix);
+        claimed_expected.network = "mainnet".into();
+        claimed_expected.expire_task_state = Some("claimed".into());
+        validate(&claimed_tx, &claimed_expected).unwrap();
+
+        // Claimed task MUST reject 3-account expire_task when expire_task_state == "claimed"
+        let mut bad_claimed_expected = request(Action::Expire, client, task);
+        bad_claimed_expected.network = "mainnet".into();
+        bad_claimed_expected.expire_task_state = Some("claimed".into());
+        let open_tx = transaction(vec![open_ix.clone()], &client);
+        assert!(validate(&open_tx, &bad_claimed_expected)
+            .unwrap_err()
+            .to_string()
+            .contains("exact 4 accounts"));
+
+        // P1-1: Submitted / Approved tasks past `submitted_at + verification_timeout` MUST accept
+        // the 3-account `[task, global_state, client]` form (`fee_payer == client`, `fee_payer ∉ {authority, oracle}`)
+        // and REJECT the 4-account `Claimed` form!
+        for state in ["submitted", "approved"] {
+            let mut sub_expected = request(Action::Expire, client, task);
+            sub_expected.network = "mainnet".into();
+            sub_expected.expire_task_state = Some(state.into());
+            let sub_inspected = validate_signed_base64(&open_b64, &sub_expected)
+                .unwrap_or_else(|e| panic!("{state} 3-account expire_task must pass: {e}"));
+            assert_eq!(sub_inspected.action, Action::Expire);
+            assert_eq!(sub_inspected.fee_payer, client.to_string());
+            assert_ne!(sub_inspected.fee_payer, authority.to_string());
+            assert_ne!(sub_inspected.fee_payer, oracle.to_string());
+            assert_eq!(
+                sub_inspected.accounts,
+                vec![
+                    task.to_string(),
+                    global_state_pda().to_string(),
+                    client.to_string(),
+                ]
+            );
+            assert_eq!(sub_inspected.required_signers, vec![client.to_string()]);
+
+            assert!(
+                validate(&claimed_tx, &sub_expected)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("exact 3 accounts"),
+                "{state} expire_task must reject 4-account form"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_with_outstanding_advance_prepends_set_payout_to_and_repaid_omits_it() {
+        let agent_kp = Keypair::new();
+        let oracle_kp = Keypair::new();
+        let agent = agent_kp.pubkey();
+        let oracle = oracle_kp.pubkey();
+        let backer = Pubkey::new_unique();
+        let task = Pubkey::new_unique();
+        let adv = advance_pda(&backer, &agent);
+
+        // 1. Outstanding advance (`recouped_lamports < advance_lamports`): `[set_payout_to, VerifyTask]`
+        let route_ix = set_payout_to_instruction(agent, task, adv);
+        let verify_ix = verify_task_co_signed_instruction(task, oracle, 850_000, [0x33; 32]);
+        let mut routed_legacy =
+            Transaction::new_with_payer(&[route_ix, verify_ix.clone()], Some(&agent));
+        routed_legacy.sign(&[&agent_kp, &oracle_kp], Hash::new_unique());
+        let routed_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&VersionedTransaction::from(routed_legacy)).unwrap());
+
+        let mut routed_expected = exact_request(Action::Verify, agent, task, &verify_ix);
+        routed_expected.network = "mainnet".into();
+        routed_expected.switchboard_feed = Some(oracle.to_string());
+        routed_expected.allowed_payout_to = Some(adv.to_string());
+        routed_expected.require_payout_routing = true;
+
+        let routed_inspected = validate_signed_base64(&routed_b64, &routed_expected).unwrap();
+        assert_eq!(routed_inspected.fee_payer, agent.to_string());
+        assert_ne!(routed_inspected.fee_payer, oracle.to_string());
+        assert_eq!(
+            routed_inspected.required_signers,
+            vec![agent.to_string(), oracle.to_string()]
+        );
+        assert_eq!(routed_inspected.payout_to, Some(adv.to_string()));
+        assert_eq!(routed_inspected.instruction_count, 2);
+        assert_eq!(routed_inspected.instruction_index, 1);
+
+        // 2. Repaid or absent advance: `[VerifyTask]` only
+        let mut direct_legacy =
+            Transaction::new_with_payer(std::slice::from_ref(&verify_ix), Some(&agent));
+        direct_legacy.sign(&[&agent_kp, &oracle_kp], Hash::new_unique());
+        let direct_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&VersionedTransaction::from(direct_legacy)).unwrap());
+        let mut direct_expected = exact_request(Action::Verify, agent, task, &verify_ix);
+        direct_expected.network = "mainnet".into();
+        direct_expected.switchboard_feed = Some(oracle.to_string());
+        let direct_inspected = validate_signed_base64(&direct_b64, &direct_expected).unwrap();
+        assert_eq!(direct_inspected.fee_payer, agent.to_string());
+        assert_eq!(direct_inspected.payout_to, None);
+        assert_eq!(direct_inspected.instruction_count, 1);
+        assert_eq!(direct_inspected.instruction_index, 0);
+    }
+
+    #[test]
+    fn competing_agent_score_zero_reopen_claim_and_submit_bundle_validates_exact_shape() {
+        let competing_agent_kp = Keypair::new();
+        let oracle_kp = Keypair::new();
+        let competing_agent = competing_agent_kp.pubkey();
+        let failed_agent = Pubkey::new_unique();
+        let oracle = oracle_kp.pubkey();
+        let task = Pubkey::new_unique();
+        let proof =
+            b"eip155:8453:0x2222222222222222222222222222222222222222222222222222222222222222:0";
+
+        let reopen_ix =
+            verify_task_attested_instruction(task, oracle, 0, [0x44; 32], Some(failed_agent));
+        let bundle = reopen_and_claim_and_submit_instructions(
+            reopen_ix,
+            competing_agent,
+            task,
+            proof.to_vec(),
+            None,
+        );
+        assert_eq!(bundle.len(), 3);
+
+        let mut legacy = Transaction::new_with_payer(&bundle, Some(&competing_agent));
+        legacy.sign(&[&competing_agent_kp, &oracle_kp], Hash::new_unique());
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&VersionedTransaction::from(legacy)).unwrap());
+
+        let mut expected = exact_request(Action::Submit, competing_agent, task, &bundle[2]);
+        expected.network = "mainnet".into();
+        expected.content_id = Some(String::from_utf8(proof.to_vec()).unwrap());
+        expected.switchboard_feed = Some(oracle.to_string());
+
+        let inspected = validate_signed_base64(&b64, &expected).unwrap();
+        assert_eq!(inspected.action, Action::Submit);
+        assert_eq!(inspected.fee_payer, competing_agent.to_string());
+        assert_ne!(inspected.fee_payer, oracle.to_string());
+        assert_eq!(
+            inspected.required_signers,
+            vec![competing_agent.to_string(), oracle.to_string()]
+        );
+        assert_eq!(inspected.instruction_count, 3);
+        assert_eq!(inspected.instruction_index, 2);
+
+        // Passing (MAX_SCORE) verify MUST NEVER be accepted as a reopen companion before claim/submit.
+        let bad_pass_ix =
+            verify_task_attested_instruction(task, oracle, MAX_SCORE, [0x44; 32], None);
+        let bad_bundle = reopen_and_claim_and_submit_instructions(
+            bad_pass_ix,
+            competing_agent,
+            task,
+            proof.to_vec(),
+            None,
+        );
+        let bad_tx = transaction(bad_bundle, &competing_agent);
+        assert!(validate(&bad_tx, &expected)
+            .unwrap_err()
+            .to_string()
+            .contains("only score-0 reopen verify"));
     }
 }

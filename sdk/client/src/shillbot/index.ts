@@ -40,13 +40,96 @@ export type {
 } from "../contracts/index.js";
 
 export const SCHEMA_VERSION = "swarm.shillbot.transaction-intent/v1" as const;
+export const EXTENSION_CREDIT_PROGRAM_ID = new PublicKey(
+  "Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh"
+);
+
+export function advancePda(
+  backer: PublicKey | string,
+  agent: PublicKey | string
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("advance"),
+      new PublicKey(backer).toBuffer(),
+      new PublicKey(agent).toBuffer(),
+    ],
+    EXTENSION_CREDIT_PROGRAM_ID
+  )[0];
+}
+
+export function routeAndRecoupDiscriminator(): Buffer {
+  return Buffer.from(sha256.arrayBuffer("global:route_and_recoup")).subarray(
+    0,
+    8
+  );
+}
+
+/** Exact Anchor account byte length of `extension-credit` `Advance` (`8 + 32 + 32 + 8 + 8 + 8 + 1 + 16 = 113`). */
+export const ADVANCE_ACCOUNT_SPACE = 113;
+
+export function advanceAccountDiscriminator(): Buffer {
+  return Buffer.from(sha256.arrayBuffer("account:Advance")).subarray(0, 8);
+}
+
+export interface DecodedAdvanceAccount {
+  backer: PublicKey;
+  recipient: PublicKey;
+  advanceLamports: bigint;
+  recoupedLamports: bigint;
+}
+
+/**
+ * Decode an on-chain `extension-credit` `Advance` account (`programs/extension-credit/src/state/advance.rs`).
+ * Returns `null` if the length (`113` bytes) or 8-byte Anchor discriminator (`account:Advance`) does not match.
+ */
+export function decodeExtensionCreditAdvance(
+  data: Uint8Array
+): DecodedAdvanceAccount | null {
+  const buf = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  if (buf.length !== ADVANCE_ACCOUNT_SPACE) {
+    return null;
+  }
+  if (!buf.subarray(0, 8).equals(advanceAccountDiscriminator())) {
+    return null;
+  }
+  const backer = new PublicKey(buf.subarray(8, 40));
+  const recipient = new PublicKey(buf.subarray(40, 72));
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const advanceLamports = view.getBigUint64(72, true);
+  const recoupedLamports = view.getBigUint64(80, true);
+  return {
+    backer,
+    recipient,
+    advanceLamports,
+    recoupedLamports,
+  };
+}
+
+export function buildRouteAndRecoupInstruction(accounts: {
+  advance: PublicKey | string;
+  backer: PublicKey | string;
+  recipient: PublicKey | string;
+}): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: EXTENSION_CREDIT_PROGRAM_ID,
+    keys: [
+      { pubkey: new PublicKey(accounts.advance), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(accounts.backer), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(accounts.recipient), isSigner: false, isWritable: true },
+    ],
+    data: routeAndRecoupDiscriminator(),
+  });
+}
+
 export type Action =
   | "create"
   | "claim"
   | "submit"
   | "approve"
   | "verify"
-  | "finalize";
+  | "finalize"
+  | "expire";
 export type Risk = "earn" | "spend" | "escrow_control";
 export type Network = "mainnet" | "devnet";
 export type TransactionVersion = "legacy" | "v0";
@@ -138,6 +221,21 @@ export interface FinalizeBuild extends CommonBuild {
   agent: string;
   client: string;
   treasury: string;
+  /** Optional true agent pubkey whose `AgentState` PDA is appended as remaining account `[5]`. */
+  agentStateOwner?: string;
+  /** Optional `extension-credit` backer pubkey to bundle atomic `route_and_recoup` after `finalize_task`. */
+  recoupBacker?: string;
+  /** Optional `extension-credit` recipient pubkey (defaults to `agentStateOwner ?? wallet`) for `route_and_recoup`. */
+  recoupRecipient?: string;
+}
+
+export interface ExpireBuild extends CommonBuild {
+  action: "expire";
+  taskPda: string;
+  /** Campaign client receiving the escrow refund (defaults to `wallet`). */
+  client?: string;
+  /** Optional claimed agent pubkey whose `AgentState` PDA is appended as remaining account `[3]`. */
+  claimedAgent?: string;
 }
 
 export type BuildRequest =
@@ -146,7 +244,8 @@ export type BuildRequest =
   | ApproveBuild
   | SubmitBuild
   | VerifyBuild
-  | FinalizeBuild;
+  | FinalizeBuild
+  | ExpireBuild;
 
 export function buildInstruction(
   request: BuildRequest
@@ -225,8 +324,26 @@ export function buildInstruction(
       },
     });
   }
-  const finalize = request as FinalizeBuild;
-  return buildShillbotInstruction({
+  if (request.action === "expire") {
+    const ix = buildShillbotInstruction({
+      name: "expire_task",
+      accounts: {
+        task,
+        global_state: globalStatePda(),
+        client: request.client ?? wallet,
+      },
+    });
+    if (request.claimedAgent) {
+      ix.keys.push({
+        pubkey: agentStatePda(new PublicKey(request.claimedAgent)),
+        isSigner: false,
+        isWritable: true,
+      });
+    }
+    return ix;
+  }
+  const finalize = request;
+  const ix = buildShillbotInstruction({
     name: "finalize_task",
     accounts: {
       task,
@@ -236,6 +353,14 @@ export function buildInstruction(
       treasury: finalize.treasury,
     },
   });
+  if (finalize.agentStateOwner) {
+    ix.keys.push({
+      pubkey: agentStatePda(new PublicKey(finalize.agentStateOwner)),
+      isSigner: false,
+      isWritable: true,
+    });
+  }
+  return ix;
 }
 
 function payoutInstruction(
@@ -270,7 +395,7 @@ export function intentDigest(
 
 function actionRisk(action: Action): Risk {
   if (action === "create") return "spend";
-  if (action === "approve") return "escrow_control";
+  if (action === "approve" || action === "expire") return "escrow_control";
   return "earn";
 }
 
@@ -313,11 +438,22 @@ export function buildTransaction(request: BuildRequest): BuiltTransaction {
       ? [payoutInstruction(request)].filter(
           (ix): ix is TransactionInstruction => ix !== undefined
         )
+      : request.action === "finalize" && request.recoupBacker
+      ? [
+          buildRouteAndRecoupInstruction({
+            advance: request.agent,
+            backer: request.recoupBacker,
+            recipient:
+              request.recoupRecipient ??
+              request.agentStateOwner ??
+              request.wallet,
+          }),
+        ]
       : [];
-  // set_payout_to authorizes against task.agent, which claim_task establishes.
-  // Keep the two operations atomic, but execute the claim first.
+  // set_payout_to authorizes against task.agent (after claim_task), and
+  // route_and_recoup sweeps after finalize_task lands escrow in the Advance PDA.
   const instructions =
-    request.action === "claim"
+    request.action === "claim" || request.action === "finalize"
       ? [lifecycle, ...companions]
       : [...companions, lifecycle];
   const unsignedTx = serializeUnsigned(
@@ -468,12 +604,14 @@ export function verifyIntent(
   if (!inspected.signers.includes(intent.wallet))
     throw new Error("wallet is not a required signer");
   const shillbotProgramId = SHILLBOT_PROGRAM_ID.toBase58();
+  const extensionCreditId = EXTENSION_CREDIT_PROGRAM_ID.toBase58();
   const allowedPrograms = new Set<string>([
     shillbotProgramId,
     COMPUTE_BUDGET_PROGRAM_ID,
     ...(intent.action === "verify"
       ? [SWITCHBOARD_PROGRAM_IDS[intent.network], SECP256K1_PROGRAM_ID]
       : []),
+    ...(intent.action === "finalize" ? [extensionCreditId] : []),
   ]);
   for (const ix of inspected.instructions) {
     if (!allowedPrograms.has(ix.program_id)) {
@@ -528,6 +666,27 @@ export function verifyIntent(
     )
   ) {
     throw new Error("unexpected Shillbot companion instruction");
+  }
+  const creditInstructions = inspected.instructions.filter(
+    (ix) => ix.program_id === extensionCreditId
+  );
+  if (creditInstructions.length > 0) {
+    if (intent.action !== "finalize" || creditInstructions.length !== 1) {
+      throw new Error("unexpected extension-credit companion instruction");
+    }
+    const creditIx = creditInstructions[0];
+    if (inspected.instructions.indexOf(creditIx) <= lifecycleIndex) {
+      throw new Error("route_and_recoup must follow finalize_task");
+    }
+    const creditData = Buffer.from(creditIx.data_base64, "base64");
+    if (
+      creditData.length !== 8 ||
+      !creditData.equals(routeAndRecoupDiscriminator()) ||
+      creditIx.accounts.length !== 3 ||
+      creditIx.accounts[0] !== intent.accounts[2]
+    ) {
+      throw new Error("malformed route_and_recoup companion instruction");
+    }
   }
   if (lifecycle[0].accounts.join(",") !== intent.accounts.join(",")) {
     throw new Error("lifecycle accounts differ from intent");
@@ -613,6 +772,8 @@ export const buildVerify = (request: Omit<VerifyBuild, "action">) =>
   buildTransaction({ ...request, action: "verify" });
 export const buildFinalize = (request: Omit<FinalizeBuild, "action">) =>
   buildTransaction({ ...request, action: "finalize" });
+export const buildExpire = (request: Omit<ExpireBuild, "action">) =>
+  buildTransaction({ ...request, action: "expire" });
 
 export { buildSwitchboardCrankAndVerify } from "./switchboard.js";
 export type { SwitchboardVerifyRequest } from "./switchboard.js";

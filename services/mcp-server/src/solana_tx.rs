@@ -172,11 +172,38 @@ pub async fn fetch_latest_blockhash(
 
 /// Pure, deterministic builder for a v0 `verify_task` transaction co-signed by
 /// `oracle_keypair` with `payer` as the fee payer ($0 protocol gas).
+#[cfg(test)]
 pub fn build_co_signed_verify_tx_with_blockhash(
     payer: &str,
     task_pda: &str,
     composite_score: u64,
     verification_hash_hex: &str,
+    oracle_keypair: &solana_sdk::signature::Keypair,
+    recent_blockhash: solana_sdk::hash::Hash,
+) -> Result<String, McpServiceError> {
+    build_co_signed_verify_tx_with_payout_route(
+        payer,
+        task_pda,
+        composite_score,
+        verification_hash_hex,
+        None,
+        oracle_keypair,
+        recent_blockhash,
+    )
+}
+
+/// Pure, deterministic builder for a v0 `verify_task` transaction co-signed by
+/// `oracle_keypair` with `payer` as fee payer, optionally prepending
+/// `set_payout_to(advance_pda)` before `VerifyTask` when `composite_score > 0`,
+/// `task.payout_to == default`, and an unrecouped `Advance` (`recouped < advance`)
+/// exists for `(onboarder, payer)`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_co_signed_verify_tx_with_payout_route(
+    payer: &str,
+    task_pda: &str,
+    composite_score: u64,
+    verification_hash_hex: &str,
+    required_payout_to: Option<&str>,
     oracle_keypair: &solana_sdk::signature::Keypair,
     recent_blockhash: solana_sdk::hash::Hash,
 ) -> Result<String, McpServiceError> {
@@ -224,15 +251,29 @@ pub fn build_co_signed_verify_tx_with_blockhash(
         verification_hash,
     );
 
-    let v0_msg = v0::Message::try_compile(
-        &payer_pubkey,
-        &[cu_limit_ix, cu_price_ix, verify_ix],
-        &[],
-        recent_blockhash,
-    )
-    .map_err(|e| {
-        McpServiceError::TransactionError(format!("failed to compile v0 verify message: {e}"))
-    })?;
+    let mut ixs = Vec::with_capacity(4);
+    ixs.push(cu_limit_ix);
+    ixs.push(cu_price_ix);
+    if composite_score > 0 {
+        if let Some(adv_str) = required_payout_to.map(str::trim).filter(|s| !s.is_empty()) {
+            let adv_pubkey = Pubkey::from_str(adv_str).map_err(|e| {
+                McpServiceError::InvalidInput(format!(
+                    "required_payout_to is not a valid Solana pubkey: {e}"
+                ))
+            })?;
+            ixs.push(shillbot_chain::set_payout_to_instruction(
+                payer_pubkey,
+                task_pubkey,
+                adv_pubkey,
+            ));
+        }
+    }
+    ixs.push(verify_ix);
+
+    let v0_msg =
+        v0::Message::try_compile(&payer_pubkey, &ixs, &[], recent_blockhash).map_err(|e| {
+            McpServiceError::TransactionError(format!("failed to compile v0 verify message: {e}"))
+        })?;
     let message = VersionedMessage::V0(v0_msg);
     let num_required = usize::from(message.header().num_required_signatures);
     let keys = message.static_account_keys();
@@ -261,6 +302,7 @@ pub fn build_co_signed_verify_tx_with_blockhash(
 }
 
 /// Fetch a fresh blockhash and build a co-signed `verify_task` transaction.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_co_signed_verify_tx(
     client: &reqwest::Client,
     rpc_url: &str,
@@ -268,14 +310,16 @@ pub async fn build_co_signed_verify_tx(
     task_pda: &str,
     composite_score: u64,
     verification_hash_hex: &str,
+    required_payout_to: Option<&str>,
     oracle_keypair: &solana_sdk::signature::Keypair,
 ) -> Result<String, McpServiceError> {
     let blockhash = fetch_latest_blockhash(client, rpc_url).await?;
-    build_co_signed_verify_tx_with_blockhash(
+    build_co_signed_verify_tx_with_payout_route(
         payer,
         task_pda,
         composite_score,
         verification_hash_hex,
+        required_payout_to,
         oracle_keypair,
         blockhash,
     )
@@ -481,8 +525,129 @@ mod tests {
             allowed_payout_to: None,
             require_payout_routing: false,
             switchboard_feed: Some(oracle.pubkey().to_string()),
+            recoup_backer: None,
+            recoup_recipient: None,
+            expire_task_state: None,
         };
         shillbot_chain::validate_signed_base64(&signed_b64, &req)
             .expect("co-signed verify tx passes shillbot-chain validation");
+    }
+
+    #[test]
+    fn co_signed_verify_tx_with_outstanding_advance_prepends_set_payout_to_and_repaid_omits_it() {
+        use base64::Engine;
+        use solana_sdk::{
+            hash::Hash,
+            pubkey::Pubkey,
+            signature::{Keypair, Signature, Signer},
+        };
+
+        let payer = Keypair::new();
+        let oracle = Keypair::new();
+        let backer = Pubkey::new_unique();
+        let task = Pubkey::new_unique();
+        let adv = shillbot_chain::advance_pda(&backer, &payer.pubkey());
+        let hash_hex = "ab".repeat(32);
+
+        // 1. Outstanding advance (`required_payout_to = Some(adv)`): `[ComputeBudget, ComputeBudget, set_payout_to, VerifyTask]`
+        let routed_b64 = build_co_signed_verify_tx_with_payout_route(
+            &payer.pubkey().to_string(),
+            &task.to_string(),
+            900_000,
+            &hash_hex,
+            Some(&adv.to_string()),
+            &oracle,
+            Hash::new_unique(),
+        )
+        .expect("builds co-signed verify tx with set_payout_to");
+
+        let mut routed_vtx = shillbot_chain::decode_base64(&routed_b64).expect("decodes");
+        assert_eq!(
+            routed_vtx.message.static_account_keys()[0],
+            payer.pubkey(),
+            "fee payer must be agent, never oracle"
+        );
+        assert_ne!(
+            routed_vtx.message.static_account_keys()[0],
+            oracle.pubkey(),
+            "oracle must never be fee payer"
+        );
+        assert_eq!(routed_vtx.signatures.len(), 2);
+        assert_eq!(routed_vtx.signatures[0], Signature::default());
+        assert_ne!(routed_vtx.signatures[1], Signature::default());
+        assert_eq!(routed_vtx.message.instructions().len(), 4);
+
+        let routed_msg_bytes = routed_vtx.message.serialize();
+        routed_vtx.signatures[0] = payer.sign_message(&routed_msg_bytes);
+        let routed_signed_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&routed_vtx).unwrap());
+
+        let routed_inspected = shillbot_chain::validate_signed_base64(
+            &routed_signed_b64,
+            &shillbot_chain::ValidationRequest {
+                action: shillbot_chain::Action::Verify,
+                network: "mainnet".to_string(),
+                wallet: payer.pubkey().to_string(),
+                task_pda: task.to_string(),
+                escrow_lamports: None,
+                content_id: None,
+                sponsor: None,
+                expected_accounts: None,
+                expected_data: None,
+                allowed_payout_to: Some(adv.to_string()),
+                require_payout_routing: true,
+                switchboard_feed: Some(oracle.pubkey().to_string()),
+                recoup_backer: None,
+                recoup_recipient: None,
+                expire_task_state: None,
+            },
+        )
+        .expect("routed co-signed verify tx validates cleanly");
+        assert_eq!(routed_inspected.payout_to, Some(adv.to_string()));
+        assert_eq!(routed_inspected.instruction_count, 4);
+        assert_eq!(routed_inspected.instruction_index, 3);
+
+        // 2. Repaid or absent advance (`required_payout_to = None`): `[ComputeBudget, ComputeBudget, VerifyTask]` only
+        let direct_b64 = build_co_signed_verify_tx_with_payout_route(
+            &payer.pubkey().to_string(),
+            &task.to_string(),
+            900_000,
+            &hash_hex,
+            None,
+            &oracle,
+            Hash::new_unique(),
+        )
+        .expect("builds co-signed verify tx without set_payout_to");
+        let mut direct_vtx = shillbot_chain::decode_base64(&direct_b64).expect("decodes");
+        assert_eq!(direct_vtx.message.instructions().len(), 3);
+        let direct_msg_bytes = direct_vtx.message.serialize();
+        direct_vtx.signatures[0] = payer.sign_message(&direct_msg_bytes);
+        let direct_signed_b64 = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&direct_vtx).unwrap());
+
+        let direct_inspected = shillbot_chain::validate_signed_base64(
+            &direct_signed_b64,
+            &shillbot_chain::ValidationRequest {
+                action: shillbot_chain::Action::Verify,
+                network: "mainnet".to_string(),
+                wallet: payer.pubkey().to_string(),
+                task_pda: task.to_string(),
+                escrow_lamports: None,
+                content_id: None,
+                sponsor: None,
+                expected_accounts: None,
+                expected_data: None,
+                allowed_payout_to: None,
+                require_payout_routing: false,
+                switchboard_feed: Some(oracle.pubkey().to_string()),
+                recoup_backer: None,
+                recoup_recipient: None,
+                expire_task_state: None,
+            },
+        )
+        .expect("direct co-signed verify tx validates cleanly");
+        assert_eq!(direct_inspected.payout_to, None);
+        assert_eq!(direct_inspected.instruction_count, 3);
+        assert_eq!(direct_inspected.instruction_index, 2);
     }
 }

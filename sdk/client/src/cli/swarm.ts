@@ -4,7 +4,11 @@ import { fileURLToPath } from "node:url";
 import { SwarmAgent, type SwarmNetwork } from "../agent.js";
 import { SwarmClientError } from "../errors.js";
 import { VALID_TOPICS, isValidTopicId } from "../inbox/types.js";
-import { validatePreparedTransaction, type Action } from "../shillbot/api.js";
+import {
+  validatePreparedTransaction,
+  type Action,
+  type ExpireTaskState,
+} from "../shillbot/api.js";
 import { inspectTransaction } from "../shillbot/index.js";
 import { CLIENT_VERSION } from "../version.js";
 import {
@@ -130,6 +134,7 @@ Commands:
   tasks submit <id> --content <str> [--payout-to <pubkey>] [--no-exec]
   tasks verify <id> [--no-exec]
   tasks finalize <id> [--no-exec]
+  tasks expire <id> [--no-exec]              (client escrow refund past claim/submit deadline or past submitted_at + verification_timeout)
   inbox list [--status pending|all] [--limit N]
   inbox open <msg_id...>
   inbox send <to_wallet> <body> [--thread <id>] [--intent <intent>]
@@ -138,7 +143,7 @@ Commands:
   topics read <open-challenge|subcontract|town-square> [--limit N]
   topics publish <open-challenge|subcontract|town-square> <body> [--ref <id>] [--reply-to <id>] [--intent <intent>]
   tx inspect [--tx <base64>]
-  tx verify --action <claim|submit|verify|finalize|approve|create> --wallet <pubkey> [--task-pda <pda>] [--payout-to <pubkey>] [--tx <base64>]
+  tx verify --action <claim|submit|verify|finalize|expire|approve|create> --wallet <pubkey> [--task-pda <pda>] [--payout-to <pubkey>] [--expire-task-state <open|claimed|submitted|approved>] [--tx <base64>]
   vow-verify <file-or-url> [--rpc <url>]
 
 Global Options:
@@ -165,6 +170,14 @@ const VALID_ACTIONS = new Set<Action>([
   "approve",
   "verify",
   "finalize",
+  "expire",
+]);
+
+const VALID_EXPIRE_STATES = new Set<ExpireTaskState>([
+  "open",
+  "claimed",
+  "submitted",
+  "approved",
 ]);
 
 function writeOutput(
@@ -258,7 +271,7 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         const rawAction = getStringFlag(flags, "--action");
         if (!rawAction || !VALID_ACTIONS.has(rawAction as Action)) {
           throw new CliUsageError(
-            "Usage: swarm tx verify --action <claim|submit|verify|finalize|approve|create> --wallet <pubkey> [--task-pda <pda>] [--tx <base64>]",
+            "Usage: swarm tx verify --action <claim|submit|verify|finalize|expire|approve|create> --wallet <pubkey> [--task-pda <pda>] [--tx <base64>]",
           );
         }
         const wallet = getStringFlag(flags, "--wallet");
@@ -272,6 +285,16 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         const taskPda = getStringFlag(flags, "--task-pda");
         const feePayer = getStringFlag(flags, "--fee-payer");
         const payoutTo = getStringFlag(flags, "--payout-to");
+        const rawExpireState = getStringFlag(flags, "--expire-task-state")?.trim().toLowerCase();
+        if (
+          rawExpireState !== undefined &&
+          !VALID_EXPIRE_STATES.has(rawExpireState as ExpireTaskState)
+        ) {
+          throw new CliUsageError(
+            `Invalid --expire-task-state "${rawExpireState}". Expected open, claimed, submitted, or approved.`,
+          );
+        }
+        const expireTaskState = rawExpireState as ExpireTaskState | undefined;
         const oracleAuthority = getStringFlag(flags, "--oracle-authority");
         const escrowLamports = getBigIntFlag(flags, "--escrow-lamports");
         try {
@@ -282,6 +305,7 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
             ...(taskPda ? { taskPda } : {}),
             ...(feePayer ? { feePayer } : {}),
             ...(payoutTo ? { payoutTo } : {}),
+            ...(expireTaskState ? { expireTaskState } : {}),
             ...(oracleAuthority ? { oracleAuthority } : {}),
             ...(escrowLamports !== undefined ? { escrowLamports } : {}),
           });
@@ -442,8 +466,17 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         writeOutput(stdout, jsonMode, res);
         return 0;
       }
+      if (sub === "expire") {
+        const id = rest[0];
+        if (!id) throw new CliUsageError("Usage: swarm tasks expire <task_id> [--no-exec]");
+        const res = noExec
+          ? await agent.tasks.buildExpire(id)
+          : await agent.tasks.expireAndExecute(id);
+        writeOutput(stdout, jsonMode, res);
+        return 0;
+      }
       throw new CliUsageError(
-        "Usage: swarm tasks <list|get|mine|earnings|next|claim|submit|verify|finalize> ...",
+        "Usage: swarm tasks <list|get|mine|earnings|next|claim|submit|verify|finalize|expire> ...",
       );
     }
 

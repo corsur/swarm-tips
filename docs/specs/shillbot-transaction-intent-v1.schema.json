@@ -7,7 +7,7 @@
   "required": ["version", "action", "network", "wallet", "task_pda", "program_id", "fee_payer", "accounts", "signers", "movements", "risk", "digest"],
   "properties": {
     "version": { "const": "swarm.shillbot.transaction-intent/v1" },
-    "action": { "enum": ["create", "claim", "submit", "approve", "verify", "finalize"] },
+    "action": { "enum": ["create", "claim", "submit", "approve", "verify", "finalize", "expire"] },
     "network": { "enum": ["mainnet", "devnet"] },
     "wallet": { "type": "string", "minLength": 32 },
     "task_id": { "type": "string", "minLength": 1 },

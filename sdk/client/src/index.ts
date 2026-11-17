@@ -59,6 +59,7 @@ export {
   type AuthoritySlotRule,
   type BuildOnChainActionProofRefParams,
   type BuildVerifyOptions,
+  type ExpireTaskState,
   type PreparedEvmCallExpectation,
   type PreparedTransactionExpectation,
   type PreparedTransactionResponse,
@@ -68,6 +69,15 @@ export {
   type VerificationDataResponse,
   type VerifyBuiltTransactionExpectation,
 } from "./shillbot/api.js";
+
+export {
+  ADVANCE_ACCOUNT_SPACE,
+  EXTENSION_CREDIT_PROGRAM_ID,
+  advanceAccountDiscriminator,
+  advancePda,
+  decodeExtensionCreditAdvance,
+  type DecodedAdvanceAccount,
+} from "./shillbot/index.js";
 
 export {
   VALID_TOPICS,

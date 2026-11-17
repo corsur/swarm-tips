@@ -8,6 +8,7 @@ import {
 import { HttpClient, type HttpClientOptions } from "../http.js";
 import { SwarmClientError } from "../errors.js";
 import {
+  EXTENSION_CREDIT_PROGRAM_ID,
   signAndBroadcast,
   type Action,
   type TransactionInspection,
@@ -24,6 +25,8 @@ export interface PreparedTransactionResponse {
   task_pda?: string;
   transaction_intent?: TransactionIntent;
   evm_call?: unknown;
+  payout_to?: string;
+  advance_backer?: string;
 }
 
 export interface VerificationDataResponse {
@@ -33,6 +36,11 @@ export interface VerificationDataResponse {
   verification_hash: string;
   global_state?: string;
   switchboard_feed: string;
+  required_payout_to?: string;
+  advance_backer?: string;
+  verification_kind?: number;
+  co_signed_transaction?: string;
+  evm_verify_call?: unknown;
 }
 
 export interface BuildVerifyOptions {
@@ -209,6 +217,16 @@ export class ShillbotApiClient {
         throw err;
       }
       const vdata = await this.getVerificationData(id, resolvedNetwork);
+      if (vdata.evm_verify_call || vdata.co_signed_transaction) {
+        return {
+          task_id: vdata.task_id ?? id,
+          transaction: vdata.co_signed_transaction ?? "",
+          task_pda: vdata.task_pda,
+          ...(vdata.evm_verify_call !== undefined ? { evm_call: vdata.evm_verify_call } : {}),
+          ...(vdata.required_payout_to ? { payout_to: vdata.required_payout_to } : {}),
+          ...(vdata.advance_backer ? { advance_backer: vdata.advance_backer } : {}),
+        };
+      }
       const fallback = await postMcpBuildVerify({
         task_id: id,
         ...(payer ? { payer } : {}),
@@ -231,6 +249,9 @@ export class ShillbotApiClient {
   buildFinalize(id: string) {
     return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/build-finalize`);
   }
+  buildExpire(id: string) {
+    return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/build-expire`);
+  }
   confirmTask<TResponse = unknown>(id: string, body: ConfirmTransactionRequest) {
     return this.post<TResponse>(`/tasks/${encodeURIComponent(id)}/confirm`, body);
   }
@@ -244,6 +265,7 @@ import {
   validateComputeBudgetInstructions,
   verifyBuiltTransaction,
   type AuthoritySlotRule,
+  type ExpireTaskState,
   type ShillbotInstructionName,
   type ShillbotInstructionSpec,
   type VerifyBuiltTransactionExpectation,
@@ -257,6 +279,7 @@ export {
   validateComputeBudgetInstructions,
   verifyBuiltTransaction,
   type AuthoritySlotRule,
+  type ExpireTaskState,
   type ShillbotInstructionName,
   type ShillbotInstructionSpec,
   type VerifyBuiltTransactionExpectation,
@@ -269,6 +292,7 @@ export interface PreparedTransactionExpectation {
   taskPda?: string;
   feePayer?: string;
   payoutTo?: string;
+  expireTaskState?: ExpireTaskState;
   oracleAuthority?: string;
   escrowLamports?: bigint;
   contentId?: string;
@@ -294,6 +318,7 @@ export const SHILLBOT_EVM_SELECTORS: Readonly<Record<Action, `0x${string}`>> = {
   approve: "0x97312249", // approveTask(uint64)
   verify: "0x3bae608b", // verifyTaskAttested(uint64,uint64,bytes)
   finalize: "0xcb26e65b", // finalizeTask(uint64)
+  expire: "0x5e9f3d19", // expireTask(uint64)
 } as const;
 
 export interface PreparedEvmCallExpectation {
@@ -524,9 +549,13 @@ export function permittedPreparedProgramIds(
   action: Action,
   network: "mainnet" | "devnet",
 ): string[] {
-  return action === "verify"
-    ? [SWITCHBOARD_PROGRAM_IDS[network], Secp256k1Program.programId.toBase58()]
-    : [];
+  if (action === "verify") {
+    return [SWITCHBOARD_PROGRAM_IDS[network], Secp256k1Program.programId.toBase58()];
+  }
+  if (action === "finalize") {
+    return [EXTENSION_CREDIT_PROGRAM_ID.toBase58()];
+  }
+  return [];
 }
 
 /**

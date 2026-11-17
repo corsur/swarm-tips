@@ -7,10 +7,19 @@ import {
 } from "@solana/web3.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { BN } from "../contracts/index.js";
 import {
+  EXTENSION_CREDIT_PROGRAM_ID,
   SHILLBOT_PROGRAM_ID,
+  advancePda,
+  agentStatePda,
+  buildExpire,
+  buildFinalize,
+  buildShillbotInstruction,
   buildTransaction,
+  globalStatePda,
   inspectTransaction,
+  verifyBuiltTransaction,
   verifyIntent,
   type BuildRequest,
 } from "./index.js";
@@ -287,5 +296,285 @@ describe("transaction construction", () => {
       verifyIntent(built.unsigned_tx, built.transaction_intent)
     ).toThrow("unexpected Shillbot companion");
     expect(request.action).toBe("claim");
+  });
+
+  it("builds and validates client-paid expire_task (Open/Submitted/Approved 3 accounts vs Claimed 4 accounts)", () => {
+    const clientKp = Keypair.generate();
+    const authorityPk = Keypair.generate().publicKey;
+    const oraclePk = Keypair.generate().publicKey;
+    const claimedAgent = Keypair.generate().publicKey;
+    const expOpen = buildExpire({
+      wallet: clientKp.publicKey.toBase58(),
+      network: "mainnet",
+      recentBlockhash,
+      taskPda: task.toBase58(),
+    });
+    const inspOpen = verifyBuiltTransaction(expOpen.unsigned_tx, {
+      action: "expire",
+      network: "mainnet",
+      wallet: clientKp.publicKey.toBase58(),
+      taskPda: task.toBase58(),
+      expireTaskState: "open",
+    });
+    expect(inspOpen.fee_payer).toBe(clientKp.publicKey.toBase58());
+    expect(inspOpen.fee_payer).not.toBe(authorityPk.toBase58());
+    expect(inspOpen.fee_payer).not.toBe(oraclePk.toBase58());
+    expect(inspOpen.signers).toEqual([clientKp.publicKey.toBase58()]);
+    expect(inspOpen.instructions).toHaveLength(1);
+    expect(inspOpen.instructions[0].accounts).toEqual([
+      task.toBase58(),
+      globalStatePda().toBase58(),
+      clientKp.publicKey.toBase58(),
+    ]);
+
+    const expClaimed = buildExpire({
+      wallet: clientKp.publicKey.toBase58(),
+      network: "mainnet",
+      recentBlockhash,
+      taskPda: task.toBase58(),
+      claimedAgent: claimedAgent.toBase58(),
+    });
+    const inspClaimed = verifyBuiltTransaction(expClaimed.unsigned_tx, {
+      action: "expire",
+      network: "mainnet",
+      wallet: clientKp.publicKey.toBase58(),
+      taskPda: task.toBase58(),
+      expireTaskState: "claimed",
+    });
+    expect(inspClaimed.instructions[0].accounts).toEqual([
+      task.toBase58(),
+      globalStatePda().toBase58(),
+      clientKp.publicKey.toBase58(),
+      agentStatePda(claimedAgent).toBase58(),
+    ]);
+
+    // Claimed task MUST reject 3-account expire_task
+    expect(() =>
+      verifyBuiltTransaction(expOpen.unsigned_tx, {
+        action: "expire",
+        network: "mainnet",
+        wallet: clientKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        expireTaskState: "claimed",
+      })
+    ).toThrow(/claimed task requires exact 4 accounts/);
+
+    // P1-1: Submitted / Approved tasks past `submitted_at + verification_timeout` MUST accept
+    // the 3-account `[task, global_state, client]` form and REJECT the 4-account Claimed form!
+    for (const expireTaskState of ["submitted", "approved"] as const) {
+      const inspSub = verifyBuiltTransaction(expOpen.unsigned_tx, {
+        action: "expire",
+        network: "mainnet",
+        wallet: clientKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        expireTaskState,
+      });
+      expect(inspSub.fee_payer).toBe(clientKp.publicKey.toBase58());
+      expect(inspSub.fee_payer).not.toBe(authorityPk.toBase58());
+      expect(inspSub.fee_payer).not.toBe(oraclePk.toBase58());
+      expect(inspSub.instructions[0].accounts).toEqual([
+        task.toBase58(),
+        globalStatePda().toBase58(),
+        clientKp.publicKey.toBase58(),
+      ]);
+
+      expect(() =>
+        verifyBuiltTransaction(expClaimed.unsigned_tx, {
+          action: "expire",
+          network: "mainnet",
+          wallet: clientKp.publicKey.toBase58(),
+          taskPda: task.toBase58(),
+          expireTaskState,
+        })
+      ).toThrow(/requires exact 3 accounts/);
+    }
+  });
+
+  it("validates atomic [finalize_task(advance_pda), route_and_recoup] and rejects recipient hijack", () => {
+    const agentKp = Keypair.generate();
+    const backerKp = Keypair.generate();
+    const clientPk = Keypair.generate().publicKey;
+    const treasuryPk = Keypair.generate().publicKey;
+    const advPk = advancePda(backerKp.publicKey, agentKp.publicKey);
+
+    const built = buildFinalize({
+      wallet: agentKp.publicKey.toBase58(),
+      network: "mainnet",
+      recentBlockhash,
+      taskPda: task.toBase58(),
+      agent: advPk.toBase58(),
+      client: clientPk.toBase58(),
+      treasury: treasuryPk.toBase58(),
+      agentStateOwner: agentKp.publicKey.toBase58(),
+      recoupBacker: backerKp.publicKey.toBase58(),
+      recoupRecipient: agentKp.publicKey.toBase58(),
+    });
+    const insp = verifyIntent(built.unsigned_tx, built.transaction_intent);
+    expect(insp.fee_payer).toBe(agentKp.publicKey.toBase58());
+    expect(insp.instructions).toHaveLength(2);
+    expect(insp.instructions[1].program_id).toBe(
+      EXTENSION_CREDIT_PROGRAM_ID.toBase58()
+    );
+    expect(insp.instructions[1].accounts).toEqual([
+      advPk.toBase58(),
+      backerKp.publicKey.toBase58(),
+      agentKp.publicKey.toBase58(),
+    ]);
+
+    expect(
+      verifyBuiltTransaction(built.unsigned_tx, {
+        action: "finalize",
+        network: "mainnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        payoutTo: advPk.toBase58(),
+      }).fee_payer
+    ).toBe(agentKp.publicKey.toBase58());
+
+    // Hijack attempt: route_and_recoup recipient redirected to attacker -> MUST fail closed
+    const attacker = Keypair.generate().publicKey;
+    const badBuilt = buildFinalize({
+      wallet: agentKp.publicKey.toBase58(),
+      network: "mainnet",
+      recentBlockhash,
+      taskPda: task.toBase58(),
+      agent: advPk.toBase58(),
+      client: clientPk.toBase58(),
+      treasury: treasuryPk.toBase58(),
+      agentStateOwner: agentKp.publicKey.toBase58(),
+      recoupBacker: backerKp.publicKey.toBase58(),
+      recoupRecipient: attacker.toBase58(),
+    });
+    expect(() =>
+      verifyBuiltTransaction(badBuilt.unsigned_tx, {
+        action: "finalize",
+        network: "mainnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        payoutTo: advPk.toBase58(),
+      })
+    ).toThrow(/recipient.*must equal caller wallet/);
+  });
+
+  it("validates [set_payout_to, verify_task] on outstanding advance and competing-agent score-0 reopen bundle", () => {
+    const agentKp = Keypair.generate();
+    const oracleKp = Keypair.generate();
+    const backerKp = Keypair.generate();
+    const advPk = advancePda(backerKp.publicKey, agentKp.publicKey);
+
+    const setPayoutIx = buildShillbotInstruction({
+      name: "set_payout_to",
+      accounts: { task: task.toBase58(), agent: agentKp.publicKey.toBase58() },
+      args: { payout_to: advPk },
+    });
+    const verifyIx = buildShillbotInstruction({
+      name: "verify_task",
+      accounts: {
+        task: task.toBase58(),
+        global_state: globalStatePda(),
+        switchboard_feed: oracleKp.publicKey,
+      },
+      args: {
+        composite_score: new BN("900000"),
+        verification_hash: Array.from(Buffer.alloc(32, 0x33)),
+      },
+    });
+    const verifyWithPayoutB64 = new Transaction({
+      feePayer: agentKp.publicKey,
+      recentBlockhash,
+    })
+      .add(setPayoutIx, verifyIx)
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+
+    const vInsp = verifyBuiltTransaction(verifyWithPayoutB64, {
+      action: "verify",
+      network: "mainnet",
+      wallet: agentKp.publicKey.toBase58(),
+      taskPda: task.toBase58(),
+      payoutTo: advPk.toBase58(),
+      oracleAuthority: oracleKp.publicKey.toBase58(),
+    });
+    expect(vInsp.fee_payer).toBe(agentKp.publicKey.toBase58());
+    expect(vInsp.fee_payer).not.toBe(oracleKp.publicKey.toBase58());
+
+    // Competing-agent score-0 reopen bundle: [verify_task_attested(0), claim_task, submit_work]
+    const reopenZeroIx = buildShillbotInstruction({
+      name: "verify_task_attested",
+      accounts: {
+        task: task.toBase58(),
+        global_state: globalStatePda(),
+        attester: oracleKp.publicKey,
+      },
+      args: {
+        score: new BN("0"),
+        verification_hash: Array.from(Buffer.alloc(32, 0x44)),
+      },
+    });
+    const claimIx = buildShillbotInstruction({
+      name: "claim_task",
+      accounts: {
+        task: task.toBase58(),
+        global_state: globalStatePda(),
+        agent_state: agentStatePda(agentKp.publicKey),
+        agent: agentKp.publicKey,
+      },
+    });
+    const submitIx = buildShillbotInstruction({
+      name: "submit_work",
+      accounts: {
+        task: task.toBase58(),
+        global_state: globalStatePda(),
+        agent_state: agentStatePda(agentKp.publicKey),
+        agent: agentKp.publicKey,
+      },
+      args: { content_id: Buffer.from("eip155:8453:0x" + "aa".repeat(32) + ":0") },
+    });
+    const reopenBundleB64 = new Transaction({
+      feePayer: agentKp.publicKey,
+      recentBlockhash,
+    })
+      .add(reopenZeroIx, claimIx, submitIx)
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+    expect(
+      verifyBuiltTransaction(reopenBundleB64, {
+        action: "submit",
+        network: "mainnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        oracleAuthority: oracleKp.publicKey.toBase58(),
+      }).fee_payer
+    ).toBe(agentKp.publicKey.toBase58());
+
+    // Non-zero score in reopen bundle MUST fail closed
+    const reopenNonZeroIx = buildShillbotInstruction({
+      name: "verify_task_attested",
+      accounts: {
+        task: task.toBase58(),
+        global_state: globalStatePda(),
+        attester: oracleKp.publicKey,
+      },
+      args: {
+        score: new BN("1000000"),
+        verification_hash: Array.from(Buffer.alloc(32, 0x44)),
+      },
+    });
+    const badReopenB64 = new Transaction({
+      feePayer: agentKp.publicKey,
+      recentBlockhash,
+    })
+      .add(reopenNonZeroIx, claimIx, submitIx)
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+    expect(() =>
+      verifyBuiltTransaction(badReopenB64, {
+        action: "submit",
+        network: "mainnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        oracleAuthority: oracleKp.publicKey.toBase58(),
+      })
+    ).toThrow(/composite_score === 0/);
   });
 });

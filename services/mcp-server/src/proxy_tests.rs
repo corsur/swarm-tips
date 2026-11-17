@@ -1156,4 +1156,60 @@ mod video_and_attestation_flow_tests {
             McpServiceError::InvalidInput(_)
         ));
     }
+
+    #[tokio::test]
+    async fn build_expire_posts_to_build_expire_and_confirms_expire_action() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tasks/c:exp/build-expire"))
+            .and(query_param("network", "devnet"))
+            .and(header("authorization", "Bearer test-signed-session"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": "ok",
+                "task_id": "c:exp",
+                "transaction": "AAAA",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/c:exp/confirm"))
+            .and(body_partial_json(serde_json::json!({
+                "action": "expire",
+                "tx_signature": "sig-exp-1",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "c:exp",
+                "action": "expire",
+                "message": "expired",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+            .authenticated("test-signed-session".into());
+        let built = proxy
+            .build_expire("c:exp", "client-wallet", Some("devnet"))
+            .await
+            .expect("build_expire ok");
+        assert_eq!(built.task_id, "c:exp");
+        assert_eq!(built.transaction.as_deref(), Some("AAAA"));
+
+        let confirmed = proxy
+            .confirm_task(
+                "c:exp",
+                "client-wallet",
+                "sig-exp-1",
+                ConfirmAction::Expire,
+                None,
+                None,
+            )
+            .await
+            .expect("confirm expire ok");
+        assert_eq!(confirmed.action, "expire");
+    }
 }

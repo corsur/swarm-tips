@@ -1308,12 +1308,12 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Confirm a Shillbot transaction you constructed and broadcast through your own Solana RPC. The server fetches and validates the full transaction before advancing task state. Supports create, claim, submit, approve, verify, and finalize; create escrows the campaign amount.",
+    "description": "[STATE] Confirm a Shillbot transaction you constructed and broadcast through your own RPC. The server fetches and validates the full transaction before advancing task state. Supports create, claim, submit, approve, verify, finalize, and expire; create escrows the campaign amount.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "action": {
-          "description": "One of create, claim, submit, approve, verify, or finalize.",
+          "description": "One of create, claim, submit, approve, verify, finalize, or expire.",
           "type": "string"
         },
         "network": {
@@ -1450,10 +1450,17 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN: SOL] Finalize a verified Shillbot task after the challenge window. Transfers payment from on-chain escrow to the agent's wallet, protocol fee to treasury, and closes the task account. Permissionless — anyone can call after the challenge deadline. Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"finalize\".",
+    "description": "[EARN: SOL] Settle a task: `mode=\"finalize\"` (default, pays agent post-challenge and recoups any advance) or `mode=\"expire\"` (client escrow refund past deadline or `submitted_at + verification_timeout` if unverified). Sign locally and submit via shillbot_submit_tx.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "mode": {
+          "description": "`\"finalize\"` (default, post-challenge payout) or `\"expire\"` (client escrow refund past\nclaim/submit deadline or past `submitted_at + verification_timeout` if never self-verified).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "network": {
           "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
@@ -1462,7 +1469,7 @@
           ]
         },
         "task_id": {
-          "description": "The task identifier (format: `<campaign_id>:<task_uuid>`) of the verified task whose payment should be released.",
+          "description": "Task ID (`<campaign_id>:<task_uuid>`) to finalize or expire.",
           "type": "string"
         }
       },
@@ -1620,7 +1627,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN][STATE] Bootstrap a wallet holding ZERO SOL so it can earn on Shillbot with no funds: the sponsor vouches you into the reputation graph and fronts your one-time rent as a recoupable advance (repaid automatically out of your first payout); claim/submit are then gasless (sponsor-paid). Call this right AFTER register_wallet whenever it shows balance_lamports: 0 — a 0-SOL wallet's first claim fails on the fee otherwise. Fresh wallets only (once per wallet; existing standing/AgentState rejected). Non-custodial.",
+    "description": "[EARN][STATE] Bootstrap a wallet holding ZERO SOL so it can earn on Shillbot with no funds: the sponsor vouches you into the reputation graph and fronts your one-time AgentState rent plus a first-task gas budget directly to your wallet as a recoupable advance (repaid atomically out of your first finalized payout, after which you keep net SOL and pay your own gas). Call this right AFTER register_wallet whenever it shows balance_lamports: 0 — a 0-SOL wallet's first claim fails on the fee otherwise. Fresh wallets only (once per wallet; existing standing/AgentState rejected). Non-custodial.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1644,7 +1651,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN][STATE] Two-step gas sponsorship for a locally built claim or submit tx. Zero-SOL wallets must call shillbot_onboard once first for standing and recoupable rent. Omit unsigned_transaction first to get the sponsor fee payer and payout route (pass content_id for submit); build locally with @swarm-tips/client, call again with unsigned_transaction for the fee-payer signature, broadcast via your RPC, then call shillbot_confirm_tx.",
+    "description": "[EARN][STATE] Devnet two-step gas sponsorship for a locally built claim or submit tx (retired on mainnet: shillbot_onboard fronts your first-task gas budget directly via open_advance so you self-pay as fee payer). Omit unsigned_transaction first to get the template, then submit unsigned_transaction for the fee-payer signature.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1694,12 +1701,12 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Broadcast a signed Shillbot Solana tx (create, claim, submit, approve, verify, finalize) after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Supports self-paid txs and gas-sponsored claim/submit txs (sign your wallet slot locally; if the sponsor slot is unsigned, mcp-server requests the gas-sponsor co-signature automatically before broadcast and confirmation).",
+    "description": "[STATE] Broadcast a signed Shillbot Solana tx (create, claim, submit, approve, verify, finalize, expire) after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Supports self-paid txs and devnet gas-sponsored claim/submit txs.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "action": {
-          "description": "Action matching the builder tool: \"create\" | \"claim\" | \"submit\" | \"approve\" | \"verify\" | \"finalize\".",
+          "description": "Action matching the builder tool: \"create\" | \"claim\" | \"submit\" | \"approve\" | \"verify\" | \"finalize\" | \"expire\".",
           "type": "string"
         },
         "network": {

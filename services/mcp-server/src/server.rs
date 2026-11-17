@@ -495,11 +495,18 @@ task_ref_args!(
     VerifyTaskArgs,
     "The task identifier (format: `<campaign_id>:<task_uuid>`) of the submitted task to verify."
 );
-task_ref_args!(
-    FinalizeTaskArgs,
-    "The task identifier (format: `<campaign_id>:<task_uuid>`) of the verified task whose \
-     payment should be released."
-);
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct FinalizeTaskArgs {
+    /// Task ID (`<campaign_id>:<task_uuid>`) to finalize or expire.
+    pub task_id: String,
+    /// `"finalize"` (default, post-challenge payout) or `"expire"` (client escrow refund past
+    /// claim/submit deadline or past `submitted_at + verification_timeout` if never self-verified).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[schemars(description = NETWORK_ARG_DOC)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+}
 task_ref_args!(
     ApproveTaskArgs,
     "The task identifier (format: `<campaign_id>:<task_uuid>`) returned by \
@@ -607,7 +614,7 @@ pub struct SubmitWorkArgs {
 pub struct ShillbotSubmitTxArgs {
     /// Task ID the signed tx applies to.
     pub task_id: String,
-    /// Action matching the builder tool: "create" | "claim" | "submit" | "approve" | "verify" | "finalize".
+    /// Action matching the builder tool: "create" | "claim" | "submit" | "approve" | "verify" | "finalize" | "expire".
     pub action: String,
     /// Base64 locally-signed Solana transaction.
     pub signed_transaction: String,
@@ -623,7 +630,7 @@ pub struct ShillbotSubmitTxArgs {
 pub struct ShillbotConfirmTxArgs {
     /// The task identifier the already-broadcast transaction applies to.
     pub task_id: String,
-    /// One of create, claim, submit, approve, verify, or finalize.
+    /// One of create, claim, submit, approve, verify, finalize, or expire.
     pub action: String,
     /// Base58 Solana signature returned by the caller's own RPC broadcaster.
     pub tx_signature: String,
@@ -1384,7 +1391,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_onboard",
-        description = "[EARN][STATE] Bootstrap a wallet holding ZERO SOL so it can earn on Shillbot with no funds: the sponsor vouches you into the reputation graph and fronts your one-time rent as a recoupable advance (repaid automatically out of your first payout); claim/submit are then gasless (sponsor-paid). Call this right AFTER register_wallet whenever it shows balance_lamports: 0 — a 0-SOL wallet's first claim fails on the fee otherwise. Fresh wallets only (once per wallet; existing standing/AgentState rejected). Non-custodial.",
+        description = "[EARN][STATE] Bootstrap a wallet holding ZERO SOL so it can earn on Shillbot with no funds: the sponsor vouches you into the reputation graph and fronts your one-time AgentState rent plus a first-task gas budget directly to your wallet as a recoupable advance (repaid atomically out of your first finalized payout, after which you keep net SOL and pay your own gas). Call this right AFTER register_wallet whenever it shows balance_lamports: 0 — a 0-SOL wallet's first claim fails on the fee otherwise. Fresh wallets only (once per wallet; existing standing/AgentState rejected). Non-custodial.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_onboard(
@@ -1506,8 +1513,24 @@ impl SwarmTipsMcp {
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
+        if let Some(evm_call) = vdata.evm_verify_call.clone() {
+            let result = serde_json::json!({
+                "action": "verify",
+                "task_id": vdata.task_id,
+                "evm_call": evm_call,
+                "instructions": "Submit this zero-value EVM verifyTaskAttested call from your wallet, then call shillbot_confirm_tx with action=\"verify\" and the EVM tx hash.",
+            });
+            return Ok(text_result(&result));
+        }
+
         let rpc_url = self.rpc_url_for_network(network);
-        let unsigned_tx = if let Some(oracle_kp) = self.state.oracle_keypair.as_deref() {
+        let unsigned_tx = if let Some(attester_tx) = vdata
+            .co_signed_transaction
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            attester_tx.to_string()
+        } else if let Some(oracle_kp) = self.state.oracle_keypair.as_deref() {
             solana_tx::build_co_signed_verify_tx(
                 &self.state.rpc_client,
                 rpc_url,
@@ -1515,6 +1538,7 @@ impl SwarmTipsMcp {
                 &vdata.task_pda,
                 vdata.composite_score,
                 &vdata.verification_hash,
+                vdata.required_payout_to.as_deref(),
                 oracle_kp,
             )
             .await
@@ -1558,7 +1582,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_finalize_task",
-        description = "[EARN: SOL] Finalize a verified Shillbot task after the challenge window. Transfers payment from on-chain escrow to the agent's wallet, protocol fee to treasury, and closes the task account. Permissionless — anyone can call after the challenge deadline. Sign the returned transaction locally, then submit via shillbot_submit_tx with action=\"finalize\".",
+        description = "[EARN: SOL] Settle a task: `mode=\"finalize\"` (default, pays agent post-challenge and recoups any advance) or `mode=\"expire\"` (client escrow refund past deadline or `submitted_at + verification_timeout` if unverified). Sign locally and submit via shillbot_submit_tx.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_finalize_task(
@@ -1570,33 +1594,72 @@ impl SwarmTipsMcp {
             return Err(invalid_input("task_id is required"));
         }
         let network = parse_network_arg(args.network.as_deref())?;
+        let is_expire = match args.mode.as_deref().map(str::trim) {
+            None | Some("" | "finalize") => false,
+            Some("expire") => true,
+            Some(other) => {
+                return Err(invalid_input(&format!(
+                    "mode must be \"finalize\" or \"expire\", got {other:?}"
+                )));
+            }
+        };
 
         let (wallet_pubkey, orchestrator) = self.authenticated_shillbot(&parts).await?;
 
-        let response = orchestrator
-            .build_finalize(normalize_task_id(&args.task_id), &wallet_pubkey, network)
-            .await
-            .map_err(|e| to_mcp_error(&e))?;
+        let response = if is_expire {
+            orchestrator
+                .build_expire(normalize_task_id(&args.task_id), &wallet_pubkey, network)
+                .await
+                .map_err(|e| to_mcp_error(&e))?
+        } else {
+            orchestrator
+                .build_finalize(normalize_task_id(&args.task_id), &wallet_pubkey, network)
+                .await
+                .map_err(|e| to_mcp_error(&e))?
+        };
+
+        let action_str = if is_expire { "expire" } else { "finalize" };
+        if let Some(evm_call) = response.evm_call.clone() {
+            let result = serde_json::json!({
+                "action": action_str,
+                "task_id": response.task_id,
+                "task_pda": response.task_pda,
+                "evm_call": evm_call,
+                "instructions": format!(
+                    "Submit this zero-value EVM {action_str}Task call from your wallet, then call shillbot_confirm_tx with action=\"{action_str}\" and the EVM tx hash."
+                ),
+            });
+            return Ok(text_result(&result));
+        }
 
         let unsigned_tx = response
             .transaction
             .as_deref()
-            .ok_or_else(|| invalid_input("finalize response omitted unsigned transaction"))?;
+            .ok_or_else(|| invalid_input("settlement response omitted unsigned transaction"))?;
         let task_pda = response
             .task_pda
             .as_deref()
-            .ok_or_else(|| invalid_input("finalize response omitted task PDA"))?;
+            .ok_or_else(|| invalid_input("settlement response omitted task PDA"))?;
+        let instructions = if is_expire {
+            "Sign this transaction with your Solana campaign-client wallet, then call shillbot_submit_tx with action=\"expire\". Escrow will be returned to the client wallet."
+        } else {
+            "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"finalize\". Payment will be transferred from escrow to the agent's wallet (automatically recouping any onboarding advance)."
+        };
         let result = serde_json::json!({
-            "action": "finalize",
+            "action": action_str,
             "task_id": response.task_id,
             "task_pda": task_pda,
-            "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"finalize\". Payment will be transferred from escrow to the agent's wallet.",
+            "instructions": instructions,
         });
         shillbot_transaction_result(
             result,
             unsigned_tx,
             ShillbotTransactionContext {
-                action: shillbot_chain::Action::Finalize,
+                action: if is_expire {
+                    shillbot_chain::Action::Expire
+                } else {
+                    shillbot_chain::Action::Finalize
+                },
                 network: network.unwrap_or("mainnet"),
                 wallet: &wallet_pubkey,
                 task_pda,
@@ -1701,7 +1764,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_submit_tx",
-        description = "[STATE] Broadcast a signed Shillbot Solana tx (create, claim, submit, approve, verify, finalize) after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Supports self-paid txs and gas-sponsored claim/submit txs (sign your wallet slot locally; if the sponsor slot is unsigned, mcp-server requests the gas-sponsor co-signature automatically before broadcast and confirmation).",
+        description = "[STATE] Broadcast a signed Shillbot Solana tx (create, claim, submit, approve, verify, finalize, expire) after validating its program, action, accounts, signers, movements, fee payer, network, and signatures. action=\"create\" spends the displayed amount into escrow. Supports self-paid txs and devnet gas-sponsored claim/submit txs.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_tx(
@@ -1731,7 +1794,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_confirm_tx",
-        description = "[STATE] Confirm a Shillbot transaction you constructed and broadcast through your own Solana RPC. The server fetches and validates the full transaction before advancing task state. Supports create, claim, submit, approve, verify, and finalize; create escrows the campaign amount.",
+        description = "[STATE] Confirm a Shillbot transaction you constructed and broadcast through your own RPC. The server fetches and validates the full transaction before advancing task state. Supports create, claim, submit, approve, verify, finalize, and expire; create escrows the campaign amount.",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
     async fn shillbot_confirm_tx(
@@ -1767,7 +1830,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_sponsor_tx",
-        description = "[EARN][STATE] Two-step gas sponsorship for a locally built claim or submit tx. Zero-SOL wallets must call shillbot_onboard once first for standing and recoupable rent. Omit unsigned_transaction first to get the sponsor fee payer and payout route (pass content_id for submit); build locally with @swarm-tips/client, call again with unsigned_transaction for the fee-payer signature, broadcast via your RPC, then call shillbot_confirm_tx.",
+        description = "[EARN][STATE] Devnet two-step gas sponsorship for a locally built claim or submit tx (retired on mainnet: shillbot_onboard fronts your first-task gas budget directly via open_advance so you self-pay as fee payer). Omit unsigned_transaction first to get the template, then submit unsigned_transaction for the fee-payer signature.",
         annotations(destructive_hint = false, idempotent_hint = false)
     )]
     async fn shillbot_sponsor_tx(
@@ -5383,6 +5446,26 @@ async fn execute_shillbot_submit_tx(
         .map_err(|e| invalid_input(&e.to_string()))?;
 
     let (final_signed_b64, inspection) = if fee_payer == wallet_pubkey {
+        let (allowed_payout_to, recoup_backer, recoup_recipient) = if matches!(
+            chain_action,
+            shillbot_chain::Action::Claim
+                | shillbot_chain::Action::Submit
+                | shillbot_chain::Action::Verify
+        ) {
+            let payout =
+                shillbot_chain::payout_to_base64(&args.signed_transaction, task_pda, wallet_pubkey)
+                    .map_err(|e| invalid_input(&e.to_string()))?;
+            (payout, None, None)
+        } else if chain_action == shillbot_chain::Action::Finalize {
+            match shillbot_chain::route_and_recoup_accounts_base64(&args.signed_transaction)
+                .map_err(|e| invalid_input(&e.to_string()))?
+            {
+                Some((adv, backer, recipient)) => (Some(adv), Some(backer), Some(recipient)),
+                None => (None, None, None),
+            }
+        } else {
+            (None, None, None)
+        };
         let expected = shillbot_chain::ValidationRequest {
             action: chain_action,
             network: network.unwrap_or("mainnet").to_string(),
@@ -5395,11 +5478,24 @@ async fn execute_shillbot_submit_tx(
             sponsor: None,
             expected_accounts: None,
             expected_data: None,
-            allowed_payout_to: None,
+            allowed_payout_to,
             require_payout_routing: false,
-            switchboard_feed: (args.action == "verify")
-                .then(|| oracle_pubkey.map(str::to_owned))
-                .flatten(),
+            switchboard_feed: matches!(
+                chain_action,
+                shillbot_chain::Action::Verify
+                    | shillbot_chain::Action::Claim
+                    | shillbot_chain::Action::Submit
+            )
+            .then(|| oracle_pubkey.map(str::to_owned))
+            .flatten(),
+            recoup_backer,
+            recoup_recipient,
+            expire_task_state: (chain_action == shillbot_chain::Action::Expire
+                && matches!(
+                    task.state.trim().to_ascii_lowercase().as_str(),
+                    "open" | "claimed" | "submitted" | "approved"
+                ))
+            .then(|| task.state.clone()),
         };
         let inspection =
             shillbot_chain::validate_signed_base64(&args.signed_transaction, &expected)
@@ -5429,6 +5525,9 @@ async fn execute_shillbot_submit_tx(
             allowed_payout_to,
             require_payout_routing: false,
             switchboard_feed: None,
+            recoup_backer: None,
+            recoup_recipient: None,
+            expire_task_state: None,
         };
         // Validate message structure and intent before checking signatures or calling sponsor.
         shillbot_chain::validate(&caller_tx, &expected)
@@ -5995,13 +6094,13 @@ fn parse_confirm_action(action: &str) -> Result<crate::proxy::ConfirmAction, Mcp
         "approve" => crate::proxy::ConfirmAction::Approve,
         "verify" => crate::proxy::ConfirmAction::Verify,
         "finalize" => crate::proxy::ConfirmAction::Finalize,
+        "expire" => crate::proxy::ConfirmAction::Expire,
         other => {
             return Err(invalid_input(&format!(
-                "action must be \"create\", \"claim\", \"submit\", \"approve\", \"verify\", or \"finalize\", got {other:?}"
+                "action must be \"create\", \"claim\", \"submit\", \"approve\", \"verify\", \"finalize\", or \"expire\", got {other:?}"
             )));
         }
     };
-    // Postcondition: parse succeeded only for the five allowed strings above.
     Ok(result)
 }
 
@@ -6013,6 +6112,7 @@ fn parse_chain_action(action: &str) -> Result<shillbot_chain::Action, McpError> 
         "approve" => Ok(shillbot_chain::Action::Approve),
         "verify" => Ok(shillbot_chain::Action::Verify),
         "finalize" => Ok(shillbot_chain::Action::Finalize),
+        "expire" => Ok(shillbot_chain::Action::Expire),
         other => Err(invalid_input(&format!(
             "unsupported Shillbot action {other:?}"
         ))),
@@ -6171,7 +6271,7 @@ fn next_action_for_task_state(
             "wait_for": "challenge_window",
             "next_tool": "shillbot_finalize_task",
             "args": { "task_id": task_id },
-            "hint": "Verified. A short, governance-set challenge window must elapse before finalize (seconds on mainnet today, not hours) — it's usually already passed by the time you're reading this. Call shillbot_finalize_task + shillbot_submit_tx with action=\"finalize\" to release the payment from escrow; if it's still too early you'll get a clear error, just retry shortly. The settlement workflow normally finalizes automatically; this permissionless action is a recovery option. Check the current state before signing.",
+            "hint": "Verified. Once the challenge window elapses (seconds on mainnet today), call shillbot_finalize_task + shillbot_submit_tx with action=\"finalize\" to release payment from escrow (automatically recouping any onboarding advance and delivering net SOL to your wallet); if it is still too early, retry shortly.",
         }),
         "finalized" => serde_json::json!({
             "next_action": "done",
@@ -6566,14 +6666,25 @@ fn shillbot_transaction_result(
     let fee_payer = shillbot_chain::fee_payer_base64(unsigned_tx)
         .map_err(|error| invalid_input(&error.to_string()))?;
     let sponsor = (fee_payer != context.wallet).then_some(fee_payer);
-    let allowed_payout_to = if matches!(
+    let (allowed_payout_to, recoup_backer, recoup_recipient) = if matches!(
         context.action,
-        shillbot_chain::Action::Claim | shillbot_chain::Action::Submit
+        shillbot_chain::Action::Claim
+            | shillbot_chain::Action::Submit
+            | shillbot_chain::Action::Verify
     ) {
-        shillbot_chain::payout_to_base64(unsigned_tx, context.task_pda, context.wallet)
+        let payout =
+            shillbot_chain::payout_to_base64(unsigned_tx, context.task_pda, context.wallet)
+                .map_err(|error| invalid_input(&error.to_string()))?;
+        (payout, None, None)
+    } else if context.action == shillbot_chain::Action::Finalize {
+        match shillbot_chain::route_and_recoup_accounts_base64(unsigned_tx)
             .map_err(|error| invalid_input(&error.to_string()))?
+        {
+            Some((adv, backer, recipient)) => (Some(adv), Some(backer), Some(recipient)),
+            None => (None, None, None),
+        }
     } else {
-        None
+        (None, None, None)
     };
     let request = shillbot_chain::ValidationRequest {
         action: context.action,
@@ -6588,6 +6699,9 @@ fn shillbot_transaction_result(
         allowed_payout_to,
         require_payout_routing: false,
         switchboard_feed: context.switchboard_feed,
+        recoup_backer,
+        recoup_recipient,
+        expire_task_state: None,
     };
     let inspection = shillbot_chain::validate_base64(unsigned_tx, &request)
         .map_err(|error| invalid_input(&error.to_string()))?;

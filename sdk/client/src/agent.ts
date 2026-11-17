@@ -1,5 +1,5 @@
 import { Buffer } from "buffer";
-import { Connection, Transaction, VersionedTransaction } from "@solana/web3.js";
+import { Connection, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { WalletTokenManager } from "./auth/token-manager.js";
 import { CoordinationGameApiClient } from "./coordination-game/api.js";
 import { SwarmClientError } from "./errors.js";
@@ -32,7 +32,10 @@ import {
   type TaskListResponse,
 } from "./shillbot/api.js";
 import {
+  EXTENSION_CREDIT_PROGRAM_ID,
   SHILLBOT_PROGRAM_ID,
+  advancePda,
+  decodeExtensionCreditAdvance,
   inspectTransaction,
   shillbotInstructionDiscriminator,
 } from "./shillbot/index.js";
@@ -235,12 +238,17 @@ export class SwarmAgent {
     buildVerify: (id: string) => Promise<PreparedTransactionResponse>;
     verifyAndExecute: (
       id: string,
-      opts?: { connection?: Connection },
+      opts?: { connection?: Connection; payoutTo?: string },
     ) => Promise<ExecutedTaskResult>;
     buildFinalize: (id: string) => Promise<PreparedTransactionResponse>;
     finalizeAndExecute: (
       id: string,
       opts?: { connection?: Connection; payoutTo?: string },
+    ) => Promise<ExecutedTaskResult>;
+    buildExpire: (id: string) => Promise<PreparedTransactionResponse>;
+    expireAndExecute: (
+      id: string,
+      opts?: { connection?: Connection; chain?: string },
     ) => Promise<ExecutedTaskResult>;
     nextAction: (task: Record<string, unknown>) => NextTaskAction;
     verifyVow: (
@@ -268,6 +276,11 @@ export class SwarmAgent {
     ) => Promise<ExecutedTaskResult>;
     approve: (id: string) => Promise<PreparedTransactionResponse>;
     approveAndExecute: (
+      id: string,
+      opts?: { connection?: Connection; chain?: string },
+    ) => Promise<ExecutedTaskResult>;
+    expire: (id: string) => Promise<PreparedTransactionResponse>;
+    expireAndExecute: (
       id: string,
       opts?: { connection?: Connection; chain?: string },
     ) => Promise<ExecutedTaskResult>;
@@ -429,6 +442,7 @@ export class SwarmAgent {
         const prepared = await self.tasks.buildVerify(id);
         return self.executePreparedAction(id, "verify", prepared, {
           connection: opts?.connection,
+          payoutTo: opts?.payoutTo,
         });
       },
       buildFinalize: (id) => self.shillbotClient.buildFinalize(id),
@@ -437,6 +451,14 @@ export class SwarmAgent {
         return self.executePreparedAction(id, "finalize", prepared, {
           connection: opts?.connection,
           payoutTo: opts?.payoutTo,
+        });
+      },
+      buildExpire: (id) => self.shillbotClient.buildExpire(id),
+      async expireAndExecute(id, opts) {
+        const prepared = await self.tasks.buildExpire(id);
+        return self.executePreparedAction(id, "expire", prepared, {
+          connection: opts?.connection,
+          chain: opts?.chain,
         });
       },
       nextAction: (task) => SwarmAgent.adviseNextAction(task),
@@ -500,6 +522,14 @@ export class SwarmAgent {
       async approveAndExecute(id, opts) {
         const prepared = await self.shillbotClient.approveTask(id);
         return self.executePreparedAction(id, "approve", prepared, {
+          connection: opts?.connection,
+          chain: opts?.chain,
+        });
+      },
+      expire: (id) => self.shillbotClient.buildExpire(id),
+      async expireAndExecute(id, opts) {
+        const prepared = await self.shillbotClient.buildExpire(id);
+        return self.executePreparedAction(id, "expire", prepared, {
           connection: opts?.connection,
           chain: opts?.chain,
         });
@@ -606,6 +636,21 @@ export class SwarmAgent {
       }
     }
 
+    const connection =
+      this.signer?.chain === "solana"
+        ? (opts?.connection ?? new Connection(this.rpcUrl, "confirmed"))
+        : opts?.connection;
+    let resolvedPayoutTo =
+      connection && this.signer?.chain === "solana"
+        ? await SwarmAgent.resolveVerifiedAdvancePayoutTo(
+            prepared,
+            this.signer.address,
+            connection,
+            opts?.payoutTo,
+          )
+        : opts?.payoutTo;
+    let payoutToResolved = Boolean(connection && this.signer?.chain === "solana");
+
     // If Solana transaction is a gasless sponsor template (fee_payer !== wallet & unsigned by sponsor),
     // exchange it via POST /tasks/{id}/sponsor before signing locally.
     if (
@@ -618,12 +663,13 @@ export class SwarmAgent {
         network: this.network,
         wallet: this.signer.address,
         taskPda: prepared.task_pda,
-        ...(opts?.payoutTo !== undefined ? { payoutTo: opts.payoutTo } : {}),
+        ...(resolvedPayoutTo !== undefined ? { payoutTo: resolvedPayoutTo } : {}),
       });
       if (
         inspected.fee_payer !== this.signer.address &&
         !isFeePayerAlreadySigned(prepared.transaction)
       ) {
+        const prevPayoutTo = prepared.payout_to;
         const sponsored = await this.shillbotClient.sponsorTask(id, {
           action,
           unsigned_transaction: prepared.transaction,
@@ -633,13 +679,76 @@ export class SwarmAgent {
           ...sponsored,
           task_pda: sponsored.task_pda ?? prepared.task_pda,
         };
+        if (opts?.payoutTo === undefined && prepared.payout_to !== prevPayoutTo) {
+          resolvedPayoutTo = undefined;
+          payoutToResolved = false;
+        }
       }
     }
 
     return this.executePreparedAction(id, action, prepared, {
-      connection: opts?.connection,
-      payoutTo: opts?.payoutTo,
+      connection,
+      payoutTo: resolvedPayoutTo,
+      payoutToResolved,
     });
+  }
+
+  /**
+   * Resolve an authorized `payoutTo` pubkey (`P1-2` / `HIGH-02`):
+   * - If caller explicitly passed `explicitPayoutTo`, return it verbatim.
+   * - Otherwise, NEVER trust `advance_backer` from the API response alone:
+   *   1. Verify `advancePda(advance_backer, walletAddress) === prepared.payout_to`.
+   *   2. Fetch the PDA on-chain via `connection.getAccountInfo(derived, "confirmed")` and require:
+   *      - account exists (`acct !== null && acct.lamports > 0`),
+   *      - `acct.owner.equals(EXTENSION_CREDIT_PROGRAM_ID)`,
+   *      - valid 113-byte `Advance` account (`sha256("account:Advance")[0..8]`) with
+   *        `backer === advance_backer`, `recipient === walletAddress`, and
+   *        `recouped_lamports < advance_lamports`.
+   *   3. On any mismatch or RPC error, return `undefined` so `validatePreparedTransaction`
+   *      rejects any `set_payout_to` fail-closed.
+   */
+  private static async resolveVerifiedAdvancePayoutTo(
+    prepared: PreparedTransactionResponse,
+    walletAddress: string | undefined,
+    connection: Connection,
+    explicitPayoutTo?: string,
+  ): Promise<string | undefined> {
+    if (explicitPayoutTo !== undefined) {
+      return explicitPayoutTo;
+    }
+    if (!walletAddress || !prepared.payout_to || !prepared.advance_backer) {
+      return undefined;
+    }
+    try {
+      const expectedBacker = new PublicKey(prepared.advance_backer);
+      const expectedRecipient = new PublicKey(walletAddress);
+      const derived = advancePda(expectedBacker, expectedRecipient);
+      if (derived.toBase58() !== prepared.payout_to) {
+        return undefined;
+      }
+      const acct = await connection.getAccountInfo(derived, "confirmed");
+      if (!acct || acct.lamports <= 0) {
+        return undefined;
+      }
+      if (!acct.owner.equals(EXTENSION_CREDIT_PROGRAM_ID)) {
+        return undefined;
+      }
+      const decoded = decodeExtensionCreditAdvance(acct.data);
+      if (!decoded) {
+        return undefined;
+      }
+      if (
+        !decoded.backer.equals(expectedBacker) ||
+        !decoded.recipient.equals(expectedRecipient) ||
+        decoded.advanceLamports === 0n ||
+        decoded.recoupedLamports >= decoded.advanceLamports
+      ) {
+        return undefined;
+      }
+      return derived.toBase58();
+    } catch {
+      return undefined;
+    }
   }
 
   private async executePreparedAction(
@@ -651,6 +760,7 @@ export class SwarmAgent {
       chain?: string;
       expectedEscrowLamports?: bigint;
       payoutTo?: string;
+      payoutToResolved?: boolean;
     },
   ): Promise<ExecutedTaskResult> {
     const signer = this.requireSigner();
@@ -743,6 +853,7 @@ export class SwarmAgent {
       connection?: Connection;
       expectedEscrowLamports?: bigint;
       payoutTo?: string;
+      payoutToResolved?: boolean;
     },
   ): Promise<ExecutedTaskResult> {
     if (!prepared.transaction) {
@@ -784,19 +895,27 @@ export class SwarmAgent {
       });
     }
 
+    const connection = opts.connection ?? new Connection(this.rpcUrl, "confirmed");
+    const resolvedPayoutTo = opts.payoutToResolved
+      ? opts.payoutTo
+      : await SwarmAgent.resolveVerifiedAdvancePayoutTo(
+          prepared,
+          signer.address,
+          connection,
+          opts.payoutTo,
+        );
     const expected = {
       action,
       network: this.network,
       wallet: signer.address,
       taskPda: prepared.task_pda,
-      ...(opts.payoutTo !== undefined ? { payoutTo: opts.payoutTo } : {}),
+      ...(resolvedPayoutTo !== undefined ? { payoutTo: resolvedPayoutTo } : {}),
       ...(action === "create" && opts.expectedEscrowLamports !== undefined
         ? { escrowLamports: opts.expectedEscrowLamports }
         : {}),
     };
     validatePreparedTransaction(prepared.transaction, expected);
 
-    const connection = opts.connection ?? new Connection(this.rpcUrl, "confirmed");
     const signature = await signBroadcastPreparedTransaction({
       connection,
       transaction: prepared.transaction,
