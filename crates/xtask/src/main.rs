@@ -3,6 +3,7 @@
 #![deny(clippy::all)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+mod fetch_promotion_candidates;
 mod firestore_ops;
 mod http;
 mod inbox_eval;
@@ -12,6 +13,7 @@ mod proof_audit;
 mod python_guardrail_tests;
 
 use anyhow::{bail, ensure, Result};
+use fetch_promotion_candidates::FetchCandidatesArgs;
 use firestore_ops::{AuditArgs, ReconcileArgs};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -26,6 +28,7 @@ Subcommands:
   check-proof-export-coverage <inventory.json> <export.txt> <coverage.json>
   write-proof-verification-receipt <report-root> <lean4export-rev> <nanoda-rev>
   check-proof-axiom-audit <audit-output.txt> [registry.json]
+  fetch-promotion-candidates --out-dir <dir> [--api <url>] [--network <net>] [--bucket <gcs-bucket>] [--project <gcp-project>] [--registry <path>] [--tasks-file <json>]
   mirror-proof-registry --project <gcp-project> --package <package-root>
   audit-stuck-shillbot [--project <gcp-project>] [--rpc <solana-rpc-url>]
   reconcile-firestore-state <task-id> <new-state> [--project <gcp-project>] [--execute|--apply]
@@ -101,6 +104,10 @@ fn dispatch(args: &[String]) -> Result<()> {
             ensure!((1..=2).contains(&rest.len()), "{USAGE}");
             let reg = rest.get(1).map(Path::new);
             proof_audit::check_proof_axiom_audit(Path::new(&rest[0]), reg).map(|_| ())
+        }
+        "fetch-promotion-candidates" => {
+            let fetch_args = parse_fetch_candidates_args(rest)?;
+            fetch_promotion_candidates::run_fetch_promotion_candidates(&fetch_args)
         }
         "mirror-proof-registry" => {
             let (project, package) = parse_mirror_args(rest)?;
@@ -241,5 +248,73 @@ fn parse_reconcile_args(args: &[String]) -> Result<ReconcileArgs> {
         new_state: positional[1].clone(),
         project,
         execute,
+    })
+}
+
+fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
+    let mut api_base = String::from(fetch_promotion_candidates::DEFAULT_SHILLBOT_API);
+    let mut network = String::from(fetch_promotion_candidates::DEFAULT_NETWORK);
+    let mut bucket = String::from(fetch_promotion_candidates::DEFAULT_ARTIFACT_BUCKET);
+    let mut project = String::from(fetch_promotion_candidates::DEFAULT_GCP_PROJECT);
+    let mut registry_path = workspace_root()?
+        .join("proofs")
+        .join("SwarmProofs")
+        .join("registry.json");
+    let mut out_dir: Option<PathBuf> = None;
+    let mut tasks_file: Option<PathBuf> = None;
+    let mut firestore_fallback = true;
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let take_val = |flag: &str, idx: &mut usize| -> Result<String> {
+            if let Some(eq_val) = arg.strip_prefix(&format!("{flag}=")) {
+                ensure!(!eq_val.is_empty(), "{flag} requires a non-empty value");
+                *idx += 1;
+                return Ok(eq_val.to_string());
+            }
+            let val = args
+                .get(*idx + 1)
+                .ok_or_else(|| anyhow::anyhow!("missing value for {flag}"))?;
+            ensure!(!val.is_empty(), "{flag} requires a non-empty value");
+            *idx += 2;
+            Ok(val.clone())
+        };
+
+        if arg == "--api" || arg.starts_with("--api=") {
+            api_base = take_val("--api", &mut i)?;
+        } else if arg == "--network" || arg.starts_with("--network=") {
+            network = take_val("--network", &mut i)?;
+        } else if arg == "--bucket" || arg.starts_with("--bucket=") {
+            bucket = take_val("--bucket", &mut i)?;
+        } else if arg == "--project" || arg.starts_with("--project=") {
+            project = take_val("--project", &mut i)?;
+        } else if arg == "--registry" || arg.starts_with("--registry=") {
+            registry_path = PathBuf::from(take_val("--registry", &mut i)?);
+        } else if arg == "--out-dir" || arg.starts_with("--out-dir=") {
+            out_dir = Some(PathBuf::from(take_val("--out-dir", &mut i)?));
+        } else if arg == "--tasks-file" || arg.starts_with("--tasks-file=") {
+            tasks_file = Some(PathBuf::from(take_val("--tasks-file", &mut i)?));
+        } else if arg == "--no-firestore-fallback" {
+            firestore_fallback = false;
+            i += 1;
+        } else if arg == "--firestore-fallback" {
+            firestore_fallback = true;
+            i += 1;
+        } else {
+            bail!("unexpected argument `{arg}`\n\n{USAGE}");
+        }
+    }
+
+    let out_dir = out_dir.ok_or_else(|| anyhow::anyhow!("--out-dir is required\n\n{USAGE}"))?;
+    Ok(FetchCandidatesArgs {
+        api_base,
+        network,
+        bucket,
+        project,
+        registry_path,
+        out_dir,
+        tasks_file,
+        firestore_fallback,
     })
 }

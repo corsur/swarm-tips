@@ -7,3 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 -- Content-addressed proof modules must be imported explicitly so a deprecated
 -- or revoked result never enters a later task by accident.
 import SwarmProofs.Registry
+import SwarmProofs.Chains.RHLagarias.Defs
+import SwarmProofs.Chains.RHAnalytic.Defs
+import SwarmProofs.Chains.BSD.Defs
+import SwarmProofs.Chains.Circuits.Defs

@@ -1,5 +1,5 @@
 use anyhow::{bail, ensure, Context, Result};
-use proof_registry::{sha256_hex, ALLOWED_AXIOMS};
+use proof_registry::{sha256_hex, ALLOWED_AXIOMS, ALLOWED_SWARM_LIBRARY_IMPORTS};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -188,6 +188,9 @@ fn verify_single_module_source(
         .arg(namespace)
         .arg("Mathlib")
         .arg("Zeta23");
+    for lib_mod in ALLOWED_SWARM_LIBRARY_IMPORTS {
+        cmd.arg(lib_mod);
+    }
     for allowed_mod in &closure {
         cmd.arg(allowed_mod);
     }

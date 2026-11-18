@@ -1,0 +1,111 @@
+name: Lean Catalog Gate
+
+on:
+  pull_request:
+    paths:
+      - "tests/fixtures/lean/catalog/**"
+      - "proofs/SwarmProofs/SwarmProofs/Chains/**"
+      - "scripts/e2e/seed-lean-catalog.ts"
+      - "scripts/e2e/test-lean-catalog-gate.ts"
+      - ".github/workflows/lean-catalog-gate.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tests/fixtures/lean/catalog/**"
+      - "proofs/SwarmProofs/SwarmProofs/Chains/**"
+      - "scripts/e2e/seed-lean-catalog.ts"
+      - "scripts/e2e/test-lean-catalog-gate.ts"
+      - ".github/workflows/lean-catalog-gate.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: lean-catalog-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-gate:
+    name: Offline Catalog & Policy-4 Gate Unit Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @swarm-tips/client build
+      - name: Run deterministic catalog gate unit tests
+        run: npx tsx scripts/e2e/test-lean-catalog-gate.ts --unit-only
+
+  live-runner-gate:
+    name: Live Runner Triviality & Elaboration Gate
+    needs: unit-gate
+    if: >-
+      vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @swarm-tips/client build
+
+      - name: Run live runner regression gate (Chebyshev rejected, Shannon & Mobius accepted)
+        run: npx tsx scripts/e2e/test-lean-catalog-gate.ts --live
+
+      - name: Gate changed catalog .lean statements
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          DIFF_FILES=""
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$BASE_REF" ]; then
+            DIFF_FILES="$(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" || true)"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            DIFF_FILES="$(git diff --name-only --diff-filter=ACMR "${BEFORE_SHA}...HEAD" || true)"
+          fi
+
+          TASKS=()
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              tests/fixtures/lean/catalog/open/*.proof.lean|tests/fixtures/lean/catalog/solvable/*.proof.lean)
+                ;;
+              tests/fixtures/lean/catalog/open/*.lean|tests/fixtures/lean/catalog/solvable/*.lean)
+                stem="$(basename "$file" .lean)"
+                TASKS+=("$stem")
+                ;;
+            esac
+          done <<< "$DIFF_FILES"
+
+          if [ "${#TASKS[@]}" -eq 0 ]; then
+            echo "No added/modified active catalog .lean files in diff."
+            exit 0
+          fi
+
+          CSV="$(IFS=,; echo "${TASKS[*]}")"
+          echo "Running --check-only gate on changed catalog statements: ${CSV}"
+          npx tsx scripts/e2e/seed-lean-catalog.ts --check-only --tasks="${CSV}"

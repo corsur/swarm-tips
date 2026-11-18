@@ -53,7 +53,7 @@ elaborates under the cap; otherwise it stays here as deferred).
 | open/chain-bsd-2-fermat-noncongruent-1.lean                    | Chain B [2/4 → BSD Congruent]          | Fermat right-triangle theorem `¬ isCongruentNumber 1` (rank-0 BSD on `E_1`)                       |
 | open/chain-bsd-3-heegner-monsky-primes.lean                    | Chain B [3/4 → BSD Congruent]          | Heegner (1952) & Monsky (1990): primes `p ≡ 5, 7 (mod 8)` are congruent (`ω=1`)                   |
 | open/chain-bsd-4-congruent-semiprimes-567.lean                 | Chain B [4/4 → BSD Congruent]          | Open semiprime slice `pq ≡ 5, 6, 7 (mod 8)` (`ω=2`, `bsd_congruent_chain.lean`)                   |
-| open/chain-rh-analytic-1-chebyshev-theta-upper.lean            | Chain C [1/4 → RH Analytic]            | Chebyshev–Erdős primorial bound `∏_{p ≤ N} p ≤ 4^N`                                               |
+| open/chain-rh-analytic-1-mobius-floor-identity.lean            | Chain C [1/4 → RH Analytic]            | Meissel (1854) Möbius floor-sum identity `∑_{k ≤ N} μ(k)⌊N/k⌋ = 1`                                |
 | open/chain-rh-analytic-2-mobius-harmonic-bound.lean            | Chain C [2/4 → RH Analytic]            | Möbius harmonic cancellation `(∑_{n ≤ N} μ(n)/n)^2 ≤ 1`                                           |
 | open/chain-rh-analytic-3-pnt-mertens-little-o.lean             | Chain C [3/4 → RH Analytic]            | Landau (1899) PNT equivalent `M(N) = o(N)`                                                        |
 | open/chain-rh-analytic-4-zero-free-strip-99-100.lean           | Chain C [4/4 → RH Analytic]            | Open zero-free strip `Re(s) > 0.99`: `M(N)^100 ≤ C · N^99` (`rh_analytic_chain.lean`)             |

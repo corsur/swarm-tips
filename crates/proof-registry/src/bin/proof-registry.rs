@@ -7,12 +7,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
         Some("validate") if args.len() == 3 => validate(Path::new(&args[2])),
-        Some("prepare") if args.len() == 6 => prepare(
-            Path::new(&args[2]),
-            Path::new(&args[3]),
-            Path::new(&args[4]),
-            &args[5],
-        ),
+        Some("prepare" | "autopromote") if (6..=8).contains(&args.len()) => {
+            let alias = parse_optional_alias(&args[6..])?;
+            prepare(
+                Path::new(&args[2]),
+                Path::new(&args[3]),
+                Path::new(&args[4]),
+                &args[5],
+                alias.as_deref(),
+            )
+        }
         Some("yank") if (5..=6).contains(&args.len()) => yank(
             Path::new(&args[2]),
             &args[3],
@@ -20,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.get(5).map(String::as_str),
         ),
         _ => Err(
-            "usage: proof-registry validate <registry> | prepare <candidate> <registry> <package-root> <public-base-url> | yank <registry> <module-id> <deprecated|revoked> [replacement]"
+            "usage: proof-registry validate <registry> | prepare|autopromote <candidate> <registry> <package-root> <public-base-url> [--alias <alias>] | yank <registry> <module-id> <deprecated|revoked> [replacement]"
                 .into(),
         ),
     }
@@ -57,11 +61,29 @@ fn validate(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn parse_optional_alias(extra: &[String]) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    match extra {
+        [] => Ok(None),
+        [flag, value] if flag == "--alias" && !value.trim().is_empty() => Ok(Some(value.clone())),
+        [combined] if combined.starts_with("--alias=") => {
+            let val = combined.trim_start_matches("--alias=").trim();
+            if val.is_empty() {
+                return Err("--alias requires a non-empty value".into());
+            }
+            Ok(Some(val.to_string()))
+        }
+        _ => Err(
+            "invalid extra arguments for prepare/autopromote; expected [--alias <alias>]".into(),
+        ),
+    }
+}
+
 fn prepare(
     candidate_path: &Path,
     registry_path: &Path,
     package_root: &Path,
     public_base_url: &str,
+    alias: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let candidate: PromotionCandidate = serde_json::from_slice(&std::fs::read(candidate_path)?)?;
     let mut registry = read_registry(registry_path)?;
@@ -71,6 +93,14 @@ fn prepare(
         package_root,
         public_base_url,
     )?;
+    if let Some(alias_key) = alias {
+        if alias_key.trim().is_empty() {
+            return Err("alias must be non-empty".into());
+        }
+        registry
+            .aliases
+            .insert(alias_key.to_string(), manifest.module_id.clone());
+    }
     write_registry(registry_path, &registry)?;
     validate(registry_path)?;
     println!("{}", manifest.module_id);
@@ -120,15 +150,19 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     fn temporary_directory() -> PathBuf {
+        let seq = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "proof-registry-test-{}-{nonce}",
+            "proof-registry-test-{}-{nonce}-{seq}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).unwrap();
@@ -214,6 +248,7 @@ mod tests {
             &registry_path,
             &root,
             "https://storage.googleapis.com/example",
+            None,
         )
         .unwrap();
         let after_first = std::fs::read(&registry_path).unwrap();
@@ -222,6 +257,7 @@ mod tests {
             &registry_path,
             &root,
             "https://storage.googleapis.com/example",
+            None,
         )
         .unwrap();
         assert_eq!(std::fs::read(&registry_path).unwrap(), after_first);
@@ -237,6 +273,7 @@ mod tests {
             &registry_path,
             &root,
             "https://storage.googleapis.com/example",
+            None,
         )
         .unwrap();
         assert_eq!(std::fs::read(&registry_path).unwrap(), after_yank);
@@ -249,8 +286,50 @@ mod tests {
             &registry_path,
             &root,
             "https://storage.googleapis.com/example",
+            None,
         )
         .is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autopromote_alias_flag_records_and_validates_alias() {
+        let root = temporary_directory();
+        let registry_path = root.join("registry.json");
+        let candidate_path = root.join("candidate.json");
+        let (environment_id, lock) = environment();
+        let registry = RegistryManifest {
+            schema: SCHEMA_VERSION.into(),
+            environments: vec![EnvironmentRecord {
+                environment_id: environment_id.clone(),
+                lock,
+            }],
+            modules: Vec::new(),
+            aliases: BTreeMap::new(),
+        };
+        write_registry(&registry_path, &registry).unwrap();
+        let cand = candidate(&environment_id);
+        std::fs::write(&candidate_path, serde_json::to_vec(&cand).unwrap()).unwrap();
+
+        assert_eq!(
+            parse_optional_alias(&["--alias".into(), "catalog:chain-bsd-1".into()]).unwrap(),
+            Some("catalog:chain-bsd-1".into())
+        );
+        assert!(parse_optional_alias(&["--alias=".into()]).is_err());
+
+        prepare(
+            &candidate_path,
+            &registry_path,
+            &root,
+            "https://storage.googleapis.com/example",
+            Some("catalog:chain-bsd-1"),
+        )
+        .unwrap();
+        let updated = read_registry(&registry_path).unwrap();
+        assert_eq!(
+            updated.aliases.get("catalog:chain-bsd-1"),
+            Some(&updated.modules[0].module_id)
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

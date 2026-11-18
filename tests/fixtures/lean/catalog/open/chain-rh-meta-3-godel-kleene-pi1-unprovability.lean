@@ -1,7 +1,10 @@
+-- @lean-policy: 4
+-- @depends-on: chain-rh-meta-2-nonstandard-ultrapower-pi1
 import Mathlib.Computability.PartrecCode
 import Mathlib.Computability.RE
+import SwarmProofs.Chains.RHLagarias.Defs
 
-/-- A partial-recursive program `c` on input `0` is halting-free (the canonical Kleene Π₁⁰
+/-- A Partrec program `c` on input `0` is halting-free (the canonical Kleene Π₁⁰
     normal form `∀ k, evaln k c 0 = none` asserting zero finite-step counterexamples exist). -/
 def isHaltingFree (c : Nat.Partrec.Code) : Prop :=
   ∀ (k : ℕ), Nat.Partrec.Code.evaln k c 0 = none
@@ -13,7 +16,8 @@ def isHaltingFree (c : Nat.Partrec.Code) : Prop :=
         halting-free codes (`∀ c, ProvPos c → isHaltingFree c`), there exists a code `c₀` with zero
         counterexamples in `ℕ` (`isHaltingFree c₀`) that `ProvPos` cannot prove (`¬ ProvPos c₀`),
         that NO Π₁⁰-conservative extension of `ProvPos` can prove, and that a strictly stronger
-        sound `REPred` extension `ProvExt` DOES prove. -/
+        sound `REPred` extension `ProvExt` DOES prove.
+    Solver proofs must start with `-- SPDX-License-Identifier: Apache-2.0` for registry promotion. -/
 def statementProp : Prop :=
   (∀ (P : ℕ → Bool), Computable P →
     ∃ (c : Nat.Partrec.Code), (∀ m : ℕ, P m = true) ↔ isHaltingFree c) ∧

@@ -1,4 +1,7 @@
+-- @lean-policy: 4
+-- @depends-on: chain-rh-meta-1-lagarias-pi1-rational-envelope
 import Mathlib.Order.Filter.Ultrafilter.Basic
+import SwarmProofs.Chains.RHLagarias.Defs
 
 /-- Track E [Rung 2/4 → Π₁⁰ RH Metamathematics] (Non-Standard Arithmetic Ultrapowers):
     Establishes the model-theoretic dichotomy for Π₁⁰ counterexamples using a non-principal
@@ -8,7 +11,8 @@ import Mathlib.Order.Filter.Ultrafilter.Basic
     (2) Conversely, for any family of stage predicates `P : ℕ → ℕ → Prop` where stage `i` holds on
         `[0, i]` (`∀ n ≤ i, P i n`) yet fails at `i + 1` (`¬ P i (i + 1)`), every standard natural
         satisfies `{i | P i n} ∈ 𝒰` while the non-standard element `h(i) = i + 1` strictly dominates
-        all standard naturals modulo `𝒰` and violates `{i | P i (h i)} ∈ 𝒰`. -/
+        all standard naturals modulo `𝒰` and violates `{i | P i (h i)} ∈ 𝒰`.
+    Solver proofs must start with `-- SPDX-License-Identifier: Apache-2.0` for registry promotion. -/
 def statementProp : Prop :=
   ∃ (𝒰 : Ultrafilter ℕ),
     (↑𝒰 : Filter ℕ) ≤ Filter.cofinite ∧

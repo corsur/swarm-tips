@@ -15,6 +15,14 @@ pub const CHALLENGE_SCHEMA_VERSION: &str = "swarm.lean-challenge/v1";
 pub const MODULE_ID_PREFIX: &str = "sha256:";
 pub const APACHE_2_0: &str = "Apache-2.0";
 pub const GENERATED_MODULE_PREFIX: &str = "SwarmProofs.Generated.H";
+pub const ALLOWED_SWARM_LIBRARY_IMPORTS: &[&str] = &[
+    "SwarmProofs",
+    "SwarmProofs.Registry",
+    "SwarmProofs.Chains.BSD.Defs",
+    "SwarmProofs.Chains.Circuits.Defs",
+    "SwarmProofs.Chains.RHAnalytic.Defs",
+    "SwarmProofs.Chains.RHLagarias.Defs",
+];
 pub const ALLOWED_AXIOMS: &[&str] = &["propext", "Classical.choice", "Quot.sound"];
 pub const MAX_DIRECT_DEPENDENCIES: usize = 16;
 pub const MAX_TRANSITIVE_DEPENDENCIES: usize = 128;
@@ -468,27 +476,51 @@ pub fn compose_generated_module(
             )));
         }
     }
-    let strip_imports = |source: &str| -> Result<String, RegistryError> {
+    let mut swarm_library_imports = BTreeSet::new();
+    let mut collect_and_strip_imports = |source: &str| -> Result<String, RegistryError> {
         let mut lines = Vec::new();
         for line in source.lines() {
             let trimmed = line.trim_start();
             if trimmed.starts_with("import ") || trimmed.starts_with("import\t") {
+                let without_comment = trimmed.split("--").next().unwrap_or(trimmed);
+                for mod_name in without_comment
+                    .trim_start_matches("import")
+                    .split_whitespace()
+                {
+                    if mod_name.starts_with(GENERATED_MODULE_PREFIX) {
+                        if !imports.iter().any(|allowed| allowed == mod_name) {
+                            return Err(RegistryError::Serialization(format!(
+                                "undeclared generated dependency import `{mod_name}`"
+                            )));
+                        }
+                    } else if mod_name.starts_with("SwarmProofs") {
+                        if !ALLOWED_SWARM_LIBRARY_IMPORTS.contains(&mod_name) {
+                            return Err(RegistryError::Serialization(format!(
+                                "noncanonical SwarmProofs import `{mod_name}`"
+                            )));
+                        }
+                        swarm_library_imports.insert(mod_name.to_string());
+                    }
+                }
                 continue;
             }
             lines.push(line);
         }
         Ok(lines.join("\n"))
     };
+    let stripped_statement = collect_and_strip_imports(&candidate.statement)?;
+    let stripped_proof = collect_and_strip_imports(&candidate.proof_source)?;
     let mut source = String::from(
         "/-\nCopyright 2026 Swarm Tips contributors\nSPDX-License-Identifier: Apache-2.0\n-/\n\nimport Mathlib\nimport Zeta23\n",
     );
+    for lib_import in &swarm_library_imports {
+        source.push_str(&format!("import {lib_import}\n"));
+    }
     for import in imports {
         source.push_str(&format!("import {import}\n"));
     }
     source.push_str(&format!(
-        "\nnamespace {namespace}\n\n{}\n\n{}\n\nend {namespace}\n",
-        strip_imports(&candidate.statement)?,
-        strip_imports(&candidate.proof_source)?
+        "\nnamespace {namespace}\n\n{stripped_statement}\n\n{stripped_proof}\n\nend {namespace}\n"
     ));
     let declares_disproof = candidate.proof_source.lines().any(|line| {
         let t = line.trim_start();
@@ -1177,5 +1209,47 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn compose_generated_module_preserves_allowed_swarm_chain_imports_and_rejects_unknown() {
+        let proof =
+            "-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := trivial";
+        let statement = "import SwarmProofs.Chains.BSD.Defs\ndef statementProp : Prop := True";
+        let make_cand = |stmt: &str| PromotionCandidate {
+            schema: "swarm.lean-promotion-candidate/v1".into(),
+            task_id: "task-chain".into(),
+            campaign_id: "camp-chain".into(),
+            network: "devnet".into(),
+            author_wallet: "wallet".into(),
+            artifact_sha256: sha256_hex(proof.as_bytes()),
+            statement: stmt.into(),
+            proof_source: proof.into(),
+            challenge: ChallengeManifest {
+                schema: CHALLENGE_SCHEMA_VERSION.into(),
+                statement_sha256: sha256_hex(stmt.as_bytes()),
+                policy_version: 4,
+                environment_id: id('e'),
+                dependency_bundle_id: id('b'),
+                reuse_license: APACHE_2_0.into(),
+                reusable: true,
+            },
+            direct_dependencies: Vec::new(),
+            dependency_closure: Vec::new(),
+            exact_imports: Vec::new(),
+            verification_axioms: vec!["propext".into()],
+            status: "verified_pending_finalization".into(),
+        };
+        let generated = compose_generated_module(&make_cand(statement)).unwrap();
+        assert!(generated
+            .source
+            .contains("import Zeta23\nimport SwarmProofs.Chains.BSD.Defs\n"));
+
+        let bad_stmt = "import SwarmProofs.Unknown.Module\ndef statementProp : Prop := True";
+        assert!(compose_generated_module(&make_cand(bad_stmt)).is_err());
+
+        let undeclared_gen =
+            "import SwarmProofs.Generated.Hdeadbeef\ndef statementProp : Prop := True";
+        assert!(compose_generated_module(&make_cand(undeclared_gen)).is_err());
     }
 }

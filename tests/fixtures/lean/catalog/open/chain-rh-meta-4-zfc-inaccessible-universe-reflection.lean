@@ -1,7 +1,10 @@
+-- @lean-policy: 4
+-- @depends-on: chain-rh-meta-3-godel-kleene-pi1-unprovability
 import Mathlib.SetTheory.ZFC.VonNeumann
 import Mathlib.SetTheory.ZFC.Ordinal
 import Mathlib.SetTheory.ZFC.Cardinal
 import Mathlib.SetTheory.Cardinal.Regular
+import SwarmProofs.Chains.RHLagarias.Defs
 
 /-- A cardinal `κ` indexes a Zermelo–Grothendieck ZFC universe `V_{κ.ord}` inside `ZFSet.{0}` if
     `ℵ₀ < κ`, the standard von Neumann natural-number set `ω` lies inside `V_{κ.ord}`, every set in
@@ -18,6 +21,7 @@ def isZfcReplacementUniverse (κ : Cardinal.{0}) : Prop :=
 /-- Track E [Rung 4/4 → Π₁⁰ RH Metamathematics] (Zermelo–Grothendieck V_κ Universe Equivalence, 1930):
     Proves that for every cardinal `κ : Cardinal.{0}`, `κ` is strongly inaccessible
     (`Cardinal.IsInaccessible κ`) if and only if the cumulative rank stage `V_{κ.ord}` is an
-    ω-containing transitive ZFC Replacement universe of `< κ`-sized sets. -/
+    ω-containing transitive ZFC Replacement universe of `< κ`-sized sets.
+    Solver proofs must start with `-- SPDX-License-Identifier: Apache-2.0` for registry promotion. -/
 def statementProp : Prop :=
   ∀ (κ : Cardinal.{0}), Cardinal.IsInaccessible κ ↔ isZfcReplacementUniverse κ
