@@ -3,22 +3,27 @@ use crate::http::{
 };
 use anyhow::{bail, ensure, Context, Result};
 use proof_registry::{
-    bundle_id, compose_generated_module, generated_module_name, resolve_bundle, sha256_hex,
-    validate_registry, ChallengeManifest, PromotionCandidate, RegistryManifest, ALLOWED_AXIOMS,
-    APACHE_2_0, CHALLENGE_SCHEMA_VERSION,
+    bundle_id, compose_generated_module, generated_module_name, preview_autopromote_manifest,
+    resolve_bundle, sha256_hex, validate_registry, ChallengeManifest, PromotionCandidate,
+    RegistryManifest, ALLOWED_AXIOMS, APACHE_2_0, CHALLENGE_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_SHILLBOT_API: &str = "https://api.shillbot.org";
 pub const DEFAULT_NETWORK: &str = "mainnet";
 pub const DEFAULT_ARTIFACT_BUCKET: &str = "coordination-game-prod-swarm-tips";
 pub const DEFAULT_GCP_PROJECT: &str = "coordination-game-prod";
+pub const DEFAULT_PUBLIC_REGISTRY_BASE_URL: &str =
+    "https://storage.googleapis.com/coordination-game-prod-swarm-proof-registry-public";
+pub const PINNED_POSTER_WALLETS: &[&str] = &["CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY"];
 const LEAN_PROOF_PLATFORM: u64 = 10;
 const PASSING_COMPOSITE_SCORE: u64 = 1_000_000;
 const MAX_FIRESTORE_SCAN_PAGES: usize = 20;
+const MAX_TASK_LIST_PAGES: usize = 50;
+const TASK_LIST_PAGE_LIMIT: usize = 100;
 
 #[derive(Debug, Clone)]
 pub struct FetchCandidatesArgs {
@@ -27,6 +32,8 @@ pub struct FetchCandidatesArgs {
     pub bucket: String,
     pub project: String,
     pub registry_path: PathBuf,
+    pub catalog_dir: PathBuf,
+    pub allowed_posters: Vec<String>,
     pub out_dir: PathBuf,
     pub tasks_file: Option<PathBuf>,
     pub firestore_fallback: bool,
@@ -273,6 +280,245 @@ pub fn validate_and_build_candidate(
     Ok((candidate, alias))
 }
 
+fn verify_catalog_statement_bytes(
+    catalog_dir: &Path,
+    topic: &str,
+    actual_stmt_sha: &str,
+) -> Result<()> {
+    let Some(raw_stem) = topic.strip_prefix("catalog:") else {
+        return Ok(());
+    };
+    let stem = raw_stem.trim();
+    ensure!(
+        !stem.is_empty() && !stem.contains('/') && !stem.contains('\\') && !stem.contains(".."),
+        "invalid catalog topic `{topic}`"
+    );
+    let canonical_path = catalog_dir.join("open").join(format!("{stem}.lean"));
+    ensure!(
+        canonical_path.is_file(),
+        "catalog statement hash mismatch: missing canonical catalog file `{}` for topic `{topic}`",
+        canonical_path.display()
+    );
+    let canonical_bytes = std::fs::read(&canonical_path).with_context(|| {
+        format!(
+            "failed reading canonical catalog file `{}`",
+            canonical_path.display()
+        )
+    })?;
+    let canonical_sha = sha256_hex(&canonical_bytes);
+    ensure!(
+        actual_stmt_sha == canonical_sha,
+        "catalog statement hash mismatch for `{topic}`: expected canonical {canonical_sha}, got {actual_stmt_sha}"
+    );
+    Ok(())
+}
+
+enum SingleTaskOutcome {
+    Skipped,
+    Ready {
+        candidate: Box<PromotionCandidate>,
+        alias: Option<String>,
+        module_id: String,
+        stem: String,
+    },
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_single_task<T: HttpTransport>(
+    transport: &T,
+    args: &FetchCandidatesArgs,
+    gcp_token: Option<&str>,
+    registry: &RegistryManifest,
+    environment_id: &str,
+    batch_aliases: &BTreeMap<String, String>,
+    mut task_val: Value,
+    task_id: &str,
+) -> Result<SingleTaskOutcome> {
+    if args.tasks_file.is_none()
+        && (task_val.get("lean_policy").is_none()
+            || task_val.get("statement_lean").is_none()
+            || extract_client_wallet(&task_val).is_none()
+            || extract_campaign_topic(&task_val).is_none())
+    {
+        if let Some(hydrated) =
+            fetch_task_detail(transport, &args.api_base, &args.network, task_id)?
+        {
+            merge_missing_fields(&mut task_val, hydrated);
+        }
+    }
+
+    let lean_policy = json_u64(&task_val, "lean_policy");
+    if lean_policy != Some(4) {
+        return Ok(SingleTaskOutcome::Skipped);
+    }
+
+    let mut score = json_u64(&task_val, "composite_score");
+    if score.is_none() && args.tasks_file.is_none() {
+        if let Some(att) =
+            fetch_task_attestation(transport, &args.api_base, &args.network, task_id)?
+        {
+            score = json_u64(&att, "composite_score");
+            merge_missing_fields(&mut task_val, att);
+        }
+    }
+    if score != Some(PASSING_COMPOSITE_SCORE) {
+        return Ok(SingleTaskOutcome::Skipped);
+    }
+
+    let campaign_id = json_str(&task_val, "campaign_id")
+        .or_else(|| task_id.split_once(':').map(|(c, _)| c.to_string()))
+        .unwrap_or_default();
+
+    if args.tasks_file.is_none()
+        && !campaign_id.is_empty()
+        && (extract_client_wallet(&task_val).is_none()
+            || extract_campaign_topic(&task_val).is_none())
+    {
+        if let Some(camp) =
+            fetch_campaign_detail(transport, &args.api_base, &args.network, &campaign_id)?
+        {
+            merge_campaign_fields(&mut task_val, camp);
+        }
+    }
+
+    let client_wallet = extract_client_wallet(&task_val).unwrap_or_default();
+    ensure!(
+        !client_wallet.is_empty()
+            && args
+                .allowed_posters
+                .iter()
+                .any(|allowed| allowed == &client_wallet),
+        "untrusted or missing poster wallet `{client_wallet}` for task {task_id}"
+    );
+
+    let author_wallet = json_str(&task_val, "agent").unwrap_or_default();
+    ensure!(
+        !campaign_id.is_empty() && !author_wallet.is_empty(),
+        "missing campaign_id or agent wallet"
+    );
+
+    let artifact_sha256 = extract_artifact_sha256(&task_val)
+        .ok_or_else(|| anyhow::anyhow!("missing artifact_sha256 on finalized policy-4 task"))?;
+    ensure!(
+        is_lower_hex_64(&artifact_sha256),
+        "invalid artifact_sha256 `{artifact_sha256}` on task {task_id}"
+    );
+
+    let proof_bytes = fetch_gcs_object(
+        transport,
+        &args.bucket,
+        &format!("lean-proofs/{artifact_sha256}.lean"),
+        gcp_token,
+    )
+    .with_context(|| format!("failed fetching proof bytes for task {task_id}"))?;
+
+    let actual_proof_sha = sha256_hex(&proof_bytes);
+    ensure!(
+        actual_proof_sha == artifact_sha256,
+        "proof SHA-256 mismatch for task {task_id}: expected {artifact_sha256}, got {actual_proof_sha}"
+    );
+
+    let expected_stmt_sha = extract_statement_sha256(&task_val);
+    let inline_stmt = json_str(&task_val, "statement_lean");
+    let statement_bytes = match (&expected_stmt_sha, &inline_stmt) {
+        (Some(stmt_sha), _) => {
+            ensure!(
+                is_lower_hex_64(stmt_sha),
+                "invalid statement_sha256 `{stmt_sha}` on task {task_id}"
+            );
+            let gcs_res = fetch_gcs_object(
+                transport,
+                &args.bucket,
+                &format!("lean-statements/{stmt_sha}.lean"),
+                gcp_token,
+            );
+            let bytes = match (gcs_res, inline_stmt.as_ref()) {
+                (Ok(b), Some(inline)) => {
+                    let inline_sha = sha256_hex(inline.as_bytes());
+                    ensure!(
+                        inline_sha == *stmt_sha,
+                        "statement SHA-256 mismatch between inline statement_lean and statement_sha256 for task {task_id}"
+                    );
+                    b
+                }
+                (Ok(b), None) => b,
+                (Err(_), Some(inline)) => inline.as_bytes().to_vec(),
+                (Err(err), None) => {
+                    return Err(err).with_context(|| {
+                        format!("failed fetching statement bytes for task {task_id}")
+                    })
+                }
+            };
+            let got_sha = sha256_hex(&bytes);
+            ensure!(
+                got_sha == *stmt_sha,
+                "statement SHA-256 mismatch for task {task_id}: expected {stmt_sha}, got {got_sha}"
+            );
+            bytes
+        }
+        (None, Some(inline)) => inline.as_bytes().to_vec(),
+        (None, None) => bail!("missing statement_sha256 and statement_lean"),
+    };
+
+    let campaign_topic = extract_campaign_topic(&task_val);
+    let actual_stmt_sha = sha256_hex(&statement_bytes);
+    if let Some(ref topic) = campaign_topic {
+        let trimmed = topic.trim();
+        if trimmed.starts_with("catalog:") {
+            verify_catalog_statement_bytes(&args.catalog_dir, trimmed, &actual_stmt_sha)?;
+        }
+    }
+
+    let direct_dependencies = extract_string_array(&task_val, "direct_dependencies")
+        .or_else(|| extract_string_array(&task_val, "lean_dependencies"))
+        .unwrap_or_default();
+    let verification_axioms = extract_axioms(&task_val);
+
+    let (candidate, alias) = validate_and_build_candidate(
+        registry,
+        environment_id,
+        RawCandidateInputs {
+            task_id: task_id.to_string(),
+            campaign_id,
+            network: args.network.clone(),
+            author_wallet,
+            campaign_topic,
+            artifact_sha256,
+            proof_bytes,
+            expected_statement_sha256: expected_stmt_sha,
+            statement_bytes,
+            direct_dependencies,
+            verification_axioms,
+        },
+    )?;
+
+    let (preview_manifest, _) =
+        preview_autopromote_manifest(&candidate, registry, DEFAULT_PUBLIC_REGISTRY_BASE_URL)
+            .map_err(|e| anyhow::anyhow!("preview_autopromote_manifest failed: {e}"))?;
+
+    if let Some(ref alias_key) = alias {
+        if let Some(existing_id) = registry
+            .aliases
+            .get(alias_key)
+            .or_else(|| batch_aliases.get(alias_key))
+        {
+            ensure!(
+                existing_id == &preview_manifest.module_id,
+                "refusing to overwrite existing alias `{alias_key}`: mapped to {existing_id}, candidate is {}",
+                preview_manifest.module_id
+            );
+        }
+    }
+
+    let stem = sanitize_task_filename(task_id)?;
+    Ok(SingleTaskOutcome::Ready {
+        candidate: Box::new(candidate),
+        alias,
+        module_id: preview_manifest.module_id,
+        stem,
+    })
+}
+
 pub fn fetch_promotion_candidates_with<T: HttpTransport>(
     transport: &T,
     args: &FetchCandidatesArgs,
@@ -280,6 +526,10 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
 ) -> Result<FetchReport> {
     ensure!(!args.network.is_empty(), "--network must be non-empty");
     ensure!(!args.bucket.is_empty(), "--bucket must be non-empty");
+    ensure!(
+        !args.allowed_posters.is_empty(),
+        "allowed_posters must be non-empty"
+    );
     let registry_bytes = std::fs::read(&args.registry_path)
         .with_context(|| format!("failed reading registry {}", args.registry_path.display()))?;
     let registry: RegistryManifest =
@@ -289,7 +539,7 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
     let environment_id = registry
         .environments
         .iter()
-        .find(|env| env.lock.policy_version == 4)
+        .rfind(|env| env.lock.policy_version == 4)
         .map(|env| env.environment_id.clone())
         .ok_or_else(|| anyhow::anyhow!("registry.json contains no policy_version=4 environment"))?;
 
@@ -308,14 +558,22 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
 
     if finalized_lean.is_empty() && args.tasks_file.is_none() && args.firestore_fallback {
         if let Some(token) = gcp_token {
-            finalized_lean = fetch_firestore_finalized_lean_tasks(transport, args, token)?;
+            match fetch_firestore_finalized_lean_tasks(transport, args, token) {
+                Ok(fallback_tasks) => finalized_lean = fallback_tasks,
+                Err(err) => {
+                    eprintln!(
+                        "[WARN] fetch-promotion-candidates Firestore fallback error: {err:#}"
+                    );
+                }
+            }
         }
     }
 
     let mut report = FetchReport::default();
     let mut plan_lines = Vec::new();
+    let mut batch_aliases: BTreeMap<String, String> = BTreeMap::new();
 
-    for mut task_val in finalized_lean {
+    for task_val in finalized_lean {
         let Some(task_id) = json_str(&task_val, "task_id") else {
             continue;
         };
@@ -324,149 +582,28 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
             continue;
         }
 
-        if args.tasks_file.is_none()
-            && (task_val.get("lean_policy").is_none() || task_val.get("statement_lean").is_none())
-        {
-            if let Some(hydrated) =
-                fetch_task_detail(transport, &args.api_base, &args.network, &task_id)?
-            {
-                merge_missing_fields(&mut task_val, hydrated);
-            }
-        }
-
-        let lean_policy = json_u64(&task_val, "lean_policy");
-        if lean_policy != Some(4) {
-            report.skipped += 1;
-            continue;
-        }
-
-        let mut score = json_u64(&task_val, "composite_score");
-        if score.is_none() && args.tasks_file.is_none() {
-            if let Some(att) =
-                fetch_task_attestation(transport, &args.api_base, &args.network, &task_id)?
-            {
-                score = json_u64(&att, "composite_score");
-                merge_missing_fields(&mut task_val, att);
-            }
-        }
-        if score != Some(PASSING_COMPOSITE_SCORE) {
-            report.skipped += 1;
-            continue;
-        }
-
-        let campaign_id = json_str(&task_val, "campaign_id")
-            .or_else(|| task_id.split_once(':').map(|(c, _)| c.to_string()))
-            .unwrap_or_default();
-        let author_wallet = json_str(&task_val, "agent").unwrap_or_default();
-        if campaign_id.is_empty() || author_wallet.is_empty() {
-            report.rejected.push(RejectedCandidate {
-                task_id,
-                reason: "missing campaign_id or agent wallet".to_string(),
-            });
-            continue;
-        }
-
-        let Some(artifact_sha256) = extract_artifact_sha256(&task_val) else {
-            report.rejected.push(RejectedCandidate {
-                task_id,
-                reason: "missing artifact_sha256 on finalized policy-4 task".to_string(),
-            });
-            continue;
-        };
-        ensure!(
-            is_lower_hex_64(&artifact_sha256),
-            "invalid artifact_sha256 `{artifact_sha256}` on task {task_id}"
-        );
-
-        let proof_bytes = fetch_gcs_object(
+        let outcome = evaluate_single_task(
             transport,
-            &args.bucket,
-            &format!("lean-proofs/{artifact_sha256}.lean"),
+            args,
             gcp_token,
-        )
-        .with_context(|| format!("failed fetching proof bytes for task {task_id}"))?;
-
-        let actual_proof_sha = sha256_hex(&proof_bytes);
-        ensure!(
-            actual_proof_sha == artifact_sha256,
-            "proof SHA-256 mismatch for task {task_id}: expected {artifact_sha256}, got {actual_proof_sha}"
-        );
-
-        let expected_stmt_sha = extract_statement_sha256(&task_val);
-        let inline_stmt = json_str(&task_val, "statement_lean");
-        let statement_bytes = match (&expected_stmt_sha, &inline_stmt) {
-            (Some(stmt_sha), _) => {
-                ensure!(
-                    is_lower_hex_64(stmt_sha),
-                    "invalid statement_sha256 `{stmt_sha}` on task {task_id}"
-                );
-                let gcs_res = fetch_gcs_object(
-                    transport,
-                    &args.bucket,
-                    &format!("lean-statements/{stmt_sha}.lean"),
-                    gcp_token,
-                );
-                let bytes = match (gcs_res, inline_stmt.as_ref()) {
-                    (Ok(b), Some(inline)) => {
-                        let inline_sha = sha256_hex(inline.as_bytes());
-                        ensure!(
-                            inline_sha == *stmt_sha,
-                            "statement SHA-256 mismatch between inline statement_lean and statement_sha256 for task {task_id}"
-                        );
-                        b
-                    }
-                    (Ok(b), None) => b,
-                    (Err(_), Some(inline)) => inline.as_bytes().to_vec(),
-                    (Err(err), None) => {
-                        return Err(err).with_context(|| {
-                            format!("failed fetching statement bytes for task {task_id}")
-                        })
-                    }
-                };
-                let got_sha = sha256_hex(&bytes);
-                ensure!(
-                    got_sha == *stmt_sha,
-                    "statement SHA-256 mismatch for task {task_id}: expected {stmt_sha}, got {got_sha}"
-                );
-                bytes
-            }
-            (None, Some(inline)) => inline.as_bytes().to_vec(),
-            (None, None) => {
-                report.rejected.push(RejectedCandidate {
-                    task_id,
-                    reason: "missing statement_sha256 and statement_lean".to_string(),
-                });
-                continue;
-            }
-        };
-
-        let campaign_topic = json_str(&task_val, "campaign_topic")
-            .or_else(|| task_val.get("brief").and_then(|b| json_str(b, "topic")));
-        let direct_dependencies = extract_string_array(&task_val, "direct_dependencies")
-            .or_else(|| extract_string_array(&task_val, "lean_dependencies"))
-            .unwrap_or_default();
-        let verification_axioms = extract_axioms(&task_val);
-
-        let build_res = validate_and_build_candidate(
             &registry,
             &environment_id,
-            RawCandidateInputs {
-                task_id: task_id.clone(),
-                campaign_id,
-                network: args.network.clone(),
-                author_wallet,
-                campaign_topic,
-                artifact_sha256: artifact_sha256.clone(),
-                proof_bytes,
-                expected_statement_sha256: expected_stmt_sha,
-                statement_bytes,
-                direct_dependencies,
-                verification_axioms,
-            },
+            &batch_aliases,
+            task_val,
+            &task_id,
         );
 
-        let (candidate, alias) = match build_res {
-            Ok(pair) => pair,
+        let (candidate, alias, module_id, stem) = match outcome {
+            Ok(SingleTaskOutcome::Skipped) => {
+                report.skipped += 1;
+                continue;
+            }
+            Ok(SingleTaskOutcome::Ready {
+                candidate,
+                alias,
+                module_id,
+                stem,
+            }) => (*candidate, alias, module_id, stem),
             Err(err) => {
                 report.rejected.push(RejectedCandidate {
                     task_id,
@@ -476,7 +613,10 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
             }
         };
 
-        let stem = sanitize_task_filename(&task_id)?;
+        if let Some(ref alias_key) = alias {
+            batch_aliases.insert(alias_key.clone(), module_id);
+        }
+
         let out_file = args.out_dir.join(format!("{stem}.json"));
         let mut cand_json = serde_json::to_vec_pretty(&candidate)?;
         cand_json.push(b'\n');
@@ -488,6 +628,7 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
             "{out_file_str}\t{}",
             alias.as_deref().unwrap_or("")
         ));
+        let artifact_sha256 = candidate.artifact_sha256.clone();
         report.candidates.push(FetchedCandidateSummary {
             task_id,
             candidate_file: out_file_str,
@@ -512,29 +653,8 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
     Ok(report)
 }
 
-fn load_initial_tasks<T: HttpTransport>(
-    transport: &T,
-    args: &FetchCandidatesArgs,
-) -> Result<Vec<Value>> {
-    let raw_bytes = if let Some(path) = &args.tasks_file {
-        std::fs::read(path).with_context(|| format!("failed reading {}", path.display()))?
-    } else {
-        let url = format!(
-            "{}/tasks?state=finalized&platform={LEAN_PROOF_PLATFORM}&network={}&limit=100",
-            args.api_base.trim_end_matches('/'),
-            percent_encode(&args.network)
-        );
-        transport
-            .send(&HttpRequest {
-                method: "GET",
-                url: &url,
-                bearer_token: None,
-                content_type: None,
-                body: None,
-            })
-            .with_context(|| format!("failed fetching tasks from {url}"))?
-    };
-    let parsed: Value = serde_json::from_slice(&raw_bytes).context("invalid tasks JSON")?;
+fn parse_tasks_json_page(raw_bytes: &[u8]) -> Result<Vec<Value>> {
+    let parsed: Value = serde_json::from_slice(raw_bytes).context("invalid tasks JSON")?;
     if let Some(arr) = parsed.as_array() {
         return Ok(arr.clone());
     }
@@ -542,6 +662,57 @@ fn load_initial_tasks<T: HttpTransport>(
         return Ok(arr.clone());
     }
     bail!("expected JSON array or `{{\"tasks\": [...]}}` from tasks source")
+}
+
+fn load_initial_tasks<T: HttpTransport>(
+    transport: &T,
+    args: &FetchCandidatesArgs,
+) -> Result<Vec<Value>> {
+    if let Some(path) = &args.tasks_file {
+        let raw_bytes =
+            std::fs::read(path).with_context(|| format!("failed reading {}", path.display()))?;
+        return parse_tasks_json_page(&raw_bytes);
+    }
+
+    let mut all_tasks = Vec::new();
+    let mut seen_ids = BTreeSet::new();
+    let base = args.api_base.trim_end_matches('/');
+    let encoded_net = percent_encode(&args.network);
+
+    for page_idx in 0..MAX_TASK_LIST_PAGES {
+        let offset = page_idx * TASK_LIST_PAGE_LIMIT;
+        let url = format!(
+            "{base}/tasks?state=finalized&platform={LEAN_PROOF_PLATFORM}&network={encoded_net}&limit={TASK_LIST_PAGE_LIMIT}&offset={offset}"
+        );
+        let raw_bytes = transport
+            .send(&HttpRequest {
+                method: "GET",
+                url: &url,
+                bearer_token: None,
+                content_type: None,
+                body: None,
+            })
+            .with_context(|| format!("failed fetching tasks from {url}"))?;
+        let page_items = parse_tasks_json_page(&raw_bytes)?;
+        let page_len = page_items.len();
+        if page_len == 0 {
+            break;
+        }
+        let mut new_in_page = 0usize;
+        for item in page_items {
+            if let Some(tid) = json_str(&item, "task_id") {
+                if !seen_ids.insert(tid) {
+                    continue;
+                }
+            }
+            new_in_page += 1;
+            all_tasks.push(item);
+        }
+        if new_in_page == 0 || page_len < TASK_LIST_PAGE_LIMIT {
+            break;
+        }
+    }
+    Ok(all_tasks)
 }
 
 fn is_finalized_lean_task(item: &Value) -> bool {
@@ -581,6 +752,33 @@ fn fetch_task_detail<T: HttpTransport>(
     }) {
         Ok(bytes) => Ok(Some(
             serde_json::from_slice(&bytes).context("invalid task detail JSON")?,
+        )),
+        Err(HttpFailure::Status { status: 404, .. }) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn fetch_campaign_detail<T: HttpTransport>(
+    transport: &T,
+    api_base: &str,
+    network: &str,
+    campaign_id: &str,
+) -> Result<Option<Value>> {
+    let url = format!(
+        "{}/campaigns/{}?network={}",
+        api_base.trim_end_matches('/'),
+        percent_encode(campaign_id),
+        percent_encode(network)
+    );
+    match transport.send(&HttpRequest {
+        method: "GET",
+        url: &url,
+        bearer_token: None,
+        content_type: None,
+        body: None,
+    }) {
+        Ok(bytes) => Ok(Some(
+            serde_json::from_slice(&bytes).context("invalid campaign detail JSON")?,
         )),
         Err(HttpFailure::Status { status: 404, .. }) => Ok(None),
         Err(err) => Err(err.into()),
@@ -662,7 +860,10 @@ fn fetch_firestore_finalized_lean_tasks<T: HttpTransport>(
             body: None,
         }) {
             Ok(bytes) => bytes,
-            Err(_) => return Ok(results),
+            Err(err) => {
+                eprintln!("[WARN] fetch-promotion-candidates Firestore fallback error: {err:#}");
+                return Ok(results);
+            }
         };
         let page: Value =
             serde_json::from_slice(&body).context("invalid Firestore tasks list JSON")?;
@@ -670,13 +871,19 @@ fn fetch_firestore_finalized_lean_tasks<T: HttpTransport>(
             for doc in docs {
                 if let Some(mut item) = parse_firestore_task_doc(doc, &args.network) {
                     if let Some(tid) = json_str(&item, "task_id") {
-                        if let Some(verif) = fetch_firestore_verification_doc(
+                        match fetch_firestore_verification_doc(
                             transport,
                             &args.project,
                             &tid,
                             gcp_token,
-                        )? {
-                            merge_missing_fields(&mut item, verif);
+                        ) {
+                            Ok(Some(verif)) => merge_missing_fields(&mut item, verif),
+                            Ok(None) => {}
+                            Err(err) => {
+                                eprintln!(
+                                    "[WARN] fetch-promotion-candidates Firestore fallback error: {err:#}"
+                                );
+                            }
                         }
                     }
                     results.push(item);
@@ -711,7 +918,10 @@ fn fetch_firestore_verification_doc<T: HttpTransport>(
     }) {
         Ok(b) => b,
         Err(HttpFailure::Status { status: 404, .. }) => return Ok(None),
-        Err(_) => return Ok(None),
+        Err(err) => {
+            eprintln!("[WARN] fetch-promotion-candidates Firestore fallback error: {err:#}");
+            return Ok(None);
+        }
     };
     let doc: Value = serde_json::from_slice(&bytes).context("invalid verification doc JSON")?;
     let Some(fields) = doc.get("fields") else {
@@ -759,6 +969,9 @@ fn parse_firestore_task_doc(doc: &Value, expected_network: &str) -> Option<Value
     obj.insert("platform".into(), Value::Number(LEAN_PROOF_PLATFORM.into()));
     if let Some(cid) = fs_str(fields, "campaign_id") {
         obj.insert("campaign_id".into(), Value::String(cid));
+    }
+    if let Some(client) = fs_str(fields, "client") {
+        obj.insert("client".into(), Value::String(client));
     }
     if let Some(agent) = fs_str(fields, "agent") {
         obj.insert("agent".into(), Value::String(agent));
@@ -828,6 +1041,42 @@ fn merge_missing_fields(target: &mut Value, extra: Value) {
             dst.insert(k.clone(), v.clone());
         }
     }
+}
+
+fn merge_campaign_fields(target: &mut Value, campaign: Value) {
+    if let Some(client) = json_str(&campaign, "client") {
+        if extract_client_wallet(target).is_none() {
+            if let Some(dst) = target.as_object_mut() {
+                dst.insert("client".into(), Value::String(client));
+            }
+        }
+    }
+    if let Some(topic) = extract_campaign_topic(&campaign) {
+        if extract_campaign_topic(target).is_none() {
+            if let Some(dst) = target.as_object_mut() {
+                dst.insert("campaign_topic".into(), Value::String(topic));
+            }
+        }
+    }
+    merge_missing_fields(target, campaign);
+}
+
+fn extract_client_wallet(val: &Value) -> Option<String> {
+    json_str(val, "client").or_else(|| val.get("campaign").and_then(|c| json_str(c, "client")))
+}
+
+fn extract_campaign_topic(val: &Value) -> Option<String> {
+    json_str(val, "campaign_topic")
+        .or_else(|| val.get("brief").and_then(|b| json_str(b, "topic")))
+        .or_else(|| {
+            val.get("campaign")
+                .and_then(|c| json_str(c, "campaign_topic"))
+        })
+        .or_else(|| {
+            val.get("campaign")
+                .and_then(|c| c.get("brief"))
+                .and_then(|b| json_str(b, "topic"))
+        })
 }
 
 fn json_str(val: &Value, key: &str) -> Option<String> {
@@ -963,6 +1212,28 @@ mod tests {
             .to_path_buf()
     }
 
+    fn default_args(
+        reg_path: PathBuf,
+        out_dir: PathBuf,
+        tasks_file: Option<PathBuf>,
+    ) -> FetchCandidatesArgs {
+        FetchCandidatesArgs {
+            api_base: DEFAULT_SHILLBOT_API.to_string(),
+            network: "mainnet".to_string(),
+            bucket: DEFAULT_ARTIFACT_BUCKET.to_string(),
+            project: DEFAULT_GCP_PROJECT.to_string(),
+            registry_path: reg_path,
+            catalog_dir: repo_root().join("tests/fixtures/lean/catalog"),
+            allowed_posters: PINNED_POSTER_WALLETS
+                .iter()
+                .map(|w| (*w).to_string())
+                .collect(),
+            out_dir,
+            tasks_file,
+            firestore_fallback: false,
+        }
+    }
+
     fn setup_temp_workspace(label: &str) -> (PathBuf, PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "xtask-fetch-promo-{label}-{}",
@@ -990,14 +1261,18 @@ mod tests {
     fn golden_api_and_gcs_fixture_autopromotes_and_validates() {
         let (dir, pkg_dir, out_dir) = setup_temp_workspace("golden");
         let reg_path = pkg_dir.join("registry.json");
-        let statement = b"import Mathlib.Data.Nat.Basic\ndef statementProp : Prop := 1 + 1 = 2\n";
+        let statement = std::fs::read(
+            repo_root()
+                .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
+        )
+        .unwrap();
         let proof =
             b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := rfl\n";
-        let stmt_sha = sha256_hex(statement);
+        let stmt_sha = sha256_hex(&statement);
         let proof_sha = sha256_hex(proof);
 
         let api_url =
-            "https://api.shillbot.org/tasks?state=finalized&platform=10&network=mainnet&limit=100";
+            "https://api.shillbot.org/tasks?state=finalized&platform=10&network=mainnet&limit=100&offset=0";
         let mut transport = MapTransport::new();
         transport.insert_ok(
             api_url,
@@ -1005,6 +1280,7 @@ mod tests {
                 "tasks": [{
                     "task_id": "camp-golden:task-golden-1",
                     "campaign_id": "camp-golden",
+                    "client": PINNED_POSTER_WALLETS[0],
                     "campaign_topic": "catalog:chain-bsd-1-weierstrass-bijection",
                     "state": "finalized",
                     "platform": 10,
@@ -1030,19 +1306,10 @@ mod tests {
                 DEFAULT_ARTIFACT_BUCKET,
                 &format!("lean-statements/{stmt_sha}.lean"),
             ),
-            statement.to_vec(),
+            statement,
         );
 
-        let args = FetchCandidatesArgs {
-            api_base: DEFAULT_SHILLBOT_API.to_string(),
-            network: "mainnet".to_string(),
-            bucket: DEFAULT_ARTIFACT_BUCKET.to_string(),
-            project: DEFAULT_GCP_PROJECT.to_string(),
-            registry_path: reg_path.clone(),
-            out_dir: out_dir.clone(),
-            tasks_file: None,
-            firestore_fallback: false,
-        };
+        let args = default_args(reg_path.clone(), out_dir, None);
         let report = fetch_promotion_candidates_with(&transport, &args, Some("tok")).unwrap();
         assert_eq!(report.candidates.len(), 1);
         assert_eq!(report.skipped, 0);
@@ -1057,13 +1324,9 @@ mod tests {
                 .unwrap();
         let mut reg: RegistryManifest =
             serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
-        let manifest = autopromote_candidate(
-            &cand,
-            &mut reg,
-            &pkg_dir,
-            "https://storage.googleapis.com/coordination-game-prod-swarm-proof-registry-public",
-        )
-        .unwrap();
+        let manifest =
+            autopromote_candidate(&cand, &mut reg, &pkg_dir, DEFAULT_PUBLIC_REGISTRY_BASE_URL)
+                .unwrap();
         reg.aliases.insert(
             report.candidates[0].alias.clone().unwrap(),
             manifest.module_id.clone(),
@@ -1079,7 +1342,6 @@ mod tests {
         let (dir, pkg_dir, out_dir) = setup_temp_workspace("chain-bsd-2");
         let reg_path = pkg_dir.join("registry.json");
 
-        // First promote Rung B1 so Rung B2's `-- @depends-on: chain-bsd-1-weierstrass-bijection` resolves!
         let b1_stmt = std::fs::read_to_string(
             repo_root()
                 .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
@@ -1112,7 +1374,7 @@ mod tests {
             &b1_cand,
             &mut reg,
             &pkg_dir,
-            "https://storage.googleapis.com/coordination-game-prod-swarm-proof-registry-public",
+            DEFAULT_PUBLIC_REGISTRY_BASE_URL,
         )
         .unwrap();
         reg.aliases
@@ -1120,7 +1382,6 @@ mod tests {
         validate_registry(&reg).unwrap();
         std::fs::write(&reg_path, serde_json::to_vec_pretty(&reg).unwrap()).unwrap();
 
-        // Now test Rung B2 (`chain-bsd-2-fermat-noncongruent-1.lean`) through `fetch_promotion_candidates_with`!
         let b2_stmt = std::fs::read(
             repo_root()
                 .join("tests/fixtures/lean/catalog/open/chain-bsd-2-fermat-noncongruent-1.lean"),
@@ -1138,6 +1399,7 @@ mod tests {
                 "tasks": [{
                     "task_id": "camp-b2:task-b2",
                     "campaign_id": "camp-b2",
+                    "client": PINNED_POSTER_WALLETS[0],
                     "campaign_topic": "catalog:chain-bsd-2-fermat-noncongruent-1",
                     "state": "finalized",
                     "platform": 10,
@@ -1169,16 +1431,7 @@ mod tests {
             b2_stmt,
         );
 
-        let args = FetchCandidatesArgs {
-            api_base: DEFAULT_SHILLBOT_API.to_string(),
-            network: "mainnet".to_string(),
-            bucket: DEFAULT_ARTIFACT_BUCKET.to_string(),
-            project: DEFAULT_GCP_PROJECT.to_string(),
-            registry_path: reg_path.clone(),
-            out_dir: out_dir.clone(),
-            tasks_file: Some(tasks_json_path),
-            firestore_fallback: false,
-        };
+        let args = default_args(reg_path, out_dir, Some(tasks_json_path));
         let report = fetch_promotion_candidates_with(&transport, &args, Some("tok")).unwrap();
         assert_eq!(report.candidates.len(), 1);
         let b2_cand: PromotionCandidate =
@@ -1190,7 +1443,7 @@ mod tests {
             &b2_cand,
             &mut reg,
             &pkg_dir,
-            "https://storage.googleapis.com/coordination-game-prod-swarm-proof-registry-public",
+            DEFAULT_PUBLIC_REGISTRY_BASE_URL,
         )
         .unwrap();
         let generated_src = std::fs::read_to_string(pkg_dir.join(format!(
@@ -1198,7 +1451,7 @@ mod tests {
             b2_manifest.module_name.replace('.', "/")
         )))
         .unwrap();
-        assert!(generated_src.contains("import SwarmProofs.Chains.BSD.Defs"));
+        assert!(generated_src.contains("import SwarmProofs.Chains.BSD.Defs.V1"));
         assert!(generated_src.contains(&format!("import {}", b1_manifest.module_name)));
         validate_registry(&reg).unwrap();
 
@@ -1254,8 +1507,8 @@ mod tests {
             let generated = compose_generated_module(&cand)
                 .unwrap_or_else(|e| panic!("{name} failed compose_generated_module: {e}"));
             assert!(
-                generated.source.contains("import SwarmProofs.Chains."),
-                "{name} must import a shared SwarmProofs.Chains.*.Defs module"
+                generated.source.contains(".Defs.V1"),
+                "{name} must import a versioned SwarmProofs.Chains.*.Defs.V1 module"
             );
             count += 1;
         }
@@ -1274,12 +1527,36 @@ mod tests {
         let proof_sha = sha256_hex(expected_proof);
         let stmt_sha = sha256_hex(statement);
 
+        let reg: RegistryManifest =
+            serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+        let direct_err = validate_and_build_candidate(
+            &reg,
+            &reg.environments[0].environment_id,
+            RawCandidateInputs {
+                task_id: "camp:bad-proof".into(),
+                campaign_id: "camp".into(),
+                network: "mainnet".into(),
+                author_wallet: "Wallet1".into(),
+                campaign_topic: None,
+                artifact_sha256: proof_sha.clone(),
+                proof_bytes: tampered_proof.to_vec(),
+                expected_statement_sha256: Some(stmt_sha.clone()),
+                statement_bytes: statement.to_vec(),
+                direct_dependencies: Vec::new(),
+                verification_axioms: vec!["propext".into()],
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(direct_err.contains("proof SHA-256 mismatch"));
+
         let tasks_path = dir.join("tasks.json");
         std::fs::write(
             &tasks_path,
             serde_json::to_vec(&json!([{
                 "task_id": "camp:bad-proof",
                 "campaign_id": "camp",
+                "client": PINNED_POSTER_WALLETS[0],
                 "state": "finalized",
                 "platform": 10,
                 "lean_policy": 4,
@@ -1308,25 +1585,18 @@ mod tests {
             statement.to_vec(),
         );
 
-        let err = fetch_promotion_candidates_with(
+        let report = fetch_promotion_candidates_with(
             &transport,
-            &FetchCandidatesArgs {
-                api_base: DEFAULT_SHILLBOT_API.into(),
-                network: "mainnet".into(),
-                bucket: DEFAULT_ARTIFACT_BUCKET.into(),
-                project: DEFAULT_GCP_PROJECT.into(),
-                registry_path: reg_path,
-                out_dir,
-                tasks_file: Some(tasks_path),
-                firestore_fallback: false,
-            },
+            &default_args(reg_path, out_dir, Some(tasks_path)),
             Some("tok"),
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap();
+        assert!(report.candidates.is_empty());
+        assert_eq!(report.rejected.len(), 1);
         assert!(
-            err.contains("proof SHA-256 mismatch"),
-            "unexpected error: {err}"
+            report.rejected[0].reason.contains("proof SHA-256 mismatch"),
+            "unexpected reason: {}",
+            report.rejected[0].reason
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1342,12 +1612,36 @@ mod tests {
         let proof_sha = sha256_hex(proof);
         let stmt_sha = sha256_hex(expected_stmt);
 
+        let reg: RegistryManifest =
+            serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+        let direct_err = validate_and_build_candidate(
+            &reg,
+            &reg.environments[0].environment_id,
+            RawCandidateInputs {
+                task_id: "camp:bad-stmt".into(),
+                campaign_id: "camp".into(),
+                network: "mainnet".into(),
+                author_wallet: "Wallet1".into(),
+                campaign_topic: None,
+                artifact_sha256: proof_sha.clone(),
+                proof_bytes: proof.to_vec(),
+                expected_statement_sha256: Some(stmt_sha.clone()),
+                statement_bytes: tampered_stmt.to_vec(),
+                direct_dependencies: Vec::new(),
+                verification_axioms: vec!["propext".into()],
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(direct_err.contains("statement SHA-256 mismatch"));
+
         let tasks_path = dir.join("tasks.json");
         std::fs::write(
             &tasks_path,
             serde_json::to_vec(&json!([{
                 "task_id": "camp:bad-stmt",
                 "campaign_id": "camp",
+                "client": PINNED_POSTER_WALLETS[0],
                 "state": "finalized",
                 "platform": 10,
                 "lean_policy": 4,
@@ -1376,25 +1670,20 @@ mod tests {
             tampered_stmt.to_vec(),
         );
 
-        let err = fetch_promotion_candidates_with(
+        let report = fetch_promotion_candidates_with(
             &transport,
-            &FetchCandidatesArgs {
-                api_base: DEFAULT_SHILLBOT_API.into(),
-                network: "mainnet".into(),
-                bucket: DEFAULT_ARTIFACT_BUCKET.into(),
-                project: DEFAULT_GCP_PROJECT.into(),
-                registry_path: reg_path,
-                out_dir,
-                tasks_file: Some(tasks_path),
-                firestore_fallback: false,
-            },
+            &default_args(reg_path, out_dir, Some(tasks_path)),
             Some("tok"),
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap();
+        assert!(report.candidates.is_empty());
+        assert_eq!(report.rejected.len(), 1);
         assert!(
-            err.contains("statement SHA-256 mismatch"),
-            "unexpected error: {err}"
+            report.rejected[0]
+                .reason
+                .contains("statement SHA-256 mismatch"),
+            "unexpected reason: {}",
+            report.rejected[0].reason
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1437,6 +1726,7 @@ mod tests {
             serde_json::to_vec(&json!([{
                 "task_id": "camp:no-spdx",
                 "campaign_id": "camp",
+                "client": PINNED_POSTER_WALLETS[0],
                 "state": "finalized",
                 "platform": 10,
                 "lean_policy": 4,
@@ -1467,16 +1757,7 @@ mod tests {
 
         let report = fetch_promotion_candidates_with(
             &transport,
-            &FetchCandidatesArgs {
-                api_base: DEFAULT_SHILLBOT_API.into(),
-                network: "mainnet".into(),
-                bucket: DEFAULT_ARTIFACT_BUCKET.into(),
-                project: DEFAULT_GCP_PROJECT.into(),
-                registry_path: reg_path,
-                out_dir,
-                tasks_file: Some(tasks_path),
-                firestore_fallback: false,
-            },
+            &default_args(reg_path, out_dir, Some(tasks_path)),
             Some("tok"),
         )
         .unwrap();
@@ -1500,6 +1781,7 @@ mod tests {
                 serde_json::to_vec(&json!([{
                     "task_id": "camp:warmup-1",
                     "campaign_id": "camp",
+                    "client": PINNED_POSTER_WALLETS[0],
                     "state": "finalized",
                     "platform": 10,
                     "lean_policy": policy,
@@ -1514,16 +1796,7 @@ mod tests {
             let transport = MapTransport::new();
             let report = fetch_promotion_candidates_with(
                 &transport,
-                &FetchCandidatesArgs {
-                    api_base: DEFAULT_SHILLBOT_API.into(),
-                    network: "mainnet".into(),
-                    bucket: DEFAULT_ARTIFACT_BUCKET.into(),
-                    project: DEFAULT_GCP_PROJECT.into(),
-                    registry_path: reg_path.clone(),
-                    out_dir: out_dir.clone(),
-                    tasks_file: Some(tasks_path),
-                    firestore_fallback: false,
-                },
+                &default_args(reg_path.clone(), out_dir.clone(), Some(tasks_path)),
                 None,
             )
             .unwrap();
@@ -1531,6 +1804,480 @@ mod tests {
             assert!(report.rejected.is_empty());
             assert_eq!(report.skipped, 1);
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn foreign_poster_wallet_is_rejected() {
+        let (dir, pkg_dir, out_dir) = setup_temp_workspace("foreign-poster");
+        let reg_path = pkg_dir.join("registry.json");
+        let statement = std::fs::read(
+            repo_root()
+                .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
+        )
+        .unwrap();
+        let proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := rfl\n";
+        let stmt_sha = sha256_hex(&statement);
+        let proof_sha = sha256_hex(proof);
+
+        let tasks_path = dir.join("tasks.json");
+        std::fs::write(
+            &tasks_path,
+            serde_json::to_vec(&json!([
+                {
+                    "task_id": "camp-attacker:task-1",
+                    "campaign_id": "camp-attacker",
+                    "client": "AttackerWallet999999999999999999999999999999",
+                    "campaign_topic": "catalog:chain-bsd-1-weierstrass-bijection",
+                    "state": "finalized",
+                    "platform": 10,
+                    "lean_policy": 4,
+                    "composite_score": 1_000_000,
+                    "agent": "AttackerSolver",
+                    "artifact_sha256": proof_sha,
+                    "statement_sha256": stmt_sha
+                },
+                {
+                    "task_id": "camp-missing-client:task-2",
+                    "campaign_id": "camp-missing-client",
+                    "state": "finalized",
+                    "platform": 10,
+                    "lean_policy": 4,
+                    "composite_score": 1_000_000,
+                    "agent": "AttackerSolver",
+                    "artifact_sha256": proof_sha,
+                    "statement_sha256": stmt_sha
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let transport = MapTransport::new();
+        let report = fetch_promotion_candidates_with(
+            &transport,
+            &default_args(reg_path, out_dir, Some(tasks_path)),
+            Some("tok"),
+        )
+        .unwrap();
+        assert!(report.candidates.is_empty());
+        assert_eq!(report.rejected.len(), 2);
+        assert!(report.rejected[0]
+            .reason
+            .contains("untrusted or missing poster wallet"));
+        assert!(report.rejected[1]
+            .reason
+            .contains("untrusted or missing poster wallet"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn catalog_alias_statement_mismatch_is_rejected() {
+        let (dir, pkg_dir, out_dir) = setup_temp_workspace("catalog-mismatch");
+        let reg_path = pkg_dir.join("registry.json");
+        // Fake trivial statement claiming canonical catalog:chain-bsd-1-weierstrass-bijection topic!
+        let fake_stmt = b"def statementProp : Prop := True\n";
+        let proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := trivial\n";
+        let stmt_sha = sha256_hex(fake_stmt);
+        let proof_sha = sha256_hex(proof);
+
+        let tasks_path = dir.join("tasks.json");
+        std::fs::write(
+            &tasks_path,
+            serde_json::to_vec(&json!([
+                {
+                    "task_id": "camp-fake:task-1",
+                    "campaign_id": "camp-fake",
+                    "client": PINNED_POSTER_WALLETS[0],
+                    "campaign_topic": "catalog:chain-bsd-1-weierstrass-bijection",
+                    "state": "finalized",
+                    "platform": 10,
+                    "lean_policy": 4,
+                    "composite_score": 1_000_000,
+                    "agent": "Solver1",
+                    "artifact_sha256": proof_sha,
+                    "statement_sha256": stmt_sha
+                },
+                {
+                    "task_id": "camp-nonexistent:task-2",
+                    "campaign_id": "camp-nonexistent",
+                    "client": PINNED_POSTER_WALLETS[0],
+                    "campaign_topic": "catalog:chain-nonexistent-rung",
+                    "state": "finalized",
+                    "platform": 10,
+                    "lean_policy": 4,
+                    "composite_score": 1_000_000,
+                    "agent": "Solver1",
+                    "artifact_sha256": proof_sha,
+                    "statement_sha256": stmt_sha
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut transport = MapTransport::new();
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-proofs/{proof_sha}.lean"),
+            ),
+            proof.to_vec(),
+        );
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-statements/{stmt_sha}.lean"),
+            ),
+            fake_stmt.to_vec(),
+        );
+
+        let report = fetch_promotion_candidates_with(
+            &transport,
+            &default_args(reg_path, out_dir, Some(tasks_path)),
+            Some("tok"),
+        )
+        .unwrap();
+        assert!(report.candidates.is_empty());
+        assert_eq!(report.rejected.len(), 2);
+        assert!(report.rejected[0]
+            .reason
+            .contains("catalog statement hash mismatch"));
+        assert!(report.rejected[1]
+            .reason
+            .contains("catalog statement hash mismatch"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn alias_hijack_overwrite_is_refused() {
+        let (dir, pkg_dir, out_dir) = setup_temp_workspace("alias-hijack");
+        let reg_path = pkg_dir.join("registry.json");
+
+        // Pre-populate registry with an active module mapped to `catalog:chain-bsd-1-weierstrass-bijection`:
+        let b1_stmt = std::fs::read(
+            repo_root()
+                .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
+        )
+        .unwrap();
+        let first_proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := rfl\n";
+        let mut reg: RegistryManifest =
+            serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+        let env_id = reg.environments[0].environment_id.clone();
+        let (first_cand, first_alias) = validate_and_build_candidate(
+            &reg,
+            &env_id,
+            RawCandidateInputs {
+                task_id: "camp-b1:original-task".into(),
+                campaign_id: "camp-b1".into(),
+                network: "mainnet".into(),
+                author_wallet: "OriginalSolver".into(),
+                campaign_topic: Some("catalog:chain-bsd-1-weierstrass-bijection".into()),
+                artifact_sha256: sha256_hex(first_proof),
+                proof_bytes: first_proof.to_vec(),
+                expected_statement_sha256: Some(sha256_hex(&b1_stmt)),
+                statement_bytes: b1_stmt.clone(),
+                direct_dependencies: Vec::new(),
+                verification_axioms: vec!["propext".into()],
+            },
+        )
+        .unwrap();
+        let first_manifest = autopromote_candidate(
+            &first_cand,
+            &mut reg,
+            &pkg_dir,
+            DEFAULT_PUBLIC_REGISTRY_BASE_URL,
+        )
+        .unwrap();
+        reg.aliases
+            .insert(first_alias.unwrap(), first_manifest.module_id);
+        std::fs::write(&reg_path, serde_json::to_vec_pretty(&reg).unwrap()).unwrap();
+
+        // Now a second task attempts to promote a DIFFERENT module under the same alias:
+        let second_proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\n-- distinct proof\ntheorem proof : statementProp := rfl\n";
+        let stmt_sha = sha256_hex(&b1_stmt);
+        let second_proof_sha = sha256_hex(second_proof);
+
+        let tasks_path = dir.join("tasks.json");
+        std::fs::write(
+            &tasks_path,
+            serde_json::to_vec(&json!([{
+                "task_id": "camp-b1:second-task",
+                "campaign_id": "camp-b1",
+                "client": PINNED_POSTER_WALLETS[0],
+                "campaign_topic": "catalog:chain-bsd-1-weierstrass-bijection",
+                "state": "finalized",
+                "platform": 10,
+                "lean_policy": 4,
+                "composite_score": 1_000_000,
+                "agent": "SecondSolver",
+                "artifact_sha256": second_proof_sha,
+                "statement_sha256": stmt_sha
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut transport = MapTransport::new();
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-proofs/{second_proof_sha}.lean"),
+            ),
+            second_proof.to_vec(),
+        );
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-statements/{stmt_sha}.lean"),
+            ),
+            b1_stmt,
+        );
+
+        let report = fetch_promotion_candidates_with(
+            &transport,
+            &default_args(reg_path, out_dir, Some(tasks_path)),
+            Some("tok"),
+        )
+        .unwrap();
+        assert!(report.candidates.is_empty());
+        assert_eq!(report.rejected.len(), 1);
+        assert!(
+            report.rejected[0]
+                .reason
+                .contains("refusing to overwrite existing alias"),
+            "unexpected reason: {}",
+            report.rejected[0].reason
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn gcs_404_on_one_task_records_rejected_and_continues_promoting_next_task() {
+        let (dir, pkg_dir, out_dir) = setup_temp_workspace("gcs-404-resilience");
+        let reg_path = pkg_dir.join("registry.json");
+        let good_stmt = std::fs::read(
+            repo_root()
+                .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
+        )
+        .unwrap();
+        let good_proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := rfl\n";
+        let good_stmt_sha = sha256_hex(&good_stmt);
+        let good_proof_sha = sha256_hex(good_proof);
+        let missing_proof_sha = "b".repeat(64);
+
+        let tasks_path = dir.join("tasks.json");
+        std::fs::write(
+            &tasks_path,
+            serde_json::to_vec(&json!([
+                {
+                    "task_id": "camp-404:broken-task",
+                    "campaign_id": "camp-404",
+                    "client": PINNED_POSTER_WALLETS[0],
+                    "state": "finalized",
+                    "platform": 10,
+                    "lean_policy": 4,
+                    "composite_score": 1_000_000,
+                    "agent": "SolverBroken",
+                    "artifact_sha256": missing_proof_sha,
+                    "statement_sha256": good_stmt_sha
+                },
+                {
+                    "task_id": "camp-ok:healthy-task",
+                    "campaign_id": "camp-ok",
+                    "client": PINNED_POSTER_WALLETS[0],
+                    "campaign_topic": "catalog:chain-bsd-1-weierstrass-bijection",
+                    "state": "finalized",
+                    "platform": 10,
+                    "lean_policy": 4,
+                    "composite_score": 1_000_000,
+                    "agent": "SolverHealthy",
+                    "artifact_sha256": good_proof_sha,
+                    "statement_sha256": good_stmt_sha
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut transport = MapTransport::new();
+        // Intentionally do NOT mock `lean-proofs/{missing_proof_sha}.lean` so it 404s!
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-proofs/{good_proof_sha}.lean"),
+            ),
+            good_proof.to_vec(),
+        );
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-statements/{good_stmt_sha}.lean"),
+            ),
+            good_stmt,
+        );
+
+        let report = fetch_promotion_candidates_with(
+            &transport,
+            &default_args(reg_path, out_dir, Some(tasks_path)),
+            Some("tok"),
+        )
+        .unwrap();
+        assert_eq!(report.rejected.len(), 1);
+        assert_eq!(report.rejected[0].task_id, "camp-404:broken-task");
+        assert_eq!(report.candidates.len(), 1);
+        assert_eq!(report.candidates[0].task_id, "camp-ok:healthy-task");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn already_promoted_task_increments_already_promoted_and_skips() {
+        let (dir, pkg_dir, out_dir) = setup_temp_workspace("already-promoted");
+        let reg_path = pkg_dir.join("registry.json");
+        let stmt = std::fs::read(
+            repo_root()
+                .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
+        )
+        .unwrap();
+        let proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := rfl\n";
+
+        let mut reg: RegistryManifest =
+            serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+        let env_id = reg.environments[0].environment_id.clone();
+        let (cand, _) = validate_and_build_candidate(
+            &reg,
+            &env_id,
+            RawCandidateInputs {
+                task_id: "camp-done:task-done-1".into(),
+                campaign_id: "camp-done".into(),
+                network: "mainnet".into(),
+                author_wallet: "SolverDone".into(),
+                campaign_topic: None,
+                artifact_sha256: sha256_hex(proof),
+                proof_bytes: proof.to_vec(),
+                expected_statement_sha256: Some(sha256_hex(&stmt)),
+                statement_bytes: stmt,
+                direct_dependencies: Vec::new(),
+                verification_axioms: vec!["propext".into()],
+            },
+        )
+        .unwrap();
+        autopromote_candidate(&cand, &mut reg, &pkg_dir, DEFAULT_PUBLIC_REGISTRY_BASE_URL).unwrap();
+        std::fs::write(&reg_path, serde_json::to_vec_pretty(&reg).unwrap()).unwrap();
+
+        let tasks_path = dir.join("tasks.json");
+        std::fs::write(
+            &tasks_path,
+            serde_json::to_vec(&json!([{
+                "task_id": "camp-done:task-done-1",
+                "campaign_id": "camp-done",
+                "client": PINNED_POSTER_WALLETS[0],
+                "state": "finalized",
+                "platform": 10,
+                "lean_policy": 4,
+                "composite_score": 1_000_000
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let transport = MapTransport::new();
+        let report = fetch_promotion_candidates_with(
+            &transport,
+            &default_args(reg_path, out_dir, Some(tasks_path)),
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.already_promoted, 1);
+        assert!(report.candidates.is_empty());
+        assert!(report.rejected.is_empty());
+        assert!(transport.calls.borrow().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn paginates_finalized_task_listing_across_multiple_pages() {
+        let (dir, pkg_dir, out_dir) = setup_temp_workspace("pagination");
+        let reg_path = pkg_dir.join("registry.json");
+        let stmt = std::fs::read(
+            repo_root()
+                .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
+        )
+        .unwrap();
+        let proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := rfl\n";
+        let stmt_sha = sha256_hex(&stmt);
+        let proof_sha = sha256_hex(proof);
+
+        // Page 0: 100 warmup policy-2 tasks (forces fetching offset=100!)
+        let page0: Vec<Value> = (0..100)
+            .map(|i| {
+                json!({
+                    "task_id": format!("camp-warm:task-{i}"),
+                    "campaign_id": "camp-warm",
+                    "client": PINNED_POSTER_WALLETS[0],
+                    "state": "finalized",
+                    "platform": 10,
+                    "lean_policy": 2,
+                    "composite_score": 1_000_000,
+                    "statement_lean": "def statementProp : Prop := True"
+                })
+            })
+            .collect();
+        // Page 1 (offset=100): 1 policy-4 candidate (< 100 items, terminates pagination!)
+        let page1 = vec![json!({
+            "task_id": "camp-page2:task-101",
+            "campaign_id": "camp-page2",
+            "client": PINNED_POSTER_WALLETS[0],
+            "campaign_topic": "catalog:chain-bsd-1-weierstrass-bijection",
+            "state": "finalized",
+            "platform": 10,
+            "lean_policy": 4,
+            "composite_score": 1_000_000,
+            "agent": "SolverPage2",
+            "artifact_sha256": proof_sha,
+            "statement_sha256": stmt_sha
+        })];
+
+        let mut transport = MapTransport::new();
+        transport.insert_ok(
+            "https://api.shillbot.org/tasks?state=finalized&platform=10&network=mainnet&limit=100&offset=0",
+            serde_json::to_vec(&json!({ "tasks": page0 })).unwrap(),
+        );
+        transport.insert_ok(
+            "https://api.shillbot.org/tasks?state=finalized&platform=10&network=mainnet&limit=100&offset=100",
+            serde_json::to_vec(&json!({ "tasks": page1 })).unwrap(),
+        );
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-proofs/{proof_sha}.lean"),
+            ),
+            proof.to_vec(),
+        );
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-statements/{stmt_sha}.lean"),
+            ),
+            stmt,
+        );
+
+        let report = fetch_promotion_candidates_with(
+            &transport,
+            &default_args(reg_path, out_dir, None),
+            Some("tok"),
+        )
+        .unwrap();
+        assert_eq!(report.skipped, 100);
+        assert_eq!(report.candidates.len(), 1);
+        assert_eq!(report.candidates[0].task_id, "camp-page2:task-101");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

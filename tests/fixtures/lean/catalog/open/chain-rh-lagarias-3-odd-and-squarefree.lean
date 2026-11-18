@@ -2,7 +2,7 @@
 -- @depends-on: chain-rh-lagarias-2-normalized-monotonicity
 import Mathlib.Data.Nat.Prime.Basic
 import Mathlib.Analysis.SpecialFunctions.Log.Basic
-import SwarmProofs.Chains.RHLagarias.Defs
+import SwarmProofs.Chains.RHLagarias.Defs.V1
 
 /-- Chain A [Rung 3/4 → RH Lagarias Equivalence] (Choie–Lichiardopol–Moree–Solé 2007):
     Lagarias's Riemann Hypothesis inequality holds unconditionally for every odd positive

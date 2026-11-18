@@ -2,7 +2,7 @@
 -- @depends-on: chain-rh-lagarias-3-odd-and-squarefree
 import Mathlib.Data.Nat.Prime.Basic
 import Mathlib.Analysis.SpecialFunctions.Log.Basic
-import SwarmProofs.Chains.RHLagarias.Defs
+import SwarmProofs.Chains.RHLagarias.Defs.V1
 
 /-- Chain A [Rung 4/4 → RH Lagarias Equivalence] (Narrowed Even Non-Squarefree Superabundant Core):
     Restricts Lagarias's RH equivalence to the finite base `[1, 5040]` plus even, non-squarefree

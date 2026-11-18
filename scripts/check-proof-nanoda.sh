@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-package_root="${1:?usage: check-proof-nanoda.sh <package-root> <module>}"
-module_name="${2:?usage: check-proof-nanoda.sh <package-root> <module>}"
+package_root="${1:?usage: check-proof-nanoda.sh <package-root> <module> [report-root] [fixture-namespace] [stability-target]}"
+module_name="${2:?usage: check-proof-nanoda.sh <package-root> <module> [report-root] [fixture-namespace] [stability-target]}"
 script_root="$(cd "$(dirname "$0")" && pwd)"
 package_root="$(cd "$package_root" && pwd)"
 report_root="${3:-$package_root/.lake/proof-audit}"
@@ -22,16 +22,37 @@ git clone --quiet https://github.com/ammkrn/nanoda_lib.git "$work_root/nanoda"
 git -C "$work_root/nanoda" checkout --quiet "$nanoda_revision"
 (cd "$work_root/nanoda" && cargo build --release --locked)
 
+exporter_bin="$work_root/lean4export/.lake/build/bin/lean4export"
 export_file="$work_root/export.txt"
 inventory_file="$report_root/declarations.json"
 fixture_namespace="${4:-}"
+stability_target="${5:-}"
+negative_tampered_mod="${6:-}"
+negative_tampered_ns="${7:-}"
+
 inventory_args=("$module_name")
 if [[ -n "$fixture_namespace" ]]; then inventory_args+=("$fixture_namespace"); fi
 (cd "$package_root" && lake env lean --run "$script_root/proof-declaration-inventory.lean" "${inventory_args[@]}" > "$inventory_file")
 # Use every declaration owned by every promoted module, including private and
 # generated helpers. The exporter recursively emits their logical dependencies.
-cargo xtask export-proof-declarations "$package_root" "$work_root/lean4export/.lake/build/bin/lean4export" "$module_name" "$inventory_file" "$export_file"
+cargo xtask export-proof-declarations "$package_root" "$exporter_bin" "$module_name" "$inventory_file" "$export_file"
 cargo xtask check-proof-export-coverage "$inventory_file" "$export_file" "$report_root/coverage.json"
+
+if [[ -n "$stability_target" ]]; then
+  if [[ -d "$stability_target" ]]; then
+    cargo xtask check-promoted-statements-expr-stability "$package_root" "$exporter_bin" "$stability_target"
+  elif [[ -n "$fixture_namespace" ]]; then
+    cargo xtask check-statement-expr-stability "$package_root" "$exporter_bin" "$module_name" "$stability_target" "$fixture_namespace"
+  fi
+fi
+
+if [[ -n "$negative_tampered_mod" && -n "$negative_tampered_ns" && -f "$stability_target" ]]; then
+  if cargo xtask check-statement-expr-stability "$package_root" "$exporter_bin" "$negative_tampered_mod" "$stability_target" "$negative_tampered_ns" > "$work_root/tampered.out" 2>&1; then
+    echo "ERROR: check-statement-expr-stability accepted tampered module $negative_tampered_mod" >&2
+    exit 1
+  fi
+  grep -F "Expr drift detected" "$work_root/tampered.out"
+fi
 
 config_file="$work_root/nanoda.json"
 printf '%s\n' \

@@ -45,7 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: proof-registry
-      - name: Validate canonical registry
+      - name: Validate canonical registry and frozen library hashes
         run: cargo run --locked -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
       - name: Prepare ephemeral audit umbrella
         run: cargo run --locked -p xtask -- prepare-proof-promotion-audit
@@ -69,12 +69,22 @@ jobs:
         run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs PromotionAudit
       - name: Reject omitted helpers, forbidden axioms, and namespace escapes
         run: |
-          cargo test --locked -p xtask
+          cargo test --locked -p proof-registry -p xtask
           bash scripts/test-proof-declaration-inventory.sh
       - name: Independently check reusable definition and private helper fixture
         run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs Reusable proofs/SwarmProofs/.lake/fixture-audit SwarmProofs.Generated.Fixture
       - name: Independently check a second module using the first definition and theorem
         run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs ReusableConsumer proofs/SwarmProofs/.lake/consumer-audit SwarmProofs.Generated.Consumer
+      - name: Independently check statementProp Expr stability and reject tampered statementProp
+        run: >-
+          bash scripts/check-proof-nanoda.sh
+          proofs/SwarmProofs
+          StatementStabilityGood
+          proofs/SwarmProofs/.lake/stability-audit
+          SwarmProofs.Generated.StabilityGood
+          proofs/fixtures/StatementStabilityStandalone.lean
+          StatementStabilityTampered
+          SwarmProofs.Generated.StabilityTampered
       - name: Retain declaration coverage evidence
         uses: actions/upload-artifact@v7
         with:
@@ -83,6 +93,7 @@ jobs:
             proofs/SwarmProofs/.lake/proof-audit/
             proofs/SwarmProofs/.lake/fixture-audit/
             proofs/SwarmProofs/.lake/consumer-audit/
+            proofs/SwarmProofs/.lake/stability-audit/
           if-no-files-found: error
       - name: Audit exported declaration axioms
         run: |

@@ -2,7 +2,7 @@
 import Mathlib.Data.Nat.Basic
 import Mathlib.Data.Rat.Defs
 import Mathlib.Tactic.Ring
-import SwarmProofs.Chains.BSD.Defs
+import SwarmProofs.Chains.BSD.Defs.V1
 
 /-- Chain B [Rung 1/4 → BSD Congruent Numbers] (Koblitz Prop. I.2 Weierstrass Bijection):
     For every integer `n ≥ 1`, `n` is the area of a rational right triangle (`isCongruentNumber n`)

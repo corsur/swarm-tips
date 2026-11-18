@@ -1,21 +1,30 @@
 /**
- * Unit + live regression suite for the Lean catalog triviality & policy-4 ladder gate.
+ * Unit + full-Mathlib positive-control + live runner regression suite for the Lean catalog gate.
  *
  * Modes:
- *   npx tsx scripts/e2e/test-lean-catalog-gate.ts --unit-only   # Deterministic offline tests
- *   npx tsx scripts/e2e/test-lean-catalog-gate.ts --live        # Unit tests + live runner gate
+ *   npx tsx scripts/e2e/test-lean-catalog-gate.ts --unit-only          # Deterministic offline tests
+ *   npx tsx scripts/e2e/test-lean-catalog-gate.ts --mathlib-controls   # Offline + live lake env lean per-probe positive controls
+ *   npx tsx scripts/e2e/test-lean-catalog-gate.ts --live               # Full suite: unit + Mathlib controls + live runner gate
+ *   npx tsx scripts/e2e/test-lean-catalog-gate.ts --live --runner-only # Unit + live runner stage (used after mathlib-search-gate job)
  */
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
+import * as catalogModule from "./seed-lean-catalog";
 import {
+  ALLOWED_SWARM_LIBRARY_IMPORTS,
   assertRegistryComposableStatement,
   assertSeedingAllowedForEntry,
+  assertValidProbeResponse,
+  BRIDGE_LEMMAS_BY_DEFS_MODULE,
+  buildMathlibProbeSpecsForEntry,
   buildTrivialityProbes,
   CATALOG_DIR,
   CHAIN_TASK_CONFIG,
   CatalogEntry,
+  classifyMathlibProbeSlice,
+  hasExistentialUniversalStructure,
   inlineSwarmProofsImportsForCompat,
   loadCatalog,
   loadProofRegistry,
@@ -23,6 +32,8 @@ import {
   parseLeanPolicyArg,
   ProofRegistryManifest,
   REPO_ROOT,
+  resolveBridgeLemmasForStatement,
+  runFullMathlibSearchProbes,
   verifyStatementElaborates,
 } from "./seed-lean-catalog";
 
@@ -36,7 +47,45 @@ function mockJsonResponse(status: number, body: unknown): Response {
 async function runUnitTests(): Promise<void> {
   console.log("=== Running Lean catalog gate offline unit tests ===");
 
-  // 1. Default policy-4 & structured ladder metadata
+  // 0. S1 + N1: Verify PROBE_MATHLIB_UMBRELLAS and swarm_fold_primorial are gone and ALLOWED_SWARM_LIBRARY_IMPORTS has ONLY the 4 Defs.V1 modules
+  assert.equal(
+    "PROBE_MATHLIB_UMBRELLAS" in catalogModule,
+    false,
+    "PROBE_MATHLIB_UMBRELLAS must be completely removed (S1)"
+  );
+  const seedSrc = fs.readFileSync(
+    path.join(REPO_ROOT, "scripts/e2e/seed-lean-catalog.ts"),
+    "utf8"
+  );
+  assert.equal(
+    seedSrc.includes("swarm_fold_primorial"),
+    false,
+    "swarm_fold_primorial must be completely removed (S1)"
+  );
+  assert.deepEqual(
+    [...ALLOWED_SWARM_LIBRARY_IMPORTS].sort(),
+    [
+      "SwarmProofs.Chains.BSD.Defs.V1",
+      "SwarmProofs.Chains.Circuits.Defs.V1",
+      "SwarmProofs.Chains.RHAnalytic.Defs.V1",
+      "SwarmProofs.Chains.RHLagarias.Defs.V1",
+    ]
+  );
+  assert.deepEqual(
+    BRIDGE_LEMMAS_BY_DEFS_MODULE["SwarmProofs.Chains.RHAnalytic.Defs.V1"],
+    ["bridge_primeFactorCount", "bridge_mobiusInt", "bridge_primorial"]
+  );
+  assert.deepEqual(
+    BRIDGE_LEMMAS_BY_DEFS_MODULE["SwarmProofs.Chains.RHLagarias.Defs.V1"],
+    [
+      "bridge_sigmaNat",
+      "bridge_sigmaDivisors",
+      "bridge_harmonicRat",
+      "bridge_harmonicNum",
+    ]
+  );
+
+  // 1. Default policy-4 & structured ladder metadata + exact file bytes parity (B1)
   assert.equal(parseLeanPolicyArg(["node", "seed-lean-catalog.ts"]), 4);
   assert.equal(
     parseLeanPolicyArg(["node", "seed-lean-catalog.ts", "--lean-policy=3"]),
@@ -55,6 +104,14 @@ async function runUnitTests(): Promise<void> {
   );
 
   for (const entry of chainEntries) {
+    const rawDiskBytes = fs.readFileSync(
+      path.join(CATALOG_DIR, "open", `${entry.name}.lean`)
+    );
+    assert.deepEqual(
+      Buffer.from(entry.statement, "utf8"),
+      rawDiskBytes,
+      `${entry.name} loaded statement must match disk bytes byte-for-byte (B1)`
+    );
     assert.equal(
       entry.declaredLeanPolicy,
       4,
@@ -78,10 +135,10 @@ async function runUnitTests(): Promise<void> {
     );
   }
   console.log(
-    "  [PASS] 18 chain-*.lean headers, composability & inline compat"
+    "  [PASS] 18 chain-*.lean headers, byte-for-byte parity, composability & inline compat"
   );
 
-  // 2. Negative composability checks
+  // 2. Negative composability checks (including N1 umbrella rejection & S2 instance/class rejection)
   for (const badToken of [
     "admit",
     "prefix ",
@@ -89,6 +146,11 @@ async function runUnitTests(): Promise<void> {
     "local ",
     "namespace Foo",
     "section Bar",
+    "instance ",
+    "instance(",
+    "instance[",
+    "instance{",
+    "class ",
   ]) {
     assert.throws(
       () =>
@@ -96,36 +158,43 @@ async function runUnitTests(): Promise<void> {
           name: "chain-bad-token",
           kind: "open",
           program: "millennium-chains",
-          statement: `-- SPDX-License-Identifier: Apache-2.0\n-- ${badToken}\ndef statementProp : Prop := True`,
+          statement: `-- SPDX-License-Identifier: Apache-2.0\n${badToken}\ndef statementProp : Prop := True`,
         }),
       /COMPOSABILITY GATE FAILED/
     );
   }
-  assert.throws(
-    () =>
-      assertRegistryComposableStatement({
-        name: "chain-bad-import",
-        kind: "open",
-        program: "millennium-chains",
-        statement: `import SwarmProofs.Evil.Backdoor\n/-- SPDX-License-Identifier: Apache-2.0 -/\ndef statementProp : Prop := True`,
-      }),
-    /noncanonical SwarmProofs module/
-  );
+  for (const badImport of [
+    "SwarmProofs",
+    "SwarmProofs.Registry",
+    "SwarmProofs.Chains.BSD.Defs",
+    "SwarmProofs.Evil.Backdoor",
+  ]) {
+    assert.throws(
+      () =>
+        assertRegistryComposableStatement({
+          name: "chain-bad-import",
+          kind: "open",
+          program: "millennium-chains",
+          statement: `import ${badImport}\n/-- SPDX-License-Identifier: Apache-2.0 -/\ndef statementProp : Prop := True`,
+        }),
+      /noncanonical SwarmProofs module/
+    );
+  }
   assert.throws(
     () =>
       assertRegistryComposableStatement({
         name: "chain-missing-spdx-doc",
         kind: "open",
         program: "millennium-chains",
-        statement: `import SwarmProofs.Chains.BSD.Defs\ndef statementProp : Prop := True`,
+        statement: `import SwarmProofs.Chains.BSD.Defs.V1\ndef statementProp : Prop := True`,
       }),
     /SPDX-License-Identifier/
   );
   console.log(
-    "  [PASS] Negative composability checks reject forbidden tokens & bad imports"
+    "  [PASS] Negative composability checks reject instance/class, unversioned imports & umbrella SwarmProofs"
   );
 
-  // 3. negateStatementProp & separate probe construction
+  // 3. negateStatementProp, N4 quantifier filtering & Mathlib probe spec construction
   const negated = negateStatementProp(
     "import Mathlib.Data.Nat.Basic\ndef statementProp : Prop := 1 = 2"
   );
@@ -138,52 +207,166 @@ async function runUnitTests(): Promise<void> {
   const bsd2 = chainEntries.find(
     (e) => e.name === "chain-bsd-2-fermat-noncongruent-1"
   )!;
-  const probes = buildTrivialityProbes(bsd2, {
+  const c1 = chainEntries.find(
+    (e) => e.name === "chain-rh-analytic-1-mertens-first-prime-log-bound"
+  )!;
+  assert.equal(hasExistentialUniversalStructure(bsd2.statement), false);
+  assert.equal(hasExistentialUniversalStructure(c1.statement), true);
+
+  const bsd2RunnerProbes = buildTrivialityProbes(bsd2, {
     effectiveStatement: inlineSwarmProofsImportsForCompat(bsd2.statement),
     promotedDependencyModuleName: "SwarmProofs.Generated.H1111",
     parentImplicationStatement:
       "def parentStatementProp : Prop := True\ndef childStatementProp : Prop := True\ndef statementProp : Prop := parentStatementProp → childStatementProp\n",
   });
-  const labels = new Set(probes.map((p) => p.label));
-  for (const requiredLabel of [
-    "positive-exact-search",
-    "positive-apply-assumption",
-    "positive-hint",
-    "positive-aesop-raised-budget",
-    "negative-exact-search",
-    "negative-apply-assumption",
-    "negative-hint",
-    "negative-aesop-raised-budget",
-    "dependency-consequence-tactic-aesop",
-    "dependency-consequence-exact-search",
-  ]) {
-    assert.ok(labels.has(requiredLabel), `missing probe ${requiredLabel}`);
-  }
-  for (const p of probes) {
-    assert.equal(p.maxBuildSecs, 120);
-    assert.ok(p.proof.includes("SwarmProofs.Generated.H1111"));
-    // Ensure apply? and hint are NEVER combined before exact? in `first |`
-    if (p.label.includes("exact-search")) {
-      assert.ok(!p.proof.includes("apply?"));
-      assert.ok(!p.proof.includes("\n  hint"));
-    }
-  }
-  console.log(
-    "  [PASS] Separate positive/negative/dependency probes & negateStatementProp"
+  const bsd2Labels = new Set(bsd2RunnerProbes.map((p) => p.label));
+  assert.equal(
+    bsd2Labels.has("zero-constant-vacuity"),
+    false,
+    "N4: non-∃∀ statement must omit zero-constant-vacuity"
+  );
+  assert.equal(
+    bsd2Labels.has("pointwise-ratio-shortcut"),
+    false,
+    "N4: non-∃∀ statement must omit pointwise-ratio-shortcut"
   );
 
-  // 4. Solvable entry NO LONGER bypasses triviality probes!
+  const c1RunnerProbes = buildTrivialityProbes(c1, {
+    effectiveStatement: inlineSwarmProofsImportsForCompat(c1.statement),
+  });
+  const c1Labels = new Set(c1RunnerProbes.map((p) => p.label));
+  assert.equal(c1Labels.has("zero-constant-vacuity"), true);
+  assert.equal(c1Labels.has("pointwise-ratio-shortcut"), true);
+
+  const mathlibSpecs = buildMathlibProbeSpecsForEntry(c1.statement, true);
+  const mathlibLabels = new Set(mathlibSpecs.map((s) => s.label));
+  for (const req of [
+    "positive-exact",
+    "positive-apply-assumption",
+    "positive-solve-by-elim",
+    "positive-hint",
+    "positive-aesop",
+    "negative-exact",
+    "negative-apply-assumption",
+    "negative-solve-by-elim",
+    "negative-hint",
+    "negative-aesop",
+    "dependency-exact",
+    "dependency-aesop",
+  ]) {
+    assert.ok(mathlibLabels.has(req), `missing Mathlib probe spec ${req}`);
+  }
+  assert.deepEqual(resolveBridgeLemmasForStatement(c1.statement).bridgeLemmas, [
+    "bridge_primeFactorCount",
+    "bridge_mobiusInt",
+    "bridge_primorial",
+  ]);
+  console.log(
+    "  [PASS] N4 existential-constant probe scoping & full-Mathlib probe spec generation"
+  );
+
+  // 4. B2: Strict exhaustion & fail-closed unit tests (timeout, deterministic timeout, max recursion, empty fail)
+  {
+    // Exact solved vs exhausted vs fail-closed
+    assert.equal(
+      classifyMathlibProbeSlice(
+        "exact",
+        "__p0",
+        "Try this:\n  [apply] exact rfl\n'__p0' does not depend on any axioms\n"
+      ),
+      "SOLVED"
+    );
+    assert.equal(
+      classifyMathlibProbeSlice(
+        "exact",
+        "__p0",
+        "<stdin>:10:2: error: `exact?` could not close the goal.\n'__p0' depends on axioms: [sorryAx]\n"
+      ),
+      "EXHAUSTED"
+    );
+    for (const badSlice of [
+      "<stdin>:10:2: error: (deterministic) timeout at `whnf`, maximum number of heartbeats (200000) has been reached\n'__p0' depends on axioms: [sorryAx]\n",
+      "<stdin>:10:2: error: maximum recursion depth has been reached\n'__p0' depends on axioms: [sorryAx]\n",
+      "<stdin>:10:2: error: process timed out after 300s\n'__p0' depends on axioms: [sorryAx]\n",
+      "<stdin>:10:2: error: out of memory\n'__p0' depends on axioms: [sorryAx]\n",
+      "<stdin>:10:2: error: unsolved goals\n'__p0' depends on axioms: [sorryAx]\n",
+      "missing print axioms line entirely\n",
+    ]) {
+      assert.throws(
+        () => classifyMathlibProbeSlice("exact", "__p0", badSlice),
+        /MATHLIB SEARCH FAIL-CLOSED/,
+        `expected fail-closed on slice: ${badSlice}`
+      );
+    }
+
+    // Hint solved vs exhausted vs fail-closed
+    assert.equal(
+      classifyMathlibProbeSlice(
+        "hint",
+        "__ph",
+        "Try these:\n  [apply] 🎉️ ring\n'__ph' depends on axioms: [propext]\n"
+      ),
+      "SOLVED"
+    );
+    assert.equal(
+      classifyMathlibProbeSlice(
+        "hint",
+        "__ph",
+        "Try these:\n  [apply] norm_num\n  Remaining subgoals:\n  ⊢ False\n'__ph' depends on axioms: [sorryAx]\n"
+      ),
+      "EXHAUSTED"
+    );
+    assert.throws(
+      () =>
+        classifyMathlibProbeSlice(
+          "hint",
+          "__ph",
+          "<stdin>:5:2: error: maximum number of heartbeats (4000000) has been reached\n'__ph' depends on axioms: [sorryAx]\n"
+        ),
+      /MATHLIB SEARCH FAIL-CLOSED/
+    );
+
+    // Runner probe response fail-closed on empty detail, timeout, heartbeat, memory, killed
+    for (const badDetail of [
+      "",
+      "   ",
+      "build timed out after 120s",
+      "(deterministic) timeout at whnf, maximum number of heartbeats reached",
+      "container killed (OOM / memory limit exceeded)",
+      "process terminated by signal SIGKILL",
+      "opaque error with zero Lean failure markers",
+    ]) {
+      assert.throws(
+        () =>
+          assertValidProbeResponse(
+            { verdict: "fail", detail: badDetail },
+            "test-entry",
+            "test-probe"
+          ),
+        /FAIL-CLOSED/
+      );
+    }
+    assertValidProbeResponse(
+      { verdict: "fail", detail: "Submission.lean:4:2: error: unsolved goals" },
+      "test-entry",
+      "test-probe"
+    );
+  }
+  console.log(
+    "  [PASS] B2 strict exhaustion parser & runner fail-closed checks reject timeouts, heartbeats, recursion & empty details"
+  );
+
+  // 5. Solvable entry runs companion proof AND runner tactic probes
   {
     const solvableEntry: CatalogEntry = {
       name: "solvable-trivial-prime",
       kind: "solvable",
       program: "lemma-ladder",
       statement:
-        "import Mathlib.Data.Nat.Prime.Basic\ndef statementProp : Prop := Nat.Prime 101",
+        "import Mathlib.Data.Nat.Prime.Basic\ndef statementProp : Prop := Nat.Prime 101\n",
       companionProof: "theorem proof : statementProp := by decide",
     };
 
-    const seenPayloads: Array<Record<string, unknown>> = [];
     const mockTrivialSolvableFetch: typeof fetch = async (input, init) => {
       const url = String(input);
       if (url.endsWith("/health")) {
@@ -193,7 +376,6 @@ async function runUnitTests(): Promise<void> {
         string,
         unknown
       >;
-      seenPayloads.push(payload);
       const proof = String(payload.proof ?? "");
       if (proof.includes("True.intro")) {
         return mockJsonResponse(200, {
@@ -204,13 +386,16 @@ async function runUnitTests(): Promise<void> {
       if (proof === solvableEntry.companionProof) {
         return mockJsonResponse(200, { verdict: "pass", axioms: [] });
       }
-      if (proof.includes("exact?")) {
+      if (proof.includes("first | rfl | decide")) {
         return mockJsonResponse(200, {
           verdict: "pass",
-          detail: "solved by exact?",
+          detail: "solved by decide",
         });
       }
-      return mockJsonResponse(200, { verdict: "fail", detail: "unsolved" });
+      return mockJsonResponse(200, {
+        verdict: "fail",
+        detail: "unsolved goals",
+      });
     };
 
     await assert.rejects(
@@ -224,14 +409,9 @@ async function runUnitTests(): Promise<void> {
           retryDelayBaseMs: 0,
           probeConcurrency: 4,
         }),
-      /was solved trivially by probe 'positive-exact-search'/
-    );
-    assert.ok(
-      seenPayloads.length > 2,
-      "solvable entry must execute triviality probes after companion check"
+      /was solved trivially by probe 'positive-tactic-blast-triviality'/
     );
 
-    // Non-trivial solvable entry whose companion passes and all probes fail -> passes!
     let checkCount = 0;
     const mockNonTrivialSolvableFetch: typeof fetch = async (input, init) => {
       const url = String(input);
@@ -246,7 +426,10 @@ async function runUnitTests(): Promise<void> {
       if (payload.proof === solvableEntry.companionProof) {
         return mockJsonResponse(200, { verdict: "pass", axioms: [] });
       }
-      return mockJsonResponse(200, { verdict: "fail", detail: "unsolved" });
+      return mockJsonResponse(200, {
+        verdict: "fail",
+        detail: "unsolved goals",
+      });
     };
     await verifyStatementElaborates(solvableEntry, {
       fetchImpl: mockNonTrivialSolvableFetch,
@@ -259,22 +442,20 @@ async function runUnitTests(): Promise<void> {
     });
     assert.equal(
       checkCount,
-      15,
-      "expected 1 stage-A1 + 1 companion + 13 triviality probes = 15 /check calls"
+      5,
+      "expected 1 stage-A1 + 1 companion + 3 fast runner probes (non-∃∀) = 5 /check calls"
     );
   }
   console.log(
-    "  [PASS] Solvable entries run companion proof AND all triviality probes"
+    "  [PASS] Solvable entries run companion proof AND all runner tactic probes"
   );
 
-  // 5. Runner HTTP 500, unreachable port, and malformed probe detail fail closed (0 tasks seeded)
+  // 6. Runner HTTP 500, unreachable port, and malformed probe detail fail closed (0 tasks seeded)
   {
     let campaignPostCount = 0;
     const mock500Fetch: typeof fetch = async (input) => {
       const url = String(input);
-      if (url.includes("/campaigns")) {
-        campaignPostCount++;
-      }
+      if (url.includes("/campaigns")) campaignPostCount++;
       if (url.endsWith("/health")) {
         return mockJsonResponse(200, { status: "ok", composable: true });
       }
@@ -293,7 +474,6 @@ async function runUnitTests(): Promise<void> {
     );
     assert.equal(campaignPostCount, 0);
 
-    // Malformed probe output ("unknown tactic") must fail closed immediately
     const mockMalformedFetch: typeof fetch = async (input, init) => {
       const url = String(input);
       if (url.endsWith("/health")) {
@@ -304,7 +484,10 @@ async function runUnitTests(): Promise<void> {
         unknown
       >;
       if (String(payload.proof ?? "").includes("True.intro")) {
-        return mockJsonResponse(200, { verdict: "fail", detail: "mismatch" });
+        return mockJsonResponse(200, {
+          verdict: "fail",
+          detail: "type mismatch",
+        });
       }
       return mockJsonResponse(200, {
         verdict: "fail",
@@ -320,16 +503,16 @@ async function runUnitTests(): Promise<void> {
           checkOnly: true,
           retryDelayBaseMs: 0,
         }),
-      /MALFORMED PROBE/
+      /FAIL-CLOSED/
     );
 
-    // Subprocess CLI invocation against closed local port 127.0.0.1:1 -> nonzero exit, nothing seeded
     const cliRun = spawnSync(
       "npx",
       [
         "tsx",
         path.join(REPO_ROOT, "scripts/e2e/seed-lean-catalog.ts"),
         "--check-only",
+        "--runner-only",
         "--tasks=chain-bsd-2-fermat-noncongruent-1",
       ],
       {
@@ -360,25 +543,20 @@ async function runUnitTests(): Promise<void> {
         encoding: "utf8",
       }
     );
-    assert.notEqual(
-      skipPrecheckRun.status,
-      0,
-      "seed-lean-catalog.ts must forbid --skip-precheck"
-    );
+    assert.notEqual(skipPrecheckRun.status, 0);
     assert.match(skipPrecheckRun.stderr, /--skip-precheck is forbidden/);
   }
   console.log(
     "  [PASS] Runner HTTP 500, malformed probe, unreachable runner & --skip-precheck fail closed"
   );
 
-  // 6. Rung N+1 seeding guard against registry.json + composable health guard
+  // 7. Rung N+1 seeding guard against registry.json + composable health guard
   {
     const emptyRegistry = loadProofRegistry();
     const bsd1 = chainEntries.find(
       (e) => e.name === "chain-bsd-1-weierstrass-bijection"
     )!;
 
-    // Policy 4 refused when runner composable !== true
     assert.throws(
       () =>
         assertSeedingAllowedForEntry(bsd1, 4, emptyRegistry, {
@@ -387,8 +565,6 @@ async function runUnitTests(): Promise<void> {
         }),
       /POLICY-4 SEED GUARD/
     );
-
-    // Rung 1 allowed when composable === true
     assert.equal(
       assertSeedingAllowedForEntry(bsd1, 4, emptyRegistry, {
         status: "ok",
@@ -396,8 +572,6 @@ async function runUnitTests(): Promise<void> {
       }),
       undefined
     );
-
-    // Rung 2 refused when Rung 1 is absent from registry.json
     assert.throws(
       () =>
         assertSeedingAllowedForEntry(bsd2, 4, emptyRegistry, {
@@ -407,7 +581,6 @@ async function runUnitTests(): Promise<void> {
       /LADDER DEPENDENCY GUARD/
     );
 
-    // Rung 2 refused when Rung 1 is revoked in registry.json
     const modId = `sha256:${"a".repeat(64)}`;
     const modName = `SwarmProofs.Generated.H${"a".repeat(64)}`;
     const revokedRegistry: ProofRegistryManifest = {
@@ -433,7 +606,6 @@ async function runUnitTests(): Promise<void> {
       /inactive/
     );
 
-    // Rung 2 allowed when Rung 1 is active in registry.json AND runner composable === true
     const activeRegistry: ProofRegistryManifest = {
       schema: emptyRegistry.schema,
       modules: [
@@ -462,10 +634,12 @@ async function runUnitTests(): Promise<void> {
   console.log("=== All offline unit tests PASSED ===\n");
 }
 
-async function runLiveRunnerTests(): Promise<void> {
-  console.log("=== Running live shillbot-lean-runner gate assertions ===");
+async function runMathlibControlTests(): Promise<void> {
+  console.log(
+    "=== Running live lake env lean full-Mathlib per-probe positive controls ==="
+  );
 
-  // 1. Retired Chebyshev Rung 1 MUST be REJECTED (solved by exact? + primorial folding)
+  // 1. Retired Chebyshev Rung 1 MUST be caught via general `bridge_primorial` + `import Mathlib` `positive-exact`
   const chebyshevPath = path.join(
     CATALOG_DIR,
     "retired",
@@ -475,30 +649,204 @@ async function runLiveRunnerTests(): Promise<void> {
     name: "chain-rh-analytic-1-chebyshev-theta-upper",
     kind: "open",
     program: "millennium-chains",
-    statement: fs.readFileSync(chebyshevPath, "utf8").trimEnd(),
+    statement: fs.readFileSync(chebyshevPath, "utf8"),
   };
-  let chebyshevErr = "";
-  await assert.rejects(async () => {
-    try {
-      await verifyStatementElaborates(chebyshevEntry, {
-        checkOnly: true,
-        leanPolicy: 3,
-      });
-    } catch (err) {
-      chebyshevErr = err instanceof Error ? err.message : String(err);
-      throw err;
-    }
-  }, /was solved trivially by probe 'positive-exact-search'/);
+  assert.throws(
+    () =>
+      runFullMathlibSearchProbes(chebyshevEntry, {
+        onlyLabels: new Set(["positive-exact"]),
+      }),
+    /was solved trivially by full-Mathlib probe 'positive-exact'/
+  );
   console.log(
-    `  [LIVE PASS] Chebyshev Rung 1 REJECTED as expected: ${chebyshevErr}`
+    "  [CONTROL PASS] retired/chain-rh-analytic-1-chebyshev-theta-upper caught by bridge_primorial + positive-exact"
   );
 
-  // 2. Shannon Rung 2 & Mobius Rung 2 (and replacement Meissel Rung C1) MUST be ACCEPTED
+  // 2. `mobiusInt` control MUST be caught via general `bridge_mobiusInt` + `import Mathlib` `positive-exact`
+  const mobiusControl: CatalogEntry = {
+    name: "control-mobiusInt-prime",
+    kind: "open",
+    program: "millennium-chains",
+    statement:
+      "import SwarmProofs.Chains.RHAnalytic.Defs.V1\ndef statementProp : Prop := ∀ (p : ℕ), Nat.Prime p → mobiusInt p = -1\n",
+  };
+  assert.throws(
+    () =>
+      runFullMathlibSearchProbes(mobiusControl, {
+        onlyLabels: new Set(["positive-exact"]),
+      }),
+    /was solved trivially by full-Mathlib probe 'positive-exact'/
+  );
+  console.log(
+    "  [CONTROL PASS] mobiusInt prime identity caught by bridge_mobiusInt + positive-exact"
+  );
+
+  // 3. `harmonicRat` control MUST be caught via general `bridge_harmonicRat` + `import Mathlib` `positive-exact`
+  const harmonicControl: CatalogEntry = {
+    name: "control-harmonicRat-pos",
+    kind: "open",
+    program: "millennium-chains",
+    statement:
+      "import SwarmProofs.Chains.RHLagarias.Defs.V1\ndef statementProp : Prop := ∀ (n : ℕ), n ≠ 0 → 0 < harmonicRat n\n",
+  };
+  assert.throws(
+    () =>
+      runFullMathlibSearchProbes(harmonicControl, {
+        onlyLabels: new Set(["positive-exact"]),
+      }),
+    /was solved trivially by full-Mathlib probe 'positive-exact'/
+  );
+  console.log(
+    "  [CONTROL PASS] harmonicRat positivity caught by bridge_harmonicRat + positive-exact"
+  );
+
+  // 4. Dedicated per-probe positive controls for all 8 positive/negative probe templates (B2):
+  const perProbeControls: Array<{
+    controlName: string;
+    statement: string;
+    onlyLabels: Set<string>;
+    expectedMessage: RegExp;
+  }> = [
+    {
+      controlName: "control-positive-exact",
+      statement: "def statementProp : Prop := ∀ (p : ℕ), Nat.Prime p → 2 ≤ p\n",
+      onlyLabels: new Set(["positive-exact"]),
+      expectedMessage: /probe 'positive-exact'/,
+    },
+    {
+      controlName: "control-positive-apply-assumption",
+      statement:
+        "def statementProp : Prop := ∀ (P Q R : Prop), (P → Q) → (Q → R) → P → R\n",
+      onlyLabels: new Set([
+        "positive-apply-assumption",
+        "positive-solve-by-elim",
+      ]),
+      expectedMessage: /probe 'positive-apply-assumption'/,
+    },
+    {
+      controlName: "control-positive-hint",
+      statement:
+        "def statementProp : Prop := ∀ (x y : ℚ), (x + y) ^ 2 - (x - y) ^ 2 = 4 * x * y\n",
+      onlyLabels: new Set(["positive-hint"]),
+      expectedMessage: /probe 'positive-hint'/,
+    },
+    {
+      controlName: "control-positive-aesop",
+      statement:
+        "def statementProp : Prop := ∀ (P Q R : Prop), (P ∧ Q) ∧ (Q → R) → R ∧ P\n",
+      onlyLabels: new Set(["positive-aesop"]),
+      expectedMessage: /probe 'positive-aesop'/,
+    },
+    {
+      controlName: "control-negative-exact",
+      statement: "def statementProp : Prop := Nat.Prime 1\n",
+      onlyLabels: new Set(["negative-exact"]),
+      expectedMessage: /probe 'negative-exact'/,
+    },
+    {
+      controlName: "control-negative-apply-assumption",
+      statement: "def statementProp : Prop := Nat.Prime 1\n",
+      onlyLabels: new Set([
+        "negative-apply-assumption",
+        "negative-solve-by-elim",
+      ]),
+      expectedMessage: /probe 'negative-apply-assumption'/,
+    },
+    {
+      controlName: "control-negative-hint",
+      statement: "def statementProp : Prop := (2 : ℕ) + 2 = 5\n",
+      onlyLabels: new Set(["negative-hint"]),
+      expectedMessage: /probe 'negative-hint'/,
+    },
+    {
+      controlName: "control-negative-aesop",
+      statement: "def statementProp : Prop := ∃ (P : Prop), P ∧ ¬ P\n",
+      onlyLabels: new Set(["negative-aesop"]),
+      expectedMessage: /probe 'negative-aesop'/,
+    },
+  ];
+
+  for (const ctrl of perProbeControls) {
+    const entry: CatalogEntry = {
+      name: ctrl.controlName,
+      kind: "open",
+      program: "general",
+      statement: ctrl.statement,
+    };
+    assert.throws(
+      () =>
+        runFullMathlibSearchProbes(entry, {
+          onlyLabels: ctrl.onlyLabels,
+        }),
+      ctrl.expectedMessage,
+      `Expected ${ctrl.controlName} to be caught by ${[...ctrl.onlyLabels].join(
+        "/"
+      )}`
+    );
+    console.log(`  [CONTROL PASS] ${ctrl.controlName} triggered rejection`);
+  }
+
+  console.log("=== All full-Mathlib per-probe positive controls PASSED ===\n");
+}
+
+async function runLiveRunnerTests(runnerOnly: boolean): Promise<void> {
+  console.log("=== Running live shillbot-lean-runner gate assertions ===");
+
+  // 1. Trivial tactic-blast statement MUST be rejected by the live runner stage
+  const trivialRunnerControl: CatalogEntry = {
+    name: "control-runner-trivial-ring",
+    kind: "open",
+    program: "general",
+    statement:
+      "import Mathlib.Data.Nat.Basic\ndef statementProp : Prop := ∀ (n : ℕ), n + 0 = n\n",
+  };
+  await assert.rejects(
+    () =>
+      verifyStatementElaborates(trivialRunnerControl, {
+        checkOnly: true,
+        leanPolicy: 2,
+        runLocalMathlibSearch: false,
+      }),
+    /was solved trivially by probe/
+  );
+  console.log(
+    "  [LIVE RUNNER PASS] trivial arithmetic statement REJECTED by live runner"
+  );
+
+  // 2. When local lake is enabled (`--live` without `--runner-only`), verify retired Chebyshev is REJECTED end-to-end
+  if (!runnerOnly) {
+    const chebyshevPath = path.join(
+      CATALOG_DIR,
+      "retired",
+      "chain-rh-analytic-1-chebyshev-theta-upper.lean"
+    );
+    const chebyshevEntry: CatalogEntry = {
+      name: "chain-rh-analytic-1-chebyshev-theta-upper",
+      kind: "open",
+      program: "millennium-chains",
+      statement: fs.readFileSync(chebyshevPath, "utf8"),
+    };
+    await assert.rejects(
+      () =>
+        verifyStatementElaborates(chebyshevEntry, {
+          checkOnly: true,
+          leanPolicy: 3,
+          runLocalMathlibSearch: true,
+        }),
+      /was solved trivially by full-Mathlib probe 'positive-exact'/
+    );
+    console.log(
+      "  [LIVE FULL PASS] retired Chebyshev Rung 1 REJECTED end-to-end"
+    );
+  }
+
+  // 3. Hardened C1 (Mertens), C2 (Mobius), E2 (Delta_0 Los + Lagarias), and D2 (Shannon) MUST be ACCEPTED
   const allOpen = loadCatalog(false);
   const catalogByName = new Map(allOpen.map((e) => [e.name, e]));
   for (const targetName of [
-    "chain-rh-analytic-1-mobius-floor-identity",
+    "chain-rh-analytic-1-mertens-first-prime-log-bound",
     "chain-rh-analytic-2-mobius-harmonic-bound",
+    "chain-rh-meta-2-nonstandard-ultrapower-pi1",
     "chain-pnp-circuit-2-shannon-counting-bound",
   ]) {
     const entry = catalogByName.get(targetName);
@@ -507,6 +855,7 @@ async function runLiveRunnerTests(): Promise<void> {
       checkOnly: true,
       leanPolicy: 4,
       catalogByName,
+      runLocalMathlibSearch: !runnerOnly,
     });
     console.log(`  [LIVE PASS] ${targetName} ACCEPTED`);
   }
@@ -516,15 +865,22 @@ async function runLiveRunnerTests(): Promise<void> {
 
 async function main(): Promise<void> {
   const unitOnly = process.argv.includes("--unit-only");
+  const mathlibControls = process.argv.includes("--mathlib-controls");
   const live = process.argv.includes("--live");
-  if (!unitOnly && !live) {
+  const runnerOnly = process.argv.includes("--runner-only");
+
+  if (!unitOnly && !mathlibControls && !live) {
     throw new Error(
-      "Specify --unit-only or --live when running test-lean-catalog-gate.ts"
+      "Specify --unit-only, --mathlib-controls, or --live when running test-lean-catalog-gate.ts"
     );
   }
+
   await runUnitTests();
+  if (mathlibControls || (live && !runnerOnly)) {
+    await runMathlibControlTests();
+  }
   if (live) {
-    await runLiveRunnerTests();
+    await runLiveRunnerTests(runnerOnly);
   }
 }
 

@@ -4,7 +4,7 @@ import Mathlib.SetTheory.ZFC.VonNeumann
 import Mathlib.SetTheory.ZFC.Ordinal
 import Mathlib.SetTheory.ZFC.Cardinal
 import Mathlib.SetTheory.Cardinal.Regular
-import SwarmProofs.Chains.RHLagarias.Defs
+import SwarmProofs.Chains.RHLagarias.Defs.V1
 
 /-- A cardinal `κ` indexes a Zermelo–Grothendieck ZFC universe `V_{κ.ord}` inside `ZFSet.{0}` if
     `ℵ₀ < κ`, the standard von Neumann natural-number set `ω` lies inside `V_{κ.ord}`, every set in

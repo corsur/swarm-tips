@@ -2,7 +2,7 @@
 -- @depends-on: chain-rh-meta-2-nonstandard-ultrapower-pi1
 import Mathlib.Computability.PartrecCode
 import Mathlib.Computability.RE
-import SwarmProofs.Chains.RHLagarias.Defs
+import SwarmProofs.Chains.RHLagarias.Defs.V1
 
 /-- A Partrec program `c` on input `0` is halting-free (the canonical Kleene Π₁⁰
     normal form `∀ k, evaln k c 0 = none` asserting zero finite-step counterexamples exist). -/

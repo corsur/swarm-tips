@@ -22,6 +22,9 @@ concurrency:
   group: lean-catalog-gate-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   unit-gate:
     name: Offline Catalog & Policy-4 Gate Unit Tests
@@ -30,6 +33,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -40,20 +45,112 @@ jobs:
       - name: Run deterministic catalog gate unit tests
         run: npx tsx scripts/e2e/test-lean-catalog-gate.ts --unit-only
 
-  live-runner-gate:
-    name: Live Runner Triviality & Elaboration Gate
+  mathlib-search-gate:
+    name: Full-Mathlib Tactic Search & Bridge Positive-Control Gate
     needs: unit-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @swarm-tips/client build
+      - name: Install pinned Lean environment
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: proofs/SwarmProofs
+          build: false
+          test: false
+      - name: Fetch Mathlib cache and build SwarmProofs
+        working-directory: proofs/SwarmProofs
+        run: lake exe cache get && lake build SwarmProofs
+      - name: Verify per-probe positive controls and bridge lemma catches
+        run: npx tsx scripts/e2e/test-lean-catalog-gate.ts --mathlib-controls
+      - name: Gate changed catalog statements and Defs-dependent rungs with full Mathlib
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          DIFF_FILES=""
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$BASE_REF" ]; then
+            DIFF_FILES="$(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" || true)"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            DIFF_FILES="$(git diff --name-only --diff-filter=ACMR "${BEFORE_SHA}...HEAD" || true)"
+          fi
+
+          CSV="$(DIFF_FILES="$DIFF_FILES" node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const files = (process.env.DIFF_FILES || "").split(/\r?\n/).filter(Boolean);
+            const tasks = new Set();
+            const changedDefsMods = new Set();
+            for (const f of files) {
+              if (/^tests\/fixtures\/lean\/catalog\/(open|solvable)\/[^/]+\.lean$/.test(f) && !f.endsWith(".proof.lean")) {
+                tasks.add(path.basename(f, ".lean"));
+              }
+              const m = f.match(/^proofs\/SwarmProofs\/(SwarmProofs\/Chains\/.+\.lean)$/);
+              if (m) {
+                changedDefsMods.add(m[1].replace(/\.lean$/, "").replace(/\//g, "."));
+              }
+            }
+            if (changedDefsMods.size > 0) {
+              for (const kind of ["open", "solvable"]) {
+                const dir = path.join("tests/fixtures/lean/catalog", kind);
+                for (const entry of fs.readdirSync(dir)) {
+                  if (!entry.endsWith(".lean") || entry.endsWith(".proof.lean")) continue;
+                  const src = fs.readFileSync(path.join(dir, entry), "utf8");
+                  for (const mod of changedDefsMods) {
+                    if (src.includes(mod)) tasks.add(entry.replace(/\.lean$/, ""));
+                  }
+                }
+              }
+            }
+            process.stdout.write([...tasks].sort().join(","));
+          ')"
+
+          if [ -z "$CSV" ]; then
+            echo "No added/modified active catalog .lean files or affected Defs dependents in diff."
+            exit 0
+          fi
+
+          echo "Running full-Mathlib search gate on statements: ${CSV}"
+          npx tsx scripts/e2e/seed-lean-catalog.ts --check-only --mathlib-only --tasks="${CSV}"
+
+  live-runner-gate:
+    name: Live Runner Elaboration & Fast Tactic Gate
+    needs: [unit-gate, mathlib-search-gate]
     if: >-
-      vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
+      - name: Require GCP Workload Identity configuration
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SA: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WIF_PROVIDER:-}" ] || [ -z "${GCP_SA:-}" ]; then
+            echo "::error::GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT repository variables must be configured (refusing to skip live-runner-gate silently)."
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Authenticate to GCP
@@ -71,10 +168,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @swarm-tips/client build
 
-      - name: Run live runner regression gate (Chebyshev rejected, Shannon & Mobius accepted)
-        run: npx tsx scripts/e2e/test-lean-catalog-gate.ts --live
+      - name: Run live runner regression gate
+        run: npx tsx scripts/e2e/test-lean-catalog-gate.ts --live --runner-only
 
-      - name: Gate changed catalog .lean statements
+      - name: Gate changed catalog statements and Defs-dependent rungs on live runner
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
@@ -88,24 +185,40 @@ jobs:
             DIFF_FILES="$(git diff --name-only --diff-filter=ACMR "${BEFORE_SHA}...HEAD" || true)"
           fi
 
-          TASKS=()
-          while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            case "$file" in
-              tests/fixtures/lean/catalog/open/*.proof.lean|tests/fixtures/lean/catalog/solvable/*.proof.lean)
-                ;;
-              tests/fixtures/lean/catalog/open/*.lean|tests/fixtures/lean/catalog/solvable/*.lean)
-                stem="$(basename "$file" .lean)"
-                TASKS+=("$stem")
-                ;;
-            esac
-          done <<< "$DIFF_FILES"
+          CSV="$(DIFF_FILES="$DIFF_FILES" node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const files = (process.env.DIFF_FILES || "").split(/\r?\n/).filter(Boolean);
+            const tasks = new Set();
+            const changedDefsMods = new Set();
+            for (const f of files) {
+              if (/^tests\/fixtures\/lean\/catalog\/(open|solvable)\/[^/]+\.lean$/.test(f) && !f.endsWith(".proof.lean")) {
+                tasks.add(path.basename(f, ".lean"));
+              }
+              const m = f.match(/^proofs\/SwarmProofs\/(SwarmProofs\/Chains\/.+\.lean)$/);
+              if (m) {
+                changedDefsMods.add(m[1].replace(/\.lean$/, "").replace(/\//g, "."));
+              }
+            }
+            if (changedDefsMods.size > 0) {
+              for (const kind of ["open", "solvable"]) {
+                const dir = path.join("tests/fixtures/lean/catalog", kind);
+                for (const entry of fs.readdirSync(dir)) {
+                  if (!entry.endsWith(".lean") || entry.endsWith(".proof.lean")) continue;
+                  const src = fs.readFileSync(path.join(dir, entry), "utf8");
+                  for (const mod of changedDefsMods) {
+                    if (src.includes(mod)) tasks.add(entry.replace(/\.lean$/, ""));
+                  }
+                }
+              }
+            }
+            process.stdout.write([...tasks].sort().join(","));
+          ')"
 
-          if [ "${#TASKS[@]}" -eq 0 ]; then
-            echo "No added/modified active catalog .lean files in diff."
+          if [ -z "$CSV" ]; then
+            echo "No added/modified active catalog .lean files or affected Defs dependents in diff."
             exit 0
           fi
 
-          CSV="$(IFS=,; echo "${TASKS[*]}")"
-          echo "Running --check-only gate on changed catalog statements: ${CSV}"
-          npx tsx scripts/e2e/seed-lean-catalog.ts --check-only --tasks="${CSV}"
+          echo "Running --check-only --runner-only gate on statements: ${CSV}"
+          npx tsx scripts/e2e/seed-lean-catalog.ts --check-only --runner-only --tasks="${CSV}"

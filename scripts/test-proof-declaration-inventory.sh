@@ -26,3 +26,5 @@ for fixture in Reusable ForbiddenAxiom ForbiddenSorry ForbiddenNamespace Forbidd
 done
 lake env lean -R ../fixtures -o .lake/build/lib/lean/ReusableConsumer.olean ../fixtures/ReusableConsumer.lean
 lake env lean --run "$script_root/proof-declaration-inventory.lean" ReusableConsumer SwarmProofs.Generated.Consumer > .lake/ReusableConsumer.inventory.json
+lake env lean -R ../fixtures -o .lake/build/lib/lean/StatementStabilityGood.olean ../fixtures/StatementStabilityGood.lean
+lake env lean -R ../fixtures -o .lake/build/lib/lean/StatementStabilityTampered.olean ../fixtures/StatementStabilityTampered.lean

@@ -1,7 +1,7 @@
 -- @lean-policy: 4
 -- @depends-on: chain-bsd-3-heegner-monsky-primes
 import Mathlib.Data.Nat.Prime.Basic
-import SwarmProofs.Chains.BSD.Defs
+import SwarmProofs.Chains.BSD.Defs.V1
 
 /-- Chain B [Rung 4/4 → BSD Congruent Numbers] (Open Semiprime BSD Slice, ω(n) = 2):
     Every semiprime `n = p · q` (`p < q` prime) with `(p · q) ≡ 5, 6, 7 (mod 8)` is a

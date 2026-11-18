@@ -1,7 +1,7 @@
 -- @lean-policy: 4
 import Mathlib.Data.Nat.Prime.Basic
 import Mathlib.Analysis.SpecialFunctions.Log.Basic
-import SwarmProofs.Chains.RHLagarias.Defs
+import SwarmProofs.Chains.RHLagarias.Defs.V1
 
 /-- Chain A [Rung 1/4 → RH Lagarias Equivalence] (Alaoglu–Erdős Parity Lemma, 1944):
     Proves the base case `lagariasBound 1` together with the structural parity theorem that

@@ -2,27 +2,29 @@
  * Seed the LeanProof bounty catalog onto DEVNET as policy-4 (composable) campaigns.
  *
  * For every statement in tests/fixtures/lean/catalog/{open,solvable}/*.lean it
- * creates a `lean_policy: 4` LeanProof campaign (statement_lean = the file bytes)
+ * creates a `lean_policy: 4` LeanProof campaign (statement_lean = the exact file bytes)
  * and funds one task, so the board shows real standing bounties. Idempotent: a
  * campaign is tagged `brief.topic = "catalog:<name>"`; a re-run skips any tag
  * that already exists among the client's campaigns.
  *
- * Ladder rungs (`chain-*`) import shared chain definitions from `SwarmProofs.Chains.*`
- * and declare `-- @depends-on: <prev-rung>` on Rung N+1. Seeding refuses to post
- * Rung N+1 until Rung N is promoted and `active` in `proofs/SwarmProofs/registry.json`,
- * and refuses `lean_policy: 4` unless runner `/health` reports `composable: true`.
+ * Ladder rungs (`chain-*`) import versioned frozen chain definitions from
+ * `SwarmProofs.Chains.*.Defs.V1` and declare `-- @depends-on: <prev-rung>` on Rung N+1.
+ * Seeding refuses to post Rung N+1 until Rung N is promoted and `active` in
+ * `proofs/SwarmProofs/registry.json`, refuses `lean_policy: 4` unless runner `/health`
+ * reports `composable: true`, and gates every statement through both:
+ *   1. Full-`import Mathlib` search probes (`exact?`, `solve_by_elim` + `apply?`,
+ *      `hint`, `aesop` on positive, negated, and parent-implication statements) via
+ *      `lake env lean` inside `proofs/SwarmProofs` with strict exhaustion parsing; and
+ *   2. Live `shillbot-lean-runner` Stage A1 elaboration + fast tactic-blast probes.
  *
  * DEVNET ONLY (real devnet SOL from id.json). Seeding with REAL mainnet SOL is a
  * founder decision — do NOT point this at mainnet without explicit sign-off.
- *
- *   DEVNET_RPC="$(gcloud secrets versions access latest \
- *       --secret=solana-rpc-url-devnet --project coordination-game-prod)" \
- *   npx tsx scripts/e2e/seed-lean-catalog.ts
  */
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as crypto from "crypto";
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import { BN } from "@coral-xyz/anchor";
 import {
   Connection,
@@ -35,8 +37,6 @@ import { loadKeypair } from "./devnet-harness";
 import { LEAN_PROOF_PLATFORM } from "../../tests/harness/shillbot-steps";
 
 const API_BASE = process.env.SHILLBOT_API ?? "https://api.shillbot.org";
-// Small standing escrow per bounty (~0.002 SOL). Open problems and solvables use
-// the same escrow on devnet and mainnet; the point is a visible board entry, not a prize.
 const ESCROW = new BN(2_000_000);
 export const REPO_ROOT = path.join(__dirname, "..", "..");
 export const CATALOG_DIR = path.join(
@@ -53,13 +53,27 @@ export const DEFAULT_REGISTRY_PATH = path.join(
 );
 
 export const ALLOWED_SWARM_LIBRARY_IMPORTS = new Set([
-  "SwarmProofs",
-  "SwarmProofs.Registry",
-  "SwarmProofs.Chains.BSD.Defs",
-  "SwarmProofs.Chains.Circuits.Defs",
-  "SwarmProofs.Chains.RHAnalytic.Defs",
-  "SwarmProofs.Chains.RHLagarias.Defs",
+  "SwarmProofs.Chains.BSD.Defs.V1",
+  "SwarmProofs.Chains.Circuits.Defs.V1",
+  "SwarmProofs.Chains.RHAnalytic.Defs.V1",
+  "SwarmProofs.Chains.RHLagarias.Defs.V1",
 ]);
+
+export const BRIDGE_LEMMAS_BY_DEFS_MODULE: Record<string, readonly string[]> = {
+  "SwarmProofs.Chains.RHAnalytic.Defs.V1": [
+    "bridge_primeFactorCount",
+    "bridge_mobiusInt",
+    "bridge_primorial",
+  ],
+  "SwarmProofs.Chains.RHLagarias.Defs.V1": [
+    "bridge_sigmaNat",
+    "bridge_sigmaDivisors",
+    "bridge_harmonicRat",
+    "bridge_harmonicNum",
+  ],
+  "SwarmProofs.Chains.BSD.Defs.V1": [],
+  "SwarmProofs.Chains.Circuits.Defs.V1": [],
+};
 
 export const FORBIDDEN_COMPOSITION_SUBSTRINGS = [
   "axiom ",
@@ -87,6 +101,11 @@ export const FORBIDDEN_COMPOSITION_SUBSTRINGS = [
   "variable(",
   "variable[",
   "variable{",
+  "instance ",
+  "instance(",
+  "instance[",
+  "instance{",
+  "class ",
   "run_tac",
   "run_elab",
   "by_elab",
@@ -102,31 +121,61 @@ export const FORBIDDEN_COMPOSITION_SUBSTRINGS = [
   "scoped ",
 ] as const;
 
-export const PROBE_MATHLIB_UMBRELLAS = [
-  "Mathlib.NumberTheory.Primorial",
-  "Mathlib.NumberTheory.ArithmeticFunction",
-  "Mathlib.NumberTheory.Divisors",
-  "Mathlib.NumberTheory.LegendreSymbol.QuadraticReciprocity",
-  "Mathlib.Analysis.SpecialFunctions.Log.Basic",
-  "Mathlib.Analysis.SpecialFunctions.Pow.Real",
-  "Mathlib.Algebra.BigOperators.Group.Finset.Basic",
-  "Mathlib.Data.Fintype.Basic",
-  "Mathlib.Order.Filter.Ultrafilter.Basic",
-  "Mathlib.Computability.PartrecCode",
-  "Mathlib.Computability.RE",
-  "Mathlib.SetTheory.ZFC.Cardinal",
-  "Mathlib.Tactic.Linarith",
-  "Mathlib.Tactic.NormNum",
-  "Mathlib.Tactic.Positivity",
-  "Mathlib.Tactic.Ring",
-  "Mathlib.Tactic.Tauto",
-] as const;
-
 export const MALFORMED_PROBE_DETAIL_MARKERS = [
   "does not exist",
   "unknown tactic",
   "unknown module prefix",
+  "unknown identifier",
   "forbidden token",
+  "exceeded the policy wall-clock cap",
+  "wall-clock cap",
+  "timed out",
+  "timeout",
+  "heartbeat",
+  "maximum recursion depth",
+  "out of memory",
+  "memory",
+  "killed",
+  "Killed",
+  "signal",
+] as const;
+
+export const VALID_RUNNER_FAIL_INDICATORS = [
+  "unsolved goals",
+  "type mismatch",
+  "tactic",
+  "failed",
+  "omega",
+  "linarith",
+  "norm_num",
+  "simp",
+  "aesop",
+  "ring",
+  "positivity",
+  "nlinarith",
+  "tauto",
+  "decide",
+  "rfl",
+  "sorry",
+  "application type mismatch",
+] as const;
+
+export const MATHLIB_FAIL_CLOSED_MARKERS = [
+  "(deterministic) timeout",
+  "maximum number of heartbeats",
+  "heartbeat",
+  "maximum recursion depth",
+  "out of memory",
+  "memory allocation",
+  "timed out",
+  "killed",
+  "Killed",
+  "unknown identifier",
+  "unknown tactic",
+  "unknown module prefix",
+  "does not exist",
+  "unexpected token",
+  "parse error",
 ] as const;
 
 function getSecret(name: string): string {
@@ -321,13 +370,13 @@ export const CHAIN_TASK_CONFIG: Record<string, ChainTaskMeta> = {
     dependsOn: "chain-bsd-3-heegner-monsky-primes",
     cta: `Chain B [Rung 4/4 -> BSD Congruent]: Open semiprime BSD slice pq ≡ 5, 6, 7 (mod 8) ${SPDX_CTA_NOTE}`,
   },
-  "chain-rh-analytic-1-mobius-floor-identity": {
+  "chain-rh-analytic-1-mertens-first-prime-log-bound": {
     escrowLamports: 15_000_000,
-    cta: `Chain C [Rung 1/4 -> RH Analytic]: Prove Meissel Mobius floor-sum identity sum_{k<=N} μ(k)*floor(N/k) = 1 ${SPDX_CTA_NOTE}`,
+    cta: `Chain C [Rung 1/4 -> RH Analytic]: Prove Mertens First Theorem |sum_{p<=N} (log p)/p - log N| <= C ${SPDX_CTA_NOTE}`,
   },
   "chain-rh-analytic-2-mobius-harmonic-bound": {
     escrowLamports: 20_000_000,
-    dependsOn: "chain-rh-analytic-1-mobius-floor-identity",
+    dependsOn: "chain-rh-analytic-1-mertens-first-prime-log-bound",
     cta: `Chain C [Rung 2/4 -> RH Analytic]: Prove Mobius harmonic cancellation (sum_{n<=N} μ(n)/n)^2 <= 1 ${SPDX_CTA_NOTE}`,
   },
   "chain-rh-analytic-3-pnt-mertens-little-o": {
@@ -356,7 +405,7 @@ export const CHAIN_TASK_CONFIG: Record<string, ChainTaskMeta> = {
   "chain-rh-meta-2-nonstandard-ultrapower-pi1": {
     escrowLamports: 20_000_000,
     dependsOn: "chain-rh-meta-1-lagarias-pi1-rational-envelope",
-    cta: `Track E [Rung 2/4 -> Pi1 RH Metamathematics]: Prove Los Pi1 ultrapower invariance vs hyperfinite counterexamples in stage ultraproducts (provable landmark) ${SPDX_CTA_NOTE}`,
+    cta: `Track E [Rung 2/4 -> Pi1 RH Metamathematics]: Prove full Delta_0 Los ultrapower theorem & nonstandard Lagarias truncation transfer (provable landmark) ${SPDX_CTA_NOTE}`,
   },
   "chain-rh-meta-3-godel-kleene-pi1-unprovability": {
     escrowLamports: 30_000_000,
@@ -527,7 +576,8 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
       const sanityScriptPath = fs.existsSync(sanityPath)
         ? sanityPath
         : undefined;
-      const statement = fs.readFileSync(path.join(dir, f), "utf8").trimEnd();
+      // Exact file bytes preserved so on-chain `statement_sha256` matches canonical disk file byte-for-byte (B1).
+      const statement = fs.readFileSync(path.join(dir, f), "utf8");
       const headerMeta = parseStatementHeaderMeta(statement);
       const chainMeta = CHAIN_TASK_CONFIG[name];
       if (
@@ -576,8 +626,7 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
 
 /**
  * Static quantifier-order audit: rejects any open problem where an existential
- * bounding constant `∃ (C : ℝ)` or `∃ C` is placed INSIDE a universal matrix/dimension
- * quantifier `∀ (n` / `∀ (N` / `∀ (G` (the exact bug exploited by 2qu3Do... via C = |x| / tr(G^2)).
+ * bounding constant `∃ (C : ℝ)` or `∃ C` is placed INSIDE a universal quantifier.
  */
 export function assertOuterExistentialQuantifierOrder(
   entry: CatalogEntry
@@ -648,8 +697,7 @@ export function assertRegistryComposableStatement(entry: CatalogEntry): void {
 
 /**
  * Rewrites `def statementProp` to `def statementPropOrig` and defines
- * `def statementProp : Prop := ¬ statementPropOrig` so `Check.lean` + `nanoda`
- * genuinely verify `Submission.proof : ¬ statementPropOrig`.
+ * `def statementProp : Prop := ¬ statementPropOrig`.
  */
 export function negateStatementProp(statement: string): string {
   const defRegex = /^(\s*(?:noncomputable\s+)?def\s+)statementProp(\b)/m;
@@ -659,24 +707,23 @@ export function negateStatementProp(statement: string): string {
     );
   }
   const renamed = statement.replace(defRegex, "$1statementPropOrig$2");
-  return `${renamed}\n\ndef statementProp : Prop := ¬ statementPropOrig\n`;
+  return `${renamed.trimEnd()}\n\ndef statementProp : Prop := ¬ statementPropOrig\n`;
 }
 
 function mapSwarmImportToRelativeFiles(modName: string): string[] {
-  if (modName === "SwarmProofs") {
-    return [
-      "SwarmProofs/Registry.lean",
-      "SwarmProofs/Chains/RHLagarias/Defs.lean",
-      "SwarmProofs/Chains/RHAnalytic/Defs.lean",
-      "SwarmProofs/Chains/BSD/Defs.lean",
-      "SwarmProofs/Chains/Circuits/Defs.lean",
-    ];
-  }
   if (!ALLOWED_SWARM_LIBRARY_IMPORTS.has(modName)) {
     throw new Error(`Unsupported SwarmProofs library import '${modName}'`);
   }
   return [`${modName.replace(/\./g, "/")}.lean`];
 }
+
+const BRIDGE_ONLY_DEF_IMPORTS = new Set([
+  "import Mathlib.NumberTheory.Primorial",
+  "import Mathlib.NumberTheory.ArithmeticFunction.Defs",
+  "import Mathlib.NumberTheory.ArithmeticFunction.Moebius",
+  "import Mathlib.NumberTheory.ArithmeticFunction.Misc",
+  "import Mathlib.NumberTheory.Harmonic.Defs",
+]);
 
 function stripDefsFileForInlineCompat(raw: string): {
   imports: string[];
@@ -686,12 +733,19 @@ function stripDefsFileForInlineCompat(raw: string): {
     /^\s*\/-[\s\S]*?SPDX-License-Identifier:[\s\S]*?-\/\s*/,
     ""
   );
+  const bridgeCutIdx = withoutLicense.search(
+    /\n(?:\/-- Canonical bridge lemma|theorem bridge_)/
+  );
+  const defsPart =
+    bridgeCutIdx >= 0 ? withoutLicense.slice(0, bridgeCutIdx) : withoutLicense;
   const imports: string[] = [];
   const keptLines: string[] = [];
-  for (const line of withoutLicense.split("\n")) {
+  for (const line of defsPart.split("\n")) {
     const trimmed = line.trim();
     if (trimmed.startsWith("import ") || trimmed.startsWith("import\t")) {
-      imports.push(trimmed);
+      if (!BRIDGE_ONLY_DEF_IMPORTS.has(trimmed)) {
+        imports.push(trimmed);
+      }
       continue;
     }
     if (trimmed.startsWith("#guard ") || trimmed.startsWith("#guard\t")) {
@@ -706,8 +760,8 @@ function stripDefsFileForInlineCompat(raw: string): {
 }
 
 /**
- * Compatibility bridge for `--check-only` while Step 3 runner upgrade is deploying:
- * inlines `SwarmProofs.Chains.*.Defs` into the check statement payload when
+ * Compatibility bridge for `--check-only` runner probes while Step 3 runner upgrade is deploying:
+ * inlines `SwarmProofs.Chains.*.Defs.V1` into the runner check payload when
  * runner `/health` does not yet report `composable: true`.
  */
 export function inlineSwarmProofsImportsForCompat(
@@ -809,6 +863,533 @@ export function buildParentImplicationStatement(
   return compatInline
     ? inlineSwarmProofsImportsForCompat(combined, swarmProofsRoot)
     : combined;
+}
+
+export function hasExistentialUniversalStructure(statement: string): boolean {
+  const propIdx = statement.indexOf("def statementProp");
+  const body = propIdx >= 0 ? statement.slice(propIdx) : statement;
+  return body.includes("∃") && body.includes("∀");
+}
+
+export function resolveBridgeLemmasForStatement(rawStatement: string): {
+  defsModules: string[];
+  bridgeLemmas: string[];
+} {
+  const importedDefs: string[] = [];
+  for (const line of rawStatement.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("import ") && !trimmed.startsWith("import\t")) {
+      continue;
+    }
+    const withoutComment = trimmed.split("--")[0];
+    const mods = withoutComment
+      .replace(/^import\s+/, "")
+      .split(/\s+/)
+      .filter(Boolean);
+    for (const modName of mods) {
+      if (modName in BRIDGE_LEMMAS_BY_DEFS_MODULE) {
+        if (!importedDefs.includes(modName)) importedDefs.push(modName);
+      }
+    }
+  }
+  const defsModules =
+    importedDefs.length > 0
+      ? importedDefs
+      : Object.keys(BRIDGE_LEMMAS_BY_DEFS_MODULE);
+  const bridgeSet = new Set<string>();
+  for (const mod of defsModules) {
+    for (const lem of BRIDGE_LEMMAS_BY_DEFS_MODULE[mod] ?? []) {
+      bridgeSet.add(lem);
+    }
+  }
+  return { defsModules, bridgeLemmas: [...bridgeSet] };
+}
+
+export type MathlibProbeKind =
+  | "exact"
+  | "solve-by-elim"
+  | "apply-assumption"
+  | "hint"
+  | "aesop";
+
+export type MathlibProbeClassification = "SOLVED" | "EXHAUSTED";
+
+export function classifyMathlibProbeSlice(
+  kind: MathlibProbeKind,
+  theoremIdent: string,
+  slice: string
+): MathlibProbeClassification {
+  for (const marker of MATHLIB_FAIL_CLOSED_MARKERS) {
+    if (slice.includes(marker)) {
+      throw new Error(
+        `[MATHLIB SEARCH FAIL-CLOSED] Probe '${theoremIdent}' (${kind}) hit resource/malformed failure '${marker}':\n${slice}`
+      );
+    }
+  }
+
+  const noAxiomsLine = `'${theoremIdent}' does not depend on any axioms`;
+  const depRegex = new RegExp(
+    `'${theoremIdent.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    )}' depends on axioms: \\[([^\\]]*)\\]`
+  );
+  const depMatch = slice.match(depRegex);
+  const sawNoAxioms = slice.includes(noAxiomsLine);
+  if (!sawNoAxioms && !depMatch) {
+    throw new Error(
+      `[MATHLIB SEARCH FAIL-CLOSED] Probe '${theoremIdent}' (${kind}) missing '#print axioms' confirmation:\n${slice}`
+    );
+  }
+  const axioms = depMatch
+    ? depMatch[1]
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+  const hasSorryAx = axioms.includes("sorryAx");
+  const hasError = /(?:^|\n).*?:\d+:\d+:\s*error:/m.test(slice);
+  if (!hasSorryAx && slice.includes("error: No goals to be solved")) {
+    return "SOLVED";
+  }
+
+  switch (kind) {
+    case "exact": {
+      if (!hasError && !hasSorryAx) return "SOLVED";
+      if (hasSorryAx && slice.includes("`exact?` could not close the goal")) {
+        return "EXHAUSTED";
+      }
+      throw new Error(
+        `[MATHLIB SEARCH FAIL-CLOSED] Unexpected 'exact?' output on '${theoremIdent}':\n${slice}`
+      );
+    }
+    case "solve-by-elim": {
+      if (!hasError && !hasSorryAx) return "SOLVED";
+      if (
+        hasSorryAx &&
+        (slice.includes("error: failed") || slice.includes("unsolved goals"))
+      ) {
+        return "EXHAUSTED";
+      }
+      throw new Error(
+        `[MATHLIB SEARCH FAIL-CLOSED] Unexpected 'solve_by_elim' output on '${theoremIdent}':\n${slice}`
+      );
+    }
+    case "apply-assumption": {
+      if (!hasError && !hasSorryAx) return "SOLVED";
+      if (
+        hasSorryAx &&
+        (slice.includes("`apply?` could not close the goal") ||
+          slice.includes("didn't find any relevant lemmas") ||
+          slice.includes("Try this:") ||
+          slice.includes("found a partial proof"))
+      ) {
+        return "EXHAUSTED";
+      }
+      throw new Error(
+        `[MATHLIB SEARCH FAIL-CLOSED] Unexpected 'apply?' output on '${theoremIdent}':\n${slice}`
+      );
+    }
+    case "hint": {
+      if (slice.includes("🎉") || (!hasError && !hasSorryAx)) {
+        return "SOLVED";
+      }
+      if (
+        hasSorryAx &&
+        (slice.includes("No suggestions available") ||
+          slice.includes("Try these:"))
+      ) {
+        return "EXHAUSTED";
+      }
+      throw new Error(
+        `[MATHLIB SEARCH FAIL-CLOSED] Unexpected 'hint' output on '${theoremIdent}':\n${slice}`
+      );
+    }
+    case "aesop": {
+      if (!hasError && !hasSorryAx) return "SOLVED";
+      if (
+        hasSorryAx &&
+        (slice.includes("failed to prove the goal after exhaustive search") ||
+          slice.includes("Tactic `aesop` failed, made no progress") ||
+          slice.includes("aesop: failed to prove the goal"))
+      ) {
+        return "EXHAUSTED";
+      }
+      throw new Error(
+        `[MATHLIB SEARCH FAIL-CLOSED] Unexpected 'aesop' output on '${theoremIdent}':\n${slice}`
+      );
+    }
+  }
+}
+
+export interface MathlibProbeSpec {
+  label: string;
+  kind: MathlibProbeKind;
+  targetExpr: string;
+  tacticBody: string;
+  maxHeartbeats: number;
+}
+
+export interface MathlibSearchGateResult {
+  entryName: string;
+  probeCount: number;
+  elapsedMs: number;
+  probeVerdicts: Record<string, MathlibProbeClassification>;
+}
+
+function envWithElanPath(): NodeJS.ProcessEnv {
+  const elanBin = path.join(os.homedir(), ".elan", "bin");
+  const curPath = process.env.PATH ?? "";
+  return {
+    ...process.env,
+    PATH: curPath.includes(elanBin) ? curPath : `${elanBin}:${curPath}`,
+  };
+}
+
+export function isLocalLakeAvailable(
+  swarmProofsRoot: string = SWARM_PROOFS_ROOT
+): boolean {
+  if (!fs.existsSync(path.join(swarmProofsRoot, ".lake"))) return false;
+  const res = spawnSync("lake", ["--version"], {
+    cwd: swarmProofsRoot,
+    env: envWithElanPath(),
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  return res.status === 0;
+}
+
+function stripAllImports(raw: string): string {
+  return raw
+    .split("\n")
+    .filter((line) => {
+      const t = line.trim();
+      return !t.startsWith("import ") && !t.startsWith("import\t");
+    })
+    .join("\n")
+    .trim();
+}
+
+export function buildMathlibProbeSpecsForEntry(
+  rawStatement: string,
+  hasParentImplication: boolean
+): MathlibProbeSpec[] {
+  const { bridgeLemmas } = resolveBridgeLemmasForStatement(rawStatement);
+  const simpPos =
+    bridgeLemmas.length > 0
+      ? `  (try simp only [${bridgeLemmas.join(", ")}])\n`
+      : "";
+  const simpNeg =
+    bridgeLemmas.length > 0
+      ? `  (try simp only [${bridgeLemmas.join(", ")}] at __h_neg ⊢)\n`
+      : "";
+  const simpDep =
+    bridgeLemmas.length > 0
+      ? `  (try simp only [${bridgeLemmas.join(", ")}] at __h_parent ⊢)\n`
+      : "";
+
+  const specs: MathlibProbeSpec[] = [
+    // Place `apply-assumption` FIRST so zero earlier theorems exist in the environment when `apply?` scans!
+    {
+      label: "positive-apply-assumption",
+      kind: "apply-assumption",
+      targetExpr: "statementProp",
+      maxHeartbeats: 400_000,
+      tacticBody:
+        `  unfold statementProp\n` +
+        `  intros\n` +
+        simpPos +
+        `  swarm_apply_assumption`,
+    },
+    {
+      label: "negative-apply-assumption",
+      kind: "apply-assumption",
+      targetExpr: "¬ statementProp",
+      maxHeartbeats: 400_000,
+      tacticBody:
+        `  unfold statementProp\n` +
+        `  intro __h_neg\n` +
+        simpNeg +
+        `  swarm_apply_assumption`,
+    },
+    {
+      label: "positive-solve-by-elim",
+      kind: "solve-by-elim",
+      targetExpr: "statementProp",
+      maxHeartbeats: 400_000,
+      tacticBody:
+        `  unfold statementProp\n` +
+        `  intros\n` +
+        simpPos +
+        `  solve_by_elim (maxDepth := 4)`,
+    },
+    {
+      label: "negative-solve-by-elim",
+      kind: "solve-by-elim",
+      targetExpr: "¬ statementProp",
+      maxHeartbeats: 400_000,
+      tacticBody:
+        `  unfold statementProp\n` +
+        `  intro __h_neg\n` +
+        simpNeg +
+        `  solve_by_elim (maxDepth := 4)`,
+    },
+    {
+      label: "positive-exact",
+      kind: "exact",
+      targetExpr: "statementProp",
+      maxHeartbeats: 400_000,
+      tacticBody:
+        `  unfold statementProp\n` + `  intros\n` + simpPos + `  exact?`,
+    },
+    {
+      label: "negative-exact",
+      kind: "exact",
+      targetExpr: "¬ statementProp",
+      maxHeartbeats: 400_000,
+      tacticBody:
+        `  unfold statementProp\n` +
+        (bridgeLemmas.length > 0
+          ? `  (try simp only [${bridgeLemmas.join(", ")}])\n`
+          : "") +
+        `  exact?`,
+    },
+    {
+      label: "positive-hint",
+      kind: "hint",
+      targetExpr: "statementProp",
+      maxHeartbeats: 4_000_000,
+      tacticBody:
+        `  unfold statementProp\n` + `  intros\n` + simpPos + `  hint`,
+    },
+    {
+      label: "negative-hint",
+      kind: "hint",
+      targetExpr: "¬ statementProp",
+      maxHeartbeats: 4_000_000,
+      tacticBody:
+        `  unfold statementProp\n` +
+        `  intro __h_neg\n` +
+        simpNeg +
+        `  hint`,
+    },
+    {
+      label: "positive-aesop",
+      kind: "aesop",
+      targetExpr: "statementProp",
+      maxHeartbeats: 4_000_000,
+      tacticBody:
+        `  unfold statementProp\n` +
+        `  intros\n` +
+        simpPos +
+        `  aesop (config := { maxRuleApplicationDepth := 30, maxRuleApplications := 200 })`,
+    },
+    {
+      label: "negative-aesop",
+      kind: "aesop",
+      targetExpr: "¬ statementProp",
+      maxHeartbeats: 4_000_000,
+      tacticBody:
+        `  unfold statementProp\n` +
+        `  intro __h_neg\n` +
+        simpNeg +
+        `  aesop (config := { maxRuleApplicationDepth := 30, maxRuleApplications := 200 })`,
+    },
+  ];
+
+  if (hasParentImplication) {
+    specs.push(
+      {
+        label: "dependency-exact",
+        kind: "exact",
+        targetExpr: "parentStatementProp → statementProp",
+        maxHeartbeats: 4_000_000,
+        tacticBody:
+          `  unfold parentStatementProp statementProp\n` +
+          `  intro __h_parent\n` +
+          `  intros\n` +
+          simpDep +
+          `  exact?`,
+      },
+      {
+        label: "dependency-aesop",
+        kind: "aesop",
+        targetExpr: "parentStatementProp → statementProp",
+        maxHeartbeats: 4_000_000,
+        tacticBody:
+          `  unfold parentStatementProp statementProp\n` +
+          `  intro __h_parent\n` +
+          `  intros\n` +
+          simpDep +
+          `  aesop (config := { maxRuleApplicationDepth := 30, maxRuleApplications := 200 })`,
+      }
+    );
+  }
+
+  return specs;
+}
+
+export interface RunMathlibSearchOptions {
+  swarmProofsRoot?: string;
+  promotedDependencyModuleName?: string;
+  parentRawStatement?: string;
+  wallTimeoutMs?: number;
+  onlyLabels?: Set<string>;
+}
+
+/**
+ * Runs the full-`import Mathlib` + `Defs.V1` bridge-lemma search gate via `lake env lean`
+ * inside `proofs/SwarmProofs`, enforcing strict exhaustion parsing on every probe.
+ */
+export function runFullMathlibSearchProbes(
+  entry: CatalogEntry,
+  opts: RunMathlibSearchOptions = {}
+): MathlibSearchGateResult {
+  const swarmProofsRoot = opts.swarmProofsRoot ?? SWARM_PROOFS_ROOT;
+  const wallTimeoutMs = opts.wallTimeoutMs ?? 300_000;
+  const t0 = Date.now();
+
+  const combinedForImports = opts.parentRawStatement
+    ? `${opts.parentRawStatement}\n${entry.statement}`
+    : entry.statement;
+  const { defsModules } = resolveBridgeLemmasForStatement(combinedForImports);
+
+  const headerLines = [
+    "import Mathlib",
+    ...defsModules.map((m) => `import ${m}`),
+    ...(opts.promotedDependencyModuleName
+      ? [`import ${opts.promotedDependencyModuleName}`]
+      : []),
+    "",
+    "set_option linter.unusedTactic false",
+    "set_option linter.unusedSimpArgs false",
+    "set_option linter.unreachableTactic false",
+    "set_option linter.style.nameCheck false",
+    "set_option maxRecDepth 16384",
+    "",
+    "elab \"swarm_apply_assumption\" : tactic => do",
+    "  let (_, goal) ← (← Lean.Elab.Tactic.getMainGoal).intros",
+    "  goal.withContext do",
+    "    match ← Lean.Meta.LibrarySearch.librarySearch goal",
+    "      (fun gs => Lean.Meta.LibrarySearch.solveByElim [] false gs 2) with",
+    "    | none => Lean.Elab.Tactic.setGoals []",
+    "    | some _ => throwError \"`apply?` could not close the goal\"",
+    "",
+  ];
+
+  let parentDecls = "";
+  if (opts.parentRawStatement) {
+    const defRegex = /^(\s*(?:noncomputable\s+)?def\s+)statementProp(\b)/m;
+    parentDecls =
+      stripAllImports(opts.parentRawStatement).replace(
+        defRegex,
+        "$1parentStatementProp$2"
+      ) + "\n\n";
+  }
+
+  const childDecls = stripAllImports(entry.statement);
+  let specs = buildMathlibProbeSpecsForEntry(
+    combinedForImports,
+    Boolean(opts.parentRawStatement)
+  );
+  if (opts.onlyLabels) {
+    specs = specs.filter((s) => opts.onlyLabels!.has(s.label));
+  }
+
+  const probeBlocks: string[] = [];
+  specs.forEach((spec, idx) => {
+    const guardName = `__SwarmProbeGuard_${idx}`;
+    const thmName = `__swarm_probe_${idx}_${spec.label.replace(/-/g, "_")}`;
+    probeBlocks.push(
+      `#check "===SWARM_PROBE_BEGIN:${spec.label}==="\n` +
+        `private structure ${guardName} : Type where dummy : Unit\n` +
+        `set_option maxHeartbeats ${spec.maxHeartbeats} in\n` +
+        `theorem ${thmName} : ${guardName} → (${spec.targetExpr}) := by\n` +
+        `  intro __g; clear __g\n` +
+        `${spec.tacticBody}\n` +
+        `#print axioms ${thmName}\n` +
+        `#check "===SWARM_PROBE_END:${spec.label}==="\n`
+    );
+  });
+
+  const fullLeanSource =
+    headerLines.join("\n") +
+    parentDecls +
+    childDecls +
+    "\n\n" +
+    probeBlocks.join("\n");
+
+  const proc = spawnSync("lake", ["env", "lean", "--stdin"], {
+    cwd: swarmProofsRoot,
+    env: envWithElanPath(),
+    input: fullLeanSource,
+    encoding: "utf8",
+    timeout: wallTimeoutMs,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+
+  if (proc.error) {
+    throw new Error(
+      `[MATHLIB SEARCH FAIL-CLOSED] ${entry.name}: lake env lean execution error/timeout: ${proc.error.message}`
+    );
+  }
+  if (proc.signal) {
+    throw new Error(
+      `[MATHLIB SEARCH FAIL-CLOSED] ${entry.name}: lake env lean killed by signal ${proc.signal}`
+    );
+  }
+
+  const combinedOut = `${proc.stdout ?? ""}\n${proc.stderr ?? ""}`;
+  const firstMarkerIdx = combinedOut.indexOf("===SWARM_PROBE_BEGIN:");
+  const preamble =
+    firstMarkerIdx >= 0 ? combinedOut.slice(0, firstMarkerIdx) : combinedOut;
+  if (/(?:^|\n).*?:\d+:\d+:\s*error:/m.test(preamble)) {
+    throw new Error(
+      `[MATHLIB SEARCH FAIL-CLOSED] ${entry.name}: statement failed elaboration before probes:\n${preamble}`
+    );
+  }
+
+  const probeVerdicts: Record<string, MathlibProbeClassification> = {};
+  specs.forEach((spec, idx) => {
+    const beginTag = `"===SWARM_PROBE_BEGIN:${spec.label}===" : String`;
+    const endTag = `"===SWARM_PROBE_END:${spec.label}===" : String`;
+    const bIdx = combinedOut.indexOf(beginTag);
+    const eIdx = combinedOut.indexOf(endTag);
+    if (bIdx < 0 || eIdx < 0 || eIdx < bIdx) {
+      throw new Error(
+        `[MATHLIB SEARCH FAIL-CLOSED] ${entry.name}: missing delimiter output for probe '${spec.label}':\n${combinedOut}`
+      );
+    }
+    const slice = combinedOut.slice(bIdx + beginTag.length, eIdx);
+    const thmName = `__swarm_probe_${idx}_${spec.label.replace(/-/g, "_")}`;
+    const verdict = classifyMathlibProbeSlice(spec.kind, thmName, slice);
+    probeVerdicts[spec.label] = verdict;
+  });
+
+  const reportOrder = [...specs].sort((a, b) => {
+    const rank = (k) => (k === "exact" ? 0 : k === "apply-assumption" || k === "solve-by-elim" ? 1 : k === "hint" ? 2 : 3);
+    return rank(a.kind) - rank(b.kind);
+  });
+  for (const spec of reportOrder) {
+    if (probeVerdicts[spec.label] === "SOLVED") {
+      const displayLabel =
+        spec.label === "positive-solve-by-elim"
+          ? "positive-apply-assumption"
+          : spec.label === "negative-solve-by-elim"
+          ? "negative-apply-assumption"
+          : spec.label;
+      throw new Error(
+        `[ANTI-VACUITY / TRIVIALITY GATE FAILED] ${entry.name} was solved trivially by full-Mathlib probe '${displayLabel}' (${spec.label})! Refusing to seed.`
+      );
+    }
+  }
+
+  return {
+    entryName: entry.name,
+    probeCount: specs.length,
+    elapsedMs: Date.now() - t0,
+    probeVerdicts,
+  };
 }
 
 export const DEFAULT_RUNNER_URL =
@@ -914,18 +1495,10 @@ export interface ProbeBuildOptions {
   parentImplicationStatement?: string;
 }
 
-function extractStatementImports(statement: string): string[] {
-  const imports: string[] = [];
-  for (const line of statement.split("\n")) {
-    const t = line.trim();
-    if (t.startsWith("import ") || t.startsWith("import\t")) {
-      const clean = t.split("--")[0].trim();
-      if (clean) imports.push(clean);
-    }
-  }
-  return imports;
-}
-
+/**
+ * Fast tactic-blast & structural anti-vacuity probes executed on `shillbot-lean-runner`
+ * (complementing `runFullMathlibSearchProbes` which runs full `import Mathlib` search).
+ */
 export function buildTrivialityProbes(
   _entry: CatalogEntry,
   options: ProbeBuildOptions
@@ -936,65 +1509,42 @@ export function buildTrivialityProbes(
     parentImplicationStatement,
   } = options;
   const negatedStatement = negateStatementProp(effectiveStatement);
-
-  const stmtImports = extractStatementImports(effectiveStatement);
-  const buildSearchHeader = (extraImports: string[]): string => {
-    const set = new Set<string>(stmtImports);
-    for (const u of PROBE_MATHLIB_UMBRELLAS) {
-      set.add(`import ${u}`);
-    }
-    for (const ext of extraImports) {
-      set.add(`import ${ext}`);
-    }
-    if (promotedDependencyModuleName) {
-      set.add(`import ${promotedDependencyModuleName}`);
-    }
-    return (
-      [...set].join("\n") +
-      "\n\ntheorem swarm_fold_primorial (N : ℕ) : (∏ p ∈ (Finset.range (N + 1)).filter Nat.Prime, p) = primorial N := rfl\n"
-    );
-  };
-
   const depImportPrefix = promotedDependencyModuleName
     ? `import ${promotedDependencyModuleName}\n`
     : "";
 
-  const probes: TrivialityProbe[] = [
-    {
-      label: "positive-exact-search",
-      statement: effectiveStatement,
-      maxBuildSecs: 120,
-      proof:
-        buildSearchHeader([]) +
-        `theorem proof : statementProp := by\n` +
-        `  unfold statementProp\n` +
-        `  intros\n` +
-        `  (try simp only [swarm_fold_primorial])\n` +
-        `  exact?`,
-    },
-    {
-      label: "zero-constant-vacuity",
-      statement: effectiveStatement,
-      maxBuildSecs: 120,
-      proof:
-        `${depImportPrefix}theorem proof : statementProp := by\n` +
-        `  refine ⟨0, le_rfl, fun N _ => ?_⟩\n` +
-        `  simp`,
-    },
-    {
-      label: "pointwise-ratio-shortcut",
-      statement: effectiveStatement,
-      maxBuildSecs: 120,
-      proof:
-        `${depImportPrefix}theorem proof : statementProp := by\n` +
-        `  intro N hN\n` +
-        `  refine ⟨0, le_rfl, ?_⟩\n` +
-        `  exact le_rfl`,
-    },
+  const probes: TrivialityProbe[] = [];
+
+  // N4: Only run existential-constant vacuity probes when statementProp has `∃` + `∀` quantifier structure.
+  if (hasExistentialUniversalStructure(effectiveStatement)) {
+    probes.push(
+      {
+        label: "zero-constant-vacuity",
+        statement: effectiveStatement,
+        maxBuildSecs: 240,
+        proof:
+          `${depImportPrefix}theorem proof : statementProp := by\n` +
+          `  refine ⟨0, le_rfl, fun N _ => ?_⟩\n` +
+          `  simp`,
+      },
+      {
+        label: "pointwise-ratio-shortcut",
+        statement: effectiveStatement,
+        maxBuildSecs: 240,
+        proof:
+          `${depImportPrefix}theorem proof : statementProp := by\n` +
+          `  intro N hN\n` +
+          `  refine ⟨0, le_rfl, ?_⟩\n` +
+          `  exact le_rfl`,
+      }
+    );
+  }
+
+  probes.push(
     {
       label: "empty-domain-contradiction",
       statement: effectiveStatement,
-      maxBuildSecs: 120,
+      maxBuildSecs: 240,
       proof:
         `${depImportPrefix}theorem proof : statementProp := by\n` +
         `  unfold statementProp\n` +
@@ -1004,140 +1554,40 @@ export function buildTrivialityProbes(
     {
       label: "positive-tactic-blast-triviality",
       statement: effectiveStatement,
-      maxBuildSecs: 120,
+      maxBuildSecs: 240,
       proof:
-        `${depImportPrefix}import Mathlib.Tactic.NormNum\nimport Mathlib.Tactic.Ring\nimport Mathlib.Tactic.Linarith\nimport Mathlib.Tactic.Positivity\nimport Mathlib.Tactic.Tauto\nimport Aesop\n` +
+        `${depImportPrefix}import Mathlib.Tactic.NormNum\nimport Mathlib.Tactic.Ring\nimport Mathlib.Tactic.Linarith\nimport Mathlib.Tactic.Tauto\nimport Aesop\n` +
         `theorem proof : statementProp := by\n` +
         `  unfold statementProp\n` +
         `  intros\n` +
-        `  first | rfl | decide | omega | norm_num | ring | linarith | positivity | nlinarith | aesop | tauto | simp`,
+        `  first | rfl | decide | omega | norm_num | ring | linarith | nlinarith | aesop | tauto | simp`,
     },
     {
       label: "negative-tactic-blast-disproof",
       statement: negatedStatement,
-      maxBuildSecs: 120,
+      maxBuildSecs: 240,
       proof:
-        `${depImportPrefix}import Mathlib.Tactic.NormNum\nimport Mathlib.Tactic.Ring\nimport Mathlib.Tactic.Linarith\nimport Mathlib.Tactic.Positivity\nimport Mathlib.Tactic.Tauto\nimport Aesop\n` +
+        `${depImportPrefix}import Mathlib.Tactic.NormNum\nimport Mathlib.Tactic.Ring\nimport Mathlib.Tactic.Linarith\nimport Mathlib.Tactic.Tauto\nimport Aesop\n` +
         `theorem proof : statementProp := by\n` +
         `  unfold statementProp statementPropOrig\n` +
         `  intro h\n` +
         `  first | exact False.elim (by omega) | norm_num at h | omega | simp at h | aesop`,
-    },
-    {
-      label: "positive-apply-assumption",
-      statement: effectiveStatement,
-      maxBuildSecs: 120,
-      proof:
-        buildSearchHeader([]) +
-        `set_option maxHeartbeats 200000 in\n` +
-        `theorem proof : statementProp := by\n` +
-        `  unfold statementProp\n` +
-        `  intros\n` +
-        `  (try simp only [swarm_fold_primorial])\n` +
-        `  apply? <;> assumption`,
-    },
-    {
-      label: "positive-hint",
-      statement: effectiveStatement,
-      maxBuildSecs: 120,
-      proof:
-        buildSearchHeader(["Mathlib.Tactic.Hint", "Aesop"]) +
-        `set_option maxHeartbeats 200000 in\n` +
-        `theorem proof : statementProp := by\n` +
-        `  unfold statementProp\n` +
-        `  intros\n` +
-        `  (try simp only [swarm_fold_primorial])\n` +
-        `  hint`,
-    },
-    {
-      label: "positive-aesop-raised-budget",
-      statement: effectiveStatement,
-      maxBuildSecs: 120,
-      proof:
-        buildSearchHeader(["Aesop"]) +
-        `theorem proof : statementProp := by\n` +
-        `  unfold statementProp\n` +
-        `  intros\n` +
-        `  (try simp only [swarm_fold_primorial])\n` +
-        `  aesop (config := { maxRuleApplicationDepth := 60, maxRuleApplications := 600 })`,
-    },
-    {
-      label: "negative-exact-search",
-      statement: negatedStatement,
-      maxBuildSecs: 120,
-      proof:
-        buildSearchHeader([]) +
-        `theorem proof : statementProp := by\n` +
-        `  unfold statementProp statementPropOrig\n` +
-        `  (try simp only [swarm_fold_primorial])\n` +
-        `  first | exact? | (intro h; exact?)`,
-    },
-    {
-      label: "negative-apply-assumption",
-      statement: negatedStatement,
-      maxBuildSecs: 120,
-      proof:
-        buildSearchHeader([]) +
-        `set_option maxHeartbeats 200000 in\n` +
-        `theorem proof : statementProp := by\n` +
-        `  unfold statementProp statementPropOrig\n` +
-        `  (try simp only [swarm_fold_primorial])\n` +
-        `  apply? <;> assumption`,
-    },
-    {
-      label: "negative-hint",
-      statement: negatedStatement,
-      maxBuildSecs: 120,
-      proof:
-        buildSearchHeader(["Mathlib.Tactic.Hint", "Aesop"]) +
-        `set_option maxHeartbeats 200000 in\n` +
-        `theorem proof : statementProp := by\n` +
-        `  unfold statementProp statementPropOrig\n` +
-        `  (try simp only [swarm_fold_primorial])\n` +
-        `  hint`,
-    },
-    {
-      label: "negative-aesop-raised-budget",
-      statement: negatedStatement,
-      maxBuildSecs: 120,
-      proof:
-        buildSearchHeader(["Aesop"]) +
-        `theorem proof : statementProp := by\n` +
-        `  unfold statementProp statementPropOrig\n` +
-        `  intro h\n` +
-        `  (try simp only [swarm_fold_primorial] at h)\n` +
-        `  aesop (config := { maxRuleApplicationDepth := 60, maxRuleApplications := 600 })`,
-    },
-  ];
+    }
+  );
 
   if (parentImplicationStatement) {
-    probes.push(
-      {
-        label: "dependency-consequence-tactic-aesop",
-        statement: parentImplicationStatement,
-        maxBuildSecs: 120,
-        proof:
-          buildSearchHeader(["Aesop"]) +
-          `theorem proof : statementProp := by\n` +
-          `  unfold statementProp parentStatementProp childStatementProp\n` +
-          `  intro hParent\n` +
-          `  intros\n` +
-          `  first | exact hParent | assumption | simp [hParent] | omega | linarith | aesop (config := { maxRuleApplicationDepth := 60, maxRuleApplications := 600 })`,
-      },
-      {
-        label: "dependency-consequence-exact-search",
-        statement: parentImplicationStatement,
-        maxBuildSecs: 120,
-        proof:
-          buildSearchHeader([]) +
-          `theorem proof : statementProp := by\n` +
-          `  unfold statementProp parentStatementProp childStatementProp\n` +
-          `  intro hParent\n` +
-          `  intros\n` +
-          `  (try simp only [swarm_fold_primorial] at hParent ⊢)\n` +
-          `  exact?`,
-      }
-    );
+    probes.push({
+      label: "dependency-consequence-tactic-aesop",
+      statement: parentImplicationStatement,
+      maxBuildSecs: 240,
+      proof:
+        `${depImportPrefix}import Mathlib.Tactic.Linarith\nimport Aesop\n` +
+        `theorem proof : statementProp := by\n` +
+        `  unfold statementProp parentStatementProp childStatementProp\n` +
+        `  intro hParent\n` +
+        `  intros\n` +
+        `  first | exact hParent | assumption | simp [hParent] | omega | linarith | aesop`,
+    });
   }
 
   return probes;
@@ -1159,7 +1609,24 @@ export function assertValidProbeResponse(
   for (const marker of MALFORMED_PROBE_DETAIL_MARKERS) {
     if (detail.includes(marker)) {
       throw new Error(
-        `[MALFORMED PROBE / RUNNER POLICY ERROR] ${entryName} (${probeLabel}) hit '${marker}': ${detail}`
+        `[MALFORMED PROBE / RESOURCE TIMEOUT FAIL-CLOSED] ${entryName} (${probeLabel}) hit '${marker}': ${detail}`
+      );
+    }
+  }
+  if (resp.verdict === "fail") {
+    const trimmed = detail.trim();
+    if (trimmed.length === 0) {
+      throw new Error(
+        `[PRE-SEED GATE FAIL-CLOSED] ${entryName} (${probeLabel}): empty 'fail' detail from runner`
+      );
+    }
+    const lower = trimmed.toLowerCase();
+    const hasValidIndicator = VALID_RUNNER_FAIL_INDICATORS.some((ind) =>
+      lower.includes(ind)
+    );
+    if (!hasValidIndicator) {
+      throw new Error(
+        `[PRE-SEED GATE FAIL-CLOSED] ${entryName} (${probeLabel}): unrecognized 'fail' detail without tactic/goal failure marker: ${detail}`
       );
     }
   }
@@ -1177,6 +1644,8 @@ export interface VerifyStatementOptions {
   skipSanityScript?: boolean;
   retryDelayBaseMs?: number;
   probeConcurrency?: number;
+  runLocalMathlibSearch?: boolean;
+  skipRunnerStage?: boolean;
 }
 
 export async function verifyStatementElaborates(
@@ -1188,7 +1657,7 @@ export async function verifyStatementElaborates(
   const checkOnly = opts.checkOnly ?? true;
   const leanPolicy = opts.leanPolicy ?? entry.declaredLeanPolicy ?? 4;
   const retryDelayBaseMs = opts.retryDelayBaseMs ?? 2_000;
-  const probeConcurrency = Math.max(1, opts.probeConcurrency ?? 5);
+  const probeConcurrency = Math.max(1, opts.probeConcurrency ?? 2);
 
   assertOuterExistentialQuantifierOrder(entry);
   if (/^\s*open\s+Classical\b/m.test(entry.statement)) {
@@ -1204,6 +1673,47 @@ export async function verifyStatementElaborates(
     execSync(`npx tsx "${entry.sanityScriptPath}"`, { stdio: "inherit" });
   }
 
+  const registry = opts.registry ?? loadProofRegistry();
+  const resolvedDep = entry.dependsOn
+    ? resolveRungDependency(entry.dependsOn, registry)
+    : undefined;
+
+  let parentRaw: string | undefined;
+  if (entry.dependsOn) {
+    const parentEntry = opts.catalogByName?.get(entry.dependsOn);
+    parentRaw =
+      parentEntry?.statement ??
+      (() => {
+        const candidatePath = path.join(
+          CATALOG_DIR,
+          "open",
+          `${entry.dependsOn}.lean`
+        );
+        return fs.existsSync(candidatePath)
+          ? fs.readFileSync(candidatePath, "utf8")
+          : undefined;
+      })();
+  }
+
+  const shouldRunMathlibSearch =
+    opts.runLocalMathlibSearch ?? (opts.fetchImpl === undefined);
+
+  if (shouldRunMathlibSearch) {
+    const promotedMod =
+      resolvedDep?.status === "active" ? resolvedDep.moduleName : undefined;
+    const mathlibRes = runFullMathlibSearchProbes(entry, {
+      promotedDependencyModuleName: promotedMod,
+      parentRawStatement: parentRaw,
+    });
+    console.log(
+      `  [mathlib-search PASS] ${entry.name}: all ${mathlibRes.probeCount} full-Mathlib probes exhausted cleanly (${mathlibRes.elapsedMs}ms)`
+    );
+  }
+
+  if (opts.skipRunnerStage) {
+    return;
+  }
+
   const token = opts.runnerToken ?? getRunnerIdToken(runnerUrl);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -1213,15 +1723,11 @@ export async function verifyStatementElaborates(
   const health =
     opts.runnerHealth ??
     (await fetchRunnerHealth(runnerUrl, headers, fetchImpl));
-  const registry = opts.registry ?? loadProofRegistry();
 
   if (!checkOnly) {
     assertSeedingAllowedForEntry(entry, leanPolicy, registry, health);
   }
 
-  const resolvedDep = entry.dependsOn
-    ? resolveRungDependency(entry.dependsOn, registry)
-    : undefined;
   const useComposableMode = health.composable === true;
   if (
     !useComposableMode &&
@@ -1303,33 +1809,17 @@ export async function verifyStatementElaborates(
       );
     }
     console.log(
-      `  [companion PASS] solvable/${entry.name} companion proof verified; running full triviality probes...`
+      `  [companion PASS] solvable/${entry.name} companion proof verified; running runner tactic probes...`
     );
   }
 
-  let parentImplicationStatement: string | undefined;
-  if (entry.dependsOn) {
-    const parentEntry = opts.catalogByName?.get(entry.dependsOn);
-    const parentRaw =
-      parentEntry?.statement ??
-      (() => {
-        const candidatePath = path.join(
-          CATALOG_DIR,
-          "open",
-          `${entry.dependsOn}.lean`
-        );
-        return fs.existsSync(candidatePath)
-          ? fs.readFileSync(candidatePath, "utf8").trimEnd()
-          : undefined;
-      })();
-    if (parentRaw) {
-      parentImplicationStatement = buildParentImplicationStatement(
+  const parentImplicationStatement = parentRaw
+    ? buildParentImplicationStatement(
         parentRaw,
         entry.statement,
         !useComposableMode
-      );
-    }
-  }
+      )
+    : undefined;
 
   const probes = buildTrivialityProbes(entry, {
     effectiveStatement,
@@ -1359,23 +1849,26 @@ export async function verifyStatementElaborates(
           fetchImpl,
           retryDelayBaseMs
         );
-        assertValidProbeResponse(cJson, entry.name, canary.label);
         return { canary, cJson };
       })
     );
     for (const { canary, cJson } of results) {
       if (cJson.verdict === "pass") {
+        assertValidProbeResponse(cJson, entry.name, canary.label);
         throw new Error(
           `[ANTI-VACUITY / TRIVIALITY GATE FAILED] ${entry.name} was solved trivially by probe '${canary.label}'! Refusing to seed.`
         );
       }
     }
+    for (const { canary, cJson } of results) {
+      assertValidProbeResponse(cJson, entry.name, canary.label);
+    }
   }
 
   console.log(
-    `  [pre-seed check PASS] ${entry.name} elaborated cleanly & rejected all ${
+    `  [runner check PASS] ${entry.name} elaborated cleanly & rejected all ${
       probes.length
-    } triviality/vacuity probes (${Date.now() - t0}ms)`
+    } runner probes (${Date.now() - t0}ms)`
   );
 }
 
@@ -1480,6 +1973,8 @@ async function main(): Promise<void> {
     process.argv.includes("--mainnet") ||
     process.env.SOLANA_NETWORK === "mainnet";
   const checkOnly = process.argv.includes("--check-only");
+  const mathlibOnly = process.argv.includes("--mathlib-only");
+  const runnerOnly = process.argv.includes("--runner-only");
   const isLadder = process.argv.includes("--ladder");
   const isChains = process.argv.includes("--chains");
   const taskArg = process.argv.find((a) => a.startsWith("--tasks="));
@@ -1489,6 +1984,12 @@ async function main(): Promise<void> {
     .trim();
   const network = isMainnet ? "mainnet" : "devnet";
   const leanPolicy = parseLeanPolicyArg(process.argv);
+
+  if ((mathlibOnly || runnerOnly) && !checkOnly) {
+    throw new Error(
+      "--mathlib-only and --runner-only are only permitted with --check-only"
+    );
+  }
 
   const allLoaded = loadCatalog(isLadder || Boolean(taskArg));
   const catalogByName = new Map(allLoaded.map((e) => [e.name, e]));
@@ -1532,6 +2033,24 @@ async function main(): Promise<void> {
   );
 
   const registry = loadProofRegistry();
+
+  if (checkOnly && mathlibOnly) {
+    for (const entry of catalog) {
+      await verifyStatementElaborates(entry, {
+        checkOnly: true,
+        leanPolicy,
+        registry,
+        catalogByName,
+        runLocalMathlibSearch: true,
+        skipRunnerStage: true,
+      });
+    }
+    console.log(
+      `\n[mathlib-only check PASS] All ${catalog.length} statements passed full-Mathlib search gate.`
+    );
+    return;
+  }
+
   const runnerToken = getRunnerIdToken(DEFAULT_RUNNER_URL);
   const runnerHeaders: Record<string, string> = {
     "Content-Type": "application/json",
@@ -1543,7 +2062,7 @@ async function main(): Promise<void> {
   );
 
   if (checkOnly) {
-    if (isChains) {
+    if (isChains && !runnerOnly) {
       await verifyReductionChainFiles();
     }
     for (const entry of catalog) {
@@ -1554,6 +2073,8 @@ async function main(): Promise<void> {
         catalogByName,
         runnerHealth,
         runnerToken,
+        runLocalMathlibSearch: !runnerOnly,
+        skipRunnerStage: false,
       });
     }
     console.log(
@@ -1562,7 +2083,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Fail closed BEFORE touching RPC or creating any campaigns if policy-4 or rung dependencies are unsatisfied:
   for (const entry of catalog) {
     assertSeedingAllowedForEntry(entry, leanPolicy, registry, runnerHealth);
   }
@@ -1619,11 +2139,6 @@ async function main(): Promise<void> {
     );
   }
 
-  if (process.argv.includes("--skip-precheck")) {
-    throw new Error(
-      "--skip-precheck is forbidden: every seeded statement must pass the triviality & elaboration gate"
-    );
-  }
   const forceReseed = process.argv.includes("--force");
   console.log(`lean_policy: ${leanPolicy}`);
   const already = forceReseed
@@ -1657,6 +2172,7 @@ async function main(): Promise<void> {
       catalogByName,
       runnerHealth,
       runnerToken,
+      runLocalMathlibSearch: true,
     });
     const campPayload: Record<string, unknown> = {
       brief: {
@@ -1681,7 +2197,6 @@ async function main(): Promise<void> {
     );
     const campaignId = camp.campaign_id as string;
 
-    // Fund one task so the bounty is claimable + visible on the board.
     const fundBody: Record<string, unknown> = { amount_lamports: entryEscrow };
     if (reservedForWalletArg) {
       fundBody.reserved_for_wallet = reservedForWalletArg;

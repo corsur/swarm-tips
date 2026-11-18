@@ -1,4 +1,7 @@
-use proof_registry::{generated_module_name, ModuleStatus, PromotionCandidate, RegistryManifest};
+use proof_registry::{
+    generated_module_name, preview_autopromote_manifest, validate_frozen_library_modules,
+    ModuleStatus, PromotionCandidate, RegistryManifest,
+};
 use std::path::Path;
 
 const ALLOWED_AXIOMS: &[&str] = &["propext", "Classical.choice", "Quot.sound"];
@@ -57,6 +60,19 @@ fn validate(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("invalid module manifest: {}", module.module_id).into());
         }
     }
+    let pkg_root = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    if pkg_root.join("SwarmProofs").join("Chains").is_dir()
+        || pkg_root.join("environment-lock.json").is_file()
+        || registry
+            .environments
+            .iter()
+            .any(|env| !env.lock.frozen_library_modules.is_empty())
+    {
+        validate_frozen_library_modules(pkg_root, &registry)?;
+    }
     println!("validated {} module(s)", registry.modules.len());
     Ok(())
 }
@@ -87,6 +103,22 @@ fn prepare(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let candidate: PromotionCandidate = serde_json::from_slice(&std::fs::read(candidate_path)?)?;
     let mut registry = read_registry(registry_path)?;
+    if let Some(alias_key) = alias {
+        if alias_key.trim().is_empty() {
+            return Err("alias must be non-empty".into());
+        }
+        let (preview_manifest, _) =
+            preview_autopromote_manifest(&candidate, &registry, public_base_url)?;
+        if let Some(existing_id) = registry.aliases.get(alias_key) {
+            if existing_id != &preview_manifest.module_id {
+                return Err(format!(
+                    "refusing to overwrite existing alias `{alias_key}`: mapped to {existing_id}, candidate is {}",
+                    preview_manifest.module_id
+                )
+                .into());
+            }
+        }
+    }
     let manifest = proof_registry::autopromote_candidate(
         &candidate,
         &mut registry,
@@ -94,9 +126,6 @@ fn prepare(
         public_base_url,
     )?;
     if let Some(alias_key) = alias {
-        if alias_key.trim().is_empty() {
-            return Err("alias must be non-empty".into());
-        }
         registry
             .aliases
             .insert(alias_key.to_string(), manifest.module_id.clone());
@@ -185,6 +214,7 @@ mod tests {
                 subdirectory: None,
                 license: APACHE_2_0.into(),
             }],
+            frozen_library_modules: BTreeMap::new(),
         };
         (environment_id(&lock).unwrap(), lock)
     }
@@ -330,6 +360,81 @@ mod tests {
             updated.aliases.get("catalog:chain-bsd-1"),
             Some(&updated.modules[0].module_id)
         );
+
+        // Idempotent re-run with the SAME candidate and SAME alias succeeds:
+        prepare(
+            &candidate_path,
+            &registry_path,
+            &root,
+            "https://storage.googleapis.com/example",
+            Some("catalog:chain-bsd-1"),
+        )
+        .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn alias_hijack_overwrite_is_refused() {
+        let root = temporary_directory();
+        let registry_path = root.join("registry.json");
+        let cand1_path = root.join("candidate1.json");
+        let cand2_path = root.join("candidate2.json");
+        let (environment_id, lock) = environment();
+        let registry = RegistryManifest {
+            schema: SCHEMA_VERSION.into(),
+            environments: vec![EnvironmentRecord {
+                environment_id: environment_id.clone(),
+                lock,
+            }],
+            modules: Vec::new(),
+            aliases: BTreeMap::new(),
+        };
+        write_registry(&registry_path, &registry).unwrap();
+        let cand1 = candidate(&environment_id);
+        std::fs::write(&cand1_path, serde_json::to_vec(&cand1).unwrap()).unwrap();
+
+        prepare(
+            &cand1_path,
+            &registry_path,
+            &root,
+            "https://storage.googleapis.com/example",
+            Some("catalog:chain-bsd-1-weierstrass-bijection"),
+        )
+        .unwrap();
+        let snapshot_reg = std::fs::read(&registry_path).unwrap();
+        let gen_dir = root.join("SwarmProofs").join("Generated");
+        let files_before = std::fs::read_dir(&gen_dir).unwrap().count();
+        assert_eq!(files_before, 1);
+
+        // Second candidate with different statement/task trying to overwrite the alias:
+        let hijack_stmt = "def statementProp : Prop := 1 = 1";
+        let hijack_proof =
+            "-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := rfl";
+        let mut cand2 = candidate(&environment_id);
+        cand2.task_id = "task-hijack".into();
+        cand2.statement = hijack_stmt.into();
+        cand2.proof_source = hijack_proof.into();
+        cand2.artifact_sha256 = sha256_hex(hijack_proof.as_bytes());
+        cand2.challenge.statement_sha256 = sha256_hex(hijack_stmt.as_bytes());
+        std::fs::write(&cand2_path, serde_json::to_vec(&cand2).unwrap()).unwrap();
+
+        let err = prepare(
+            &cand2_path,
+            &registry_path,
+            &root,
+            "https://storage.googleapis.com/example",
+            Some("catalog:chain-bsd-1-weierstrass-bijection"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("refusing to overwrite existing alias"),
+            "unexpected error: {err}"
+        );
+
+        // Verify zero files or registry bytes were mutated on disk!
+        assert_eq!(std::fs::read(&registry_path).unwrap(), snapshot_reg);
+        assert_eq!(std::fs::read_dir(&gen_dir).unwrap().count(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

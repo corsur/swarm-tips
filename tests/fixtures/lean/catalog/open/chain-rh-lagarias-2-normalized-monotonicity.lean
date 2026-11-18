@@ -2,7 +2,7 @@
 -- @depends-on: chain-rh-lagarias-1-superabundant-even
 import Mathlib.Data.Nat.Basic
 import Mathlib.Analysis.SpecialFunctions.Log.Basic
-import SwarmProofs.Chains.RHLagarias.Defs
+import SwarmProofs.Chains.RHLagarias.Defs.V1
 
 /-- Chain A [Rung 2/4 → RH Lagarias Equivalence] (Normalized Lagarias RHS Monotonicity):
     For all integers `1 ≤ k ≤ n`, the normalized Lagarias upper-bound sequence

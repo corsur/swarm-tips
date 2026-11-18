@@ -2,7 +2,7 @@
   "schema": "swarm.lean-proof-registry/v1",
   "environments": [
     {
-      "environment_id": "sha256:2dbb38af494fbd820a4920b5ed36fb7834ab6e3c551f77f535a6f0a73fdb2a43",
+      "environment_id": "sha256:f0956a054a45f31938440986ebc7f76d9db772da3f61681df78b58e68cf8b849",
       "lock": {
         "schema": "swarm.lean-environment/v1",
         "name": "lean-4.33-zeta23-v1",
@@ -10,7 +10,11 @@
         "mathlib_revision": "51e6992efd06126df61a496bebf8f49482a4e129",
         "policy_version": 4,
         "registry_schema": "swarm.lean-proof-registry/v1",
-        "allowed_import_roots": ["Mathlib", "Zeta23", "SwarmProofs"],
+        "allowed_import_roots": [
+          "Mathlib",
+          "Zeta23",
+          "SwarmProofs"
+        ],
         "external_packages": [
           {
             "name": "Zeta23",
@@ -19,7 +23,13 @@
             "subdirectory": "zeta23",
             "license": "Apache-2.0"
           }
-        ]
+        ],
+        "frozen_library_modules": {
+          "SwarmProofs.Chains.BSD.Defs.V1": "sha256:c2c3edf31528a5287c992f26b010140c99dd10536ec1cd7527041545222e704d",
+          "SwarmProofs.Chains.Circuits.Defs.V1": "sha256:00cd43b77425913085d1a1d8ab6d2664c5857ee7495a5c1b5b89e798ceef667d",
+          "SwarmProofs.Chains.RHAnalytic.Defs.V1": "sha256:e8f5208308b7a38f2e6e7ea34938c7c4a0f34b8017a8c47481559429321a5a27",
+          "SwarmProofs.Chains.RHLagarias.Defs.V1": "sha256:19fc97a99af3b26fea6e7a86b73272394180634fb97fcb280093c1c2b52ecec8"
+        }
       }
     }
   ],

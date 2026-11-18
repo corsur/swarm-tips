@@ -2,7 +2,7 @@
 -- @depends-on: chain-pnp-circuit-1-de-morgan-parity-lower-bound
 import Mathlib.Data.Fin.Basic
 import Mathlib.Data.Fintype.Basic
-import SwarmProofs.Chains.Circuits.Defs
+import SwarmProofs.Chains.Circuits.Defs.V1
 
 /-- Track D [Rung 2/2 → Classical Boolean Circuit Lower Bounds] (Shannon 1949 Counting Bound):
     Unconditionally provable classical circuit lower bound over the full 16-operation basis `B_2`:

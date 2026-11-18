@@ -3,7 +3,7 @@
 import Mathlib.Data.Nat.Prime.Basic
 import Mathlib.Algebra.BigOperators.Group.Finset.Basic
 import Mathlib.Tactic.Linarith
-import SwarmProofs.Chains.RHAnalytic.Defs
+import SwarmProofs.Chains.RHAnalytic.Defs.V1
 
 /-- Chain C [Rung 3/4 → RH Analytic Mertens Hierarchy] (Landau 1899 PNT Equivalence):
     Sublinear cancellation `M(N) = o(N)` of the Mertens function (`∀ k ≥ 1, ∃ N₀, ∀ N ≥ N₀,

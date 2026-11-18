@@ -8,26 +8,28 @@ on:
     branches: [main]
     paths:
       - "proofs/SwarmProofs/registry.json"
-      - "proofs/SwarmProofs/SwarmProofs/**"
+      - "proofs/SwarmProofs/SwarmProofs/Generated/**"
 
 concurrency:
-  group: proof-registry-promote-${{ github.event_name }}
+  group: proof-registry-promote
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+  contents: read
 
 jobs:
-  promote:
+  fetch-and-stage:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      has_candidates: ${{ steps.fetch.outputs.has_candidates }}
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
-          token: ${{ secrets.PROMOTE_BOT_TOKEN || github.token }}
+          persist-credentials: false
 
       - name: Authenticate to GCP
         if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
@@ -45,18 +47,21 @@ jobs:
         with:
           shared-key: proof-registry
 
-      - name: Fetch finalized policy-4 promotion candidates
+      - name: Fetch and stage finalized policy-4 promotion candidates (Rust only, no Lean)
         id: fetch
         run: |
           set -euo pipefail
+          rm -rf /tmp/staged-promotion
+          mkdir -p /tmp/staged-promotion/candidates
           cargo run --locked -p xtask -- fetch-promotion-candidates \
-            --out-dir /tmp/promotion-candidates \
+            --out-dir /tmp/staged-promotion/candidates \
             --network mainnet \
             --bucket coordination-game-prod-swarm-tips \
             --project coordination-game-prod \
-            --registry proofs/SwarmProofs/registry.json
+            --registry proofs/SwarmProofs/registry.json \
+            --catalog-dir tests/fixtures/lean/catalog
 
-          if [ ! -s /tmp/promotion-candidates/autopromote-plan.tsv ]; then
+          if [ ! -s /tmp/staged-promotion/candidates/autopromote-plan.tsv ]; then
             echo "has_candidates=false" >> "$GITHUB_OUTPUT"
             echo "No eligible policy-4 candidates to promote."
             exit 0
@@ -74,25 +79,68 @@ jobs:
                 autopromote "$cand_path" proofs/SwarmProofs/registry.json proofs/SwarmProofs \
                 "https://storage.googleapis.com/coordination-game-prod-swarm-proof-registry-public"
             fi
-          done < /tmp/promotion-candidates/autopromote-plan.tsv
+          done < /tmp/staged-promotion/candidates/autopromote-plan.tsv
 
           if git diff --quiet -- proofs/SwarmProofs/registry.json && [ -z "$(git status --porcelain -- proofs/SwarmProofs)" ]; then
             echo "has_candidates=false" >> "$GITHUB_OUTPUT"
             echo "Registry unchanged after idempotent autopromote."
-          else
-            echo "has_candidates=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-      - name: Validate canonical registry
+          mkdir -p /tmp/staged-promotion/SwarmProofs/Generated
+          cp proofs/SwarmProofs/registry.json /tmp/staged-promotion/registry.json
+          if compgen -G "proofs/SwarmProofs/SwarmProofs/Generated/*.lean" > /dev/null; then
+            cp proofs/SwarmProofs/SwarmProofs/Generated/*.lean /tmp/staged-promotion/SwarmProofs/Generated/
+          fi
+          echo "has_candidates=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload staged promotion bundle
         if: steps.fetch.outputs.has_candidates == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: staged-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/staged-promotion/
+          if-no-files-found: error
+          retention-days: 5
+
+  audit-untrusted-lean:
+    needs: fetch-and-stage
+    if: needs.fetch-and-stage.outputs.has_candidates == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download staged promotion bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: staged-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/staged-promotion
+
+      - name: Materialize staged registry and generated modules
+        run: |
+          set -euo pipefail
+          cp /tmp/staged-promotion/registry.json proofs/SwarmProofs/registry.json
+          mkdir -p proofs/SwarmProofs/SwarmProofs/Generated
+          if compgen -G "/tmp/staged-promotion/SwarmProofs/Generated/*.lean" > /dev/null; then
+            cp /tmp/staged-promotion/SwarmProofs/Generated/*.lean proofs/SwarmProofs/SwarmProofs/Generated/
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proof-registry
+
+      - name: Validate canonical registry and frozen library hashes
         run: cargo run --locked -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
 
       - name: Prepare ephemeral audit umbrella
-        if: steps.fetch.outputs.has_candidates == 'true'
         run: cargo run --locked -p xtask -- prepare-proof-promotion-audit
 
       - name: Install pinned Lean environment
-        if: steps.fetch.outputs.has_candidates == 'true'
         uses: leanprover/lean-action@v1
         with:
           lake-package-directory: proofs/SwarmProofs
@@ -100,55 +148,123 @@ jobs:
           test: false
 
       - name: Build pinned trusted environment only
-        if: steps.fetch.outputs.has_candidates == 'true'
         working-directory: proofs/SwarmProofs
         run: lake build Zeta23
 
       - name: Parse source policy before compiling promoted modules
-        if: steps.fetch.outputs.has_candidates == 'true'
         run: cargo run --locked -p xtask -- check-proof-sources
 
       - name: Build promoted modules
-        if: steps.fetch.outputs.has_candidates == 'true'
         working-directory: proofs/SwarmProofs
         run: lake build SwarmProofs PromotionAudit
 
-      - name: Export and independently check promoted declarations with nanoda
-        if: steps.fetch.outputs.has_candidates == 'true'
-        run: bash scripts/check-proof-nanoda.sh proofs/SwarmProofs PromotionAudit
+      - name: Export, check statementProp Expr stability, and independently verify with nanoda
+        run: >-
+          bash scripts/check-proof-nanoda.sh
+          proofs/SwarmProofs
+          PromotionAudit
+          proofs/SwarmProofs/.lake/proof-audit
+          ""
+          /tmp/staged-promotion/candidates
 
       - name: Collect exported declaration axioms
-        if: steps.fetch.outputs.has_candidates == 'true'
         working-directory: proofs/SwarmProofs
         run: lake env lean PromotionAudit.lean 2>&1 | tee /tmp/swarm-proof-axioms.txt
 
       - name: Audit exported declaration axioms
-        if: steps.fetch.outputs.has_candidates == 'true'
         run: cargo run --locked -p xtask -- check-proof-axiom-audit /tmp/swarm-proof-axioms.txt proofs/SwarmProofs/registry.json
 
       - name: Restore non-umbrella public package root
-        if: always() && steps.fetch.outputs.has_candidates == 'true'
+        if: always()
         run: |
           if [ -f proofs/SwarmProofs/lakefile.toml.original ]; then
             mv proofs/SwarmProofs/lakefile.toml.original proofs/SwarmProofs/lakefile.toml
           fi
           rm -f proofs/SwarmProofs/PromotionAudit.lean
 
-      - name: Open promotion PR and enable auto-merge
-        id: pr
-        if: steps.fetch.outputs.has_candidates == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.PROMOTE_BOT_TOKEN || github.token }}
+      - name: Package verified promotion outputs
         run: |
           set -euo pipefail
+          rm -rf /tmp/verified-promotion
+          mkdir -p /tmp/verified-promotion/SwarmProofs/Generated
+          cp proofs/SwarmProofs/registry.json /tmp/verified-promotion/registry.json
+          cp /tmp/staged-promotion/candidates/manifest.json /tmp/verified-promotion/manifest.json
+          if compgen -G "proofs/SwarmProofs/SwarmProofs/Generated/*.lean" > /dev/null; then
+            cp proofs/SwarmProofs/SwarmProofs/Generated/*.lean /tmp/verified-promotion/SwarmProofs/Generated/
+          fi
+
+      - name: Upload verified promotion outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: verified-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/verified-promotion/
+          if-no-files-found: error
+          retention-days: 5
+
+  open-pr:
+    needs: [fetch-and-stage, audit-untrusted-lean]
+    if: needs.fetch-and-stage.outputs.has_candidates == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Require PROMOTE_BOT_TOKEN secret
+        env:
+          PROMOTE_BOT_TOKEN: ${{ secrets.PROMOTE_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PROMOTE_BOT_TOKEN:-}" ]; then
+            echo "::error::PROMOTE_BOT_TOKEN secret must be configured so promotion PRs trigger required status checks and auto-merge."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.PROMOTE_BOT_TOKEN }}
+
+      - name: Download verified promotion outputs
+        uses: actions/download-artifact@v7
+        with:
+          name: verified-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/verified-promotion
+
+      - name: Open promotion PR and enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.PROMOTE_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          cp /tmp/verified-promotion/registry.json proofs/SwarmProofs/registry.json
+          mkdir -p proofs/SwarmProofs/SwarmProofs/Generated
+          for gen_file in /tmp/verified-promotion/SwarmProofs/Generated/H*.lean; do
+            [ -e "$gen_file" ] || continue
+            base_name="$(basename "$gen_file")"
+            case "$base_name" in
+              H[0-9a-f]*.lean)
+                cp "$gen_file" "proofs/SwarmProofs/SwarmProofs/Generated/${base_name}"
+                ;;
+              *)
+                echo "::error::Refusing unexpected generated file name: ${base_name}"
+                exit 1
+                ;;
+            esac
+          done
+
+          if git diff --quiet -- proofs/SwarmProofs/registry.json && [ -z "$(git status --porcelain -- proofs/SwarmProofs/SwarmProofs/Generated)" ]; then
+            echo "No net changes against main."
+            exit 0
+          fi
+
           REG_HASH="$(sha256sum proofs/SwarmProofs/registry.json | cut -c1-12)"
           BRANCH="promote/swarm-proofs-${REG_HASH}"
 
           git config user.name "swarm-proof-promoter[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          git add proofs/SwarmProofs
-          COUNT="$(jq '.candidates | length' /tmp/promotion-candidates/manifest.json)"
+          git add proofs/SwarmProofs/registry.json proofs/SwarmProofs/SwarmProofs/Generated
+          COUNT="$(jq '.candidates | length' /tmp/verified-promotion/manifest.json)"
           git commit -m "chore(proofs): autopromote ${COUNT} verified policy-4 module(s) (${REG_HASH})"
           git push --force-with-lease origin "$BRANCH"
 
@@ -158,38 +274,18 @@ jobs:
               --base main \
               --head "$BRANCH" \
               --title "chore(proofs): autopromote ${COUNT} verified policy-4 module(s) (${REG_HASH})" \
-              --body "Automated promotion of finalized \`platform=10\`, \`lean_policy=4\`, \`score=1_000_000\` proof module(s) verified by \`lake build\`, \`nanoda\`, and axiom audit.")"
+              --body "Automated promotion of finalized \`platform=10\`, \`lean_policy=4\`, \`score=1_000_000\` proof module(s) verified by \`lake build\`, \`check-statement-expr-stability\`, \`nanoda\`, and axiom audit.")"
           else
             PR_URL="$EXISTING_PR"
           fi
           echo "Promotion PR: $PR_URL"
-          gh pr merge "$PR_URL" --auto --squash || echo "Auto-merge note: repository auto-merge may require branch protection or bot token."
-
-          MERGE_SHA="$(gh pr view "$PR_URL" --json mergeCommit --jq '.mergeCommit.oid // empty' || true)"
-          echo "merge_sha=${MERGE_SHA}" >> "$GITHUB_OUTPUT"
-
-      - name: Dispatch swarm-proofs-promoted if merged synchronously
-        if: steps.fetch.outputs.has_candidates == 'true' && steps.pr.outputs.merge_sha != ''
-        env:
-          DISPATCH_TOKEN: ${{ secrets.COORDINATION_APP_DISPATCH_TOKEN }}
-          SWARM_PROOFS_REV: ${{ steps.pr.outputs.merge_sha }}
-        run: |
-          set -euo pipefail
-          if [ -z "${DISPATCH_TOKEN:-}" ]; then
-            echo "COORDINATION_APP_DISPATCH_TOKEN is not configured; skipping repository_dispatch for rev ${SWARM_PROOFS_REV}."
-            exit 0
-          fi
-          PAYLOAD="$(jq -nc --arg rev "$SWARM_PROOFS_REV" '{event_type: "swarm-proofs-promoted", client_payload: {swarm_proofs_rev: $rev}}')"
-          printf 'header = "Authorization: Bearer %s"\n' "$DISPATCH_TOKEN" | curl -fsSL --max-time 30 --config - \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/corsur/coordination-app/dispatches" \
-            -d "$PAYLOAD"
-          echo "Dispatched swarm-proofs-promoted (${SWARM_PROOFS_REV}) to corsur/coordination-app."
+          gh pr merge "$PR_URL" --auto --squash
 
   notify-runner:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.SWARM_PROOFS_RUNNER_DISPATCH_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -201,8 +297,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${DISPATCH_TOKEN:-}" ]; then
-            echo "COORDINATION_APP_DISPATCH_TOKEN is not configured; skipping repository_dispatch for rev ${SWARM_PROOFS_REV}."
-            exit 0
+            echo "::error::COORDINATION_APP_DISPATCH_TOKEN is required when SWARM_PROOFS_RUNNER_DISPATCH_ENABLED=true."
+            exit 1
           fi
           PAYLOAD="$(jq -nc --arg rev "$SWARM_PROOFS_REV" '{event_type: "swarm-proofs-promoted", client_payload: {swarm_proofs_rev: $rev}}')"
           printf 'header = "Authorization: Bearer %s"\n' "$DISPATCH_TOKEN" | curl -fsSL --max-time 30 --config - \

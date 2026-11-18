@@ -3,7 +3,7 @@ import Mathlib.Data.Nat.Factorial.Basic
 import Mathlib.Data.Rat.Cast.Order
 import Mathlib.Analysis.SpecialFunctions.Log.Basic
 import Mathlib.Algebra.BigOperators.Group.Finset.Basic
-import SwarmProofs.Chains.RHLagarias.Defs
+import SwarmProofs.Chains.RHLagarias.Defs.V1
 
 /-- Track E [Rung 1/4 → Π₁⁰ RH Metamathematics] (Rational Π₁⁰ Envelope Equivalence):
     Eliminates ℝ, Real.exp, and Real.log from Lagarias's RH criterion without Schanuel's

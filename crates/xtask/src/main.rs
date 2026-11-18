@@ -26,9 +26,11 @@ Subcommands:
   check-proof-sources [--package <dir>]
   export-proof-declarations <package-root> <exporter-bin> <module> <inventory.json> <export.txt>
   check-proof-export-coverage <inventory.json> <export.txt> <coverage.json>
+  check-statement-expr-stability <package-root> <lean4export-bin> <module-name> <standalone-statement-file> <generated-namespace>
+  check-promoted-statements-expr-stability <package-root> <lean4export-bin> <candidates-dir>
   write-proof-verification-receipt <report-root> <lean4export-rev> <nanoda-rev>
   check-proof-axiom-audit <audit-output.txt> [registry.json]
-  fetch-promotion-candidates --out-dir <dir> [--api <url>] [--network <net>] [--bucket <gcs-bucket>] [--project <gcp-project>] [--registry <path>] [--tasks-file <json>]
+  fetch-promotion-candidates --out-dir <dir> [--api <url>] [--network <net>] [--bucket <gcs-bucket>] [--project <gcp-project>] [--registry <path>] [--catalog-dir <dir>] [--allowed-poster <wallet>] [--tasks-file <json>]
   mirror-proof-registry --project <gcp-project> --package <package-root>
   audit-stuck-shillbot [--project <gcp-project>] [--rpc <solana-rpc-url>]
   reconcile-firestore-state <task-id> <new-state> [--project <gcp-project>] [--execute|--apply]
@@ -91,6 +93,24 @@ fn dispatch(args: &[String]) -> Result<()> {
         "check-proof-export-coverage" => {
             ensure!(rest.len() == 3, "{USAGE}");
             proof_audit::check_proof_export_coverage_files(
+                Path::new(&rest[0]),
+                Path::new(&rest[1]),
+                Path::new(&rest[2]),
+            )
+        }
+        "check-statement-expr-stability" => {
+            ensure!(rest.len() == 5, "{USAGE}");
+            proof_audit::check_statement_expr_stability(
+                Path::new(&rest[0]),
+                Path::new(&rest[1]),
+                &rest[2],
+                Path::new(&rest[3]),
+                &rest[4],
+            )
+        }
+        "check-promoted-statements-expr-stability" => {
+            ensure!(rest.len() == 3, "{USAGE}");
+            proof_audit::check_promoted_statements_expr_stability(
                 Path::new(&rest[0]),
                 Path::new(&rest[1]),
                 Path::new(&rest[2]),
@@ -252,14 +272,21 @@ fn parse_reconcile_args(args: &[String]) -> Result<ReconcileArgs> {
 }
 
 fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
+    let root = workspace_root()?;
     let mut api_base = String::from(fetch_promotion_candidates::DEFAULT_SHILLBOT_API);
     let mut network = String::from(fetch_promotion_candidates::DEFAULT_NETWORK);
     let mut bucket = String::from(fetch_promotion_candidates::DEFAULT_ARTIFACT_BUCKET);
     let mut project = String::from(fetch_promotion_candidates::DEFAULT_GCP_PROJECT);
-    let mut registry_path = workspace_root()?
+    let mut registry_path = root
         .join("proofs")
         .join("SwarmProofs")
         .join("registry.json");
+    let mut catalog_dir = root
+        .join("tests")
+        .join("fixtures")
+        .join("lean")
+        .join("catalog");
+    let mut custom_posters: Vec<String> = Vec::new();
     let mut out_dir: Option<PathBuf> = None;
     let mut tasks_file: Option<PathBuf> = None;
     let mut firestore_fallback = true;
@@ -291,6 +318,10 @@ fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
             project = take_val("--project", &mut i)?;
         } else if arg == "--registry" || arg.starts_with("--registry=") {
             registry_path = PathBuf::from(take_val("--registry", &mut i)?);
+        } else if arg == "--catalog-dir" || arg.starts_with("--catalog-dir=") {
+            catalog_dir = PathBuf::from(take_val("--catalog-dir", &mut i)?);
+        } else if arg == "--allowed-poster" || arg.starts_with("--allowed-poster=") {
+            custom_posters.push(take_val("--allowed-poster", &mut i)?);
         } else if arg == "--out-dir" || arg.starts_with("--out-dir=") {
             out_dir = Some(PathBuf::from(take_val("--out-dir", &mut i)?));
         } else if arg == "--tasks-file" || arg.starts_with("--tasks-file=") {
@@ -306,6 +337,14 @@ fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
         }
     }
 
+    let allowed_posters = if custom_posters.is_empty() {
+        fetch_promotion_candidates::PINNED_POSTER_WALLETS
+            .iter()
+            .map(|w| (*w).to_string())
+            .collect()
+    } else {
+        custom_posters
+    };
     let out_dir = out_dir.ok_or_else(|| anyhow::anyhow!("--out-dir is required\n\n{USAGE}"))?;
     Ok(FetchCandidatesArgs {
         api_base,
@@ -313,6 +352,8 @@ fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
         bucket,
         project,
         registry_path,
+        catalog_dir,
+        allowed_posters,
         out_dir,
         tasks_file,
         firestore_fallback,

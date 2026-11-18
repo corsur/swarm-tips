@@ -16,12 +16,10 @@ pub const MODULE_ID_PREFIX: &str = "sha256:";
 pub const APACHE_2_0: &str = "Apache-2.0";
 pub const GENERATED_MODULE_PREFIX: &str = "SwarmProofs.Generated.H";
 pub const ALLOWED_SWARM_LIBRARY_IMPORTS: &[&str] = &[
-    "SwarmProofs",
-    "SwarmProofs.Registry",
-    "SwarmProofs.Chains.BSD.Defs",
-    "SwarmProofs.Chains.Circuits.Defs",
-    "SwarmProofs.Chains.RHAnalytic.Defs",
-    "SwarmProofs.Chains.RHLagarias.Defs",
+    "SwarmProofs.Chains.BSD.Defs.V1",
+    "SwarmProofs.Chains.Circuits.Defs.V1",
+    "SwarmProofs.Chains.RHAnalytic.Defs.V1",
+    "SwarmProofs.Chains.RHLagarias.Defs.V1",
 ];
 pub const ALLOWED_AXIOMS: &[&str] = &["propext", "Classical.choice", "Quot.sound"];
 pub const MAX_DIRECT_DEPENDENCIES: usize = 16;
@@ -48,6 +46,8 @@ pub struct EnvironmentLock {
     pub registry_schema: String,
     pub allowed_import_roots: Vec<String>,
     pub external_packages: Vec<ExternalPackage>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frozen_library_modules: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +182,14 @@ pub fn validate_registry(registry: &RegistryManifest) -> Result<(), RegistryErro
     }
     let mut environments = BTreeSet::new();
     for environment in &registry.environments {
+        for (mod_name, mod_hash) in &environment.lock.frozen_library_modules {
+            validate_id(mod_hash)?;
+            if !is_canonical_frozen_module_name(mod_name) {
+                return Err(RegistryError::InvalidRegistry(format!(
+                    "noncanonical frozen library module name `{mod_name}`"
+                )));
+            }
+        }
         if environment.lock.schema != "swarm.lean-environment/v1"
             || environment.lock.registry_schema != SCHEMA_VERSION
             || environment.lock.policy_version != 4
@@ -259,6 +267,139 @@ pub fn validate_registry(registry: &RegistryManifest) -> Result<(), RegistryErro
             )));
         }
     }
+    Ok(())
+}
+
+fn is_canonical_frozen_module_name(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() != 5 {
+        return false;
+    }
+    if parts[0] != "SwarmProofs" || parts[1] != "Chains" || parts[3] != "Defs" {
+        return false;
+    }
+    let chain = parts[2];
+    let ver = parts[4];
+    !chain.is_empty()
+        && chain
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && ver
+            .strip_prefix('V')
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Validate that every frozen shared library module under `<package_root>/SwarmProofs`
+/// is listed in `frozen_library_modules` and matches its SHA-256 digest byte-for-byte.
+pub fn validate_frozen_library_modules(
+    package_root: &Path,
+    registry: &RegistryManifest,
+) -> Result<(), RegistryError> {
+    let swarm_dir = package_root.join("SwarmProofs");
+    if !swarm_dir.is_dir() {
+        return Err(RegistryError::InvalidRegistry(format!(
+            "missing SwarmProofs directory under {}",
+            package_root.display()
+        )));
+    }
+    let mut disk_modules: BTreeMap<String, String> = BTreeMap::new();
+    let mut stack = vec![swarm_dir];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).map_err(|e| {
+            RegistryError::InvalidRegistry(format!("failed reading {}: {e}", dir.display()))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                RegistryError::InvalidRegistry(format!("directory entry error: {e}"))
+            })?;
+            let path = entry.path();
+            let ft = entry
+                .file_type()
+                .map_err(|e| RegistryError::InvalidRegistry(format!("file_type error: {e}")))?;
+            if ft.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("lean") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(package_root)
+                .map_err(|e| RegistryError::InvalidRegistry(e.to_string()))?;
+            let rel_slash = rel.to_string_lossy().replace('\\', "/");
+            if rel_slash == "SwarmProofs/Registry.lean"
+                || rel_slash.starts_with("SwarmProofs/Generated/")
+            {
+                continue;
+            }
+            let Some(stem) = rel_slash.strip_suffix(".lean") else {
+                continue;
+            };
+            let mod_name = stem.replace('/', ".");
+            if !is_canonical_frozen_module_name(&mod_name) {
+                return Err(RegistryError::InvalidRegistry(format!(
+                    "unversioned or noncanonical library file on disk: {rel_slash}"
+                )));
+            }
+            let bytes = std::fs::read(&path).map_err(|e| {
+                RegistryError::InvalidRegistry(format!("failed reading {}: {e}", path.display()))
+            })?;
+            let sha = format!("{MODULE_ID_PREFIX}{}", sha256_hex(&bytes));
+            disk_modules.insert(mod_name, sha);
+        }
+    }
+    if disk_modules.is_empty() {
+        return Err(RegistryError::InvalidRegistry(
+            "no frozen Defs/V*.lean modules found under SwarmProofs/Chains".into(),
+        ));
+    }
+
+    let lock_path = package_root.join("environment-lock.json");
+    if lock_path.is_file() {
+        let lock_bytes = std::fs::read(&lock_path).map_err(|e| {
+            RegistryError::InvalidRegistry(format!("failed reading {}: {e}", lock_path.display()))
+        })?;
+        let disk_lock: EnvironmentLock = serde_json::from_slice(&lock_bytes).map_err(|e| {
+            RegistryError::InvalidRegistry(format!("invalid environment-lock.json: {e}"))
+        })?;
+        if disk_lock.frozen_library_modules != disk_modules {
+            return Err(RegistryError::InvalidRegistry(
+                "environment-lock.json frozen_library_modules mismatch with Defs/V*.lean on disk"
+                    .into(),
+            ));
+        }
+        let expected_env_id = environment_id(&disk_lock)?;
+        let Some(matched_env) = registry
+            .environments
+            .iter()
+            .find(|env| env.environment_id == expected_env_id)
+        else {
+            return Err(RegistryError::InvalidRegistry(format!(
+                "registry.json missing environment {expected_env_id} from environment-lock.json"
+            )));
+        };
+        if matched_env.lock != disk_lock {
+            return Err(RegistryError::InvalidRegistry(
+                "registry.json environment lock differs from environment-lock.json".into(),
+            ));
+        }
+    } else {
+        let Some(active_env) = registry
+            .environments
+            .iter()
+            .rfind(|env| env.lock.policy_version == 4)
+        else {
+            return Err(RegistryError::InvalidRegistry(
+                "registry.json contains no policy_version=4 environment".into(),
+            ));
+        };
+        if active_env.lock.frozen_library_modules != disk_modules {
+            return Err(RegistryError::InvalidRegistry(
+                "registry.json frozen_library_modules mismatch with Defs/V*.lean on disk".into(),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -432,6 +573,11 @@ pub fn compose_generated_module(
         "variable(",
         "variable[",
         "variable{",
+        "instance ",
+        "instance(",
+        "instance[",
+        "instance{",
+        "class ",
         "run_tac",
         "run_elab",
         "by_elab",
@@ -564,12 +710,11 @@ pub fn compose_generated_module(
 ///
 /// Idempotent: if the module is already present with identical identity, the existing
 /// record is returned without re-activating yanked/revoked modules.
-pub fn autopromote_candidate(
+pub fn preview_autopromote_manifest(
     candidate: &PromotionCandidate,
-    registry: &mut RegistryManifest,
-    package_root: &Path,
+    registry: &RegistryManifest,
     public_base_url: &str,
-) -> Result<ProofModuleManifest, RegistryError> {
+) -> Result<(ProofModuleManifest, GeneratedModule), RegistryError> {
     if candidate.schema != "swarm.lean-promotion-candidate/v1"
         || candidate.status != "verified_pending_finalization"
         || candidate.task_id.is_empty()
@@ -628,8 +773,8 @@ pub fn autopromote_candidate(
         schema: SCHEMA_VERSION.into(),
         module_id: String::new(),
         module_name: String::new(),
-        theorem_name: generated.theorem_name,
-        theorem_signature: generated.theorem_signature,
+        theorem_name: generated.theorem_name.clone(),
+        theorem_signature: generated.theorem_signature.clone(),
         environment_id: candidate.challenge.environment_id.clone(),
         source_sha256,
         source_url: String::new(),
@@ -660,6 +805,17 @@ pub fn autopromote_candidate(
         "{}/modules/{id_hex}.lean",
         public_base_url.trim_end_matches('/')
     );
+
+    Ok((manifest, generated))
+}
+
+pub fn autopromote_candidate(
+    candidate: &PromotionCandidate,
+    registry: &mut RegistryManifest,
+    package_root: &Path,
+    public_base_url: &str,
+) -> Result<ProofModuleManifest, RegistryError> {
+    let (manifest, generated) = preview_autopromote_manifest(candidate, registry, public_base_url)?;
 
     if let Some(existing) = registry
         .modules
@@ -899,6 +1055,7 @@ mod tests {
             registry_schema: SCHEMA_VERSION.into(),
             allowed_import_roots: vec!["Mathlib".into(), "SwarmProofs".into()],
             external_packages: Vec::new(),
+            frozen_library_modules: BTreeMap::new(),
         }
     }
 
@@ -1215,7 +1372,7 @@ mod tests {
     fn compose_generated_module_preserves_allowed_swarm_chain_imports_and_rejects_unknown() {
         let proof =
             "-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := trivial";
-        let statement = "import SwarmProofs.Chains.BSD.Defs\ndef statementProp : Prop := True";
+        let statement = "import SwarmProofs.Chains.BSD.Defs.V1\ndef statementProp : Prop := True";
         let make_cand = |stmt: &str| PromotionCandidate {
             schema: "swarm.lean-promotion-candidate/v1".into(),
             task_id: "task-chain".into(),
@@ -1243,13 +1400,77 @@ mod tests {
         let generated = compose_generated_module(&make_cand(statement)).unwrap();
         assert!(generated
             .source
-            .contains("import Zeta23\nimport SwarmProofs.Chains.BSD.Defs\n"));
+            .contains("import Zeta23\nimport SwarmProofs.Chains.BSD.Defs.V1\n"));
 
-        let bad_stmt = "import SwarmProofs.Unknown.Module\ndef statementProp : Prop := True";
-        assert!(compose_generated_module(&make_cand(bad_stmt)).is_err());
+        for disallowed in [
+            "import SwarmProofs\ndef statementProp : Prop := True",
+            "import SwarmProofs.Registry\ndef statementProp : Prop := True",
+            "import SwarmProofs.Chains.BSD.Defs\ndef statementProp : Prop := True",
+            "import SwarmProofs.Unknown.Module\ndef statementProp : Prop := True",
+            "instance bad : Zero Nat := ⟨0⟩\ndef statementProp : Prop := True",
+            "class Bad (α : Type) where x : α\ndef statementProp : Prop := True",
+        ] {
+            assert!(
+                compose_generated_module(&make_cand(disallowed)).is_err(),
+                "expected compose_generated_module to reject: {disallowed}"
+            );
+        }
 
         let undeclared_gen =
             "import SwarmProofs.Generated.Hdeadbeef\ndef statementProp : Prop := True";
         assert!(compose_generated_module(&make_cand(undeclared_gen)).is_err());
+    }
+
+    #[test]
+    fn golden_swarm_proofs_frozen_library_modules_pass_and_fail_closed_on_1_byte_mutation() {
+        let pkg_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .join("proofs")
+            .join("SwarmProofs");
+        let reg_bytes = std::fs::read(pkg_root.join("registry.json")).unwrap();
+        let reg: RegistryManifest = serde_json::from_slice(&reg_bytes).unwrap();
+        validate_registry(&reg).unwrap();
+        validate_frozen_library_modules(&pkg_root, &reg).unwrap();
+
+        // Copy to a temp package root and verify 1-byte mutation & unlisted V2 fail closed
+        let tmp = std::env::temp_dir().join(format!(
+            "frozen-defs-golden-{}-{}",
+            std::process::id(),
+            &sha256_hex(&reg_bytes)[..12]
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        for rel in [
+            "SwarmProofs/Registry.lean",
+            "SwarmProofs/Chains/BSD/Defs/V1.lean",
+            "SwarmProofs/Chains/Circuits/Defs/V1.lean",
+            "SwarmProofs/Chains/RHAnalytic/Defs/V1.lean",
+            "SwarmProofs/Chains/RHLagarias/Defs/V1.lean",
+            "environment-lock.json",
+            "registry.json",
+        ] {
+            let dst = tmp.join(rel);
+            std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+            std::fs::copy(pkg_root.join(rel), &dst).unwrap();
+        }
+        validate_frozen_library_modules(&tmp, &reg).unwrap();
+
+        // Mutate 1 byte in BSD/Defs/V1.lean -> MUST fail closed!
+        let bsd_path = tmp.join("SwarmProofs/Chains/BSD/Defs/V1.lean");
+        let orig_bsd = std::fs::read(&bsd_path).unwrap();
+        let mut mutated = orig_bsd.clone();
+        mutated.push(b'\n');
+        std::fs::write(&bsd_path, &mutated).unwrap();
+        assert!(validate_frozen_library_modules(&tmp, &reg).is_err());
+
+        // Restore BSD/Defs/V1.lean, then add an unlisted V2.lean -> MUST fail closed!
+        std::fs::write(&bsd_path, &orig_bsd).unwrap();
+        validate_frozen_library_modules(&tmp, &reg).unwrap();
+        let unlisted_v2 = tmp.join("SwarmProofs/Chains/BSD/Defs/V2.lean");
+        std::fs::write(&unlisted_v2, b"def sneaky : Nat := 0\n").unwrap();
+        assert!(validate_frozen_library_modules(&tmp, &reg).is_err());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

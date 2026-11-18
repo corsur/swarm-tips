@@ -7,13 +7,16 @@ open Lean
 partial def auditSyntax (stx : Syntax) : IO Unit := do
   let forbiddenKinds := #[
     ``Parser.Command.axiom, ``Parser.Term.attributes,
-    ``Parser.Command.deriving, ``Parser.Command.variable]
+    ``Parser.Command.deriving, ``Parser.Command.variable,
+    ``Parser.Command.instance, ``Parser.Command.classAbbrev,
+    ``Parser.Command.classTk, ``Parser.Command.classInductive]
   if forbiddenKinds.contains stx.getKind then
     throw <| IO.userError s!"forbidden syntax: {stx.getKind}"
   if let .atom _ token := stx then
     if #["unsafe", "partial", "opaque", "meta", "constant", "sorry", "sorryAx", "admit",
       "run_cmd", "run_tac", "run_elab", "by_elab", "native_decide", "ofReduceBool",
       "trustCompiler", "extern", "implemented_by", "csimp", "deriving", "local",
+      "instance", "class",
       "#eval", "#print", "#reduce", "#synth", "#check",
       "notation", "macro", "macro_rules", "elab", "elab_rules", "syntax"].contains token.trimAscii.toString then
       throw <| IO.userError s!"forbidden syntax token: {token}"

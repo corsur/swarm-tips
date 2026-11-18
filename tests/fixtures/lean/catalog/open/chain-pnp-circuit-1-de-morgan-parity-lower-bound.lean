@@ -1,6 +1,6 @@
 -- @lean-policy: 4
 import Mathlib.Data.Nat.Basic
-import SwarmProofs.Chains.Circuits.Defs
+import SwarmProofs.Chains.Circuits.Defs.V1
 
 /-- Track D [Rung 1/2 → Classical Boolean Circuit Lower Bounds] (Schnorr 1974 / Red'kin 1973):
     Unconditionally provable classical circuit lower bound: for every `n ≥ 2`, every straight-line

@@ -2,7 +2,7 @@
 -- @depends-on: chain-rh-analytic-3-pnt-mertens-little-o
 import Mathlib.Data.Nat.Prime.Basic
 import Mathlib.Algebra.BigOperators.Group.Finset.Basic
-import SwarmProofs.Chains.RHAnalytic.Defs
+import SwarmProofs.Chains.RHAnalytic.Defs.V1
 
 /-- Chain C [Rung 4/4 → RH Analytic Mertens Hierarchy] (Open Zero-Free Strip Re(s) > 0.99):
     Establishes a uniform power-saving Mertens bound `|M(N)| ≤ C^{1/100} · N^{99/100}` for all
