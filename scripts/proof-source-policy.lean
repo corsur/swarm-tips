@@ -9,16 +9,19 @@ partial def auditSyntax (stx : Syntax) : IO Unit := do
     ``Parser.Command.axiom, ``Parser.Term.attributes,
     ``Parser.Command.deriving, ``Parser.Command.variable,
     ``Parser.Command.instance, ``Parser.Command.classAbbrev,
-    ``Parser.Command.classTk, ``Parser.Command.classInductive]
+    ``Parser.Command.classTk, ``Parser.Command.classInductive,
+    ``Parser.Command.opaque, ``Parser.Command.example]
   if forbiddenKinds.contains stx.getKind then
     throw <| IO.userError s!"forbidden syntax: {stx.getKind}"
   if let .atom _ token := stx then
-    if #["unsafe", "partial", "opaque", "meta", "constant", "sorry", "sorryAx", "admit",
+    if #["axiom", "unsafe", "partial", "opaque", "meta", "constant", "sorry", "sorryAx", "admit",
       "run_cmd", "run_tac", "run_elab", "by_elab", "native_decide", "ofReduceBool",
-      "trustCompiler", "extern", "implemented_by", "csimp", "deriving", "local",
-      "instance", "class",
+      "trustCompiler", "extern", "implemented_by", "csimp", "deriving", "local", "scoped",
+      "instance", "class", "attribute", "variable", "initialize", "builtin_initialize",
+      "unif_hint", "declare_syntax_cat", "simproc",
       "#eval", "#print", "#reduce", "#synth", "#check",
-      "notation", "macro", "macro_rules", "elab", "elab_rules", "syntax"].contains token.trimAscii.toString then
+      "notation", "infix", "infixl", "infixr", "prefix", "postfix",
+      "macro", "macro_rules", "elab", "elab_rules", "command_elab", "term_elab", "syntax"].contains token.trimAscii.toString then
       throw <| IO.userError s!"forbidden syntax token: {token}"
   if let .ident _ _ val _ := stx then
     let forbiddenIdents : Array Name := #[
@@ -76,5 +79,19 @@ unsafe def main (args : List String) : IO Unit := do
       unless #[``Parser.Command.declaration, ``Parser.Command.open,
         ``Parser.Command.universe].contains command.getKind do
         throw <| IO.userError s!"forbidden command: {command.getKind}"
+      if command.getKind == ``Parser.Command.declaration then
+        let inner := command[1]
+        let innerKind := inner.getKind
+        let allowedInner := #[
+          ``Parser.Command.«theorem»,
+          ``Parser.Command.definition,
+          ``Parser.Command.abbrev,
+          ``Parser.Command.«inductive»,
+          ``Parser.Command.«structure»]
+        unless allowedInner.contains innerKind do
+          throw <| IO.userError s!"forbidden declaration kind: {innerKind}"
+        if innerKind == ``Parser.Command.«structure» then
+          unless inner.getNumArgs > 0 && inner[0].getKind == ``Parser.Command.structureTk do
+            throw <| IO.userError s!"forbidden non-structure declaration: {inner[0].getKind}"
   unless closed && !inNamespace do throw <| IO.userError "missing generated namespace boundary"
   IO.println "parsed promotion source policy passed"

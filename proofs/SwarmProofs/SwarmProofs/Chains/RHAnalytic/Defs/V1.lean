@@ -97,6 +97,12 @@ theorem bridge_mobiusInt (n : ℕ) :
     · rw [if_neg (fun h => hsq (hsq_iff.mp h)), ArithmeticFunction.moebius]
       simp [hsq]
 
+/-- Canonical bridge lemma matching `mertensSum` with the sum of `ArithmeticFunction.moebius` (never `@[simp]`). -/
+theorem bridge_mertensSum (N : ℕ) :
+    mertensSum N = Finset.sum (Finset.range (N + 1)) (fun n => ArithmeticFunction.moebius n) := by
+  unfold mertensSum
+  exact Finset.sum_congr rfl (fun n _ => bridge_mobiusInt n)
+
 /-- Canonical bridge lemma matching the prime product with Mathlib's `primorial N` (never `@[simp]`). -/
 theorem bridge_primorial (N : ℕ) :
     Finset.prod ((Finset.range (N + 1)).filter Nat.Prime) (fun p : ℕ => p) = primorial N :=

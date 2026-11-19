@@ -46,8 +46,6 @@ pub struct EnvironmentLock {
     pub registry_schema: String,
     pub allowed_import_roots: Vec<String>,
     pub external_packages: Vec<ExternalPackage>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub frozen_library_modules: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +144,8 @@ pub struct RegistryManifest {
 pub struct EnvironmentRecord {
     pub environment_id: String,
     pub lock: EnvironmentLock,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frozen_library_modules: BTreeMap<String, String>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -182,7 +182,7 @@ pub fn validate_registry(registry: &RegistryManifest) -> Result<(), RegistryErro
     }
     let mut environments = BTreeSet::new();
     for environment in &registry.environments {
-        for (mod_name, mod_hash) in &environment.lock.frozen_library_modules {
+        for (mod_name, mod_hash) in &environment.frozen_library_modules {
             validate_id(mod_hash)?;
             if !is_canonical_frozen_module_name(mod_name) {
                 return Err(RegistryError::InvalidRegistry(format!(
@@ -362,12 +362,6 @@ pub fn validate_frozen_library_modules(
         let disk_lock: EnvironmentLock = serde_json::from_slice(&lock_bytes).map_err(|e| {
             RegistryError::InvalidRegistry(format!("invalid environment-lock.json: {e}"))
         })?;
-        if disk_lock.frozen_library_modules != disk_modules {
-            return Err(RegistryError::InvalidRegistry(
-                "environment-lock.json frozen_library_modules mismatch with Defs/V*.lean on disk"
-                    .into(),
-            ));
-        }
         let expected_env_id = environment_id(&disk_lock)?;
         let Some(matched_env) = registry
             .environments
@@ -383,6 +377,12 @@ pub fn validate_frozen_library_modules(
                 "registry.json environment lock differs from environment-lock.json".into(),
             ));
         }
+        if matched_env.frozen_library_modules != disk_modules {
+            return Err(RegistryError::InvalidRegistry(
+                "registry.json EnvironmentRecord frozen_library_modules mismatch with Defs/V*.lean on disk"
+                    .into(),
+            ));
+        }
     } else {
         let Some(active_env) = registry
             .environments
@@ -393,9 +393,10 @@ pub fn validate_frozen_library_modules(
                 "registry.json contains no policy_version=4 environment".into(),
             ));
         };
-        if active_env.lock.frozen_library_modules != disk_modules {
+        if active_env.frozen_library_modules != disk_modules {
             return Err(RegistryError::InvalidRegistry(
-                "registry.json frozen_library_modules mismatch with Defs/V*.lean on disk".into(),
+                "registry.json EnvironmentRecord frozen_library_modules mismatch with Defs/V*.lean on disk"
+                    .into(),
             ));
         }
     }
@@ -528,6 +529,125 @@ pub fn generated_module_name(module_id: &str) -> Result<String, RegistryError> {
     Ok(format!("{GENERATED_MODULE_PREFIX}{hex}"))
 }
 
+pub const FORBIDDEN_SHARED_WORD_TOKENS: &[&str] = &[
+    "axiom",
+    "sorry",
+    "sorryAx",
+    "admit",
+    "unsafe",
+    "partial",
+    "opaque",
+    "meta",
+    "constant",
+    "extern",
+    "implemented_by",
+    "csimp",
+    "macro",
+    "macro_rules",
+    "syntax",
+    "elab",
+    "elab_rules",
+    "command_elab",
+    "term_elab",
+    "notation",
+    "infix",
+    "infixl",
+    "infixr",
+    "prefix",
+    "postfix",
+    "attribute",
+    "deriving",
+    "variable",
+    "run_tac",
+    "run_cmd",
+    "run_elab",
+    "by_elab",
+    "native_decide",
+    "ofReduceBool",
+    "trustCompiler",
+    "instance",
+    "class",
+    "initialize",
+    "builtin_initialize",
+    "unif_hint",
+    "declare_syntax_cat",
+    "simproc",
+    "namespace",
+    "section",
+    "end",
+];
+
+pub const FORBIDDEN_SHARED_SUBSTRINGS: &[&str] =
+    &["@[", "#eval", "#check", "#print", "#reduce", "#synth"];
+
+pub const FORBIDDEN_PROOF_WORD_TOKENS: &[&str] = &["local", "scoped", "open", "export"];
+
+/// Strip Lean `--` line comments and nested `/- ... -/` block comments, replacing
+/// comment bytes with spaces while preserving newlines. Fails closed on unclosed `/-`.
+pub fn strip_lean_comments(source: &str) -> Result<String, RegistryError> {
+    let mut out = String::with_capacity(source.len());
+    let mut block_depth = 0usize;
+    let chars: Vec<(usize, char)> = source.char_indices().collect();
+    let mut idx = 0usize;
+    while idx < chars.len() {
+        let (_, ch) = chars[idx];
+        let next_ch = chars.get(idx + 1).map(|(_, c)| *c);
+        if block_depth > 0 {
+            if ch == '/' && next_ch == Some('-') {
+                block_depth += 1;
+                out.push_str("  ");
+                idx += 2;
+                continue;
+            }
+            if ch == '-' && next_ch == Some('/') {
+                block_depth -= 1;
+                out.push_str("  ");
+                idx += 2;
+                continue;
+            }
+            out.push(if ch == '\n' { '\n' } else { ' ' });
+            idx += 1;
+            continue;
+        }
+        if ch == '/' && next_ch == Some('-') {
+            block_depth = 1;
+            out.push_str("  ");
+            idx += 2;
+            continue;
+        }
+        if ch == '-' && next_ch == Some('-') {
+            while idx < chars.len() && chars[idx].1 != '\n' {
+                out.push(' ');
+                idx += 1;
+            }
+            continue;
+        }
+        out.push(ch);
+        idx += 1;
+    }
+    if block_depth != 0 {
+        return Err(RegistryError::Serialization(
+            "unclosed Lean block comment `/-` in promotion source".into(),
+        ));
+    }
+    Ok(out)
+}
+
+fn has_lean_word_token(stripped_code: &str, forbidden: &[&str]) -> bool {
+    stripped_code
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '\'')
+        .filter(|tok| !tok.is_empty())
+        .any(|tok| forbidden.contains(&tok))
+}
+
+fn has_forbidden_promotion_tokens(stripped_combined: &str, stripped_proof: &str) -> bool {
+    FORBIDDEN_SHARED_SUBSTRINGS
+        .iter()
+        .any(|sub| stripped_combined.contains(sub))
+        || has_lean_word_token(stripped_combined, FORBIDDEN_SHARED_WORD_TOKENS)
+        || has_lean_word_token(stripped_proof, FORBIDDEN_PROOF_WORD_TOKENS)
+}
+
 /// Build the deterministic, namespaced source promoted from a verified task.
 /// The namespace uses the statement+proof payload hash, avoiding a circular
 /// dependency between published bytes and the manifest-derived module ID.
@@ -547,65 +667,11 @@ pub fn compose_generated_module(
             "promotion candidate violates the reusable policy".into(),
         ));
     }
-    let forbidden_shared = [
-        "axiom ",
-        "sorry",
-        "admit",
-        "unsafe ",
-        "partial ",
-        "opaque ",
-        "extern ",
-        "implemented_by",
-        "csimp",
-        "macro ",
-        "macro_rules",
-        "syntax ",
-        "elab ",
-        "elab_rules",
-        "command_elab",
-        "term_elab",
-        "notation ",
-        "infix",
-        "prefix ",
-        "postfix ",
-        "attribute ",
-        "variable ",
-        "variable(",
-        "variable[",
-        "variable{",
-        "instance ",
-        "instance(",
-        "instance[",
-        "instance{",
-        "class ",
-        "run_tac",
-        "run_elab",
-        "by_elab",
-        "native_decide",
-        "#eval",
-        "#check",
-        "#print",
-        "#reduce",
-        "#synth",
-        "namespace ",
-        "section ",
-    ];
-    let proof_only_forbidden = ["local ", "scoped ", "open ", "export "];
     let combined = format!("{}\n{}", candidate.statement, candidate.proof_source);
-    if forbidden_shared
-        .iter()
-        .any(|token| combined.contains(token))
-        || proof_only_forbidden
-            .iter()
-            .any(|token| candidate.proof_source.contains(token))
-        || combined.lines().any(|line| {
-            let trimmed = line.trim_start();
-            trimmed == "section"
-                || trimmed == "end"
-                || trimmed.starts_with("end ")
-                || trimmed.starts_with("end\t")
-        })
-    {
+    let stripped_stmt_code = strip_lean_comments(&candidate.statement)?;
+    let stripped_proof_code = strip_lean_comments(&candidate.proof_source)?;
+    let stripped_combined_code = format!("{stripped_stmt_code}\n{stripped_proof_code}");
+    if has_forbidden_promotion_tokens(&stripped_combined_code, &stripped_proof_code) {
         return Err(RegistryError::Serialization(
             "promotion source contains a forbidden declaration or command".into(),
         ));
@@ -1055,7 +1121,6 @@ mod tests {
             registry_schema: SCHEMA_VERSION.into(),
             allowed_import_roots: vec!["Mathlib".into(), "SwarmProofs".into()],
             external_packages: Vec::new(),
-            frozen_library_modules: BTreeMap::new(),
         }
     }
 
@@ -1071,6 +1136,7 @@ mod tests {
             environments: vec![EnvironmentRecord {
                 environment_id: environment,
                 lock,
+                frozen_library_modules: BTreeMap::new(),
             }],
             modules: vec![item],
             aliases: BTreeMap::new(),
@@ -1472,5 +1538,123 @@ mod tests {
         assert!(validate_frozen_library_modules(&tmp, &reg).is_err());
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn registry_v4_environment_matches_pinned_attester_policy_v4() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .unwrap();
+        let policy_v4: Value = serde_json::from_slice(
+            &std::fs::read(repo_root.join("policies/lean-attester-policy-v4.json")).unwrap(),
+        )
+        .unwrap();
+        let expected_env_sha = policy_v4["environment_lock_sha256"].as_str().unwrap();
+        assert_eq!(
+            expected_env_sha,
+            "sha256:2dbb38af494fbd820a4920b5ed36fb7834ab6e3c551f77f535a6f0a73fdb2a43"
+        );
+
+        let pkg_root = repo_root.join("proofs/SwarmProofs");
+        let lock: EnvironmentLock =
+            serde_json::from_slice(&std::fs::read(pkg_root.join("environment-lock.json")).unwrap())
+                .unwrap();
+        assert_eq!(environment_id(&lock).unwrap(), expected_env_sha);
+
+        let reg: RegistryManifest =
+            serde_json::from_slice(&std::fs::read(pkg_root.join("registry.json")).unwrap())
+                .unwrap();
+        validate_registry(&reg).unwrap();
+        validate_frozen_library_modules(&pkg_root, &reg).unwrap();
+
+        let registry_v4 = reg
+            .environments
+            .iter()
+            .find(|e| e.lock.policy_version == 4)
+            .unwrap();
+        assert_eq!(registry_v4.environment_id, expected_env_sha);
+        assert_eq!(registry_v4.frozen_library_modules.len(), 4);
+
+        // Verify weil-correlation.challenge.json matches restored environment_id and empty bundle_id
+        let weil: ChallengeManifest = serde_json::from_slice(
+            &std::fs::read(repo_root.join("proofs/gram-ladder/weil-correlation.challenge.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(weil.environment_id, expected_env_sha);
+        let empty_bundle = resolve_bundle(&reg, expected_env_sha, &[]).unwrap();
+        assert_eq!(weil.dependency_bundle_id, bundle_id(&empty_bundle).unwrap());
+
+        // Verify SBOM.spdx.json namespace and repo links match SwarmProofs + environment_id
+        let sbom: Value =
+            serde_json::from_slice(&std::fs::read(pkg_root.join("SBOM.spdx.json")).unwrap())
+                .unwrap();
+        let doc_ns = sbom["documentNamespace"].as_str().unwrap();
+        let env_hex = expected_env_sha.strip_prefix("sha256:").unwrap();
+        assert!(
+            doc_ns.starts_with("https://github.com/corsur/swarm-tips/proofs/SwarmProofs/")
+                && doc_ns.ends_with(env_hex),
+            "unexpected SBOM documentNamespace: {doc_ns}"
+        );
+    }
+
+    #[test]
+    fn compose_generated_module_source_policy_parity_and_comment_stripping() {
+        let base_stmt =
+            "-- meta constant sorry instance in line comment\n/- nested /- @[simp] class -/ block comment -/\ndef statementProp : Prop := True";
+        let make_cand = |stmt: &str, proof_body: &str| {
+            let full_proof = format!("-- SPDX-License-Identifier: Apache-2.0\n{proof_body}");
+            PromotionCandidate {
+                schema: "swarm.lean-promotion-candidate/v1".into(),
+                task_id: "task-parity".into(),
+                campaign_id: "camp-parity".into(),
+                network: "mainnet".into(),
+                author_wallet: "wallet".into(),
+                artifact_sha256: sha256_hex(full_proof.as_bytes()),
+                statement: stmt.into(),
+                proof_source: full_proof,
+                challenge: ChallengeManifest {
+                    schema: CHALLENGE_SCHEMA_VERSION.into(),
+                    statement_sha256: sha256_hex(stmt.as_bytes()),
+                    policy_version: 4,
+                    environment_id: id('e'),
+                    dependency_bundle_id: id('b'),
+                    reuse_license: APACHE_2_0.into(),
+                    reusable: true,
+                },
+                direct_dependencies: Vec::new(),
+                dependency_closure: Vec::new(),
+                exact_imports: Vec::new(),
+                verification_axioms: vec!["propext".into()],
+                status: "verified_pending_finalization".into(),
+            }
+        };
+
+        // Comments containing banned words do not false-trigger:
+        assert!(compose_generated_module(&make_cand(
+            base_stmt,
+            "-- instance sorry @[simp]\ntheorem proof : statementProp := trivial"
+        ))
+        .is_ok());
+
+        // Exact S-a required negative cases:
+        for bad_proof in [
+            "@[simp] theorem helper : True := trivial\ntheorem proof : statementProp := trivial",
+            "instance:\n  Inhabited Nat := ⟨0⟩\ntheorem proof : statementProp := trivial",
+            "inductive Sneaky where | mk\n  deriving DecidableEq\ntheorem proof : statementProp := trivial",
+            "meta def sneakyMeta : Nat := 0\ntheorem proof : statementProp := trivial",
+            "opaque sneakyOpaque : Nat := 0\ntheorem proof : statementProp := trivial",
+            "constant sneakyConst : Nat\ntheorem proof : statementProp := trivial",
+            "theorem proof : statementProp := sorryAx statementProp false",
+            "theorem proof : statementProp := Lean.ofReduceBool true rfl",
+            "open Classical in\ntheorem proof : statementProp := trivial",
+            "/- unclosed comment instance",
+        ] {
+            assert!(
+                compose_generated_module(&make_cand(base_stmt, bad_proof)).is_err(),
+                "expected compose_generated_module to reject proof:\n{bad_proof}"
+            );
+        }
     }
 }

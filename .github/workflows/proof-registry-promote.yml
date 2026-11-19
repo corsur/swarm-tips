@@ -3,7 +3,21 @@ name: Promote Verified Lean Proofs
 on:
   schedule:
     - cron: "23 */6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Target Solana network (devnet runs in isolated dry-run mode only; never opens a PR)"
+        required: false
+        default: "mainnet"
+        type: choice
+        options:
+          - mainnet
+          - devnet
+      dry_run:
+        description: "Stage and audit in isolated /tmp/dry-run-registry without opening a PR"
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
     paths:
@@ -26,6 +40,8 @@ jobs:
       id-token: write
     outputs:
       has_candidates: ${{ steps.fetch.outputs.has_candidates }}
+      effective_network: ${{ steps.fetch.outputs.effective_network }}
+      effective_dry_run: ${{ steps.fetch.outputs.effective_dry_run }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -49,57 +65,52 @@ jobs:
 
       - name: Fetch and stage finalized policy-4 promotion candidates (Rust only, no Lean)
         id: fetch
+        env:
+          INPUT_NETWORK: ${{ inputs.network }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          rm -rf /tmp/staged-promotion
+          NETWORK="${INPUT_NETWORK:-mainnet}"
+          if [ "$NETWORK" != "mainnet" ] || [ "${INPUT_DRY_RUN:-false}" = "true" ]; then
+            DRY_RUN="true"
+          else
+            DRY_RUN="false"
+          fi
+          echo "effective_network=${NETWORK}" >> "$GITHUB_OUTPUT"
+          echo "effective_dry_run=${DRY_RUN}" >> "$GITHUB_OUTPUT"
+
+          rm -rf /tmp/staged-promotion /tmp/dry-run-registry
           mkdir -p /tmp/staged-promotion/candidates
+
+          EXTRA_ARGS=()
+          if [ "$DRY_RUN" = "true" ]; then
+            EXTRA_ARGS+=(--dry-run-registry /tmp/dry-run-registry)
+          fi
+
           cargo run --locked -p xtask -- fetch-promotion-candidates \
             --out-dir /tmp/staged-promotion/candidates \
-            --network mainnet \
+            --network "$NETWORK" \
             --bucket coordination-game-prod-swarm-tips \
             --project coordination-game-prod \
             --registry proofs/SwarmProofs/registry.json \
-            --catalog-dir tests/fixtures/lean/catalog
+            --rejected-file proofs/SwarmProofs/rejected-candidates.json \
+            --catalog-dir tests/fixtures/lean/catalog \
+            "${EXTRA_ARGS[@]}"
 
           if [ ! -s /tmp/staged-promotion/candidates/autopromote-plan.tsv ]; then
             echo "has_candidates=false" >> "$GITHUB_OUTPUT"
-            echo "No eligible policy-4 candidates to promote."
+            echo "No eligible policy-4 candidates to promote on network=${NETWORK}."
             exit 0
           fi
 
-          while IFS=$'\t' read -r cand_path alias_name; do
-            [ -z "$cand_path" ] && continue
-            if [ -n "$alias_name" ]; then
-              cargo run --locked -p proof-registry --bin proof-registry -- \
-                autopromote "$cand_path" proofs/SwarmProofs/registry.json proofs/SwarmProofs \
-                "https://storage.googleapis.com/coordination-game-prod-swarm-proof-registry-public" \
-                --alias "$alias_name"
-            else
-              cargo run --locked -p proof-registry --bin proof-registry -- \
-                autopromote "$cand_path" proofs/SwarmProofs/registry.json proofs/SwarmProofs \
-                "https://storage.googleapis.com/coordination-game-prod-swarm-proof-registry-public"
-            fi
-          done < /tmp/staged-promotion/candidates/autopromote-plan.tsv
-
-          if git diff --quiet -- proofs/SwarmProofs/registry.json && [ -z "$(git status --porcelain -- proofs/SwarmProofs)" ]; then
-            echo "has_candidates=false" >> "$GITHUB_OUTPUT"
-            echo "Registry unchanged after idempotent autopromote."
-            exit 0
-          fi
-
-          mkdir -p /tmp/staged-promotion/SwarmProofs/Generated
-          cp proofs/SwarmProofs/registry.json /tmp/staged-promotion/registry.json
-          if compgen -G "proofs/SwarmProofs/SwarmProofs/Generated/*.lean" > /dev/null; then
-            cp proofs/SwarmProofs/SwarmProofs/Generated/*.lean /tmp/staged-promotion/SwarmProofs/Generated/
-          fi
           echo "has_candidates=true" >> "$GITHUB_OUTPUT"
 
-      - name: Upload staged promotion bundle
+      - name: Upload trusted staged candidate plan
         if: steps.fetch.outputs.has_candidates == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: staged-promotion-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /tmp/staged-promotion/
+          path: /tmp/staged-promotion/candidates/
           if-no-files-found: error
           retention-days: 5
 
@@ -114,36 +125,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download staged promotion bundle
+      - name: Download trusted staged candidate plan
         uses: actions/download-artifact@v7
         with:
           name: staged-promotion-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /tmp/staged-promotion
-
-      - name: Materialize staged registry and generated modules
-        run: |
-          set -euo pipefail
-          cp /tmp/staged-promotion/registry.json proofs/SwarmProofs/registry.json
-          mkdir -p proofs/SwarmProofs/SwarmProofs/Generated
-          if compgen -G "/tmp/staged-promotion/SwarmProofs/Generated/*.lean" > /dev/null; then
-            cp /tmp/staged-promotion/SwarmProofs/Generated/*.lean proofs/SwarmProofs/SwarmProofs/Generated/
-          fi
+          path: /tmp/staged-promotion/candidates
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: proof-registry
+          save-if: false
 
-      - name: Validate canonical registry and frozen library hashes
+      - name: Validate clean baseline registry and frozen library hashes
         run: cargo run --locked -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
 
-      - name: Prepare ephemeral audit umbrella
-        run: cargo run --locked -p xtask -- prepare-proof-promotion-audit
-
-      - name: Install pinned Lean environment
+      - name: Install pinned Lean environment (read-only cache, save disabled)
         uses: leanprover/lean-action@v1
         with:
           lake-package-directory: proofs/SwarmProofs
+          use-github-cache: false
           build: false
           test: false
 
@@ -151,28 +152,25 @@ jobs:
         working-directory: proofs/SwarmProofs
         run: lake build Zeta23
 
-      - name: Parse source policy before compiling promoted modules
-        run: cargo run --locked -p xtask -- check-proof-sources
-
-      - name: Build promoted modules
-        working-directory: proofs/SwarmProofs
-        run: lake build SwarmProofs PromotionAudit
-
-      - name: Export, check statementProp Expr stability, and independently verify with nanoda
-        run: >-
-          bash scripts/check-proof-nanoda.sh
-          proofs/SwarmProofs
-          PromotionAudit
-          proofs/SwarmProofs/.lake/proof-audit
-          ""
-          /tmp/staged-promotion/candidates
-
-      - name: Collect exported declaration axioms
-        working-directory: proofs/SwarmProofs
-        run: lake env lean PromotionAudit.lean 2>&1 | tee /tmp/swarm-proof-axioms.txt
-
-      - name: Audit exported declaration axioms
-        run: cargo run --locked -p xtask -- check-proof-axiom-audit /tmp/swarm-proof-axioms.txt proofs/SwarmProofs/registry.json
+      - name: Audit staged candidates one-by-one with isolated rollback
+        env:
+          AUDIT_NETWORK: ${{ needs.fetch-and-stage.outputs.effective_network }}
+          AUDIT_DRY_RUN: ${{ needs.fetch-and-stage.outputs.effective_dry_run }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/audit-verdicts /tmp/dry-run-audit
+          mkdir -p /tmp/audit-verdicts
+          PKG_DIR="proofs/SwarmProofs"
+          if [ "${AUDIT_DRY_RUN}" = "true" ]; then
+            mkdir -p /tmp/dry-run-audit/SwarmProofs
+            cp -R proofs/SwarmProofs/. /tmp/dry-run-audit/SwarmProofs/
+            PKG_DIR="/tmp/dry-run-audit/SwarmProofs"
+          fi
+          cargo run --locked -p xtask -- audit-staged-candidates \
+            --staged-dir /tmp/staged-promotion/candidates \
+            --package "$PKG_DIR" \
+            --network "${AUDIT_NETWORK:-mainnet}" \
+            --verdicts-out /tmp/audit-verdicts/audit-verdicts.json
 
       - name: Restore non-umbrella public package root
         if: always()
@@ -182,38 +180,38 @@ jobs:
           fi
           rm -f proofs/SwarmProofs/PromotionAudit.lean
 
-      - name: Package verified promotion outputs
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/verified-promotion
-          mkdir -p /tmp/verified-promotion/SwarmProofs/Generated
-          cp proofs/SwarmProofs/registry.json /tmp/verified-promotion/registry.json
-          cp /tmp/staged-promotion/candidates/manifest.json /tmp/verified-promotion/manifest.json
-          if compgen -G "proofs/SwarmProofs/SwarmProofs/Generated/*.lean" > /dev/null; then
-            cp proofs/SwarmProofs/SwarmProofs/Generated/*.lean /tmp/verified-promotion/SwarmProofs/Generated/
-          fi
-
-      - name: Upload verified promotion outputs
+      - name: Upload audit verdicts JSON only (zero Lean/registry files trusted downstream)
         uses: actions/upload-artifact@v7
         with:
-          name: verified-promotion-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /tmp/verified-promotion/
+          name: audit-verdicts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/audit-verdicts/audit-verdicts.json
           if-no-files-found: error
           retention-days: 5
 
   open-pr:
     needs: [fetch-and-stage, audit-untrusted-lean]
-    if: needs.fetch-and-stage.outputs.has_candidates == 'true'
+    if: >-
+      needs.fetch-and-stage.outputs.has_candidates == 'true' &&
+      needs.fetch-and-stage.outputs.effective_network == 'mainnet' &&
+      needs.fetch-and-stage.outputs.effective_dry_run == 'false' &&
+      (inputs.network == '' || inputs.network == 'mainnet') &&
+      inputs.dry_run != true
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - name: Require PROMOTE_BOT_TOKEN secret
+      - name: Enforce mainnet non-dry-run & require PROMOTE_BOT_TOKEN secret
         env:
+          EFFECTIVE_NETWORK: ${{ needs.fetch-and-stage.outputs.effective_network }}
+          EFFECTIVE_DRY_RUN: ${{ needs.fetch-and-stage.outputs.effective_dry_run }}
           PROMOTE_BOT_TOKEN: ${{ secrets.PROMOTE_BOT_TOKEN }}
         run: |
           set -euo pipefail
+          if [ "${EFFECTIVE_NETWORK}" != "mainnet" ] || [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            echo "::error::Refusing to open promotion PR for network=${EFFECTIVE_NETWORK} dry_run=${EFFECTIVE_DRY_RUN}; devnet/dry-run proofs never enter the public registry."
+            exit 1
+          fi
           if [ -z "${PROMOTE_BOT_TOKEN:-}" ]; then
             echo "::error::PROMOTE_BOT_TOKEN secret must be configured so promotion PRs trigger required status checks and auto-merge."
             exit 1
@@ -225,58 +223,94 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.PROMOTE_BOT_TOKEN }}
 
-      - name: Download verified promotion outputs
+      - name: Download trusted staged candidates from fetch-and-stage
         uses: actions/download-artifact@v7
         with:
-          name: verified-promotion-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /tmp/verified-promotion
+          name: staged-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/staged-promotion/candidates
 
-      - name: Open promotion PR and enable auto-merge
+      - name: Download audit-verdicts.json from audit-untrusted-lean
+        uses: actions/download-artifact@v7
+        with:
+          name: audit-verdicts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/audit-verdicts
+
+      - name: Validate audit-verdicts.json schema strictly via jq regex before Rust reconstruction
+        run: |
+          set -euo pipefail
+          jq -e '
+            .schema == "swarm.lean-audit-verdicts/v1" and
+            .network == "mainnet" and
+            (.passed_task_ids | type == "array" and all(type == "string" and test("^[A-Za-z0-9:._-]{1,128}$"))) and
+            (.rejected | type == "array" and all(
+              type == "object" and
+              (.task_id | type == "string" and test("^[A-Za-z0-9:._-]{1,128}$")) and
+              (.artifact_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+              (.reason | type == "string")
+            ))
+          ' /tmp/audit-verdicts/audit-verdicts.json > /dev/null
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proof-registry
+
+      - name: Reconstruct verified modules from trusted staged candidates (Rust only, no Lean)
+        run: |
+          set -euo pipefail
+          cargo run --locked -p xtask -- apply-verified-promotions \
+            --staged-dir /tmp/staged-promotion/candidates \
+            --verdicts /tmp/audit-verdicts/audit-verdicts.json \
+            --registry proofs/SwarmProofs/registry.json \
+            --package proofs/SwarmProofs \
+            --rejected-file proofs/SwarmProofs/rejected-candidates.json
+          cargo run --locked -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
+
+      - name: Open or update single canonical promotion PR and enable auto-merge
         env:
           GH_TOKEN: ${{ secrets.PROMOTE_BOT_TOKEN }}
         run: |
           set -euo pipefail
-          cp /tmp/verified-promotion/registry.json proofs/SwarmProofs/registry.json
-          mkdir -p proofs/SwarmProofs/SwarmProofs/Generated
-          for gen_file in /tmp/verified-promotion/SwarmProofs/Generated/H*.lean; do
-            [ -e "$gen_file" ] || continue
-            base_name="$(basename "$gen_file")"
-            case "$base_name" in
-              H[0-9a-f]*.lean)
-                cp "$gen_file" "proofs/SwarmProofs/SwarmProofs/Generated/${base_name}"
-                ;;
-              *)
-                echo "::error::Refusing unexpected generated file name: ${base_name}"
-                exit 1
-                ;;
-            esac
-          done
-
-          if git diff --quiet -- proofs/SwarmProofs/registry.json && [ -z "$(git status --porcelain -- proofs/SwarmProofs/SwarmProofs/Generated)" ]; then
+          if git diff --quiet -- proofs/SwarmProofs/registry.json proofs/SwarmProofs/rejected-candidates.json && \
+             [ -z "$(git status --porcelain -- proofs/SwarmProofs/SwarmProofs/Generated)" ]; then
             echo "No net changes against main."
             exit 0
           fi
 
           REG_HASH="$(sha256sum proofs/SwarmProofs/registry.json | cut -c1-12)"
-          BRANCH="promote/swarm-proofs-${REG_HASH}"
+          BRANCH="promote/swarm-proofs-auto"
+          PASSED_COUNT="$(jq '.passed_task_ids | length' /tmp/audit-verdicts/audit-verdicts.json)"
+          REJECTED_COUNT="$(jq '.rejected | length' /tmp/audit-verdicts/audit-verdicts.json)"
 
           git config user.name "swarm-proof-promoter[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          git add proofs/SwarmProofs/registry.json proofs/SwarmProofs/SwarmProofs/Generated
-          COUNT="$(jq '.candidates | length' /tmp/verified-promotion/manifest.json)"
-          git commit -m "chore(proofs): autopromote ${COUNT} verified policy-4 module(s) (${REG_HASH})"
+          git add proofs/SwarmProofs/registry.json proofs/SwarmProofs/rejected-candidates.json
+          if [ -d proofs/SwarmProofs/SwarmProofs/Generated ]; then
+            git add proofs/SwarmProofs/SwarmProofs/Generated
+          fi
+          git commit -m "chore(proofs): autopromote ${PASSED_COUNT} verified policy-4 module(s), record ${REJECTED_COUNT} rejection(s) (${REG_HASH})"
           git push --force-with-lease origin "$BRANCH"
+
+          # Close any stale legacy promote/swarm-proofs-* PRs other than canonical promote/swarm-proofs-auto
+          STALE_PRS="$(gh pr list --base main --state open --json number,headRefName --jq '.[] | select((.headRefName | startswith("promote/swarm-proofs-")) and (.headRefName != "promote/swarm-proofs-auto")) | .number')"
+          for pr_num in $STALE_PRS; do
+            gh pr close "$pr_num" --delete-branch --comment "Superseded by canonical single-PR branch \`promote/swarm-proofs-auto\`." || true
+          done
+
+          TITLE="chore(proofs): autopromote ${PASSED_COUNT} verified policy-4 module(s) (${REG_HASH})"
+          BODY="Automated promotion of finalized \`platform=10\`, \`lean_policy=4\`, \`score=1_000_000\` proof module(s) reconstructed purely in Rust from trusted \`fetch-and-stage\` candidates after isolated per-candidate \`lake build\`, \`check-statement-expr-stability\`, \`nanoda\`, and axiom audit (${PASSED_COUNT} promoted, ${REJECTED_COUNT} audit rejection(s) recorded)."
 
           EXISTING_PR="$(gh pr list --head "$BRANCH" --base main --state open --json url --jq '.[0].url // empty')"
           if [ -z "$EXISTING_PR" ]; then
             PR_URL="$(gh pr create \
               --base main \
               --head "$BRANCH" \
-              --title "chore(proofs): autopromote ${COUNT} verified policy-4 module(s) (${REG_HASH})" \
-              --body "Automated promotion of finalized \`platform=10\`, \`lean_policy=4\`, \`score=1_000_000\` proof module(s) verified by \`lake build\`, \`check-statement-expr-stability\`, \`nanoda\`, and axiom audit.")"
+              --title "$TITLE" \
+              --body "$BODY")"
           else
             PR_URL="$EXISTING_PR"
+            gh pr edit "$PR_URL" --title "$TITLE" --body "$BODY"
           fi
           echo "Promotion PR: $PR_URL"
           gh pr merge "$PR_URL" --auto --squash

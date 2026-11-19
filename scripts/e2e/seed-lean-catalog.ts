@@ -17,8 +17,14 @@
  *      `lake env lean` inside `proofs/SwarmProofs` with strict exhaustion parsing; and
  *   2. Live `shillbot-lean-runner` Stage A1 elaboration + fast tactic-blast probes.
  *
- * DEVNET ONLY (real devnet SOL from id.json). Seeding with REAL mainnet SOL is a
- * founder decision — do NOT point this at mainnet without explicit sign-off.
+ * IMMUTABILITY AFTER POSTING: Editing `open/<stem>.lean` in place after a campaign has
+ * been posted intentionally blocks registry promotion of in-flight tasks carrying the old
+ * `statement_sha256` (`verify_catalog_statement_bytes` enforces exact byte-for-byte hash
+ * parity against `open/<stem>.lean`). To revise a posted statement, move the old file to
+ * `retired/` and create a new stem under `open/`.
+ *
+ * Supports `--network devnet` (default) and `--network mainnet` / `--mainnet`. Seeding
+ * with REAL mainnet SOL is a founder decision — do NOT point this at mainnet without sign-off.
  */
 import * as fs from "fs";
 import * as os from "os";
@@ -59,15 +65,73 @@ export const ALLOWED_SWARM_LIBRARY_IMPORTS = new Set([
   "SwarmProofs.Chains.RHLagarias.Defs.V1",
 ]);
 
+export const UNFOLD_DEFS_BY_MODULE: Record<string, readonly string[]> = {
+  "SwarmProofs.Chains.RHLagarias.Defs.V1": [
+    "lagariasBound",
+    "isSuperabundant",
+    "isSquarefreePos",
+    "lagariasEnvelopeRat",
+    "expUpperRat",
+    "logUpperRat",
+    "sigmaDivisors",
+    "sigmaNat",
+    "sigmaRat",
+    "harmonicNum",
+    "harmonicRat",
+  ],
+  "SwarmProofs.Chains.RHAnalytic.Defs.V1": [
+    "mertensSum",
+    "mobiusInt",
+    "primeFactorCount",
+    "squarePrimeFactorCount",
+  ],
+  "SwarmProofs.Chains.BSD.Defs.V1": [
+    "isCongruentNumber",
+    "isCongruentTriangle",
+  ],
+  "SwarmProofs.Chains.Circuits.Defs.V1": [
+    "evalCircuitFin",
+    "evalCircuit",
+    "isDeMorganOp",
+  ],
+};
+
+/**
+ * Wrapper definitions unfolded first via `dsimp only [...]` before `simp only [bridge_*]`
+ * rewrites the underlying bridged arithmetic/divisor/harmonic/Möbius definitions.
+ */
+export const WRAPPER_DEFS_BY_MODULE: Record<string, readonly string[]> = {
+  "SwarmProofs.Chains.RHLagarias.Defs.V1": [
+    "lagariasBound",
+    "isSuperabundant",
+    "lagariasEnvelopeRat",
+    "expUpperRat",
+    "logUpperRat",
+  ],
+  "SwarmProofs.Chains.RHAnalytic.Defs.V1": ["squarePrimeFactorCount"],
+  "SwarmProofs.Chains.BSD.Defs.V1": [
+    "isCongruentNumber",
+    "isCongruentTriangle",
+  ],
+  "SwarmProofs.Chains.Circuits.Defs.V1": [
+    "evalCircuitFin",
+    "evalCircuit",
+    "isDeMorganOp",
+  ],
+};
+
 export const BRIDGE_LEMMAS_BY_DEFS_MODULE: Record<string, readonly string[]> = {
   "SwarmProofs.Chains.RHAnalytic.Defs.V1": [
     "bridge_primeFactorCount",
     "bridge_mobiusInt",
+    "bridge_mertensSum",
     "bridge_primorial",
   ],
   "SwarmProofs.Chains.RHLagarias.Defs.V1": [
     "bridge_sigmaNat",
+    "bridge_sigmaRat",
     "bridge_sigmaDivisors",
+    "bridge_isSquarefreePos",
     "bridge_harmonicRat",
     "bridge_harmonicNum",
   ],
@@ -75,51 +139,112 @@ export const BRIDGE_LEMMAS_BY_DEFS_MODULE: Record<string, readonly string[]> = {
   "SwarmProofs.Chains.Circuits.Defs.V1": [],
 };
 
-export const FORBIDDEN_COMPOSITION_SUBSTRINGS = [
-  "axiom ",
+export const FORBIDDEN_SHARED_WORD_TOKENS = [
+  "axiom",
   "sorry",
+  "sorryAx",
   "admit",
-  "unsafe ",
-  "partial ",
-  "opaque ",
-  "extern ",
+  "unsafe",
+  "partial",
+  "opaque",
+  "meta",
+  "constant",
+  "extern",
   "implemented_by",
   "csimp",
-  "macro ",
+  "macro",
   "macro_rules",
-  "syntax ",
-  "elab ",
+  "syntax",
+  "elab",
   "elab_rules",
   "command_elab",
   "term_elab",
-  "notation ",
+  "notation",
   "infix",
-  "prefix ",
-  "postfix ",
-  "attribute ",
-  "variable ",
-  "variable(",
-  "variable[",
-  "variable{",
-  "instance ",
-  "instance(",
-  "instance[",
-  "instance{",
-  "class ",
+  "infixl",
+  "infixr",
+  "prefix",
+  "postfix",
+  "attribute",
+  "deriving",
+  "variable",
   "run_tac",
+  "run_cmd",
   "run_elab",
   "by_elab",
   "native_decide",
+  "ofReduceBool",
+  "trustCompiler",
+  "instance",
+  "class",
+  "initialize",
+  "builtin_initialize",
+  "unif_hint",
+  "declare_syntax_cat",
+  "simproc",
+  "namespace",
+  "section",
+  "end",
+  "local",
+  "scoped",
+] as const;
+
+export const FORBIDDEN_COMPOSITION_SUBSTRINGS = [
+  "@[",
   "#eval",
   "#check",
   "#print",
   "#reduce",
   "#synth",
-  "namespace ",
-  "section ",
-  "local ",
-  "scoped ",
 ] as const;
+
+export function stripLeanComments(source: string): string {
+  let out = "";
+  let blockDepth = 0;
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i];
+    const next = i + 1 < source.length ? source[i + 1] : "";
+    if (blockDepth > 0) {
+      if (ch === "/" && next === "-") {
+        blockDepth++;
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      if (ch === "-" && next === "/") {
+        blockDepth--;
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      i++;
+      continue;
+    }
+    if (ch === "/" && next === "-") {
+      blockDepth = 1;
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    if (ch === "-" && next === "-") {
+      while (i < source.length && source[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  if (blockDepth !== 0) {
+    throw new Error(
+      "[COMPOSABILITY GATE FAILED] unclosed Lean block comment '/-' in statement"
+    );
+  }
+  return out;
+}
 
 export const MALFORMED_PROBE_DETAIL_MARKERS = [
   "does not exist",
@@ -405,7 +530,7 @@ export const CHAIN_TASK_CONFIG: Record<string, ChainTaskMeta> = {
   "chain-rh-meta-2-nonstandard-ultrapower-pi1": {
     escrowLamports: 20_000_000,
     dependsOn: "chain-rh-meta-1-lagarias-pi1-rational-envelope",
-    cta: `Track E [Rung 2/4 -> Pi1 RH Metamathematics]: Prove full Delta_0 Los ultrapower theorem & nonstandard Lagarias truncation transfer (provable landmark) ${SPDX_CTA_NOTE}`,
+    cta: `Track E [Rung 2/4 -> Pi1 RH Metamathematics]: Prove full Delta_0 Los ultrapower theorem & Robinson Delta_0 overspill (provable landmark) ${SPDX_CTA_NOTE}`,
   },
   "chain-rh-meta-3-godel-kleene-pi1-unprovability": {
     escrowLamports: 30_000_000,
@@ -647,25 +772,27 @@ export function assertOuterExistentialQuantifierOrder(
  * token, boundary, import, and SPDX-instruction invariants.
  */
 export function assertRegistryComposableStatement(entry: CatalogEntry): void {
-  for (const token of FORBIDDEN_COMPOSITION_SUBSTRINGS) {
-    if (entry.statement.includes(token)) {
+  const strippedCode = stripLeanComments(entry.statement);
+  for (const sub of FORBIDDEN_COMPOSITION_SUBSTRINGS) {
+    if (strippedCode.includes(sub)) {
       throw new Error(
-        `[COMPOSABILITY GATE FAILED] ${entry.name} contains forbidden substring '${token}' (rejected by proof_registry::compose_generated_module)`
+        `[COMPOSABILITY GATE FAILED] ${entry.name} contains forbidden substring '${sub}' (rejected by proof_registry::compose_generated_module)`
+      );
+    }
+  }
+  const forbiddenSet = new Set<string>(FORBIDDEN_SHARED_WORD_TOKENS);
+  const codeWords = strippedCode
+    .split(/[^\p{L}\p{N}_']+/u)
+    .filter(Boolean);
+  for (const word of codeWords) {
+    if (forbiddenSet.has(word)) {
+      throw new Error(
+        `[COMPOSABILITY GATE FAILED] ${entry.name} contains forbidden declaration/command token '${word}' (rejected by proof_registry::compose_generated_module)`
       );
     }
   }
   for (const line of entry.statement.split("\n")) {
     const trimmed = line.trimStart();
-    if (
-      trimmed === "section" ||
-      trimmed === "end" ||
-      trimmed.startsWith("end ") ||
-      trimmed.startsWith("end\t")
-    ) {
-      throw new Error(
-        `[COMPOSABILITY GATE FAILED] ${entry.name} contains forbidden section/end command '${trimmed}'`
-      );
-    }
     if (trimmed.startsWith("import ") || trimmed.startsWith("import\t")) {
       const withoutComment = trimmed.split("--")[0];
       const mods = withoutComment
@@ -873,6 +1000,8 @@ export function hasExistentialUniversalStructure(statement: string): boolean {
 
 export function resolveBridgeLemmasForStatement(rawStatement: string): {
   defsModules: string[];
+  unfoldDefs: string[];
+  wrapperDefs: string[];
   bridgeLemmas: string[];
 } {
   const importedDefs: string[] = [];
@@ -896,13 +1025,20 @@ export function resolveBridgeLemmasForStatement(rawStatement: string): {
     importedDefs.length > 0
       ? importedDefs
       : Object.keys(BRIDGE_LEMMAS_BY_DEFS_MODULE);
+  const unfoldSet = new Set<string>();
+  const wrapperSet = new Set<string>();
   const bridgeSet = new Set<string>();
   for (const mod of defsModules) {
-    for (const lem of BRIDGE_LEMMAS_BY_DEFS_MODULE[mod] ?? []) {
-      bridgeSet.add(lem);
-    }
+    for (const d of UNFOLD_DEFS_BY_MODULE[mod] ?? []) unfoldSet.add(d);
+    for (const w of WRAPPER_DEFS_BY_MODULE[mod] ?? []) wrapperSet.add(w);
+    for (const lem of BRIDGE_LEMMAS_BY_DEFS_MODULE[mod] ?? []) bridgeSet.add(lem);
   }
-  return { defsModules, bridgeLemmas: [...bridgeSet] };
+  return {
+    defsModules,
+    unfoldDefs: [...unfoldSet],
+    wrapperDefs: [...wrapperSet],
+    bridgeLemmas: [...bridgeSet],
+  };
 }
 
 export type MathlibProbeKind =
@@ -965,10 +1101,7 @@ export function classifyMathlibProbeSlice(
     }
     case "solve-by-elim": {
       if (!hasError && !hasSorryAx) return "SOLVED";
-      if (
-        hasSorryAx &&
-        (slice.includes("error: failed") || slice.includes("unsolved goals"))
-      ) {
+      if (hasSorryAx && slice.includes("swarm_solve_by_elim: exhausted")) {
         return "EXHAUSTED";
       }
       throw new Error(
@@ -977,17 +1110,11 @@ export function classifyMathlibProbeSlice(
     }
     case "apply-assumption": {
       if (!hasError && !hasSorryAx) return "SOLVED";
-      if (
-        hasSorryAx &&
-        (slice.includes("`apply?` could not close the goal") ||
-          slice.includes("didn't find any relevant lemmas") ||
-          slice.includes("Try this:") ||
-          slice.includes("found a partial proof"))
-      ) {
+      if (hasSorryAx && slice.includes("swarm_apply_assumption: exhausted (")) {
         return "EXHAUSTED";
       }
       throw new Error(
-        `[MATHLIB SEARCH FAIL-CLOSED] Unexpected 'apply?' output on '${theoremIdent}':\n${slice}`
+        `[MATHLIB SEARCH FAIL-CLOSED] Unexpected 'swarm_apply_assumption' output on '${theoremIdent}':\n${slice}`
       );
     }
     case "hint": {
@@ -1074,125 +1201,125 @@ export function buildMathlibProbeSpecsForEntry(
   rawStatement: string,
   hasParentImplication: boolean
 ): MathlibProbeSpec[] {
-  const { bridgeLemmas } = resolveBridgeLemmasForStatement(rawStatement);
-  const simpPos =
-    bridgeLemmas.length > 0
-      ? `  (try simp only [${bridgeLemmas.join(", ")}])\n`
+  const { wrapperDefs, bridgeLemmas } =
+    resolveBridgeLemmasForStatement(rawStatement);
+  const dsimpAll =
+    wrapperDefs.length > 0
+      ? `  (try dsimp only [${wrapperDefs.join(", ")}] at *)\n`
       : "";
-  const simpNeg =
+  const simpAll =
     bridgeLemmas.length > 0
-      ? `  (try simp only [${bridgeLemmas.join(", ")}] at __h_neg ⊢)\n`
-      : "";
-  const simpDep =
-    bridgeLemmas.length > 0
-      ? `  (try simp only [${bridgeLemmas.join(", ")}] at __h_parent ⊢)\n`
+      ? `  (try simp only [${bridgeLemmas.join(", ")}] at *)\n`
       : "";
 
+  const normPos = dsimpAll + simpAll;
+  const normNeg = dsimpAll + simpAll;
+  const normDep = dsimpAll + simpAll;
+
   const specs: MathlibProbeSpec[] = [
-    // Place `apply-assumption` FIRST so zero earlier theorems exist in the environment when `apply?` scans!
+    // Place `apply-assumption` FIRST so zero earlier theorems exist in the environment when `librarySearch` scans!
     {
       label: "positive-apply-assumption",
       kind: "apply-assumption",
       targetExpr: "statementProp",
-      maxHeartbeats: 400_000,
+      maxHeartbeats: 0,
       tacticBody:
         `  unfold statementProp\n` +
         `  intros\n` +
-        simpPos +
+        normPos +
         `  swarm_apply_assumption`,
     },
     {
       label: "negative-apply-assumption",
       kind: "apply-assumption",
       targetExpr: "¬ statementProp",
-      maxHeartbeats: 400_000,
+      maxHeartbeats: 0,
       tacticBody:
         `  unfold statementProp\n` +
         `  intro __h_neg\n` +
-        simpNeg +
+        normNeg +
         `  swarm_apply_assumption`,
     },
     {
       label: "positive-solve-by-elim",
       kind: "solve-by-elim",
       targetExpr: "statementProp",
-      maxHeartbeats: 400_000,
+      maxHeartbeats: 0,
       tacticBody:
         `  unfold statementProp\n` +
         `  intros\n` +
-        simpPos +
-        `  solve_by_elim (maxDepth := 4)`,
+        normPos +
+        `  first | done | solve_by_elim (maxDepth := 4) | fail "swarm_solve_by_elim: exhausted"`,
     },
     {
       label: "negative-solve-by-elim",
       kind: "solve-by-elim",
       targetExpr: "¬ statementProp",
-      maxHeartbeats: 400_000,
+      maxHeartbeats: 0,
       tacticBody:
         `  unfold statementProp\n` +
         `  intro __h_neg\n` +
-        simpNeg +
-        `  solve_by_elim (maxDepth := 4)`,
+        normNeg +
+        `  first | done | solve_by_elim (maxDepth := 4) | fail "swarm_solve_by_elim: exhausted"`,
     },
     {
       label: "positive-exact",
       kind: "exact",
       targetExpr: "statementProp",
-      maxHeartbeats: 400_000,
+      maxHeartbeats: 0,
       tacticBody:
-        `  unfold statementProp\n` + `  intros\n` + simpPos + `  exact?`,
+        `  unfold statementProp\n` +
+        `  intros\n` +
+        normPos +
+        `  first | (refine And.intro ?_ ?_ <;> exact?) | exact?`,
     },
     {
       label: "negative-exact",
       kind: "exact",
       targetExpr: "¬ statementProp",
-      maxHeartbeats: 400_000,
+      maxHeartbeats: 0,
       tacticBody:
-        `  unfold statementProp\n` +
-        (bridgeLemmas.length > 0
-          ? `  (try simp only [${bridgeLemmas.join(", ")}])\n`
-          : "") +
-        `  exact?`,
+        `  unfold statementProp\n` + normPos + `  exact?`,
     },
     {
       label: "positive-hint",
       kind: "hint",
       targetExpr: "statementProp",
-      maxHeartbeats: 4_000_000,
+      maxHeartbeats: 0,
       tacticBody:
-        `  unfold statementProp\n` + `  intros\n` + simpPos + `  hint`,
+        `  unfold statementProp\n` + `  intros\n` + normPos + `  hint`,
     },
     {
       label: "negative-hint",
       kind: "hint",
       targetExpr: "¬ statementProp",
-      maxHeartbeats: 4_000_000,
+      maxHeartbeats: 0,
       tacticBody:
         `  unfold statementProp\n` +
         `  intro __h_neg\n` +
-        simpNeg +
+        normNeg +
         `  hint`,
     },
     {
       label: "positive-aesop",
       kind: "aesop",
       targetExpr: "statementProp",
-      maxHeartbeats: 4_000_000,
+      maxHeartbeats: 0,
       tacticBody:
         `  unfold statementProp\n` +
         `  intros\n` +
-        simpPos +
+        normPos +
         `  aesop (config := { maxRuleApplicationDepth := 30, maxRuleApplications := 200 })`,
     },
     {
       label: "negative-aesop",
       kind: "aesop",
       targetExpr: "¬ statementProp",
-      maxHeartbeats: 4_000_000,
+      maxHeartbeats: 0,
       tacticBody:
         `  unfold statementProp\n` +
         `  intro __h_neg\n` +
-        simpNeg +
+        normNeg +
         `  aesop (config := { maxRuleApplicationDepth := 30, maxRuleApplications := 200 })`,
     },
   ];
@@ -1203,24 +1330,24 @@ export function buildMathlibProbeSpecsForEntry(
         label: "dependency-exact",
         kind: "exact",
         targetExpr: "parentStatementProp → statementProp",
-        maxHeartbeats: 4_000_000,
+        maxHeartbeats: 0,
         tacticBody:
           `  unfold parentStatementProp statementProp\n` +
           `  intro __h_parent\n` +
           `  intros\n` +
-          simpDep +
+          normDep +
           `  exact?`,
       },
       {
         label: "dependency-aesop",
         kind: "aesop",
         targetExpr: "parentStatementProp → statementProp",
-        maxHeartbeats: 4_000_000,
+        maxHeartbeats: 0,
         tacticBody:
           `  unfold parentStatementProp statementProp\n` +
           `  intro __h_parent\n` +
           `  intros\n` +
-          simpDep +
+          normDep +
           `  aesop (config := { maxRuleApplicationDepth := 30, maxRuleApplications := 200 })`,
       }
     );
@@ -1239,14 +1366,15 @@ export interface RunMathlibSearchOptions {
 
 /**
  * Runs the full-`import Mathlib` + `Defs.V1` bridge-lemma search gate via `lake env lean`
- * inside `proofs/SwarmProofs`, enforcing strict exhaustion parsing on every probe.
+ * inside `proofs/SwarmProofs`, enforcing `set_option maxHeartbeats 0` + 600s OS wall-clock
+ * fail-closed cap and strict exhaustion parsing on every probe.
  */
 export function runFullMathlibSearchProbes(
   entry: CatalogEntry,
   opts: RunMathlibSearchOptions = {}
 ): MathlibSearchGateResult {
   const swarmProofsRoot = opts.swarmProofsRoot ?? SWARM_PROOFS_ROOT;
-  const wallTimeoutMs = opts.wallTimeoutMs ?? 300_000;
+  const wallTimeoutMs = opts.wallTimeoutMs ?? 600_000;
   const t0 = Date.now();
 
   const combinedForImports = opts.parentRawStatement
@@ -1268,12 +1396,32 @@ export function runFullMathlibSearchProbes(
     "set_option maxRecDepth 16384",
     "",
     "elab \"swarm_apply_assumption\" : tactic => do",
-    "  let (_, goal) ← (← Lean.Elab.Tactic.getMainGoal).intros",
+    "  let goal ← Lean.Elab.Tactic.getMainGoal",
     "  goal.withContext do",
+    "    let savedMCtx ← Lean.getMCtx",
     "    match ← Lean.Meta.LibrarySearch.librarySearch goal",
-    "      (fun gs => Lean.Meta.LibrarySearch.solveByElim [] false gs 2) with",
-    "    | none => Lean.Elab.Tactic.setGoals []",
-    "    | some _ => throwError \"`apply?` could not close the goal\"",
+    "      (fun gs => Lean.Meta.LibrarySearch.solveByElim [] false gs 1) with",
+    "    | none =>",
+    "      Lean.Elab.Tactic.setGoals []",
+    "      Lean.logInfo \"swarm_apply_assumption: closed\"",
+    "    | some #[] =>",
+    "      throwError \"swarm_apply_assumption: exhausted (0 partial candidates)\"",
+    "    | some candidates =>",
+    "      for (remGoals, candMCtx) in candidates do",
+    "        Lean.setMCtx candMCtx",
+    "        let closedAll ← (Lean.Meta.withAssignableSyntheticOpaque do",
+    "          for (g : Lean.MVarId) in remGoals do",
+    "            let assigned ← Lean.MVarId.isAssigned g",
+    "            if !assigned then",
+    "              Lean.MVarId.assumption g",
+    "          let proofExpr ← Lean.instantiateMVars (Lean.mkMVar goal)",
+    "          return (!proofExpr.hasExprMVar && !proofExpr.hasLevelMVar)) <|> pure false",
+    "        if closedAll then",
+    "          Lean.Elab.Tactic.setGoals []",
+    "          Lean.logInfo \"swarm_apply_assumption: closed\"",
+    "          return",
+    "      Lean.setMCtx savedMCtx",
+    "      throwError s!\"swarm_apply_assumption: exhausted ({candidates.size} partial candidates, none closed by assumption)\"",
     "",
   ];
 
@@ -1372,14 +1520,8 @@ export function runFullMathlibSearchProbes(
   });
   for (const spec of reportOrder) {
     if (probeVerdicts[spec.label] === "SOLVED") {
-      const displayLabel =
-        spec.label === "positive-solve-by-elim"
-          ? "positive-apply-assumption"
-          : spec.label === "negative-solve-by-elim"
-          ? "negative-apply-assumption"
-          : spec.label;
       throw new Error(
-        `[ANTI-VACUITY / TRIVIALITY GATE FAILED] ${entry.name} was solved trivially by full-Mathlib probe '${displayLabel}' (${spec.label})! Refusing to seed.`
+        `[ANTI-VACUITY / TRIVIALITY GATE FAILED] ${entry.name} was solved trivially by full-Mathlib probe '${spec.label}'! Refusing to seed.`
       );
     }
   }
@@ -1943,6 +2085,35 @@ async function verifyReductionChainFiles(): Promise<void> {
   }
 }
 
+export function parseNetworkArg(
+  argv: string[] = process.argv,
+  env: NodeJS.ProcessEnv = process.env
+): "mainnet" | "devnet" {
+  const hasMainnetFlag = argv.includes("--mainnet");
+  const eqArg = argv.find((a) => a.startsWith("--network="));
+  const idx = argv.indexOf("--network");
+  const explicitRaw = eqArg
+    ? eqArg.slice("--network=".length).trim().toLowerCase()
+    : idx >= 0 && idx + 1 < argv.length
+    ? argv[idx + 1].trim().toLowerCase()
+    : undefined;
+  if (explicitRaw !== undefined) {
+    if (explicitRaw !== "mainnet" && explicitRaw !== "devnet") {
+      throw new Error(
+        `Invalid --network value '${explicitRaw}'; expected 'devnet' or 'mainnet'`
+      );
+    }
+    if (hasMainnetFlag && explicitRaw !== "mainnet") {
+      throw new Error("Conflicting --mainnet and --network=devnet flags");
+    }
+    return explicitRaw;
+  }
+  if (hasMainnetFlag || env.SOLANA_NETWORK === "mainnet") {
+    return "mainnet";
+  }
+  return "devnet";
+}
+
 export function parseLeanPolicyArg(
   argv: string[] = process.argv
 ): 1 | 2 | 3 | 4 {
@@ -1969,9 +2140,8 @@ async function main(): Promise<void> {
       "--skip-precheck is forbidden: every seeded statement must pass the triviality & elaboration gate"
     );
   }
-  const isMainnet =
-    process.argv.includes("--mainnet") ||
-    process.env.SOLANA_NETWORK === "mainnet";
+  const parsedNetwork = parseNetworkArg(process.argv, process.env);
+  const isMainnet = parsedNetwork === "mainnet";
   const checkOnly = process.argv.includes("--check-only");
   const mathlibOnly = process.argv.includes("--mathlib-only");
   const runnerOnly = process.argv.includes("--runner-only");
@@ -1982,7 +2152,7 @@ async function main(): Promise<void> {
     .find((a) => a.startsWith("--reserved-for-wallet="))
     ?.replace("--reserved-for-wallet=", "")
     .trim();
-  const network = isMainnet ? "mainnet" : "devnet";
+  const network = parsedNetwork;
   const leanPolicy = parseLeanPolicyArg(process.argv);
 
   if ((mathlibOnly || runnerOnly) && !checkOnly) {

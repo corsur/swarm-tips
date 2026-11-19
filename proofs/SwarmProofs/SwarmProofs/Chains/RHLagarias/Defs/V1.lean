@@ -176,6 +176,27 @@ theorem bridge_sigmaNat (n : ℕ) :
     rw [hset]
     exact Finset.sum_congr rfl (fun d _ => (pow_one d).symm)
 
+/-- Canonical bridge lemma matching `sigmaRat` with `(ArithmeticFunction.sigma 1 n : ℚ)`. -/
+theorem bridge_sigmaRat (n : ℕ) :
+    sigmaRat n = (ArithmeticFunction.sigma 1 n : ℚ) := by
+  have hcast : sigmaRat n = (sigmaNat n : ℚ) := by
+    unfold sigmaRat sigmaNat
+    push_cast
+    rfl
+  rw [hcast, bridge_sigmaNat]
+
+/-- Canonical bridge lemma matching `isSquarefreePos` with `0 < n ∧ Squarefree n`. -/
+theorem bridge_isSquarefreePos (n : ℕ) :
+    isSquarefreePos n ↔ (0 < n ∧ Squarefree n) := by
+  unfold isSquarefreePos
+  rw [Nat.squarefree_iff_prime_squarefree]
+  constructor
+  · rintro ⟨hpos, hno⟩
+    refine ⟨hpos, fun p hp hpp => ?_⟩
+    exact hno p (Nat.le_of_dvd hpos (dvd_trans ⟨p, rfl⟩ hpp)) hp hpp
+  · rintro ⟨hpos, hsq⟩
+    exact ⟨hpos, fun p _ hp => hsq p hp⟩
+
 /-- Canonical bridge lemma matching `sigmaDivisors` with `(ArithmeticFunction.sigma 1 n : ℝ)`. -/
 theorem bridge_sigmaDivisors (n : ℕ) :
     sigmaDivisors n = (ArithmeticFunction.sigma 1 n : ℝ) := by

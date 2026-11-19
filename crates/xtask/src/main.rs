@@ -8,6 +8,7 @@ mod firestore_ops;
 mod http;
 mod inbox_eval;
 mod mirror_proof_registry;
+mod promote_pipeline;
 mod proof_audit;
 #[cfg(test)]
 mod python_guardrail_tests;
@@ -30,7 +31,10 @@ Subcommands:
   check-promoted-statements-expr-stability <package-root> <lean4export-bin> <candidates-dir>
   write-proof-verification-receipt <report-root> <lean4export-rev> <nanoda-rev>
   check-proof-axiom-audit <audit-output.txt> [registry.json]
-  fetch-promotion-candidates --out-dir <dir> [--api <url>] [--network <net>] [--bucket <gcs-bucket>] [--project <gcp-project>] [--registry <path>] [--catalog-dir <dir>] [--allowed-poster <wallet>] [--tasks-file <json>]
+  fetch-promotion-candidates --out-dir <dir> [--api <url>] [--network <net>] [--bucket <gcs-bucket>] [--project <gcp-project>] [--registry <path>] [--catalog-dir <dir>] [--allowed-poster <wallet>] [--tasks-file <json>] [--rejected-file <json>] [--dry-run-registry <tmp-dir>] [--task-id <id>]
+  audit-staged-candidates --staged-dir <dir> --verdicts-out <json> [--package <dir>] [--network <net>] [--skip-nanoda]
+  apply-verified-promotions --staged-dir <dir> --verdicts <json> [--registry <path>] [--package <dir>] [--rejected-file <json>] [--public-base-url <url>]
+  promote-pipeline --network <net> --dry-run-registry <tmp-dir> [--api <url>] [--bucket <gcs-bucket>] [--project <gcp-project>] [--catalog-dir <dir>] [--allowed-poster <wallet>] [--tasks-file <json>] [--task-id <id>] [--skip-nanoda]
   mirror-proof-registry --project <gcp-project> --package <package-root>
   audit-stuck-shillbot [--project <gcp-project>] [--rpc <solana-rpc-url>]
   reconcile-firestore-state <task-id> <new-state> [--project <gcp-project>] [--execute|--apply]
@@ -126,8 +130,24 @@ fn dispatch(args: &[String]) -> Result<()> {
             proof_audit::check_proof_axiom_audit(Path::new(&rest[0]), reg).map(|_| ())
         }
         "fetch-promotion-candidates" => {
-            let fetch_args = parse_fetch_candidates_args(rest)?;
+            let fetch_args = parse_fetch_candidates_args(rest, true)?;
             fetch_promotion_candidates::run_fetch_promotion_candidates(&fetch_args)
+        }
+        "audit-staged-candidates" => {
+            let root = workspace_root()?;
+            let audit_args = parse_audit_staged_args(rest)?;
+            promote_pipeline::run_audit_staged_candidates(&root, &audit_args)
+        }
+        "apply-verified-promotions" => {
+            let apply_args = parse_apply_verified_args(rest)?;
+            let count = promote_pipeline::apply_verified_promotions(&apply_args)?;
+            println!("reconstructed and promoted {count} verified candidate(s)");
+            Ok(())
+        }
+        "promote-pipeline" => {
+            let root = workspace_root()?;
+            let pipe_args = parse_promote_pipeline_args(rest)?;
+            promote_pipeline::run_promote_pipeline(&root, &pipe_args)
         }
         "mirror-proof-registry" => {
             let (project, package) = parse_mirror_args(rest)?;
@@ -271,7 +291,10 @@ fn parse_reconcile_args(args: &[String]) -> Result<ReconcileArgs> {
     })
 }
 
-fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
+fn parse_fetch_candidates_args(
+    args: &[String],
+    require_out_dir: bool,
+) -> Result<FetchCandidatesArgs> {
     let root = workspace_root()?;
     let mut api_base = String::from(fetch_promotion_candidates::DEFAULT_SHILLBOT_API);
     let mut network = String::from(fetch_promotion_candidates::DEFAULT_NETWORK);
@@ -281,6 +304,15 @@ fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
         .join("proofs")
         .join("SwarmProofs")
         .join("registry.json");
+    let default_rejected = root
+        .join("proofs")
+        .join("SwarmProofs")
+        .join("rejected-candidates.json");
+    let mut rejected_file: Option<PathBuf> = if default_rejected.is_file() {
+        Some(default_rejected)
+    } else {
+        None
+    };
     let mut catalog_dir = root
         .join("tests")
         .join("fixtures")
@@ -289,6 +321,8 @@ fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
     let mut custom_posters: Vec<String> = Vec::new();
     let mut out_dir: Option<PathBuf> = None;
     let mut tasks_file: Option<PathBuf> = None;
+    let mut dry_run_registry: Option<PathBuf> = None;
+    let mut only_task_id: Option<String> = None;
     let mut firestore_fallback = true;
 
     let mut i = 0usize;
@@ -326,6 +360,12 @@ fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
             out_dir = Some(PathBuf::from(take_val("--out-dir", &mut i)?));
         } else if arg == "--tasks-file" || arg.starts_with("--tasks-file=") {
             tasks_file = Some(PathBuf::from(take_val("--tasks-file", &mut i)?));
+        } else if arg == "--rejected-file" || arg.starts_with("--rejected-file=") {
+            rejected_file = Some(PathBuf::from(take_val("--rejected-file", &mut i)?));
+        } else if arg == "--dry-run-registry" || arg.starts_with("--dry-run-registry=") {
+            dry_run_registry = Some(PathBuf::from(take_val("--dry-run-registry", &mut i)?));
+        } else if arg == "--task-id" || arg.starts_with("--task-id=") {
+            only_task_id = Some(take_val("--task-id", &mut i)?);
         } else if arg == "--no-firestore-fallback" {
             firestore_fallback = false;
             i += 1;
@@ -345,7 +385,14 @@ fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
     } else {
         custom_posters
     };
-    let out_dir = out_dir.ok_or_else(|| anyhow::anyhow!("--out-dir is required\n\n{USAGE}"))?;
+    let out_dir = match out_dir {
+        Some(d) => d,
+        None if !require_out_dir => dry_run_registry
+            .as_ref()
+            .map(|d| d.join("candidates"))
+            .unwrap_or_else(|| PathBuf::from(".")),
+        None => bail!("--out-dir is required\n\n{USAGE}"),
+    };
     Ok(FetchCandidatesArgs {
         api_base,
         network,
@@ -357,5 +404,134 @@ fn parse_fetch_candidates_args(args: &[String]) -> Result<FetchCandidatesArgs> {
         out_dir,
         tasks_file,
         firestore_fallback,
+        rejected_file,
+        dry_run_registry,
+        only_task_id,
     })
+}
+
+fn parse_audit_staged_args(args: &[String]) -> Result<promote_pipeline::AuditStagedArgs> {
+    let root = workspace_root()?;
+    let mut staged_dir: Option<PathBuf> = None;
+    let mut package_root = root.join("proofs").join("SwarmProofs");
+    let mut verdicts_out: Option<PathBuf> = None;
+    let mut network = String::from(fetch_promotion_candidates::DEFAULT_NETWORK);
+    let mut skip_nanoda = false;
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let take_val = |flag: &str, idx: &mut usize| -> Result<String> {
+            if let Some(eq_val) = arg.strip_prefix(&format!("{flag}=")) {
+                ensure!(!eq_val.is_empty(), "{flag} requires a non-empty value");
+                *idx += 1;
+                return Ok(eq_val.to_string());
+            }
+            let val = args
+                .get(*idx + 1)
+                .ok_or_else(|| anyhow::anyhow!("missing value for {flag}"))?;
+            ensure!(!val.is_empty(), "{flag} requires a non-empty value");
+            *idx += 2;
+            Ok(val.clone())
+        };
+        if arg == "--staged-dir" || arg.starts_with("--staged-dir=") {
+            staged_dir = Some(PathBuf::from(take_val("--staged-dir", &mut i)?));
+        } else if arg == "--package" || arg.starts_with("--package=") {
+            package_root = PathBuf::from(take_val("--package", &mut i)?);
+        } else if arg == "--verdicts-out" || arg.starts_with("--verdicts-out=") {
+            verdicts_out = Some(PathBuf::from(take_val("--verdicts-out", &mut i)?));
+        } else if arg == "--network" || arg.starts_with("--network=") {
+            network = take_val("--network", &mut i)?;
+        } else if arg == "--skip-nanoda" {
+            skip_nanoda = true;
+            i += 1;
+        } else {
+            bail!("unexpected argument `{arg}`\n\n{USAGE}");
+        }
+    }
+
+    Ok(promote_pipeline::AuditStagedArgs {
+        staged_candidates_dir: staged_dir
+            .ok_or_else(|| anyhow::anyhow!("--staged-dir is required\n\n{USAGE}"))?,
+        package_root,
+        verdicts_out: verdicts_out
+            .ok_or_else(|| anyhow::anyhow!("--verdicts-out is required\n\n{USAGE}"))?,
+        network,
+        skip_nanoda,
+    })
+}
+
+fn parse_apply_verified_args(args: &[String]) -> Result<promote_pipeline::ApplyVerifiedArgs> {
+    let root = workspace_root()?;
+    let mut staged_dir: Option<PathBuf> = None;
+    let mut verdicts_path: Option<PathBuf> = None;
+    let mut package_root = root.join("proofs").join("SwarmProofs");
+    let mut registry_path: Option<PathBuf> = None;
+    let mut rejected_file: Option<PathBuf> = None;
+    let mut public_base_url =
+        String::from(fetch_promotion_candidates::DEFAULT_PUBLIC_REGISTRY_BASE_URL);
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let take_val = |flag: &str, idx: &mut usize| -> Result<String> {
+            if let Some(eq_val) = arg.strip_prefix(&format!("{flag}=")) {
+                ensure!(!eq_val.is_empty(), "{flag} requires a non-empty value");
+                *idx += 1;
+                return Ok(eq_val.to_string());
+            }
+            let val = args
+                .get(*idx + 1)
+                .ok_or_else(|| anyhow::anyhow!("missing value for {flag}"))?;
+            ensure!(!val.is_empty(), "{flag} requires a non-empty value");
+            *idx += 2;
+            Ok(val.clone())
+        };
+        if arg == "--staged-dir" || arg.starts_with("--staged-dir=") {
+            staged_dir = Some(PathBuf::from(take_val("--staged-dir", &mut i)?));
+        } else if arg == "--verdicts" || arg.starts_with("--verdicts=") {
+            verdicts_path = Some(PathBuf::from(take_val("--verdicts", &mut i)?));
+        } else if arg == "--package" || arg.starts_with("--package=") {
+            package_root = PathBuf::from(take_val("--package", &mut i)?);
+        } else if arg == "--registry" || arg.starts_with("--registry=") {
+            registry_path = Some(PathBuf::from(take_val("--registry", &mut i)?));
+        } else if arg == "--rejected-file" || arg.starts_with("--rejected-file=") {
+            rejected_file = Some(PathBuf::from(take_val("--rejected-file", &mut i)?));
+        } else if arg == "--public-base-url" || arg.starts_with("--public-base-url=") {
+            public_base_url = take_val("--public-base-url", &mut i)?;
+        } else {
+            bail!("unexpected argument `{arg}`\n\n{USAGE}");
+        }
+    }
+
+    let reg = registry_path.unwrap_or_else(|| package_root.join("registry.json"));
+    let rej = rejected_file.unwrap_or_else(|| package_root.join("rejected-candidates.json"));
+    Ok(promote_pipeline::ApplyVerifiedArgs {
+        staged_candidates_dir: staged_dir
+            .ok_or_else(|| anyhow::anyhow!("--staged-dir is required\n\n{USAGE}"))?,
+        verdicts_path: verdicts_path
+            .ok_or_else(|| anyhow::anyhow!("--verdicts is required\n\n{USAGE}"))?,
+        registry_path: reg,
+        package_root,
+        rejected_file: rej,
+        public_base_url,
+    })
+}
+
+fn parse_promote_pipeline_args(args: &[String]) -> Result<promote_pipeline::PromotePipelineArgs> {
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut skip_nanoda = false;
+    for a in args {
+        if a == "--skip-nanoda" {
+            skip_nanoda = true;
+        } else {
+            filtered.push(a.clone());
+        }
+    }
+    let fetch = parse_fetch_candidates_args(&filtered, false)?;
+    ensure!(
+        fetch.dry_run_registry.is_some(),
+        "promote-pipeline requires --dry-run-registry <tmp_dir>\n\n{USAGE}"
+    );
+    Ok(promote_pipeline::PromotePipelineArgs { fetch, skip_nanoda })
 }

@@ -3,17 +3,21 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "SwarmProofs-0.1.0",
-  "documentNamespace": "https://swarm.tips/spdx/SwarmProofs/0.1.0/2dbb38af494fbd820a4920b5ed36fb78",
+  "documentNamespace": "https://github.com/corsur/swarm-tips/proofs/SwarmProofs/0.1.0/2dbb38af494fbd820a4920b5ed36fb7834ab6e3c551f77f535a6f0a73fdb2a43",
   "creationInfo": {
     "created": "2026-09-26T00:00:00Z",
-    "creators": ["Organization: Swarm Tips", "Tool: proof-registry-0.1.0"]
+    "creators": [
+      "Organization: Swarm Tips",
+      "Tool: proof-registry-0.1.0"
+    ]
   },
   "packages": [
     {
       "name": "SwarmProofs",
       "SPDXID": "SPDXRef-Package-SwarmProofs",
       "versionInfo": "0.1.0",
-      "downloadLocation": "https://github.com/corsur/swarm-tips/tree/main/proofs/SwarmProofs",
+      "downloadLocation": "git+https://github.com/corsur/swarm-tips#proofs/SwarmProofs",
+      "homepage": "https://github.com/corsur/swarm-tips/tree/main/proofs/SwarmProofs",
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",
       "licenseDeclared": "Apache-2.0",
@@ -22,7 +26,7 @@
     {
       "name": "Zeta23",
       "SPDXID": "SPDXRef-Package-Zeta23",
-      "versionInfo": "v1.0@3635e74826a4c1fcece7d1cd2b6fa75e43a00510",
+      "versionInfo": "0.1.0@3635e74826a4c1fcece7d1cd2b6fa75e43a00510",
       "downloadLocation": "git+https://github.com/anthropics/formal-math@3635e74826a4c1fcece7d1cd2b6fa75e43a00510",
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",
@@ -38,6 +42,86 @@
       "licenseConcluded": "Apache-2.0",
       "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "batteries",
+      "SPDXID": "SPDXRef-Package-batteries",
+      "versionInfo": "76e1c118b0700b4ceafe99532e887d6431625e1a",
+      "downloadLocation": "git+https://github.com/leanprover-community/batteries@76e1c118b0700b4ceafe99532e887d6431625e1a",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "Qq",
+      "SPDXID": "SPDXRef-Package-Qq",
+      "versionInfo": "ef42f8944eaf5b6cbfbe75d1917d824c7dd6cf33",
+      "downloadLocation": "git+https://github.com/leanprover-community/quote4@ef42f8944eaf5b6cbfbe75d1917d824c7dd6cf33",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "aesop",
+      "SPDXID": "SPDXRef-Package-aesop",
+      "versionInfo": "7db8190085343afde2f5d2cdcc9bac719b6ec02c",
+      "downloadLocation": "git+https://github.com/leanprover-community/aesop@7db8190085343afde2f5d2cdcc9bac719b6ec02c",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "proofwidgets",
+      "SPDXID": "SPDXRef-Package-proofwidgets",
+      "versionInfo": "222c58dad7706a6e7cae46c0edd65ea881d3ee27",
+      "downloadLocation": "git+https://github.com/leanprover-community/ProofWidgets4@222c58dad7706a6e7cae46c0edd65ea881d3ee27",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "importGraph",
+      "SPDXID": "SPDXRef-Package-importGraph",
+      "versionInfo": "bb3469a87774349fe01898d8bf2fc6a1ce6411ca",
+      "downloadLocation": "git+https://github.com/leanprover-community/import-graph@bb3469a87774349fe01898d8bf2fc6a1ce6411ca",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "LeanSearchClient",
+      "SPDXID": "SPDXRef-Package-LeanSearchClient",
+      "versionInfo": "f5c090429dff3cf66cb65562526c9ea6e8edfbcb",
+      "downloadLocation": "git+https://github.com/leanprover-community/LeanSearchClient@f5c090429dff3cf66cb65562526c9ea6e8edfbcb",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "plausible",
+      "SPDXID": "SPDXRef-Package-plausible",
+      "versionInfo": "123d15766ba49356c02ebad2a4462dfe12d79899",
+      "downloadLocation": "git+https://github.com/leanprover-community/plausible@123d15766ba49356c02ebad2a4462dfe12d79899",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "Cli",
+      "SPDXID": "SPDXRef-Package-Cli",
+      "versionInfo": "1319485273bf87833fa472afbcefdedecb16b45f",
+      "downloadLocation": "git+https://github.com/leanprover/lean4-cli@1319485273bf87833fa472afbcefdedecb16b45f",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) 2021 Marc Huisinga"
     }
   ],
   "relationships": [
@@ -52,9 +136,54 @@
       "relatedSpdxElement": "SPDXRef-Package-Zeta23"
     },
     {
+      "spdxElementId": "SPDXRef-Package-SwarmProofs",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Mathlib"
+    },
+    {
       "spdxElementId": "SPDXRef-Package-Zeta23",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Package-Mathlib"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Mathlib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-batteries"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Mathlib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Qq"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Mathlib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-aesop"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Mathlib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-proofwidgets"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Mathlib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-importGraph"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Mathlib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-LeanSearchClient"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Mathlib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-plausible"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Mathlib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Cli"
     }
   ]
 }

@@ -25,6 +25,66 @@ const MAX_FIRESTORE_SCAN_PAGES: usize = 20;
 const MAX_TASK_LIST_PAGES: usize = 50;
 const TASK_LIST_PAGE_LIMIT: usize = 100;
 
+pub const REJECTED_CANDIDATES_SCHEMA: &str = "swarm.lean-rejected-candidates/v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedRejectionEntry {
+    pub artifact_sha256: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RejectedCandidatesManifest {
+    pub schema: String,
+    #[serde(default)]
+    pub rejected: BTreeMap<String, PersistedRejectionEntry>,
+}
+
+impl Default for RejectedCandidatesManifest {
+    fn default() -> Self {
+        Self {
+            schema: REJECTED_CANDIDATES_SCHEMA.to_string(),
+            rejected: BTreeMap::new(),
+        }
+    }
+}
+
+pub fn load_rejected_candidates_manifest(
+    path: Option<&Path>,
+) -> Result<RejectedCandidatesManifest> {
+    let Some(p) = path else {
+        return Ok(RejectedCandidatesManifest::default());
+    };
+    if !p.is_file() {
+        return Ok(RejectedCandidatesManifest::default());
+    }
+    let bytes = std::fs::read(p)
+        .with_context(|| format!("failed reading rejected candidates file {}", p.display()))?;
+    let parsed: RejectedCandidatesManifest =
+        serde_json::from_slice(&bytes).context("invalid rejected-candidates.json")?;
+    ensure!(
+        parsed.schema == REJECTED_CANDIDATES_SCHEMA,
+        "unexpected rejected-candidates.json schema '{}'",
+        parsed.schema
+    );
+    Ok(parsed)
+}
+
+pub fn save_rejected_candidates_manifest(
+    path: &Path,
+    manifest: &RejectedCandidatesManifest,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut bytes = serde_json::to_vec_pretty(manifest)?;
+    bytes.push(b'\n');
+    std::fs::write(path, bytes).with_context(|| format!("failed writing {}", path.display()))?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct FetchCandidatesArgs {
     pub api_base: String,
@@ -37,6 +97,9 @@ pub struct FetchCandidatesArgs {
     pub out_dir: PathBuf,
     pub tasks_file: Option<PathBuf>,
     pub firestore_fallback: bool,
+    pub rejected_file: Option<PathBuf>,
+    pub dry_run_registry: Option<PathBuf>,
+    pub only_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,6 +378,7 @@ fn verify_catalog_statement_bytes(
 
 enum SingleTaskOutcome {
     Skipped,
+    PreviouslyRejected,
     Ready {
         candidate: Box<PromotionCandidate>,
         alias: Option<String>,
@@ -331,6 +395,7 @@ fn evaluate_single_task<T: HttpTransport>(
     registry: &RegistryManifest,
     environment_id: &str,
     batch_aliases: &BTreeMap<String, String>,
+    persisted_rejected: &RejectedCandidatesManifest,
     mut task_val: Value,
     task_id: &str,
 ) -> Result<SingleTaskOutcome> {
@@ -403,6 +468,14 @@ fn evaluate_single_task<T: HttpTransport>(
         is_lower_hex_64(&artifact_sha256),
         "invalid artifact_sha256 `{artifact_sha256}` on task {task_id}"
     );
+    let rej_key = format!("{}:{task_id}", args.network);
+    if persisted_rejected
+        .rejected
+        .get(&rej_key)
+        .is_some_and(|entry| entry.artifact_sha256 == artifact_sha256)
+    {
+        return Ok(SingleTaskOutcome::PreviouslyRejected);
+    }
 
     let proof_bytes = fetch_gcs_object(
         transport,
@@ -530,8 +603,41 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
         !args.allowed_posters.is_empty(),
         "allowed_posters must be non-empty"
     );
-    let registry_bytes = std::fs::read(&args.registry_path)
-        .with_context(|| format!("failed reading registry {}", args.registry_path.display()))?;
+    let public_swarm_proofs_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(|r| r.join("proofs").join("SwarmProofs"))
+        .ok_or_else(|| {
+            anyhow::anyhow!("cannot resolve proofs/SwarmProofs from CARGO_MANIFEST_DIR")
+        })?;
+    let effective_registry_path = if let Some(ref dry_root) = args.dry_run_registry {
+        crate::promote_pipeline::assert_dry_run_isolation_for_network(
+            &args.network,
+            Some(dry_root),
+            &dry_root.join("SwarmProofs").join("registry.json"),
+            &public_swarm_proofs_dir,
+        )?;
+        let staged_pkg = crate::promote_pipeline::stage_dry_run_swarm_proofs_copy(
+            &public_swarm_proofs_dir,
+            dry_root,
+        )?;
+        staged_pkg.join("registry.json")
+    } else {
+        crate::promote_pipeline::assert_dry_run_isolation_for_network(
+            &args.network,
+            None,
+            &args.registry_path,
+            &public_swarm_proofs_dir,
+        )?;
+        args.registry_path.clone()
+    };
+    let persisted_rejected = load_rejected_candidates_manifest(args.rejected_file.as_deref())?;
+    let registry_bytes = std::fs::read(&effective_registry_path).with_context(|| {
+        format!(
+            "failed reading registry {}",
+            effective_registry_path.display()
+        )
+    })?;
     let registry: RegistryManifest =
         serde_json::from_slice(&registry_bytes).context("invalid registry.json")?;
     validate_registry(&registry).map_err(|e| anyhow::anyhow!("registry validation failed: {e}"))?;
@@ -577,9 +683,25 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
         let Some(task_id) = json_str(&task_val, "task_id") else {
             continue;
         };
+        if let Some(ref wanted) = args.only_task_id {
+            if &task_id != wanted {
+                continue;
+            }
+        }
         if already_in_reg.contains(&(args.network.clone(), task_id.clone())) {
             report.already_promoted += 1;
             continue;
+        }
+        if let Some(art_sha) = extract_artifact_sha256(&task_val) {
+            let rej_key = format!("{}:{task_id}", args.network);
+            if persisted_rejected
+                .rejected
+                .get(&rej_key)
+                .is_some_and(|entry| entry.artifact_sha256 == art_sha)
+            {
+                report.skipped += 1;
+                continue;
+            }
         }
 
         let outcome = evaluate_single_task(
@@ -589,12 +711,13 @@ pub fn fetch_promotion_candidates_with<T: HttpTransport>(
             &registry,
             &environment_id,
             &batch_aliases,
+            &persisted_rejected,
             task_val,
             &task_id,
         );
 
         let (candidate, alias, module_id, stem) = match outcome {
-            Ok(SingleTaskOutcome::Skipped) => {
+            Ok(SingleTaskOutcome::Skipped | SingleTaskOutcome::PreviouslyRejected) => {
                 report.skipped += 1;
                 continue;
             }
@@ -1231,6 +1354,9 @@ mod tests {
             out_dir,
             tasks_file,
             firestore_fallback: false,
+            rejected_file: None,
+            dry_run_registry: None,
+            only_task_id: None,
         }
     }
 
@@ -2279,5 +2405,374 @@ mod tests {
         assert_eq!(report.candidates.len(), 1);
         assert_eq!(report.candidates[0].task_id, "camp-page2:task-101");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn source_policy_parity_rejects_simp_instance_deriving_and_meta_at_fetch_stage() {
+        let (dir, pkg_dir, out_dir) = setup_temp_workspace("sa-parity");
+        let reg_path = pkg_dir.join("registry.json");
+        let stmt = std::fs::read(
+            repo_root()
+                .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
+        )
+        .unwrap();
+        let stmt_sha = sha256_hex(&stmt);
+
+        let bad_proofs: [(&str, &str); 4] = [
+            (
+                "camp-sa:simp",
+                "-- SPDX-License-Identifier: Apache-2.0\n@[simp] theorem helper : True := trivial\ntheorem proof : statementProp := rfl\n",
+            ),
+            (
+                "camp-sa:instance-colon",
+                "-- SPDX-License-Identifier: Apache-2.0\ninstance:\n  Inhabited Nat := ⟨0⟩\ntheorem proof : statementProp := rfl\n",
+            ),
+            (
+                "camp-sa:deriving",
+                "-- SPDX-License-Identifier: Apache-2.0\ninductive Foo where | mk\n  deriving DecidableEq\ntheorem proof : statementProp := rfl\n",
+            ),
+            (
+                "camp-sa:meta",
+                "-- SPDX-License-Identifier: Apache-2.0\nmeta def helper : Nat := 0\ntheorem proof : statementProp := rfl\n",
+            ),
+        ];
+
+        let mut transport = MapTransport::new();
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-statements/{stmt_sha}.lean"),
+            ),
+            stmt,
+        );
+        let mut task_items = Vec::new();
+        for (tid, proof_str) in bad_proofs {
+            let proof_bytes = proof_str.as_bytes();
+            let p_sha = sha256_hex(proof_bytes);
+            transport.insert_ok(
+                gcs_media_url(
+                    DEFAULT_ARTIFACT_BUCKET,
+                    &format!("lean-proofs/{p_sha}.lean"),
+                ),
+                proof_bytes.to_vec(),
+            );
+            task_items.push(json!({
+                "task_id": tid,
+                "campaign_id": "camp-sa",
+                "client": PINNED_POSTER_WALLETS[0],
+                "campaign_topic": "catalog:chain-bsd-1-weierstrass-bijection",
+                "state": "finalized",
+                "platform": 10,
+                "lean_policy": 4,
+                "composite_score": 1_000_000,
+                "agent": "SolverBad",
+                "artifact_sha256": p_sha,
+                "statement_sha256": stmt_sha
+            }));
+        }
+        let tasks_path = dir.join("tasks.json");
+        std::fs::write(&tasks_path, serde_json::to_vec(&task_items).unwrap()).unwrap();
+
+        let report = fetch_promotion_candidates_with(
+            &transport,
+            &default_args(reg_path, out_dir, Some(tasks_path)),
+            Some("tok"),
+        )
+        .unwrap();
+        assert!(report.candidates.is_empty());
+        assert_eq!(report.rejected.len(), 4);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn per_candidate_audit_isolation_rolls_back_bad_proof_persists_rejection_and_reconstructs_cleanly(
+    ) {
+        use crate::promote_pipeline::{
+            apply_verified_promotions, audit_staged_candidates_with, ApplyVerifiedArgs,
+            AuditStagedArgs,
+        };
+        let (dir, pkg_dir, out_dir) = setup_temp_workspace("sa-isolation");
+        let real_pkg = repo_root().join("proofs/SwarmProofs");
+        for rel in [
+            "environment-lock.json",
+            "SwarmProofs/Registry.lean",
+            "SwarmProofs/Chains/BSD/Defs/V1.lean",
+            "SwarmProofs/Chains/Circuits/Defs/V1.lean",
+            "SwarmProofs/Chains/RHAnalytic/Defs/V1.lean",
+            "SwarmProofs/Chains/RHLagarias/Defs/V1.lean",
+        ] {
+            let dst = pkg_dir.join(rel);
+            std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+            std::fs::copy(real_pkg.join(rel), dst).unwrap();
+        }
+        let reg_path = pkg_dir.join("registry.json");
+        let rejected_path = pkg_dir.join("rejected-candidates.json");
+
+        let b1_stmt = std::fs::read(
+            repo_root()
+                .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
+        )
+        .unwrap();
+        let c1_stmt = std::fs::read(
+            repo_root().join(
+                "tests/fixtures/lean/catalog/open/chain-rh-analytic-1-mertens-first-prime-log-bound.lean",
+            ),
+        )
+        .unwrap();
+        let bad_proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := True.intro\n";
+        let good_proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := rfl\n";
+        let b1_sha = sha256_hex(&b1_stmt);
+        let c1_sha = sha256_hex(&c1_stmt);
+        let bad_proof_sha = sha256_hex(bad_proof);
+        let good_proof_sha = sha256_hex(good_proof);
+
+        let tasks_path = dir.join("tasks.json");
+        std::fs::write(
+            &tasks_path,
+            serde_json::to_vec(&json!([
+                {
+                    "task_id": "camp-bad:task-1",
+                    "campaign_id": "camp-bad",
+                    "client": PINNED_POSTER_WALLETS[0],
+                    "campaign_topic": "catalog:chain-rh-analytic-1-mertens-first-prime-log-bound",
+                    "state": "finalized",
+                    "platform": 10,
+                    "lean_policy": 4,
+                    "composite_score": 1_000_000,
+                    "agent": "SolverBad",
+                    "artifact_sha256": bad_proof_sha,
+                    "statement_sha256": c1_sha
+                },
+                {
+                    "task_id": "camp-good:task-2",
+                    "campaign_id": "camp-good",
+                    "client": PINNED_POSTER_WALLETS[0],
+                    "campaign_topic": "catalog:chain-bsd-1-weierstrass-bijection",
+                    "state": "finalized",
+                    "platform": 10,
+                    "lean_policy": 4,
+                    "composite_score": 1_000_000,
+                    "agent": "SolverGood",
+                    "artifact_sha256": good_proof_sha,
+                    "statement_sha256": b1_sha
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut transport = MapTransport::new();
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-statements/{b1_sha}.lean"),
+            ),
+            b1_stmt,
+        );
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-statements/{c1_sha}.lean"),
+            ),
+            c1_stmt,
+        );
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-proofs/{bad_proof_sha}.lean"),
+            ),
+            bad_proof.to_vec(),
+        );
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-proofs/{good_proof_sha}.lean"),
+            ),
+            good_proof.to_vec(),
+        );
+
+        let mut fetch_args = default_args(reg_path.clone(), out_dir.clone(), Some(tasks_path));
+        fetch_args.rejected_file = Some(rejected_path.clone());
+        let report1 =
+            fetch_promotion_candidates_with(&transport, &fetch_args, Some("tok")).unwrap();
+        assert_eq!(report1.candidates.len(), 2);
+
+        // Audit in an untrusted workspace copy: task-1 fails Lean audit, task-2 passes!
+        let audit_pkg = dir.join("untrusted-audit-pkg");
+        crate::promote_pipeline::stage_dry_run_swarm_proofs_copy(&pkg_dir, &audit_pkg).unwrap();
+        let verdicts_path = dir.join("audit-verdicts.json");
+        let verdicts = audit_staged_candidates_with(
+            &repo_root(),
+            &AuditStagedArgs {
+                staged_candidates_dir: out_dir.clone(),
+                package_root: audit_pkg.join("SwarmProofs"),
+                verdicts_out: verdicts_path.clone(),
+                network: "mainnet".into(),
+                skip_nanoda: true,
+            },
+            |_root, _pkg, cand, _skip| {
+                if cand.task_id == "camp-bad:task-1" {
+                    anyhow::bail!("simulated Lean type mismatch in bad proof")
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(verdicts.passed_task_ids, vec!["camp-good:task-2"]);
+        assert_eq!(verdicts.rejected.len(), 1);
+        assert_eq!(verdicts.rejected[0].task_id, "camp-bad:task-1");
+
+        // Reconstruct in open-pr purely from trusted out_dir + verdicts_path (zero files from untrusted audit_pkg!)
+        let promoted_count = apply_verified_promotions(&ApplyVerifiedArgs {
+            staged_candidates_dir: out_dir.clone(),
+            verdicts_path: verdicts_path.clone(),
+            registry_path: reg_path.clone(),
+            package_root: pkg_dir.clone(),
+            rejected_file: rejected_path.clone(),
+            public_base_url: DEFAULT_PUBLIC_REGISTRY_BASE_URL.into(),
+        })
+        .unwrap();
+        assert_eq!(promoted_count, 1);
+
+        let final_reg: RegistryManifest =
+            serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+        assert_eq!(final_reg.modules.len(), 1);
+        assert_eq!(final_reg.modules[0].originating_task_id, "camp-good:task-2");
+
+        // Second cron run: camp-good:task-2 is already_promoted AND camp-bad:task-1 is skipped via rejected-candidates.json!
+        let out_dir2 = dir.join("out2");
+        fetch_args.out_dir = out_dir2;
+        let report2 =
+            fetch_promotion_candidates_with(&transport, &fetch_args, Some("tok")).unwrap();
+        assert!(report2.candidates.is_empty());
+        assert_eq!(report2.already_promoted, 1);
+        assert_eq!(report2.skipped, 1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn devnet_requires_isolated_dry_run_registry_and_never_touches_public_registry() {
+        use crate::promote_pipeline::{run_promote_pipeline_with, PromotePipelineArgs};
+        let public_pkg = repo_root().join("proofs/SwarmProofs");
+        let public_reg_path = public_pkg.join("registry.json");
+        let public_reg_before = std::fs::read(&public_reg_path).unwrap();
+
+        let tmp = std::env::temp_dir().join(format!("w7-devnet-dryrun-{}", uuid::Uuid::new_v4()));
+        let out_dir = tmp.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        let b1_stmt = std::fs::read(
+            repo_root()
+                .join("tests/fixtures/lean/catalog/open/chain-bsd-1-weierstrass-bijection.lean"),
+        )
+        .unwrap();
+        let proof =
+            b"-- SPDX-License-Identifier: Apache-2.0\ntheorem proof : statementProp := rfl\n";
+        let stmt_sha = sha256_hex(&b1_stmt);
+        let proof_sha = sha256_hex(proof);
+
+        let tasks_path = tmp.join("devnet-tasks.json");
+        std::fs::write(
+            &tasks_path,
+            serde_json::to_vec(&json!([{
+                "task_id": "dev-camp:dev-task-1",
+                "campaign_id": "dev-camp",
+                "client": PINNED_POSTER_WALLETS[0],
+                "campaign_topic": "catalog:chain-bsd-1-weierstrass-bijection",
+                "state": "finalized",
+                "platform": 10,
+                "lean_policy": 4,
+                "composite_score": 1_000_000,
+                "agent": "DevnetSolver",
+                "artifact_sha256": proof_sha,
+                "statement_sha256": stmt_sha
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut transport = MapTransport::new();
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-statements/{stmt_sha}.lean"),
+            ),
+            b1_stmt,
+        );
+        transport.insert_ok(
+            gcs_media_url(
+                DEFAULT_ARTIFACT_BUCKET,
+                &format!("lean-proofs/{proof_sha}.lean"),
+            ),
+            proof.to_vec(),
+        );
+
+        // 1. --network devnet WITHOUT --dry-run-registry MUST be rejected!
+        let mut missing_dry = default_args(
+            public_reg_path.clone(),
+            out_dir.clone(),
+            Some(tasks_path.clone()),
+        );
+        missing_dry.network = "devnet".into();
+        let err1 = fetch_promotion_candidates_with(&transport, &missing_dry, Some("tok"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err1.contains("devnet proofs never enter the public registry"),
+            "unexpected error: {err1}"
+        );
+
+        // 2. --network devnet WITH --dry-run-registry pointing inside repo proofs/SwarmProofs MUST be rejected!
+        let mut inside_public = missing_dry.clone();
+        inside_public.dry_run_registry = Some(public_pkg.clone());
+        let err2 = fetch_promotion_candidates_with(&transport, &inside_public, Some("tok"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err2.contains("devnet proofs never enter the public registry"),
+            "unexpected error: {err2}"
+        );
+
+        // 3. --network devnet WITH --dry-run-registry <tmp_isolated> builds & validates cleanly while public registry stays 100% untouched!
+        let dry_isolated = tmp.join("dry-run-reg");
+        let mut valid_devnet = missing_dry;
+        valid_devnet.dry_run_registry = Some(dry_isolated.clone());
+        let verdicts = run_promote_pipeline_with(
+            &repo_root(),
+            &transport,
+            &PromotePipelineArgs {
+                fetch: valid_devnet,
+                skip_nanoda: true,
+            },
+            Some("tok"),
+            |_root, staged_pkg, _cand, _skip| {
+                let staged_reg: RegistryManifest = serde_json::from_slice(
+                    &std::fs::read(staged_pkg.join("registry.json")).unwrap(),
+                )
+                .unwrap();
+                proof_registry::validate_registry(&staged_reg)?;
+                proof_registry::validate_frozen_library_modules(staged_pkg, &staged_reg)?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(verdicts.passed_task_ids, vec!["dev-camp:dev-task-1"]);
+        assert!(verdicts.rejected.is_empty());
+
+        let staged_reg: RegistryManifest = serde_json::from_slice(
+            &std::fs::read(dry_isolated.join("SwarmProofs/registry.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(staged_reg.modules.len(), 1);
+        assert_eq!(staged_reg.modules[0].originating_network, "devnet");
+
+        // Public registry in repo MUST be 100% byte-for-byte unchanged!
+        assert_eq!(std::fs::read(&public_reg_path).unwrap(), public_reg_before);
+
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 }

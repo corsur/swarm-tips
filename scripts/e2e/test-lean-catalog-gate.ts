@@ -30,7 +30,10 @@ import {
   loadProofRegistry,
   negateStatementProp,
   parseLeanPolicyArg,
+  parseNetworkArg,
   ProofRegistryManifest,
+  UNFOLD_DEFS_BY_MODULE,
+  WRAPPER_DEFS_BY_MODULE,
   REPO_ROOT,
   resolveBridgeLemmasForStatement,
   runFullMathlibSearchProbes,
@@ -73,19 +76,93 @@ async function runUnitTests(): Promise<void> {
   );
   assert.deepEqual(
     BRIDGE_LEMMAS_BY_DEFS_MODULE["SwarmProofs.Chains.RHAnalytic.Defs.V1"],
-    ["bridge_primeFactorCount", "bridge_mobiusInt", "bridge_primorial"]
+    [
+      "bridge_primeFactorCount",
+      "bridge_mobiusInt",
+      "bridge_mertensSum",
+      "bridge_primorial",
+    ]
   );
   assert.deepEqual(
     BRIDGE_LEMMAS_BY_DEFS_MODULE["SwarmProofs.Chains.RHLagarias.Defs.V1"],
     [
       "bridge_sigmaNat",
+      "bridge_sigmaRat",
       "bridge_sigmaDivisors",
+      "bridge_isSquarefreePos",
       "bridge_harmonicRat",
       "bridge_harmonicNum",
     ]
   );
+  assert.deepEqual(
+    UNFOLD_DEFS_BY_MODULE["SwarmProofs.Chains.RHLagarias.Defs.V1"],
+    [
+      "lagariasBound",
+      "isSuperabundant",
+      "isSquarefreePos",
+      "lagariasEnvelopeRat",
+      "expUpperRat",
+      "logUpperRat",
+      "sigmaDivisors",
+      "sigmaNat",
+      "sigmaRat",
+      "harmonicNum",
+      "harmonicRat",
+    ]
+  );
+  assert.deepEqual(
+    UNFOLD_DEFS_BY_MODULE["SwarmProofs.Chains.RHAnalytic.Defs.V1"],
+    ["mertensSum", "mobiusInt", "primeFactorCount", "squarePrimeFactorCount"]
+  );
+  assert.deepEqual(UNFOLD_DEFS_BY_MODULE["SwarmProofs.Chains.BSD.Defs.V1"], [
+    "isCongruentNumber",
+    "isCongruentTriangle",
+  ]);
+  assert.deepEqual(
+    UNFOLD_DEFS_BY_MODULE["SwarmProofs.Chains.Circuits.Defs.V1"],
+    ["evalCircuitFin", "evalCircuit", "isDeMorganOp"]
+  );
+  assert.ok(
+    WRAPPER_DEFS_BY_MODULE["SwarmProofs.Chains.RHLagarias.Defs.V1"].includes(
+      "lagariasBound"
+    ) &&
+      !WRAPPER_DEFS_BY_MODULE["SwarmProofs.Chains.RHLagarias.Defs.V1"].includes(
+        "sigmaDivisors"
+      ),
+    "wrapper defs must unfold outer definitions without unfolding bridged defs prematurely"
+  );
 
-  // 1. Default policy-4 & structured ladder metadata + exact file bytes parity (B1)
+  // 1. Default policy-4, --network parsing (W7) & structured ladder metadata + exact file bytes parity (B1)
+  assert.equal(parseNetworkArg(["node", "seed-lean-catalog.ts"], {}), "devnet");
+  assert.equal(
+    parseNetworkArg(["node", "seed-lean-catalog.ts", "--network", "devnet"], {}),
+    "devnet"
+  );
+  assert.equal(
+    parseNetworkArg(["node", "seed-lean-catalog.ts", "--network=devnet"], {}),
+    "devnet"
+  );
+  assert.equal(
+    parseNetworkArg(["node", "seed-lean-catalog.ts", "--network", "mainnet"], {}),
+    "mainnet"
+  );
+  assert.equal(
+    parseNetworkArg(["node", "seed-lean-catalog.ts", "--network=mainnet"], {}),
+    "mainnet"
+  );
+  assert.equal(
+    parseNetworkArg(["node", "seed-lean-catalog.ts", "--mainnet"], {}),
+    "mainnet"
+  );
+  assert.throws(() =>
+    parseNetworkArg(["node", "seed-lean-catalog.ts", "--network=testnet"], {})
+  );
+  assert.throws(() =>
+    parseNetworkArg(
+      ["node", "seed-lean-catalog.ts", "--mainnet", "--network=devnet"],
+      {}
+    )
+  );
   assert.equal(parseLeanPolicyArg(["node", "seed-lean-catalog.ts"]), 4);
   assert.equal(
     parseLeanPolicyArg(["node", "seed-lean-catalog.ts", "--lean-policy=3"]),
@@ -150,6 +227,11 @@ async function runUnitTests(): Promise<void> {
     "instance(",
     "instance[",
     "instance{",
+    "instance:\n  Inhabited Nat := ⟨0⟩",
+    "@[simp] theorem helper : True := trivial",
+    "inductive Sneaky where | mk\n  deriving DecidableEq",
+    "meta def sneakyMeta : Nat := 0",
+    "opaque sneakyOpaque : Nat := 0",
     "class ",
   ]) {
     assert.throws(
@@ -256,9 +338,17 @@ async function runUnitTests(): Promise<void> {
   ]) {
     assert.ok(mathlibLabels.has(req), `missing Mathlib probe spec ${req}`);
   }
+  for (const s of mathlibSpecs) {
+    assert.equal(
+      s.maxHeartbeats,
+      0,
+      `X1: Mathlib probe '${s.label}' must run with maxHeartbeats = 0`
+    );
+  }
   assert.deepEqual(resolveBridgeLemmasForStatement(c1.statement).bridgeLemmas, [
     "bridge_primeFactorCount",
     "bridge_mobiusInt",
+    "bridge_mertensSum",
     "bridge_primorial",
   ]);
   console.log(
@@ -325,6 +415,52 @@ async function runUnitTests(): Promise<void> {
         ),
       /MATHLIB SEARCH FAIL-CLOSED/
     );
+
+    // Apply-assumption & solve-by-elim strict exhaustion markers (X1):
+    assert.equal(
+      classifyMathlibProbeSlice(
+        "apply-assumption",
+        "__pa",
+        "<stdin>:8:2: error: swarm_apply_assumption: exhausted (0 partial candidates)\n'__pa' depends on axioms: [sorryAx]\n"
+      ),
+      "EXHAUSTED"
+    );
+    assert.equal(
+      classifyMathlibProbeSlice(
+        "apply-assumption",
+        "__pa",
+        "<stdin>:8:2: error: swarm_apply_assumption: exhausted (14 partial candidates, none closed by assumption)\n'__pa' depends on axioms: [sorryAx]\n"
+      ),
+      "EXHAUSTED"
+    );
+    for (const badApplySlice of [
+      "<stdin>:8:2: error: `apply?` could not close the goal\n'__pa' depends on axioms: [sorryAx]\n",
+      "<stdin>:8:2: error: failed to synthesize instance\n'__pa' depends on axioms: [sorryAx]\n",
+    ]) {
+      assert.throws(
+        () => classifyMathlibProbeSlice("apply-assumption", "__pa", badApplySlice),
+        /MATHLIB SEARCH FAIL-CLOSED/
+      );
+    }
+
+    assert.equal(
+      classifyMathlibProbeSlice(
+        "solve-by-elim",
+        "__ps",
+        "<stdin>:9:2: error: swarm_solve_by_elim: exhausted\n'__ps' depends on axioms: [sorryAx]\n"
+      ),
+      "EXHAUSTED"
+    );
+    for (const badSbeSlice of [
+      "<stdin>:9:2: error: failed\n'__ps' depends on axioms: [sorryAx]\n",
+      "<stdin>:9:2: error: failed to synthesize\n'__ps' depends on axioms: [sorryAx]\n",
+      "<stdin>:9:2: error: unsolved goals\n'__ps' depends on axioms: [sorryAx]\n",
+    ]) {
+      assert.throws(
+        () => classifyMathlibProbeSlice("solve-by-elim", "__ps", badSbeSlice),
+        /MATHLIB SEARCH FAIL-CLOSED/
+      );
+    }
 
     // Runner probe response fail-closed on empty detail, timeout, heartbeat, memory, killed
     for (const badDetail of [
@@ -636,7 +772,7 @@ async function runUnitTests(): Promise<void> {
 
 async function runMathlibControlTests(): Promise<void> {
   console.log(
-    "=== Running live lake env lean full-Mathlib per-probe positive controls ==="
+    "=== Running live lake env lean full-Mathlib per-probe, bridge, and late-search positive controls ==="
   );
 
   // 1. Retired Chebyshev Rung 1 MUST be caught via general `bridge_primorial` + `import Mathlib` `positive-exact`
@@ -662,107 +798,220 @@ async function runMathlibControlTests(): Promise<void> {
     "  [CONTROL PASS] retired/chain-rh-analytic-1-chebyshev-theta-upper caught by bridge_primorial + positive-exact"
   );
 
-  // 2. `mobiusInt` control MUST be caught via general `bridge_mobiusInt` + `import Mathlib` `positive-exact`
-  const mobiusControl: CatalogEntry = {
-    name: "control-mobiusInt-prime",
-    kind: "open",
-    program: "millennium-chains",
-    statement:
-      "import SwarmProofs.Chains.RHAnalytic.Defs.V1\ndef statementProp : Prop := ∀ (p : ℕ), Nat.Prime p → mobiusInt p = -1\n",
-  };
-  assert.throws(
-    () =>
-      runFullMathlibSearchProbes(mobiusControl, {
-        onlyLabels: new Set(["positive-exact"]),
-      }),
-    /was solved trivially by full-Mathlib probe 'positive-exact'/
-  );
-  console.log(
-    "  [CONTROL PASS] mobiusInt prime identity caught by bridge_mobiusInt + positive-exact"
-  );
+  // 2. S-c Wrapped-def + Bridge controls (lagariasBound + bridges, isSquarefreePos, mertensSum, sigmaRat, mobiusInt, harmonicRat)
+  const bridgeAndWrapperControls: Array<{
+    controlName: string;
+    statement: string;
+    onlyLabel: string;
+    expectedRegex: RegExp;
+  }> = [
+    {
+      controlName: "control-mobiusInt-prime",
+      statement:
+        "import SwarmProofs.Chains.RHAnalytic.Defs.V1\ndef statementProp : Prop := ∀ (p : ℕ), Nat.Prime p → mobiusInt p = -1\n",
+      onlyLabel: "positive-exact",
+      expectedRegex:
+        /was solved trivially by full-Mathlib probe 'positive-exact'/,
+    },
+    {
+      controlName: "control-mertensSum-bridge",
+      statement:
+        "import SwarmProofs.Chains.RHAnalytic.Defs.V1\ndef statementProp : Prop := ∀ (N : ℕ), mertensSum N = Finset.sum (Finset.range (N + 1)) (fun n => ArithmeticFunction.moebius n)\n",
+      onlyLabel: "positive-exact",
+      expectedRegex:
+        /was solved trivially by full-Mathlib probe 'positive-exact'/,
+    },
+    {
+      controlName: "control-harmonicRat-pos",
+      statement:
+        "import SwarmProofs.Chains.RHLagarias.Defs.V1\ndef statementProp : Prop := ∀ (n : ℕ), n ≠ 0 → 0 < harmonicRat n\n",
+      onlyLabel: "positive-exact",
+      expectedRegex:
+        /was solved trivially by full-Mathlib probe 'positive-exact'/,
+    },
+    {
+      controlName: "control-sigmaRat-bridge",
+      statement:
+        "import SwarmProofs.Chains.RHLagarias.Defs.V1\ndef statementProp : Prop := ∀ (n : ℕ), sigmaRat n = (ArithmeticFunction.sigma 1 n : ℚ)\n",
+      onlyLabel: "positive-exact",
+      expectedRegex:
+        /was solved trivially by full-Mathlib probe 'positive-exact'/,
+    },
+    {
+      controlName: "control-isSquarefreePos-exact",
+      statement:
+        "import SwarmProofs.Chains.RHLagarias.Defs.V1\ndef statementProp : Prop := ∀ (p : ℕ), 0 < p → Squarefree p → isSquarefreePos p\n",
+      onlyLabel: "positive-exact",
+      expectedRegex:
+        /was solved trivially by full-Mathlib probe 'positive-exact'/,
+    },
+    {
+      controlName: "control-isSquarefreePos-prime",
+      statement:
+        "import SwarmProofs.Chains.RHLagarias.Defs.V1\ndef statementProp : Prop := ∀ (p : ℕ), Nat.Prime p → isSquarefreePos p\n",
+      onlyLabel: "positive-exact",
+      expectedRegex:
+        /was solved trivially by full-Mathlib probe 'positive-exact'/,
+    },
+    {
+      controlName: "control-wrapper-lagariasBound-bridges",
+      statement:
+        "import SwarmProofs.Chains.RHLagarias.Defs.V1\ndef statementProp : Prop := ∀ (n : ℕ), lagariasBound n → (ArithmeticFunction.sigma 1 n : ℝ) ≤ (harmonic n : ℝ) + Real.exp (harmonic n : ℝ) * Real.log (harmonic n : ℝ)\n",
+      onlyLabel: "positive-exact",
+      expectedRegex:
+        /was solved trivially by full-Mathlib probe 'positive-exact'/,
+    },
+  ];
 
-  // 3. `harmonicRat` control MUST be caught via general `bridge_harmonicRat` + `import Mathlib` `positive-exact`
-  const harmonicControl: CatalogEntry = {
-    name: "control-harmonicRat-pos",
-    kind: "open",
-    program: "millennium-chains",
-    statement:
-      "import SwarmProofs.Chains.RHLagarias.Defs.V1\ndef statementProp : Prop := ∀ (n : ℕ), n ≠ 0 → 0 < harmonicRat n\n",
-  };
-  assert.throws(
-    () =>
-      runFullMathlibSearchProbes(harmonicControl, {
-        onlyLabels: new Set(["positive-exact"]),
-      }),
-    /was solved trivially by full-Mathlib probe 'positive-exact'/
-  );
-  console.log(
-    "  [CONTROL PASS] harmonicRat positivity caught by bridge_harmonicRat + positive-exact"
-  );
+  for (const ctrl of bridgeAndWrapperControls) {
+    assert.throws(
+      () =>
+        runFullMathlibSearchProbes(
+          {
+            name: ctrl.controlName,
+            kind: "open",
+            program: "millennium-chains",
+            statement: ctrl.statement,
+          },
+          { onlyLabels: new Set([ctrl.onlyLabel]) }
+        ),
+      ctrl.expectedRegex
+    );
+    console.log(
+      `  [CONTROL PASS] ${ctrl.controlName} caught by dsimp[wrappers]+simp[bridges]+${ctrl.onlyLabel}`
+    );
+  }
 
-  // 4. Dedicated per-probe positive controls for all 8 positive/negative probe templates (B2):
+  // 3. X1 Late-search positive control: verify empirically in Lean 4.33 that `maxHeartbeats 100000`
+  //    aborts early with "`exact?` could not close the goal", while our `maxHeartbeats 0` gate CATCHES & REJECTS IT!
+  {
+    const lateSearchStmt =
+      "def statementProp : Prop := ∀ (α : Type) [LinearOrder α] (a b : α), a ≤ b → b ≤ a → a = b\n";
+    const cappedLeanSrc = [
+      "import Mathlib",
+      lateSearchStmt,
+      "set_option maxHeartbeats 100000 in",
+      "theorem __capped_late_ctrl : statementProp := by",
+      "  unfold statementProp",
+      "  intros",
+      "  exact?",
+    ].join("\n");
+    const elanBin = path.join(process.env.HOME ?? "", ".elan", "bin");
+    const curPath = process.env.PATH ?? "";
+    const cappedProc = spawnSync("lake", ["env", "lean", "--stdin"], {
+      cwd: path.join(REPO_ROOT, "proofs", "SwarmProofs"),
+      env: {
+        ...process.env,
+        PATH: curPath.includes(elanBin) ? curPath : `${elanBin}:${curPath}`,
+      },
+      input: cappedLeanSrc,
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+    const cappedOut = `${cappedProc.stdout ?? ""}\n${cappedProc.stderr ?? ""}`;
+    assert.match(
+      cappedOut,
+      /`exact\?` could not close the goal/,
+      `Expected capped maxHeartbeats 100000 exact? to abort early on late-search goal, got:\n${cappedOut}`
+    );
+    assert.throws(
+      () =>
+        runFullMathlibSearchProbes(
+          {
+            name: "control-late-search-exact-unbounded",
+            kind: "open",
+            program: "general",
+            statement: lateSearchStmt,
+          },
+          { onlyLabels: new Set(["positive-exact"]) }
+        ),
+      /was solved trivially by full-Mathlib probe 'positive-exact'/
+    );
+    console.log(
+      "  [CONTROL PASS] X1 late-search positive control: aborted under maxHeartbeats 100000, CAUGHT & REJECTED under maxHeartbeats 0"
+    );
+  }
+
+  // 4. S-b Dedicated independent single-label positive controls for ALL 10 probe kinds (strict regex per label):
   const perProbeControls: Array<{
     controlName: string;
     statement: string;
-    onlyLabels: Set<string>;
+    onlyLabel: string;
     expectedMessage: RegExp;
   }> = [
     {
       controlName: "control-positive-exact",
       statement: "def statementProp : Prop := ∀ (p : ℕ), Nat.Prime p → 2 ≤ p\n",
-      onlyLabels: new Set(["positive-exact"]),
-      expectedMessage: /probe 'positive-exact'/,
+      onlyLabel: "positive-exact",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'positive-exact'/,
+    },
+    {
+      controlName: "control-negative-exact",
+      statement: "def statementProp : Prop := Nat.Prime 1\n",
+      onlyLabel: "negative-exact",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'negative-exact'/,
     },
     {
       controlName: "control-positive-apply-assumption",
       statement:
+        "def statementProp : Prop := ∀ (a b c : ℕ), a ∣ b → b ∣ c → a ∣ c\n",
+      onlyLabel: "positive-apply-assumption",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'positive-apply-assumption'/,
+    },
+    {
+      controlName: "control-negative-apply-assumption",
+      statement: "def statementProp : Prop := Nat.Prime 1\n",
+      onlyLabel: "negative-apply-assumption",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'negative-apply-assumption'/,
+    },
+    {
+      controlName: "control-positive-solve-by-elim",
+      statement:
         "def statementProp : Prop := ∀ (P Q R : Prop), (P → Q) → (Q → R) → P → R\n",
-      onlyLabels: new Set([
-        "positive-apply-assumption",
-        "positive-solve-by-elim",
-      ]),
-      expectedMessage: /probe 'positive-apply-assumption'/,
+      onlyLabel: "positive-solve-by-elim",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'positive-solve-by-elim'/,
+    },
+    {
+      controlName: "control-negative-solve-by-elim",
+      statement: "def statementProp : Prop := ∀ (P : Prop), P\n",
+      onlyLabel: "negative-solve-by-elim",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'negative-solve-by-elim'/,
     },
     {
       controlName: "control-positive-hint",
       statement:
         "def statementProp : Prop := ∀ (x y : ℚ), (x + y) ^ 2 - (x - y) ^ 2 = 4 * x * y\n",
-      onlyLabels: new Set(["positive-hint"]),
-      expectedMessage: /probe 'positive-hint'/,
+      onlyLabel: "positive-hint",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'positive-hint'/,
+    },
+    {
+      controlName: "control-negative-hint",
+      statement: "def statementProp : Prop := (2 : ℕ) + 2 = 5\n",
+      onlyLabel: "negative-hint",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'negative-hint'/,
     },
     {
       controlName: "control-positive-aesop",
       statement:
         "def statementProp : Prop := ∀ (P Q R : Prop), (P ∧ Q) ∧ (Q → R) → R ∧ P\n",
-      onlyLabels: new Set(["positive-aesop"]),
-      expectedMessage: /probe 'positive-aesop'/,
-    },
-    {
-      controlName: "control-negative-exact",
-      statement: "def statementProp : Prop := Nat.Prime 1\n",
-      onlyLabels: new Set(["negative-exact"]),
-      expectedMessage: /probe 'negative-exact'/,
-    },
-    {
-      controlName: "control-negative-apply-assumption",
-      statement: "def statementProp : Prop := Nat.Prime 1\n",
-      onlyLabels: new Set([
-        "negative-apply-assumption",
-        "negative-solve-by-elim",
-      ]),
-      expectedMessage: /probe 'negative-apply-assumption'/,
-    },
-    {
-      controlName: "control-negative-hint",
-      statement: "def statementProp : Prop := (2 : ℕ) + 2 = 5\n",
-      onlyLabels: new Set(["negative-hint"]),
-      expectedMessage: /probe 'negative-hint'/,
+      onlyLabel: "positive-aesop",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'positive-aesop'/,
     },
     {
       controlName: "control-negative-aesop",
       statement: "def statementProp : Prop := ∃ (P : Prop), P ∧ ¬ P\n",
-      onlyLabels: new Set(["negative-aesop"]),
-      expectedMessage: /probe 'negative-aesop'/,
+      onlyLabel: "negative-aesop",
+      expectedMessage:
+        /was solved trivially by full-Mathlib probe 'negative-aesop'/,
     },
   ];
 
@@ -776,14 +1025,14 @@ async function runMathlibControlTests(): Promise<void> {
     assert.throws(
       () =>
         runFullMathlibSearchProbes(entry, {
-          onlyLabels: ctrl.onlyLabels,
+          onlyLabels: new Set([ctrl.onlyLabel]),
         }),
       ctrl.expectedMessage,
-      `Expected ${ctrl.controlName} to be caught by ${[...ctrl.onlyLabels].join(
-        "/"
-      )}`
+      `Expected ${ctrl.controlName} to be caught by single probe '${ctrl.onlyLabel}'`
     );
-    console.log(`  [CONTROL PASS] ${ctrl.controlName} triggered rejection`);
+    console.log(
+      `  [CONTROL PASS] ${ctrl.controlName} caught independently by '${ctrl.onlyLabel}'`
+    );
   }
 
   console.log("=== All full-Mathlib per-probe positive controls PASSED ===\n");

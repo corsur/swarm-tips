@@ -23,6 +23,12 @@ Statements posted as on-chain LeanProof campaigns (`lean_policy: 2`). Two kinds:
   trivially provable = fraud-by-technicality. Only post statements whose meaning
   is faithful to the named problem — either a mathlib definition is cited, or the
   Prop is hand-authored from first principles and reviewed (see provenance below).
+- **Immutable once posted (never edit `open/<stem>.lean` in place after seeding).**
+  On-chain campaigns commit to `statement_sha256`, and `fetch-promotion-candidates`
+  verifies that any finalized `catalog:<stem>` task matches `open/<stem>.lean`
+  byte-for-byte. Editing `open/<stem>.lean` after posting intentionally blocks
+  promotion of in-flight tasks carrying the old `statement_sha256`. To revise a
+  posted statement, move the old file to `retired/` and publish under a new stem.
 
 ## Do NOT post (not faithfully stateable)
 
@@ -60,6 +66,6 @@ elaborates under the cap; otherwise it stays here as deferred).
 | open/chain-pnp-circuit-1-de-morgan-parity-lower-bound.lean     | Track D [1/2 → Circuit Lower Bounds]   | Provable classical theorem (Schnorr 1974): De Morgan parity circuit size `s ≥ 2n - 1`             |
 | open/chain-pnp-circuit-2-shannon-counting-bound.lean           | Track D [2/2 → Circuit Lower Bounds]   | Provable classical theorem (Shannon 1949): `∃ f`, `B_2` circuit size `s > 2^n / (4n)`             |
 | open/chain-rh-meta-1-lagarias-pi1-rational-envelope.lean       | Track E [1/4 → Π₁⁰ RH Metamathematics] | Constructive rational Taylor/artanh envelope `lagariasBound n ↔ ∀ K ≥ 1, σ_ℚ(n) ≤ U_Lag(n, K)`    |
-| open/chain-rh-meta-2-nonstandard-ultrapower-pi1.lean           | Track E [2/4 → Π₁⁰ RH Metamathematics] | Full `Δ₀` Łoś ultrapower theorem (`BoundedArithFormula`) & nonstandard Lagarias truncation transfer |
+| open/chain-rh-meta-2-nonstandard-ultrapower-pi1.lean           | Track E [2/4 → Π₁⁰ RH Metamathematics] | Full `Δ₀` Łoś ultrapower theorem (`BoundedArithFormula`) & Robinson `Δ₀` overspill |
 | open/chain-rh-meta-3-godel-kleene-pi1-unprovability.lean       | Track E [3/4 → Π₁⁰ RH Metamathematics] | `Nat.Partrec.Code` Π₁⁰ compiler + Gödel–Turing RE unprovability + non-conservativity barrier      |
 | open/chain-rh-meta-4-zfc-inaccessible-universe-reflection.lean | Track E [4/4 → Π₁⁰ RH Metamathematics] | Zermelo (1930): `Cardinal.IsInaccessible κ ↔ V_{κ.ord}` is an ω-standard ZFC Replacement universe |

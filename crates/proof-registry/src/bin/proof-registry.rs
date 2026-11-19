@@ -69,7 +69,7 @@ fn validate(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         || registry
             .environments
             .iter()
-            .any(|env| !env.lock.frozen_library_modules.is_empty())
+            .any(|env| !env.frozen_library_modules.is_empty())
     {
         validate_frozen_library_modules(pkg_root, &registry)?;
     }
@@ -214,7 +214,6 @@ mod tests {
                 subdirectory: None,
                 license: APACHE_2_0.into(),
             }],
-            frozen_library_modules: BTreeMap::new(),
         };
         (environment_id(&lock).unwrap(), lock)
     }
@@ -265,6 +264,7 @@ mod tests {
             environments: vec![EnvironmentRecord {
                 environment_id: environment_id.clone(),
                 lock,
+                frozen_library_modules: BTreeMap::new(),
             }],
             modules: Vec::new(),
             aliases: BTreeMap::new(),
@@ -333,6 +333,7 @@ mod tests {
             environments: vec![EnvironmentRecord {
                 environment_id: environment_id.clone(),
                 lock,
+                frozen_library_modules: BTreeMap::new(),
             }],
             modules: Vec::new(),
             aliases: BTreeMap::new(),
@@ -385,6 +386,7 @@ mod tests {
             environments: vec![EnvironmentRecord {
                 environment_id: environment_id.clone(),
                 lock,
+                frozen_library_modules: BTreeMap::new(),
             }],
             modules: Vec::new(),
             aliases: BTreeMap::new(),
