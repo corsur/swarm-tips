@@ -129,21 +129,144 @@ pub fn prepare_proof_promotion_audit(package_root: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
+pub enum SourcePolicyCheckError {
+    CandidatePolicy(anyhow::Error),
+    Infra(anyhow::Error),
+}
+
+pub fn check_frozen_defs_append_only(
+    repo_root: &Path,
+    package_root: &Path,
+    base_registry_path: Option<&Path>,
+) -> Result<()> {
+    let head_reg_path = package_root.join("registry.json");
+    let head_bytes = std::fs::read(&head_reg_path)
+        .with_context(|| format!("failed reading {}", head_reg_path.display()))?;
+    let head: RegistryManifest = serde_json::from_slice(&head_bytes)
+        .with_context(|| format!("invalid {}", head_reg_path.display()))?;
+    proof_registry::validate_registry(&head)
+        .map_err(|e| anyhow::anyhow!("head registry validation failed: {e}"))?;
+    proof_registry::validate_frozen_library_modules(package_root, &head)
+        .map_err(|e| anyhow::anyhow!("head frozen library validation failed: {e}"))?;
+
+    if let Some(v4_env) = head
+        .environments
+        .iter()
+        .find(|env| env.lock.policy_version == 4)
+    {
+        for (mod_name, rel_file, pinned_sha) in proof_registry::FROZEN_V1_DEFS_GOLDEN_HASHES {
+            let actual = v4_env
+                .frozen_library_modules
+                .get(*mod_name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "missing immutable V1 frozen library module `{mod_name}` in {}",
+                        head_reg_path.display()
+                    )
+                })?;
+            ensure!(
+                actual == pinned_sha,
+                "immutable V1 frozen library module `{mod_name}` hash drifted: expected {pinned_sha}, got {actual}"
+            );
+            let disk_bytes = std::fs::read(package_root.join(rel_file)).with_context(|| {
+                format!("failed reading {}", package_root.join(rel_file).display())
+            })?;
+            let disk_sha = format!("sha256:{}", sha256_hex(&disk_bytes));
+            ensure!(
+                disk_sha == *pinned_sha,
+                "immutable V1 frozen library file `{rel_file}` hash drifted: expected {pinned_sha}, got {disk_sha}"
+            );
+        }
+    }
+
+    if let Some(base_path) = base_registry_path {
+        let base_bytes = std::fs::read(base_path)
+            .with_context(|| format!("failed reading base registry {}", base_path.display()))?;
+        let base: RegistryManifest = serde_json::from_slice(&base_bytes)
+            .with_context(|| format!("invalid base registry {}", base_path.display()))?;
+        proof_registry::validate_frozen_defs_append_only(&base, &head)
+            .map_err(|e| anyhow::anyhow!("append-only frozen Defs check failed: {e}"))?;
+    } else {
+        let cat_status = Command::new("git")
+            .current_dir(repo_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .args([
+                "cat-file",
+                "-e",
+                "origin/main:proofs/SwarmProofs/registry.json",
+            ])
+            .status();
+        if let Ok(st) = cat_status {
+            if st.success() {
+                let show_out = Command::new("git")
+                    .current_dir(repo_root)
+                    .stdin(Stdio::null())
+                    .args(["show", "origin/main:proofs/SwarmProofs/registry.json"])
+                    .output()
+                    .context(
+                        "failed executing `git show origin/main:proofs/SwarmProofs/registry.json`",
+                    )?;
+                ensure!(
+                    show_out.status.success(),
+                    "`git show origin/main:proofs/SwarmProofs/registry.json` failed"
+                );
+                let base: RegistryManifest = serde_json::from_slice(&show_out.stdout)
+                    .context("invalid origin/main:proofs/SwarmProofs/registry.json")?;
+                proof_registry::validate_frozen_defs_append_only(&base, &head).map_err(|e| {
+                    anyhow::anyhow!("append-only frozen Defs check against origin/main failed: {e}")
+                })?;
+            }
+        }
+    }
+
+    println!(
+        "verified append-only frozen Defs integrity for {}",
+        head_reg_path.display()
+    );
+    Ok(())
+}
+
 pub fn check_proof_sources(repo_root: &Path, package_root: &Path) -> Result<()> {
+    match check_proof_sources_classified(repo_root, package_root) {
+        Ok(()) => Ok(()),
+        Err(SourcePolicyCheckError::CandidatePolicy(e) | SourcePolicyCheckError::Infra(e)) => {
+            Err(e)
+        }
+    }
+}
+
+pub fn check_proof_sources_classified(
+    repo_root: &Path,
+    package_root: &Path,
+) -> std::result::Result<(), SourcePolicyCheckError> {
     let registry_path = package_root.join("registry.json");
     let policy_script = repo_root.join("scripts").join("proof-source-policy.lean");
-    ensure!(
-        registry_path.is_file(),
-        "missing {}",
-        registry_path.display()
-    );
-    ensure!(
-        policy_script.is_file(),
-        "missing {}",
-        policy_script.display()
-    );
+    if !registry_path.is_file() {
+        return Err(SourcePolicyCheckError::Infra(anyhow::anyhow!(
+            "missing {}",
+            registry_path.display()
+        )));
+    }
+    if !policy_script.is_file() {
+        return Err(SourcePolicyCheckError::Infra(anyhow::anyhow!(
+            "missing {}",
+            policy_script.display()
+        )));
+    }
 
-    let registry: RegistryFile = serde_json::from_slice(&std::fs::read(&registry_path)?)?;
+    let reg_bytes = std::fs::read(&registry_path).map_err(|e| {
+        SourcePolicyCheckError::Infra(
+            anyhow::Error::new(e).context(format!("failed reading {}", registry_path.display())),
+        )
+    })?;
+    let registry: RegistryFile = serde_json::from_slice(&reg_bytes).map_err(|e| {
+        SourcePolicyCheckError::Infra(
+            anyhow::Error::new(e).context(format!("invalid {}", registry_path.display())),
+        )
+    })?;
     let modules_by_id: BTreeMap<&str, &RegistryModule> = registry
         .modules
         .iter()
@@ -151,34 +274,52 @@ pub fn check_proof_sources(repo_root: &Path, package_root: &Path) -> Result<()> 
         .collect();
 
     for module in &registry.modules {
-        verify_single_module_source(package_root, &policy_script, module, &modules_by_id)?;
+        verify_single_module_source_classified(
+            package_root,
+            &policy_script,
+            module,
+            &modules_by_id,
+        )?;
     }
     Ok(())
 }
 
-fn verify_single_module_source(
+fn verify_single_module_source_classified(
     package_root: &Path,
     policy_script: &Path,
     module: &RegistryModule,
     modules_by_id: &BTreeMap<&str, &RegistryModule>,
-) -> Result<()> {
-    ensure!(
-        !module.module_name.contains('/') && !module.module_name.contains(".."),
-        "invalid module_name: {}",
-        module.module_name
-    );
+) -> std::result::Result<(), SourcePolicyCheckError> {
+    if module.module_name.contains('/') || module.module_name.contains("..") {
+        return Err(SourcePolicyCheckError::CandidatePolicy(anyhow::anyhow!(
+            "invalid module_name: {}",
+            module.module_name
+        )));
+    }
     let source_path = package_root.join(format!("{}.lean", module.module_name.replace('.', "/")));
-    let payload = std::fs::read(&source_path)
-        .with_context(|| format!("missing module source {}", source_path.display()))?;
+    let payload = std::fs::read(&source_path).map_err(|e| {
+        let msg = format!("missing module source {}: {e}", source_path.display());
+        if crate::promote_pipeline::contains_infra_marker(&msg) {
+            SourcePolicyCheckError::Infra(anyhow::anyhow!(msg))
+        } else {
+            SourcePolicyCheckError::CandidatePolicy(anyhow::anyhow!(msg))
+        }
+    })?;
     if sha256_hex(&payload) != module.source_sha256 || payload.len() as u64 != module.source_bytes {
-        bail!("source integrity mismatch: {}", module.module_id);
+        return Err(SourcePolicyCheckError::CandidatePolicy(anyhow::anyhow!(
+            "source integrity mismatch: {}",
+            module.module_id
+        )));
     }
 
-    let closure = resolve_dependency_names(module, modules_by_id)?;
-    let (namespace, _) = module
-        .theorem_name
-        .rsplit_once('.')
-        .ok_or_else(|| anyhow::anyhow!("unqualified theorem_name: {}", module.theorem_name))?;
+    let closure = resolve_dependency_names(module, modules_by_id)
+        .map_err(SourcePolicyCheckError::CandidatePolicy)?;
+    let (namespace, _) = module.theorem_name.rsplit_once('.').ok_or_else(|| {
+        SourcePolicyCheckError::CandidatePolicy(anyhow::anyhow!(
+            "unqualified theorem_name: {}",
+            module.theorem_name
+        ))
+    })?;
 
     let mut cmd = Command::new("lake");
     cmd.current_dir(package_root)
@@ -197,15 +338,44 @@ fn verify_single_module_source(
     for allowed_mod in &closure {
         cmd.arg(allowed_mod);
     }
-    let status = cmd
-        .status()
-        .context("failed to execute `lake env lean --run proof-source-policy.lean`")?;
-    ensure!(
-        status.success(),
-        "proof-source-policy failed for {}",
-        module.module_id
+    let out = cmd.output().map_err(|e| {
+        SourcePolicyCheckError::Infra(
+            anyhow::Error::new(e)
+                .context("failed to execute `lake env lean --run proof-source-policy.lean`"),
+        )
+    })?;
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
-    Ok(())
+    match out.status.code() {
+        Some(0) => Ok(()),
+        None => Err(SourcePolicyCheckError::Infra(anyhow::anyhow!(
+            "`proof-source-policy.lean` terminated by signal for {}",
+            module.module_id
+        ))),
+        Some(code) if !(1..=124).contains(&code) => {
+            Err(SourcePolicyCheckError::Infra(anyhow::anyhow!(
+                "`proof-source-policy.lean` exited with infrastructure status {code} for {}",
+                module.module_id
+            )))
+        }
+        Some(code) => {
+            if crate::promote_pipeline::contains_infra_marker(&combined) {
+                Err(SourcePolicyCheckError::Infra(anyhow::anyhow!(
+                    "`proof-source-policy.lean` hit infrastructure error (exit {code}) for {}",
+                    module.module_id
+                )))
+            } else {
+                eprint!("{}", String::from_utf8_lossy(&out.stderr));
+                Err(SourcePolicyCheckError::CandidatePolicy(anyhow::anyhow!(
+                    "proof-source-policy failed for {} (exit {code})",
+                    module.module_id
+                )))
+            }
+        }
+    }
 }
 
 fn resolve_dependency_names(
@@ -1920,6 +2090,84 @@ mod tests {
         bytes[0] ^= 0x01;
         std::fs::write(&target, &bytes).unwrap();
         assert!(proof_registry::validate_frozen_library_modules(&tmp, &reg).is_err());
+
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn check_frozen_defs_append_only_allows_v2_addition_and_rejects_v1_mutation_or_deletion() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .unwrap();
+        let pkg_root = root.join("proofs").join("SwarmProofs");
+        let base_reg_path = pkg_root.join("registry.json");
+
+        let tmp = std::env::temp_dir().join(format!("xtask-append-only-{}", uuid::Uuid::new_v4()));
+        for rel in [
+            "SwarmProofs/Registry.lean",
+            "SwarmProofs/Chains/BSD/Defs/V1.lean",
+            "SwarmProofs/Chains/Circuits/Defs/V1.lean",
+            "SwarmProofs/Chains/RHAnalytic/Defs/V1.lean",
+            "SwarmProofs/Chains/RHLagarias/Defs/V1.lean",
+            "environment-lock.json",
+            "registry.json",
+        ] {
+            let dst = tmp.join(rel);
+            std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+            std::fs::copy(pkg_root.join(rel), &dst).unwrap();
+        }
+
+        // 1. Unchanged -> Ok
+        check_frozen_defs_append_only(root, &tmp, Some(&base_reg_path)).unwrap();
+
+        // 2. Adding a new V2 module on disk + in registry.json -> Ok (append-only)
+        let v2_bytes = b"/- SPDX-License-Identifier: Apache-2.0 -/\ndef v2Helper : Nat := 42\n";
+        let v2_path = tmp.join("SwarmProofs/Chains/BSD/Defs/V2.lean");
+        std::fs::write(&v2_path, v2_bytes).unwrap();
+        let mut head_reg: RegistryManifest =
+            serde_json::from_slice(&std::fs::read(tmp.join("registry.json")).unwrap()).unwrap();
+        head_reg.environments[0].frozen_library_modules.insert(
+            "SwarmProofs.Chains.BSD.Defs.V2".into(),
+            format!("sha256:{}", sha256_hex(v2_bytes)),
+        );
+        std::fs::write(
+            tmp.join("registry.json"),
+            serde_json::to_vec_pretty(&head_reg).unwrap(),
+        )
+        .unwrap();
+        check_frozen_defs_append_only(root, &tmp, Some(&base_reg_path)).unwrap();
+
+        // 3. Mutating existing V1 on disk AND updating head registry.json -> Error!
+        let bsd_v1_path = tmp.join("SwarmProofs/Chains/BSD/Defs/V1.lean");
+        let orig_bsd_v1 = std::fs::read(&bsd_v1_path).unwrap();
+        let mut mutated_v1 = orig_bsd_v1.clone();
+        mutated_v1.push(b'\n');
+        std::fs::write(&bsd_v1_path, &mutated_v1).unwrap();
+        let mut mutated_reg = head_reg.clone();
+        mutated_reg.environments[0].frozen_library_modules.insert(
+            "SwarmProofs.Chains.BSD.Defs.V1".into(),
+            format!("sha256:{}", sha256_hex(&mutated_v1)),
+        );
+        std::fs::write(
+            tmp.join("registry.json"),
+            serde_json::to_vec_pretty(&mutated_reg).unwrap(),
+        )
+        .unwrap();
+        assert!(check_frozen_defs_append_only(root, &tmp, Some(&base_reg_path)).is_err());
+
+        // 4. Deleting existing V1 on disk + in head registry.json -> Error!
+        std::fs::remove_file(&bsd_v1_path).unwrap();
+        let mut deleted_reg = head_reg;
+        deleted_reg.environments[0]
+            .frozen_library_modules
+            .remove("SwarmProofs.Chains.BSD.Defs.V1");
+        std::fs::write(
+            tmp.join("registry.json"),
+            serde_json::to_vec_pretty(&deleted_reg).unwrap(),
+        )
+        .unwrap();
+        assert!(check_frozen_defs_append_only(root, &tmp, Some(&base_reg_path)).is_err());
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }

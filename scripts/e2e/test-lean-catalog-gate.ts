@@ -210,12 +210,20 @@ async function runUnitTests(): Promise<void> {
       !inlined.includes("#guard"),
       `${entry.name} inline compat must strip #guard commands`
     );
+    const cta = CHAIN_TASK_CONFIG[entry.name]?.cta ?? "";
+    assert.ok(
+      cta.includes("-- SPDX-License-Identifier: Apache-2.0") &&
+        cta.includes("@[...]") &&
+        cta.includes("instance") &&
+        cta.includes("open"),
+      `N4: ${entry.name} CTA must document SPDX header and forbidden attribute/instance/open tokens`
+    );
   }
   console.log(
-    "  [PASS] 18 chain-*.lean headers, byte-for-byte parity, composability & inline compat"
+    "  [PASS] 18 chain-*.lean headers, byte-for-byte parity, composability, CTA notes & inline compat"
   );
 
-  // 2. Negative composability checks (including N1 umbrella rejection & S2 instance/class rejection)
+  // 2. Negative composability checks (including N1 umbrella rejection, S2 instance/class rejection & SF3 string/char literal comment spoofing)
   for (const badToken of [
     "admit",
     "prefix ",
@@ -233,6 +241,16 @@ async function runUnitTests(): Promise<void> {
     "meta def sneakyMeta : Nat := 0",
     "opaque sneakyOpaque : Nat := 0",
     "class ",
+    // SF3 mandatory negative cases: string & char literals must NEVER spoof line/block comments!
+    'theorem spoof1 : True := by\n  have h : "--" = "--" := rfl; native_decide',
+    'theorem spoof2 : True := by\n  have a : String := "/-"; native_decide; have b : String := "-/"',
+    'theorem spoof3 : True := by\n  have c : String := "\\"-" ++ "-"; sorry',
+    'theorem spoof3_exact : True := by\n  have c : String := "\\"--"; sorry',
+    "theorem spoof4 : True := by\n  have c1 : Char := '/'; have c2 : Char := '-'; sorry",
+    "theorem spoof5 : True := by\n  let f' : Char → Char := id; let _ := f' '-'; sorry",
+    'theorem spoof6 : True := by\n  have s : String := s!"{sorry}"; exact trivial',
+    'theorem spoof7 : True := by\n  have r : String := r#"\\"#; sorry; have q : String := "#"',
+    'theorem spoof8 : True := by\n  have u : String := "unclosed',
   ]) {
     assert.throws(
       () =>
@@ -242,8 +260,21 @@ async function runUnitTests(): Promise<void> {
           program: "millennium-chains",
           statement: `-- SPDX-License-Identifier: Apache-2.0\n${badToken}\ndef statementProp : Prop := True`,
         }),
-      /COMPOSABILITY GATE FAILED/
+      /COMPOSABILITY GATE FAILED/,
+      `Expected assertRegistryComposableStatement to reject:\n${badToken}`
     );
+  }
+  // SF3 positive cases: identifier primes (`local'`, `f' x`) and benign char/string literals pass cleanly:
+  for (const okSnippet of [
+    "def local' : Prop := True\ndef f' (x : Nat) : Nat := x\ntheorem okPrime : f' 0 = 0 := rfl",
+    "def dashChar : Char := '-'\ndef quoteChar : Char := '\\''\ndef slashStr : String := \"\\\\\"",
+  ]) {
+    assertRegistryComposableStatement({
+      name: "chain-ok-prime-literals",
+      kind: "open",
+      program: "millennium-chains",
+      statement: `-- SPDX-License-Identifier: Apache-2.0\n${okSnippet}\ndef statementProp : Prop := True`,
+    });
   }
   for (const badImport of [
     "SwarmProofs",
@@ -273,7 +304,7 @@ async function runUnitTests(): Promise<void> {
     /SPDX-License-Identifier/
   );
   console.log(
-    "  [PASS] Negative composability checks reject instance/class, unversioned imports & umbrella SwarmProofs"
+    "  [PASS] Negative composability checks reject instance/class, SF3 string/char comment spoofing, unversioned imports & umbrella SwarmProofs"
   );
 
   // 3. negateStatementProp, N4 quantifier filtering & Mathlib probe spec construction
@@ -459,6 +490,41 @@ async function runUnitTests(): Promise<void> {
       assert.throws(
         () => classifyMathlibProbeSlice("solve-by-elim", "__ps", badSbeSlice),
         /MATHLIB SEARCH FAIL-CLOSED/
+      );
+    }
+
+    // N1: aesop MUST only count exhaustive search or made no progress as EXHAUSTED;
+    // hitting maxRuleApplicationDepth or maxRuleApplications MUST fail closed!
+    assert.equal(
+      classifyMathlibProbeSlice(
+        "aesop",
+        "__paesop",
+        "<stdin>:12:2: error: tactic 'aesop' failed, failed to prove the goal after exhaustive search.\n'__paesop' depends on axioms: [sorryAx]\n"
+      ),
+      "EXHAUSTED"
+    );
+    assert.equal(
+      classifyMathlibProbeSlice(
+        "aesop",
+        "__paesop",
+        "<stdin>:12:2: error: Tactic `aesop` failed, made no progress\n'__paesop' depends on axioms: [sorryAx]\n"
+      ),
+      "EXHAUSTED"
+    );
+    for (const nonExhaustiveAesopSlice of [
+      "<stdin>:12:2: error: aesop: failed to prove the goal. Some goals were not explored because the maximum rule application depth (30) was reached\n'__paesop' depends on axioms: [sorryAx]\n",
+      "<stdin>:12:2: error: tactic 'aesop' failed, failed to prove the goal. Some goals were not explored because the maximum rule application depth (30) was reached. Set option 'maxRuleApplicationDepth' to increase the limit.\n'__paesop' depends on axioms: [sorryAx]\n",
+      "<stdin>:12:2: error: tactic 'aesop' failed, failed to prove the goal. Some goals were not explored because the maximum number of rule applications (200) was reached.\n'__paesop' depends on axioms: [sorryAx]\n",
+    ]) {
+      assert.throws(
+        () =>
+          classifyMathlibProbeSlice(
+            "aesop",
+            "__paesop",
+            nonExhaustiveAesopSlice
+          ),
+        /MATHLIB SEARCH FAIL-CLOSED/,
+        `N1: expected aesop non-exhaustive slice to fail closed:\n${nonExhaustiveAesopSlice}`
       );
     }
 

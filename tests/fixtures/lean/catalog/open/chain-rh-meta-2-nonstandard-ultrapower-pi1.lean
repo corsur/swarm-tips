@@ -41,6 +41,8 @@ def forallLeVar0 (ψ : BoundedArithFormula) : BoundedArithFormula :=
          standard natural `n : ℕ` inside `ℕ^ℕ / 𝒰`, there exists an infinite internal sequence
          `ω : ℕ → ℕ` (`∀ m : ℕ, {i | m < ω i} ∈ 𝒰`) such that `forallLeVar0 ψ` holds up to `ω` in
          `ℕ^ℕ / 𝒰`.
+    Because Rung E1's rational Lagarias envelope bound (`sigmaRat n ≤ lagariasEnvelopeRat n K`) is a
+    bounded `Δ₀` relation, Part (2a) yields the direct Π₁⁰ nonstandard transfer bridge for Rung E1.
     Solver proofs must start with `-- SPDX-License-Identifier: Apache-2.0` for registry promotion. -/
 def statementProp : Prop :=
   ∀ (𝒰 : Ultrafilter ℕ), (↑𝒰 : Filter ℕ) ≤ Filter.cofinite →

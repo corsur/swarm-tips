@@ -152,6 +152,28 @@ jobs:
         working-directory: proofs/SwarmProofs
         run: lake build Zeta23
 
+      - name: Build pinned lean4export and nanoda_bin once before candidate loop
+        run: |
+          set -euo pipefail
+          LEAN4EXPORT_REV="9fb131bb100eb32ccf6836f14e4f8328d13b6792"
+          NANODA_REV="3a2407216ee84a75f9e1aead6803d0578be06ae7"
+          rm -rf /tmp/swarm-audit-tools
+          mkdir -p /tmp/swarm-audit-tools
+
+          git clone --quiet https://github.com/leanprover/lean4export.git /tmp/swarm-audit-tools/lean4export
+          git -C /tmp/swarm-audit-tools/lean4export checkout --quiet "$LEAN4EXPORT_REV"
+          cp proofs/SwarmProofs/lean-toolchain /tmp/swarm-audit-tools/lean4export/lean-toolchain
+          (cd /tmp/swarm-audit-tools/lean4export && lake build)
+
+          git clone --quiet https://github.com/ammkrn/nanoda_lib.git /tmp/swarm-audit-tools/nanoda
+          git -C /tmp/swarm-audit-tools/nanoda checkout --quiet "$NANODA_REV"
+          (cd /tmp/swarm-audit-tools/nanoda && cargo build --release --locked)
+
+          test -x /tmp/swarm-audit-tools/lean4export/.lake/build/bin/lean4export
+          test -x /tmp/swarm-audit-tools/nanoda/target/release/nanoda_bin
+          echo "LEAN4EXPORT_BIN=/tmp/swarm-audit-tools/lean4export/.lake/build/bin/lean4export" >> "$GITHUB_ENV"
+          echo "NANODA_BIN=/tmp/swarm-audit-tools/nanoda/target/release/nanoda_bin" >> "$GITHUB_ENV"
+
       - name: Audit staged candidates one-by-one with isolated rollback
         env:
           AUDIT_NETWORK: ${{ needs.fetch-and-stage.outputs.effective_network }}
@@ -246,7 +268,14 @@ jobs:
               type == "object" and
               (.task_id | type == "string" and test("^[A-Za-z0-9:._-]{1,128}$")) and
               (.artifact_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
-              (.reason | type == "string")
+              (.reason | type == "string" and (
+                . == "autopromote_policy_failed" or
+                . == "registry_validation_failed" or
+                . == "source_policy_failed" or
+                . == "lean_compile_failed" or
+                . == "nanoda_or_expr_stability_failed" or
+                . == "axiom_audit_failed"
+              ))
             ))
           ' /tmp/audit-verdicts/audit-verdicts.json > /dev/null
 

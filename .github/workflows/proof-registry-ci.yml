@@ -47,6 +47,16 @@ jobs:
           shared-key: proof-registry
       - name: Validate canonical registry and frozen library hashes
         run: cargo run --locked -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
+      - name: Enforce append-only immutability on frozen Defs against origin/main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main || true
+          if git cat-file -e origin/main:proofs/SwarmProofs/registry.json 2>/dev/null; then
+            git show origin/main:proofs/SwarmProofs/registry.json > /tmp/base-main-registry.json
+            cargo run --locked -p xtask -- check-frozen-defs-append-only --base-registry /tmp/base-main-registry.json
+          else
+            cargo run --locked -p xtask -- check-frozen-defs-append-only
+          fi
       - name: Prepare ephemeral audit umbrella
         run: cargo run --locked -p xtask -- prepare-proof-promotion-audit
       - name: Install pinned Lean environment

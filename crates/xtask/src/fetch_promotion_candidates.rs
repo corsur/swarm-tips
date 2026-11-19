@@ -2489,7 +2489,7 @@ mod tests {
     ) {
         use crate::promote_pipeline::{
             apply_verified_promotions, audit_staged_candidates_with, ApplyVerifiedArgs,
-            AuditStagedArgs,
+            AuditStagedArgs, StepOutcome,
         };
         let (dir, pkg_dir, out_dir) = setup_temp_workspace("sa-isolation");
         let real_pkg = repo_root().join("proofs/SwarmProofs");
@@ -2614,9 +2614,11 @@ mod tests {
             },
             |_root, _pkg, cand, _skip| {
                 if cand.task_id == "camp-bad:task-1" {
-                    anyhow::bail!("simulated Lean type mismatch in bad proof")
+                    StepOutcome::CandidateRejected {
+                        code: "lean_compile_failed",
+                    }
                 } else {
-                    Ok(())
+                    StepOutcome::Passed
                 }
             },
         )
@@ -2624,6 +2626,7 @@ mod tests {
         assert_eq!(verdicts.passed_task_ids, vec!["camp-good:task-2"]);
         assert_eq!(verdicts.rejected.len(), 1);
         assert_eq!(verdicts.rejected[0].task_id, "camp-bad:task-1");
+        assert_eq!(verdicts.rejected[0].reason, "lean_compile_failed");
 
         // Reconstruct in open-pr purely from trusted out_dir + verdicts_path (zero files from untrusted audit_pkg!)
         let promoted_count = apply_verified_promotions(&ApplyVerifiedArgs {
@@ -2656,7 +2659,9 @@ mod tests {
 
     #[test]
     fn devnet_requires_isolated_dry_run_registry_and_never_touches_public_registry() {
-        use crate::promote_pipeline::{run_promote_pipeline_with, PromotePipelineArgs};
+        use crate::promote_pipeline::{
+            run_promote_pipeline_with, PromotePipelineArgs, StepOutcome,
+        };
         let public_pkg = repo_root().join("proofs/SwarmProofs");
         let public_reg_path = public_pkg.join("registry.json");
         let public_reg_before = std::fs::read(&public_reg_path).unwrap();
@@ -2754,9 +2759,15 @@ mod tests {
                     &std::fs::read(staged_pkg.join("registry.json")).unwrap(),
                 )
                 .unwrap();
-                proof_registry::validate_registry(&staged_reg)?;
-                proof_registry::validate_frozen_library_modules(staged_pkg, &staged_reg)?;
-                Ok(())
+                if let Err(e) = proof_registry::validate_registry(&staged_reg) {
+                    return StepOutcome::InfraError(anyhow::anyhow!(e.to_string()));
+                }
+                if let Err(e) =
+                    proof_registry::validate_frozen_library_modules(staged_pkg, &staged_reg)
+                {
+                    return StepOutcome::InfraError(anyhow::anyhow!(e.to_string()));
+                }
+                StepOutcome::Passed
             },
         )
         .unwrap();

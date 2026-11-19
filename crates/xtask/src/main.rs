@@ -25,6 +25,7 @@ usage: cargo xtask <subcommand> [args...]
 Subcommands:
   prepare-proof-promotion-audit [--package <dir>]
   check-proof-sources [--package <dir>]
+  check-frozen-defs-append-only [--base-registry <path>] [--package <dir>]
   export-proof-declarations <package-root> <exporter-bin> <module> <inventory.json> <export.txt>
   check-proof-export-coverage <inventory.json> <export.txt> <coverage.json>
   check-statement-expr-stability <package-root> <lean4export-bin> <module-name> <standalone-statement-file> <generated-namespace>
@@ -83,6 +84,11 @@ fn dispatch(args: &[String]) -> Result<()> {
             let root = workspace_root()?;
             let pkg = parse_optional_package(rest)?;
             proof_audit::check_proof_sources(&root, &pkg)
+        }
+        "check-frozen-defs-append-only" => {
+            let root = workspace_root()?;
+            let (pkg, base_reg) = parse_frozen_defs_append_only_args(rest)?;
+            proof_audit::check_frozen_defs_append_only(&root, &pkg, base_reg.as_deref())
         }
         "export-proof-declarations" => {
             ensure!(rest.len() == 5, "{USAGE}");
@@ -450,6 +456,16 @@ fn parse_audit_staged_args(args: &[String]) -> Result<promote_pipeline::AuditSta
         }
     }
 
+    if network != "mainnet" {
+        let canonical_swarm_proofs_root = root.join("proofs").join("SwarmProofs");
+        promote_pipeline::assert_dry_run_isolation_for_network(
+            &network,
+            Some(&package_root),
+            &package_root.join("registry.json"),
+            &canonical_swarm_proofs_root,
+        )?;
+    }
+
     Ok(promote_pipeline::AuditStagedArgs {
         staged_candidates_dir: staged_dir
             .ok_or_else(|| anyhow::anyhow!("--staged-dir is required\n\n{USAGE}"))?,
@@ -459,6 +475,38 @@ fn parse_audit_staged_args(args: &[String]) -> Result<promote_pipeline::AuditSta
         network,
         skip_nanoda,
     })
+}
+
+fn parse_frozen_defs_append_only_args(args: &[String]) -> Result<(PathBuf, Option<PathBuf>)> {
+    let root = workspace_root()?;
+    let mut package_root = root.join("proofs").join("SwarmProofs");
+    let mut base_registry: Option<PathBuf> = None;
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let take_val = |flag: &str, idx: &mut usize| -> Result<String> {
+            if let Some(eq_val) = arg.strip_prefix(&format!("{flag}=")) {
+                ensure!(!eq_val.is_empty(), "{flag} requires a non-empty value");
+                *idx += 1;
+                return Ok(eq_val.to_string());
+            }
+            let val = args
+                .get(*idx + 1)
+                .ok_or_else(|| anyhow::anyhow!("missing value for {flag}"))?;
+            ensure!(!val.is_empty(), "{flag} requires a non-empty value");
+            *idx += 2;
+            Ok(val.clone())
+        };
+        if arg == "--base-registry" || arg.starts_with("--base-registry=") {
+            base_registry = Some(PathBuf::from(take_val("--base-registry", &mut i)?));
+        } else if arg == "--package" || arg.starts_with("--package=") {
+            package_root = PathBuf::from(take_val("--package", &mut i)?);
+        } else {
+            bail!("unexpected argument `{arg}`\n\n{USAGE}");
+        }
+    }
+    Ok((package_root, base_registry))
 }
 
 fn parse_apply_verified_args(args: &[String]) -> Result<promote_pipeline::ApplyVerifiedArgs> {
@@ -534,4 +582,44 @@ fn parse_promote_pipeline_args(args: &[String]) -> Result<promote_pipeline::Prom
         "promote-pipeline requires --dry-run-registry <tmp_dir>\n\n{USAGE}"
     );
     Ok(promote_pipeline::PromotePipelineArgs { fetch, skip_nanoda })
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn sf4_parse_audit_staged_args_rejects_devnet_against_default_or_public_package() {
+        let default_pkg_args: Vec<String> = [
+            "--staged-dir",
+            "/tmp/sf4-cands",
+            "--verdicts-out",
+            "/tmp/sf4-verdicts.json",
+            "--network",
+            "devnet",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let err = parse_audit_staged_args(&default_pkg_args)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("devnet proofs never enter the public registry"));
+
+        let isolated_args: Vec<String> = [
+            "--staged-dir",
+            "/tmp/sf4-cands",
+            "--verdicts-out",
+            "/tmp/sf4-verdicts.json",
+            "--network",
+            "devnet",
+            "--package",
+            "/tmp/sf4-isolated-dry-run/SwarmProofs",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let ok = parse_audit_staged_args(&isolated_args).unwrap();
+        assert_eq!(ok.network, "devnet");
+    }
 }

@@ -198,13 +198,59 @@ export const FORBIDDEN_COMPOSITION_SUBSTRINGS = [
   "#synth",
 ] as const;
 
+function isLeanIdentChar(ch: string): boolean {
+  return /^[\p{L}\p{N}_'?»₊₋]$/u.test(ch);
+}
+
+function matchLeanCharLiteral(chars: string[], idx: number): number | null {
+  if (idx + 2 < chars.length) {
+    const c1 = chars[idx + 1];
+    if (
+      c1 !== "'" &&
+      c1 !== "\\" &&
+      c1 !== "\n" &&
+      c1 !== "\r" &&
+      chars[idx + 2] === "'"
+    ) {
+      return 3;
+    }
+  }
+  if (idx + 3 < chars.length && chars[idx + 1] === "\\") {
+    const esc = chars[idx + 2];
+    if (esc !== "\n" && esc !== "\r" && chars[idx + 3] === "'") {
+      return 4;
+    }
+    if (
+      esc === "x" &&
+      idx + 5 < chars.length &&
+      /^[0-9a-fA-F]$/.test(chars[idx + 3]) &&
+      /^[0-9a-fA-F]$/.test(chars[idx + 4]) &&
+      chars[idx + 5] === "'"
+    ) {
+      return 6;
+    }
+    if (
+      esc === "u" &&
+      idx + 7 < chars.length &&
+      [3, 4, 5, 6].every((k) => /^[0-9a-fA-F]$/.test(chars[idx + k])) &&
+      chars[idx + 7] === "'"
+    ) {
+      return 8;
+    }
+  }
+  return null;
+}
+
 export function stripLeanComments(source: string): string {
+  const chars = Array.from(source);
   let out = "";
   let blockDepth = 0;
+  let prevIsIdent = false;
+  let prevWasIdentBang = false;
   let i = 0;
-  while (i < source.length) {
-    const ch = source[i];
-    const next = i + 1 < source.length ? source[i + 1] : "";
+  while (i < chars.length) {
+    const ch = chars[i];
+    const next = i + 1 < chars.length ? chars[i + 1] : "";
     if (blockDepth > 0) {
       if (ch === "/" && next === "-") {
         blockDepth++;
@@ -216,6 +262,10 @@ export function stripLeanComments(source: string): string {
         blockDepth--;
         out += "  ";
         i += 2;
+        if (blockDepth === 0) {
+          prevIsIdent = false;
+          prevWasIdentBang = false;
+        }
         continue;
       }
       out += ch === "\n" ? "\n" : " ";
@@ -225,17 +275,121 @@ export function stripLeanComments(source: string): string {
     if (ch === "/" && next === "-") {
       blockDepth = 1;
       out += "  ";
+      prevIsIdent = false;
+      prevWasIdentBang = false;
       i += 2;
       continue;
     }
     if (ch === "-" && next === "-") {
-      while (i < source.length && source[i] !== "\n") {
+      while (i < chars.length && chars[i] !== "\n") {
         out += " ";
         i++;
       }
+      prevIsIdent = false;
+      prevWasIdentBang = false;
+      continue;
+    }
+    if (ch === "r" && !prevIsIdent) {
+      let hashCount = 0;
+      while (
+        i + 1 + hashCount < chars.length &&
+        chars[i + 1 + hashCount] === "#"
+      ) {
+        hashCount++;
+      }
+      if (
+        hashCount > 0 &&
+        i + 1 + hashCount < chars.length &&
+        chars[i + 1 + hashCount] === '"'
+      ) {
+        out += `r${"#".repeat(hashCount)}"`;
+        i += 2 + hashCount;
+        let closed = false;
+        while (i < chars.length) {
+          const c = chars[i];
+          let closingHashes = c === '"';
+          for (let k = 1; closingHashes && k <= hashCount; k++) {
+            if (i + k >= chars.length || chars[i + k] !== "#") {
+              closingHashes = false;
+            }
+          }
+          if (closingHashes) {
+            out += `"${"#".repeat(hashCount)}`;
+            i += 1 + hashCount;
+            closed = true;
+            break;
+          }
+          out += c === "\n" ? "\n" : " ";
+          i++;
+        }
+        if (!closed) {
+          throw new Error(
+            "[COMPOSABILITY GATE FAILED] unclosed Lean raw string literal in source"
+          );
+        }
+        prevIsIdent = false;
+        prevWasIdentBang = false;
+        continue;
+      }
+    }
+    if (ch === '"') {
+      if (prevWasIdentBang) {
+        throw new Error(
+          "[COMPOSABILITY GATE FAILED] interpolated Lean string literal is not permitted in promotion source"
+        );
+      }
+      out += '"';
+      i++;
+      let closed = false;
+      while (i < chars.length) {
+        const c = chars[i];
+        if (c === "\\") {
+          out += " ";
+          i++;
+          if (i >= chars.length) {
+            throw new Error(
+              "[COMPOSABILITY GATE FAILED] unclosed Lean string literal in source"
+            );
+          }
+          const esc = chars[i];
+          out += esc === "\n" ? "\n" : " ";
+          i++;
+          continue;
+        }
+        if (c === '"') {
+          out += '"';
+          i++;
+          closed = true;
+          break;
+        }
+        out += c === "\n" ? "\n" : " ";
+        i++;
+      }
+      if (!closed) {
+        throw new Error(
+          "[COMPOSABILITY GATE FAILED] unclosed Lean string literal in source"
+        );
+      }
+      prevIsIdent = false;
+      prevWasIdentBang = false;
+      continue;
+    }
+    if (ch === "'" && !prevIsIdent) {
+      const litLen = matchLeanCharLiteral(chars, i);
+      if (litLen === null) {
+        throw new Error(
+          "[COMPOSABILITY GATE FAILED] unclosed or malformed Lean character literal in source"
+        );
+      }
+      out += `'${" ".repeat(Math.max(0, litLen - 2))}'`;
+      i += litLen;
+      prevIsIdent = false;
+      prevWasIdentBang = false;
       continue;
     }
     out += ch;
+    prevWasIdentBang = prevIsIdent && ch === "!";
+    prevIsIdent = isLeanIdentChar(ch) || (prevIsIdent && ch === "!");
     i++;
   }
   if (blockDepth !== 0) {
@@ -454,7 +608,7 @@ export interface ChainTaskMeta {
 }
 
 const SPDX_CTA_NOTE =
-  "(-- SPDX-License-Identifier: Apache-2.0 header required)";
+  "(proof must start with `-- SPDX-License-Identifier: Apache-2.0` and avoid `@[...]` attributes, `instance`/`class`, and `open`/`local`/`scoped`)";
 
 export const CHAIN_TASK_CONFIG: Record<string, ChainTaskMeta> = {
   "chain-rh-lagarias-1-superabundant-even": {
@@ -1138,7 +1292,7 @@ export function classifyMathlibProbeSlice(
         hasSorryAx &&
         (slice.includes("failed to prove the goal after exhaustive search") ||
           slice.includes("Tactic `aesop` failed, made no progress") ||
-          slice.includes("aesop: failed to prove the goal"))
+          slice.includes("tactic 'aesop' failed, made no progress"))
       ) {
         return "EXHAUSTED";
       }

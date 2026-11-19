@@ -289,6 +289,69 @@ fn is_canonical_frozen_module_name(name: &str) -> bool {
             .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
+pub const FROZEN_V1_DEFS_GOLDEN_HASHES: &[(&str, &str, &str)] = &[
+    (
+        "SwarmProofs.Chains.BSD.Defs.V1",
+        "SwarmProofs/Chains/BSD/Defs/V1.lean",
+        "sha256:c2c3edf31528a5287c992f26b010140c99dd10536ec1cd7527041545222e704d",
+    ),
+    (
+        "SwarmProofs.Chains.Circuits.Defs.V1",
+        "SwarmProofs/Chains/Circuits/Defs/V1.lean",
+        "sha256:00cd43b77425913085d1a1d8ab6d2664c5857ee7495a5c1b5b89e798ceef667d",
+    ),
+    (
+        "SwarmProofs.Chains.RHAnalytic.Defs.V1",
+        "SwarmProofs/Chains/RHAnalytic/Defs/V1.lean",
+        "sha256:5777771ee0a643240cb1f6d84994658c0008dd04ea32ae665c560a48329dfbe6",
+    ),
+    (
+        "SwarmProofs.Chains.RHLagarias.Defs.V1",
+        "SwarmProofs/Chains/RHLagarias/Defs/V1.lean",
+        "sha256:c590bd97d7b40f604c9a258c6f2c9197ab64d24036cea0ecee34b91efa873300",
+    ),
+];
+
+/// Enforce append-only immutability of `frozen_library_modules` across registry revisions:
+/// every frozen environment and `SwarmProofs.Chains.*.Defs.V<N>` entry present in `base`
+/// must remain present in `head` with the exact same SHA-256 digest (new `V<N+1>` modules may be added).
+pub fn validate_frozen_defs_append_only(
+    base: &RegistryManifest,
+    head: &RegistryManifest,
+) -> Result<(), RegistryError> {
+    validate_registry(base)?;
+    validate_registry(head)?;
+    for base_env in &base.environments {
+        let Some(head_env) = head
+            .environments
+            .iter()
+            .find(|env| env.environment_id == base_env.environment_id)
+        else {
+            return Err(RegistryError::InvalidRegistry(format!(
+                "frozen environment {} was deleted from registry",
+                base_env.environment_id
+            )));
+        };
+        for (mod_name, base_hash) in &base_env.frozen_library_modules {
+            match head_env.frozen_library_modules.get(mod_name) {
+                None => {
+                    return Err(RegistryError::InvalidRegistry(format!(
+                        "frozen library module `{mod_name}` was deleted from environment {}",
+                        base_env.environment_id
+                    )));
+                }
+                Some(head_hash) if head_hash != base_hash => {
+                    return Err(RegistryError::InvalidRegistry(format!(
+                        "frozen library module `{mod_name}` hash mutated from {base_hash} to {head_hash}; add a new V<N+1> module instead"
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate that every frozen shared library module under `<package_root>/SwarmProofs`
 /// is listed in `frozen_library_modules` and matches its SHA-256 digest byte-for-byte.
 pub fn validate_frozen_library_modules(
@@ -582,11 +645,49 @@ pub const FORBIDDEN_SHARED_SUBSTRINGS: &[&str] =
 
 pub const FORBIDDEN_PROOF_WORD_TOKENS: &[&str] = &["local", "scoped", "open", "export"];
 
-/// Strip Lean `--` line comments and nested `/- ... -/` block comments, replacing
-/// comment bytes with spaces while preserving newlines. Fails closed on unclosed `/-`.
+fn is_lean_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '\'' | '?' | '»' | '₊' | '₋')
+}
+
+fn match_lean_char_literal(chars: &[(usize, char)], idx: usize) -> Option<usize> {
+    if idx + 2 < chars.len() {
+        let c1 = chars[idx + 1].1;
+        if c1 != '\'' && c1 != '\\' && c1 != '\n' && c1 != '\r' && chars[idx + 2].1 == '\'' {
+            return Some(3);
+        }
+    }
+    if idx + 3 < chars.len() && chars[idx + 1].1 == '\\' {
+        let esc = chars[idx + 2].1;
+        if esc != '\n' && esc != '\r' && chars[idx + 3].1 == '\'' {
+            return Some(4);
+        }
+        if esc == 'x'
+            && idx + 5 < chars.len()
+            && chars[idx + 3].1.is_ascii_hexdigit()
+            && chars[idx + 4].1.is_ascii_hexdigit()
+            && chars[idx + 5].1 == '\''
+        {
+            return Some(6);
+        }
+        if esc == 'u'
+            && idx + 7 < chars.len()
+            && (3..=6).all(|k| chars[idx + k].1.is_ascii_hexdigit())
+            && chars[idx + 7].1 == '\''
+        {
+            return Some(8);
+        }
+    }
+    None
+}
+
+/// Strip Lean `--` line comments and nested `/- ... -/` block comments while blanking
+/// string and character literal interiors so `"--"` / `"/-"` / `'-'` / `'/'` never spoof comments.
+/// Fails closed on unclosed `/-`, unclosed string/char literals, or interpolated strings `s!"..."`.
 pub fn strip_lean_comments(source: &str) -> Result<String, RegistryError> {
     let mut out = String::with_capacity(source.len());
     let mut block_depth = 0usize;
+    let mut prev_is_ident = false;
+    let mut prev_was_ident_bang = false;
     let chars: Vec<(usize, char)> = source.char_indices().collect();
     let mut idx = 0usize;
     while idx < chars.len() {
@@ -603,6 +704,10 @@ pub fn strip_lean_comments(source: &str) -> Result<String, RegistryError> {
                 block_depth -= 1;
                 out.push_str("  ");
                 idx += 2;
+                if block_depth == 0 {
+                    prev_is_ident = false;
+                    prev_was_ident_bang = false;
+                }
                 continue;
             }
             out.push(if ch == '\n' { '\n' } else { ' ' });
@@ -612,6 +717,8 @@ pub fn strip_lean_comments(source: &str) -> Result<String, RegistryError> {
         if ch == '/' && next_ch == Some('-') {
             block_depth = 1;
             out.push_str("  ");
+            prev_is_ident = false;
+            prev_was_ident_bang = false;
             idx += 2;
             continue;
         }
@@ -620,9 +727,112 @@ pub fn strip_lean_comments(source: &str) -> Result<String, RegistryError> {
                 out.push(' ');
                 idx += 1;
             }
+            prev_is_ident = false;
+            prev_was_ident_bang = false;
+            continue;
+        }
+        // Raw string literal `r#+"..."#+` when `r` is not part of an identifier:
+        if ch == 'r' && !prev_is_ident {
+            let mut hash_count = 0usize;
+            while chars.get(idx + 1 + hash_count).map(|(_, c)| *c) == Some('#') {
+                hash_count += 1;
+            }
+            if hash_count > 0 && chars.get(idx + 1 + hash_count).map(|(_, c)| *c) == Some('"') {
+                out.push('r');
+                for _ in 0..hash_count {
+                    out.push('#');
+                }
+                out.push('"');
+                idx += 2 + hash_count;
+                let mut closed = false;
+                while idx < chars.len() {
+                    let c = chars[idx].1;
+                    if c == '"'
+                        && (1..=hash_count)
+                            .all(|k| chars.get(idx + k).map(|(_, hc)| *hc) == Some('#'))
+                    {
+                        out.push('"');
+                        for _ in 0..hash_count {
+                            out.push('#');
+                        }
+                        idx += 1 + hash_count;
+                        closed = true;
+                        break;
+                    }
+                    out.push(if c == '\n' { '\n' } else { ' ' });
+                    idx += 1;
+                }
+                if !closed {
+                    return Err(RegistryError::Serialization(
+                        "unclosed Lean raw string literal in promotion source".into(),
+                    ));
+                }
+                prev_is_ident = false;
+                prev_was_ident_bang = false;
+                continue;
+            }
+        }
+        if ch == '"' {
+            if prev_was_ident_bang {
+                return Err(RegistryError::Serialization(
+                    "interpolated Lean string literal is not permitted in promotion source".into(),
+                ));
+            }
+            out.push('"');
+            idx += 1;
+            let mut closed = false;
+            while idx < chars.len() {
+                let c = chars[idx].1;
+                if c == '\\' {
+                    out.push(' ');
+                    idx += 1;
+                    if idx >= chars.len() {
+                        return Err(RegistryError::Serialization(
+                            "unclosed Lean string literal in promotion source".into(),
+                        ));
+                    }
+                    let esc = chars[idx].1;
+                    out.push(if esc == '\n' { '\n' } else { ' ' });
+                    idx += 1;
+                    continue;
+                }
+                if c == '"' {
+                    out.push('"');
+                    idx += 1;
+                    closed = true;
+                    break;
+                }
+                out.push(if c == '\n' { '\n' } else { ' ' });
+                idx += 1;
+            }
+            if !closed {
+                return Err(RegistryError::Serialization(
+                    "unclosed Lean string literal in promotion source".into(),
+                ));
+            }
+            prev_is_ident = false;
+            prev_was_ident_bang = false;
+            continue;
+        }
+        if ch == '\'' && !prev_is_ident {
+            let Some(lit_len) = match_lean_char_literal(&chars, idx) else {
+                return Err(RegistryError::Serialization(
+                    "unclosed or malformed Lean character literal in promotion source".into(),
+                ));
+            };
+            out.push('\'');
+            for _ in 0..lit_len.saturating_sub(2) {
+                out.push(' ');
+            }
+            out.push('\'');
+            idx += lit_len;
+            prev_is_ident = false;
+            prev_was_ident_bang = false;
             continue;
         }
         out.push(ch);
+        prev_was_ident_bang = prev_is_ident && ch == '!';
+        prev_is_ident = is_lean_ident_char(ch) || (prev_is_ident && ch == '!');
         idx += 1;
     }
     if block_depth != 0 {
@@ -1656,5 +1866,114 @@ mod tests {
                 "expected compose_generated_module to reject proof:\n{bad_proof}"
             );
         }
+
+        // SF3 mandatory negative cases: string & char literals must NEVER spoof line/block comments!
+        for spoof_proof in [
+            "theorem proof : statementProp := by\n  have h : \"--\" = \"--\" := rfl; native_decide",
+            "theorem proof : statementProp := by\n  have a : String := \"/-\"; native_decide; have b : String := \"-/\"",
+            "theorem proof : statementProp := by\n  have c : String := \"\\\"--\"; sorry",
+            "theorem proof : statementProp := by\n  have c1 : Char := '/'; have c2 : Char := '-'; sorry",
+            "theorem proof : statementProp := by\n  let f' : Char → Char := id; let _ := f' '-'; sorry",
+            "theorem proof : statementProp := by\n  have s : String := s!\"{sorry}\"; exact trivial",
+            "theorem proof : statementProp := by\n  have r : String := r#\"\\\"#; sorry; have q : String := \"#\"",
+            "theorem proof : statementProp := by\n  have u : String := \"unclosed",
+        ] {
+            assert!(
+                compose_generated_module(&make_cand(base_stmt, spoof_proof)).is_err(),
+                "SF3 expected compose_generated_module to reject spoofed proof:\n{spoof_proof}"
+            );
+        }
+
+        // SF3 positive cases: identifier primes (`local'`, `f' x`) and benign char/string literals work cleanly:
+        for ok_proof in [
+            "def local' : Prop := True\ntheorem proof : statementProp := by\n  let f' : Nat → Nat := fun x => x\n  have _ : f' 0 = 0 := rfl\n  exact trivial",
+            "theorem proof : statementProp := by\n  have _ : Char := '-'\n  have _ : Char := '\\''\n  have _ : String := \"\\\\\"\n  exact trivial",
+        ] {
+            assert!(
+                compose_generated_module(&make_cand(base_stmt, ok_proof)).is_ok(),
+                "SF3 expected compose_generated_module to accept valid proof:\n{ok_proof}"
+            );
+        }
+    }
+
+    #[test]
+    fn frozen_v1_defs_hashes_are_immutable_and_append_only() {
+        let pkg_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .join("proofs")
+            .join("SwarmProofs");
+        let reg: RegistryManifest =
+            serde_json::from_slice(&std::fs::read(pkg_root.join("registry.json")).unwrap())
+                .unwrap();
+        validate_registry(&reg).unwrap();
+        validate_frozen_library_modules(&pkg_root, &reg).unwrap();
+
+        let v4_env = reg
+            .environments
+            .iter()
+            .find(|env| env.lock.policy_version == 4)
+            .expect("missing policy_version=4 environment in registry.json");
+
+        // Exact hard-coded golden SHA-256 hashes for all 4 V1 Defs modules:
+        let expected_v1: [(&str, &str, &str); 4] = [
+            (
+                "SwarmProofs.Chains.BSD.Defs.V1",
+                "SwarmProofs/Chains/BSD/Defs/V1.lean",
+                "sha256:c2c3edf31528a5287c992f26b010140c99dd10536ec1cd7527041545222e704d",
+            ),
+            (
+                "SwarmProofs.Chains.Circuits.Defs.V1",
+                "SwarmProofs/Chains/Circuits/Defs/V1.lean",
+                "sha256:00cd43b77425913085d1a1d8ab6d2664c5857ee7495a5c1b5b89e798ceef667d",
+            ),
+            (
+                "SwarmProofs.Chains.RHAnalytic.Defs.V1",
+                "SwarmProofs/Chains/RHAnalytic/Defs/V1.lean",
+                "sha256:5777771ee0a643240cb1f6d84994658c0008dd04ea32ae665c560a48329dfbe6",
+            ),
+            (
+                "SwarmProofs.Chains.RHLagarias.Defs.V1",
+                "SwarmProofs/Chains/RHLagarias/Defs/V1.lean",
+                "sha256:c590bd97d7b40f604c9a258c6f2c9197ab64d24036cea0ecee34b91efa873300",
+            ),
+        ];
+        assert_eq!(FROZEN_V1_DEFS_GOLDEN_HASHES, &expected_v1);
+
+        for (mod_name, rel_file, pinned_sha) in expected_v1 {
+            assert_eq!(
+                v4_env.frozen_library_modules.get(mod_name).map(String::as_str),
+                Some(pinned_sha),
+                "registry.json frozen_library_modules entry for {mod_name} drifted from pinned V1 hash"
+            );
+            let disk_bytes = std::fs::read(pkg_root.join(rel_file)).unwrap();
+            let disk_sha = format!("sha256:{}", sha256_hex(&disk_bytes));
+            assert_eq!(
+                disk_sha, pinned_sha,
+                "disk file {rel_file} drifted from pinned V1 hash"
+            );
+        }
+
+        // Append-only checks: unchanged -> ok; adding V2 -> ok; mutating or deleting V1 -> error!
+        validate_frozen_defs_append_only(&reg, &reg).unwrap();
+
+        let mut with_v2 = reg.clone();
+        with_v2.environments[0]
+            .frozen_library_modules
+            .insert("SwarmProofs.Chains.BSD.Defs.V2".into(), id('2'));
+        validate_frozen_defs_append_only(&reg, &with_v2).unwrap();
+
+        let mut mutated_v1 = reg.clone();
+        mutated_v1.environments[0]
+            .frozen_library_modules
+            .insert("SwarmProofs.Chains.BSD.Defs.V1".into(), id('9'));
+        assert!(validate_frozen_defs_append_only(&reg, &mutated_v1).is_err());
+
+        let mut deleted_v1 = reg.clone();
+        deleted_v1.environments[0]
+            .frozen_library_modules
+            .remove("SwarmProofs.Chains.BSD.Defs.V1");
+        assert!(validate_frozen_defs_append_only(&reg, &deleted_v1).is_err());
     }
 }

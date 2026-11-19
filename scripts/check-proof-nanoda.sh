@@ -13,16 +13,33 @@ nanoda_revision="3a2407216ee84a75f9e1aead6803d0578be06ae7"
 work_root="$(mktemp -d)"
 trap 'rm -rf "$work_root"' EXIT
 
-git clone --quiet https://github.com/leanprover/lean4export.git "$work_root/lean4export"
-git -C "$work_root/lean4export" checkout --quiet "$lean4export_revision"
-cp "$package_root/lean-toolchain" "$work_root/lean4export/lean-toolchain"
-(cd "$work_root/lean4export" && lake build)
+if [[ -n "${LEAN4EXPORT_BIN:-}" ]]; then
+  if [[ ! -x "$LEAN4EXPORT_BIN" ]]; then
+    echo "ERROR: LEAN4EXPORT_BIN is set but not executable: $LEAN4EXPORT_BIN" >&2
+    exit 127
+  fi
+  exporter_bin="$(cd "$(dirname "$LEAN4EXPORT_BIN")" && pwd)/$(basename "$LEAN4EXPORT_BIN")"
+else
+  git clone --quiet https://github.com/leanprover/lean4export.git "$work_root/lean4export"
+  git -C "$work_root/lean4export" checkout --quiet "$lean4export_revision"
+  cp "$package_root/lean-toolchain" "$work_root/lean4export/lean-toolchain"
+  (cd "$work_root/lean4export" && lake build)
+  exporter_bin="$work_root/lean4export/.lake/build/bin/lean4export"
+fi
 
-git clone --quiet https://github.com/ammkrn/nanoda_lib.git "$work_root/nanoda"
-git -C "$work_root/nanoda" checkout --quiet "$nanoda_revision"
-(cd "$work_root/nanoda" && cargo build --release --locked)
+if [[ -n "${NANODA_BIN:-}" ]]; then
+  if [[ ! -x "$NANODA_BIN" ]]; then
+    echo "ERROR: NANODA_BIN is set but not executable: $NANODA_BIN" >&2
+    exit 127
+  fi
+  nanoda_bin="$(cd "$(dirname "$NANODA_BIN")" && pwd)/$(basename "$NANODA_BIN")"
+else
+  git clone --quiet https://github.com/ammkrn/nanoda_lib.git "$work_root/nanoda"
+  git -C "$work_root/nanoda" checkout --quiet "$nanoda_revision"
+  (cd "$work_root/nanoda" && cargo build --release --locked)
+  nanoda_bin="$work_root/nanoda/target/release/nanoda_bin"
+fi
 
-exporter_bin="$work_root/lean4export/.lake/build/bin/lean4export"
 export_file="$work_root/export.txt"
 inventory_file="$report_root/declarations.json"
 fixture_namespace="${4:-}"
@@ -67,5 +84,5 @@ printf '%s\n' \
   '  "print_axioms": false' \
   '}' > "$config_file"
 
-"$work_root/nanoda/target/release/nanoda_bin" "$config_file"
+"$nanoda_bin" "$config_file"
 cargo xtask write-proof-verification-receipt "$report_root" "$lean4export_revision" "$nanoda_revision"
