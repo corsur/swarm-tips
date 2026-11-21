@@ -15,10 +15,14 @@ export default defineConfig({
       "tests/fixtures/**",
       "tests/live/**",
       "tests/coordination-game/**",
-      "tests/coordination-game.ts",
       "tests/shillbot/**",
-      "tests/shillbot.ts",
-      "tests/xchain.ts",
+      ...(process.env.ANCHOR_PROVIDER_URL
+        ? []
+        : [
+            "tests/coordination-game.ts",
+            "tests/shillbot.ts",
+            "tests/xchain.ts",
+          ]),
       "tests/vitest.setup.ts",
       "**/node_modules/**",
       "**/*.d.ts",
