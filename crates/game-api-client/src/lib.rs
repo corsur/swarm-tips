@@ -535,11 +535,18 @@ impl GameApiClient {
     /// `xqueue_status_by_handle` with the handle minted at `/join`. Kept during
     /// rollout until every caller polls by handle.
     pub async fn xqueue_status(&self, wallet: &str) -> Result<XQueueResponse, GameApiError> {
+        self.xqueue_status_as(wallet, None).await
+    }
+
+    /// `GET /internal/xqueue/status?wallet=…` authenticated with a `game-internal`
+    /// service Bearer token minted for a verified wallet session (`C4`).
+    pub async fn xqueue_status_as(
+        &self,
+        wallet: &str,
+        bearer: Option<&str>,
+    ) -> Result<XQueueResponse, GameApiError> {
         let url = format!("{}/internal/xqueue/status", self.base_url);
-        let resp = self
-            .inner
-            .get(&url)
-            .query(&[("wallet", wallet)])
+        let resp = with_bearer(self.inner.get(&url).query(&[("wallet", wallet)]), bearer)
             .send()
             .await?;
         Self::check_status(resp)

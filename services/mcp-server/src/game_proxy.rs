@@ -189,10 +189,12 @@ impl GameApiProxy {
     /// DEPRECATED — leaks the public wallet; prefer `xqueue_status_by_handle`.
     pub async fn xqueue_status(
         &self,
+        verified: &crate::session_binding::VerifiedWallet,
         wallet: &str,
     ) -> Result<game_api_client::XQueueResponse, McpServiceError> {
+        let bearer = self.internal_bearer(verified);
         self.client
-            .xqueue_status(wallet)
+            .xqueue_status_as(wallet, bearer.as_deref())
             .await
             .map_err(map_game_api_error)
     }
@@ -652,7 +654,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn xqueue_status_queries_by_wallet() {
+    async fn xqueue_status_queries_by_wallet_with_internal_bearer() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/internal/xqueue/status"))
@@ -662,9 +664,25 @@ mod tests {
             .mount(&server)
             .await;
 
-        let resp = proxy(&server).xqueue_status("So1Wallet").await.expect("ok");
+        let verified = crate::session_binding::VerifiedWallet::new_for_test("So1Wallet");
+        let resp = proxy(&server)
+            .with_internal_jwt_secret(Some("test-internal-secret".to_string()))
+            .xqueue_status(&verified, "So1Wallet")
+            .await
+            .expect("ok");
         assert_eq!(resp.status, "waiting");
         assert!(resp.match_payload.is_none());
+        let received = server.received_requests().await.expect("received requests");
+        assert_eq!(received.len(), 1);
+        let auth_hdr = received[0]
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            auth_hdr.starts_with("Bearer "),
+            "xqueue_status must attach internal bearer when secret is configured, got: {auth_hdr}"
+        );
     }
 
     #[tokio::test]
@@ -922,7 +940,8 @@ mod tests {
         drop(server);
 
         let p = GameApiProxy::new(uri).expect("builds");
-        let err = p.xqueue_status("w").await.expect_err("must fail");
+        let vw = crate::session_binding::VerifiedWallet::new_for_test("w");
+        let err = p.xqueue_status(&vw, "w").await.expect_err("must fail");
         assert!(matches!(err, McpServiceError::GameApiError(_)));
     }
 

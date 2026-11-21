@@ -65,15 +65,12 @@ async function runUnitTests(): Promise<void> {
     false,
     "swarm_fold_primorial must be completely removed (S1)"
   );
-  assert.deepEqual(
-    [...ALLOWED_SWARM_LIBRARY_IMPORTS].sort(),
-    [
-      "SwarmProofs.Chains.BSD.Defs.V1",
-      "SwarmProofs.Chains.Circuits.Defs.V1",
-      "SwarmProofs.Chains.RHAnalytic.Defs.V1",
-      "SwarmProofs.Chains.RHLagarias.Defs.V1",
-    ]
-  );
+  assert.deepEqual([...ALLOWED_SWARM_LIBRARY_IMPORTS].sort(), [
+    "SwarmProofs.Chains.BSD.Defs.V1",
+    "SwarmProofs.Chains.Circuits.Defs.V1",
+    "SwarmProofs.Chains.RHAnalytic.Defs.V1",
+    "SwarmProofs.Chains.RHLagarias.Defs.V1",
+  ]);
   assert.deepEqual(
     BRIDGE_LEMMAS_BY_DEFS_MODULE["SwarmProofs.Chains.RHAnalytic.Defs.V1"],
     [
@@ -135,7 +132,10 @@ async function runUnitTests(): Promise<void> {
   // 1. Default policy-4, --network parsing (W7) & structured ladder metadata + exact file bytes parity (B1)
   assert.equal(parseNetworkArg(["node", "seed-lean-catalog.ts"], {}), "devnet");
   assert.equal(
-    parseNetworkArg(["node", "seed-lean-catalog.ts", "--network", "devnet"], {}),
+    parseNetworkArg(
+      ["node", "seed-lean-catalog.ts", "--network", "devnet"],
+      {}
+    ),
     "devnet"
   );
   assert.equal(
@@ -143,7 +143,10 @@ async function runUnitTests(): Promise<void> {
     "devnet"
   );
   assert.equal(
-    parseNetworkArg(["node", "seed-lean-catalog.ts", "--network", "mainnet"], {}),
+    parseNetworkArg(
+      ["node", "seed-lean-catalog.ts", "--network", "mainnet"],
+      {}
+    ),
     "mainnet"
   );
   assert.equal(
@@ -469,7 +472,8 @@ async function runUnitTests(): Promise<void> {
       "<stdin>:8:2: error: failed to synthesize instance\n'__pa' depends on axioms: [sorryAx]\n",
     ]) {
       assert.throws(
-        () => classifyMathlibProbeSlice("apply-assumption", "__pa", badApplySlice),
+        () =>
+          classifyMathlibProbeSlice("apply-assumption", "__pa", badApplySlice),
         /MATHLIB SEARCH FAIL-CLOSED/
       );
     }

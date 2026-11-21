@@ -294,14 +294,15 @@ async function runLifecycle(
   );
   await buildSignConfirm(conn, agentToken, h.agent, claim, taskId, "claim");
 
+  const uniqueProofUrl = `${proofUrl}#attester-e2e=${Date.now()}`;
   const submit = await api(
     "POST",
     `/tasks/${taskId}/submit?network=devnet`,
     agentToken,
-    { content_id: proofUrl }
+    { content_id: uniqueProofUrl }
   );
   await buildSignConfirm(conn, agentToken, h.agent, submit, taskId, "submit");
-  console.log(`  submitted content_id=${proofUrl}`);
+  console.log(`  submitted content_id=${uniqueProofUrl}`);
 
   // The pod reads at finalized commitment — wait for the submitted Task to
   // finalize before triggering, else run-attest sees it absent.
@@ -321,8 +322,46 @@ async function runLifecycle(
       `  run-attest client returned (tolerated): ${String(e).slice(0, 90)}`
     );
   }
-  console.log("  polling on-chain for Verified (production worker)...");
-  await awaitVerified(conn, taskKey, "attested task");
+  // Under Gas Policy Phase 1 (1a), shillbot-attester scores the proof and stores
+  // the Ed25519 attestation; the caller fetches the co-signed verify_task_attested
+  // tx via /build-verify and pays gas to land Verified on-chain.
+  console.log("  polling /build-verify + on-chain for Verified...");
+  const MAX_VERIFY_POLLS = 160;
+  let verifiedOnChain = false;
+  for (let i = 0; i < MAX_VERIFY_POLLS; i++) {
+    const acc = await conn.getAccountInfo(taskKey, "confirmed");
+    if (acc !== null && acc.data[TASK_STATE_OFFSET] === STATE_VERIFIED) {
+      verifiedOnChain = true;
+      break;
+    }
+    try {
+      const built = await api(
+        "POST",
+        `/tasks/${taskId}/build-verify?network=devnet`,
+        agentToken
+      );
+      const verifyTx =
+        (built.co_signed_transaction as string | undefined) ??
+        (built.transaction as string | undefined);
+      if (typeof verifyTx === "string" && verifyTx.length > 0) {
+        await buildSignConfirm(
+          conn,
+          agentToken,
+          h.agent,
+          { transaction: verifyTx },
+          taskId,
+          "verify",
+          taskPda
+        );
+      }
+    } catch {
+      // Attester still elaborating / waiting on attestation_delay; keep polling.
+    }
+    await sleep(3000);
+  }
+  if (!verifiedOnChain) {
+    await awaitVerified(conn, taskKey, "attested task");
+  }
 
   // Assert the on-chain Task the pod just verified.
   const verified = await h.program.account.task.fetch(taskKey);

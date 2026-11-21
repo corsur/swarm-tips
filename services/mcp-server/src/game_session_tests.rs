@@ -1036,3 +1036,103 @@ async fn join_queue_after_stake_sends_svc_token_preserving_is_ai_when_secret_con
         Some("Bearer user-session-jwt")
     );
 }
+
+#[tokio::test]
+async fn join_queue_after_stake_preserves_ws_match_found_delivered_during_join_http_call() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    struct ImmediatePairResponder {
+        session: Arc<Mutex<GameSession>>,
+    }
+
+    impl Respond for ImmediatePairResponder {
+        fn respond(&self, _req: &Request) -> ResponseTemplate {
+            // Simulate game-api pushing `match_found` over the open WS inside
+            // `POST /queue/join` BEFORE the HTTP response returns to mcp-server.
+            let mut s = self
+                .session
+                .try_lock()
+                .expect("session lock must not be held across join_queue HTTP await");
+            assert_eq!(
+                s.state,
+                GameSessionState::Queued,
+                "session must already be reset to Queued before POST /queue/join fires"
+            );
+            assert!(
+                s.game_id.is_none() && s.commit_preimage.is_none(),
+                "stale previous-game fields must already be cleared"
+            );
+            s.session_id = Some("live-pair-sess".to_string());
+            s.role = Some(1);
+            s.match_found = Some(MatchFoundMsg {
+                session_id: "live-pair-sess".to_string(),
+                role: 1,
+                matchup_commitment: Some("00".repeat(32)),
+                tournament_id: Some(1003),
+            });
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "matched": true,
+                "session_id": "live-pair-sess",
+                "cohort_name": "default"
+            }))
+        }
+    }
+
+    let mock_api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/queue/leave"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ok": true })))
+        .mount(&mock_api)
+        .await;
+
+    let wallet = "5nFDehrqPaLNL26xk9fGEEcNG7D9k5xRohqvPDRk8DJX";
+    let session = Arc::new(Mutex::new(GameSession {
+        wallet: wallet.to_string(),
+        jwt: "user-session-jwt".to_string(),
+        state: GameSessionState::Resolved,
+        game_id: Some(999),
+        tournament_id: Some(1003),
+        session_id: Some("old-sess".to_string()),
+        role: Some(0),
+        chat_buffer: vec!["stale".to_string()],
+        match_found: None,
+        matchup_commitment: None,
+        commit_preimage: Some([0x42u8; 32]),
+        game_ready: Some(999),
+        reveal_data: None,
+        network: Some("devnet".to_string()),
+    }));
+
+    Mock::given(method("POST"))
+        .and(path("/queue/join"))
+        .respond_with(ImmediatePairResponder {
+            session: Arc::clone(&session),
+        })
+        .expect(1)
+        .mount(&mock_api)
+        .await;
+
+    let manager = GameSessionManager::new_for_test(mock_api.uri(), mock_api.uri());
+    manager
+        .sessions
+        .write()
+        .await
+        .insert(wallet.to_string(), Arc::clone(&session));
+
+    manager
+        .join_queue_after_stake(wallet, "user-session-jwt", 1003)
+        .await
+        .expect("join_queue_after_stake must succeed");
+
+    let final_s = session.lock().await;
+    assert_eq!(
+        final_s.session_id.as_deref(),
+        Some("live-pair-sess"),
+        "synchronous WS match_found must not be clobbered after POST /queue/join returns"
+    );
+    assert_eq!(final_s.role, Some(1));
+    assert!(final_s.match_found.is_some());
+    assert!(final_s.chat_buffer.is_empty());
+    assert!(final_s.game_ready.is_none());
+}

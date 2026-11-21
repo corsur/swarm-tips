@@ -1969,6 +1969,24 @@ impl GameSessionManager {
             );
         }
 
+        // Reset per-game fields BEFORE `join_queue`! When an opponent is already
+        // waiting in the queue, `POST /queue/join` pairs synchronously and pushes
+        // `ws: match_found` over the already-open WebSocket BEFORE the HTTP
+        // response returns — resetting after `join_queue` clobbered `match_found`
+        // ~130ms after arrival and stranded the agent in `queued` forever.
+        let session = self
+            .sessions
+            .read()
+            .await
+            .get(wallet)
+            .context("no session for wallet")?
+            .clone();
+        {
+            let mut s = session.lock().await;
+            s.reset_for_queue(tournament_id);
+            self.persist_session(&s).await?;
+        }
+
         // Join queue. When `internal_jwt_secret` is configured, authenticate
         // with a short-lived `typ == "svc"`, `aud == ["game-internal"]` service
         // token (matching `GameApiProxy::evmgame_join` / `xqueue_join`) so
@@ -1988,19 +2006,12 @@ impl GameSessionManager {
                 crate::jwt::mint_svc_token(&verified, secret)
             })
             .unwrap_or_else(|| jwt.to_string());
-        api_client.join_queue(&join_bearer, &request).await?;
-
-        // Update session state.
-        let session = self
-            .sessions
-            .read()
-            .await
-            .get(wallet)
-            .context("no session for wallet")?
-            .clone();
-        let mut s = session.lock().await;
-        s.reset_for_queue(tournament_id);
-        self.persist_session(&s).await?;
+        if let Err(e) = api_client.join_queue(&join_bearer, &request).await {
+            let mut s = session.lock().await;
+            s.state = GameSessionState::Connected;
+            let _ = self.persist_session(&s).await;
+            return Err(e.into());
+        }
 
         tracing::info!(
             service = "coordination-mcp-server",

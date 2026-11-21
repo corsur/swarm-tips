@@ -53,26 +53,69 @@ function loadKey(path: string): Hex {
   ).trim();
   return `0x${raw.replace(/^0x/, "")}` as Hex;
 }
-const api = async (path: string, init?: RequestInit) => {
-  const res = await fetch(`${GAME_API}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) throw new Error(`${path} -> ${res.status} ${await res.text()}`);
-  return res.json();
+const api = async (path: string, init?: RequestInit, bearer?: string) => {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (bearer) headers["Authorization"] = `Bearer ${bearer}`;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await fetch(`${GAME_API}${path}`, {
+      ...init,
+      headers: {
+        ...headers,
+        ...((init?.headers as Record<string, string> | undefined) ?? {}),
+      },
+    });
+    if (res.ok) return res.json();
+    const text = await res.text();
+    const transientGfe =
+      (res.status === 403 && text.includes("<!doctype html>")) ||
+      res.status === 502 ||
+      res.status === 504;
+    if (transientGfe && attempt < 3) {
+      await new Promise((r) => setTimeout(r, 2500));
+      continue;
+    }
+    throw new Error(`${path} -> ${res.status} ${text}`);
+  }
+  throw new Error(`${path} -> exhausted retries`);
 };
-const join = (wallet: string) =>
-  api("/internal/evmgame/join", {
+
+async function getEvmJwt(
+  acct: ReturnType<typeof privateKeyToAccount>
+): Promise<string> {
+  const { nonce } = (await api("/auth/evm/challenge", {
     method: "POST",
-    body: JSON.stringify({ wallet, chain: CHAIN, tournament_id: TOURNAMENT }),
-  });
-const status = (wallet: string) =>
-  api(`/internal/evmgame/status?wallet=${wallet}`);
-const committed = (game_id: string, wallet: string) =>
-  api("/internal/evmgame/committed", {
+    body: JSON.stringify({ wallet: acct.address }),
+  })) as { nonce: string };
+  const signature = await acct.signMessage({ message: nonce });
+  const { token } = (await api("/auth/evm/verify", {
     method: "POST",
-    body: JSON.stringify({ game_id, wallet }),
-  });
+    body: JSON.stringify({ wallet: acct.address, nonce, signature }),
+  })) as { token: string };
+  return token;
+}
+
+const join = (wallet: string, bearer: string) =>
+  api(
+    "/internal/evmgame/join",
+    {
+      method: "POST",
+      body: JSON.stringify({ wallet, chain: CHAIN, tournament_id: TOURNAMENT }),
+    },
+    bearer
+  );
+const status = (wallet: string, bearer: string) =>
+  api(`/internal/evmgame/status?wallet=${wallet}`, undefined, bearer);
+const committed = (game_id: string, wallet: string, bearer: string) =>
+  api(
+    "/internal/evmgame/committed",
+    {
+      method: "POST",
+      body: JSON.stringify({ game_id, wallet }),
+    },
+    bearer
+  );
 
 /** commit secret: random 32-byte r with the guess in the last bit; SHA-256(r). */
 async function commitSecret(
@@ -129,24 +172,63 @@ async function main() {
     transport: http(RPC),
   });
   console.log(`A (creator) ${aAcct.address}\nB (joiner)  ${bAcct.address}`);
+  const [aToken, bToken] = await Promise.all([
+    getEvmJwt(aAcct),
+    getEvmJwt(bAcct),
+  ]);
 
-  // 1) Pair: A queues (waiting), B joins (matched) -> A is the waiter=creator.
-  await join(aAcct.address);
-  const bRes = await join(bAcct.address);
+  for (let attempt = 0; attempt < 240; attempt++) {
+    const avail = (await api("/availability")) as {
+      available?: boolean;
+      paused?: boolean;
+    };
+    if (avail.available === true && avail.paused === false) break;
+    if (attempt === 0) {
+      console.log("  waiting for game-api /availability drain to clear...");
+    }
+    if (attempt === 239) {
+      throw new Error("timed out waiting for game-api /availability");
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+
+  // 1) Pair: A queues (waiting), B joins (matched); game-api randomizes P1/P2 seats.
+  // If a prior aborted run left an orphan in queue 1, A's first join drains it and
+  // B becomes the new waiter — re-joining A then pairs A and B cleanly.
+  const aFirst = await join(aAcct.address, aToken);
+  let bRes = await join(bAcct.address, bToken);
+  if (aFirst.status === "matched" && bRes.status === "waiting") {
+    bRes = await join(aAcct.address, aToken);
+  }
   if (bRes.status !== "matched")
-    throw new Error(`B expected matched, got ${bRes.status}`);
-  const match = bRes.match;
+    throw new Error(`Expected A+B matched, got ${bRes.status}`);
+  const [aView, bView] = await Promise.all([
+    status(aAcct.address, aToken),
+    status(bAcct.address, bToken),
+  ]);
+  if (aView.status !== "matched" || bView.status !== "matched") {
+    throw new Error(
+      `Expected both status views matched, got a=${aView.status} b=${bView.status}`
+    );
+  }
+  const match = aView.match;
   const contract = match.contract as Address;
   const gameId = match.game_id as Hex;
-  if (match.create_call.player.toLowerCase() !== aAcct.address.toLowerCase())
-    throw new Error("expected A to be the creator");
+  const aIsCreator = aView.my_role === "creator";
+  const creatorAcct = aIsCreator ? aAcct : bAcct;
+  const joinerAcct = aIsCreator ? bAcct : aAcct;
+  const creatorW = aIsCreator ? aw : bw;
+  const joinerW = aIsCreator ? bw : aw;
+  const creatorToken = aIsCreator ? aToken : bToken;
+  const joinerToken = aIsCreator ? bToken : aToken;
+  const cc = (aIsCreator ? aView : bView).match.create_call;
+  const jc = (aIsCreator ? bView : aView).match.join_call;
   console.log(
-    `matched: game ${gameId} on ${contract}, stake ${match.stake_base_units} wei`
+    `matched: game ${gameId} on ${contract}, stake ${match.stake_base_units} wei (creator=${creatorAcct.address})`
   );
 
-  // 2) A submits createGame (operator-attested) — THE v-normalization proof.
-  const cc = match.create_call;
-  const createHash = await aw.sendTransaction({
+  // 2) Creator submits createGame (operator-attested) — THE v-normalization proof.
+  const createHash = await creatorW.sendTransaction({
     to: cc.to as Address,
     data: cc.data as Hex,
     value: BigInt(cc.value_wei),
@@ -161,9 +243,8 @@ async function main() {
   );
   await untilStatus(pub, contract, gameId, 1, "pending");
 
-  // 3) B submits joinGame.
-  const jc = match.join_call;
-  const joinHash = await bw.sendTransaction({
+  // 3) Joiner submits joinGame.
+  const joinHash = await joinerW.sendTransaction({
     to: jc.to as Address,
     data: jc.data as Hex,
     value: BigInt(jc.value_wei),
@@ -176,9 +257,9 @@ async function main() {
   console.log(`✅ joinGame accepted: ${joinHash}`);
   await untilStatus(pub, contract, gameId, 2, "active");
 
-  // 4) Commit (A first -> firstCommitter=1), then notify game-api.
-  const aSec = await commitSecret(1);
-  const bSec = await commitSecret(0);
+  // 4) Commit (creator first -> firstCommitter=1), then notify game-api.
+  const cSec = await commitSecret(1);
+  const jSec = await commitSecret(0);
   const send = (w: typeof aw, fn: string, args: unknown[]) =>
     w.sendTransaction({
       to: contract,
@@ -189,29 +270,29 @@ async function main() {
       }),
     });
   await pub.waitForTransactionReceipt({
-    hash: await send(aw, "commitGuess", [gameId, aSec.commitment]),
+    hash: await send(creatorW, "commitGuess", [gameId, cSec.commitment]),
   });
-  await untilStatus(pub, contract, gameId, 3, "committing"); // A committed
+  await untilStatus(pub, contract, gameId, 3, "committing");
   await pub.waitForTransactionReceipt({
-    hash: await send(bw, "commitGuess", [gameId, bSec.commitment]),
+    hash: await send(joinerW, "commitGuess", [gameId, jSec.commitment]),
   });
-  await committed(gameId, aAcct.address);
-  const bComm = await committed(gameId, bAcct.address);
+  await committed(gameId, creatorAcct.address, creatorToken);
+  const bComm = await committed(gameId, joinerAcct.address, joinerToken);
   if (!bComm.both_committed || !bComm.r_matchup)
     throw new Error("expected both_committed + r_matchup");
   await untilStatus(pub, contract, gameId, 4, "revealing"); // both committed -> Revealing
   console.log(`✅ both committed; r_matchup released`);
 
-  // 5) Reveal: creator A first WITH r_matchup; joiner B with the zero sentinel.
+  // 5) Reveal: creator first WITH r_matchup; joiner with the zero sentinel.
   await pub.waitForTransactionReceipt({
-    hash: await send(aw, "revealGuess", [
+    hash: await send(creatorW, "revealGuess", [
       gameId,
-      aSec.r,
+      cSec.r,
       bComm.r_matchup as Hex,
     ]),
   });
-  // B's reveal takes the second-revealer path; wait until A's reveal has bound
-  // matchupType on-chain so B's estimateGas doesn't hit the first-revealer check.
+  // Joiner's reveal takes the second-revealer path; wait until creator's reveal has bound
+  // matchupType on-chain so joiner's estimateGas doesn't hit the first-revealer check.
   for (let i = 0; i < 30; i++) {
     const g = (await pub.readContract({
       address: contract,
@@ -223,7 +304,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 3000));
   }
   await pub.waitForTransactionReceipt({
-    hash: await send(bw, "revealGuess", [gameId, bSec.r, ZERO32]),
+    hash: await send(joinerW, "revealGuess", [gameId, jSec.r, ZERO32]),
   });
 
   // 6) Wait for resolution (lag-robust) and cross-check the on-chain outcome

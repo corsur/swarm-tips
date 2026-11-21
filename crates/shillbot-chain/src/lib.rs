@@ -887,9 +887,12 @@ pub fn validate(
         ));
     }
     let fee_payer = keys[0];
-    if sponsor.is_some() && !matches!(expected.action, Action::Claim | Action::Submit) {
+    if sponsor.is_some()
+        && !(matches!(expected.action, Action::Claim | Action::Submit)
+            || (expected.action == Action::Create && expected.network == "devnet"))
+    {
         return Err(ValidationError::Request(
-            "sponsorship is only valid for claim and submit".into(),
+            "sponsorship is only valid for claim, submit, and devnet create".into(),
         ));
     }
     if fee_payer != sponsor.unwrap_or(wallet) {
@@ -2813,5 +2816,51 @@ mod tests {
         let atomic_post_tx = transaction(vec![claim_ix, submit_ix, route_ix], &agent);
         let atomic_inspected = validate(&atomic_post_tx, &expected).unwrap();
         assert_eq!(atomic_inspected.payout_to, Some(adv.to_string()));
+    }
+
+    #[test]
+    fn sponsored_devnet_create_accepted_while_mainnet_and_verify_rejected() {
+        let client = Keypair::new().pubkey();
+        let sponsor = Keypair::new().pubkey();
+        let args = CreateTaskArgs {
+            nonce: 42,
+            escrow_lamports: 1_000_000,
+            content_hash: [7_u8; 32],
+            deadline: 1_900_000_000,
+            submit_margin: 3_600,
+            claim_buffer: 3_600,
+            platform: 9,
+            attestation_delay_override: 0,
+            challenge_window_override: 0,
+            verification_timeout_override: 0,
+            requires_approval: false,
+            verification_kind: 0,
+        };
+        let task = task_pda(args.nonce, &client);
+        let ix = create_task_instruction(client, args);
+        let tx = transaction(vec![ix.clone()], &sponsor);
+
+        let mut devnet_req = exact_request(Action::Create, client, task, &ix);
+        devnet_req.network = "devnet".into();
+        devnet_req.sponsor = Some(sponsor.to_string());
+        devnet_req.escrow_lamports = Some(args.escrow_lamports);
+        let inspected = validate(&tx, &devnet_req).expect("devnet sponsored create must validate");
+        assert_eq!(inspected.fee_payer, sponsor.to_string());
+        assert_eq!(inspected.escrow_lamports.as_deref(), Some("1000000"));
+
+        let mut mainnet_req = devnet_req.clone();
+        mainnet_req.network = "mainnet".into();
+        assert!(validate(&tx, &mainnet_req)
+            .unwrap_err()
+            .to_string()
+            .contains("sponsorship is only valid"));
+
+        let mut verify_req = request(Action::Verify, client, task);
+        verify_req.network = "devnet".into();
+        verify_req.sponsor = Some(sponsor.to_string());
+        assert!(validate(&tx, &verify_req)
+            .unwrap_err()
+            .to_string()
+            .contains("sponsorship is only valid"));
     }
 }

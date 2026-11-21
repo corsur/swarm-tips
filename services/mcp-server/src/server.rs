@@ -2881,21 +2881,48 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<XchainMatchStatusArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
-            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
-
         // Prefer the secret handle so the public wallet never rides in the query
-        // string; fall back to the deprecated wallet lookup during rollout.
-        let resp = match args.poll_handle.as_deref() {
+        // string; fall back to the deprecated wallet lookup only for verified
+        // wallet sessions (`C4` prevents unverified callers from polling a victim).
+        let (chain, address, resp) = match args.poll_handle.as_deref() {
             Some(handle) if !handle.is_empty() => {
-                self.state.game_api.xqueue_status_by_handle(handle).await
+                let bound = self.require_bound_wallet(Some(&parts)).await?;
+                let (chain, address) =
+                    crate::xchain::resolve_xchain_wallet(&bound).ok_or_else(|| {
+                        invalid_input("registered wallet is not a cross-chain wallet")
+                    })?;
+                let resp = self
+                    .state
+                    .game_api
+                    .xqueue_status_by_handle(handle)
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(
+                            format!("cross-chain queue status failed: {e}"),
+                            None,
+                        )
+                    })?;
+                (chain, address, resp)
             }
-            _ => self.state.game_api.xqueue_status(&address).await,
-        }
-        .map_err(|e| {
-            McpError::internal_error(format!("cross-chain queue status failed: {e}"), None)
-        })?;
+            _ => {
+                let verified = self.require_verified_bound_wallet(Some(&parts)).await?;
+                let (chain, address) = verified.to_xchain_native().ok_or_else(|| {
+                    invalid_input("registered wallet is not a cross-chain wallet")
+                })?;
+                let resp = self
+                    .state
+                    .game_api
+                    .xqueue_status(&verified, address.as_str())
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(
+                            format!("cross-chain queue status failed: {e}"),
+                            None,
+                        )
+                    })?;
+                (chain, address.as_str().to_string(), resp)
+            }
+        };
 
         Ok(text_result(&serde_json::json!({
             "status": resp.status,

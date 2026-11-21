@@ -42,6 +42,7 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 import { readFileSync } from "fs";
+import { createPrivateKey, sign as cryptoSign } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
 import type { ExtensionCredit } from "../../target/types/extension_credit";
@@ -84,6 +85,49 @@ function loadIdl(name: string): anchor.Idl {
   ) as anchor.Idl;
 }
 
+function signEd25519Nonce(secretKey: Uint8Array, nonce: string): string {
+  const secret = Buffer.from(secretKey).subarray(0, 32);
+  const derPrivPrefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  const privKey = createPrivateKey({
+    key: Buffer.concat([derPrivPrefix, secret]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const sig = cryptoSign(null, Buffer.from(nonce, "utf8"), privKey);
+  return anchor.utils.bytes.bs58.encode(sig);
+}
+
+const tokenCache = new Map<string, string>();
+async function getAuthToken(wallet: Keypair): Promise<string> {
+  const pubkey = wallet.publicKey.toBase58();
+  if (tokenCache.has(pubkey)) return tokenCache.get(pubkey)!;
+
+  const challengeRes = await fetch(
+    "https://api.coordination.game/auth/challenge",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: pubkey }),
+    }
+  );
+  if (!challengeRes.ok) {
+    throw new Error(`auth challenge failed: ${await challengeRes.text()}`);
+  }
+  const { nonce } = (await challengeRes.json()) as { nonce: string };
+  const signature = signEd25519Nonce(wallet.secretKey, nonce);
+  const verifyRes = await fetch("https://api.coordination.game/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wallet: pubkey, nonce, signature }),
+  });
+  if (!verifyRes.ok) {
+    throw new Error(`auth verify failed: ${await verifyRes.text()}`);
+  }
+  const { token } = (await verifyRes.json()) as { token: string };
+  tokenCache.set(pubkey, token);
+  return token;
+}
+
 async function api(
   path: string,
   bearer: string,
@@ -103,11 +147,20 @@ async function api(
 async function signSendConfirm(
   connection: Connection,
   txB64: string,
-  agent: Keypair
+  signer: Keypair
 ): Promise<string> {
-  const vtx = VersionedTransaction.deserialize(Buffer.from(txB64, "base64"));
-  vtx.sign([agent]);
-  const sig = await connection.sendRawTransaction(vtx.serialize(), {
+  const raw = Buffer.from(txB64, "base64");
+  let wire: Uint8Array | Buffer;
+  try {
+    const vtx = VersionedTransaction.deserialize(raw);
+    vtx.sign([signer]);
+    wire = vtx.serialize();
+  } catch {
+    const tx = Transaction.from(raw);
+    tx.partialSign(signer);
+    wire = tx.serialize();
+  }
+  const sig = await connection.sendRawTransaction(wire, {
     maxRetries: 5,
   });
   await connection.confirmTransaction(sig, "confirmed");
@@ -132,7 +185,7 @@ async function seedGamePlayTask(
   root: Keypair,
   escrowLamports: number
 ): Promise<{ taskId: string; taskPda: PublicKey }> {
-  const rootBearer = root.publicKey.toBase58();
+  const rootBearer = await getAuthToken(root);
   const cResp = await api("/campaigns", rootBearer, {
     brief: BRIEF,
     budget_lamports: 0,
@@ -176,24 +229,44 @@ async function seedGamePlayTask(
 // (dedup). So each run consumes one of the agent's games; pass GAME_ID=<n> to pin
 // a specific fresh one. Game layout: disc(8) game_id(8) tournament_id(8) =>
 // player_one@24, player_two@56, state@88 (4 = Resolved).
-async function pickAgentGame(
+async function pickAgentGames(
   connection: Connection,
-  agent: PublicKey
-): Promise<string | null> {
-  if (process.env.GAME_ID) return process.env.GAME_ID;
+  agent: PublicKey,
+  bearer: string
+): Promise<string[]> {
+  if (process.env.GAME_ID) return [process.env.GAME_ID];
+  const usedIds = new Set<string>();
+  try {
+    const tResp = await fetch(`${API}/agent/tasks?network=devnet`, {
+      headers: { Authorization: `Bearer ${bearer}` },
+    });
+    if (tResp.ok) {
+      const body = (await tResp.json()) as
+        | { tasks?: { content_id?: string | null }[] }
+        | { content_id?: string | null }[];
+      const list = Array.isArray(body) ? body : body.tasks ?? [];
+      for (const t of list) {
+        if (t.content_id) usedIds.add(String(t.content_id).trim());
+      }
+    }
+  } catch {
+    // Best-effort dedup precheck; fall back to chain scan if /agent/tasks fails.
+  }
   const agentKey = agent.toBase58();
   const [counterPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("game_counter")],
     COORD_GAME
   );
   const info = await connection.getAccountInfo(counterPda);
-  if (!info || info.data.length < 16) return null;
+  if (!info || info.data.length < 16) return [];
   const count = info.data.readBigUInt64LE(8);
-  const MAX_SCAN = 60;
+  const MAX_SCAN = 200;
   const RESOLVED = 4;
+  const out: string[] = [];
   for (let i = 1n; i <= BigInt(MAX_SCAN); i++) {
     if (count <= i) break;
     const candidate = count - i;
+    if (usedIds.has(candidate.toString())) continue;
     const [gamePda] = PublicKey.findProgramAddressSync(
       [
         Buffer.from("game"),
@@ -202,19 +275,29 @@ async function pickAgentGame(
       COORD_GAME
     );
     const g = await connection.getAccountInfo(gamePda);
-    if (!g || g.data.length < 89) continue;
+    if (!g) {
+      if (i <= 25n) {
+        const sigs = await connection.getSignaturesForAddress(gamePda, {
+          limit: 1,
+        });
+        if (sigs.length > 0) out.push(candidate.toString());
+      }
+      continue;
+    }
+    if (g.data.length < 89) continue;
     if (g.data[88] !== RESOLVED) continue;
     const p1 = new PublicKey(g.data.subarray(24, 56)).toBase58();
     const p2 = new PublicKey(g.data.subarray(56, 88)).toBase58();
-    if (p1 === agentKey || p2 === agentKey) return candidate.toString();
+    if (p1 === agentKey || p2 === agentKey) out.push(candidate.toString());
   }
-  return null;
+  return out;
 }
 
 async function main(): Promise<void> {
   const root = loadKeypair(join(homedir(), ".config/solana/id.json"));
   const agent = loadKeypair(join(homedir(), ".config/solana/test.json"));
-  const bearer = agent.publicKey.toBase58();
+  const agentPubkey = agent.publicKey.toBase58();
+  const bearer = await getAuthToken(agent);
   const connection = new Connection(DEVNET, "confirmed");
   const provider = new anchor.AnchorProvider(
     connection,
@@ -236,19 +319,23 @@ async function main(): Promise<void> {
     connection.getBalance(pk, "confirmed");
 
   console.log(`root  (backer):    ${root.publicKey.toBase58()}`);
-  console.log(`agent (recipient): ${bearer}`);
+  console.log(`agent (recipient): ${agentPubkey}`);
   // Baseline for the circular close-out: the agent is swept back to this at the end.
   const agentStart = await bal(agent.publicKey);
 
   // --- 0. Need a Resolved game the AGENT played (and not yet used), else SKIP. ---
-  const gameId = await pickAgentGame(connection, agent.publicKey);
-  if (!gameId) {
+  const gameIds = await pickAgentGames(connection, agent.publicKey, bearer);
+  if (gameIds.length === 0) {
     console.log(
       "\nSKIP — no Resolved game found where the agent is a player; seed/play a game first."
     );
     process.exit(2);
   }
-  console.log(`  using agent-played game_id=${gameId}`);
+  console.log(
+    `  found ${gameIds.length} candidate agent-played game(s): ${gameIds
+      .slice(0, 6)
+      .join(", ")}`
+  );
 
   // --- 1. Self-seed a game-play task (client=root) + claim it (agent). ---
   // Escrow comfortably exceeds the advance so the finalized payment to the vault
@@ -269,7 +356,7 @@ async function main(): Promise<void> {
   });
   if (!claimCf.ok)
     throw new Error(`claim-confirm failed: ${await claimCf.text()}`);
-  console.log(`  claimed by agent ${bearer}`);
+  console.log(`  claimed by agent ${agentPubkey}`);
 
   // --- 2. open_advance: backer fronts capital to the agent's vault. ---
   const [advance] = PublicKey.findProgramAddressSync(
@@ -360,12 +447,24 @@ async function main(): Promise<void> {
   );
 
   // --- 4. submit -> the protocol cranks + finalizes; the agent does NOTHING. ---
-  const sResp = await api(`/tasks/${taskId}/submit`, bearer, {
-    content_id: gameId,
-  });
-  if (!sResp.ok) throw new Error(`submit failed: ${await sResp.text()}`);
-  const { transaction: sTx } = (await sResp.json()) as { transaction?: string };
-  if (!sTx) throw new Error("submit returned no tx");
+  let sTx: string | undefined;
+  let lastSubmitErr = "";
+  for (const gid of gameIds) {
+    const sResp = await api(`/tasks/${taskId}/submit`, bearer, {
+      content_id: gid,
+    });
+    if (sResp.ok) {
+      const parsed = (await sResp.json()) as { transaction?: string };
+      sTx = parsed.transaction;
+      console.log(`  using eligible agent-played game_id=${gid}`);
+      break;
+    }
+    lastSubmitErr = await sResp.text();
+  }
+  if (!sTx)
+    throw new Error(
+      `submit failed across ${gameIds.length} candidate game(s); last error: ${lastSubmitErr}`
+    );
   const sSig = await signSendConfirm(connection, sTx, agent);
   let submitted = false;
   for (let i = 0; i < 5 && !submitted; i++) {
@@ -377,6 +476,7 @@ async function main(): Promise<void> {
     if (cf.ok) submitted = true;
   }
   if (!submitted) throw new Error("submit-confirm failed");
+  const agentBeforeSettlement = await bal(agent.publicKey);
   console.log(
     "  submitted; agent now does NOTHING — protocol verifies + finalizes"
   );
@@ -384,17 +484,21 @@ async function main(): Promise<void> {
   // --- 5. Poll until finalized (no verify/finalize action from us). Budget 16m. ---
   const start = Date.now();
   let state = "";
+  let paymentAmount = 0;
   while (Date.now() - start < 16 * 60 * 1000) {
     const td = (await (
       await fetch(`${API}/tasks/${taskId}?network=devnet`)
-    ).json()) as { state: string };
+    ).json()) as { state: string; payment_amount?: number | null };
     if (td.state !== state) {
       state = td.state;
       console.log(
         `  [${Math.round((Date.now() - start) / 1000)}s] state=${state}`
       );
     }
-    if (state === "finalized") break;
+    if (state === "finalized") {
+      paymentAmount = Number(td.payment_amount ?? 0);
+      break;
+    }
     await new Promise((r) => setTimeout(r, 4000));
   }
   check(
@@ -402,63 +506,82 @@ async function main(): Promise<void> {
     "task finalized by the protocol crank (agent idle)"
   );
 
-  // --- 6. The REAL finalize routed the escrow INTO the vault (not simulated). ---
-  const vaultAfterFinalize = await bal(advance);
-  const routedIn = vaultAfterFinalize - vaultAfterOpen;
-  check(
-    routedIn > 0,
-    `finalize routed the escrow into the advance vault (+${routedIn} lamports)`
-  );
-
-  // --- 7. route_and_recoup: backer-first split, agent keeps the surplus. ---
-  // Economic guarantee: ALWAYS fully recoup + close the advance so a run can never
-  // strand the (backer, recipient) PDA — even off the happy path (if the protocol
-  // finalize did not land, the assertions above already failed). If the vault is
-  // short of the outstanding advance, top up the shortfall from the backer so
-  // route+close succeed; that top-up is circular (backer -> vault -> backer) and
-  // only happens when real settlement is absent.
+  // --- 6 & 7. Verify escrow routing + backer-first recoupment + surplus to agent. ---
+  // `shillbot-verifier`'s `run-finalize` now bundles `[finalize_task, route_and_recoup]`
+  // atomically when `payout_to` is an `Advance` PDA, so by the time `state == finalized`
+  // `advance.recouped_lamports == ADVANCE` and `agent` already holds `payment - ADVANCE`.
   const outstanding = ADVANCE.toNumber();
-  let vaultBal = await bal(advance);
-  if (vaultBal - rentFloor < outstanding) {
-    const shortfall = outstanding - (vaultBal - rentFloor);
-    await provider.sendAndConfirm(
-      new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: root.publicKey,
-          toPubkey: advance,
-          lamports: shortfall,
-        })
-      )
+  const postFinalizeAdvance = await credit.account.advance.fetch(advance);
+  const autoRecouped = postFinalizeAdvance.recoupedLamports.toNumber();
+  const vaultAfterFinalize = await bal(advance);
+
+  if (autoRecouped >= outstanding && paymentAmount > outstanding) {
+    const expectedSurplus = paymentAmount - outstanding;
+    const actualSurplus = (await bal(agent.publicKey)) - agentBeforeSettlement;
+    check(
+      autoRecouped === outstanding,
+      `finalize + atomic route_and_recoup recouped full advance (${autoRecouped} lamports)`
     );
-    vaultBal = await bal(advance);
-    console.log(
-      `  (no real settlement — topped up ${shortfall} lamports to recoup+close the advance; circular)`
+    check(
+      actualSurplus === expectedSurplus,
+      `agent received exact routed surplus (${actualSurplus} == ${expectedSurplus})`
+    );
+    check(
+      outstanding + actualSurplus === paymentAmount,
+      "all routed earnings distributed (conservation)"
+    );
+    check(
+      Math.abs(vaultAfterFinalize - rentFloor) < 100,
+      "vault drained to the rent floor"
+    );
+  } else {
+    const routedIn = vaultAfterFinalize - vaultAfterOpen;
+    check(
+      routedIn > 0,
+      `finalize routed the escrow into the advance vault (+${routedIn} lamports)`
+    );
+    let vaultBal = vaultAfterFinalize;
+    if (vaultBal - rentFloor < outstanding) {
+      const shortfall = outstanding - (vaultBal - rentFloor);
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: root.publicKey,
+            toPubkey: advance,
+            lamports: shortfall,
+          })
+        )
+      );
+      vaultBal = await bal(advance);
+      console.log(
+        `  (no real settlement — topped up ${shortfall} lamports to recoup+close the advance; circular)`
+      );
+    }
+    const available = vaultBal - rentFloor;
+    const toBacker = Math.min(available, outstanding);
+    const toRecipient = available - toBacker;
+    const agentBeforeRoute = await bal(agent.publicKey);
+    await credit.methods
+      .routeAndRecoup()
+      .accountsPartial({
+        advance,
+        backer: root.publicKey,
+        recipient: agent.publicKey,
+      })
+      .rpc({ commitment: "confirmed" });
+    check(
+      (await bal(agent.publicKey)) - agentBeforeRoute === toRecipient,
+      `agent received exactly the routed surplus (${toRecipient})`
+    );
+    check(
+      toBacker + toRecipient === available,
+      "all routed earnings distributed (conservation)"
+    );
+    check(
+      Math.abs((await bal(advance)) - rentFloor) < 100,
+      "vault drained to the rent floor"
     );
   }
-  const available = vaultBal - rentFloor;
-  const toBacker = Math.min(available, outstanding);
-  const toRecipient = available - toBacker;
-  const agentBeforeRoute = await bal(agent.publicKey);
-  await credit.methods
-    .routeAndRecoup()
-    .accountsPartial({
-      advance,
-      backer: root.publicKey,
-      recipient: agent.publicKey,
-    })
-    .rpc({ commitment: "confirmed" });
-  check(
-    (await bal(agent.publicKey)) - agentBeforeRoute === toRecipient,
-    `agent received exactly the routed surplus (${toRecipient})`
-  );
-  check(
-    toBacker + toRecipient === available,
-    "all routed earnings distributed (conservation)"
-  );
-  check(
-    Math.abs((await bal(advance)) - rentFloor) < 100,
-    "vault drained to the rent floor"
-  );
 
   // --- 8. close the fully-recouped advance (rent back to the backer). ---
   await credit.methods

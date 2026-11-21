@@ -935,9 +935,7 @@ export function assertRegistryComposableStatement(entry: CatalogEntry): void {
     }
   }
   const forbiddenSet = new Set<string>(FORBIDDEN_SHARED_WORD_TOKENS);
-  const codeWords = strippedCode
-    .split(/[^\p{L}\p{N}_']+/u)
-    .filter(Boolean);
+  const codeWords = strippedCode.split(/[^\p{L}\p{N}_']+/u).filter(Boolean);
   for (const word of codeWords) {
     if (forbiddenSet.has(word)) {
       throw new Error(
@@ -1185,7 +1183,8 @@ export function resolveBridgeLemmasForStatement(rawStatement: string): {
   for (const mod of defsModules) {
     for (const d of UNFOLD_DEFS_BY_MODULE[mod] ?? []) unfoldSet.add(d);
     for (const w of WRAPPER_DEFS_BY_MODULE[mod] ?? []) wrapperSet.add(w);
-    for (const lem of BRIDGE_LEMMAS_BY_DEFS_MODULE[mod] ?? []) bridgeSet.add(lem);
+    for (const lem of BRIDGE_LEMMAS_BY_DEFS_MODULE[mod] ?? [])
+      bridgeSet.add(lem);
   }
   return {
     defsModules,
@@ -1432,8 +1431,7 @@ export function buildMathlibProbeSpecsForEntry(
       kind: "exact",
       targetExpr: "¬ statementProp",
       maxHeartbeats: 0,
-      tacticBody:
-        `  unfold statementProp\n` + normPos + `  exact?`,
+      tacticBody: `  unfold statementProp\n` + normPos + `  exact?`,
     },
     {
       label: "positive-hint",
@@ -1449,10 +1447,7 @@ export function buildMathlibProbeSpecsForEntry(
       targetExpr: "¬ statementProp",
       maxHeartbeats: 0,
       tacticBody:
-        `  unfold statementProp\n` +
-        `  intro __h_neg\n` +
-        normNeg +
-        `  hint`,
+        `  unfold statementProp\n` + `  intro __h_neg\n` + normNeg + `  hint`,
     },
     {
       label: "positive-aesop",
@@ -1549,7 +1544,7 @@ export function runFullMathlibSearchProbes(
     "set_option linter.style.nameCheck false",
     "set_option maxRecDepth 16384",
     "",
-    "elab \"swarm_apply_assumption\" : tactic => do",
+    'elab "swarm_apply_assumption" : tactic => do',
     "  let goal ← Lean.Elab.Tactic.getMainGoal",
     "  goal.withContext do",
     "    let savedMCtx ← Lean.getMCtx",
@@ -1557,9 +1552,9 @@ export function runFullMathlibSearchProbes(
     "      (fun gs => Lean.Meta.LibrarySearch.solveByElim [] false gs 1) with",
     "    | none =>",
     "      Lean.Elab.Tactic.setGoals []",
-    "      Lean.logInfo \"swarm_apply_assumption: closed\"",
+    '      Lean.logInfo "swarm_apply_assumption: closed"',
     "    | some #[] =>",
-    "      throwError \"swarm_apply_assumption: exhausted (0 partial candidates)\"",
+    '      throwError "swarm_apply_assumption: exhausted (0 partial candidates)"',
     "    | some candidates =>",
     "      for (remGoals, candMCtx) in candidates do",
     "        Lean.setMCtx candMCtx",
@@ -1572,10 +1567,10 @@ export function runFullMathlibSearchProbes(
     "          return (!proofExpr.hasExprMVar && !proofExpr.hasLevelMVar)) <|> pure false",
     "        if closedAll then",
     "          Lean.Elab.Tactic.setGoals []",
-    "          Lean.logInfo \"swarm_apply_assumption: closed\"",
+    '          Lean.logInfo "swarm_apply_assumption: closed"',
     "          return",
     "      Lean.setMCtx savedMCtx",
-    "      throwError s!\"swarm_apply_assumption: exhausted ({candidates.size} partial candidates, none closed by assumption)\"",
+    '      throwError s!"swarm_apply_assumption: exhausted ({candidates.size} partial candidates, none closed by assumption)"',
     "",
   ];
 
@@ -1669,7 +1664,14 @@ export function runFullMathlibSearchProbes(
   });
 
   const reportOrder = [...specs].sort((a, b) => {
-    const rank = (k) => (k === "exact" ? 0 : k === "apply-assumption" || k === "solve-by-elim" ? 1 : k === "hint" ? 2 : 3);
+    const rank = (k: string) =>
+      k === "exact"
+        ? 0
+        : k === "apply-assumption" || k === "solve-by-elim"
+        ? 1
+        : k === "hint"
+        ? 2
+        : 3;
     return rank(a.kind) - rank(b.kind);
   });
   for (const spec of reportOrder) {
@@ -1992,7 +1994,7 @@ export async function verifyStatementElaborates(
   }
 
   const shouldRunMathlibSearch =
-    opts.runLocalMathlibSearch ?? (opts.fetchImpl === undefined);
+    opts.runLocalMathlibSearch ?? opts.fetchImpl === undefined;
 
   if (shouldRunMathlibSearch) {
     const promotedMod =
