@@ -169,13 +169,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-
-      - uses: google-github-actions/setup-gcloud@v3
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -184,11 +177,24 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @swarm-tips/client build
 
+      - name: Mint Lean runner OIDC identity token
+        id: runner_identity
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          token_format: id_token
+          id_token_audience: https://shillbot-lean-runner-wjucctfqta-uc.a.run.app
+          id_token_include_email: true
+
       - name: Run live runner regression gate
+        env:
+          RUNNER_ID_TOKEN: ${{ steps.runner_identity.outputs.id_token }}
         run: npx tsx scripts/e2e/test-lean-catalog-gate.ts --live --runner-only
 
       - name: Gate changed catalog statements and Defs-dependent rungs on live runner
         env:
+          RUNNER_ID_TOKEN: ${{ steps.runner_identity.outputs.id_token }}
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           BEFORE_SHA: ${{ github.event.before }}
