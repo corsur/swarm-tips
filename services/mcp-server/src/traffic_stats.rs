@@ -48,7 +48,9 @@ struct CachedStats {
 pub struct TrafficStatsState {
     http: reqwest::Client,
     gcp_project_id: String,
-    umami_base_url: String,
+    /// `None` when Umami is retired/unconfigured — `/internal/traffic-stats`
+    /// serves funnel data only with zero outbound Umami polls or WARN noise.
+    umami_base_url: Option<String>,
     /// domain -> Umami share id, from the `umami-share-tokens` secret.
     /// `None` when the secret is absent — web section degrades.
     share_tokens: Option<HashMap<String, String>>,
@@ -59,11 +61,14 @@ impl TrafficStatsState {
     pub fn new(
         http: reqwest::Client,
         gcp_project_id: String,
-        umami_base_url: String,
+        umami_base_url: Option<String>,
         share_tokens_json: Option<String>,
     ) -> Self {
+        let umami_base_url = umami_base_url
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty());
         let share_tokens = share_tokens_json.as_deref().and_then(parse_share_tokens);
-        if share_tokens.is_none() {
+        if umami_base_url.is_some() && share_tokens.is_none() {
             tracing::warn!(
                 service = "mcp-server",
                 "umami-share-tokens secret absent or unparseable — /internal/traffic-stats will serve funnel data only"
@@ -145,10 +150,18 @@ async fn get_traffic_stats(state: &TrafficStatsState) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// Web side — Umami share-token API
+// Web side — Umami share-token API (retired by default when UMAMI_BASE_URL unset)
 // ---------------------------------------------------------------------------
 
 async fn fetch_web_section(state: &TrafficStatsState) -> Value {
+    let Some(base_url) = state.umami_base_url.as_deref() else {
+        return json!({
+            "available": false,
+            "retired": true,
+            "reason": "umami_retired",
+            "sites": [],
+        });
+    };
     let Some(tokens) = state.share_tokens.as_ref() else {
         return json!({ "available": false, "reason": "umami-share-tokens secret not configured" });
     };
@@ -160,7 +173,7 @@ async fn fetch_web_section(state: &TrafficStatsState) -> Value {
     let mut sites = Vec::new();
     let mut any_ok = false;
     for domain in domains {
-        match fetch_site(state, domain, &tokens[domain]).await {
+        match fetch_site(state, base_url, domain, &tokens[domain]).await {
             Ok(site) => {
                 any_ok = true;
                 sites.push(site);
@@ -182,6 +195,7 @@ async fn fetch_web_section(state: &TrafficStatsState) -> Value {
 
 async fn fetch_site(
     state: &TrafficStatsState,
+    umami_base_url: &str,
     domain: &str,
     share_id: &str,
 ) -> Result<Value, anyhow::Error> {
@@ -189,7 +203,7 @@ async fn fetch_site(
     // short-lived token that authenticates the stats endpoints.
     let share: Value = state
         .http
-        .get(format!("{}/api/share/{share_id}", state.umami_base_url))
+        .get(format!("{umami_base_url}/api/share/{share_id}"))
         .send()
         .await?
         .error_for_status()?
@@ -210,7 +224,7 @@ async fn fetch_site(
     let mut windows = serde_json::Map::new();
     for (label, secs) in WINDOWS {
         let start_ms = now_ms.saturating_sub(secs.saturating_mul(1000));
-        let base = format!("{}/api/websites/{website_id}", state.umami_base_url);
+        let base = format!("{umami_base_url}/api/websites/{website_id}");
         let range = [
             ("startAt", start_ms.to_string()),
             ("endAt", now_ms.to_string()),
@@ -630,11 +644,26 @@ mod tests {
     // -- degradation flow ----------------------------------------------------
 
     #[tokio::test]
+    async fn web_section_returns_retired_without_umami_url() {
+        let state = TrafficStatsState::new(
+            reqwest::Client::new(),
+            "test-project".to_string(),
+            None,
+            Some(r#"{"swarm.tips": "tok"}"#.to_string()),
+        );
+        let web = fetch_web_section(&state).await;
+        assert_eq!(web["available"], false);
+        assert_eq!(web["retired"], true);
+        assert_eq!(web["reason"], "umami_retired");
+        assert_eq!(web["sites"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
     async fn web_section_unavailable_without_tokens() {
         let state = TrafficStatsState::new(
             reqwest::Client::new(),
             "test-project".to_string(),
-            "http://umami.invalid".to_string(),
+            Some("http://umami.invalid".to_string()),
             None,
         );
         let web = fetch_web_section(&state).await;
@@ -652,7 +681,7 @@ mod tests {
                 .build()
                 .expect("client builds"),
             "test-project".to_string(),
-            "http://umami-does-not-exist.invalid".to_string(),
+            Some("http://umami-does-not-exist.invalid".to_string()),
             Some(r#"{"swarm.tips": "tok"}"#.to_string()),
         );
         let web = fetch_web_section(&state).await;

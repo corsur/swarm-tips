@@ -201,6 +201,12 @@ pub struct TaskSummary {
     /// Optional: older orchestrator responses omit it.
     #[serde(default)]
     pub task_pda: Option<String>,
+    /// Number of parallel off-chain competing attempts on an Open M2 task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub competing_attempts_count: Option<u64>,
+    /// Caller's latest off-chain attempt summary (`{attempt_id, status, score, ...}`) on Open M2 tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub my_latest_attempt: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -231,12 +237,13 @@ pub struct EarningsResponse {
 
 /// Mirrors `shillbot-api::models::task::TransactionResponse`. Returned
 /// by `POST /tasks/:id/claim` and `POST /tasks/:id/submit` — the orchestrator
-/// builds the unsigned Solana transaction and the agent signs locally.
+/// builds the unsigned Solana transaction and the agent signs locally (or
+/// queues an off-chain Open-Competition attempt with `attempt_id` at $0 gas).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TransactionResponse {
     pub message: String,
     pub task_id: String,
-    /// Base64-encoded unsigned Solana transaction.
+    /// Base64-encoded unsigned Solana transaction (`None` on off-chain Open-Competition submit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -249,6 +256,12 @@ pub struct TransactionResponse {
     pub payout_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advance_backer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_competition: Option<bool>,
 }
 
 /// VOW v1 attestation — mirrors orchestrator
@@ -300,6 +313,10 @@ pub struct VerificationDataResponse {
     pub co_signed_transaction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_verify_call: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onboarded_advance_tx: Option<String>,
 }
 
 /// Action discriminator for `POST /tasks/:id/confirm`. Mirrors
@@ -841,7 +858,7 @@ impl OrchestratorProxy {
             McpServiceError::OrchestratorError(format!("invalid submit_task response: {e}"))
         })?;
 
-        if parsed.transaction.is_none() {
+        if parsed.transaction.is_none() && parsed.attempt_id.is_none() {
             return Err(McpServiceError::OrchestratorError(
                 "submit_task response missing transaction field".to_string(),
             ));
@@ -946,12 +963,25 @@ impl OrchestratorProxy {
     }
 
     /// Request the orchestrator build an unsigned `verify_task` Solana
-    /// transaction. Bundles the Switchboard feed read + composite score
-    /// into the on-chain verify instruction. The agent signs and submits.
+    /// transaction (or co-signed `M2` Open-Competition 1-tx bundle).
+    #[cfg(test)]
     pub async fn get_verification_data(
         &self,
         task_id: &str,
+        wallet_pubkey: &str,
+        network: Option<&str>,
+    ) -> Result<VerificationDataResponse, McpServiceError> {
+        self.get_verification_data_for_attempt(task_id, wallet_pubkey, None, network)
+            .await
+    }
+
+    /// Request authoritative verification data (and co-signed tx when kind=1)
+    /// optionally targeting a specific Open-Competition `attempt_id`.
+    pub async fn get_verification_data_for_attempt(
+        &self,
+        task_id: &str,
         _wallet_pubkey: &str,
+        attempt_id: Option<&str>,
         network: Option<&str>,
     ) -> Result<VerificationDataResponse, McpServiceError> {
         if task_id.is_empty() {
@@ -961,7 +991,11 @@ impl OrchestratorProxy {
         }
         let encoded_task_id = require_path_segment(task_id, "task_id")?;
 
-        let qs = network_query_suffix(network);
+        let mut qs = network_query_suffix(network);
+        if let Some(aid) = attempt_id.map(str::trim).filter(|s| !s.is_empty()) {
+            let sep = if qs.is_empty() { '?' } else { '&' };
+            qs.push_str(&format!("{sep}attempt_id={}", urlencoding::encode(aid)));
+        }
         let url = format!("{}/tasks/{encoded_task_id}/build-verify{qs}", self.base_url);
         let response = self.bodyless_post(&url)
             .send()

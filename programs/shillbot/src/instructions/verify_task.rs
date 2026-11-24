@@ -120,11 +120,13 @@ fn validate_verify_inputs(
     Ok(())
 }
 
-/// Returns `true` when an `OnChainAction` submission scored `0` and still has
-/// enough time before `deadline` (`now + claim_buffer < deadline`) for another
-/// agent to claim and submit a valid proof.
+/// Returns `true` when an `OnChainAction` or unapproved (`requires_approval == 0`)
+/// `LeanProof` submission scored `0` and still has enough time before `deadline`
+/// (`now + claim_buffer < deadline`) for another agent to settle a valid proof.
 pub(crate) fn should_reopen_onchain_action(task: &Task, composite_score: u64, now: i64) -> bool {
-    task.platform == shared::PlatformType::OnChainAction.discriminant()
+    (task.platform == shared::PlatformType::OnChainAction.discriminant()
+        || (task.platform == shared::PlatformType::LeanProof.discriminant()
+            && task.requires_approval == 0))
         && composite_score == 0
         && now.saturating_add(task.claim_buffer) < task.deadline
 }

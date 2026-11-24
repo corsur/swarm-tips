@@ -181,17 +181,11 @@ pub(crate) fn validate_attested_inputs(
         ShillbotError::InvalidVerificationHash
     );
 
-    if task.platform == shared::PlatformType::OnChainAction.discriminant() {
-        let eff_delay = if task.attestation_delay_override > 0 {
-            i64::from(task.attestation_delay_override)
-        } else {
-            global.attestation_delay_seconds
-        };
-        require!(
-            now >= task.submitted_at.saturating_add(eff_delay),
-            ShillbotError::AttestationStale
-        );
-    }
+    // Note (`M2` Open Competition): `shillbot-attester` verifies full
+    // target-chain finality (Solana `finalized` / EVM `finalized`) before
+    // co-signing `verify_task_attested`, and in a 1-tx `Open -> Verified`
+    // bundle `task.submitted_at == now`, so no post-submit wall-clock delay
+    // is imposed inside `verify_task_attested`.
 
     let eff_timeout = if task.verification_timeout_override > 0 {
         i64::from(task.verification_timeout_override)
@@ -295,31 +289,22 @@ mod tests {
     }
 
     #[test]
-    fn verify_task_attested_enforces_timeout_upper_bound_and_onchain_delay() {
+    fn verify_task_attested_allows_same_slot_m2_and_enforces_timeout_upper_bound() {
         let attester = Pubkey::new_unique();
         let global = sample_global(attester);
         let task = sample_task(shared::PlatformType::OnChainAction.discriminant(), 1_000);
 
-        // Before attestation delay (1000 + 59 < 1060): rejected
+        // Same-slot M2 bundle (now == submitted_at) is accepted
         assert!(validate_attested_inputs(
             &task,
             &global,
             &attester,
             shared::MAX_SCORE,
             [1u8; 32],
-            1_059
-        )
-        .is_err());
-        // Inside valid window (1060..=4600): accepted
-        assert!(validate_attested_inputs(
-            &task,
-            &global,
-            &attester,
-            shared::MAX_SCORE,
-            [1u8; 32],
-            1_060
+            1_000
         )
         .is_ok());
+        // Inside valid window (1000..=4600): accepted
         assert!(validate_attested_inputs(
             &task,
             &global,

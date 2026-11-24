@@ -32,8 +32,9 @@ import {
 import {
   ShillbotCtx,
   createTask,
-  claimTask,
-  submitWork,
+  claimAndSubmitAtomic,
+  claimAndVerifyAtomic,
+  approveTask,
   verifyTaskAttested,
   finalizeTask,
   LEAN_PROOF_PLATFORM,
@@ -93,31 +94,44 @@ async function runLifecycle(
   label: string
 ): Promise<void> {
   console.log(`\n=== ${label} ===`);
+  const useM2Atomic = score === MAX_SCORE;
   const created = await createTask(ctx, h.authority, {
     escrowLamports: ESCROW,
     platform: LEAN_PROOF_PLATFORM,
     verificationKind: 1,
-    requiresApproval: false,
+    requiresApproval: !useM2Atomic,
     challengeWindowOverride: 0, // use the shrunk global window
     contentTag: `theorem-${Date.now()}`,
   });
   const createdTask = await h.program.account.task.fetch(created.task);
   chk.check(createdTask.verificationKind === 1, "verification_kind = 1");
 
-  await claimTask(ctx, h.agent, created.task);
-  await submitWork(
-    ctx,
-    h.agent,
-    created.task,
-    "https://artifacts.example/proof.lean"
-  );
-  await verifyTaskAttested(
-    ctx,
-    created.task,
-    created.taskId,
-    score,
-    h.attester
-  );
+  if (useM2Atomic) {
+    await claimAndVerifyAtomic(
+      ctx,
+      h.agent,
+      created.task,
+      created.taskId,
+      "https://artifacts.example/proof.lean",
+      score,
+      h.attester
+    );
+  } else {
+    await claimAndSubmitAtomic(
+      ctx,
+      h.agent,
+      created.task,
+      "https://artifacts.example/proof.lean"
+    );
+    await approveTask(ctx, h.authority, created.task);
+    await verifyTaskAttested(
+      ctx,
+      created.task,
+      created.taskId,
+      score,
+      h.attester
+    );
+  }
 
   const verified = await h.program.account.task.fetch(created.task);
   chk.check(

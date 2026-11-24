@@ -52,10 +52,10 @@ export const ONCHAIN_ACTION_PLATFORM = 11;
 
 /** Allowed task status transitions. Terminals (Finalized/Resolved/Expired) are absorbing. */
 export const TASK_GRAPH: TransitionGraph = {
-  // OnChainAction atomic claim+submit goes Open -> Submitted in one tx.
-  Open: ["Claimed", "Submitted", "Expired"],
+  // M1 atomic claim+submit goes Open -> Submitted; M2 atomic claim+submit+verify goes Open -> Verified.
+  Open: ["Claimed", "Submitted", "Verified", "Expired"],
   Claimed: ["Submitted", "Expired"],
-  // OnChainAction score=0 before deadline reopens Submitted -> Open in-place.
+  // OnChainAction/LeanProof score=0 before deadline reopens Submitted -> Open in-place.
   Submitted: ["Open", "Approved", "Verified", "Expired"],
   Approved: ["Verified", "Expired"],
   Verified: ["Finalized", "Disputed"],
@@ -399,6 +399,80 @@ export async function claimAndSubmitAtomic(
     ])
     .postInstructions(postIxs)
     .signers([agent])
+    .rpc();
+  assertLegalTransition(
+    TASK_GRAPH,
+    before,
+    await statusAfter(ctx, task, before)
+  );
+}
+
+/** Atomic M2 [claim_task (+ SYSVAR_INSTRUCTIONS), (set_payout_to?), submit_work, verify_task_attested(MAX_SCORE)]: Open → Verified. */
+export async function claimAndVerifyAtomic(
+  ctx: ShillbotCtx,
+  agent: Keypair,
+  task: PublicKey,
+  taskId: BN,
+  contentId: string,
+  score: number = 1_000_000,
+  attester: Keypair = ctx.authority,
+  payoutTo?: PublicKey
+): Promise<void> {
+  const before = await statusOf(ctx, task);
+  const agentState = agentStatePda(agent.publicKey, ctx.rt.program.programId);
+  const hash = contentHash(`attestation ${taskId.toString()} ${score}`);
+  const postIxs = [];
+  if (payoutTo) {
+    postIxs.push(
+      await ctx.rt.program.methods
+        .setPayoutTo(payoutTo)
+        .accountsPartial({
+          task,
+          agent: agent.publicKey,
+        })
+        .instruction()
+    );
+  }
+  postIxs.push(
+    await ctx.rt.program.methods
+      .submitWork(Buffer.from(contentId))
+      .accountsPartial({
+        task,
+        agentState,
+        agent: agent.publicKey,
+      })
+      .instruction()
+  );
+  postIxs.push(
+    await ctx.rt.program.methods
+      .verifyTaskAttested(new BN(score), hash as never)
+      .accountsPartial({
+        task,
+        globalState: ctx.globalPda,
+        attester: attester.publicKey,
+      })
+      .instruction()
+  );
+  const signers = attester.publicKey.equals(agent.publicKey)
+    ? [agent]
+    : [agent, attester];
+  await ctx.rt.program.methods
+    .claimTask()
+    .accountsPartial({
+      task,
+      agentState,
+      agent: agent.publicKey,
+      systemProgram: SystemProgram.programId,
+    })
+    .remainingAccounts([
+      {
+        pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+        isSigner: false,
+        isWritable: false,
+      },
+    ])
+    .postInstructions(postIxs)
+    .signers(signers)
     .rpc();
   assertLegalTransition(
     TASK_GRAPH,

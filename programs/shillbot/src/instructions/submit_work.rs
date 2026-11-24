@@ -55,7 +55,9 @@ pub(crate) fn validate_submit_common(
     now: i64,
 ) -> Result<()> {
     require!(!global.paused, ShillbotError::ProtocolPaused);
-    if task.platform == shared::PlatformType::OnChainAction.discriminant() {
+    if task.platform == shared::PlatformType::OnChainAction.discriminant()
+        || task.platform == shared::PlatformType::LeanProof.discriminant()
+    {
         require!(content_id_len > 0, ShillbotError::InvalidParameter);
     }
     require!(

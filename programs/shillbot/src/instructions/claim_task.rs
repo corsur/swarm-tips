@@ -17,10 +17,17 @@ use crate::state::{AgentState, GlobalState, Task, TaskState};
 /// how many tasks the agent currently has in Claimed state. This is tamper-proof
 /// because the count is maintained on-chain by claim_task, submit_work, and expire_task.
 ///
-/// For `PlatformType::OnChainAction` (`11`), bare speculative claims are rejected (`M1`):
-/// `claim_task` must execute at top-level stack height (`1`) with `sysvar::instructions`
-/// in `remaining_accounts[0]` and be immediately followed by `submit_work` (or
-/// `set_payout_to` then `submit_work`) for the identical `(task, agent)`.
+/// For `verification_kind == 1` (`LeanProof` / `OnChainAction`) without client
+/// pre-approval (`requires_approval == 0`), bare speculative claims AND
+/// unverified `[claim_task, submit_work]` locks are rejected (`M2`):
+/// `claim_task` must execute at top-level stack height (`1`) with
+/// `sysvar::instructions` in `remaining_accounts[0]` and be immediately followed
+/// by `[set_payout_to?, submit_work, verify_task_attested(MAX_SCORE)]` co-signed
+/// by `global_state.oracle_authority` for the identical `(task, agent)`.
+///
+/// For `OnChainAction` (`kind == 0`, devnet Switchboard) or approval-gated
+/// `LeanProof` (`requires_approval == 1`), `M1` atomic `[claim_task,
+/// set_payout_to?, submit_work]` is enforced.
 pub fn claim_task(ctx: Context<ClaimTask>) -> Result<()> {
     let clock = Clock::get()?;
     let task = &ctx.accounts.task;
@@ -46,7 +53,17 @@ pub fn claim_task(ctx: Context<ClaimTask>) -> Result<()> {
     // wasn't already exposed to. `SelfClaimForbidden` is retained (unused) in the
     // error enum to preserve Anchor error numbering.
 
-    if task.platform == shared::PlatformType::OnChainAction.discriminant() {
+    if task.verification_kind == 1 && task.requires_approval == 0 {
+        enforce_atomic_verified_bundle(
+            ctx.program_id,
+            &task.key(),
+            &agent_key,
+            &global.oracle_authority,
+            ctx.remaining_accounts,
+        )?;
+    } else if task.platform == shared::PlatformType::OnChainAction.discriminant()
+        || task.platform == shared::PlatformType::LeanProof.discriminant()
+    {
         enforce_atomic_submit_bundle(
             ctx.program_id,
             &task.key(),
@@ -125,9 +142,130 @@ fn commit_wallet_claim(
     Ok(())
 }
 
-/// Enforce `M1`: top-level `claim_task` on `OnChainAction` must be followed in
-/// the same transaction by `submit_work` (or `set_payout_to` then `submit_work`)
-/// targeting the same `task` PDA and `agent` signer.
+/// Enforce `M2` (Open Competition): top-level `claim_task` on
+/// `verification_kind == 1 && requires_approval == 0` (`LeanProof` / `OnChainAction`)
+/// MUST be immediately followed in the same transaction by:
+/// - `[submit_work, verify_task_attested(MAX_SCORE)]`, OR
+/// - `[set_payout_to, submit_work, verify_task_attested(MAX_SCORE)]`
+///
+/// targeting the identical `(task, agent)` and co-signed by `oracle_authority`.
+///
+/// This makes speculative claim squatting and unverified submission locks
+/// structurally impossible on-chain: a task transitions directly `Open -> Verified`
+/// only after the attester has verified a passing proof off-chain.
+fn enforce_atomic_verified_bundle(
+    program_id: &Pubkey,
+    task_key: &Pubkey,
+    agent_key: &Pubkey,
+    oracle_authority: &Pubkey,
+    remaining_accounts: &[AccountInfo],
+) -> Result<()> {
+    require!(
+        get_stack_height() == TRANSACTION_LEVEL_STACK_HEIGHT,
+        ShillbotError::InvalidInstructionBundle
+    );
+    let sysvar_info = remaining_accounts
+        .first()
+        .ok_or(ShillbotError::InvalidInstructionBundle)?;
+    require!(
+        sysvar_info.key() == ix_sysvar::ID,
+        ShillbotError::InvalidInstructionBundle
+    );
+    let cur = usize::from(
+        load_current_index_checked(sysvar_info)
+            .map_err(|_| error!(ShillbotError::InvalidInstructionBundle))?,
+    );
+    let next_idx = cur
+        .checked_add(1)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    let third_idx = cur
+        .checked_add(2)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    let next_ix = load_instruction_at_checked(next_idx, sysvar_info)
+        .map_err(|_| error!(ShillbotError::InvalidInstructionBundle))?;
+    let third_ix = load_instruction_at_checked(third_idx, sysvar_info)
+        .map_err(|_| error!(ShillbotError::InvalidInstructionBundle))?;
+    let fourth_ix = cur
+        .checked_add(3)
+        .and_then(|idx| load_instruction_at_checked(idx, sysvar_info).ok());
+    require!(
+        is_valid_verified_claim_bundle(
+            program_id,
+            task_key,
+            agent_key,
+            oracle_authority,
+            &next_ix,
+            &third_ix,
+            fourth_ix.as_ref(),
+        ),
+        ShillbotError::InvalidInstructionBundle
+    );
+    Ok(())
+}
+
+pub(crate) fn is_valid_verified_claim_bundle(
+    program_id: &Pubkey,
+    task_key: &Pubkey,
+    agent_key: &Pubkey,
+    oracle_authority: &Pubkey,
+    next_ix: &Instruction,
+    third_ix: &Instruction,
+    fourth_ix: Option<&Instruction>,
+) -> bool {
+    if is_matching_submit_work(next_ix, program_id, task_key, agent_key)
+        && is_matching_verify_task_attested(third_ix, program_id, task_key, oracle_authority)
+    {
+        return true;
+    }
+    if is_matching_set_payout_to(next_ix, program_id, task_key, agent_key)
+        && is_matching_submit_work(third_ix, program_id, task_key, agent_key)
+    {
+        if let Some(fourth) = fourth_ix {
+            return is_matching_verify_task_attested(
+                fourth,
+                program_id,
+                task_key,
+                oracle_authority,
+            );
+        }
+    }
+    false
+}
+
+/// Checks that `ix` is a `verify_task_attested` instruction for `task_key`,
+/// signed by `oracle_authority`, with `score == shared::MAX_SCORE` and a
+/// non-zero `verification_hash`.
+pub(crate) fn is_matching_verify_task_attested(
+    ix: &Instruction,
+    program_id: &Pubkey,
+    task_key: &Pubkey,
+    oracle_authority: &Pubkey,
+) -> bool {
+    if ix.program_id != *program_id
+        || ix.data.len() != 48
+        || !ix
+            .data
+            .starts_with(crate::instruction::VerifyTaskAttested::DISCRIMINATOR)
+        || ix.accounts.len() < 3
+        || ix.accounts[0].pubkey != *task_key
+        || !ix.accounts[0].is_writable
+        || ix.accounts[2].pubkey != *oracle_authority
+        || !ix.accounts[2].is_signer
+    {
+        return false;
+    }
+    let score_bytes: [u8; 8] = match ix.data[8..16].try_into() {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let score = u64::from_le_bytes(score_bytes);
+    score == shared::MAX_SCORE && ix.data[16..48].iter().any(|&b| b != 0)
+}
+
+/// Enforce `M1`: top-level `claim_task` on `OnChainAction` (`kind == 0`) or
+/// approval-gated `LeanProof` must be followed in the same transaction by
+/// `submit_work` (or `set_payout_to` then `submit_work`) targeting the same
+/// `task` PDA and `agent` signer.
 fn enforce_atomic_submit_bundle(
     program_id: &Pubkey,
     task_key: &Pubkey,
@@ -290,6 +428,28 @@ mod tests {
         }
     }
 
+    fn verify_attested_ix(
+        program_id: Pubkey,
+        task: Pubkey,
+        attester: Pubkey,
+        score: u64,
+        verification_hash: [u8; 32],
+    ) -> Instruction {
+        Instruction {
+            program_id,
+            accounts: vec![
+                AccountMeta::new(task, false),
+                AccountMeta::new_readonly(Pubkey::new_unique(), false),
+                AccountMeta::new_readonly(attester, true),
+            ],
+            data: crate::instruction::VerifyTaskAttested {
+                score,
+                verification_hash,
+            }
+            .data(),
+        }
+    }
+
     #[test]
     fn wallet_claim_bundle_accepts_direct_and_payout_routed_submit() {
         let program_id = crate::ID;
@@ -351,6 +511,121 @@ mod tests {
             &agent,
             &payout_only,
             None
+        ));
+    }
+
+    #[test]
+    fn verified_claim_bundle_accepts_direct_and_payout_routed_m2() {
+        let program_id = crate::ID;
+        let task = Pubkey::new_unique();
+        let agent = Pubkey::new_unique();
+        let oracle = Pubkey::new_unique();
+        let submit = submit_ix(program_id, task, agent, b"lean4:sha256:abcd");
+        let payout = payout_ix(program_id, task, agent);
+        let verify = verify_attested_ix(program_id, task, oracle, shared::MAX_SCORE, [7u8; 32]);
+
+        assert!(is_valid_verified_claim_bundle(
+            &program_id,
+            &task,
+            &agent,
+            &oracle,
+            &submit,
+            &verify,
+            None,
+        ));
+        assert!(is_valid_verified_claim_bundle(
+            &program_id,
+            &task,
+            &agent,
+            &oracle,
+            &payout,
+            &submit,
+            Some(&verify),
+        ));
+    }
+
+    #[test]
+    fn verified_claim_bundle_rejects_score_zero_wrong_attester_or_missing_verify() {
+        let program_id = crate::ID;
+        let task = Pubkey::new_unique();
+        let agent = Pubkey::new_unique();
+        let oracle = Pubkey::new_unique();
+        let submit = submit_ix(program_id, task, agent, b"lean4:sha256:abcd");
+        let payout = payout_ix(program_id, task, agent);
+        let verify_ok = verify_attested_ix(program_id, task, oracle, shared::MAX_SCORE, [7u8; 32]);
+        let verify_zero = verify_attested_ix(program_id, task, oracle, 0, [7u8; 32]);
+        let verify_zero_hash =
+            verify_attested_ix(program_id, task, oracle, shared::MAX_SCORE, [0u8; 32]);
+        let verify_wrong_oracle = verify_attested_ix(
+            program_id,
+            task,
+            Pubkey::new_unique(),
+            shared::MAX_SCORE,
+            [7u8; 32],
+        );
+        let verify_wrong_task = verify_attested_ix(
+            program_id,
+            Pubkey::new_unique(),
+            oracle,
+            shared::MAX_SCORE,
+            [7u8; 32],
+        );
+
+        assert!(!is_valid_verified_claim_bundle(
+            &program_id,
+            &task,
+            &agent,
+            &oracle,
+            &submit,
+            &verify_zero,
+            None,
+        ));
+        assert!(!is_valid_verified_claim_bundle(
+            &program_id,
+            &task,
+            &agent,
+            &oracle,
+            &submit,
+            &verify_zero_hash,
+            None,
+        ));
+        assert!(!is_valid_verified_claim_bundle(
+            &program_id,
+            &task,
+            &agent,
+            &oracle,
+            &submit,
+            &verify_wrong_oracle,
+            None,
+        ));
+        assert!(!is_valid_verified_claim_bundle(
+            &program_id,
+            &task,
+            &agent,
+            &oracle,
+            &submit,
+            &verify_wrong_task,
+            None,
+        ));
+        // [set_payout_to, submit] without trailing verify_task_attested is rejected
+        assert!(!is_valid_verified_claim_bundle(
+            &program_id,
+            &task,
+            &agent,
+            &oracle,
+            &payout,
+            &submit,
+            None,
+        ));
+        // Skipping submit_work is rejected
+        assert!(!is_valid_verified_claim_bundle(
+            &program_id,
+            &task,
+            &agent,
+            &oracle,
+            &verify_ok,
+            &verify_ok,
+            None,
         ));
     }
 }

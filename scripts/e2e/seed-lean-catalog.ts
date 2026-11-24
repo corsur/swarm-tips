@@ -589,6 +589,20 @@ export const MILLENNIUM_TASKS = new Set([
   "millennium-sub-pnp-paley-rigidity",
 ]);
 
+/**
+ * Retired post-Alpöge (Nov 20, 2026 Lean 4 + Mathlib + nanoda proof of RH & GRH).
+ * Excluded from default Mainnet seeding unless explicitly targeted via `--tasks=`.
+ */
+export const RETIRED_RH_SLUGS = new Set([
+  "riemann-hypothesis",
+  "millennium-rh-lagarias-divisor",
+  "millennium-rh-mertens-quasi",
+  "weil-gram-spectral-floor",
+  "chain-rh-analytic-4-zero-free-strip-99-100",
+  "chain-rh-lagarias-3-odd-and-squarefree",
+  "chain-rh-lagarias-4-even-superabundant-core",
+]);
+
 export const LADDER_TASKS = new Set([
   "tier1-escrow-conservation",
   "tier1-weil-trace-hollow-2x2",
@@ -2290,6 +2304,24 @@ export function parseLeanPolicyArg(
   return parsed as 1 | 2 | 3 | 4;
 }
 
+export function parseDeadlineDaysArg(argv: string[]): number {
+  const eq = argv.find((a) => a.startsWith("--deadline-days="));
+  const idx = argv.indexOf("--deadline-days");
+  const raw = eq
+    ? eq.slice("--deadline-days=".length).trim()
+    : idx >= 0 && idx + 1 < argv.length
+    ? argv[idx + 1].trim()
+    : undefined;
+  if (!raw) return 90;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 90) {
+    throw new Error(
+      `Invalid --deadline-days value '${raw}'; expected integer in 1..=90`
+    );
+  }
+  return parsed;
+}
+
 async function main(): Promise<void> {
   if (process.argv.includes("--skip-precheck")) {
     throw new Error(
@@ -2310,6 +2342,7 @@ async function main(): Promise<void> {
     .trim();
   const network = parsedNetwork;
   const leanPolicy = parseLeanPolicyArg(process.argv);
+  const deadlineDays = parseDeadlineDaysArg(process.argv);
 
   if ((mathlibOnly || runnerOnly) && !checkOnly) {
     throw new Error(
@@ -2350,6 +2383,22 @@ async function main(): Promise<void> {
     catalog = catalog.filter((e) => e.program === "lemma-ladder");
   } else if (isMillenniumOnly) {
     catalog = catalog.filter((e) => e.program === "millennium-rh-weil-gram");
+  }
+
+  if (isMainnet && !taskArg) {
+    const skippedRh = catalog
+      .filter((e) => RETIRED_RH_SLUGS.has(e.name))
+      .map((e) => e.name);
+    if (skippedRh.length > 0) {
+      console.log(
+        `excluding ${
+          skippedRh.length
+        } retired post-Alpöge RH slug(s) from default mainnet seeding: ${skippedRh.join(
+          ", "
+        )}`
+      );
+      catalog = catalog.filter((e) => !RETIRED_RH_SLUGS.has(e.name));
+    }
   }
 
   console.log(
@@ -2440,6 +2489,7 @@ async function main(): Promise<void> {
       escrowLamports / LAMPORTS_PER_SOL
     ).toFixed(4)} SOL)`
   );
+  console.log(`deadline: ${deadlineDays}d`);
   if (reservedForWalletArg) {
     console.log(`reserved_for_wallet: ${reservedForWalletArg}`);
   }
@@ -2511,6 +2561,7 @@ async function main(): Promise<void> {
       platform: LEAN_PROOF_PLATFORM,
       statement_lean: entry.statement,
       lean_policy: leanPolicy,
+      deadline_days: deadlineDays,
     };
     if (resolvedDep?.moduleId) {
       campPayload.lean_dependencies = [resolvedDep.moduleId];

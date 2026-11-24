@@ -32,7 +32,8 @@ import {
   createTask,
   claimTask,
   claimAndSubmitAtomic,
-  submitWork,
+  claimAndVerifyAtomic,
+  approveTask,
   verifyTaskOracle,
   verifyTaskAttested,
   challengeTask,
@@ -129,19 +130,19 @@ describe("shillbot-guards (bankrun, discrete)", () => {
   // --- claim / verify guards --------------------------------------------
 
   describe("claim + verify guards", () => {
-    it("allows the client to self-claim their own deterministic task (guard removed)", async () => {
+    it("allows the client to self-claim their own deterministic task via M2 (guard removed)", async () => {
       // The kind-1 self-claim guard was removed — it only blocked same-wallet
       // credential wash, which a two-wallet split bypasses, so it guarded
-      // nothing real. Self-claiming a deterministic task must now succeed.
+      // nothing real. Self-settling a deterministic task via M2 must now succeed.
       const client = await freshClient();
-      const { task } = await createTask(ctx, client, {
+      const { task, taskId } = await createTask(ctx, client, {
         escrowLamports: ESCROW,
         platform: LEAN_PROOF_PLATFORM,
         verificationKind: 1,
         requiresApproval: false,
         challengeWindowOverride: CHALLENGE_WINDOW,
       });
-      await claimTask(ctx, client, task); // no longer throws SelfClaimForbidden
+      await claimAndVerifyAtomic(ctx, client, task, taskId, "proof.lean");
     });
 
     it("verify_task_attested rejects a non-binary score", async () => {
@@ -151,11 +152,11 @@ describe("shillbot-guards (bankrun, discrete)", () => {
         escrowLamports: ESCROW,
         platform: LEAN_PROOF_PLATFORM,
         verificationKind: 1,
-        requiresApproval: false,
+        requiresApproval: true,
         challengeWindowOverride: CHALLENGE_WINDOW,
       });
-      await claimTask(ctx, agent, task);
-      await submitWork(ctx, agent, task, "proof.lean");
+      await claimAndSubmitAtomic(ctx, agent, task, "proof.lean");
+      await approveTask(ctx, client, task);
       await expectErr(
         verifyTaskAttested(ctx, task, taskId, 500_000),
         /AttestedScoreNotBinary/
@@ -170,11 +171,11 @@ describe("shillbot-guards (bankrun, discrete)", () => {
         escrowLamports: ESCROW,
         platform: LEAN_PROOF_PLATFORM,
         verificationKind: 1,
-        requiresApproval: false,
+        requiresApproval: true,
         challengeWindowOverride: CHALLENGE_WINDOW,
       });
-      await claimTask(ctx, agent, task);
-      await submitWork(ctx, agent, task, "proof.lean");
+      await claimAndSubmitAtomic(ctx, agent, task, "proof.lean");
+      await approveTask(ctx, client, task);
       await expectErr(
         verifyTaskAttested(ctx, task, taskId, MAX_SCORE, imposter),
         /OracleAuthorityMismatch/
@@ -203,9 +204,7 @@ describe("shillbot-guards (bankrun, discrete)", () => {
       requiresApproval: false,
       challengeWindowOverride: CHALLENGE_WINDOW,
     });
-    await claimTask(ctx, agent, task);
-    await submitWork(ctx, agent, task, "proof.lean");
-    await verifyTaskAttested(ctx, task, taskId, MAX_SCORE);
+    await claimAndVerifyAtomic(ctx, agent, task, taskId, "proof.lean");
     return { task, taskId, agent, client, challenger };
   }
 
@@ -392,7 +391,7 @@ describe("shillbot-guards (bankrun, discrete)", () => {
       );
     });
 
-    it("mainnet VOW v1 verify_task_attested(score=0) reopens OnChainAction with AgentState strike cooldown, and goodAgent completes + finalizes", async () => {
+    it("mainnet VOW v1 OnChainAction enforces M2 Open Competition (rejects unverified lock & score=0, settles 1-tx Open -> Verified -> Finalized)", async () => {
       const client = await freshClient();
       const badAgent = await freshClient();
       const badVault = await freshClient();
@@ -410,79 +409,68 @@ describe("shillbot-guards (bankrun, discrete)", () => {
           deadlineSeconds: 86_400 * 7,
         });
 
-        await claimAndSubmitAtomic(
-          ctx,
-          badAgent,
-          task,
-          "eip155:56:0x" + "aa".repeat(32) + ":0",
-          badVault.publicKey
-        );
-        const sub1 = await ctx.rt.program.account.task.fetch(task);
-        await handle.runtime.warpTo(sub1.submittedAt.toNumber() + 65);
-        const reopenHash = Array.from({ length: 32 }, (_, i) => (i + 7) & 0xff);
-
-        // Omitting remaining_accounts[0] (writable AgentState PDA) must fail with MissingAgentState!
+        // Bare claim_task is rejected on mainnet VOW v1 OnChainAction.
         await expectErr(
-          ctx.rt.program.methods
-            .verifyTaskAttested(new BN(0), reopenHash as never)
-            .accountsPartial({
-              task,
-              globalState: ctx.globalPda,
-              attester: ctx.authority.publicKey,
-            })
-            .signers([ctx.authority])
-            .rpc(),
-          /MissingAgentState/
+          claimTask(ctx, badAgent, task),
+          /InvalidInstructionBundle|6053/
         );
-
-        const badAgentState = agentStatePda(
-          badAgent.publicKey,
-          ctx.rt.program.programId
-        );
-        await ctx.rt.program.methods
-          .verifyTaskAttested(new BN(0), reopenHash as never)
-          .accountsPartial({
-            task,
-            globalState: ctx.globalPda,
-            attester: ctx.authority.publicKey,
-          })
-          .remainingAccounts([
-            { pubkey: badAgentState, isWritable: true, isSigner: false },
-          ])
-          .signers([ctx.authority])
-          .rpc();
-
-        const reopened = await ctx.rt.program.account.task.fetch(task);
-        assert.deepEqual(reopened.state, { open: {} });
-        assert.equal(reopened.agent.toBase58(), PublicKey.default.toBase58());
-        assert.equal(
-          reopened.payoutTo.toBase58(),
-          PublicKey.default.toBase58()
-        );
-
-        // Immediate re-claim by badAgent within the 60s strike cooldown must fail!
+        // Unverified [claim, set_payout_to, submit] is rejected — task cannot be locked without a passing attestation!
         await expectErr(
           claimAndSubmitAtomic(
             ctx,
             badAgent,
             task,
-            "eip155:56:0x" + "ab".repeat(32) + ":0"
+            "eip155:56:0x" + "aa".repeat(32) + ":0",
+            badVault.publicKey
           ),
-          /StrikeCooldownActive/
+          /InvalidInstructionBundle|6053/
+        );
+        // [claim, submit, verify_task_attested(score=0)] is also rejected.
+        await expectErr(
+          claimAndVerifyAtomic(
+            ctx,
+            badAgent,
+            task,
+            taskId,
+            "eip155:56:0x" + "aa".repeat(32) + ":0",
+            0
+          ),
+          /InvalidInstructionBundle|6053/
         );
 
-        // goodAgent claims, submits, passes VOW v1 verify_task_attested(MAX_SCORE), and finalizes!
-        await claimAndSubmitAtomic(
+        // Task stayed completely Open with zero squatting!
+        const stillOpen = await ctx.rt.program.account.task.fetch(task);
+        assert.deepEqual(stillOpen.state, { open: {} });
+        assert.equal(stillOpen.agent.toBase58(), PublicKey.default.toBase58());
+        assert.equal(
+          stillOpen.payoutTo.toBase58(),
+          PublicKey.default.toBase58()
+        );
+
+        // goodAgent settles Open -> Verified in 1 atomic M2 tx (same-slot, no post-submit wait!) and finalizes!
+        await claimAndVerifyAtomic(
           ctx,
           goodAgent,
           task,
+          taskId,
           "eip155:56:0x" + "bb".repeat(32) + ":0"
         );
-        const sub2 = await ctx.rt.program.account.task.fetch(task);
-        await handle.runtime.warpTo(sub2.submittedAt.toNumber() + 65);
-        await verifyTaskAttested(ctx, task, taskId, MAX_SCORE);
-
         const verified = await ctx.rt.program.account.task.fetch(task);
+        assert.deepEqual(verified.state, { verified: {} });
+        assert.equal(verified.agent.toBase58(), goodAgent.publicKey.toBase58());
+
+        // Racing solver fails cleanly on already-Verified task.
+        await expectErr(
+          claimAndVerifyAtomic(
+            ctx,
+            badAgent,
+            task,
+            taskId,
+            "eip155:56:0x" + "cc".repeat(32) + ":0"
+          ),
+          /InvalidTaskState/
+        );
+
         await handle.runtime.warpTo(verified.challengeDeadline.toNumber() + 1);
         const agentBefore = await ctx.rt.getBalance(goodAgent.publicKey);
         const treasuryBefore = await ctx.rt.getBalance(ctx.treasury);

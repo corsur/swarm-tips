@@ -25,7 +25,18 @@ pub fn claim_task_session(ctx: Context<ClaimTaskSession>) -> Result<()> {
         &ctx.accounts.agent_state,
         clock.unix_timestamp,
     )?;
-    if ctx.accounts.task.platform == shared::PlatformType::OnChainAction.discriminant() {
+    if ctx.accounts.task.verification_kind == 1 && ctx.accounts.task.requires_approval == 0 {
+        enforce_atomic_session_verified_bundle(
+            ctx.program_id,
+            &ctx.accounts.task.key(),
+            &ctx.accounts.session_delegate.key(),
+            &ctx.accounts.delegate.key(),
+            &ctx.accounts.global_state.oracle_authority,
+            ctx.remaining_accounts,
+        )?;
+    } else if ctx.accounts.task.platform == shared::PlatformType::OnChainAction.discriminant()
+        || ctx.accounts.task.platform == shared::PlatformType::LeanProof.discriminant()
+    {
         enforce_atomic_session_submit_bundle(
             ctx.program_id,
             &ctx.accounts.task.key(),
@@ -46,6 +57,57 @@ pub fn claim_task_session(ctx: Context<ClaimTaskSession>) -> Result<()> {
         task_id: ctx.accounts.task.task_id,
         agent: agent_key,
     });
+    Ok(())
+}
+
+fn enforce_atomic_session_verified_bundle(
+    program_id: &Pubkey,
+    task_key: &Pubkey,
+    session_delegate_key: &Pubkey,
+    delegate_key: &Pubkey,
+    oracle_authority: &Pubkey,
+    remaining_accounts: &[AccountInfo],
+) -> Result<()> {
+    require!(
+        get_stack_height() == TRANSACTION_LEVEL_STACK_HEIGHT,
+        ShillbotError::InvalidInstructionBundle
+    );
+    let sysvar_info = remaining_accounts
+        .first()
+        .ok_or(ShillbotError::InvalidInstructionBundle)?;
+    require!(
+        sysvar_info.key() == ix_sysvar::ID,
+        ShillbotError::InvalidInstructionBundle
+    );
+    let cur = usize::from(
+        load_current_index_checked(sysvar_info)
+            .map_err(|_| error!(ShillbotError::InvalidInstructionBundle))?,
+    );
+    let next_idx = cur
+        .checked_add(1)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    let third_idx = cur
+        .checked_add(2)
+        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    let next_ix = load_instruction_at_checked(next_idx, sysvar_info)
+        .map_err(|_| error!(ShillbotError::InvalidInstructionBundle))?;
+    let third_ix = load_instruction_at_checked(third_idx, sysvar_info)
+        .map_err(|_| error!(ShillbotError::InvalidInstructionBundle))?;
+    require!(
+        is_matching_submit_work_session(
+            &next_ix,
+            program_id,
+            task_key,
+            session_delegate_key,
+            delegate_key,
+        ) && crate::instructions::claim_task::is_matching_verify_task_attested(
+            &third_ix,
+            program_id,
+            task_key,
+            oracle_authority,
+        ),
+        ShillbotError::InvalidInstructionBundle
+    );
     Ok(())
 }
 

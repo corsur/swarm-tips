@@ -32,8 +32,9 @@ import {
 import {
   ShillbotCtx,
   createTask,
-  claimTask,
-  submitWork,
+  claimAndSubmitAtomic,
+  claimAndVerifyAtomic,
+  approveTask,
   verifyTaskAttested,
   challengeTask,
   resolveChallenge,
@@ -152,43 +153,57 @@ async function runCell(
   cell: Cell
 ): Promise<void> {
   console.log(`\n=== ${cell.name} ===`);
+  const useM2Atomic = cell.score === MAX_SCORE && cell.outcome !== K.Expired;
   const created = await createTask(ctx, h.authority, {
     escrowLamports: ESCROW,
     platform: LEAN_PROOF_PLATFORM,
     verificationKind: 1,
-    requiresApproval: false,
+    requiresApproval: !useM2Atomic,
     challengeWindowOverride: 0, // use the shrunk global window
     contentTag: `matrix-${cell.outcome}-${cell.score}-${Date.now()}`,
   });
-  await claimTask(ctx, h.agent, created.task);
-  await submitWork(
-    ctx,
-    h.agent,
-    created.task,
-    "https://artifacts.example/proof.lean"
-  );
 
   const g = await h.program.account.globalState.fetch(h.globalPda);
   const expected = deriveTaskOutcome(scenarioFor(h, g as never, cell));
 
-  if (cell.outcome === K.Expired) {
-    const t = await h.program.account.task.fetch(created.task);
-    const expiry = t.submittedAt.toNumber() + VERIFICATION_TIMEOUT + 4;
-    await sleepUntil(h, expiry);
-    await assertTerminal(h, ctx, chk, cell, expected, challenger, async () =>
-      expireTask(ctx, created.task, h.agent.publicKey, h.authority.publicKey)
+  if (useM2Atomic) {
+    await claimAndVerifyAtomic(
+      ctx,
+      h.agent,
+      created.task,
+      created.taskId,
+      "https://artifacts.example/proof.lean",
+      cell.score,
+      h.attester
     );
-    return;
-  }
+  } else {
+    await claimAndSubmitAtomic(
+      ctx,
+      h.agent,
+      created.task,
+      "https://artifacts.example/proof.lean"
+    );
 
-  // Reach Verified (attester-signed, deterministic — no async verifier).
-  await verifyTaskAttested(
-    ctx,
-    created.task,
-    created.taskId,
-    cell.score,
-    h.attester
-  );
+    if (cell.outcome === K.Expired) {
+      const t = await h.program.account.task.fetch(created.task);
+      const expiry = t.submittedAt.toNumber() + VERIFICATION_TIMEOUT + 4;
+      await sleepUntil(h, expiry);
+      await assertTerminal(h, ctx, chk, cell, expected, challenger, async () =>
+        expireTask(ctx, created.task, h.agent.publicKey, h.authority.publicKey)
+      );
+      return;
+    }
+
+    await approveTask(ctx, h.authority, created.task);
+    // Reach Verified (attester-signed, deterministic — no async verifier).
+    await verifyTaskAttested(
+      ctx,
+      created.task,
+      created.taskId,
+      cell.score,
+      h.attester
+    );
+  }
 
   // Assert the PINNED on-chain payment/fee match the oracle — a clean check
   // that survives the shared devnet treasury's concurrent activity (unlike a

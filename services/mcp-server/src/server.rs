@@ -497,10 +497,17 @@ task_ref_args!(
     "The unique task identifier (format: `<campaign_id>:<task_uuid>`) returned by \
      shillbot_list_available_tasks or list_earning_opportunities."
 );
-task_ref_args!(
-    VerifyTaskArgs,
-    "The task identifier (format: `<campaign_id>:<task_uuid>`) of the submitted task to verify."
-);
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct VerifyTaskArgs {
+    /// Task ID (`<campaign_id>:<task_uuid>`).
+    pub task_id: String,
+    /// Open-Competition attempt ID returned by `shillbot_submit_work` (platforms 10/11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    #[schemars(description = NETWORK_ARG_DOC)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+}
 #[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct FinalizeTaskArgs {
     /// Task ID (`<campaign_id>:<task_uuid>`) to finalize or expire.
@@ -1426,7 +1433,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_claim_task",
-        description = "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a verified wallet (register_wallet, then agent_verify_wallet). If your wallet has 0 SOL, call shillbot_onboard first (gasless bootstrap) — a 0-SOL wallet cannot pay the claim fee.",
+        description = "[STATE] Claim a Shillbot task (platforms 0/3/4/5/9). Returns an unsigned base64 Solana tx to sign locally and submit via shillbot_submit_tx action=\"claim\". Platforms 10 (LeanProof) and 11 (OnChainAction) use Open Competition: do NOT claim — call shillbot_submit_work directly at $0 gas.",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_claim_task(
@@ -1466,7 +1473,7 @@ impl SwarmTipsMcp {
             "action": "claim",
             "task_id": response.task_id,
             "task_pda": task_pda,
-            "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"claim\" to broadcast and confirm the claim with the orchestrator.",
+            "instructions": "Sign this base64 transaction with your Solana wallet, then call shillbot_submit_tx with action=\"claim\" to broadcast and confirm your claim with the orchestrator.",
         });
         shillbot_transaction_result(
             result,
@@ -1485,7 +1492,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_submit_work",
-        description = "[EARN: SOL] Submit work for a Shillbot task; sign and send via shillbot_submit_tx action=\"submit\". content_id by platform: 11=<caip2>:<tx>:<idx>[:sig:<b64url_or_0xhex>] (atomic claim+submit on Open task, ~1m); 10=lean4:proof:<base64>, HTTPS .lean URL, or pass raw source in proof_lean (~5m); 5=game_id (~5m); 4=campaign_id (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
+        description = "[EARN: SOL] Submit work for a Shillbot task. Open-Competition platforms 10 (LeanProof: raw `proof_lean` or `lean4:proof:<b64>`/URL) & 11 (OnChainAction: `<caip2>:<tx>[:<idx>|auto][:sig:<sig>]`) queue an off-chain attempt at $0 gas (`attempt_id`), then call shillbot_verify_task once passed. Other platforms return an unsigned tx for shillbot_submit_tx action=\"submit\" (5=game_id, 4=campaign_id, 9=URL, 0/3=video/tweet ID).",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_work(
@@ -1499,7 +1506,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_verify_task",
-        description = "[EARN: SOL] Build an oracle-co-signed verify_task tx (your wallet as fee payer) after the verifier scores a task (~5m for game/website, 7d for YouTube/X). Sign locally and broadcast via shillbot_submit_tx action=\"verify\".",
+        description = "[EARN: SOL] Build an oracle-co-signed verify tx (your wallet as fee payer). For Open-Competition platforms 10/11, pass `attempt_id` after passing off-chain verification to get the atomic 1-tx Open->Verified bundle ($0-SOL winners are auto-onboarded). Sign locally and broadcast via shillbot_submit_tx action=\"verify\".",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_verify_task(
@@ -1516,7 +1523,12 @@ impl SwarmTipsMcp {
 
         // Get verification data from orchestrator
         let vdata = orchestrator
-            .get_verification_data(normalize_task_id(&args.task_id), &wallet_pubkey, network)
+            .get_verification_data_for_attempt(
+                normalize_task_id(&args.task_id),
+                &wallet_pubkey,
+                args.attempt_id.as_deref(),
+                network,
+            )
             .await
             .map_err(|e| to_mcp_error(&e))?;
 
@@ -1566,12 +1578,18 @@ impl SwarmTipsMcp {
             .as_ref()
             .map(|kp| solana_sdk::signer::Signer::pubkey(kp.as_ref()).to_string())
             .unwrap_or_else(|| vdata.switchboard_feed.clone());
-        let result = serde_json::json!({
+        let mut result = serde_json::json!({
             "action": "verify",
             "task_id": vdata.task_id,
             "unsigned_tx": unsigned_tx,
             "instructions": "Sign this transaction with your Solana wallet, then call shillbot_submit_tx with action=\"verify\".",
         });
+        if let Some(aid) = vdata.attempt_id.as_deref() {
+            result["attempt_id"] = serde_json::Value::String(aid.to_string());
+        }
+        if let Some(adv_tx) = vdata.onboarded_advance_tx.as_deref() {
+            result["onboarded_advance_tx"] = serde_json::Value::String(adv_tx.to_string());
+        }
         shillbot_transaction_result(
             result,
             &unsigned_tx,
@@ -5449,6 +5467,34 @@ async fn execute_shillbot_submit_work(
         response.content_id.clone().filter(|s| !s.is_empty())
     };
 
+    if response.transaction.is_none() {
+        if let Some(attempt_id) = response.attempt_id.as_deref() {
+            let status = response.status.as_deref().unwrap_or("verifying");
+            tracing::info!(
+                event = "shillbot_submit_work",
+                mode = "open_competition",
+                task_id = %args.task_id,
+                attempt_id = %attempt_id,
+                status = %status,
+                wallet = %wallet_pubkey,
+                network = network.unwrap_or("mainnet"),
+                "submit_work: off-chain Open-Competition attempt queued ($0 gas)"
+            );
+            let result = serde_json::json!({
+                "action": "submit",
+                "mode": "open_competition",
+                "status": status,
+                "task_id": response.task_id,
+                "attempt_id": attempt_id,
+                "task_pda": response.task_pda,
+                "content_id": effective_content_id.as_deref().unwrap_or(""),
+                "message": response.message,
+                "instructions": "Attempt queued for off-chain verification at $0 gas (task stays Open for competing solvers). Poll shillbot_get_task_details; once your attempt passes, call shillbot_verify_task with task_id and attempt_id to obtain the co-signed 1-tx Open->Verified bundle ($0-SOL winners are auto-onboarded).",
+            });
+            return Ok(text_result(&result));
+        }
+    }
+
     tracing::info!(
         event = "shillbot_submit_work",
         task_id = %args.task_id,
@@ -6236,13 +6282,52 @@ fn task_next_action(
     expires: &str,
     network: Option<&str>,
 ) -> serde_json::Value {
-    let mut next = if task.state == "open" && task.platform == Some(11) {
-        serde_json::json!({
-            "next_action": "submit_work",
-            "next_tool": "shillbot_submit_work",
-            "args": { "task_id": task.task_id, "content_id": "<caip2>:<tx_id>[:<index>|auto][:sig:<base64url_or_0xhex_65B_secp256k1>]" },
-            "hint": "OnChainAction (platform 11) uses atomic claim-on-proof: do NOT call shillbot_claim_task. Drive a finalized matching affiliate event on the target chain, optionally dry-run POST /tasks/:id/preflight, then call shillbot_submit_work directly (omit <index> or pass auto to scan all receipt logs/instructions).",
-        })
+    let latest_attempt_status = task
+        .my_latest_attempt
+        .as_ref()
+        .and_then(|v| v.get("status"))
+        .and_then(serde_json::Value::as_str);
+    let latest_attempt_id = task
+        .my_latest_attempt
+        .as_ref()
+        .and_then(|v| v.get("attempt_id"))
+        .and_then(serde_json::Value::as_str);
+
+    let mut next = if task.state == "open" && matches!(task.platform, Some(10) | Some(11)) {
+        if latest_attempt_status == Some("passed") {
+            let mut verify_args = serde_json::json!({ "task_id": task.task_id });
+            if let Some(aid) = latest_attempt_id {
+                verify_args["attempt_id"] = serde_json::Value::String(aid.to_string());
+            }
+            serde_json::json!({
+                "next_action": "verify_task",
+                "next_tool": "shillbot_verify_task",
+                "args": verify_args,
+                "hint": "Your competing attempt PASSED off-chain verification! Call shillbot_verify_task now to get the co-signed 1-tx Open->Verified bundle ($0-SOL winners are auto-onboarded), sign locally, and broadcast via shillbot_submit_tx action=\"verify\" before another solver settles.",
+            })
+        } else if latest_attempt_status == Some("verifying") {
+            serde_json::json!({
+                "next_action": "wait",
+                "wait_for": "attempt_verification",
+                "next_tool": "shillbot_get_task_details",
+                "args": { "task_id": task.task_id },
+                "hint": "Your Open-Competition attempt is being verified off-chain at $0 gas. Poll shillbot_get_task_details until my_latest_attempt.status becomes \"passed\" (then call shillbot_verify_task) or \"failed\" (then revise and re-submit).",
+            })
+        } else if task.platform == Some(10) {
+            serde_json::json!({
+                "next_action": "submit_work",
+                "next_tool": "shillbot_submit_work",
+                "args": { "task_id": task.task_id, "proof_lean": "<complete Proof.lean source>" },
+                "hint": "LeanProof (platform 10) uses Open Competition (M2): do NOT call shillbot_claim_task. Submit your Lean 4 proof directly via shillbot_submit_work at $0 gas (task stays Open until a verified proof settles).",
+            })
+        } else {
+            serde_json::json!({
+                "next_action": "submit_work",
+                "next_tool": "shillbot_submit_work",
+                "args": { "task_id": task.task_id, "content_id": "<caip2>:<tx_id>[:<index>|auto][:sig:<base64url_or_0xhex_65B_secp256k1>]" },
+                "hint": "OnChainAction (platform 11) uses Open Competition (M2): do NOT call shillbot_claim_task. Drive a finalized matching event on the target chain, optionally dry-run POST /tasks/:id/preflight, then call shillbot_submit_work directly at $0 gas (omit <index> or pass auto to scan all receipt logs/instructions).",
+            })
+        }
     } else if task.state == "claimed" && task.platform == Some(10) {
         serde_json::json!({
             "next_action": "submit_work",
@@ -7926,6 +8011,57 @@ mod tests {
         );
         assert_eq!(atomic_json["transaction_intent"]["instruction_count"], 3);
         assert_eq!(atomic_json["transaction_intent"]["instruction_index"], 2);
+    }
+
+    #[tokio::test]
+    async fn shillbot_submit_work_handles_open_competition_202_attempt_at_zero_gas() {
+        use solana_sdk::signature::Keypair;
+        use solana_sdk::signer::Signer;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let agent = Keypair::new();
+        let client = Keypair::new().pubkey();
+        let task = shillbot_chain::task_pda(78, &client);
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/camp1:openlean/submit"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
+                "message": "Open-competition attempt queued for off-chain verification ($0 gas)",
+                "task_id": "camp1:openlean",
+                "task_pda": task.to_string(),
+                "content_id": "lean4:inline:sha256:abcd",
+                "attempt_id": "att_abc123",
+                "status": "verifying",
+                "open_competition": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+            .authenticated("user-jwt".to_string());
+        let res = execute_shillbot_submit_work(
+            &proxy,
+            &agent.pubkey().to_string(),
+            &SubmitWorkArgs {
+                task_id: "camp1:openlean".to_string(),
+                content_id: String::new(),
+                proof_lean: Some("theorem proof : statementProp := by trivial".to_string()),
+                network: None,
+            },
+        )
+        .await
+        .expect("202 Open-Competition submit must succeed without unsigned tx");
+        let payload = res.structured_content.expect("structured_content");
+        assert_eq!(payload["action"], "submit");
+        assert_eq!(payload["mode"], "open_competition");
+        assert_eq!(payload["status"], "verifying");
+        assert_eq!(payload["attempt_id"], "att_abc123");
+        assert_eq!(payload["task_pda"], task.to_string());
+        assert_eq!(payload["content_id"], "lean4:inline:sha256:abcd");
+        assert!(payload.get("unsigned_tx").is_none());
     }
 
     #[tokio::test]

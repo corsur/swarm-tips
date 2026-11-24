@@ -150,10 +150,14 @@ pub async fn initialize_with_dependencies(
     let discovery_state =
         build_discovery_state(&cfg.gcp_project_id, &rpc_client, workflows.clone()).await;
 
+    let umami_base_url = std::env::var("UMAMI_BASE_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let traffic_stats_state = Arc::new(traffic_stats::TrafficStatsState::new(
         rpc_client.clone(),
         cfg.gcp_project_id.clone(),
-        load_env_or("UMAMI_BASE_URL", "https://analytics.coordination.game"),
+        umami_base_url,
         config::load_optional_secret(&cfg.gcp_project_id, "umami-share-tokens").await,
     ));
 
@@ -1566,6 +1570,21 @@ async fn build_verify_tx_handler(
         },
     };
 
+    let opt_attempt_id = match body.get("attempt_id") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => match v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => Some(s.to_string()),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    BUILD_VERIFY_CORS,
+                    "attempt_id must be a non-empty string when provided",
+                )
+                    .into_response();
+            }
+        },
+    };
+
     let (validation_network, rpc_url, net_opt) = match body.get("network") {
         None | Some(serde_json::Value::Null) => ("mainnet", state.rpc_url_mainnet.as_str(), None),
         Some(v) => match v.as_str().map(str::trim) {
@@ -1595,7 +1614,7 @@ async fn build_verify_tx_handler(
 
     let client = state.orchestrator.authenticated(token.to_owned());
     let vdata = match client
-        .get_verification_data(&task_id, &payer, net_opt)
+        .get_verification_data_for_attempt(&task_id, &payer, opt_attempt_id.as_deref(), net_opt)
         .await
     {
         Ok(v) => v,
@@ -1667,6 +1686,8 @@ async fn build_verify_tx_handler(
         required_payout_to,
         advance_backer,
         pre_cosigned_tx,
+        returned_attempt_id,
+        onboarded_advance_tx,
     ) = (
         vdata.task_pda,
         vdata.composite_score,
@@ -1674,6 +1695,8 @@ async fn build_verify_tx_handler(
         vdata.required_payout_to,
         vdata.advance_backer,
         vdata.co_signed_transaction,
+        vdata.attempt_id,
+        vdata.onboarded_advance_tx,
     );
 
     let tx = if let Some(attester_tx) = pre_cosigned_tx.filter(|s| !s.trim().is_empty()) {
@@ -1773,6 +1796,12 @@ async fn build_verify_tx_handler(
     }
     if let Some(backer) = advance_backer {
         payload["advance_backer"] = serde_json::Value::String(backer);
+    }
+    if let Some(aid) = returned_attempt_id {
+        payload["attempt_id"] = serde_json::Value::String(aid);
+    }
+    if let Some(adv_tx) = onboarded_advance_tx {
+        payload["onboarded_advance_tx"] = serde_json::Value::String(adv_tx);
     }
 
     (StatusCode::OK, BUILD_VERIFY_CORS, axum::Json(payload)).into_response()

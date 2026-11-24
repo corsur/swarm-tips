@@ -7,6 +7,7 @@ import {
   LAMPORTS_PER_SOL,
   PublicKey,
   SystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
   SYSVAR_SLOT_HASHES_PUBKEY,
   Transaction,
 } from "@solana/web3.js";
@@ -20,12 +21,14 @@ const IDL = require("../target/idl/shillbot.json");
 // ---------------------------------------------------------------------------
 // Deterministic attested-verification suite (bankrun).
 //
-// Covers the 2026-07-07 S2 surface:
+// Covers the 2026-07-07 S2 surface + M2 Open Competition:
 //   - verification_kind carve: create_task kind arg + bidirectional
 //     kind↔platform validation
+//   - M2 Open Competition: kind-1 unapproved tasks require atomic 1-tx
+//     [claim_task(+sysvar), set_payout_to?, submit_work, verify_task_attested(MAX_SCORE)]
 //   - verify_task_attested: attester gating (oracle_authority Signer),
 //     binary-score rule, threshold guard, mutual exclusion with verify_task
-//   - claim self-claim guard on kind-1 tasks
+//   - claim self-claim guard on kind-1 tasks (removed)
 //   - challenge_deadline boundary battery at deadline−1 / deadline / deadline+1
 //     (the Truebit-class dead-second, pinned)
 //   - resolve_challenge_default: permissionless dispute-liveness crank with
@@ -94,14 +97,16 @@ describe("shillbot-attested (bankrun)", () => {
     return account === null ? BigInt(0) : BigInt(account.lamports);
   }
 
-  /** Create a task; kind/platform parameterized for the validation tests. */
+  /** Create a task; kind/platform/approval parameterized for the validation tests. */
   async function createTask(opts?: {
     kind?: number;
     platform?: number;
+    requiresApproval?: boolean;
     challengeWindowOverride?: number;
   }): Promise<{ taskPda: PublicKey; taskId: BN }> {
     const kind = opts?.kind ?? 1;
     const platform = opts?.platform ?? LEAN_PROOF_PLATFORM;
+    const requiresApproval = opts?.requiresApproval ?? false;
     const windowOverride =
       opts?.challengeWindowOverride ?? LEAN_CHALLENGE_WINDOW;
     const taskId = new BN(randomBytes(8));
@@ -126,7 +131,7 @@ describe("shillbot-attested (bankrun)", () => {
         0,
         windowOverride,
         0,
-        false, // requires_approval off — attester verifies from Submitted
+        requiresApproval,
         kind
       )
       .accountsPartial({
@@ -145,29 +150,130 @@ describe("shillbot-attested (bankrun)", () => {
     return { taskPda, taskId };
   }
 
-  async function claimAndSubmit(taskPda: PublicKey): Promise<void> {
+  async function claimAndSubmit(
+    taskPda: PublicKey,
+    solver: Keypair = agent
+  ): Promise<void> {
     const agentState = pda(
-      [Buffer.from("agent_state"), agent.publicKey.toBuffer()],
+      [Buffer.from("agent_state"), solver.publicKey.toBuffer()],
       program.programId
     );
-    await program.methods
-      .claimTask()
-      .accountsPartial({
-        task: taskPda,
-        agentState,
-        agent: agent.publicKey,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([agent])
-      .rpc();
-    await program.methods
+    const submitIx = await program.methods
       .submitWork(Buffer.from("https://artifacts.test/proof.lean"))
       .accountsPartial({
         task: taskPda,
         agentState,
-        agent: agent.publicKey,
+        agent: solver.publicKey,
       })
-      .signers([agent])
+      .instruction();
+    await program.methods
+      .claimTask()
+      .preInstructions([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: paramNonce++ }),
+      ])
+      .accountsPartial({
+        task: taskPda,
+        agentState,
+        agent: solver.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .remainingAccounts([
+        {
+          pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+          isSigner: false,
+          isWritable: false,
+        },
+      ])
+      .postInstructions([submitIx])
+      .signers([solver])
+      .rpc();
+  }
+
+  async function approveTask(taskPda: PublicKey): Promise<void> {
+    await program.methods
+      .approveTask()
+      .accountsPartial({
+        task: taskPda,
+        client: client.publicKey,
+      })
+      .signers([client])
+      .rpc();
+  }
+
+  async function claimAndVerifyAtomic(
+    taskPda: PublicKey,
+    taskId: BN,
+    opts?: {
+      solver?: Keypair;
+      attester?: Keypair;
+      score?: number;
+      payoutTo?: PublicKey;
+      verificationHash?: number[];
+    }
+  ): Promise<void> {
+    const solver = opts?.solver ?? agent;
+    const attester = opts?.attester ?? authority;
+    const score = opts?.score ?? MAX_SCORE;
+    const hash = opts?.verificationHash ?? attestationHash(taskId, score);
+    const agentState = pda(
+      [Buffer.from("agent_state"), solver.publicKey.toBuffer()],
+      program.programId
+    );
+    const postIxs = [];
+    if (opts?.payoutTo) {
+      postIxs.push(
+        await program.methods
+          .setPayoutTo(opts.payoutTo)
+          .accountsPartial({
+            task: taskPda,
+            agent: solver.publicKey,
+          })
+          .instruction()
+      );
+    }
+    postIxs.push(
+      await program.methods
+        .submitWork(Buffer.from("https://artifacts.test/proof.lean"))
+        .accountsPartial({
+          task: taskPda,
+          agentState,
+          agent: solver.publicKey,
+        })
+        .instruction()
+    );
+    postIxs.push(
+      await program.methods
+        .verifyTaskAttested(new BN(score), hash as any)
+        .accountsPartial({
+          task: taskPda,
+          globalState: globalPda,
+          attester: attester.publicKey,
+        })
+        .instruction()
+    );
+    const signers = attester.publicKey.equals(solver.publicKey)
+      ? [solver]
+      : [solver, attester];
+    await program.methods
+      .claimTask()
+      .preInstructions([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: paramNonce++ }),
+      ])
+      .accountsPartial({
+        task: taskPda,
+        agentState,
+        agent: solver.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .remainingAccounts([
+        {
+          pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+          isSigner: false,
+          isWritable: false,
+        },
+      ])
+      .postInstructions(postIxs)
+      .signers(signers)
       .rpc();
   }
 
@@ -302,27 +408,99 @@ describe("shillbot-attested (bankrun)", () => {
     });
   });
 
-  describe("claim self-claim (kind 1, guard removed)", () => {
-    it("allows the client to claim their own deterministic task", async () => {
-      // The kind-1 self-claim guard was removed — it only blocked same-wallet
-      // credential wash (bypassable with two wallets), so it protected nothing
-      // real. The client claiming their own deterministic task must now succeed.
-      const { taskPda } = await createTask();
-      const clientAgentState = pda(
-        [Buffer.from("agent_state"), client.publicKey.toBuffer()],
+  describe("M2 Open Competition (claim_task atomic verified bundle)", () => {
+    it("rejects bare claim_task, unverified [claim, submit], score=0, and imposter attester while task stays Open", async () => {
+      const { taskPda, taskId } = await createTask();
+      const agentState = pda(
+        [Buffer.from("agent_state"), agent.publicKey.toBuffer()],
         program.programId
       );
-      await program.methods
-        .claimTask()
-        .accountsPartial({
-          task: taskPda,
-          agentState: clientAgentState,
-          agent: client.publicKey,
-          systemProgram: SystemProgram.programId,
+
+      // (1) Bare claim_task rejected
+      await expectError(
+        program.methods
+          .claimTask()
+          .accountsPartial({
+            task: taskPda,
+            agentState,
+            agent: agent.publicKey,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([agent])
+          .rpc(),
+        /InvalidInstructionBundle|6053/
+      );
+
+      // (2) Unverified [claim_task, submit_work] rejected on kind=1 requires_approval=false
+      await expectError(
+        claimAndSubmit(taskPda),
+        /InvalidInstructionBundle|6053/
+      );
+
+      // (3) [claim_task, submit_work, verify_task_attested(score=0)] rejected
+      await expectError(
+        claimAndVerifyAtomic(taskPda, taskId, { score: 0 }),
+        /InvalidInstructionBundle|6053/
+      );
+
+      // (4) [claim_task, submit_work, verify_task_attested(MAX_SCORE, imposter)] rejected
+      await expectError(
+        claimAndVerifyAtomic(taskPda, taskId, { attester: challenger }),
+        /InvalidInstructionBundle|6053/
+      );
+
+      // (5) Task remained Open through all rejected attempts — zero squatting!
+      const stillOpen = await program.account.task.fetch(taskPda);
+      assert.deepEqual(stillOpen.state, { open: {} });
+      assert.equal(stillOpen.agent.toBase58(), PublicKey.default.toBase58());
+    });
+
+    it("settles Open -> Verified in 1 atomic tx with payout_to, leaves claimed_count=0, and rejects racing solver", async () => {
+      const { taskPda, taskId } = await createTask();
+      const vault = Keypair.generate().publicKey;
+      const solver2 = Keypair.generate();
+      const fundTx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: provider.wallet.publicKey,
+          toPubkey: solver2.publicKey,
+          lamports: 2 * LAMPORTS_PER_SOL,
         })
-        .signers([client])
-        .rpc();
+      );
+      await provider.sendAndConfirm!(fundTx);
+
+      await claimAndVerifyAtomic(taskPda, taskId, { payoutTo: vault });
+
       const task = await program.account.task.fetch(taskPda);
+      assert.deepEqual(task.state, { verified: {} });
+      assert.equal(task.agent.toBase58(), agent.publicKey.toBase58());
+      assert.equal(task.payoutTo.toBase58(), vault.toBase58());
+      assert.equal(task.compositeScore.toNumber(), MAX_SCORE);
+
+      const agentState = await program.account.agentState.fetch(
+        pda(
+          [Buffer.from("agent_state"), agent.publicKey.toBuffer()],
+          program.programId
+        )
+      );
+      assert.equal(agentState.claimedCount, 0);
+
+      // Second solver racing an already-Verified task fails cleanly with InvalidTaskState
+      await expectError(
+        claimAndVerifyAtomic(taskPda, taskId, { solver: solver2 }),
+        /InvalidTaskState/
+      );
+    });
+  });
+
+  describe("claim self-claim (kind 1, guard removed)", () => {
+    it("allows the client to settle their own deterministic task atomically via M2", async () => {
+      // The kind-1 self-claim guard was removed — it only blocked same-wallet
+      // credential wash (bypassable with two wallets), so it protected nothing
+      // real. The client solving their own deterministic task via M2 must succeed.
+      const { taskPda, taskId } = await createTask();
+      await claimAndVerifyAtomic(taskPda, taskId, { solver: client });
+      const task = await program.account.task.fetch(taskPda);
+      assert.deepEqual(task.state, { verified: {} });
       assert.equal(task.agent.toBase58(), client.publicKey.toBase58());
     });
   });
@@ -330,8 +508,7 @@ describe("shillbot-attested (bankrun)", () => {
   describe("verify_task_attested", () => {
     it("full lifecycle: attested pass pays full escrow minus fee", async () => {
       const { taskPda, taskId } = await createTask();
-      await claimAndSubmit(taskPda);
-      await verifyAttested(taskPda, taskId, MAX_SCORE, authority);
+      await claimAndVerifyAtomic(taskPda, taskId);
 
       const task = await program.account.task.fetch(taskPda);
       assert.deepEqual(task.state, { verified: {} });
@@ -372,9 +549,10 @@ describe("shillbot-attested (bankrun)", () => {
       );
     });
 
-    it("attested fail (score 0) verifies with zero payment", async () => {
-      const { taskPda, taskId } = await createTask();
+    it("attested fail (score 0) verifies with zero payment on approval-gated task", async () => {
+      const { taskPda, taskId } = await createTask({ requiresApproval: true });
       await claimAndSubmit(taskPda);
+      await approveTask(taskPda);
       await verifyAttested(taskPda, taskId, 0, authority);
       const task = await program.account.task.fetch(taskPda);
       assert.deepEqual(task.state, { verified: {} });
@@ -383,8 +561,9 @@ describe("shillbot-attested (bankrun)", () => {
     });
 
     it("rejects a non-binary score", async () => {
-      const { taskPda, taskId } = await createTask();
+      const { taskPda, taskId } = await createTask({ requiresApproval: true });
       await claimAndSubmit(taskPda);
+      await approveTask(taskPda);
       await expectError(
         verifyAttested(taskPda, taskId, 500_000, authority),
         /AttestedScoreNotBinary/
@@ -392,8 +571,9 @@ describe("shillbot-attested (bankrun)", () => {
     });
 
     it("rejects a signer that is not the oracle_authority", async () => {
-      const { taskPda, taskId } = await createTask();
+      const { taskPda, taskId } = await createTask({ requiresApproval: true });
       await claimAndSubmit(taskPda);
+      await approveTask(taskPda);
       await expectError(
         verifyAttested(taskPda, taskId, MAX_SCORE, challenger),
         /OracleAuthorityMismatch/
@@ -420,8 +600,9 @@ describe("shillbot-attested (bankrun)", () => {
         .signers([authority])
         .rpc();
 
-      const { taskPda, taskId } = await createTask();
+      const { taskPda, taskId } = await createTask({ requiresApproval: true });
       await claimAndSubmit(taskPda);
+      await approveTask(taskPda);
       // Old attester (authority) now rejected; the rotated key verifies.
       await expectError(
         verifyAttested(taskPda, taskId, MAX_SCORE, authority),
@@ -443,8 +624,9 @@ describe("shillbot-attested (bankrun)", () => {
     });
 
     it("rejects a zero verification hash", async () => {
-      const { taskPda } = await createTask();
+      const { taskPda } = await createTask({ requiresApproval: true });
       await claimAndSubmit(taskPda);
+      await approveTask(taskPda);
       await expectError(
         program.methods
           .verifyTaskAttested(new BN(MAX_SCORE), new Array(32).fill(0) as any)
@@ -462,8 +644,9 @@ describe("shillbot-attested (bankrun)", () => {
 
   describe("verification-kind mutual exclusion", () => {
     it("verify_task rejects a kind-1 task before touching the feed", async () => {
-      const { taskPda } = await createTask();
+      const { taskPda } = await createTask({ requiresApproval: true });
       await claimAndSubmit(taskPda);
+      await approveTask(taskPda);
       await expectError(
         program.methods
           .verifyTask(new BN(MAX_SCORE), contentHash("switchboard") as any)
@@ -528,8 +711,7 @@ describe("shillbot-attested (bankrun)", () => {
         /QualityThresholdBoundsExceeded/
       );
       const { taskPda, taskId } = await createTask();
-      await claimAndSubmit(taskPda);
-      await verifyAttested(taskPda, taskId, MAX_SCORE, authority);
+      await claimAndVerifyAtomic(taskPda, taskId);
     });
   });
 
@@ -543,8 +725,7 @@ describe("shillbot-attested (bankrun)", () => {
       deadline: number;
     }> {
       const { taskPda, taskId } = await createTask();
-      await claimAndSubmit(taskPda);
-      await verifyAttested(taskPda, taskId, MAX_SCORE, authority);
+      await claimAndVerifyAtomic(taskPda, taskId);
       const task = await program.account.task.fetch(taskPda);
       return { taskPda, taskId, deadline: task.challengeDeadline.toNumber() };
     }
@@ -598,8 +779,7 @@ describe("shillbot-attested (bankrun)", () => {
       resolutionDeadline: number;
     }> {
       const { taskPda, taskId } = await createTask();
-      await claimAndSubmit(taskPda);
-      await verifyAttested(taskPda, taskId, MAX_SCORE, authority);
+      await claimAndVerifyAtomic(taskPda, taskId);
       const challengePda = await challenge(taskPda, taskId);
       const ch = await program.account.challenge.fetch(challengePda);
       return {

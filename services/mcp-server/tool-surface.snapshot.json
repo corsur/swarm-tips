@@ -1246,7 +1246,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[STATE] Claim a Shillbot task. Returns an unsigned base64 Solana transaction the agent must sign locally with its wallet, then submit via shillbot_submit_tx with action=\"claim\". Non-custodial — the MCP server never sees your private key. Requires a verified wallet (register_wallet, then agent_verify_wallet). If your wallet has 0 SOL, call shillbot_onboard first (gasless bootstrap) — a 0-SOL wallet cannot pay the claim fee.",
+    "description": "[STATE] Claim a Shillbot task (platforms 0/3/4/5/9). Returns an unsigned base64 Solana tx to sign locally and submit via shillbot_submit_tx action=\"claim\". Platforms 10 (LeanProof) and 11 (OnChainAction) use Open Competition: do NOT claim — call shillbot_submit_work directly at $0 gas.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1749,7 +1749,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN: SOL] Submit work for a Shillbot task; sign and send via shillbot_submit_tx action=\"submit\". content_id by platform: 11=<caip2>:<tx>:<idx>[:sig:<b64url_or_0xhex>] (atomic claim+submit on Open task, ~1m); 10=lean4:proof:<base64>, HTTPS .lean URL, or pass raw source in proof_lean (~5m); 5=game_id (~5m); 4=campaign_id (~5m); 9=page URL (~5m); 0/3=video/tweet ID (T+7d).",
+    "description": "[EARN: SOL] Submit work for a Shillbot task. Open-Competition platforms 10 (LeanProof: raw `proof_lean` or `lean4:proof:<b64>`/URL) & 11 (OnChainAction: `<caip2>:<tx>[:<idx>|auto][:sig:<sig>]`) queue an off-chain attempt at $0 gas (`attempt_id`), then call shillbot_verify_task once passed. Other platforms return an unsigned tx for shillbot_submit_tx action=\"submit\" (5=game_id, 4=campaign_id, 9=URL, 0/3=video/tweet ID).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -1792,10 +1792,17 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN: SOL] Build an oracle-co-signed verify_task tx (your wallet as fee payer) after the verifier scores a task (~5m for game/website, 7d for YouTube/X). Sign locally and broadcast via shillbot_submit_tx action=\"verify\".",
+    "description": "[EARN: SOL] Build an oracle-co-signed verify tx (your wallet as fee payer). For Open-Competition platforms 10/11, pass `attempt_id` after passing off-chain verification to get the atomic 1-tx Open->Verified bundle ($0-SOL winners are auto-onboarded). Sign locally and broadcast via shillbot_submit_tx action=\"verify\".",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "attempt_id": {
+          "description": "Open-Competition attempt ID returned by `shillbot_submit_work` (platforms 10/11).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "network": {
           "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",
           "type": [
@@ -1804,7 +1811,7 @@
           ]
         },
         "task_id": {
-          "description": "The task identifier (format: `<campaign_id>:<task_uuid>`) of the submitted task to verify.",
+          "description": "Task ID (`<campaign_id>:<task_uuid>`).",
           "type": "string"
         }
       },

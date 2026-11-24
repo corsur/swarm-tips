@@ -232,6 +232,28 @@ pub fn verify_task_attested_instruction(
     }
 }
 
+/// Build the canonical `M2` Open Competition atomic 1-tx bundle:
+/// `[claim_task(+sysvar::instructions), (set_payout_to?), submit_work(content_id), verify_task_attested(MAX_SCORE, verification_hash)]`
+/// transitioning `Open -> Verified` in a single slot without speculative locking.
+pub fn claim_submit_and_verify_attested_instructions(
+    agent: Pubkey,
+    task: Pubkey,
+    content_id: Vec<u8>,
+    payout_to: Option<Pubkey>,
+    attester: Pubkey,
+    verification_hash: [u8; 32],
+) -> Vec<Instruction> {
+    let mut out = claim_and_submit_instructions(agent, task, content_id, payout_to);
+    out.push(verify_task_attested_instruction(
+        task,
+        attester,
+        MAX_SCORE,
+        verification_hash,
+        None,
+    ));
+    out
+}
+
 /// Canonical `extension-credit` program ID (`Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh`).
 pub const EXTENSION_CREDIT_PROGRAM_ID: Pubkey = shillbot::constants::EXTENSION_CREDIT_PROGRAM_ID;
 
@@ -905,6 +927,7 @@ pub fn validate(
     let verify_disc = discriminator("verify_task");
     let verify_attested_disc = discriminator("verify_task_attested");
     let claim_disc = discriminator("claim_task");
+    let submit_disc = discriminator("submit_work");
     let set_payout_disc = discriminator("set_payout_to");
     let route_and_recoup_disc = discriminator("route_and_recoup");
     let switchboard_submit_disc = discriminator("pull_feed_submit_response_consensus");
@@ -927,6 +950,8 @@ pub fn validate(
     let mut is_attested_verify = false;
     let mut preceding_reopen_pos: Option<usize> = None;
     let mut preceding_claim_pos: Option<usize> = None;
+    let mut preceding_submit_pos: Option<usize> = None;
+    let mut companion_submit_content_id: Option<String> = None;
     let mut payout_pos: Option<usize> = None;
     let mut payout_routing = 0_usize;
     let mut recoup_accounts: Option<(Pubkey, Pubkey, Pubkey)> = None;
@@ -949,19 +974,40 @@ pub fn validate(
                         "transaction repeats the lifecycle instruction".into(),
                     ));
                 }
-                if let Some(claim_pos) = preceding_claim_pos {
-                    let expected_submit_pos = match payout_pos {
-                        Some(p_pos) => p_pos.saturating_add(1),
-                        None => claim_pos.saturating_add(1),
-                    };
-                    if position != expected_submit_pos {
-                        return Err(ValidationError::Rejected(
-                            "submit_work must immediately follow atomic claim_task".into(),
-                        ));
+                if expected.action == Action::Submit {
+                    if let Some(claim_pos) = preceding_claim_pos {
+                        let expected_submit_pos = match payout_pos {
+                            Some(p_pos) => p_pos.saturating_add(1),
+                            None => claim_pos.saturating_add(1),
+                        };
+                        if position != expected_submit_pos {
+                            return Err(ValidationError::Rejected(
+                                "submit_work must immediately follow atomic claim_task".into(),
+                            ));
+                        }
                     }
                 }
                 if expected.action == Action::Verify {
-                    if let Some(p_pos) = payout_pos {
+                    if preceding_claim_pos.is_some() {
+                        if disc != verify_attested_disc {
+                            return Err(ValidationError::Rejected(
+                                "atomic claim+submit verify bundle requires verify_task_attested"
+                                    .into(),
+                            ));
+                        }
+                        let Some(sub_pos) = preceding_submit_pos else {
+                            return Err(ValidationError::Rejected(
+                                "atomic M2 verify bundle requires submit_work before verify_task_attested"
+                                    .into(),
+                            ));
+                        };
+                        if position != sub_pos.saturating_add(1) {
+                            return Err(ValidationError::Rejected(
+                                "verify_task_attested must immediately follow submit_work in M2 bundle"
+                                    .into(),
+                            ));
+                        }
+                    } else if let Some(p_pos) = payout_pos {
                         if position != p_pos.saturating_add(1) {
                             return Err(ValidationError::Rejected(
                                 "verify instruction must immediately follow set_payout_to".into(),
@@ -995,8 +1041,14 @@ pub fn validate(
                     disc == verify_attested_disc,
                 )?;
                 preceding_reopen_pos = Some(position);
-            } else if expected.action == Action::Submit && disc == claim_disc {
-                if matched.is_some() || preceding_claim_pos.is_some() || payout_routing > 0 {
+            } else if matches!(expected.action, Action::Submit | Action::Verify)
+                && disc == claim_disc
+            {
+                if matched.is_some()
+                    || preceding_claim_pos.is_some()
+                    || preceding_submit_pos.is_some()
+                    || payout_routing > 0
+                {
                     return Err(ValidationError::Rejected(
                         "atomic claim_task must appear once before submit_work".into(),
                     ));
@@ -1010,6 +1062,34 @@ pub fn validate(
                 }
                 validate_companion_claim_ix(ix, keys, &task, &wallet)?;
                 preceding_claim_pos = Some(position);
+            } else if expected.action == Action::Verify && disc == submit_disc {
+                let Some(claim_pos) = preceding_claim_pos else {
+                    return Err(ValidationError::Rejected(
+                        "companion submit_work in verify bundle requires preceding claim_task"
+                            .into(),
+                    ));
+                };
+                if matched.is_some() || preceding_submit_pos.is_some() {
+                    return Err(ValidationError::Rejected(
+                        "companion submit_work must appear once before verify_task_attested".into(),
+                    ));
+                }
+                let expected_sub_pos = payout_pos.unwrap_or(claim_pos).saturating_add(1);
+                if position != expected_sub_pos {
+                    return Err(ValidationError::Rejected(
+                        "companion submit_work must immediately follow claim_task or set_payout_to"
+                            .into(),
+                    ));
+                }
+                companion_submit_content_id = Some(validate_companion_submit_ix(
+                    ix,
+                    keys,
+                    required,
+                    &task,
+                    &wallet,
+                    expected.content_id.as_deref(),
+                )?);
+                preceding_submit_pos = Some(position);
             } else if disc == set_payout_disc
                 && (expected.action == Action::Claim
                     || expected.action == Action::Submit
@@ -1021,12 +1101,14 @@ pub fn validate(
                     ));
                 }
                 if let Some(claim_pos) = preceding_claim_pos {
-                    let follows_claim =
-                        position == claim_pos.saturating_add(1) && matched.is_none();
-                    let follows_atomic_submit = matched.is_some_and(|(sub_pos, _)| {
-                        sub_pos == claim_pos.saturating_add(1)
-                            && position == sub_pos.saturating_add(1)
-                    });
+                    let follows_claim = position == claim_pos.saturating_add(1)
+                        && matched.is_none()
+                        && preceding_submit_pos.is_none();
+                    let follows_atomic_submit = expected.action == Action::Submit
+                        && matched.is_some_and(|(sub_pos, _)| {
+                            sub_pos == claim_pos.saturating_add(1)
+                                && position == sub_pos.saturating_add(1)
+                        });
                     if !follows_claim && !follows_atomic_submit {
                         return Err(ValidationError::Rejected(
                             "payout-routing instruction must immediately follow claim_task or submit_work".into(),
@@ -1240,6 +1322,11 @@ pub fn validate(
                     "verify_task_attested score must be 0 or MAX_SCORE".into(),
                 ));
             }
+            if preceding_claim_pos.is_some() && score != MAX_SCORE {
+                return Err(ValidationError::Rejected(
+                    "atomic M2 verify bundle requires MAX_SCORE".into(),
+                ));
+            }
             if score == 0 && payout_routing > 0 {
                 return Err(ValidationError::Rejected(
                     "set_payout_to cannot be bundled with a score-0 reopen verify".into(),
@@ -1260,6 +1347,13 @@ pub fn validate(
             if usize::from(attester_idx) >= required {
                 return Err(ValidationError::Rejected(
                     "verify_task_attested attester must be a required signer".into(),
+                ));
+            }
+            if preceding_claim_pos.is_some()
+                && keys.get(usize::from(attester_idx)) == Some(&fee_payer)
+            {
+                return Err(ValidationError::Rejected(
+                    "atomic M2 verify bundle attester cannot be fee payer".into(),
                 ));
             }
             if let Some(feed) = expected_feed {
@@ -1553,7 +1647,7 @@ pub fn validate(
         }
         std::str::from_utf8(cid_bytes).ok().map(str::to_owned)
     } else {
-        None
+        companion_submit_content_id
     };
 
     let intent_json = serde_json::to_vec(&("swarm.shillbot.transaction-intent/v1", expected))
@@ -1669,6 +1763,79 @@ fn validate_companion_claim_ix(
         ));
     }
     Ok(())
+}
+
+fn validate_companion_submit_ix(
+    ix: &solana_sdk::instruction::CompiledInstruction,
+    keys: &[Pubkey],
+    required: usize,
+    task: &Pubkey,
+    wallet: &Pubkey,
+    expected_content_id: Option<&str>,
+) -> Result<String, ValidationError> {
+    if ix.accounts.len() != 4 {
+        return Err(ValidationError::Rejected(
+            "companion submit_work must carry 4 accounts".into(),
+        ));
+    }
+    let key_at = |pos: usize| -> Option<&Pubkey> {
+        ix.accounts
+            .get(pos)
+            .and_then(|idx| keys.get(usize::from(*idx)))
+    };
+    if key_at(0) != Some(task) {
+        return Err(ValidationError::Rejected(
+            "companion submit_work targets a different task".into(),
+        ));
+    }
+    if key_at(1) != Some(&global_state_pda()) || key_at(2) != Some(&agent_state_pda(wallet)) {
+        return Err(ValidationError::Rejected(
+            "companion submit_work accounts differ from canonical PDAs".into(),
+        ));
+    }
+    if key_at(3) != Some(wallet) || usize::from(ix.accounts[3]) >= required {
+        return Err(ValidationError::Rejected(
+            "companion submit_work authority differs from required wallet signer".into(),
+        ));
+    }
+    let raw = ix.data.get(8..).ok_or_else(|| {
+        ValidationError::Rejected("companion submit_work instruction data is truncated".into())
+    })?;
+    let len_bytes: [u8; 4] = raw
+        .get(..4)
+        .ok_or_else(|| ValidationError::Rejected("companion content id length is missing".into()))?
+        .try_into()
+        .map_err(|_| ValidationError::Rejected("companion content id length is invalid".into()))?;
+    let len = usize::try_from(u32::from_le_bytes(len_bytes))
+        .map_err(|_| ValidationError::Rejected("companion content id is too large".into()))?;
+    if len == 0 {
+        return Err(ValidationError::Rejected(
+            "companion submit_work content id must be non-empty".into(),
+        ));
+    }
+    let content_end = 4usize.checked_add(len).ok_or_else(|| {
+        ValidationError::Rejected("companion content id length overflows transaction data".into())
+    })?;
+    if raw.len() != content_end {
+        return Err(ValidationError::Rejected(
+            "companion submit_work instruction data has trailing bytes".into(),
+        ));
+    }
+    let cid_bytes = raw.get(4..content_end).ok_or_else(|| {
+        ValidationError::Rejected("companion submit_work instruction data is truncated".into())
+    })?;
+    if let Some(expected_cid) = expected_content_id {
+        if cid_bytes != expected_cid.as_bytes() {
+            return Err(ValidationError::Rejected(
+                "companion submit_work content id differs from intent".into(),
+            ));
+        }
+    }
+    std::str::from_utf8(cid_bytes)
+        .map(str::to_owned)
+        .map_err(|_| {
+            ValidationError::Rejected("companion submit_work content id is not valid UTF-8".into())
+        })
 }
 
 #[cfg(test)]
@@ -2862,5 +3029,103 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("sponsorship is only valid"));
+    }
+
+    #[test]
+    fn m2_open_competition_verify_bundle_validates_and_enforces_invariants() {
+        let agent = Pubkey::new_unique();
+        let attester = Pubkey::new_unique();
+        let backer = Pubkey::new_unique();
+        let task = Pubkey::new_unique();
+        let adv = advance_pda(&backer, &agent);
+        let hash = [9u8; 32];
+        let cid = "lean4:sha256:0123456789abcdef";
+
+        // (1) Standard M2 [claim_task, submit_work, verify_task_attested(MAX_SCORE)] passes!
+        let ixs = claim_submit_and_verify_attested_instructions(
+            agent,
+            task,
+            cid.as_bytes().to_vec(),
+            None,
+            attester,
+            hash,
+        );
+        let tx = transaction(ixs, &agent);
+        let mut req = request(Action::Verify, agent, task);
+        req.switchboard_feed = Some(attester.to_string());
+        req.content_id = Some(cid.into());
+        let inspected = validate(&tx, &req).expect("standard M2 bundle must validate");
+        assert_eq!(inspected.fee_payer, agent.to_string());
+        assert_eq!(inspected.content_id.as_deref(), Some(cid));
+        assert_eq!(inspected.instruction_index, 2);
+        assert_eq!(inspected.payout_to, None);
+
+        // (2) M2 with ComputeBudget + set_payout_to(advance_pda) + require_payout_routing passes!
+        let mut routed_ixs = vec![
+            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(200_000),
+        ];
+        routed_ixs.extend(claim_submit_and_verify_attested_instructions(
+            agent,
+            task,
+            cid.as_bytes().to_vec(),
+            Some(adv),
+            attester,
+            hash,
+        ));
+        let routed_tx = transaction(routed_ixs, &agent);
+        let mut routed_req = req.clone();
+        routed_req.allowed_payout_to = Some(adv.to_string());
+        routed_req.require_payout_routing = true;
+        let routed_inspected =
+            validate(&routed_tx, &routed_req).expect("routed M2 bundle must validate");
+        assert_eq!(routed_inspected.payout_to, Some(adv.to_string()));
+        assert_eq!(routed_inspected.instruction_index, 4);
+
+        // (3) M2 with score == 0 rejected!
+        let mut zero_ixs =
+            claim_and_submit_instructions(agent, task, cid.as_bytes().to_vec(), None);
+        zero_ixs.push(verify_task_attested_instruction(
+            task, attester, 0, hash, None,
+        ));
+        let zero_tx = transaction(zero_ixs, &agent);
+        assert!(validate(&zero_tx, &req)
+            .unwrap_err()
+            .to_string()
+            .contains("MAX_SCORE"));
+
+        // (4) M2 missing submit_work ([claim_task, verify_task_attested]) rejected!
+        let missing_submit_tx = transaction(
+            vec![
+                claim_task_atomic_instruction(agent, task),
+                verify_task_attested_instruction(task, attester, MAX_SCORE, hash, None),
+            ],
+            &agent,
+        );
+        assert!(validate(&missing_submit_tx, &req)
+            .unwrap_err()
+            .to_string()
+            .contains("submit_work"));
+
+        // (5) M2 with fee_payer == attester (protocol paying gas) rejected!
+        let protocol_paid_tx = transaction(
+            claim_submit_and_verify_attested_instructions(
+                agent,
+                task,
+                cid.as_bytes().to_vec(),
+                None,
+                attester,
+                hash,
+            ),
+            &attester,
+        );
+        assert!(validate(&protocol_paid_tx, &req).is_err());
+
+        // (6) M2 with wrong content_id rejected!
+        let mut wrong_cid_req = req.clone();
+        wrong_cid_req.content_id = Some("lean4:sha256:different".into());
+        assert!(validate(&tx, &wrong_cid_req)
+            .unwrap_err()
+            .to_string()
+            .contains("content id differs"));
     }
 }

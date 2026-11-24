@@ -33,6 +33,8 @@ import {
   setupShillbot,
   createTask,
   claimTask,
+  claimAndSubmitAtomic,
+  claimAndVerifyAtomic,
   submitWork,
   approveTask,
   verifyTaskOracle,
@@ -128,18 +130,27 @@ function kind0Cells(): Cell[] {
 
 function kind1Cells(): Cell[] {
   const cells: Cell[] = [];
-  // Finalize path: binary score × approval sweep.
+  // Finalize path:
+  //   - approval=false uses M2 Open Competition (atomic Open -> Verified(MAX_SCORE));
+  //     score=0 is structurally rejected on-chain and never locks the task.
+  //   - approval=true uses M1 ([claim, submit]) -> approve -> verify(0 | MAX_SCORE).
+  cells.push({
+    name: "kind1 finalize score=1000000 approval=false (M2 atomic)",
+    kind: 1,
+    platform: LEAN_PROOF_PLATFORM,
+    score: 1_000_000,
+    requiresApproval: false,
+    outcome: K.Finalized,
+  });
   for (const score of [0, 1_000_000]) {
-    for (const requiresApproval of [false, true]) {
-      cells.push({
-        name: `kind1 finalize score=${score} approval=${requiresApproval}`,
-        kind: 1,
-        platform: LEAN_PROOF_PLATFORM,
-        score,
-        requiresApproval,
-        outcome: K.Finalized,
-      });
-    }
+    cells.push({
+      name: `kind1 finalize score=${score} approval=true`,
+      kind: 1,
+      platform: LEAN_PROOF_PLATFORM,
+      score,
+      requiresApproval: true,
+      outcome: K.Finalized,
+    });
   }
   cells.push({
     name: "kind1 challenger-wins score=MAX",
@@ -166,11 +177,19 @@ function kind1Cells(): Cell[] {
     outcome: K.DefaultResolved,
   });
   cells.push({
-    name: "kind1 expire (refund from Submitted)",
+    name: "kind1 expire (refund from Open, M2 approval=false)",
     kind: 1,
     platform: LEAN_PROOF_PLATFORM,
     score: 0,
     requiresApproval: false,
+    outcome: K.Expired,
+  });
+  cells.push({
+    name: "kind1 expire (refund from Submitted, M1 approval=true)",
+    kind: 1,
+    platform: LEAN_PROOF_PLATFORM,
+    score: 0,
+    requiresApproval: true,
     outcome: K.Expired,
   });
   return cells;
@@ -281,26 +300,40 @@ async function runCell(
     challengeWindowOverride: CHALLENGE_WINDOW,
   });
   const { task, taskId } = created;
-  await claimTask(ctx, agent, task);
-  await submitWork(ctx, agent, task, `content-${taskId.toString()}`);
-
+  const contentId = `content-${taskId.toString()}`;
   const expected = deriveTaskOutcome(await scenarioFor(ctx, cell));
 
-  if (cell.outcome === K.Expired) {
-    await runExpire(ctx, task, agent, client, treasury, expected);
-    return;
-  }
-
-  // Reach Verified.
-  if (cell.requiresApproval) await approveTask(ctx, client, task);
-  if (cell.kind === 0) {
-    // Kind-0 (Switchboard) enforces an attestation-staleness window centered on
-    // submitted_at + attestation_delay — warp there so the mock feed is fresh.
-    // (Kind-1 attested has no feed/staleness gate; the attester signs directly.)
-    await warpToAttestation(ctx, task);
-    await verifyTaskOracle(ctx, task, cell.score);
+  if (cell.kind === 1 && !cell.requiresApproval) {
+    // M2 Open Competition: task stays Open until deadline expiry or 1-tx verified settle.
+    if (cell.outcome === K.Expired) {
+      await runExpire(ctx, task, agent, client, treasury, expected);
+      return;
+    }
+    await claimAndVerifyAtomic(ctx, agent, task, taskId, contentId, cell.score);
   } else {
-    await verifyTaskAttested(ctx, task, taskId, cell.score);
+    if (cell.kind === 1) {
+      await claimAndSubmitAtomic(ctx, agent, task, contentId);
+    } else {
+      await claimTask(ctx, agent, task);
+      await submitWork(ctx, agent, task, contentId);
+    }
+
+    if (cell.outcome === K.Expired) {
+      await runExpire(ctx, task, agent, client, treasury, expected);
+      return;
+    }
+
+    // Reach Verified.
+    if (cell.requiresApproval) await approveTask(ctx, client, task);
+    if (cell.kind === 0) {
+      // Kind-0 (Switchboard) enforces an attestation-staleness window centered on
+      // submitted_at + attestation_delay — warp there so the mock feed is fresh.
+      // (Kind-1 attested has no feed/staleness gate; the attester signs directly.)
+      await warpToAttestation(ctx, task);
+      await verifyTaskOracle(ctx, task, cell.score);
+    } else {
+      await verifyTaskAttested(ctx, task, taskId, cell.score);
+    }
   }
 
   switch (cell.outcome) {
@@ -501,7 +534,9 @@ async function runExpire(
   const t = await ctx.rt.program.account.task.fetch(task);
   const g = await ctx.rt.program.account.globalState.fetch(ctx.globalPda);
   const expiry =
-    t.submittedAt.toNumber() + g.verificationTimeoutSeconds.toNumber() + 1;
+    t.submittedAt.toNumber() > 0
+      ? t.submittedAt.toNumber() + g.verificationTimeoutSeconds.toNumber() + 1
+      : t.deadline.toNumber() + 1;
   await ctx.rt.warpTo(expiry);
 
   const ledger = new Ledger();
