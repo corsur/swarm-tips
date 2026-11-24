@@ -612,12 +612,18 @@ pub struct GetAttestationArgs {
 pub struct SubmitWorkArgs {
     /// Task ID (`<campaign_id>:<task_uuid>`).
     pub task_id: String,
-    /// Work proof ID (video/tweet ID, game_id, URL, or `<caip2>:<tx>:<idx>[:sig:<sig>]`). Optional if `proof_lean` is set.
+    /// Proof ID (video/tweet/game ID, URL, or `<caip2>:<tx>:<idx>`). Optional with `proof_lean`.
     #[serde(default)]
     pub content_id: String,
     /// LeanProof (10): raw `.lean` source (`content_id` optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_lean: Option<String>,
+    /// Prover harness tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_harness: Option<String>,
+    /// Model family tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_family: Option<String>,
     #[schemars(description = NETWORK_ARG_DOC)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
@@ -1492,7 +1498,7 @@ impl SwarmTipsMcp {
 
     #[tool(
         name = "shillbot_submit_work",
-        description = "[EARN: SOL] Submit work for a Shillbot task. Open-Competition platforms 10 (LeanProof: raw `proof_lean` or `lean4:proof:<b64>`/URL) & 11 (OnChainAction: `<caip2>:<tx>[:<idx>|auto][:sig:<sig>]`) queue an off-chain attempt at $0 gas (`attempt_id`), then call shillbot_verify_task once passed. Other platforms return an unsigned tx for shillbot_submit_tx action=\"submit\" (5=game_id, 4=campaign_id, 9=URL, 0/3=video/tweet ID).",
+        description = "[EARN: SOL] Submit work. Open-Competition platforms 10 (LeanProof: raw `proof_lean` or `lean4:proof:<b64>`/URL) & 11 (OnChainAction: `<caip2>:<tx>[:<idx>|auto][:sig:<sig>]`) queue an off-chain attempt at $0 gas (`attempt_id`), then call shillbot_verify_task once passed. Other platforms return an unsigned tx for shillbot_submit_tx action=\"submit\" (5=game_id, 4=campaign_id, 9=URL, 0/3=video/tweet ID).",
         annotations(destructive_hint = true)
     )]
     async fn shillbot_submit_work(
@@ -5451,13 +5457,15 @@ async fn execute_shillbot_submit_work(
     let network = parse_network_arg(args.network.as_deref())?;
 
     let response = orchestrator
-        .submit_task(
-            normalize_task_id(&args.task_id),
+        .submit_task(crate::proxy::SubmitTaskParams {
+            task_id: normalize_task_id(&args.task_id),
             wallet_pubkey,
-            &args.content_id,
-            args.proof_lean.as_deref(),
+            content_id: &args.content_id,
+            proof_lean: args.proof_lean.as_deref(),
+            agent_harness: args.agent_harness.as_deref(),
+            model_family: args.model_family.as_deref(),
             network,
-        )
+        })
         .await
         .map_err(|e| to_mcp_error(&e))?;
 
@@ -6333,7 +6341,7 @@ fn task_next_action(
             "next_action": "submit_work",
             "next_tool": "shillbot_submit_work",
             "args": { "task_id": task.task_id, "proof_lean": "<complete Proof.lean source>" },
-            "hint": "LeanProof (platform 10): pass your Lean 4 proof source directly in proof_lean (content_id may be omitted), or pass content_id as lean4:proof:<base64> / an HTTPS .lean URL, then sign and submit via shillbot_submit_tx action=\"submit\".",
+            "hint": "LeanProof (platform 10): optionally dry-run POST /tasks/:id/preflight (with compile: true), then pass your Lean 4 proof source directly in proof_lean (content_id may be omitted) with optional agent_harness/model_family, or pass content_id as lean4:proof:<base64> / an HTTPS .lean URL, then sign and submit via shillbot_submit_tx action=\"submit\".",
         })
     } else if task.state == "claimed" && task.platform == Some(9) {
         if task
@@ -7900,6 +7908,8 @@ mod tests {
             .and(body_partial_json(serde_json::json!({
                 "content_id": "",
                 "proof_lean": lean_source,
+                "agent_harness": "claude-code",
+                "model_family": "claude-opus-4-6",
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "message": "ok",
@@ -7920,6 +7930,8 @@ mod tests {
                 task_id: "camp1:lean1".to_string(),
                 content_id: String::new(),
                 proof_lean: Some(lean_source.to_string()),
+                agent_harness: Some("claude-code".to_string()),
+                model_family: Some("claude-opus-4-6".to_string()),
                 network: None,
             },
         )
@@ -7997,6 +8009,8 @@ mod tests {
                 task_id: "camp1:oca1".to_string(),
                 content_id: proof_ref.clone(),
                 proof_lean: None,
+                agent_harness: None,
+                model_family: None,
                 network: Some("devnet".to_string()),
             },
         )
@@ -8049,6 +8063,8 @@ mod tests {
                 task_id: "camp1:openlean".to_string(),
                 content_id: String::new(),
                 proof_lean: Some("theorem proof : statementProp := by trivial".to_string()),
+                agent_harness: None,
+                model_family: None,
                 network: None,
             },
         )

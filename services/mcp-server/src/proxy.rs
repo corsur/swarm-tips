@@ -131,6 +131,8 @@ pub struct TaskSummary {
     pub statement_lean: Option<String>,
     #[serde(default)]
     pub lean_policy: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lean_environment: Option<serde_json::Value>,
     #[serde(default)]
     pub check_detail: Option<String>,
     #[serde(default)]
@@ -354,6 +356,31 @@ pub struct CreateCampaignParams<'a> {
     pub network: Option<&'a str>,
 }
 
+/// Parameters for [`OrchestratorProxy::submit_task`], bundled into a struct to
+/// stay under clippy's argument limit while carrying optional prover attribution.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SubmitTaskParams<'a> {
+    pub task_id: &'a str,
+    pub wallet_pubkey: &'a str,
+    pub content_id: &'a str,
+    pub proof_lean: Option<&'a str>,
+    pub agent_harness: Option<&'a str>,
+    pub model_family: Option<&'a str>,
+    pub network: Option<&'a str>,
+}
+
+/// Parameters for [`OrchestratorProxy::preflight_task`] (`POST /tasks/:id/preflight`).
+#[allow(dead_code)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PreflightTaskParams<'a> {
+    pub task_id: &'a str,
+    pub proof_lean: Option<&'a str>,
+    pub compile: Option<bool>,
+    pub content_id: Option<&'a str>,
+    pub agent_wallet: Option<&'a str>,
+    pub network: Option<&'a str>,
+}
+
 /// Mirrors `shillbot-api::models::task::ConfirmTaskResponse`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConfirmTaskResponse {
@@ -363,6 +390,11 @@ pub struct ConfirmTaskResponse {
 }
 
 impl OrchestratorProxy {
+    /// Base URL configured for the Shillbot orchestrator.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// A request-scoped clone; credentials never mutate the shared proxy.
     pub fn authenticated(&self, token: String) -> Self {
         let mut proxy = self.clone();
@@ -804,12 +836,17 @@ impl OrchestratorProxy {
     /// `content_id`.
     pub async fn submit_task(
         &self,
-        task_id: &str,
-        wallet_pubkey: &str,
-        content_id: &str,
-        proof_lean: Option<&str>,
-        network: Option<&str>,
+        params: SubmitTaskParams<'_>,
     ) -> Result<TransactionResponse, McpServiceError> {
+        let SubmitTaskParams {
+            task_id,
+            wallet_pubkey,
+            content_id,
+            proof_lean,
+            agent_harness,
+            model_family,
+            network,
+        } = params;
         if task_id.is_empty() {
             return Err(McpServiceError::InvalidInput(
                 "task_id must not be empty".to_string(),
@@ -833,13 +870,16 @@ impl OrchestratorProxy {
             qs.push_str("&sponsor=auto");
         }
         let url = format!("{}/tasks/{encoded_task_id}/submit{qs}", self.base_url);
-        let body = match proof_lean {
-            Some(proof) if !proof.trim().is_empty() => serde_json::json!({
-                "content_id": content_id,
-                "proof_lean": proof,
-            }),
-            _ => serde_json::json!({ "content_id": content_id }),
-        };
+        let mut body = serde_json::json!({ "content_id": content_id });
+        if let Some(proof) = proof_lean.filter(|p| !p.trim().is_empty()) {
+            body["proof_lean"] = serde_json::json!(proof);
+        }
+        if let Some(harness) = agent_harness.map(str::trim).filter(|s| !s.is_empty()) {
+            body["agent_harness"] = serde_json::json!(harness);
+        }
+        if let Some(model) = model_family.map(str::trim).filter(|s| !s.is_empty()) {
+            body["model_family"] = serde_json::json!(model);
+        }
         let response = self
             .client
             .post(&url)
@@ -865,6 +905,60 @@ impl OrchestratorProxy {
         }
 
         Ok(parsed)
+    }
+
+    /// Proxy a Lean 4 or OnChainAction preflight check (`POST /tasks/:id/preflight`).
+    /// For LeanProof (`platform=10`), passing `compile: Some(true)` requests a
+    /// rate-limited remote compile dry-run with structured diagnostics.
+    #[allow(dead_code)]
+    pub async fn preflight_task(
+        &self,
+        params: PreflightTaskParams<'_>,
+    ) -> Result<serde_json::Value, McpServiceError> {
+        let PreflightTaskParams {
+            task_id,
+            proof_lean,
+            compile,
+            content_id,
+            agent_wallet,
+            network,
+        } = params;
+        if task_id.is_empty() {
+            return Err(McpServiceError::InvalidInput(
+                "task_id must not be empty".to_string(),
+            ));
+        }
+        let encoded_task_id = require_path_segment(task_id, "task_id")?;
+        let qs = network_query_suffix(network);
+        let url = format!("{}/tasks/{encoded_task_id}/preflight{qs}", self.base_url);
+        let mut body = serde_json::Map::new();
+        if let Some(proof) = proof_lean {
+            body.insert("proof_lean".to_string(), serde_json::json!(proof));
+        }
+        if let Some(compile_flag) = compile {
+            body.insert("compile".to_string(), serde_json::json!(compile_flag));
+        }
+        if let Some(cid) = content_id.map(str::trim).filter(|s| !s.is_empty()) {
+            body.insert("content_id".to_string(), serde_json::json!(cid));
+        }
+        if let Some(wallet) = agent_wallet.map(str::trim).filter(|s| !s.is_empty()) {
+            body.insert("agent_wallet".to_string(), serde_json::json!(wallet));
+        }
+        let mut req = self
+            .client
+            .post(&url)
+            .json(&serde_json::Value::Object(body));
+        if !self.access_token.is_empty() {
+            req = req.bearer_auth(&self.access_token);
+        }
+        let response = req.send().await.map_err(|e| {
+            tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator preflight_task failed");
+            McpServiceError::OrchestratorError(format!("request failed: {e}"))
+        })?;
+        let response = require_success(response, "preflight_task", task_id).await?;
+        response.json().await.map_err(|e| {
+            McpServiceError::OrchestratorError(format!("invalid preflight_task response: {e}"))
+        })
     }
 
     /// Validate a locally constructed claim/submit transaction and add only

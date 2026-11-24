@@ -1749,14 +1749,28 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "[EARN: SOL] Submit work for a Shillbot task. Open-Competition platforms 10 (LeanProof: raw `proof_lean` or `lean4:proof:<b64>`/URL) & 11 (OnChainAction: `<caip2>:<tx>[:<idx>|auto][:sig:<sig>]`) queue an off-chain attempt at $0 gas (`attempt_id`), then call shillbot_verify_task once passed. Other platforms return an unsigned tx for shillbot_submit_tx action=\"submit\" (5=game_id, 4=campaign_id, 9=URL, 0/3=video/tweet ID).",
+    "description": "[EARN: SOL] Submit work. Open-Competition platforms 10 (LeanProof: raw `proof_lean` or `lean4:proof:<b64>`/URL) & 11 (OnChainAction: `<caip2>:<tx>[:<idx>|auto][:sig:<sig>]`) queue an off-chain attempt at $0 gas (`attempt_id`), then call shillbot_verify_task once passed. Other platforms return an unsigned tx for shillbot_submit_tx action=\"submit\" (5=game_id, 4=campaign_id, 9=URL, 0/3=video/tweet ID).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "agent_harness": {
+          "description": "Prover harness tag.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "content_id": {
           "default": "",
-          "description": "Work proof ID (video/tweet ID, game_id, URL, or `<caip2>:<tx>:<idx>[:sig:<sig>]`). Optional if `proof_lean` is set.",
+          "description": "Proof ID (video/tweet/game ID, URL, or `<caip2>:<tx>:<idx>`). Optional with `proof_lean`.",
           "type": "string"
+        },
+        "model_family": {
+          "description": "Model family tag.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "network": {
           "description": "Solana network: \"mainnet\" (default) or \"devnet\". Mismatched network = the on-chain accounts won't be found.",

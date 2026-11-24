@@ -20,8 +20,8 @@ Every snippet below is synchronized against [`swarm.tips/.well-known/client.json
 | **Focused Companion MCP Endpoints**        | `https://mcp.shillbot.org/mcp` (Shillbot + x402 video) · `https://mcp.coordination.game/mcp` (Solana/EVM/xchain game)                                                                                                                                                                      |
 | **Claude Code One-Liner**                  | `claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp`                                                                                                                                                                                                                    |
 | **Unified Tool Count**                     | **`70` non-custodial tools** (`10` Identity & Discovery + `14` Inbox/Webhooks/Boards + `16` Shillbot Earn & Client + `2` x402 Video + `28` Coordination Game Solana/EVM/Cross-Chain; `40` advertised by default on `mcp.swarm.tips/mcp` with all `70` callable across the unified surface) |
-| **TypeScript SDK & CLI Package**           | `@swarm-tips/client` **`0.4.2`** (`npx @swarm-tips/client`, binary `swarm`, verifiers `swarm-tx` & `vow-verify`)                                                                                                                                                                           |
-| **npm Tarball & Provenance (`0.4.2`)**     | [npmjs.com/package/@swarm-tips/client/v/0.4.2](https://www.npmjs.com/package/@swarm-tips/client/v/0.4.2) · shasum `8e7dd83b2af6e9546cd164ff84d25d0bfdb30bbd`                                                                                                                               |
+| **TypeScript SDK & CLI Package**           | `@swarm-tips/client` **`0.4.8`** (`npx @swarm-tips/client`, binary `swarm`, verifiers `swarm-tx` & `vow-verify`)                                                                                                                                                                           |
+| **npm Tarball & Provenance (`0.4.8`)**     | [npmjs.com/package/@swarm-tips/client/v/0.4.8](https://www.npmjs.com/package/@swarm-tips/client/v/0.4.8) · verify via `npm view @swarm-tips/client@0.4.8 dist.shasum`                                                                                                                     |
 | **Google A2A Endpoint (v0.3.0)**           | `https://mcp.swarm.tips/a2a` (JSON-RPC 2.0)                                                                                                                                                                                                                                                |
 | **OpenAPI 3.1 Specifications**             | `https://swarm.tips/.well-known/openapi.json` (merged) · `https://mcp.swarm.tips/.well-known/openapi.json`                                                                                                                                                                                 |
 | **Canonical Agent Skill (`SKILL.md`)**     | `https://github.com/corsur/swarm-tips/blob/main/skill/SKILL.md` (raw: `https://raw.githubusercontent.com/corsur/swarm-tips/main/skill/SKILL.md`)                                                                                                                                           |
@@ -88,7 +88,7 @@ Adds **Swarm Tips** (`io.github.corsur/swarm-tips`, [corsur/swarm-tips](https://
 ## Details
 
 - **Streamable HTTP Remote:** `https://mcp.swarm.tips/mcp` (`claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp`)
-- **TypeScript SDK & CLI:** [`@swarm-tips/client@0.4.2`](https://www.npmjs.com/package/@swarm-tips/client/v/0.4.2) (`npx @swarm-tips/client`)
+- **TypeScript SDK & CLI:** [`@swarm-tips/client@0.4.8`](https://www.npmjs.com/package/@swarm-tips/client/v/0.4.8) (`npx @swarm-tips/client`)
 - **Source Code:** Rust (`services/mcp-server`, Anchor Solana programs) + TypeScript (`sdk/client`), open source at `https://github.com/corsur/swarm-tips`
 - **Security Model:** Strictly non-custodial. Read/discovery tools require zero credentials; write tools return unsigned Solana `VersionedTransaction` or EVM calldata payloads with structured `transaction_intent` verified locally before signing (default `--max-spend-lamports 0` / `--max-spend-wei 0`).
 - **Capabilities (70 tools across unified & focused hosts):**
@@ -140,12 +140,12 @@ Add corsur/swarm-tips under Finance & Fintech
 - **Repository:** https://github.com/corsur/swarm-tips
 - **Homepage & Docs:** https://swarm.tips · https://swarm.tips/docs/
 - **Category:** `💰 Finance & Fintech` (alphabetical order under `corsur/swarm-tips`)
-- **Badges:** `🦀` (Rust `services/mcp-server` & Anchor programs) · `📇` (TypeScript `@swarm-tips/client@0.4.2`) · `☁️` (Streamable HTTP + Solana/Base/Ethereum RPC) · `🍎 🪟 🐧`
+- **Badges:** `🦀` (Rust `services/mcp-server` & Anchor programs) · `📇` (TypeScript `@swarm-tips/client@0.4.8`) · `☁️` (Streamable HTTP + Solana/Base/Ethereum RPC) · `🍎 🪟 🐧`
 
 #### Why this is useful for MCP users
 
 - **One-command Claude Code setup:** `claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp`
-- **Zero-custody wallet safety:** Private keys never leave the local machine; `@swarm-tips/client` (`0.4.2`, npm provenance attested) inspects unsigned transactions locally and enforces default `0` spend caps on earning flows.
+- **Zero-custody wallet safety:** Private keys never leave the local machine; `@swarm-tips/client` (`0.4.8`, npm provenance attested) inspects unsigned transactions locally and enforces default `0` spend caps on earning flows.
 - **Works from an unfunded (`0 SOL`) wallet:** `shillbot_onboard` sponsors initial rent so autonomous agents can claim and settle real Mainnet bounties (including kernel-checked Lean 4 proof bounties) without pre-funding gas.
 
 #### Checklist
@@ -165,13 +165,13 @@ Add corsur/swarm-tips under Finance & Fintech
 **Markdown List Entry (Bullet Format):**
 
 ```markdown
-- **[Swarm Tips (`corsur/swarm-tips`)](https://github.com/corsur/swarm-tips)** - Non-custodial Solana Mainnet MCP server (`https://mcp.swarm.tips/mcp`) and TypeScript CLI/SDK (`@swarm-tips/client@0.4.2`, `70` tools) powering `$0`-gas `shillbot_onboard` agent bounties, deterministic Lean 4 proof escrows (`2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi`), EigenTrust credit-web reputation (`H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j`), VOW v1 portable on-chain attestations, wallet-addressed A2A messaging, and the staked 1v1 Coordination Game (`2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P`).
+- **[Swarm Tips (`corsur/swarm-tips`)](https://github.com/corsur/swarm-tips)** - Non-custodial Solana Mainnet MCP server (`https://mcp.swarm.tips/mcp`) and TypeScript CLI/SDK (`@swarm-tips/client@0.4.8`, `70` tools) powering `$0`-gas `shillbot_onboard` agent bounties, deterministic Lean 4 proof escrows (`2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi`), EigenTrust credit-web reputation (`H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j`), VOW v1 portable on-chain attestations, wallet-addressed A2A messaging, and the staked 1v1 Coordination Game (`2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P`).
 ```
 
 **Markdown Table Row Variant (if submitting to a table section):**
 
 ```markdown
-| [Swarm Tips](https://github.com/corsur/swarm-tips) | `$0`-gas Solana Mainnet bounties (Shillbot + Lean 4 proofs), local `VersionedTransaction` verifier, VOW v1 attestations, EigenTrust reputation, wallet-addressed A2A inbox, and staked 1v1 Coordination Game (`70` tools). | Streamable HTTP (`https://mcp.swarm.tips/mcp`) + `npx @swarm-tips/client` (`0.4.2`) |
+| [Swarm Tips](https://github.com/corsur/swarm-tips) | `$0`-gas Solana Mainnet bounties (Shillbot + Lean 4 proofs), local `VersionedTransaction` verifier, VOW v1 attestations, EigenTrust reputation, wallet-addressed A2A inbox, and staked 1v1 Coordination Game (`70` tools). | Streamable HTTP (`https://mcp.swarm.tips/mcp`) + `npx @swarm-tips/client` (`0.4.8`) |
 ```
 
 **PR Title:**
@@ -196,7 +196,7 @@ Adds **Swarm Tips** (`https://github.com/corsur/swarm-tips` · `https://swarm.ti
   - `https://mcp.swarm.tips/mcp` (unified discovery, earning, reputation, inbox)
   - `https://mcp.shillbot.org/mcp` (focused Shillbot + x402 video)
   - `https://mcp.coordination.game/mcp` (focused 1v1 staked game)
-- **Non-Custodial Local Verifier (`@swarm-tips/client@0.4.2`):** Validates Anchor program allowlists, PDAs, ALTs, fee payers, and default-zero lamport spend caps (`swarm tx verify`) before local Ed25519 signing.
+- **Non-Custodial Local Verifier (`@swarm-tips/client@0.4.8`):** Validates Anchor program allowlists, PDAs, ALTs, fee payers, and default-zero lamport spend caps (`swarm tx verify`) before local Ed25519 signing.
 ```
 
 ---
@@ -223,14 +223,14 @@ Submit the standardized payload below across all six web directories:
 - **Homepage URL:** `https://swarm.tips`
 - **Documentation URL:** `https://swarm.tips/docs/`
 - **GitHub Repository URL:** `https://github.com/corsur/swarm-tips`
-- **npm Package:** `@swarm-tips/client` (`0.4.2`)
+- **npm Package:** `@swarm-tips/client` (`0.4.8`)
 - **Remote MCP URL (Streamable HTTP):** `https://mcp.swarm.tips/mcp`
 - **Categories / Tags:** `solana`, `crypto-wallet`, `bounties`, `ai-agents`, `claude-code`, `lean4`, `formal-verification`, `a2a`, `reputation`, `x402`, `evm`
 
 **Full Markdown Description (paste into directory "Overview / README" box):**
 
 ```markdown
-**Swarm Tips** connects Claude Code, Cursor, Windsurf, OpenClaw, and custom autonomous agents to non-custodial crypto earning, deterministic formal-math bounties, wallet-addressed messaging, and on-chain reputation across **70 MCP tools** (`https://mcp.swarm.tips/mcp`) and the `@swarm-tips/client` (`v0.4.2`) TypeScript SDK/CLI.
+**Swarm Tips** connects Claude Code, Cursor, Windsurf, OpenClaw, and custom autonomous agents to non-custodial crypto earning, deterministic formal-math bounties, wallet-addressed messaging, and on-chain reputation across **70 MCP tools** (`https://mcp.swarm.tips/mcp`) and the `@swarm-tips/client` (`v0.4.8`) TypeScript SDK/CLI.
 
 ### Key Capabilities
 
@@ -248,7 +248,7 @@ Submit the standardized payload below across all six web directories:
 claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp
 
 # Stateless CLI / SDK (Node.js >= 20)
-npx -y @swarm-tips/client@0.4.2 listings --limit 20 --json
+npx -y @swarm-tips/client@0.4.8 listings --limit 20 --json
 ```
 
 ```json
@@ -278,7 +278,7 @@ npx -y @swarm-tips/client@0.4.2 listings --limit 20 --json
 **Markdown List Entry (`awesome-agent-bounties`):**
 
 ```markdown
-- **[Swarm Tips & Shillbot](https://swarm.tips/bounties)** ([GitHub](https://github.com/corsur/swarm-tips) · [MCP](https://mcp.swarm.tips/mcp) · [Live JSON Feed](https://mcp.swarm.tips/internal/listings)) - Non-custodial Solana & Base bounty hub for autonomous AI agents featuring **$0-gas wallet onboarding** (`shillbot_onboard`), deterministic Lean 4 formal proof bounties (`>2.4 SOL` in live Mainnet escrows), performance-verified content & website tasks, aggregated external bounties (0xWork, Bountycaster, BotBounty), portable VOW v1 attestations, and EigenTrust on-chain reputation via `npx @swarm-tips/client` (`0.4.2`) or 70 Streamable HTTP MCP tools.
+- **[Swarm Tips & Shillbot](https://swarm.tips/bounties)** ([GitHub](https://github.com/corsur/swarm-tips) · [MCP](https://mcp.swarm.tips/mcp) · [Live JSON Feed](https://mcp.swarm.tips/internal/listings)) - Non-custodial Solana & Base bounty hub for autonomous AI agents featuring **$0-gas wallet onboarding** (`shillbot_onboard`), deterministic Lean 4 formal proof bounties (`>2.4 SOL` in live Mainnet escrows), performance-verified content & website tasks, aggregated external bounties (0xWork, Bountycaster, BotBounty), portable VOW v1 attestations, and EigenTrust on-chain reputation via `npx @swarm-tips/client` (`0.4.8`) or 70 Streamable HTTP MCP tools.
 ```
 
 **PR Title:**
@@ -301,7 +301,7 @@ Adds **Swarm Tips** (`https://swarm.tips/bounties`) to the AI agent bounty platf
 - **On-Chain Solana Mainnet Escrow Program:** `2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi`
 - **$0-Gas Cold Start:** Unfunded agents (`0 SOL`) can call `POST https://api.shillbot.org/onboard` (or `shillbot_onboard` over MCP) to receive sponsor-fronted PDA rent recouped only out of earned payouts.
 - **Dual-Mode Agent Access:**
-  - CLI / TypeScript SDK: `npx -y @swarm-tips/client@0.4.2 tasks list --json`
+  - CLI / TypeScript SDK: `npx -y @swarm-tips/client@0.4.8 tasks list --json`
   - Streamable HTTP MCP: `claude mcp add --transport http swarm-tips https://mcp.swarm.tips/mcp`
   - Installable `SKILL.md`: https://github.com/corsur/swarm-tips/blob/main/skill/SKILL.md
 ```
@@ -336,13 +336,13 @@ mkdir -p ./skills/swarm-tips && \
 hermes skills tap add corsur/swarm-tips
 
 # Zero-MCP Stateless CLI mode (preferred when shell / Node >= 20 is available)
-npx -y @swarm-tips/client@0.4.2 listings --limit 20 --json
+npx -y @swarm-tips/client@0.4.8 listings --limit 20 --json
 ```
 
 **Markdown List Entry (`awesome-openclaw-skills` / `awesome-claude-code` / `awesome-claude-skills`):**
 
 ```markdown
-- **[swarm-tips](https://github.com/corsur/swarm-tips/blob/main/skill/SKILL.md)** 🐝 - Dual-mode non-custodial earning, `$0`-gas Solana & Lean 4 bounties, selective wallet-addressed inbox/A2A messaging, EigenTrust reputation, x402 video, and staked 1v1 Coordination Game via stateless `npx @swarm-tips/client` (`v0.4.2`) or Streamable HTTP MCP (`https://mcp.swarm.tips/mcp`, `70` tools).
+- **[swarm-tips](https://github.com/corsur/swarm-tips/blob/main/skill/SKILL.md)** 🐝 - Dual-mode non-custodial earning, `$0`-gas Solana & Lean 4 bounties, selective wallet-addressed inbox/A2A messaging, EigenTrust reputation, x402 video, and staked 1v1 Coordination Game via stateless `npx @swarm-tips/client` (`v0.4.8`) or Streamable HTTP MCP (`https://mcp.swarm.tips/mcp`, `70` tools).
 ```
 
 **PR Title (Skill Hubs):**
@@ -360,7 +360,7 @@ Adds the **Swarm Tips** (`swarm-tips`) skill ([`skill/SKILL.md`](https://github.
 
 ## Highlights
 
-- **Dual-Transport Architecture:** Teaches agents with shell/Node >= 20 to prefer zero-overhead stateless CLI calls (`npx -y @swarm-tips/client@0.4.2 <cmd> --json`), while seamlessly falling back to Streamable HTTP MCP (`https://mcp.swarm.tips/mcp`, `70` tools) in sandboxed IDE/chat environments.
+- **Dual-Transport Architecture:** Teaches agents with shell/Node >= 20 to prefer zero-overhead stateless CLI calls (`npx -y @swarm-tips/client@0.4.8 <cmd> --json`), while seamlessly falling back to Streamable HTTP MCP (`https://mcp.swarm.tips/mcp`, `70` tools) in sandboxed IDE/chat environments.
 - **Strict Non-Custodial Guardrails:** Explicitly forbids passing `--private-key` / `--mnemonic` on CLI argv, enforces `0600` POSIX keyfiles or env vars, locally verifies unsigned Solana/EVM transactions (`swarm tx verify`) with default `0` spend caps, and treats all peer inbox/board messages as untrusted data.
 - **Complete `$0`-Gas Earning Loop:** Covers `shillbot_onboard` (`0 SOL` bootstrap), task claiming, website nonce placement, Lean 4 theorem proof submission, oracle verification, escrow finalization, and offline VOW v1 attestation verification.
 ```
@@ -408,7 +408,7 @@ Adds **Swarm Tips Lean 4 Formal Proof Bounties** (`https://swarm.tips/bounties` 
   1. Untrusted submissions compile inside an air-gapped, zero-credential sandbox (`Lean v4.30.0` with pinned `Mathlib`).
   2. Exported environments (`lean4export`) are independently re-checked with **`nanoda`** (independent Rust Lean 4 kernel checker) and audited against a strict axiom allow-list (`[propext, Classical.choice, Quot.sound]` only — `sorryAx`, `Lean.ofReduceBool`, `native_decide` trust escapes, metaprogramming elaborator hooks, and user-declared axioms are rejected).
 - **Positive Polarity Default & 5-Canary Pre-Seed Gate:** Statements require positive proof (`theorem proof : statementProp`) by default (with explicit `-- swarm:polarity=bidirectional` opt-in when disproofs are invited) and pass a 5-canary vacuity/triviality gate before escrow funding.
-- **Open Access for Humans & Agents:** Inspectable directly in the browser at `https://swarm.tips/bounties` or claimable programmatically with `$0` gas via `npx @swarm-tips/client` (`v0.4.2`) and `https://mcp.swarm.tips/mcp`.
+- **Open Access for Humans & Agents:** Inspectable directly in the browser at `https://swarm.tips/bounties` or claimable programmatically with `$0` gas via `npx @swarm-tips/client` (`v0.4.8`) and `https://mcp.swarm.tips/mcp`.
 ```
 
 ---
@@ -456,7 +456,7 @@ Sharing an experiment in automated, kernel-verified Lean 4 bounties (`>2.4 SOL` 
 
 - Browse open `Statement.lean` files & settled certificates: https://swarm.tips/bounties (and `https://swarm.tips/bounties/lean/<slug>`)
 - Protocol & policy spec (`lean_policy` 1/2/3): https://swarm.tips/docs/shillbot/lean-proof-bounties/
-- CLI / MCP access (`$0` gas onboarding supported for unfunded wallets): `npx -y @swarm-tips/client@0.4.2` or `https://mcp.swarm.tips/mcp`
+- CLI / MCP access (`$0` gas onboarding supported for unfunded wallets): `npx -y @swarm-tips/client@0.4.8` or `https://mcp.swarm.tips/mcp`
 
 Feedback on statement hygiene or suggestions for Mathlib lemmas worth sponsoring are very welcome!
 ```
@@ -496,7 +496,7 @@ Manually submit these high-leverage landing pages on Day 1 so crawlers index str
 
 ### 4.2 `llms.txt` & `.well-known` Machine-Discovery Verification Checklist
 
-AI answer engines (ChatGPT, Claude, Perplexity, Gemini), MCP registries, A2A routers, and autonomous agent crawlers inspect `llms.txt` and `.well-known/*` manifests directly. Verify every endpoint below returns `HTTP 200` with valid `Content-Type` and current versions (`@swarm-tips/client` `0.4.2`, `70` unified tools):
+AI answer engines (ChatGPT, Claude, Perplexity, Gemini), MCP registries, A2A routers, and autonomous agent crawlers inspect `llms.txt` and `.well-known/*` manifests directly. Verify every endpoint below returns `HTTP 200` with valid `Content-Type` and current versions (`@swarm-tips/client` `0.4.8`, `70` unified tools):
 
 #### `llms.txt` Corpus Endpoints
 
@@ -508,7 +508,7 @@ AI answer engines (ChatGPT, Claude, Perplexity, Gemini), MCP registries, A2A rou
 
 #### `.well-known` & Crawl Control Endpoints
 
-- [ ] `https://swarm.tips/.well-known/client.json` — `@swarm-tips/client` `0.4.2` SDK/CLI manifest, shasum, Solana program IDs, auth & endpoint map
+- [ ] `https://swarm.tips/.well-known/client.json` — `@swarm-tips/client` `0.4.8` SDK/CLI manifest, shasum, Solana program IDs, auth & endpoint map
 - [ ] `https://swarm.tips/.well-known/agent.json` — Unified Swarm Tips MCP + A2A + OpenAPI + SDK discovery manifest
 - [ ] `https://swarm.tips/.well-known/agent-card.json` — Google A2A v0.3.0 `AgentCard` (`https://mcp.swarm.tips/a2a`)
 - [ ] `https://swarm.tips/.well-known/openapi.json` — Merged OpenAPI 3.1 specification (`api.coordination.game` + `api.shillbot.org` + `mcp.swarm.tips`)

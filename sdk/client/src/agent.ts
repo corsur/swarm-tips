@@ -28,7 +28,12 @@ import {
   validatePreparedTransaction,
   type Action,
   type CampaignListResponse,
+  type ListProofsOptions,
+  type PreflightTaskRequest,
+  type PreflightTaskResponse,
   type PreparedTransactionResponse,
+  type ProofsResponse,
+  type SubmitTaskRequest,
   type TaskListResponse,
 } from "./shillbot/api.js";
 import {
@@ -106,6 +111,18 @@ export interface ExecutedTaskResult<TConfirm = unknown> {
   confirmation?: TConfirm;
 }
 
+export interface PreflightTaskOptions {
+  proof_lean?: string;
+  proofLean?: string;
+  compile?: boolean;
+  content_id?: string;
+  contentId?: string;
+  agent_wallet?: string;
+  agentWallet?: string;
+  network?: SwarmNetwork;
+  token?: string | null;
+}
+
 export interface ExecuteTaskOptions {
   sponsor?: "auto" | "true" | "none";
   /** Automatically call `onboard()` if `?sponsor=auto` returns self-paid on an underfunded wallet; default `true`. */
@@ -115,6 +132,10 @@ export interface ExecuteTaskOptions {
   feePayer?: string;
   /** Explicit authorized payout destination pubkey (base58) when `set_payout_to` is expected. */
   payoutTo?: string;
+  /** Optional self-reported prover harness tag forwarded on `POST /tasks/:id/submit`. */
+  agentHarness?: string;
+  /** Optional self-reported model family tag forwarded on `POST /tasks/:id/submit`. */
+  modelFamily?: string;
   extra?: Record<string, unknown>;
 }
 
@@ -245,8 +266,14 @@ export class SwarmAgent {
     onboard: <TResponse = unknown>() => Promise<TResponse>;
     claim: (id: string, sponsor?: string) => Promise<PreparedTransactionResponse>;
     claimAndExecute: (id: string, opts?: ExecuteTaskOptions) => Promise<ExecutedTaskResult>;
-    submit: (id: string, body: unknown) => Promise<PreparedTransactionResponse>;
-    preflight: <TResponse = unknown>(id: string, body?: unknown) => Promise<TResponse>;
+    submit: (
+      id: string,
+      body: SubmitTaskRequest | Record<string, unknown>,
+    ) => Promise<PreparedTransactionResponse>;
+    preflight: <TResponse = PreflightTaskResponse>(
+      id: string,
+      opts?: PreflightTaskOptions,
+    ) => Promise<TResponse>;
     submitAndExecute: (
       id: string,
       contentId: string,
@@ -277,6 +304,10 @@ export class SwarmAgent {
         allowLocalhostHttp?: boolean;
       },
     ) => Promise<Verdict>;
+  };
+
+  readonly proofs: {
+    list: (opts?: ListProofsOptions) => Promise<ProofsResponse>;
   };
 
   readonly campaigns: {
@@ -450,7 +481,24 @@ export class SwarmAgent {
       claim: (id, sponsor = "auto") => self.shillbotClient.claimTask(id, sponsor),
       claimAndExecute: (id, opts) => self.executeClaimOrSubmit(id, "claim", undefined, opts),
       submit: (id, body) => self.shillbotClient.submitTask(id, body),
-      preflight: (id, body) => self.shillbotClient.preflightTask(id, body),
+      preflight<TResponse = PreflightTaskResponse>(id: string, opts?: PreflightTaskOptions) {
+        const body: PreflightTaskRequest = {};
+        const proofLean = opts?.proof_lean ?? opts?.proofLean;
+        const contentId = opts?.content_id ?? opts?.contentId;
+        const agentWallet = opts?.agent_wallet ?? opts?.agentWallet;
+        if (proofLean !== undefined) body.proof_lean = proofLean;
+        if (opts?.compile !== undefined) body.compile = opts.compile;
+        if (contentId !== undefined) body.content_id = contentId;
+        if (agentWallet !== undefined) body.agent_wallet = agentWallet;
+        const callOpts =
+          opts?.network !== undefined || opts?.token !== undefined
+            ? {
+                ...(opts.network !== undefined ? { network: opts.network } : {}),
+                ...(opts.token !== undefined ? { token: opts.token } : {}),
+              }
+            : undefined;
+        return self.shillbotClient.preflightTask<TResponse>(id, body, callOpts);
+      },
       submitAndExecute: (id, contentId, opts) =>
         self.executeClaimOrSubmit(id, "submit", contentId, opts),
       buildVerify: (id) =>
@@ -496,6 +544,10 @@ export class SwarmAgent {
           operation: "tasks.verifyVow",
         });
       },
+    };
+
+    this.proofs = {
+      list: (opts) => self.shillbotClient.listProofs(opts),
     };
 
     this.campaigns = {
@@ -649,9 +701,19 @@ export class SwarmAgent {
         return this.shillbotClient.claimTask(id, query);
       }
       const suffix = sponsorMode !== "none" ? `?sponsor=${encodeURIComponent(query)}` : "";
+      const payload: Record<string, unknown> = {
+        content_id: contentId ?? "",
+        ...(opts?.extra ?? {}),
+      };
+      if (opts?.agentHarness && payload.agent_harness === undefined) {
+        payload.agent_harness = opts.agentHarness;
+      }
+      if (opts?.modelFamily && payload.model_family === undefined) {
+        payload.model_family = opts.modelFamily;
+      }
       return this.shillbotClient.post<PreparedTransactionResponse>(
         `/tasks/${encodeURIComponent(id)}/submit${suffix}`,
-        { content_id: contentId, ...(opts?.extra ?? {}) },
+        payload,
       );
     };
 

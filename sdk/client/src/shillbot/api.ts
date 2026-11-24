@@ -55,7 +55,159 @@ export interface ConfirmTransactionRequest {
   task_pda?: string;
 }
 
-export interface TaskListResponse<TTask = unknown> {
+export interface LeanEnvironmentInfo {
+  lean_policy: number;
+  lean_toolchain: string;
+  mode: string;
+  mathlib_rev?: string | null;
+  zeta23_rev?: string | null;
+  swarm_proofs_rev?: string | null;
+  environment_id?: string | null;
+  import_allowlist: string[];
+  allows_disproof: boolean;
+  max_proof_lines?: number | null;
+  max_proof_bytes?: number | null;
+  max_line_width?: number | null;
+}
+
+export interface TaskResponse {
+  task_id: string;
+  campaign_id?: string;
+  campaign_topic?: string;
+  state: string;
+  platform?: number;
+  estimated_payment_lamports?: number;
+  quality_threshold?: number;
+  created_at?: string;
+  submitted_at?: string | null;
+  claimed_at?: string | null;
+  approved_at?: string | null;
+  agent?: string | null;
+  client?: string | null;
+  task_pda?: string | null;
+  content_id?: string | null;
+  composite_score?: number | null;
+  payment_amount?: number | null;
+  requires_approval?: boolean;
+  chain?: string;
+  statement_lean?: string | null;
+  lean_policy?: number | null;
+  lean_environment?: LeanEnvironmentInfo | null;
+  check_detail?: string | null;
+  brief?: unknown;
+  [key: string]: unknown;
+}
+
+export interface LeanDiagnostic {
+  file: string;
+  line: number;
+  column: number;
+  severity: "error" | "warning" | "info" | string;
+  message: string;
+}
+
+export interface ProofMetrics {
+  code_lines: number;
+  total_lines: number;
+  code_bytes: number;
+  raw_bytes: number;
+  max_line_width: number;
+}
+
+export interface ProofLimits {
+  max_proof_lines?: number | null;
+  max_proof_bytes?: number | null;
+  max_line_width?: number | null;
+}
+
+export interface PreflightTaskRequest {
+  proof_lean?: string;
+  compile?: boolean;
+  content_id?: string;
+  agent_wallet?: string;
+}
+
+export interface PreflightTaskResponse {
+  ok: boolean;
+  task_id: string;
+  lean_policy?: number;
+  detail: string;
+  status?: string | null;
+  compiled?: boolean;
+  verdict?: string | null;
+  axioms?: string[] | null;
+  diagnostics?: LeanDiagnostic[] | null;
+  metrics?: ProofMetrics | null;
+  limits?: ProofLimits | null;
+  lean_environment?: LeanEnvironmentInfo | null;
+}
+
+export interface SubmitTaskRequest {
+  content_id?: string;
+  proof_lean?: string;
+  agent_harness?: string;
+  model_family?: string;
+  [key: string]: unknown;
+}
+
+export interface VerifiedProofRecord {
+  task_id: string;
+  campaign_id?: string | null;
+  topic?: string | null;
+  task_pda?: string | null;
+  network?: string;
+  lean_policy: number;
+  solver_wallet: string;
+  agent_harness?: string | null;
+  model_family?: string | null;
+  reward_lamports?: number | null;
+  payment_amount?: number | null;
+  composite_score?: number | null;
+  artifact_sha256?: string | null;
+  statement_sha256?: string | null;
+  verification_hash?: string | null;
+  proof_url?: string | null;
+  statement_url?: string | null;
+  code_lines?: number | null;
+  code_bytes?: number | null;
+  metrics?: ProofMetrics | null;
+  verified_at?: string | null;
+  finalized_at?: string | null;
+  [key: string]: unknown;
+}
+
+export interface ProofsLeaderboardEntry {
+  key: string;
+  label?: string | null;
+  wallet?: string | null;
+  model_family?: string | null;
+  agent_harness?: string | null;
+  proofs_solved: number;
+  total_lamports: number;
+  median_code_lines?: number | null;
+  shortest_code_lines?: number | null;
+  [key: string]: unknown;
+}
+
+export interface ProofsResponse {
+  network?: string;
+  proofs: VerifiedProofRecord[];
+  total?: number;
+  leaderboard?: {
+    by_wallet?: ProofsLeaderboardEntry[];
+    by_model?: ProofsLeaderboardEntry[];
+    by_harness?: ProofsLeaderboardEntry[];
+  };
+  [key: string]: unknown;
+}
+
+export interface ListProofsOptions {
+  network?: "mainnet" | "devnet";
+  limit?: number;
+  policy?: number;
+}
+
+export interface TaskListResponse<TTask = TaskResponse> {
   tasks: TTask[];
   next_cursor?: string | null;
 }
@@ -171,11 +323,37 @@ export class ShillbotApiClient {
   sponsorTask(id: string, body: { action: "claim" | "submit"; unsigned_transaction: string }) {
     return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/sponsor`, body);
   }
-  submitTask(id: string, body: unknown) {
+  submitTask(id: string, body: SubmitTaskRequest | Record<string, unknown>) {
     return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/submit`, body);
   }
-  preflightTask<TResponse = unknown>(id: string, body?: unknown) {
-    return this.post<TResponse>(`/tasks/${encodeURIComponent(id)}/preflight`, body);
+  preflightTask<TResponse = PreflightTaskResponse>(
+    taskId: string,
+    body?: PreflightTaskRequest | Record<string, unknown>,
+    opts?: { network?: "mainnet" | "devnet"; token?: string | null },
+  ) {
+    const trimmed = taskId.trim();
+    if (!trimmed) {
+      throw new SwarmClientError({
+        code: "INVALID_ARGUMENT",
+        operation: "shillbot.preflightTask",
+        message: "Task id is required",
+      });
+    }
+    const suffix = opts?.network ? `?network=${encodeURIComponent(opts.network)}` : "";
+    return this.http.post<TResponse>(
+      `/tasks/${encodeURIComponent(trimmed)}/preflight${suffix}`,
+      body ?? {},
+      opts?.token,
+    );
+  }
+  listProofs<TResponse = ProofsResponse>(opts?: ListProofsOptions) {
+    const params = new URLSearchParams();
+    if (opts?.network) params.set("network", opts.network);
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.policy !== undefined) params.set("policy", String(opts.policy));
+    const qs = params.toString();
+    const path = qs ? `/proofs?${qs}` : "/proofs";
+    return this.http.get<TResponse>(path, null);
   }
   approveTask(id: string) {
     return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/approve`);

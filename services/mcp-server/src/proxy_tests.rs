@@ -542,7 +542,13 @@ mod network_flow_tests {
         let proxy = OrchestratorProxy::new(server.uri(), server.uri())
             .authenticated("test-signed-session".into());
         let resp = proxy
-            .submit_task("c:t", "wallet1", "yt-abc", None, Some("devnet"))
+            .submit_task(SubmitTaskParams {
+                task_id: "c:t",
+                wallet_pubkey: "wallet1",
+                content_id: "yt-abc",
+                network: Some("devnet"),
+                ..Default::default()
+            })
             .await
             .expect("ok");
         assert_eq!(resp.task_id, "c:t");
@@ -596,7 +602,13 @@ mod network_flow_tests {
 
         // 2. LeanProof submit on mainnet forwards verbatim `proof_lean` body & NO `sponsor` param.
         let submit_resp = proxy
-            .submit_task("c:lean", "wallet1", "", Some(lean_src), None)
+            .submit_task(SubmitTaskParams {
+                task_id: "c:lean",
+                wallet_pubkey: "wallet1",
+                content_id: "",
+                proof_lean: Some(lean_src),
+                ..Default::default()
+            })
             .await
             .expect("lean submit ok");
         assert_eq!(submit_resp.task_id, "c:lean");
@@ -626,10 +638,84 @@ mod network_flow_tests {
 
         // 3. Reject when BOTH content_id and proof_lean are empty/whitespace without hitting HTTP.
         let err = proxy
-            .submit_task("c:lean", "wallet1", "", Some("   "), None)
+            .submit_task(SubmitTaskParams {
+                task_id: "c:lean",
+                wallet_pubkey: "wallet1",
+                content_id: "",
+                proof_lean: Some("   "),
+                ..Default::default()
+            })
             .await
             .expect_err("empty content_id + whitespace proof_lean must reject");
         assert!(matches!(err, McpServiceError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn preflight_task_forwards_compile_true_and_submit_task_forwards_attribution() {
+        let server = MockServer::start().await;
+        let lean_src = "theorem proof : statementProp := by exact trivial\n";
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/c:lean/preflight"))
+            .and(query_param("network", "devnet"))
+            .and(body_partial_json(serde_json::json!({
+                "proof_lean": lean_src,
+                "compile": true,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "task_id": "c:lean",
+                "lean_policy": 3,
+                "detail": "ok",
+                "compiled": true,
+                "verdict": "Pass",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/tasks/c:lean/submit"))
+            .and(body_partial_json(serde_json::json!({
+                "content_id": "",
+                "proof_lean": lean_src,
+                "agent_harness": "swarm-cli",
+                "model_family": "gemini-3-pro",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(minimal_tx_json("c:lean")))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let proxy = OrchestratorProxy::new(server.uri(), server.uri())
+            .authenticated("test-signed-session".into());
+
+        let preflight = proxy
+            .preflight_task(PreflightTaskParams {
+                task_id: "c:lean",
+                proof_lean: Some(lean_src),
+                compile: Some(true),
+                network: Some("devnet"),
+                ..Default::default()
+            })
+            .await
+            .expect("preflight ok");
+        assert_eq!(preflight["ok"], true);
+        assert_eq!(preflight["compiled"], true);
+
+        let submit = proxy
+            .submit_task(SubmitTaskParams {
+                task_id: "c:lean",
+                wallet_pubkey: "wallet1",
+                content_id: "",
+                proof_lean: Some(lean_src),
+                agent_harness: Some("  swarm-cli  "),
+                model_family: Some("gemini-3-pro"),
+                network: None,
+            })
+            .await
+            .expect("submit with attribution ok");
+        assert_eq!(submit.task_id, "c:lean");
     }
 
     #[tokio::test]
@@ -865,7 +951,13 @@ mod network_flow_tests {
             .await
             .expect("claim ok");
         proxy
-            .submit_task("c:t", "wallet1", "yt-id", None, Some("devnet"))
+            .submit_task(SubmitTaskParams {
+                task_id: "c:t",
+                wallet_pubkey: "wallet1",
+                content_id: "yt-id",
+                network: Some("devnet"),
+                ..Default::default()
+            })
             .await
             .expect("submit ok");
         proxy

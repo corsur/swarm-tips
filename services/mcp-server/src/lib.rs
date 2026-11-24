@@ -599,6 +599,7 @@ fn build_router(
         jwt_secret: verify_state.jwt_secret.clone(),
         session_binding: Some(session_binding),
     });
+    let tasks_redirect_base = public_tasks_redirect_base(verify_state.orchestrator.base_url());
     let verify_state_get = verify_state.clone();
     let verify_state_post = verify_state;
 
@@ -608,161 +609,162 @@ fn build_router(
     // expensive call can't block every agent.
     let inflight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    let mut router = attach_public_discovery_routes(axum::Router::new())
-        // Human-facing root. swarm.tips links to this host in its nav, and the
-        // MCP protocol endpoint lives at /mcp — without this route a browser
-        // visit to the bare domain is an empty 404.
-        .route("/", axum::routing::get(root_page))
-        .route("/related-servers", axum::routing::get(related_servers_page))
-        .route(
-            "/internal/inbox/list",
-            inbox_http::list_handler(Arc::clone(&inbox_http_state)),
-        )
-        .route(
-            "/internal/inbox/open",
-            inbox_http::open_handler(Arc::clone(&inbox_http_state)),
-        )
-        .route(
-            "/internal/inbox/ack-ids",
-            inbox_http::ack_ids_handler(Arc::clone(&inbox_http_state)),
-        )
-        // Initialization has finished before the router is exposed. Readiness
-        // observes this module's lifecycle, without dependency calls per probe.
-        .route(
-            "/ready",
-            axum::routing::get(build_readiness_handler(shutdown)),
-        )
-        .route(
-            "/internal/scaling-metric",
-            axum::routing::get({
-                let inflight = Arc::clone(&inflight);
-                move || {
-                    let value = inflight.load(std::sync::atomic::Ordering::Relaxed);
-                    async move { axum::Json(serde_json::json!({ "value": value })) }
-                }
-            }),
-        )
-        .route(
-            "/internal/listings",
-            listings::listings_handler(listings_state),
-        )
-        .route(
-            "/internal/traffic-stats",
-            traffic_stats::traffic_stats_handler(traffic_stats_state),
-        )
-        // Browser REST twins for the agent inbox — same storage layer and
-        // events as the agent_* MCP tools (see src/inbox_http.rs).
-        .route(
-            "/internal/inbox/session",
-            inbox_http::session_handler(Arc::clone(&inbox_http_state)),
-        )
-        .route(
-            "/internal/inbox/messages",
-            inbox_http::messages_handler(Arc::clone(&inbox_http_state)),
-        )
-        .route(
-            "/internal/inbox/ack",
-            inbox_http::ack_handler(Arc::clone(&inbox_http_state)),
-        )
-        .route(
-            "/internal/inbox/send",
-            inbox_http::send_handler(Arc::clone(&inbox_http_state)),
-        )
-        .route(
-            "/internal/inbox/mute",
-            inbox_http::mute_handler(Arc::clone(&inbox_http_state)),
-        )
-        // W4: webhook registration/management + the agent-webhook-delivery
-        // workflow's outcome callback.
-        .route(
-            "/internal/inbox/webhook",
-            inbox_http::webhook_handler(Arc::clone(&inbox_http_state)),
-        )
-        .route(
-            "/internal/webhooks/delivery-result",
-            inbox_http::delivery_result_handler(Arc::clone(&inbox_http_state)),
-        )
-        // W3: topic-board twins (publish/report share the inbox session
-        // chokepoint; read is open like /internal/listings).
-        .route(
-            "/internal/topics/publish",
-            inbox_http::topics_publish_handler(Arc::clone(&inbox_http_state)),
-        )
-        .route(
-            "/internal/topics/read",
-            inbox_http::topics_read_handler(Arc::clone(&inbox_http_state)),
-        )
-        .route(
-            "/internal/topics/report",
-            inbox_http::topics_report_handler(Arc::clone(&inbox_http_state)),
-        )
-        // W5: Google-A2A JSON-RPC facade over the inbox (message/send,
-        // tasks/get, tasks/pushNotificationConfig/set). Translation only —
-        // same session guard + inbox chokepoint as the twins (src/a2a.rs).
-        .route("/a2a", inbox_http::a2a_handler(inbox_http_state))
-        .route(
-            "/internal/build-verify-tx",
-            axum::routing::get(move || {
-                let state = verify_state_get.clone();
-                async move { build_verify_tx_ready_handler(state).await }
-            })
-            .post(
-                move |headers: axum::http::HeaderMap, body: axum::Json<serde_json::Value>| {
-                    let state = verify_state_post.clone();
-                    async move { build_verify_tx_handler(headers, body, state).await }
-                },
+    let mut router =
+        attach_public_discovery_routes_with_tasks_base(axum::Router::new(), tasks_redirect_base)
+            // Human-facing root. swarm.tips links to this host in its nav, and the
+            // MCP protocol endpoint lives at /mcp — without this route a browser
+            // visit to the bare domain is an empty 404.
+            .route("/", axum::routing::get(root_page))
+            .route("/related-servers", axum::routing::get(related_servers_page))
+            .route(
+                "/internal/inbox/list",
+                inbox_http::list_handler(Arc::clone(&inbox_http_state)),
             )
-            .options(|| async {
-                // CORS preflight for browser and CLI requests
-                axum::http::Response::builder()
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                    .header(
-                        "Access-Control-Allow-Headers",
-                        "content-type, authorization, x-api-key",
-                    )
-                    .header("Access-Control-Max-Age", "3600")
-                    .body(axum::body::Body::empty())
-                    .unwrap()
-            }),
-        )
-        .route(
-            "/internal/reputation/rebuild",
-            reputation::rebuild_handler(reputation_db.clone(), internal_api_key.clone()),
-        )
-        .route(
-            "/internal/reputation/record-bounty",
-            reputation::record_bounty_handler(reputation_db.clone(), internal_api_key.clone()),
-        )
-        .route(
-            "/internal/reputation/backfill",
-            reputation::backfill_handler(
-                Arc::clone(&reputation_db),
-                reqwest::Client::new(),
-                rpc_url_mainnet.clone(),
-                internal_api_key.clone(),
-            ),
-        )
-        .route(
-            // Settlement-graph leaderboard for the swarm.tips/reputation
-            // page and the agent_reputation_leaderboard MCP tool.
-            "/internal/reputation/leaderboard",
-            reputation::leaderboard_handler(Arc::clone(&reputation_db)),
-        )
-        .route(
-            // Plain-HTTP reputation read for the swarm.tips/reputation page
-            // (B8). Two signals in one response: the extension-credit
-            // web-position (on-chain read; network param, default mainnet
-            // since the 2026-07-08 extension-registry mainnet deploy) and
-            // the EigenTrust settlement-graph record (Firestore, mainnet
-            // settlements — network-independent).
-            "/internal/agent-reputation",
-            reputation_lookup::handler(
-                Arc::clone(&reputation_db),
-                rpc_url_mainnet.clone(),
-                rpc_url_devnet.clone(),
-            ),
-        );
+            .route(
+                "/internal/inbox/open",
+                inbox_http::open_handler(Arc::clone(&inbox_http_state)),
+            )
+            .route(
+                "/internal/inbox/ack-ids",
+                inbox_http::ack_ids_handler(Arc::clone(&inbox_http_state)),
+            )
+            // Initialization has finished before the router is exposed. Readiness
+            // observes this module's lifecycle, without dependency calls per probe.
+            .route(
+                "/ready",
+                axum::routing::get(build_readiness_handler(shutdown)),
+            )
+            .route(
+                "/internal/scaling-metric",
+                axum::routing::get({
+                    let inflight = Arc::clone(&inflight);
+                    move || {
+                        let value = inflight.load(std::sync::atomic::Ordering::Relaxed);
+                        async move { axum::Json(serde_json::json!({ "value": value })) }
+                    }
+                }),
+            )
+            .route(
+                "/internal/listings",
+                listings::listings_handler(listings_state),
+            )
+            .route(
+                "/internal/traffic-stats",
+                traffic_stats::traffic_stats_handler(traffic_stats_state),
+            )
+            // Browser REST twins for the agent inbox — same storage layer and
+            // events as the agent_* MCP tools (see src/inbox_http.rs).
+            .route(
+                "/internal/inbox/session",
+                inbox_http::session_handler(Arc::clone(&inbox_http_state)),
+            )
+            .route(
+                "/internal/inbox/messages",
+                inbox_http::messages_handler(Arc::clone(&inbox_http_state)),
+            )
+            .route(
+                "/internal/inbox/ack",
+                inbox_http::ack_handler(Arc::clone(&inbox_http_state)),
+            )
+            .route(
+                "/internal/inbox/send",
+                inbox_http::send_handler(Arc::clone(&inbox_http_state)),
+            )
+            .route(
+                "/internal/inbox/mute",
+                inbox_http::mute_handler(Arc::clone(&inbox_http_state)),
+            )
+            // W4: webhook registration/management + the agent-webhook-delivery
+            // workflow's outcome callback.
+            .route(
+                "/internal/inbox/webhook",
+                inbox_http::webhook_handler(Arc::clone(&inbox_http_state)),
+            )
+            .route(
+                "/internal/webhooks/delivery-result",
+                inbox_http::delivery_result_handler(Arc::clone(&inbox_http_state)),
+            )
+            // W3: topic-board twins (publish/report share the inbox session
+            // chokepoint; read is open like /internal/listings).
+            .route(
+                "/internal/topics/publish",
+                inbox_http::topics_publish_handler(Arc::clone(&inbox_http_state)),
+            )
+            .route(
+                "/internal/topics/read",
+                inbox_http::topics_read_handler(Arc::clone(&inbox_http_state)),
+            )
+            .route(
+                "/internal/topics/report",
+                inbox_http::topics_report_handler(Arc::clone(&inbox_http_state)),
+            )
+            // W5: Google-A2A JSON-RPC facade over the inbox (message/send,
+            // tasks/get, tasks/pushNotificationConfig/set). Translation only —
+            // same session guard + inbox chokepoint as the twins (src/a2a.rs).
+            .route("/a2a", inbox_http::a2a_handler(inbox_http_state))
+            .route(
+                "/internal/build-verify-tx",
+                axum::routing::get(move || {
+                    let state = verify_state_get.clone();
+                    async move { build_verify_tx_ready_handler(state).await }
+                })
+                .post(
+                    move |headers: axum::http::HeaderMap, body: axum::Json<serde_json::Value>| {
+                        let state = verify_state_post.clone();
+                        async move { build_verify_tx_handler(headers, body, state).await }
+                    },
+                )
+                .options(|| async {
+                    // CORS preflight for browser and CLI requests
+                    axum::http::Response::builder()
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                        .header(
+                            "Access-Control-Allow-Headers",
+                            "content-type, authorization, x-api-key",
+                        )
+                        .header("Access-Control-Max-Age", "3600")
+                        .body(axum::body::Body::empty())
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/internal/reputation/rebuild",
+                reputation::rebuild_handler(reputation_db.clone(), internal_api_key.clone()),
+            )
+            .route(
+                "/internal/reputation/record-bounty",
+                reputation::record_bounty_handler(reputation_db.clone(), internal_api_key.clone()),
+            )
+            .route(
+                "/internal/reputation/backfill",
+                reputation::backfill_handler(
+                    Arc::clone(&reputation_db),
+                    reqwest::Client::new(),
+                    rpc_url_mainnet.clone(),
+                    internal_api_key.clone(),
+                ),
+            )
+            .route(
+                // Settlement-graph leaderboard for the swarm.tips/reputation
+                // page and the agent_reputation_leaderboard MCP tool.
+                "/internal/reputation/leaderboard",
+                reputation::leaderboard_handler(Arc::clone(&reputation_db)),
+            )
+            .route(
+                // Plain-HTTP reputation read for the swarm.tips/reputation page
+                // (B8). Two signals in one response: the extension-credit
+                // web-position (on-chain read; network param, default mainnet
+                // since the 2026-07-08 extension-registry mainnet deploy) and
+                // the EigenTrust settlement-graph record (Firestore, mainnet
+                // settlements — network-independent).
+                "/internal/agent-reputation",
+                reputation_lookup::handler(
+                    Arc::clone(&reputation_db),
+                    rpc_url_mainnet.clone(),
+                    rpc_url_devnet.clone(),
+                ),
+            );
 
     if let Some(state) = discovery_state {
         router = router
@@ -885,6 +887,9 @@ impl McpServices {
             surfaces::Surface::Shillbot => self.shillbot.handle(req).await,
             surfaces::Surface::Game => self.game.handle(req).await,
         };
+        if response.status() == axum::http::StatusCode::METHOD_NOT_ALLOWED {
+            return mcp_method_not_allowed_response(&req_headers);
+        }
         let mut resp = response.map(axum::body::Body::new);
         attach_mcp_cors_headers(&req_headers, resp.headers_mut());
         resp
@@ -1159,6 +1164,33 @@ pub(crate) fn mcp_preflight_response(
     resp
 }
 
+/// Helpful 405 response for non-POST calls to `/mcp` (e.g. external monitors
+/// issuing `GET /mcp` without an SSE session on our stateless Streamable HTTP
+/// transport). Advertises `Allow: POST, OPTIONS` and points callers to
+/// `POST /mcp` and `/.well-known/agent-card.json`.
+pub(crate) fn mcp_method_not_allowed_response(
+    req_headers: &axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut resp = (
+        axum::http::StatusCode::METHOD_NOT_ALLOWED,
+        axum::Json(serde_json::json!({
+            "error": "method_not_allowed",
+            "message": "This stateless MCP Streamable HTTP endpoint accepts JSON-RPC 2.0 requests via POST /mcp.",
+            "mcp_endpoint": "POST /mcp",
+            "agent_card": "/.well-known/agent-card.json",
+            "openapi": "/.well-known/openapi.json",
+        })),
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::ALLOW,
+        axum::http::HeaderValue::from_static("POST, OPTIONS"),
+    );
+    attach_mcp_cors_headers(req_headers, resp.headers_mut());
+    resp
+}
+
 #[derive(Clone)]
 pub(crate) struct McpSessionMiddlewareState {
     pub key: [u8; 32],
@@ -1380,9 +1412,109 @@ fn health_handler() -> axum::routing::MethodRouter {
         .options(|| async { (axum::http::StatusCode::NO_CONTENT, HEALTH_CORS) })
 }
 
+const PUBLIC_SHILLBOT_API_URL: &str = "https://api.shillbot.org";
+
+/// Choose the public base URL used for `GET /tasks` 307 redirects.
+/// Never leaks in-cluster (`http://shillbot-api:8080`) or internal `*.run.app`
+/// hostnames into external `Location` headers.
+fn public_tasks_redirect_base(orchestrator_url: &str) -> String {
+    if let Ok(url) = std::env::var("PUBLIC_SHILLBOT_API_URL") {
+        let trimmed = url.trim().trim_end_matches('/');
+        if trimmed.starts_with("https://") {
+            return trimmed.to_string();
+        }
+    }
+    let trimmed = orchestrator_url.trim().trim_end_matches('/');
+    if trimmed.starts_with("https://") && !trimmed.contains(".run.app") {
+        trimmed.to_string()
+    } else {
+        PUBLIC_SHILLBOT_API_URL.to_string()
+    }
+}
+
+/// Safely construct `{base_url}/tasks[?{query}]`, rejecting CR/LF, NUL, spaces,
+/// or any non-printable ASCII byte in `raw_query` so `Location` cannot be
+/// abused for HTTP header injection.
+fn build_tasks_redirect_location(base_url: &str, raw_query: Option<&str>) -> Option<String> {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() || !base.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+        return None;
+    }
+    match raw_query {
+        None | Some("") => Some(format!("{base}/tasks")),
+        Some(q) => {
+            if !q.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+                return None;
+            }
+            Some(format!("{base}/tasks?{q}"))
+        }
+    }
+}
+
+fn tasks_redirect_handler(base_url: String) -> axum::routing::MethodRouter {
+    use axum::response::IntoResponse;
+
+    axum::routing::get(move |uri: axum::http::Uri| {
+        let base_url = base_url.clone();
+        async move {
+            let Some(target) = build_tasks_redirect_location(&base_url, uri.query()) else {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    HEALTH_CORS,
+                    "invalid query string",
+                )
+                    .into_response();
+            };
+            let Ok(location) = axum::http::HeaderValue::from_str(&target) else {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    HEALTH_CORS,
+                    "invalid redirect target",
+                )
+                    .into_response();
+            };
+            let mut resp =
+                (axum::http::StatusCode::TEMPORARY_REDIRECT, HEALTH_CORS).into_response();
+            resp.headers_mut()
+                .insert(axum::http::header::LOCATION, location);
+            resp
+        }
+    })
+    .options(|| async { (axum::http::StatusCode::NO_CONTENT, HEALTH_CORS) })
+}
+
+fn robots_txt_handler() -> axum::routing::MethodRouter {
+    axum::routing::get(|| async {
+        (
+            axum::http::StatusCode::OK,
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+                ),
+                (
+                    axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    axum::http::HeaderValue::from_static("*"),
+                ),
+            ],
+            "User-agent: *\nAllow: /\n",
+        )
+    })
+}
+
+#[cfg(test)]
 fn attach_public_discovery_routes(router: axum::Router) -> axum::Router {
+    attach_public_discovery_routes_with_tasks_base(router, PUBLIC_SHILLBOT_API_URL.to_string())
+}
+
+fn attach_public_discovery_routes_with_tasks_base(
+    router: axum::Router,
+    tasks_redirect_base: String,
+) -> axum::Router {
     router
         .route("/health", health_handler())
+        .route("/robots.txt", robots_txt_handler())
+        .route("/tasks", tasks_redirect_handler(tasks_redirect_base))
         .route(
             "/.well-known/openapi.json",
             openapi::well_known_openapi_handler(),
@@ -2694,6 +2826,131 @@ mod readiness_tests {
                 .and_then(|v| v.to_str().ok()),
             Some("*")
         );
+    }
+
+    #[tokio::test]
+    async fn tasks_redirect_robots_txt_and_mcp_405_hints_prevent_bot_discovery_leaks() {
+        let app = super::attach_public_discovery_routes_with_tasks_base(
+            axum::Router::new(),
+            "https://api.shillbot.org".to_string(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+
+        // 1. GET /tasks?limit=100&network=mainnet -> 307 Temporary Redirect preserving query + CORS
+        let tasks_qs = client
+            .get(format!("{base}/tasks?limit=100&network=mainnet"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(tasks_qs.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            tasks_qs
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok()),
+            Some("https://api.shillbot.org/tasks?limit=100&network=mainnet")
+        );
+        assert_eq!(
+            tasks_qs
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+
+        // 2. Bare GET /tasks -> 307 to https://api.shillbot.org/tasks
+        let tasks_bare = client.get(format!("{base}/tasks")).send().await.unwrap();
+        assert_eq!(tasks_bare.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            tasks_bare
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok()),
+            Some("https://api.shillbot.org/tasks")
+        );
+
+        // 3. Query string sanitizer rejects CR/LF / whitespace header injection
+        assert_eq!(
+            super::build_tasks_redirect_location(
+                "https://api.shillbot.org",
+                Some("a=1\r\nX-Bad: 1")
+            ),
+            None
+        );
+        assert_eq!(
+            super::build_tasks_redirect_location("https://api.shillbot.org", Some("a=1 b=2")),
+            None
+        );
+        assert_eq!(
+            super::public_tasks_redirect_base("http://shillbot-api:8080"),
+            "https://api.shillbot.org"
+        );
+        assert_eq!(
+            super::public_tasks_redirect_base("https://shillbot-api-abc.a.run.app"),
+            "https://api.shillbot.org"
+        );
+        assert_eq!(
+            super::public_tasks_redirect_base("https://staging-api.shillbot.org/"),
+            "https://staging-api.shillbot.org"
+        );
+
+        // 4. GET /robots.txt -> 200 text/plain; charset=utf-8
+        let robots = client
+            .get(format!("{base}/robots.txt"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(robots.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            robots
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain; charset=utf-8")
+        );
+        assert_eq!(robots.text().await.unwrap(), "User-agent: *\nAllow: /\n");
+
+        // 5. MCP 405 helper advertises Allow: POST, OPTIONS + JSON pointer to POST /mcp & agent-card.json
+        let mut req_headers = axum::http::HeaderMap::new();
+        req_headers.insert(
+            axum::http::header::ORIGIN,
+            axum::http::HeaderValue::from_static("https://swarm.tips"),
+        );
+        let resp_405 = super::mcp_method_not_allowed_response(&req_headers);
+        assert_eq!(
+            resp_405.status(),
+            axum::http::StatusCode::METHOD_NOT_ALLOWED
+        );
+        assert_eq!(
+            resp_405
+                .headers()
+                .get(axum::http::header::ALLOW)
+                .and_then(|v| v.to_str().ok()),
+            Some("POST, OPTIONS")
+        );
+        assert_eq!(
+            resp_405
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("https://swarm.tips")
+        );
+        let body_bytes = axum::body::to_bytes(resp_405.into_body(), 16_384)
+            .await
+            .unwrap();
+        let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body_json["mcp_endpoint"], "POST /mcp");
+        assert_eq!(body_json["agent_card"], "/.well-known/agent-card.json");
     }
 
     #[tokio::test]

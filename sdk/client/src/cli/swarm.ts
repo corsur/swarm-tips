@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import { readFileSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SwarmAgent, type SwarmNetwork } from "../agent.js";
+import { SwarmAgent, type ExecuteTaskOptions, type SwarmNetwork } from "../agent.js";
 import { SwarmClientError } from "../errors.js";
 import { VALID_TOPICS, isValidTopicId } from "../inbox/types.js";
 import {
   validatePreparedTransaction,
   type Action,
   type ExpireTaskState,
+  type PreflightTaskResponse,
+  type SubmitTaskRequest,
 } from "../shillbot/api.js";
 import { inspectTransaction } from "../shillbot/index.js";
 import { CLIENT_VERSION } from "../version.js";
@@ -16,6 +19,7 @@ import {
   assertNoSecretCliFlags,
   loadSignerFromCliOrEnv,
 } from "./keyfile.js";
+import { scaffoldLeanWorkspace } from "./lean-init.js";
 
 export interface CliIo {
   stdout?: { write: (chunk: string) => boolean; isTTY?: boolean };
@@ -41,6 +45,8 @@ const BOOLEAN_FLAGS = new Set([
   "--unmute",
   "--cursor",
   "--allow-localhost-http",
+  "--compile",
+  "--force",
 ]);
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
@@ -131,11 +137,14 @@ Commands:
   listings [--limit N] [--category CAT] [--chain CHAIN]
   reputation <wallet>
   tasks list [--limit N] | get <id> | mine | earnings | onboard | next <task-json-or-id>
+  tasks init <id> [--dir <path>] [--force]   (scaffold pinned Lean 4 workspace — zero auth / zero SOL)
+  tasks check <id> <proof-file> [--compile]  (static or remote compile preflight with diagnostics & compression metrics)
   tasks claim <id> [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]
-  tasks submit <id> --content <str> [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]
+  tasks submit <id> (--content <str> | --proof-file <path>) [--harness <name>] [--model <name>] [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]
   tasks verify <id> [--no-exec]
   tasks finalize <id> [--no-exec]
   tasks expire <id> [--no-exec]              (client escrow refund past claim/submit deadline or past submitted_at + verification_timeout)
+  proofs list [--limit N] [--policy N]       (public verified Lean 4 proofs & prover leaderboard)
   inbox list [--status pending|all] [--limit N]
   inbox open <msg_id...>
   inbox send <to_wallet> <body> [--thread <id>] [--intent <intent>]
@@ -209,6 +218,54 @@ function writeError(
   } else {
     stderr.write(`Error: ${message}\n`);
   }
+}
+
+function defaultLeanWorkspaceDir(taskId: string): string {
+  const safeSlug = taskId.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "lean";
+  return resolve(`swarm-task-${safeSlug}`);
+}
+
+function formatPreflightHuman(res: PreflightTaskResponse, compiled: boolean): string {
+  const modeLabel = res.compiled ?? compiled ? "compile" : "static";
+  const statusLabel = res.ok ? "PASS" : "FAIL";
+  const verdictPart = res.verdict ? ` [${res.verdict}]` : "";
+  const lines: string[] = [
+    `${statusLabel} (${modeLabel})${verdictPart} — task ${res.task_id}`,
+  ];
+  if (res.detail) {
+    lines.push(`Detail: ${res.detail}`);
+  }
+  if (res.metrics) {
+    const m = res.metrics;
+    lines.push(
+      `Metrics: ${m.code_lines} code lines (${m.total_lines} total), ${m.code_bytes} code bytes (${m.raw_bytes} raw), max line width ${m.max_line_width}`,
+    );
+  }
+  if (res.limits) {
+    const parts: string[] = [];
+    if (res.limits.max_proof_lines !== undefined && res.limits.max_proof_lines !== null) {
+      parts.push(`max_proof_lines=${res.limits.max_proof_lines}`);
+    }
+    if (res.limits.max_proof_bytes !== undefined && res.limits.max_proof_bytes !== null) {
+      parts.push(`max_proof_bytes=${res.limits.max_proof_bytes}`);
+    }
+    if (res.limits.max_line_width !== undefined && res.limits.max_line_width !== null) {
+      parts.push(`max_line_width=${res.limits.max_line_width}`);
+    }
+    if (parts.length > 0) {
+      lines.push(`Limits: ${parts.join(", ")}`);
+    }
+  }
+  if (Array.isArray(res.axioms) && res.axioms.length > 0) {
+    lines.push(`Axioms: ${res.axioms.join(", ")}`);
+  }
+  if (Array.isArray(res.diagnostics) && res.diagnostics.length > 0) {
+    lines.push("Diagnostics:");
+    for (const d of res.diagnostics) {
+      lines.push(`  ${d.file}:${d.line}:${d.column}: ${d.severity}: ${d.message}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Promise<number> {
@@ -423,6 +480,59 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         writeOutput(stdout, jsonMode, res);
         return 0;
       }
+      if (sub === "init") {
+        const id = rest[0]?.trim();
+        if (!id) {
+          throw new CliUsageError("Usage: swarm tasks init <task_id> [--dir <path>] [--force]");
+        }
+        const task = await agent.tasks.get<Record<string, unknown>>(id);
+        const dirFlag = getStringFlag(flags, "--dir");
+        const targetDir = dirFlag ? resolve(dirFlag) : defaultLeanWorkspaceDir(id);
+        const result = scaffoldLeanWorkspace(task, id, targetDir, Boolean(flags.get("--force")));
+        if (jsonMode) {
+          writeOutput(stdout, true, result);
+        } else {
+          stdout.write(
+            [
+              `Scaffolded Lean 4 workspace for ${result.task_id} in ${result.dir}`,
+              `Policy: v${result.lean_policy} | Toolchain: ${result.lean_toolchain}`,
+              `Files: ${result.files.join(", ")}`,
+              `Next: cd ${result.dir} && npx @swarm-tips/client tasks check ${result.task_id} Solution.lean --compile`,
+            ].join("\n") + "\n",
+          );
+        }
+        return 0;
+      }
+      if (sub === "check") {
+        const id = rest[0]?.trim();
+        const proofPath = rest[1] ?? getStringFlag(flags, "--proof-file");
+        if (!id || !proofPath) {
+          throw new CliUsageError("Usage: swarm tasks check <task_id> <proof_file> [--compile]");
+        }
+        let proofLean: string;
+        try {
+          proofLean = readFileSync(proofPath, "utf8");
+        } catch (err) {
+          throw new CliUsageError(
+            `Failed to read proof file ${proofPath}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (!proofLean.trim()) {
+          throw new CliUsageError(`Proof file ${proofPath} is empty.`);
+        }
+        const compile = Boolean(flags.get("--compile"));
+        const res = await agent.tasks.preflight(id, {
+          proof_lean: proofLean,
+          ...(compile ? { compile: true } : {}),
+          network,
+        });
+        if (jsonMode) {
+          writeOutput(stdout, true, res);
+        } else {
+          stdout.write(formatPreflightHuman(res, compile));
+        }
+        return res.ok ? 0 : 1;
+      }
       if (sub === "mine") {
         const tasks = await agent.tasks.mine();
         writeOutput(stdout, jsonMode, { tasks });
@@ -469,22 +579,58 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         return 0;
       }
       if (sub === "submit") {
-        const id = rest[0];
+        const id = rest[0]?.trim();
         const content = getStringFlag(flags, "--content");
-        if (!id || !content) {
+        const proofFile = getStringFlag(flags, "--proof-file");
+        const harness = getStringFlag(flags, "--harness");
+        const model = getStringFlag(flags, "--model");
+        if (!id || (!content && !proofFile)) {
           throw new CliUsageError(
-            "Usage: swarm tasks submit <task_id> --content <str> [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]",
+            "Usage: swarm tasks submit <task_id> (--content <str> | --proof-file <path>) [--harness <name>] [--model <name>] [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]",
           );
+        }
+        let proofLean: string | undefined;
+        if (proofFile) {
+          try {
+            proofLean = readFileSync(proofFile, "utf8");
+          } catch (err) {
+            throw new CliUsageError(
+              `Failed to read proof file ${proofFile}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+          if (!proofLean.trim()) {
+            throw new CliUsageError(`Proof file ${proofFile} is empty.`);
+          }
         }
         const payoutTo = getStringFlag(flags, "--payout-to");
         const feePayer = getStringFlag(flags, "--fee-payer");
-        const execOpts =
-          payoutTo || feePayer
-            ? { ...(payoutTo ? { payoutTo } : {}), ...(feePayer ? { feePayer } : {}) }
+        if (noExec) {
+          const submitBody: SubmitTaskRequest = {
+            content_id: content ?? "",
+            ...(proofLean !== undefined ? { proof_lean: proofLean } : {}),
+            ...(harness ? { agent_harness: harness } : {}),
+            ...(model ? { model_family: model } : {}),
+          };
+          const res = await agent.tasks.submit(id, submitBody);
+          writeOutput(stdout, jsonMode, res);
+          return 0;
+        }
+        const extra: Record<string, unknown> = {
+          ...(proofLean !== undefined ? { proof_lean: proofLean } : {}),
+          ...(harness ? { agent_harness: harness } : {}),
+          ...(model ? { model_family: model } : {}),
+        };
+        const execOpts: ExecuteTaskOptions | undefined =
+          payoutTo || feePayer || harness || model || Object.keys(extra).length > 0
+            ? {
+                ...(payoutTo ? { payoutTo } : {}),
+                ...(feePayer ? { feePayer } : {}),
+                ...(harness ? { agentHarness: harness } : {}),
+                ...(model ? { modelFamily: model } : {}),
+                ...(Object.keys(extra).length > 0 ? { extra } : {}),
+              }
             : undefined;
-        const res = noExec
-          ? await agent.tasks.submit(id, { content_id: content })
-          : await agent.tasks.submitAndExecute(id, content, execOpts);
+        const res = await agent.tasks.submitAndExecute(id, content ?? "", execOpts);
         writeOutput(stdout, jsonMode, res);
         return 0;
       }
@@ -516,8 +662,21 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         return 0;
       }
       throw new CliUsageError(
-        "Usage: swarm tasks <list|get|mine|earnings|onboard|next|claim|submit|verify|finalize|expire> ...",
+        "Usage: swarm tasks <list|get|init|check|mine|earnings|onboard|next|claim|submit|verify|finalize|expire> ...",
       );
+    }
+
+    if (cmd === "proofs") {
+      if (sub === "list" || !sub) {
+        const res = await agent.proofs.list({
+          network,
+          limit: getIntFlag(flags, "--limit"),
+          policy: getIntFlag(flags, "--policy"),
+        });
+        writeOutput(stdout, jsonMode, res);
+        return 0;
+      }
+      throw new CliUsageError("Usage: swarm proofs list [--limit N] [--policy N]");
     }
 
     if (cmd === "inbox") {
