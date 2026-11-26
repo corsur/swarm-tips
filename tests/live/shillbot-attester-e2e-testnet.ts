@@ -301,12 +301,35 @@ async function runLifecycle(
   );
 
   const uniqueProofUrl = `${proofUrl}#attester-e2e=${Date.now()}`;
-  const submit = await api(
-    "POST",
-    `/tasks/${taskId}/submit?network=devnet`,
-    agentToken,
-    { content_id: uniqueProofUrl }
-  );
+  let submit: Record<string, unknown>;
+  try {
+    submit = await api(
+      "POST",
+      `/tasks/${taskId}/submit?network=devnet`,
+      agentToken,
+      { content_id: uniqueProofUrl }
+    );
+  } catch (e) {
+    if (expectedScore === 0 && /400/.test(String(e))) {
+      chk.check(
+        true,
+        `forbidden-token proof rejected synchronously at submit (HTTP 400)`
+      );
+      // Also exercise the full off-chain Lean runner failure path with a
+      // syntactically clean proof that fails type-checking (`0 < 1` != `True`).
+      submit = await api(
+        "POST",
+        `/tasks/${taskId}/submit?network=devnet`,
+        agentToken,
+        {
+          proof_lean:
+            "theorem proof : statementProp := by exact Nat.zero_lt_one",
+        }
+      );
+    } else {
+      throw e;
+    }
+  }
   const attemptId = String(submit.attempt_id ?? "");
   chk.check(
     submit.open_competition === true && attemptId.length > 0,

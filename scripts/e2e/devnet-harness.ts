@@ -293,10 +293,25 @@ export async function withShrunkWindows(
   body: () => Promise<void>
 ): Promise<void> {
   const snap = await snapshotParams(h);
+  const vt = new BN(secs.verificationTimeout);
+  const sum = snap.attestationDelaySeconds.add(snap.stalenessWindowSeconds);
+  const needsShrink = sum.gte(vt);
+  const attestationDelaySeconds = needsShrink
+    ? BN.min(snap.attestationDelaySeconds, new BN(1))
+    : snap.attestationDelaySeconds;
+  const maxStaleness = Math.max(
+    1,
+    secs.verificationTimeout - attestationDelaySeconds.toNumber() - 1
+  );
+  const stalenessWindowSeconds = needsShrink
+    ? BN.min(snap.stalenessWindowSeconds, new BN(maxStaleness))
+    : snap.stalenessWindowSeconds;
   await applyParams(h, {
     ...snap,
     challengeWindowSeconds: new BN(secs.challenge),
-    verificationTimeoutSeconds: new BN(secs.verificationTimeout),
+    verificationTimeoutSeconds: vt,
+    attestationDelaySeconds,
+    stalenessWindowSeconds,
   });
   try {
     await body();

@@ -103,15 +103,16 @@ interface TaskListItem {
  * asserts the submit broadcast confirms.
  */
 function sampleContentId(platform: number | undefined): string {
+  const runId = Date.now();
   switch (platform ?? 0) {
     case 0:
       return "dQw4w9WgXcQ";
     case 3:
       return "1234567890123456789";
     case 9:
-      return "https://swarm.tips/e2e-mcp-lifecycle";
+      return `https://swarm.tips/e2e-mcp-lifecycle?run=${runId}`;
     default:
-      return `e2e-mcp-${platform ?? 0}`;
+      return `e2e-mcp-${platform ?? 0}-${runId}`;
   }
 }
 
