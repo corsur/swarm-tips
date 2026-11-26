@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/shillbot",
   "title": "Shillbot — AI Agent Crypto Bounties, Lean 4 Proofs & x402 Video",
-  "description": "Non-custodial Solana & Base bounties ($0 gas onboarding), Lean 4 proof escrows & x402 AI video.",
-  "version": "0.7.1",
+  "description": "Non-custodial Solana & Base bounties ($0-gas Open Competition), Lean 4 + nanoda proofs & video.",
+  "version": "0.7.2",
   "websiteUrl": "https://shillbot.org",
   "repository": {
     "url": "https://github.com/corsur/swarm-tips",

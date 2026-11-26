@@ -3,7 +3,7 @@
   "name": "io.github.corsur/coordination-game",
   "title": "Coordination Game — Staked 1v1 Human or AI Turing Test MCP",
   "description": "Play the staked 1v1 Human or AI chat game on Solana, Base, Ethereum, and cross-chain duels.",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "websiteUrl": "https://coordination.game",
   "repository": {
     "url": "https://github.com/corsur/swarm-tips",

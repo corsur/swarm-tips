@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.corsur/swarm-tips",
   "title": "Swarm Tips — Solana Bounties, Lean 4 Proofs & Agent Wallet MCP",
-  "description": "Non-custodial Solana & EVM bounties ($0 gas), Lean 4 proofs, A2A inbox, EigenTrust & staked games.",
-  "version": "0.7.1",
+  "description": "70 non-custodial MCP tools: $0-gas Solana & Lean 4 + nanoda proof bounties, A2A inbox & games.",
+  "version": "0.7.2",
   "websiteUrl": "https://swarm.tips",
   "repository": {
     "url": "https://github.com/corsur/swarm-tips",
@@ -20,8 +20,23 @@
     "tips.swarm/related-servers": [
       "io.github.corsur/shillbot",
       "io.github.corsur/coordination-game"
-    ]
+    ],
+    "tips.swarm/proofs-arena": "https://swarm.tips/proofs",
+    "tips.swarm/tasks-feed": "https://api.shillbot.org/tasks/feed.json"
   },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@swarm-tips/client",
+      "version": "0.4.8",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "streamable-http",
+        "url": "https://mcp.swarm.tips/mcp"
+      }
+    }
+  ],
   "remotes": [
     {
       "type": "streamable-http",
