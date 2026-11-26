@@ -338,7 +338,10 @@ async function runLifecycle(
     }
   }
   console.log(
-    `  attempt verdict: status=${attemptStatus} detail=${attemptDetail.slice(0, 120)}`
+    `  attempt verdict: status=${attemptStatus} detail=${attemptDetail.slice(
+      0,
+      120
+    )}`
   );
 
   if (expectedScore === 0) {
@@ -355,7 +358,9 @@ async function runLifecycle(
     try {
       await api(
         "POST",
-        `/tasks/${taskId}/build-verify?network=devnet&attempt_id=${encodeURIComponent(attemptId)}`,
+        `/tasks/${taskId}/build-verify?network=devnet&attempt_id=${encodeURIComponent(
+          attemptId
+        )}`,
         agentToken
       );
     } catch {
@@ -370,20 +375,27 @@ async function runLifecycle(
 
   chk.check(
     attemptStatus === "passed",
-    `valid proof marked passed off-chain (got ${attemptStatus}: ${attemptDetail.slice(0, 120)})`
+    `valid proof marked passed off-chain (got ${attemptStatus}: ${attemptDetail.slice(
+      0,
+      120
+    )})`
   );
 
   // Fetch attester-co-signed 1-tx Open -> Verified bundle, sign & confirm.
   const built = await api(
     "POST",
-    `/tasks/${taskId}/build-verify?network=devnet&attempt_id=${encodeURIComponent(attemptId)}`,
+    `/tasks/${taskId}/build-verify?network=devnet&attempt_id=${encodeURIComponent(
+      attemptId
+    )}`,
     agentToken
   );
   const verifyTx =
     (built.co_signed_transaction as string | undefined) ??
     (built.transaction as string | undefined);
   if (!verifyTx) {
-    throw new Error(`build-verify missing co_signed_transaction: ${JSON.stringify(built)}`);
+    throw new Error(
+      `build-verify missing co_signed_transaction: ${JSON.stringify(built)}`
+    );
   }
   await buildSignConfirm(
     conn,

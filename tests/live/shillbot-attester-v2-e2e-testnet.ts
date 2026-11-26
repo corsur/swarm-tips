@@ -301,7 +301,9 @@ async function runLifecycle(
   const attemptId = String(submit.attempt_id ?? "");
   chk.check(
     submit.open_competition === true && attemptId.length > 0,
-    `off-chain M2 Mathlib submit accepted (attempt_id=${attemptId || "MISSING"})`
+    `off-chain M2 Mathlib submit accepted (attempt_id=${
+      attemptId || "MISSING"
+    })`
   );
   console.log(
     `  submitted off-chain content_id=${uniqueProofUrl} attempt_id=${attemptId}`
@@ -330,7 +332,10 @@ async function runLifecycle(
     }
   }
   console.log(
-    `  attempt verdict: status=${attemptStatus} detail=${attemptDetail.slice(0, 120)}`
+    `  attempt verdict: status=${attemptStatus} detail=${attemptDetail.slice(
+      0,
+      120
+    )}`
   );
 
   if (expectedScore === 0) {
@@ -348,19 +353,26 @@ async function runLifecycle(
 
   chk.check(
     attemptStatus === "passed",
-    `valid Mathlib proof marked passed off-chain (got ${attemptStatus}: ${attemptDetail.slice(0, 120)})`
+    `valid Mathlib proof marked passed off-chain (got ${attemptStatus}: ${attemptDetail.slice(
+      0,
+      120
+    )})`
   );
 
   const built = await api(
     "POST",
-    `/tasks/${taskId}/build-verify?network=devnet&attempt_id=${encodeURIComponent(attemptId)}`,
+    `/tasks/${taskId}/build-verify?network=devnet&attempt_id=${encodeURIComponent(
+      attemptId
+    )}`,
     agentToken
   );
   const verifyTx =
     (built.co_signed_transaction as string | undefined) ??
     (built.transaction as string | undefined);
   if (!verifyTx) {
-    throw new Error(`build-verify missing co_signed_transaction: ${JSON.stringify(built)}`);
+    throw new Error(
+      `build-verify missing co_signed_transaction: ${JSON.stringify(built)}`
+    );
   }
   await buildSignConfirm(
     conn,
