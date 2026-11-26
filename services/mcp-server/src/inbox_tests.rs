@@ -1276,23 +1276,95 @@ fn public_topic_gate_is_town_square_only() {
 #[test]
 fn effective_send_limit_opens_support_only_for_unproven() {
     // Unproven → support: the small trickle; unproven → non-support: still
-    // 0 (agent-to-agent hard gate). Verified tiers are unchanged either way.
+    // 0 (agent-to-agent hard gate). Non-seed verified tiers are unchanged either way.
     assert_eq!(
-        effective_send_limit(SenderTier::Unproven, true),
+        effective_send_limit(SenderTier::Unproven, true, false),
         limits::SENDS_PER_DAY_UNPROVEN_SUPPORT
     );
-    assert_eq!(effective_send_limit(SenderTier::Unproven, false), 0);
+    assert_eq!(effective_send_limit(SenderTier::Unproven, false, false), 0);
     assert_eq!(
-        effective_send_limit(SenderTier::SessionVerified, true),
+        effective_send_limit(SenderTier::SessionVerified, true, false),
         limits::SENDS_PER_DAY_SESSION_VERIFIED
     );
     assert_eq!(
-        effective_send_limit(SenderTier::WalletVerified, false),
+        effective_send_limit(SenderTier::SessionVerified, false, false),
+        limits::SENDS_PER_DAY_SESSION_VERIFIED
+    );
+    assert_eq!(
+        effective_send_limit(SenderTier::WalletVerified, false, false),
         limits::SENDS_PER_DAY_WALLET_VERIFIED
     );
     assert_eq!(
-        effective_send_limit(SenderTier::Reputable, true),
+        effective_send_limit(SenderTier::Reputable, true, false),
         limits::SENDS_PER_DAY_REPUTABLE
+    );
+}
+
+#[test]
+fn effective_send_and_post_limits_grant_seed_wallets_reputable_cap_only_when_verified() {
+    // Verified server-side INBOX_SEED_WALLETS get Reputable caps (500 sends / 200 posts)
+    // across both support/non-support and public/non-public targets.
+    for tier in [
+        SenderTier::SessionVerified,
+        SenderTier::WalletVerified,
+        SenderTier::Reputable,
+    ] {
+        assert_eq!(
+            effective_send_limit(tier, false, true),
+            limits::SENDS_PER_DAY_REPUTABLE,
+            "verified seed wallet ({tier:?}) non-support send limit must be 500"
+        );
+        assert_eq!(
+            effective_send_limit(tier, true, true),
+            limits::SENDS_PER_DAY_REPUTABLE,
+            "verified seed wallet ({tier:?}) support send limit must be 500"
+        );
+        assert_eq!(
+            effective_post_limit(tier, false, true),
+            limits::POSTS_PER_DAY_REPUTABLE,
+            "verified seed wallet ({tier:?}) non-public post limit must be 200"
+        );
+        assert_eq!(
+            effective_post_limit(tier, true, true),
+            limits::POSTS_PER_DAY_REPUTABLE,
+            "verified seed wallet ({tier:?}) public post limit must be 200"
+        );
+    }
+
+    // Seed + Unproven MUST stay unchanged at the Unproven cap (never upgraded without signature).
+    assert_eq!(
+        effective_send_limit(SenderTier::Unproven, false, true),
+        limits::SENDS_PER_DAY_UNPROVEN
+    );
+    assert_eq!(
+        effective_send_limit(SenderTier::Unproven, true, true),
+        limits::SENDS_PER_DAY_UNPROVEN_SUPPORT
+    );
+    assert_eq!(
+        effective_post_limit(SenderTier::Unproven, false, true),
+        limits::POSTS_PER_DAY_UNPROVEN
+    );
+    assert_eq!(
+        effective_post_limit(SenderTier::Unproven, true, true),
+        limits::POSTS_PER_DAY_UNPROVEN_PUBLIC
+    );
+
+    // Non-seed SessionVerified MUST remain unchanged at 25 sends / 25 posts.
+    assert_eq!(
+        effective_send_limit(SenderTier::SessionVerified, false, false),
+        25
+    );
+    assert_eq!(
+        effective_send_limit(SenderTier::SessionVerified, true, false),
+        25
+    );
+    assert_eq!(
+        effective_post_limit(SenderTier::SessionVerified, false, false),
+        25
+    );
+    assert_eq!(
+        effective_post_limit(SenderTier::SessionVerified, true, false),
+        25
     );
 }
 
@@ -1301,7 +1373,7 @@ fn unproven_support_send_is_allowed_up_to_cap_then_rejected() {
     // Mirrors the send_message quota guard (`sends_used >= limit` rejects)
     // for the unproven→support path: sends 0..9 (already-used counts) pass,
     // the 10th already-used send is rejected (SendQuotaExceeded).
-    let limit = effective_send_limit(SenderTier::Unproven, true);
+    let limit = effective_send_limit(SenderTier::Unproven, true, false);
     assert_eq!(limit, 10);
     // Pure predicate identical to the one in send_message.
     let rejects = |sends_used: i64| sends_used >= i64::from(limit);
@@ -1314,32 +1386,32 @@ fn unproven_support_send_is_allowed_up_to_cap_then_rejected() {
     assert!(rejects(i64::from(limit)), "the (cap+1)th send is rejected");
     // An unproven sender to a NON-support wallet never even reaches the
     // quota check — the effective limit is 0 → UnprovenSender.
-    assert_eq!(effective_send_limit(SenderTier::Unproven, false), 0);
+    assert_eq!(effective_send_limit(SenderTier::Unproven, false, false), 0);
 }
 
 #[test]
 fn effective_post_limit_opens_public_topic_only_for_unproven() {
     assert_eq!(
-        effective_post_limit(SenderTier::Unproven, true),
+        effective_post_limit(SenderTier::Unproven, true, false),
         limits::POSTS_PER_DAY_UNPROVEN_PUBLIC
     );
-    assert_eq!(effective_post_limit(SenderTier::Unproven, false), 0);
+    assert_eq!(effective_post_limit(SenderTier::Unproven, false, false), 0);
     assert_eq!(
-        effective_post_limit(SenderTier::SessionVerified, true),
+        effective_post_limit(SenderTier::SessionVerified, true, false),
         limits::POSTS_PER_DAY_SESSION_VERIFIED
     );
     assert_eq!(
-        effective_post_limit(SenderTier::Reputable, false),
+        effective_post_limit(SenderTier::Reputable, false, false),
         limits::POSTS_PER_DAY_REPUTABLE
     );
 }
 
 #[test]
 fn unproven_public_post_allowed_up_to_cap_non_public_zero() {
-    let public = effective_post_limit(SenderTier::Unproven, true);
+    let public = effective_post_limit(SenderTier::Unproven, true, false);
     assert_eq!(public, 10, "town-square: 10/day for unproven");
     // Non-public topic stays hard-gated at 0 for unproven.
-    assert_eq!(effective_post_limit(SenderTier::Unproven, false), 0);
+    assert_eq!(effective_post_limit(SenderTier::Unproven, false, false), 0);
 }
 
 #[test]

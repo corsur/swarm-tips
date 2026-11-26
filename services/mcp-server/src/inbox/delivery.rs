@@ -269,7 +269,7 @@ impl Inbox {
         let proposed = ProposedDelivery {
             id: digest(&["inbox-delivery-v1", &req.from, key]),
             fingerprint: digest(&[&to, &thread_id, intent.as_deref().unwrap_or(""), &req.body]),
-            limit: effective_send_limit(req.tier, is_support_mailbox(&to)),
+            limit: effective_send_limit(req.tier, is_support_mailbox(&to), req.seed),
             quota_expiry: FirestoreTimestamp(quota_expiry),
             message: InboxMessageDoc {
                 schema: MESSAGE_SCHEMA.into(),

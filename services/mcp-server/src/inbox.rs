@@ -567,26 +567,42 @@ pub fn synthetic_session_sender(session_id: &str) -> String {
     format!("session:{session_id}")
 }
 
-/// Effective daily SEND cap for a `(tier, recipient)` pair. An UNPROVEN session
-/// addressing a support mailbox gets the small support-only trickle
-/// (`SENDS_PER_DAY_UNPROVEN_SUPPORT`); every other pair keeps its normal tier
-/// cap — including unproven → 0 for any non-support recipient, so the
-/// agent-to-agent hard gate is unchanged.
-fn effective_send_limit(tier: SenderTier, to_is_support: bool) -> u32 {
-    if tier == SenderTier::Unproven && to_is_support {
-        limits::SENDS_PER_DAY_UNPROVEN_SUPPORT
+/// Effective daily SEND cap for a `(tier, recipient, seed)` triple. An UNPROVEN
+/// session addressing a support mailbox gets the small support-only trickle
+/// (`SENDS_PER_DAY_UNPROVEN_SUPPORT`) and 0 for any non-support recipient,
+/// regardless of `seed`. Verified wallets in the server-side `INBOX_SEED_WALLETS`
+/// allowlist (`seed == true`) receive `SENDS_PER_DAY_REPUTABLE` (500/day) so
+/// org/canary probes do not exhaust the 25/day session-verified tier; every
+/// other verified sender keeps its normal tier cap unchanged.
+fn effective_send_limit(tier: SenderTier, to_is_support: bool, seed: bool) -> u32 {
+    if tier == SenderTier::Unproven {
+        if to_is_support {
+            limits::SENDS_PER_DAY_UNPROVEN_SUPPORT
+        } else {
+            limits::SENDS_PER_DAY_UNPROVEN
+        }
+    } else if seed {
+        limits::SENDS_PER_DAY_REPUTABLE
     } else {
         tier.send_limit()
     }
 }
 
-/// Effective daily POST cap for a `(tier, topic)` pair. Sibling of
+/// Effective daily POST cap for a `(tier, topic, seed)` triple. Sibling of
 /// `effective_send_limit`: an UNPROVEN session posting to a PUBLIC topic gets
-/// `POSTS_PER_DAY_UNPROVEN_PUBLIC`; every other pair keeps its tier cap
-/// (unproven → 0 for any non-public topic).
-fn effective_post_limit(tier: SenderTier, topic_is_public: bool) -> u32 {
-    if tier == SenderTier::Unproven && topic_is_public {
-        limits::POSTS_PER_DAY_UNPROVEN_PUBLIC
+/// `POSTS_PER_DAY_UNPROVEN_PUBLIC` (and 0 for non-public topics), regardless of
+/// `seed`; verified wallets in server-side `INBOX_SEED_WALLETS` (`seed == true`)
+/// receive `POSTS_PER_DAY_REPUTABLE` (200/day); every other verified sender
+/// keeps its normal tier cap unchanged.
+fn effective_post_limit(tier: SenderTier, topic_is_public: bool, seed: bool) -> u32 {
+    if tier == SenderTier::Unproven {
+        if topic_is_public {
+            limits::POSTS_PER_DAY_UNPROVEN_PUBLIC
+        } else {
+            limits::POSTS_PER_DAY_UNPROVEN
+        }
+    } else if seed {
+        limits::POSTS_PER_DAY_REPUTABLE
     } else {
         tier.post_limit()
     }
@@ -2426,7 +2442,7 @@ impl Inbox {
         // Every non-support recipient keeps the tier's own cap (0 for unproven).
         let to = resolve_recipient(&req.to_wallet, is_support_sender(&req.from))
             .map_err(InboxRejection::InvalidRecipient)?;
-        let limit = effective_send_limit(req.tier, is_support_mailbox(&to));
+        let limit = effective_send_limit(req.tier, is_support_mailbox(&to), req.seed);
         if limit == 0 {
             return Err(InboxRejection::UnprovenSender.into());
         }
@@ -3198,7 +3214,7 @@ impl Inbox {
         validate_topic(&req.topic_id).map_err(InboxRejection::InvalidTopic)?;
         // Topic is validated BEFORE the tier gate so an UNPROVEN session gets
         // `POSTS_PER_DAY_UNPROVEN_PUBLIC` on a PUBLIC topic and 0 elsewhere.
-        let limit = effective_post_limit(req.tier, is_public_topic(&req.topic_id));
+        let limit = effective_post_limit(req.tier, is_public_topic(&req.topic_id), req.seed);
         if limit == 0 {
             return Err(InboxRejection::UnprovenSender.into());
         }
