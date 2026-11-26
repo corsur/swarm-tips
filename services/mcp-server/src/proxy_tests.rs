@@ -1304,4 +1304,68 @@ mod video_and_attestation_flow_tests {
             .expect("confirm expire ok");
         assert_eq!(confirmed.action, "expire");
     }
+
+    #[tokio::test]
+    async fn get_task_details_forwards_bearer_only_on_authenticated_clone() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/tasks/c:m2"))
+            .and(header("authorization", "Bearer jwt-agent-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "c:m2",
+                "state": "open",
+                "platform": 10,
+                "competing_attempts_count": 2,
+                "my_latest_attempt": {
+                    "attempt_id": "att-a",
+                    "agent": "AgentWalletA",
+                    "status": "passed"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/tasks/c:m2"))
+            .and(|req: &Request| !req.headers.contains_key("authorization"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "c:m2",
+                "state": "open",
+                "platform": 10,
+                "competing_attempts_count": 2,
+                "my_latest_attempt": null
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let shared = OrchestratorProxy::new(server.uri(), server.uri());
+        let authed_a = shared.authenticated("jwt-agent-a".into());
+        let details_a = authed_a
+            .get_task_details("c:m2", None)
+            .await
+            .expect("authenticated get_task_details must succeed");
+        assert_eq!(details_a.competing_attempts_count, Some(2));
+        assert_eq!(
+            details_a
+                .my_latest_attempt
+                .as_ref()
+                .and_then(|v| v.get("attempt_id"))
+                .and_then(|v| v.as_str()),
+            Some("att-a")
+        );
+
+        // Shared unauthenticated proxy must stay unauthenticated and omit Authorization.
+        let details_anon = shared
+            .get_task_details("c:m2", None)
+            .await
+            .expect("unauthenticated get_task_details must succeed");
+        assert_eq!(details_anon.competing_attempts_count, Some(2));
+        assert!(details_anon.my_latest_attempt.is_none());
+    }
 }

@@ -541,7 +541,11 @@ impl OrchestratorProxy {
         let qs = network_query_suffix(network);
         let url = format!("{}/tasks/{encoded_task_id}{qs}", self.base_url);
 
-        let response = self.client.get(&url).send().await.map_err(|e| {
+        let mut req = self.client.get(&url);
+        if !self.access_token.is_empty() {
+            req = req.bearer_auth(&self.access_token);
+        }
+        let response = req.send().await.map_err(|e| {
             tracing::error!(service = "mcp-server", error = %e, task_id = %task_id, "orchestrator get_task_details failed");
             McpServiceError::OrchestratorError(format!("request failed: {e}"))
         })?;

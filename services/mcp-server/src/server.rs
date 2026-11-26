@@ -1264,15 +1264,15 @@ impl SwarmTipsMcp {
     async fn shillbot_get_task_details(
         &self,
         Parameters(args): Parameters<GetTaskDetailsArgs>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         if args.task_id.is_empty() {
             return Err(invalid_input("task_id is required"));
         }
         let network = parse_network_arg(args.network.as_deref())?;
+        let orchestrator = self.optional_authenticated_shillbot(&parts).await?;
 
-        let task = self
-            .state
-            .orchestrator
+        let task = orchestrator
             .get_task_details(normalize_task_id(&args.task_id), network)
             .await
             .map_err(|e| to_mcp_error(&e))?;
@@ -5041,6 +5041,50 @@ impl SwarmTipsMcp {
         ))
     }
 
+    /// Return a request-scoped `OrchestratorProxy` carrying the caller's own
+    /// Bearer JWT when the caller is authenticated (via `Authorization: Bearer`
+    /// or a verified `Mcp-Session-Id` binding), or an unauthenticated proxy
+    /// otherwise. Never borrows another session's token and never mutates the
+    /// shared `self.state.orchestrator`.
+    async fn optional_authenticated_shillbot(
+        &self,
+        parts: &http::request::Parts,
+    ) -> Result<OrchestratorProxy, McpError> {
+        if let Some((verified, token)) = self.bearer_verified_from_parts(Some(parts))? {
+            if let Some(session_id) = session_id_from_parts(Some(parts)) {
+                if let Some(bound) = self.state.session_binding.resolve(&session_id).await {
+                    if !crate::jwt::wallets_match(&bound, verified.as_str()) {
+                        return Err(invalid_input(
+                            "Authorization: Bearer wallet conflicts with bound Mcp-Session-Id wallet",
+                        ));
+                    }
+                }
+            }
+            return Ok(self.state.orchestrator.authenticated(token));
+        }
+        if let Some(session_id) = session_id_from_parts(Some(parts)) {
+            match self
+                .state
+                .session_binding
+                .resolve_access_token(&session_id)
+                .await
+            {
+                Ok(Some((_wallet, token))) if !token.is_empty() => {
+                    return Ok(self.state.orchestrator.authenticated(token));
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!(
+                        service = "mcp-server",
+                        error = %err,
+                        "optional_authenticated_shillbot: session token lookup failed; proceeding unauthenticated"
+                    );
+                }
+            }
+        }
+        Ok(self.state.orchestrator.clone())
+    }
+
     /// Verify an ownership proof for `wallet` via game-api's auth endpoints.
     /// Returns `Ok(None)` when no proof args were supplied, or
     /// `Ok(Some((method, proof_sig, access_token)))` on a PASSING proof. A failing proof is
@@ -8650,5 +8694,153 @@ mod tests {
         let verify_json = verify_res.structured_content.expect("structured");
         assert_eq!(verify_json["status"], "verified");
         assert_eq!(verify_json["wallet"], pubkey_str);
+    }
+
+    #[tokio::test]
+    async fn shillbot_get_task_details_attaches_caller_bearer_and_never_leaks_across_sessions() {
+        use solana_sdk::signer::Signer;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let orch = MockServer::start().await;
+        let game_api = MockServer::start().await;
+        let rpc = MockServer::start().await;
+
+        let wallet_a = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let wallet_b = solana_sdk::signature::Keypair::new().pubkey().to_string();
+        let wallet_unverified = solana_sdk::signature::Keypair::new().pubkey().to_string();
+
+        // Orchestrator returns each caller's own attempt based strictly on the Bearer header,
+        // and omits my_latest_attempt when no Authorization header is sent.
+        Mock::given(method("GET"))
+            .and(path("/tasks/camp1:open1"))
+            .and(header("authorization", "Bearer jwt-agent-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "camp1:open1",
+                "state": "open",
+                "platform": 10,
+                "competing_attempts_count": 2,
+                "my_latest_attempt": {
+                    "attempt_id": "att-agent-a",
+                    "agent": wallet_a,
+                    "status": "passed"
+                }
+            })))
+            .expect(1)
+            .mount(&orch)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/tasks/camp1:open1"))
+            .and(header("authorization", "Bearer jwt-agent-b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "camp1:open1",
+                "state": "open",
+                "platform": 10,
+                "competing_attempts_count": 2,
+                "my_latest_attempt": {
+                    "attempt_id": "att-agent-b",
+                    "agent": wallet_b,
+                    "status": "failed"
+                }
+            })))
+            .expect(1)
+            .mount(&orch)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/tasks/camp1:open1"))
+            .and(|req: &Request| !req.headers.contains_key("authorization"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "camp1:open1",
+                "state": "open",
+                "platform": 10,
+                "competing_attempts_count": 2,
+                "my_latest_attempt": null
+            })))
+            .expect(3)
+            .mount(&orch)
+            .await;
+
+        let mcp = build_test_mcp_instance(orch.uri(), game_api.uri(), rpc.uri());
+
+        // Bind two verified sessions (A & B) and one registered-but-unverified session (D).
+        mcp.state
+            .session_binding
+            .bind("sess-agent-a", &wallet_a)
+            .await
+            .expect("bind A");
+        mcp.state
+            .session_binding
+            .mark_verified_with_token("sess-agent-a", &wallet_a, Some("jwt-agent-a"))
+            .await
+            .expect("verify A");
+
+        mcp.state
+            .session_binding
+            .bind("sess-agent-b", &wallet_b)
+            .await
+            .expect("bind B");
+        mcp.state
+            .session_binding
+            .mark_verified_with_token("sess-agent-b", &wallet_b, Some("jwt-agent-b"))
+            .await
+            .expect("verify B");
+
+        mcp.state
+            .session_binding
+            .bind("sess-unverified-d", &wallet_unverified)
+            .await
+            .expect("bind D");
+
+        let parts_for = |sid: Option<&str>| {
+            let mut builder = http::Request::builder();
+            if let Some(s) = sid {
+                builder = builder.header(MCP_SESSION_ID_HEADER, s);
+            }
+            builder.body(()).unwrap().into_parts().0
+        };
+        let get_details = |sid: Option<&str>| {
+            mcp.shillbot_get_task_details(
+                Parameters(GetTaskDetailsArgs {
+                    task_id: "camp1:open1".into(),
+                    network: None,
+                }),
+                Extension(parts_for(sid)),
+            )
+        };
+
+        // 1. Verified Session A receives ONLY Wallet A's attempt.
+        let res_a = get_details(Some("sess-agent-a"))
+            .await
+            .expect("session A get_task_details");
+        let text_a = res_a.content[0].as_text().expect("text A").text.as_str();
+        let json_a: serde_json::Value = serde_json::from_str(text_a).unwrap();
+        assert_eq!(json_a["my_latest_attempt"]["attempt_id"], "att-agent-a");
+        assert_eq!(json_a["my_latest_attempt"]["agent"], wallet_a);
+        assert_eq!(json_a["my_latest_attempt"]["status"], "passed");
+
+        // 2. Verified Session B receives ONLY Wallet B's attempt (never A's).
+        let res_b = get_details(Some("sess-agent-b"))
+            .await
+            .expect("session B get_task_details");
+        let text_b = res_b.content[0].as_text().expect("text B").text.as_str();
+        let json_b: serde_json::Value = serde_json::from_str(text_b).unwrap();
+        assert_eq!(json_b["my_latest_attempt"]["attempt_id"], "att-agent-b");
+        assert_eq!(json_b["my_latest_attempt"]["agent"], wallet_b);
+        assert_ne!(json_b["my_latest_attempt"]["attempt_id"], "att-agent-a");
+
+        // 3. Anonymous session, missing session header, and registered-but-unverified
+        //    session ALL omit Authorization and receive NO my_latest_attempt.
+        for sid in [Some("sess-anon-c"), None, Some("sess-unverified-d")] {
+            let res = get_details(sid).await.expect("unauthenticated read");
+            let text = res.content[0].as_text().expect("text").text.as_str();
+            let json: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert!(
+                json.get("my_latest_attempt").is_none() || json["my_latest_attempt"].is_null(),
+                "unauthenticated session {sid:?} must not receive any my_latest_attempt: {json}"
+            );
+            assert_eq!(json["competing_attempts_count"], 2);
+        }
     }
 }
