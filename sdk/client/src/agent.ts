@@ -27,6 +27,7 @@ import {
   validatePreparedEvmCall,
   validatePreparedTransaction,
   type Action,
+  type BuildVerifyResponse,
   type CampaignListResponse,
   type ListProofsOptions,
   type PreflightTaskRequest,
@@ -34,6 +35,7 @@ import {
   type PreparedTransactionResponse,
   type ProofsResponse,
   type SubmitTaskRequest,
+  type SubmitTaskResponse,
   type TaskListResponse,
 } from "./shillbot/api.js";
 import {
@@ -60,11 +62,11 @@ export type SwarmNetwork = "mainnet" | "devnet";
 /** Default EVM gas price ceiling (`maxFeePerGas` = 50 gwei). */
 export const DEFAULT_MAX_NETWORK_FEE_WEI = 50_000_000_000n;
 
-/** Recoupable SOL advance (`0.0031 SOL` = `3_100_000` lamports = `3_000_000` rent + `100_000` first-task gas budget) fronted by `/agent/onboard`. */
-export const ONBOARD_ADVANCE_LAMPORTS = 3_100_000;
+/** Recoupable SOL advance (`0.0026 SOL` = `2_600_000` lamports) fronted by proof-gated onboarding / `/agent/onboard`. */
+export const ONBOARD_ADVANCE_LAMPORTS = 2_600_000;
 
-/** Minimum SOL balance (`0.003 SOL` = `3_000_000` lamports) required for self-paid `AgentState` initialization + lifecycle fees. */
-export const MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS = 3_000_000;
+/** Minimum SOL balance (`0.00255 SOL` = `2_550_000` lamports) required for self-paid `AgentState` initialization + lifecycle fees. */
+export const MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS = 2_550_000;
 
 /** Minimum SOL balance (`50_000` lamports) required for standalone post-claim `submit_work` fee payment. */
 const MIN_POST_CLAIM_SUBMIT_SOLANA_BALANCE_LAMPORTS = 50_000;
@@ -109,6 +111,10 @@ export interface ExecutedTaskResult<TConfirm = unknown> {
   signature: string;
   task_pda?: string;
   confirmation?: TConfirm;
+  attempt_id?: string;
+  open_competition?: boolean;
+  status?: string;
+  onboarded_advance_tx?: string | null;
 }
 
 export interface PreflightTaskOptions {
@@ -132,10 +138,14 @@ export interface ExecuteTaskOptions {
   feePayer?: string;
   /** Explicit authorized payout destination pubkey (base58) when `set_payout_to` is expected. */
   payoutTo?: string;
+  /** Optional inline Lean 4 proof source forwarded as `proof_lean` on `POST /tasks/:id/submit`. */
+  proofLean?: string;
   /** Optional self-reported prover harness tag forwarded on `POST /tasks/:id/submit`. */
   agentHarness?: string;
   /** Optional self-reported model family tag forwarded on `POST /tasks/:id/submit`. */
   modelFamily?: string;
+  /** Optional Open-Competition (`M2`) attempt ID forwarded on `POST /tasks/:id/build-verify`. */
+  attemptId?: string;
   extra?: Record<string, unknown>;
 }
 
@@ -269,20 +279,27 @@ export class SwarmAgent {
     submit: (
       id: string,
       body: SubmitTaskRequest | Record<string, unknown>,
-    ) => Promise<PreparedTransactionResponse>;
+    ) => Promise<SubmitTaskResponse>;
     preflight: <TResponse = PreflightTaskResponse>(
       id: string,
       opts?: PreflightTaskOptions,
     ) => Promise<TResponse>;
     submitAndExecute: (
       id: string,
-      contentId: string,
+      contentId?: string,
       opts?: ExecuteTaskOptions,
     ) => Promise<ExecutedTaskResult>;
-    buildVerify: (id: string) => Promise<PreparedTransactionResponse>;
+    buildVerify: (
+      id: string,
+      opts?: { attemptId?: string },
+    ) => Promise<BuildVerifyResponse>;
+    verify: (
+      id: string,
+      opts?: ExecuteTaskOptions & { attemptId?: string },
+    ) => Promise<ExecutedTaskResult>;
     verifyAndExecute: (
       id: string,
-      opts?: { connection?: Connection; payoutTo?: string },
+      opts?: ExecuteTaskOptions & { attemptId?: string },
     ) => Promise<ExecutedTaskResult>;
     buildFinalize: (id: string) => Promise<PreparedTransactionResponse>;
     finalizeAndExecute: (
@@ -501,19 +518,15 @@ export class SwarmAgent {
       },
       submitAndExecute: (id, contentId, opts) =>
         self.executeClaimOrSubmit(id, "submit", contentId, opts),
-      buildVerify: (id) =>
+      buildVerify: (id, opts) =>
         self.shillbotClient.buildVerify(id, {
           payer: self.auth.walletAddress,
           mcpBaseUrl: self.mcpUrl,
           network: self.network,
+          ...(opts?.attemptId ? { attemptId: opts.attemptId } : {}),
         }),
-      async verifyAndExecute(id, opts) {
-        const prepared = await self.tasks.buildVerify(id);
-        return self.executePreparedAction(id, "verify", prepared, {
-          connection: opts?.connection,
-          payoutTo: opts?.payoutTo,
-        });
-      },
+      verify: (id, opts) => self.verifyTask(id, opts),
+      verifyAndExecute: (id, opts) => self.verifyTask(id, opts),
       buildFinalize: (id) => self.shillbotClient.buildFinalize(id),
       async finalizeAndExecute(id, opts) {
         const prepared = await self.tasks.buildFinalize(id);
@@ -655,7 +668,7 @@ export class SwarmAgent {
     };
   }
 
-  /** Bootstrap a zero-funds Solana agent wallet via recoupable Advance PDA fronting (`3_100_000` lamports). */
+  /** Bootstrap a zero-funds Solana agent wallet via recoupable Advance PDA fronting (`2_600_000` lamports). */
   onboard<TResponse = unknown>(): Promise<TResponse> {
     return this.shillbotClient.onboard<TResponse>();
   }
@@ -665,13 +678,29 @@ export class SwarmAgent {
     return this.executeClaimOrSubmit(id, "claim", undefined, opts);
   }
 
-  /** Submit work for a task and execute the prepared transaction (with automatic `$0` wallet onboarding when enabled). */
+  /** Submit work for a task and execute the prepared transaction (or return immediately on M2 202 Accepted open competition). */
   submitWork(
     id: string,
-    contentId: string,
+    contentId?: string,
     opts?: ExecuteTaskOptions,
   ): Promise<ExecutedTaskResult> {
     return this.executeClaimOrSubmit(id, "submit", contentId, opts);
+  }
+
+  /** Build, locally validate, sign, broadcast, and confirm a task verification transaction (including M2 1-tx Open->Verified bundles). */
+  async verifyTask(
+    id: string,
+    opts?: ExecuteTaskOptions & { attemptId?: string },
+  ): Promise<ExecutedTaskResult> {
+    const prepared = await this.tasks.buildVerify(
+      id,
+      opts?.attemptId ? { attemptId: opts.attemptId } : undefined,
+    );
+    return this.executePreparedAction(id, "verify", prepared, {
+      connection: opts?.connection,
+      feePayer: opts?.feePayer,
+      payoutTo: opts?.payoutTo,
+    });
   }
 
   private requireSigner(): SwarmSigner {
@@ -702,9 +731,16 @@ export class SwarmAgent {
       }
       const suffix = sponsorMode !== "none" ? `?sponsor=${encodeURIComponent(query)}` : "";
       const payload: Record<string, unknown> = {
-        content_id: contentId ?? "",
         ...(opts?.extra ?? {}),
       };
+      if (opts?.proofLean !== undefined && payload.proof_lean === undefined) {
+        payload.proof_lean = opts.proofLean;
+      }
+      if (contentId !== undefined && contentId !== "") {
+        payload.content_id = contentId;
+      } else if (payload.content_id === undefined && payload.proof_lean === undefined) {
+        payload.content_id = contentId ?? "";
+      }
       if (opts?.agentHarness && payload.agent_harness === undefined) {
         payload.agent_harness = opts.agentHarness;
       }
@@ -739,12 +775,28 @@ export class SwarmAgent {
       }
     }
 
+    // M2 Open-Competition off-chain submission (`202 Accepted`, $0 gas):
+    // return immediately without calling RPC, signing, broadcasting, or auto-onboarding prematurely.
+    if (
+      action === "submit" &&
+      (prepared.open_competition === true || (!prepared.transaction && Boolean(prepared.attempt_id)))
+    ) {
+      return {
+        task_id: prepared.task_id ?? id,
+        signature: "",
+        ...(prepared.task_pda ? { task_pda: prepared.task_pda } : {}),
+        attempt_id: prepared.attempt_id,
+        open_competition: true,
+        status: prepared.status ?? "verifying",
+      };
+    }
+
     const connection =
       this.signer?.chain === "solana"
         ? (opts?.connection ?? new Connection(this.rpcUrl, "confirmed"))
         : opts?.connection;
 
-    // When a Solana wallet holds less than MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS (3_000_000 lamports
+    // When a Solana wallet holds less than MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS (2_550_000 lamports
     // for claim / atomic claim+submit) or MIN_POST_CLAIM_SUBMIT_SOLANA_BALANCE_LAMPORTS (50_000 lamports
     // for standalone submit) and receives a self-paid HTTP 200 transaction, onboard once and re-request.
     if (
@@ -847,14 +899,14 @@ export class SwarmAgent {
   /**
    * Resolve an authorized `payoutTo` pubkey (`P1-2` / `HIGH-02`):
    * - If caller explicitly passed `explicitPayoutTo`, return it verbatim.
-   * - Otherwise, NEVER trust `advance_backer` from the API response alone:
-   *   1. Verify `advancePda(advance_backer, walletAddress) === prepared.payout_to`.
-   *   2. Fetch the PDA on-chain via `connection.getAccountInfo(derived, "confirmed")` and require:
+   * - Otherwise, NEVER trust `advance_backer` or `required_payout_to` from the API response alone:
+   *   1. When `advance_backer` is provided, verify `advancePda(advance_backer, walletAddress) === candidatePayoutTo`.
+   *   2. Fetch the PDA on-chain via `connection.getAccountInfo(candidatePk, "confirmed")` and require:
    *      - account exists (`acct !== null && acct.lamports > 0`),
    *      - `acct.owner.equals(EXTENSION_CREDIT_PROGRAM_ID)`,
    *      - valid 113-byte `Advance` account (`sha256("account:Advance")[0..8]`) with
-   *        `backer === advance_backer`, `recipient === walletAddress`, and
-   *        `recouped_lamports < advance_lamports`.
+   *        `recipient === walletAddress`, canonical `advancePda(decoded.backer, walletAddress) === candidatePk`,
+   *        `backer === advance_backer` (when provided), and `recouped_lamports < advance_lamports`.
    *   3. On any mismatch or RPC error, return `undefined` so `validatePreparedTransaction`
    *      rejects any `set_payout_to` fail-closed.
    */
@@ -867,17 +919,25 @@ export class SwarmAgent {
     if (explicitPayoutTo !== undefined) {
       return explicitPayoutTo;
     }
-    if (!walletAddress || !prepared.payout_to || !prepared.advance_backer) {
+    const candidatePayoutTo = prepared.payout_to ?? prepared.required_payout_to ?? undefined;
+    if (!walletAddress || !candidatePayoutTo) {
       return undefined;
     }
     try {
-      const expectedBacker = new PublicKey(prepared.advance_backer);
       const expectedRecipient = new PublicKey(walletAddress);
-      const derived = advancePda(expectedBacker, expectedRecipient);
-      if (derived.toBase58() !== prepared.payout_to) {
-        return undefined;
+      let expectedBacker: PublicKey | undefined;
+      let candidatePk: PublicKey;
+      if (prepared.advance_backer) {
+        expectedBacker = new PublicKey(prepared.advance_backer);
+        const derived = advancePda(expectedBacker, expectedRecipient);
+        if (derived.toBase58() !== candidatePayoutTo) {
+          return undefined;
+        }
+        candidatePk = derived;
+      } else {
+        candidatePk = new PublicKey(candidatePayoutTo);
       }
-      const acct = await connection.getAccountInfo(derived, "confirmed");
+      const acct = await connection.getAccountInfo(candidatePk, "confirmed");
       if (!acct || acct.lamports <= 0) {
         return undefined;
       }
@@ -888,15 +948,18 @@ export class SwarmAgent {
       if (!decoded) {
         return undefined;
       }
+      if (expectedBacker && !decoded.backer.equals(expectedBacker)) {
+        return undefined;
+      }
       if (
-        !decoded.backer.equals(expectedBacker) ||
         !decoded.recipient.equals(expectedRecipient) ||
+        !advancePda(decoded.backer, expectedRecipient).equals(candidatePk) ||
         decoded.advanceLamports === 0n ||
         decoded.recoupedLamports >= decoded.advanceLamports
       ) {
         return undefined;
       }
-      return derived.toBase58();
+      return candidatePk.toBase58();
     } catch {
       return undefined;
     }
@@ -1009,7 +1072,8 @@ export class SwarmAgent {
       payoutToResolved?: boolean;
     },
   ): Promise<ExecutedTaskResult> {
-    if (!prepared.transaction) {
+    const encodedTx = prepared.transaction || prepared.co_signed_transaction || "";
+    if (!encodedTx) {
       throw new SwarmClientError({
         code: "INVALID_RESPONSE",
         operation: `tasks.${action}AndExecute`,
@@ -1018,7 +1082,7 @@ export class SwarmAgent {
     }
 
     if (action === "create") {
-      const txEscrow = extractCreateEscrowLamports(prepared.transaction);
+      const txEscrow = extractCreateEscrowLamports(encodedTx);
       if (txEscrow !== undefined && txEscrow > this.maxEscrowSpendLamports) {
         throw new SwarmClientError({
           code: "SPEND_CAP_EXCEEDED",
@@ -1031,7 +1095,7 @@ export class SwarmAgent {
     // C9 Network Fee Cap check first so fee cap breaches report SPEND_CAP_EXCEEDED
     let preInspected;
     try {
-      preInspected = inspectTransaction(prepared.transaction);
+      preInspected = inspectTransaction(encodedTx);
     } catch (err) {
       throw new SwarmClientError({
         code: "TRANSACTION_MISMATCH",
@@ -1068,11 +1132,11 @@ export class SwarmAgent {
         ? { escrowLamports: opts.expectedEscrowLamports }
         : {}),
     };
-    validatePreparedTransaction(prepared.transaction, expected);
+    validatePreparedTransaction(encodedTx, expected);
 
     const signature = await signBroadcastPreparedTransaction({
       connection,
-      transaction: prepared.transaction,
+      transaction: encodedTx,
       expected,
       sign: (tx) => signer.signTransaction(tx),
     });
@@ -1088,17 +1152,44 @@ export class SwarmAgent {
       signature,
       task_pda: prepared.task_pda,
       confirmation,
+      ...(prepared.attempt_id !== undefined ? { attempt_id: prepared.attempt_id } : {}),
+      ...(prepared.onboarded_advance_tx !== undefined
+        ? { onboarded_advance_tx: prepared.onboarded_advance_tx }
+        : {}),
     };
   }
 
   static adviseNextAction(task: Record<string, unknown>, nowMs = Date.now()): NextTaskAction {
     const rawState = String(task.state ?? task.status ?? "").trim().toLowerCase();
     const rawPlatform = task.platform;
-    const isOnChainAction =
+    const normalizedPlatform =
+      typeof rawPlatform === "string" ? rawPlatform.trim().toLowerCase() : undefined;
+    const isOpenCompetition =
+      rawPlatform === 10 ||
       rawPlatform === 11 ||
-      (typeof rawPlatform === "string" && rawPlatform.trim().toLowerCase() === "onchain_action");
+      normalizedPlatform === "10" ||
+      normalizedPlatform === "11" ||
+      normalizedPlatform === "lean_proof" ||
+      normalizedPlatform === "onchain_action";
     if (rawState === "open") {
-      return { step: isOnChainAction ? "submit" : "claim" };
+      if (isOpenCompetition) {
+        const latestAttempt =
+          task.my_latest_attempt && typeof task.my_latest_attempt === "object"
+            ? (task.my_latest_attempt as Record<string, unknown>)
+            : undefined;
+        const attemptStatus =
+          typeof latestAttempt?.status === "string"
+            ? latestAttempt.status.trim().toLowerCase()
+            : "";
+        if (attemptStatus === "passed") {
+          return { step: "verify" };
+        }
+        if (attemptStatus === "verifying") {
+          return { step: "wait_attestation" };
+        }
+        return { step: "submit" };
+      }
+      return { step: "claim" };
     }
     if (rawState === "claimed") {
       return { step: "submit" };

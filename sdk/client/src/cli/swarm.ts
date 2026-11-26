@@ -140,8 +140,8 @@ Commands:
   tasks init <id> [--dir <path>] [--force]   (scaffold pinned Lean 4 workspace — zero auth / zero SOL)
   tasks check <id> <proof-file> [--compile]  (static or remote compile preflight with diagnostics & compression metrics)
   tasks claim <id> [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]
-  tasks submit <id> (--content <str> | --proof-file <path>) [--harness <name>] [--model <name>] [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]
-  tasks verify <id> [--no-exec]
+  tasks submit <id> ([<content_id>] | --content <str> | --proof-file <path> | --proof-lean <src>) [--harness <name>] [--model <name>] [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]
+  tasks verify <id> [--attempt-id <id>] [--payout-to <pubkey>] [--no-exec]
   tasks finalize <id> [--no-exec]
   tasks expire <id> [--no-exec]              (client escrow refund past claim/submit deadline or past submitted_at + verification_timeout)
   proofs list [--limit N] [--policy N]       (public verified Lean 4 proofs & prover leaderboard)
@@ -580,13 +580,17 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
       }
       if (sub === "submit") {
         const id = rest[0]?.trim();
-        const content = getStringFlag(flags, "--content");
+        const content = getStringFlag(flags, "--content") ?? rest[1];
         const proofFile = getStringFlag(flags, "--proof-file");
+        const inlineProofLean = getStringFlag(flags, "--proof-lean");
         const harness = getStringFlag(flags, "--harness");
         const model = getStringFlag(flags, "--model");
-        if (!id || (!content && !proofFile)) {
+        if (proofFile && inlineProofLean !== undefined) {
+          throw new CliUsageError("Specify either --proof-file or --proof-lean, not both.");
+        }
+        if (!id || (!content && !proofFile && inlineProofLean === undefined)) {
           throw new CliUsageError(
-            "Usage: swarm tasks submit <task_id> (--content <str> | --proof-file <path>) [--harness <name>] [--model <name>] [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]",
+            "Usage: swarm tasks submit <task_id> ([<content_id>] | --content <str> | --proof-file <path> | --proof-lean <src>) [--harness <name>] [--model <name>] [--payout-to <pubkey>] [--fee-payer <pubkey>] [--no-exec]",
           );
         }
         let proofLean: string | undefined;
@@ -601,9 +605,29 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
           if (!proofLean.trim()) {
             throw new CliUsageError(`Proof file ${proofFile} is empty.`);
           }
+        } else if (inlineProofLean !== undefined) {
+          if (!inlineProofLean.trim()) {
+            throw new CliUsageError("Flag --proof-lean must not be empty.");
+          }
+          proofLean = inlineProofLean;
         }
         const payoutTo = getStringFlag(flags, "--payout-to");
         const feePayer = getStringFlag(flags, "--fee-payer");
+        const formatOpenCompetitionHuman = (res: {
+          task_id?: string;
+          attempt_id?: string;
+          status?: string;
+        }) => {
+          const targetId = res.task_id ?? id;
+          const attemptPart = res.attempt_id ? ` --attempt-id ${res.attempt_id}` : "";
+          stdout.write(
+            [
+              `Accepted (Open Competition — $0 gas) — task ${targetId}`,
+              `Attempt ID: ${res.attempt_id ?? "pending"} | Status: ${res.status ?? "verifying"}`,
+              `Next: poll \`swarm tasks get ${targetId}\`, then run \`swarm tasks verify ${targetId}${attemptPart}\` once passed.`,
+            ].join("\n") + "\n",
+          );
+        };
         if (noExec) {
           const submitBody: SubmitTaskRequest = {
             content_id: content ?? "",
@@ -612,34 +636,47 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
             ...(model ? { model_family: model } : {}),
           };
           const res = await agent.tasks.submit(id, submitBody);
-          writeOutput(stdout, jsonMode, res);
+          if (!jsonMode && res.open_competition === true) {
+            formatOpenCompetitionHuman(res);
+          } else {
+            writeOutput(stdout, jsonMode, res);
+          }
           return 0;
         }
-        const extra: Record<string, unknown> = {
-          ...(proofLean !== undefined ? { proof_lean: proofLean } : {}),
-          ...(harness ? { agent_harness: harness } : {}),
-          ...(model ? { model_family: model } : {}),
-        };
         const execOpts: ExecuteTaskOptions | undefined =
-          payoutTo || feePayer || harness || model || Object.keys(extra).length > 0
+          payoutTo || feePayer || harness || model || proofLean !== undefined
             ? {
                 ...(payoutTo ? { payoutTo } : {}),
                 ...(feePayer ? { feePayer } : {}),
+                ...(proofLean !== undefined ? { proofLean } : {}),
                 ...(harness ? { agentHarness: harness } : {}),
                 ...(model ? { modelFamily: model } : {}),
-                ...(Object.keys(extra).length > 0 ? { extra } : {}),
               }
             : undefined;
-        const res = await agent.tasks.submitAndExecute(id, content ?? "", execOpts);
-        writeOutput(stdout, jsonMode, res);
+        const res = await agent.tasks.submitAndExecute(id, content, execOpts);
+        if (!jsonMode && res.open_competition === true) {
+          formatOpenCompetitionHuman(res);
+        } else {
+          writeOutput(stdout, jsonMode, res);
+        }
         return 0;
       }
       if (sub === "verify") {
-        const id = rest[0];
-        if (!id) throw new CliUsageError("Usage: swarm tasks verify <task_id> [--no-exec]");
+        const id = rest[0]?.trim();
+        if (!id) {
+          throw new CliUsageError(
+            "Usage: swarm tasks verify <task_id> [--attempt-id <id>] [--payout-to <pubkey>] [--no-exec]",
+          );
+        }
+        const attemptId = getStringFlag(flags, "--attempt-id")?.trim() || undefined;
+        const payoutTo = getStringFlag(flags, "--payout-to");
+        const verifyOpts =
+          attemptId || payoutTo
+            ? { ...(attemptId ? { attemptId } : {}), ...(payoutTo ? { payoutTo } : {}) }
+            : undefined;
         const res = noExec
-          ? await agent.tasks.buildVerify(id)
-          : await agent.tasks.verifyAndExecute(id);
+          ? await agent.tasks.buildVerify(id, attemptId ? { attemptId } : undefined)
+          : await agent.tasks.verifyAndExecute(id, verifyOpts);
         writeOutput(stdout, jsonMode, res);
         return 0;
       }

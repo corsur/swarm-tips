@@ -511,4 +511,83 @@ describe("CLI tasks init, tasks check --compile, tasks submit --proof-file, and 
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("handles M2 Open-Competition 202 Accepted on `tasks submit --proof-file` without a signer or SOL", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "swarm-cli-m2-lean-"));
+    try {
+      const proofFile = join(dir, "Solution.lean");
+      const proofText = "import TargetStatement\ntheorem proof : statementProp := by exact trivial\n";
+      writeFileSync(proofFile, proofText, "utf8");
+      const jwt = makeJwt(Keypair.generate().publicKey.toBase58());
+
+      const seen: Array<{ url: string; body: unknown }> = [];
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        seen.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        return jsonResponse(
+          {
+            task_id: "camp:lean-open",
+            attempt_id: "att_lean_42",
+            open_competition: true,
+            status: "verifying",
+          },
+          202,
+        );
+      });
+
+      let jsonOut = "";
+      const jsonCode = await runSwarmCli(
+        ["tasks", "submit", "camp:lean-open", "--proof-file", proofFile, "--json"],
+        {
+          stdout: { write: (s) => ((jsonOut += s), true), isTTY: false },
+          stderr: { write: () => true },
+          env: { SWARM_AUTH_TOKEN: jwt },
+          fetch: fetchMock as unknown as typeof fetch,
+        },
+      );
+      expect(jsonCode).toBe(0);
+      expect(JSON.parse(jsonOut)).toEqual({
+        task_id: "camp:lean-open",
+        signature: "",
+        attempt_id: "att_lean_42",
+        open_competition: true,
+        status: "verifying",
+      });
+      expect(seen[0]).toEqual({
+        url: "https://api.shillbot.org/tasks/camp%3Alean-open/submit?sponsor=auto",
+        body: { proof_lean: proofText },
+      });
+
+      let ttyOut = "";
+      const ttyCode = await runSwarmCli(
+        ["tasks", "submit", "camp:lean-open", "--proof-file", proofFile],
+        {
+          stdout: { write: (s) => ((ttyOut += s), true), isTTY: true },
+          stderr: { write: () => true },
+          env: { SWARM_AUTH_TOKEN: jwt },
+          fetch: fetchMock as unknown as typeof fetch,
+        },
+      );
+      expect(ttyCode).toBe(0);
+      expect(ttyOut).toContain("Accepted (Open Competition — $0 gas)");
+      expect(ttyOut).toContain("att_lean_42");
+
+      // Type-level + runtime check on TaskResponse with M2 fields
+      const taskWithAttempt: TaskResponse = {
+        task_id: "camp:lean-open",
+        state: "open",
+        platform: 10,
+        competing_attempts_count: 3,
+        my_latest_attempt: {
+          attempt_id: "att_lean_42",
+          task_id: "camp:lean-open",
+          status: "passed",
+          score: 1_000_000,
+        },
+      };
+      expect(taskWithAttempt.my_latest_attempt?.status).toBe("passed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

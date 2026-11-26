@@ -10,9 +10,13 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
+  Secp256k1Program,
   SystemProgram,
   Transaction,
   TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
 } from "@solana/web3.js";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
@@ -59,6 +63,7 @@ import {
   SHILLBOT_PROGRAM_ID,
   advanceAccountDiscriminator,
   advancePda,
+  agentStatePda,
   buildClaim,
   buildCreate,
   buildExpire,
@@ -68,6 +73,7 @@ import {
   buildSubmit,
   buildVerify,
   decodeExtensionCreditAdvance,
+  globalStatePda,
   inspectTransaction,
   shillbotInstructionDiscriminator,
   verifyIntent,
@@ -104,12 +110,12 @@ function mockConnection(txSig = "5MockSig11111111111111111111111111111111111111"
 }
 
 describe("Version sync & multi-bin package contract", () => {
-  it("exports CLIENT_VERSION matching package.json 0.4.8 and registers both swarm and client bins", () => {
+  it("exports CLIENT_VERSION matching package.json 0.4.9 and registers both swarm and client bins", () => {
     const pkg = JSON.parse(readFileSync(resolve(clientRoot, "package.json"), "utf8")) as {
       version: string;
       bin: Record<string, string>;
     };
-    expect(pkg.version).toBe("0.4.8");
+    expect(pkg.version).toBe("0.4.9");
     expect(CLIENT_VERSION).toBe(pkg.version);
     expect(pkg.bin.swarm).toBe("./dist/cli/swarm.js");
     expect(pkg.bin.client).toBe("./dist/cli/swarm.js");
@@ -140,7 +146,7 @@ describe("Version sync & multi-bin package contract", () => {
       );
       expect(res.error).toBeUndefined();
       expect(res.status, res.stderr).toBe(0);
-      expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.8" });
+      expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.9" });
     } finally {
       rmSync(cliBundle, { force: true });
     }
@@ -955,7 +961,7 @@ describe("C6 CLI security, keyfile permissions, swarm tx verify --json, and Pyth
     });
     expect(proofRef).toMatch(/^eip155:56:0x[0-9a-f]{64}:0:sig:[A-Za-z0-9_-]{87}$/);
 
-    // adviseNextAction routes open onchain_action directly to submit
+    // adviseNextAction routes open M2 Open-Competition platforms (10/11) directly to submit
     expect(SwarmAgent.adviseNextAction({ state: "open", platform: "onchain_action" })).toEqual({
       step: "submit",
     });
@@ -963,6 +969,9 @@ describe("C6 CLI security, keyfile permissions, swarm tx verify --json, and Pyth
       step: "submit",
     });
     expect(SwarmAgent.adviseNextAction({ state: "open", platform: "lean_proof" })).toEqual({
+      step: "submit",
+    });
+    expect(SwarmAgent.adviseNextAction({ state: "open", platform: 5 })).toEqual({
       step: "claim",
     });
 
@@ -2312,9 +2321,9 @@ describe("Onboarding, Devnet Advance PDA, 0x EVM CLI keyfiles, and Python 8aa400
     expect(pyFinOk.status).toBe(0);
   });
 
-  it("auto-onboards an underfunded Solana wallet (3.1M advance) and verifies on-chain Advance PDA on Mainnet", async () => {
-    expect(ONBOARD_ADVANCE_LAMPORTS).toBe(3_100_000);
-    expect(MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS).toBe(3_000_000);
+  it("auto-onboards an underfunded Solana wallet (2.6M advance) and verifies on-chain Advance PDA on Mainnet", async () => {
+    expect(ONBOARD_ADVANCE_LAMPORTS).toBe(2_600_000);
+    expect(MIN_SELF_PAID_SOLANA_BALANCE_LAMPORTS).toBe(2_550_000);
 
     const agentKp = Keypair.generate();
     const backerKp = Keypair.generate();
@@ -2528,7 +2537,7 @@ describe("Onboarding, Devnet Advance PDA, 0x EVM CLI keyfiles, and Python 8aa400
       expect(JSON.parse(onboardOut)).toEqual({
         onboarded: true,
         wallet: solKp.publicKey.toBase58(),
-        advance_lamports: 3_100_000,
+        advance_lamports: 2_600_000,
       });
 
       const evmJwt = makeJwt(expectedEvmAddress, Math.floor(Date.now() / 1000) + 3600);
@@ -2581,5 +2590,829 @@ describe("Onboarding, Devnet Advance PDA, 0x EVM CLI keyfiles, and Python 8aa400
       await new Promise<void>((resolveClose) => rpcServer.close(() => resolveClose()));
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Phase 0A: M2 Open-Competition 1-tx verify bundles, $0 off-chain submit, auto-onboard verify & CLI", () => {
+  const BLOCKHASH = "11111111111111111111111111111111";
+
+  function makeVerifyTaskAttestedIx(params: {
+    task: PublicKey;
+    attester: PublicKey;
+    score: bigint;
+    verificationHash?: Buffer;
+    reopenAgent?: PublicKey;
+  }): TransactionInstruction {
+    const data = Buffer.alloc(48);
+    shillbotInstructionDiscriminator("verify_task_attested").copy(data, 0);
+    data.writeBigUInt64LE(params.score, 8);
+    (params.verificationHash ?? Buffer.alloc(32, 0xab)).copy(data, 16);
+    const keys = [
+      { pubkey: params.task, isSigner: false, isWritable: true },
+      { pubkey: globalStatePda(), isSigner: false, isWritable: false },
+      { pubkey: params.attester, isSigner: true, isWritable: false },
+    ];
+    if (params.reopenAgent) {
+      keys.push({
+        pubkey: agentStatePda(params.reopenAgent),
+        isSigner: false,
+        isWritable: true,
+      });
+    }
+    return new TransactionInstruction({
+      programId: SHILLBOT_PROGRAM_ID,
+      keys,
+      data,
+    });
+  }
+
+  function makeClaimWithSysvarIx(wallet: PublicKey, task: PublicKey): TransactionInstruction {
+    const ix = buildInstruction({
+      action: "claim",
+      wallet: wallet.toBase58(),
+      network: "devnet",
+      recentBlockhash: BLOCKHASH,
+      taskPda: task.toBase58(),
+    });
+    ix.keys.push({ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false });
+    return ix;
+  }
+
+  function makeSubmitIx(
+    wallet: PublicKey,
+    task: PublicKey,
+    contentId = "lean4:sha256:0123456789abcdef",
+  ): TransactionInstruction {
+    return buildInstruction({
+      action: "submit",
+      wallet: wallet.toBase58(),
+      network: "devnet",
+      recentBlockhash: BLOCKHASH,
+      taskPda: task.toBase58(),
+      contentId,
+    });
+  }
+
+  function compileV0Base64(
+    feePayer: PublicKey,
+    instructions: TransactionInstruction[],
+    signers: Keypair[] = [],
+  ): string {
+    const msg = new TransactionMessage({
+      payerKey: feePayer,
+      recentBlockhash: BLOCKHASH,
+      instructions,
+    }).compileToV0Message();
+    const vtx = new VersionedTransaction(msg);
+    if (signers.length > 0) {
+      vtx.sign(signers);
+    }
+    return Buffer.from(vtx.serialize()).toString("base64");
+  }
+
+  it("verifyBuiltTransaction accepts valid M2 1-tx verify bundles (with and without set_payout_to) and rejects tampered bundles", () => {
+    const agentKp = Keypair.generate();
+    const oracleKp = Keypair.generate();
+    const otherKp = Keypair.generate();
+    const backerKp = Keypair.generate();
+    const taskPk = Keypair.generate().publicKey;
+    const otherTaskPk = Keypair.generate().publicKey;
+    const advPk = advancePda(backerKp.publicKey, agentKp.publicKey);
+    const wallet = agentKp.publicKey.toBase58();
+    const taskPda = taskPk.toBase58();
+    const oracle = oracleKp.publicKey.toBase58();
+    const cid = "lean4:sha256:deadbeefcafebabe";
+
+    const cbIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 });
+    const claimIx = makeClaimWithSysvarIx(agentKp.publicKey, taskPk);
+    const payoutIx = buildShillbotInstruction({
+      name: "set_payout_to",
+      accounts: { task: taskPk, agent: agentKp.publicKey },
+      args: { payout_to: advPk },
+    });
+    const submitIx = makeSubmitIx(agentKp.publicKey, taskPk, cid);
+    const verifyPassIx = makeVerifyTaskAttestedIx({
+      task: taskPk,
+      attester: oracleKp.publicKey,
+      score: 1_000_000n,
+    });
+
+    // 1. Valid M2 bundle without set_payout_to: [ComputeBudget, claim_task(sysvar), submit_work, verify_task_attested(MAX_SCORE)]
+    const m2DirectB64 = compileV0Base64(
+      agentKp.publicKey,
+      [cbIx, claimIx, submitIx, verifyPassIx],
+      [oracleKp],
+    );
+    const inspectedDirect = verifyBuiltTransaction(m2DirectB64, {
+      action: "verify",
+      network: "devnet",
+      wallet,
+      taskPda,
+      oracleAuthority: oracle,
+      contentId: cid,
+    });
+    expect(inspectedDirect.fee_payer).toBe(wallet);
+    expect(inspectedDirect.signers).toContain(wallet);
+    expect(inspectedDirect.signers).toContain(oracle);
+
+    // 2. Valid M2 bundle WITH set_payout_to: [ComputeBudget, claim_task(sysvar), set_payout_to(adv), submit_work, verify_task_attested(MAX_SCORE)]
+    const m2PayoutB64 = compileV0Base64(
+      agentKp.publicKey,
+      [cbIx, claimIx, payoutIx, submitIx, verifyPassIx],
+      [oracleKp],
+    );
+    const inspectedPayout = verifyBuiltTransaction(m2PayoutB64, {
+      action: "verify",
+      network: "devnet",
+      wallet,
+      taskPda,
+      oracleAuthority: oracle,
+      payoutTo: advPk.toBase58(),
+    });
+    expect(inspectedPayout.fee_payer).toBe(wallet);
+
+    // 3. Reject unauthorized set_payout_to (missing expected.payoutTo or mismatched destination)
+    expect(() =>
+      verifyBuiltTransaction(m2PayoutB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/Unexpected set_payout_to instruction/);
+    expect(() =>
+      verifyBuiltTransaction(m2PayoutB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+        payoutTo: Keypair.generate().publicKey.toBase58(),
+      }),
+    ).toThrow(/destination pubkey/);
+
+    // 4. Reject missing set_payout_to when caller required expected.payoutTo
+    expect(() =>
+      verifyBuiltTransaction(m2DirectB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+        payoutTo: advPk.toBase58(),
+      }),
+    ).toThrow(/Expected set_payout_to/);
+
+    // 5. Reject score == 0 M2 bundle (and non-MAX_SCORE)
+    const scoreZeroB64 = compileV0Base64(
+      agentKp.publicKey,
+      [
+        cbIx,
+        claimIx,
+        submitIx,
+        makeVerifyTaskAttestedIx({ task: taskPk, attester: oracleKp.publicKey, score: 0n }),
+      ],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(scoreZeroB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/MAX_SCORE/);
+
+    const partialScoreB64 = compileV0Base64(
+      agentKp.publicKey,
+      [
+        cbIx,
+        claimIx,
+        submitIx,
+        makeVerifyTaskAttestedIx({ task: taskPk, attester: oracleKp.publicKey, score: 500_000n }),
+      ],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(partialScoreB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/MAX_SCORE/);
+
+    // 6. Reject oracle as fee_payer (protocol must never pay M2 verify gas!)
+    const oracleFeePayerB64 = compileV0Base64(
+      oracleKp.publicKey,
+      [cbIx, claimIx, submitIx, verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(oracleFeePayerB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(TransactionMismatchError);
+
+    // 7. Reject wrong ordering: [submit, claim, verify], [verify, claim, submit], [claim, submit, set_payout_to, verify], [set_payout_to, claim, submit, verify]
+    const submitBeforeClaimB64 = compileV0Base64(
+      agentKp.publicKey,
+      [submitIx, claimIx, verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(submitBeforeClaimB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(TransactionMismatchError);
+
+    const verifyFirstB64 = compileV0Base64(
+      agentKp.publicKey,
+      [verifyPassIx, claimIx, submitIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(verifyFirstB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/strict order/);
+
+    const payoutAfterSubmitB64 = compileV0Base64(
+      agentKp.publicKey,
+      [claimIx, submitIx, payoutIx, verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(payoutAfterSubmitB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+        payoutTo: advPk.toBase58(),
+      }),
+    ).toThrow(/Unexpected set_payout_to/);
+
+    const payoutBeforeClaimB64 = compileV0Base64(
+      agentKp.publicKey,
+      [payoutIx, claimIx, submitIx, verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(payoutBeforeClaimB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+        payoutTo: advPk.toBase58(),
+      }),
+    ).toThrow(/Unexpected set_payout_to/);
+
+    // 8. Reject duplicate companions and incomplete M2 bundles ([claim, verify] missing submit)
+    const dupClaimB64 = compileV0Base64(
+      agentKp.publicKey,
+      [claimIx, claimIx, submitIx, verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(dupClaimB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(TransactionMismatchError);
+
+    const missingSubmitB64 = compileV0Base64(
+      agentKp.publicKey,
+      [claimIx, verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(missingSubmitB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(TransactionMismatchError);
+
+    // 9. Reject wrong authority on claim_task[3], submit_work[3], or set_payout_to[1]
+    const wrongClaimAuthB64 = compileV0Base64(
+      agentKp.publicKey,
+      [makeClaimWithSysvarIx(otherKp.publicKey, taskPk), submitIx, verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(wrongClaimAuthB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/claim_task authority slot/);
+
+    const wrongSubmitAuthB64 = compileV0Base64(
+      agentKp.publicKey,
+      [claimIx, makeSubmitIx(otherKp.publicKey, taskPk, cid), verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(wrongSubmitAuthB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/submit_work authority slot/);
+
+    const wrongPayoutAuthIx = buildShillbotInstruction({
+      name: "set_payout_to",
+      accounts: { task: taskPk, agent: otherKp.publicKey },
+      args: { payout_to: advPk },
+    });
+    const wrongPayoutAuthB64 = compileV0Base64(
+      agentKp.publicKey,
+      [claimIx, wrongPayoutAuthIx, submitIx, verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(wrongPayoutAuthB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+        payoutTo: advPk.toBase58(),
+      }),
+    ).toThrow(/set_payout_to authority slot/);
+
+    // 10. Reject mismatched task PDA on companion claim_task or submit_work
+    const wrongClaimTaskB64 = compileV0Base64(
+      agentKp.publicKey,
+      [makeClaimWithSysvarIx(agentKp.publicKey, otherTaskPk), submitIx, verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(wrongClaimTaskB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/claim_task account \[0\]/);
+
+    const wrongSubmitTaskB64 = compileV0Base64(
+      agentKp.publicKey,
+      [claimIx, makeSubmitIx(agentKp.publicKey, otherTaskPk, cid), verifyPassIx],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(wrongSubmitTaskB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/submit_work account \[0\]/);
+
+    // 11. Reject unexpected programs (SystemProgram.transfer or Secp256k1Program) in M2 bundle
+    const drainB64 = compileV0Base64(
+      agentKp.publicKey,
+      [
+        SystemProgram.transfer({
+          fromPubkey: agentKp.publicKey,
+          toPubkey: otherKp.publicKey,
+          lamports: 1_000_000,
+        }),
+        claimIx,
+        submitIx,
+        verifyPassIx,
+      ],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(drainB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/Unexpected program/);
+
+    const secpSmuggledB64 = compileV0Base64(
+      agentKp.publicKey,
+      [
+        new TransactionInstruction({
+          programId: Secp256k1Program.programId,
+          keys: [],
+          data: Buffer.from([0]),
+        }),
+        claimIx,
+        submitIx,
+        verifyPassIx,
+      ],
+      [oracleKp],
+    );
+    expect(() =>
+      verifyBuiltTransaction(secpSmuggledB64, {
+        action: "verify",
+        network: "devnet",
+        wallet,
+        taskPda,
+      }),
+    ).toThrow(/Unexpected program/);
+  });
+
+  it("SwarmAgent.submitWork handles 202 Accepted M2 open_competition without calling RPC, signer, onboard, or confirm", async () => {
+    const agentKp = Keypair.generate();
+    const baseSigner = fromSolanaKeypair(agentKp);
+    const signTxSpy = vi.fn();
+    const signer = {
+      ...baseSigner,
+      signTransaction: <T extends Transaction | VersionedTransaction>(tx: T): Promise<T> => {
+        signTxSpy(tx);
+        return baseSigner.signTransaction(tx);
+      },
+    };
+    const jwt = makeJwt(signer.address, Math.floor(Date.now() / 1000) + 3600);
+
+    const rpcGetBalance = vi.fn(async () => 0);
+    const rpcSend = vi.fn(async () => "should-never-send");
+    const conn = {
+      getBalance: rpcGetBalance,
+      sendRawTransaction: rpcSend,
+      confirmTransaction: vi.fn(),
+    } as unknown as Connection;
+
+    const seenRequests: Array<{ url: string; body: unknown }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      seenRequests.push({ url, body });
+      if (url.includes("/tasks/camp%3Alean-m2/submit")) {
+        return jsonResponse(
+          {
+            task_id: "camp:lean-m2",
+            attempt_id: "att_zero_gas_1",
+            open_competition: true,
+            status: "verifying",
+            message: "Queued off-chain at $0 gas",
+          },
+          202,
+        );
+      }
+      throw new Error(`Unexpected request (must not call onboard or confirm): ${url}`);
+    });
+
+    const agent = createSwarmAgent({
+      signer,
+      token: jwt,
+      network: "devnet",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const proofLean = "import TargetStatement\ntheorem proof : statementProp := by trivial\n";
+    const res = await agent.submitWork("camp:lean-m2", undefined, {
+      proofLean,
+      agentHarness: "swarm-sdk",
+      modelFamily: "gemini-2.5-pro",
+      connection: conn,
+    });
+
+    expect(res).toEqual({
+      task_id: "camp:lean-m2",
+      signature: "",
+      attempt_id: "att_zero_gas_1",
+      open_competition: true,
+      status: "verifying",
+    });
+    expect(seenRequests).toEqual([
+      {
+        url: "https://api.shillbot.org/tasks/camp%3Alean-m2/submit?sponsor=auto&network=devnet",
+        body: {
+          proof_lean: proofLean,
+          agent_harness: "swarm-sdk",
+          model_family: "gemini-2.5-pro",
+        },
+      },
+    ]);
+    expect(rpcGetBalance).not.toHaveBeenCalled();
+    expect(rpcSend).not.toHaveBeenCalled();
+    expect(signTxSpy).not.toHaveBeenCalled();
+  });
+
+  it("SwarmAgent.tasks.verify handles attemptId + co_signed_transaction + onboarded_advance_tx + required_payout_to with on-chain Advance check", async () => {
+    const agentKp = Keypair.generate();
+    const oracleKp = Keypair.generate();
+    const backerKp = Keypair.generate();
+    const taskPk = Keypair.generate().publicKey;
+    const signer = fromSolanaKeypair(agentKp);
+    const jwt = makeJwt(signer.address, Math.floor(Date.now() / 1000) + 3600);
+    const advPk = advancePda(backerKp.publicKey, agentKp.publicKey);
+    const onboardTxSig = "5AutoOnboardAdvanceSig11111111111111111111111";
+
+    const m2BundleB64 = compileV0Base64(
+      agentKp.publicKey,
+      [
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }),
+        makeClaimWithSysvarIx(agentKp.publicKey, taskPk),
+        buildShillbotInstruction({
+          name: "set_payout_to",
+          accounts: { task: taskPk, agent: agentKp.publicKey },
+          args: { payout_to: advPk },
+        }),
+        makeSubmitIx(agentKp.publicKey, taskPk, "lean4:sha256:abcd"),
+        makeVerifyTaskAttestedIx({
+          task: taskPk,
+          attester: oracleKp.publicKey,
+          score: 1_000_000n,
+        }),
+      ],
+      [oracleKp],
+    );
+
+    const advanceData = encodeAdvanceAccountData({
+      backer: backerKp.publicKey,
+      recipient: agentKp.publicKey,
+      advanceLamports: BigInt(ONBOARD_ADVANCE_LAMPORTS),
+      recoupedLamports: 0n,
+    });
+
+    const seenUrls: string[] = [];
+    const seenConfirmBodies: unknown[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seenUrls.push(url);
+      if (url === "https://api.shillbot.org/tasks/camp%3Am2/build-verify?network=devnet&attempt_id=att_pass_9") {
+        return jsonResponse({
+          task_id: "camp:m2",
+          task_pda: taskPk.toBase58(),
+          composite_score: 1_000_000,
+          verification_hash: "ab".repeat(32),
+          switchboard_feed: oracleKp.publicKey.toBase58(),
+          verification_kind: 1,
+          co_signed_transaction: m2BundleB64,
+          required_payout_to: advPk.toBase58(),
+          // Intentionally omit advance_backer on first call to prove on-chain Advance PDA self-verification!
+          attempt_id: "att_pass_9",
+          onboarded_advance_tx: onboardTxSig,
+        });
+      }
+      if (url === "https://api.shillbot.org/tasks/camp%3Am2/confirm?network=devnet") {
+        seenConfirmBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ task_id: "camp:m2", state: "verified" });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    const getAccountInfoMock = vi.fn(async (pk: PublicKey) => {
+      expect(pk.toBase58()).toBe(advPk.toBase58());
+      return {
+        data: advanceData,
+        executable: false,
+        lamports: 1_672_080,
+        owner: EXTENSION_CREDIT_PROGRAM_ID,
+      };
+    });
+    const sendRawMock = vi.fn(async () => "5M2VerifySig1111111111111111111111111111111");
+    const conn = {
+      getAccountInfo: getAccountInfoMock,
+      sendRawTransaction: sendRawMock,
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+    } as unknown as Connection;
+
+    const agent = createSwarmAgent({
+      signer,
+      token: jwt,
+      network: "devnet",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const res = await agent.tasks.verify("camp:m2", {
+      attemptId: "att_pass_9",
+      connection: conn,
+    });
+
+    expect(res).toMatchObject({
+      task_id: "camp:m2",
+      signature: "5M2VerifySig1111111111111111111111111111111",
+      task_pda: taskPk.toBase58(),
+      attempt_id: "att_pass_9",
+      onboarded_advance_tx: onboardTxSig,
+      confirmation: { task_id: "camp:m2", state: "verified" },
+    });
+    expect(seenUrls).toEqual([
+      "https://api.shillbot.org/tasks/camp%3Am2/build-verify?network=devnet&attempt_id=att_pass_9",
+      "https://api.shillbot.org/tasks/camp%3Am2/confirm?network=devnet",
+    ]);
+    expect(seenConfirmBodies).toEqual([
+      {
+        tx_signature: "5M2VerifySig1111111111111111111111111111111",
+        action: "verify",
+        task_pda: taskPk.toBase58(),
+      },
+    ]);
+    expect(getAccountInfoMock).toHaveBeenCalledTimes(1);
+    expect(sendRawMock).toHaveBeenCalledTimes(1);
+
+    // If on-chain Advance check fails (nonexistent PDA), verify MUST reject fail-closed without broadcasting!
+    const sendNever = vi.fn(async () => "never");
+    const badConn = {
+      getAccountInfo: vi.fn(async () => null),
+      sendRawTransaction: sendNever,
+      confirmTransaction: vi.fn(),
+    } as unknown as Connection;
+    await expect(
+      agent.tasks.verify("camp:m2", { attemptId: "att_pass_9", connection: badConn }),
+    ).rejects.toThrow(/Unexpected set_payout_to instruction/);
+    expect(sendNever).not.toHaveBeenCalled();
+
+    // Also verify Mainnet ShillbotApiClient.buildVerify appends `?attempt_id=` without `&network=`
+    const seenMainnetUrls: string[] = [];
+    const mainnetApi = new ShillbotApiClient({
+      baseUrl: "https://api.shillbot.org",
+      network: "mainnet",
+      getToken: () => jwt,
+      fetch: (async (input: RequestInfo | URL) => {
+        seenMainnetUrls.push(String(input));
+        return jsonResponse({
+          task_id: "camp:m2-main",
+          task_pda: taskPk.toBase58(),
+          composite_score: 1_000_000,
+          verification_hash: "ab".repeat(32),
+          switchboard_feed: oracleKp.publicKey.toBase58(),
+          co_signed_transaction: m2BundleB64,
+          attempt_id: "att_main_1",
+        });
+      }) as typeof fetch,
+    });
+    const builtMain = await mainnetApi.buildVerify("camp:m2-main", { attemptId: "att_main_1" });
+    expect(seenMainnetUrls).toEqual([
+      "https://api.shillbot.org/tasks/camp%3Am2-main/build-verify?attempt_id=att_main_1",
+    ]);
+    expect(builtMain.transaction).toBe(m2BundleB64);
+    expect(builtMain.attempt_id).toBe("att_main_1");
+  });
+
+  it("SwarmAgent.tasks.nextAction routes Open platform=10|11 tasks across no-attempt, verifying, failed, and passed states", () => {
+    const agent = createSwarmAgent({ fetch: vi.fn() as unknown as typeof fetch });
+
+    for (const platform of [10, 11, "lean_proof", "onchain_action"] as const) {
+      expect(agent.tasks.nextAction({ state: "open", platform })).toEqual({ step: "submit" });
+      expect(
+        agent.tasks.nextAction({ state: "open", platform, my_latest_attempt: null }),
+      ).toEqual({ step: "submit" });
+      expect(
+        agent.tasks.nextAction({
+          state: "open",
+          platform,
+          my_latest_attempt: { attempt_id: "a1", status: "verifying" },
+        }),
+      ).toEqual({ step: "wait_attestation" });
+      expect(
+        agent.tasks.nextAction({
+          state: "open",
+          platform,
+          my_latest_attempt: { attempt_id: "a2", status: "failed", check_detail: "compile error" },
+        }),
+      ).toEqual({ step: "submit" });
+      expect(
+        agent.tasks.nextAction({
+          state: "open",
+          platform,
+          my_latest_attempt: { attempt_id: "a3", status: "passed", score: 1_000_000 },
+        }),
+      ).toEqual({ step: "verify" });
+    }
+
+    // Legacy platforms still advise claim on open tasks
+    expect(agent.tasks.nextAction({ state: "open", platform: 4 })).toEqual({ step: "claim" });
+    expect(agent.tasks.nextAction({ state: "open", platform: 5 })).toEqual({ step: "claim" });
+    expect(agent.tasks.nextAction({ state: "open", platform: 9 })).toEqual({ step: "claim" });
+  });
+
+  it("CLI supports `tasks submit` with --proof-lean / positional content_id on M2 202 Accepted and `tasks verify --attempt-id`", async () => {
+    const kp = Keypair.generate();
+    const jwt = makeJwt(kp.publicKey.toBase58(), Math.floor(Date.now() / 1000) + 3600);
+    const taskPda = Keypair.generate().publicKey.toBase58();
+
+    const seen: Array<{ url: string; body?: unknown }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.includes("/tasks/camp%3Am2-cli/submit")) {
+        return jsonResponse(
+          {
+            task_id: "camp:m2-cli",
+            attempt_id: "att_cli_77",
+            open_competition: true,
+            status: "verifying",
+          },
+          202,
+        );
+      }
+      if (url.includes("/tasks/camp%3Am2-cli/build-verify")) {
+        return jsonResponse({
+          task_id: "camp:m2-cli",
+          task_pda: taskPda,
+          composite_score: 1_000_000,
+          verification_hash: "cd".repeat(32),
+          switchboard_feed: Keypair.generate().publicKey.toBase58(),
+          co_signed_transaction: "AQID",
+          attempt_id: "att_cli_77",
+          onboarded_advance_tx: "5AdvCliSig11111111111111111111111111111111",
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    // 1. CLI `tasks submit --proof-lean ... --json` on M2 202 Accepted (execute path, no RPC/tx!)
+    let submitJsonOut = "";
+    const submitJsonCode = await runSwarmCli(
+      [
+        "tasks",
+        "submit",
+        "camp:m2-cli",
+        "--proof-lean",
+        "theorem proof : statementProp := by trivial",
+        "--network",
+        "devnet",
+        "--json",
+      ],
+      {
+        stdout: { write: (s) => ((submitJsonOut += s), true), isTTY: false },
+        stderr: { write: () => true },
+        env: { SWARM_AUTH_TOKEN: jwt },
+        fetch: fetchMock as unknown as typeof fetch,
+      },
+    );
+    expect(submitJsonCode).toBe(0);
+    expect(JSON.parse(submitJsonOut)).toEqual({
+      task_id: "camp:m2-cli",
+      signature: "",
+      attempt_id: "att_cli_77",
+      open_competition: true,
+      status: "verifying",
+    });
+    expect(seen[0]).toEqual({
+      url: "https://api.shillbot.org/tasks/camp%3Am2-cli/submit?sponsor=auto&network=devnet",
+      body: { proof_lean: "theorem proof : statementProp := by trivial" },
+    });
+
+    // 2. CLI `tasks submit` in human TTY mode with positional content_id prints clean M2 message (no empty tx signature!)
+    let submitHumanOut = "";
+    const submitHumanCode = await runSwarmCli(
+      ["tasks", "submit", "camp:m2-cli", "eip155:8453:0x1234:0", "--network", "devnet"],
+      {
+        stdout: { write: (s) => ((submitHumanOut += s), true), isTTY: true },
+        stderr: { write: () => true },
+        env: { SWARM_AUTH_TOKEN: jwt },
+        fetch: fetchMock as unknown as typeof fetch,
+      },
+    );
+    expect(submitHumanCode).toBe(0);
+    expect(submitHumanOut).toContain("Accepted (Open Competition — $0 gas)");
+    expect(submitHumanOut).toContain("att_cli_77");
+    expect(submitHumanOut).toContain("tasks verify camp:m2-cli --attempt-id att_cli_77");
+    expect(seen[1].body).toEqual({ content_id: "eip155:8453:0x1234:0" });
+
+    // 3. CLI `tasks verify <id> --attempt-id <aid> --no-exec --json` appends attempt_id query param
+    let verifyOut = "";
+    const verifyCode = await runSwarmCli(
+      [
+        "tasks",
+        "verify",
+        "camp:m2-cli",
+        "--attempt-id",
+        "att_cli_77",
+        "--network",
+        "devnet",
+        "--no-exec",
+        "--json",
+      ],
+      {
+        stdout: { write: (s) => ((verifyOut += s), true), isTTY: false },
+        stderr: { write: () => true },
+        env: { SWARM_AUTH_TOKEN: jwt },
+        fetch: fetchMock as unknown as typeof fetch,
+      },
+    );
+    expect(verifyCode).toBe(0);
+    expect(seen[2].url).toBe(
+      "https://api.shillbot.org/tasks/camp%3Am2-cli/build-verify?network=devnet&attempt_id=att_cli_77",
+    );
+    expect(JSON.parse(verifyOut)).toMatchObject({
+      task_id: "camp:m2-cli",
+      transaction: "AQID",
+      co_signed_transaction: "AQID",
+      attempt_id: "att_cli_77",
+      onboarded_advance_tx: "5AdvCliSig11111111111111111111111111111111",
+    });
   });
 });

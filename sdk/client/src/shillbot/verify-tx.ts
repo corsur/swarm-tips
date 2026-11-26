@@ -1,5 +1,10 @@
 import { Buffer } from "buffer";
-import { ComputeBudgetProgram, PublicKey, Secp256k1Program } from "@solana/web3.js";
+import {
+  ComputeBudgetProgram,
+  PublicKey,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
+  Secp256k1Program,
+} from "@solana/web3.js";
 import { SHILLBOT_PROGRAM_ID, shillbotInstructionDiscriminator } from "../contracts/index.js";
 import { SwarmClientError, TransactionMismatchError } from "../errors.js";
 import {
@@ -20,6 +25,9 @@ export const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 100_000n;
 
 /** Solana runtime ceiling for `ComputeBudget::SetComputeUnitLimit` (`1_400_000` CUs). */
 export const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
+
+/** Full passing composite score (`1_000_000`) required on M2 Open-Competition 1-tx verify bundles. */
+const MAX_VERIFY_SCORE = 1_000_000n;
 
 const MIN_HEAP_FRAME_BYTES = 32 * 1024;
 const MAX_HEAP_FRAME_BYTES = 256 * 1024;
@@ -1019,6 +1027,187 @@ export function verifyBuiltTransaction(
       expectedPayoutPubkey,
       operation,
     );
+    return inspected;
+  }
+
+  // M2 Open-Competition 1-tx verify bundle:
+  // `[ComputeBudget?, claim_task(sysvar), set_payout_to?, submit_work, verify_task_attested(MAX_SCORE)]`
+  const isM2VerifyNoPayout =
+    isVerifyLifecycle &&
+    primary.spec.name === "verify_task_attested" &&
+    companions.length === 2 &&
+    companions[0].spec.name === "claim_task" &&
+    companions[1].spec.name === "submit_work";
+  const isM2VerifyWithPayout =
+    isVerifyLifecycle &&
+    primary.spec.name === "verify_task_attested" &&
+    companions.length === 3 &&
+    companions[0].spec.name === "claim_task" &&
+    companions[1].spec.name === "set_payout_to" &&
+    companions[2].spec.name === "submit_work";
+
+  if (isM2VerifyNoPayout || isM2VerifyWithPayout) {
+    const disallowedInM2 = new Set<string>([
+      SWITCHBOARD_PROGRAM_IDS[expected.network],
+      Secp256k1Program.programId.toBase58(),
+    ]);
+    for (const extraAllowed of expected.allowedProgramIds ?? []) {
+      disallowedInM2.delete(extraAllowed);
+    }
+    const unexpectedProgramInM2 = inspected.instructions.find((ix) =>
+      disallowedInM2.has(ix.program_id),
+    );
+    if (unexpectedProgramInM2) {
+      throw txMismatch(
+        operation,
+        `Unexpected program ${unexpectedProgramInM2.program_id} in M2 verify bundle`,
+      );
+    }
+    if (inspected.fee_payer !== expected.wallet) {
+      throw txMismatch(
+        operation,
+        `M2 verify bundle requires fee_payer ${expected.wallet}, got ${inspected.fee_payer}`,
+      );
+    }
+    if (primary.ix.accounts[2] === inspected.fee_payer) {
+      throw txMismatch(
+        operation,
+        "M2 verify bundle attester cannot be fee_payer",
+      );
+    }
+    if (primary.ix.accounts.length !== 3) {
+      throw txMismatch(
+        operation,
+        `M2 verify_task_attested must carry exact 3 accounts [task, global_state, attester], got ${primary.ix.accounts.length}`,
+      );
+    }
+    const scoreView = new DataView(
+      primary.data.buffer,
+      primary.data.byteOffset + 8,
+      8,
+    );
+    const verifyScore = scoreView.getBigUint64(0, true);
+    if (verifyScore !== MAX_VERIFY_SCORE) {
+      throw txMismatch(
+        operation,
+        `M2 verify bundle requires MAX_SCORE (${MAX_VERIFY_SCORE}), got ${verifyScore}`,
+      );
+    }
+    if (!primary.data.subarray(16, 48).some((b) => b !== 0)) {
+      throw txMismatch(
+        operation,
+        "M2 verify_task_attested verification_hash must be non-zero",
+      );
+    }
+
+    const lifecycleTaskPda = primary.ix.accounts[0];
+    const claimIx = companions[0];
+    const payoutIx = isM2VerifyWithPayout ? companions[1] : undefined;
+    const submitIx = isM2VerifyWithPayout ? companions[2] : companions[1];
+
+    if (payoutIx) {
+      if (
+        payoutIx.txIndex !== claimIx.txIndex + 1 ||
+        submitIx.txIndex !== payoutIx.txIndex + 1 ||
+        primary.txIndex !== submitIx.txIndex + 1
+      ) {
+        throw txMismatch(
+          operation,
+          "M2 verify bundle instructions must execute in strict order claim_task < set_payout_to < submit_work < verify_task_attested",
+        );
+      }
+    } else {
+      if (expectedPayoutPubkey) {
+        throw txMismatch(
+          operation,
+          "Expected set_payout_to instruction matching expected.payoutTo, but none was present",
+        );
+      }
+      if (
+        submitIx.txIndex !== claimIx.txIndex + 1 ||
+        primary.txIndex !== submitIx.txIndex + 1
+      ) {
+        throw txMismatch(
+          operation,
+          "M2 verify bundle instructions must execute in strict order claim_task < submit_work < verify_task_attested",
+        );
+      }
+    }
+
+    // Validate companion claim_task
+    const validClaimAccounts =
+      claimIx.ix.accounts.length === SHILLBOT_INSTRUCTION_SPECS.claim_task.minAccounts ||
+      (claimIx.ix.accounts.length === 6 &&
+        claimIx.ix.accounts[5] === SYSVAR_INSTRUCTIONS_PUBKEY.toBase58());
+    if (claimIx.data.length !== 8 || !validClaimAccounts) {
+      throw txMismatch(operation, "Malformed claim_task companion in M2 verify bundle");
+    }
+    if (claimIx.ix.accounts[0] !== lifecycleTaskPda) {
+      throw txMismatch(
+        operation,
+        "M2 verify bundle claim_task account [0] does not match expected task PDA",
+      );
+    }
+    if (
+      claimIx.ix.accounts[3] !== expected.wallet ||
+      !inspected.signers.includes(claimIx.ix.accounts[3])
+    ) {
+      throw txMismatch(
+        operation,
+        "M2 verify bundle claim_task authority slot [3] does not match expected wallet signer",
+      );
+    }
+
+    // Validate optional companion set_payout_to
+    if (payoutIx) {
+      validateSetPayoutToInstruction(
+        payoutIx,
+        expected.wallet,
+        lifecycleTaskPda,
+        expectedPayoutPubkey,
+        operation,
+      );
+    }
+
+    // Validate companion submit_work
+    if (submitIx.ix.accounts.length !== SHILLBOT_INSTRUCTION_SPECS.submit_work.minAccounts) {
+      throw txMismatch(
+        operation,
+        `M2 verify bundle submit_work must carry exact 4 accounts, got ${submitIx.ix.accounts.length}`,
+      );
+    }
+    if (submitIx.ix.accounts[0] !== lifecycleTaskPda) {
+      throw txMismatch(
+        operation,
+        "M2 verify bundle submit_work account [0] does not match expected task PDA",
+      );
+    }
+    if (
+      submitIx.ix.accounts[3] !== expected.wallet ||
+      !inspected.signers.includes(submitIx.ix.accounts[3])
+    ) {
+      throw txMismatch(
+        operation,
+        "M2 verify bundle submit_work authority slot [3] does not match expected wallet signer",
+      );
+    }
+    if (submitIx.data.length < 12) {
+      throw txMismatch(operation, "M2 verify bundle submit_work instruction is truncated");
+    }
+    const submitContentLen = submitIx.data.readUInt32LE(8);
+    if (submitIx.data.length !== 12 + submitContentLen) {
+      throw txMismatch(operation, "M2 verify bundle submit_work content_id length mismatch");
+    }
+    if (expected.contentId !== undefined) {
+      const actualContent = submitIx.data.subarray(12, 12 + submitContentLen).toString("utf8");
+      if (actualContent !== expected.contentId) {
+        throw txMismatch(
+          operation,
+          "M2 verify bundle submit_work content_id differs from expectation",
+        );
+      }
+    }
+
     return inspected;
   }
 

@@ -278,6 +278,7 @@ async function runLifecycle(
   );
   const taskId = fund.task_id as string;
   const taskPda = fund.task_pda as string;
+  const taskKey = new PublicKey(taskPda);
   console.log(`  task_id=${taskId} task_pda=${taskPda}`);
   await buildSignConfirm(
     conn,
@@ -289,47 +290,91 @@ async function runLifecycle(
     taskPda
   );
 
-  const claim = await api(
-    "POST",
-    `/tasks/${taskId}/claim?network=devnet`,
-    agentToken
-  );
-  await buildSignConfirm(conn, agentToken, h.agent, claim, taskId, "claim");
-
+  // M2 Open Competition: submit proof off-chain (no /claim, $0 gas).
+  const uniqueProofUrl = `${proofUrl}#attester-v2=${Date.now()}`;
   const submit = await api(
     "POST",
     `/tasks/${taskId}/submit?network=devnet`,
     agentToken,
-    { content_id: proofUrl }
+    { content_id: uniqueProofUrl }
   );
-  await buildSignConfirm(conn, agentToken, h.agent, submit, taskId, "submit");
-  console.log(`  submitted content_id=${proofUrl}`);
+  const attemptId = String(submit.attempt_id ?? "");
+  chk.check(
+    submit.open_competition === true && attemptId.length > 0,
+    `off-chain M2 Mathlib submit accepted (attempt_id=${attemptId || "MISSING"})`
+  );
+  console.log(
+    `  submitted off-chain content_id=${uniqueProofUrl} attempt_id=${attemptId}`
+  );
 
-  const taskKey = new PublicKey(taskPda);
-  console.log("  waiting for finalized Submitted state of the task...");
-  await awaitFinalizedSubmitted(conn, taskKey, "submitted task");
-
-  // Trigger the DEPLOYED attester+runner. Mathlib elaboration is ~90s; tolerate
-  // the client-side 504 (the attester finishes server-side — see awaitVerified).
-  console.log("  triggering attest (deployed pod runs mathlib, async ~90s)...");
-  try {
-    await api("POST", `/internal/run-attest/${taskId}`, clientToken, {
-      task_id: taskId,
-    });
-  } catch (e) {
-    console.log(
-      `  run-attest client returned (tolerated): ${String(e).slice(0, 90)}`
+  // Poll authenticated GET /tasks/{id} until my_latest_attempt reaches passed/failed.
+  // Mathlib elaboration can take ~90-180s plus cold-start / queueing headroom.
+  console.log("  polling my_latest_attempt for Lean v2 (Mathlib) verdict...");
+  let attemptStatus = String(submit.status ?? "verifying");
+  let attemptDetail = "";
+  const MAX_POLLS = 160; // ~8 min
+  for (let i = 0; i < MAX_POLLS; i++) {
+    if (attemptStatus === "passed" || attemptStatus === "failed") break;
+    await sleep(3000);
+    const details = await api(
+      "GET",
+      `/tasks/${taskId}?network=devnet`,
+      agentToken
     );
+    const att = details.my_latest_attempt as
+      | { attempt_id?: string; status?: string; check_detail?: string }
+      | undefined;
+    if (att && (!att.attempt_id || att.attempt_id === attemptId)) {
+      attemptStatus = String(att.status ?? "verifying");
+      attemptDetail = String(att.check_detail ?? "");
+    }
   }
   console.log(
-    "  polling on-chain for Verified (attester lands it server-side)..."
+    `  attempt verdict: status=${attemptStatus} detail=${attemptDetail.slice(0, 120)}`
   );
-  await awaitVerified(conn, taskKey, "attested task");
 
-  // Everything below is asserted from ON-CHAIN state — the deployed
-  // attester+runner's verdict, not the (possibly-504'd) HTTP response. The
-  // payment_amount == oracle check below IS the score assertion: a mathlib PASS
-  // paying MAX is only reachable via policy v2 (v1 can't elaborate mathlib).
+  if (expectedScore === 0) {
+    chk.check(
+      attemptStatus === "failed",
+      `rejected Mathlib proof marked failed off-chain (got ${attemptStatus})`
+    );
+    const onChainOpen = await h.program.account.task.fetch(taskKey);
+    chk.check(
+      JSON.stringify(onChainOpen.state) === JSON.stringify({ open: {} }),
+      "rejected Mathlib proof leaves on-chain task Open (0 lamports spent)"
+    );
+    return;
+  }
+
+  chk.check(
+    attemptStatus === "passed",
+    `valid Mathlib proof marked passed off-chain (got ${attemptStatus}: ${attemptDetail.slice(0, 120)})`
+  );
+
+  const built = await api(
+    "POST",
+    `/tasks/${taskId}/build-verify?network=devnet&attempt_id=${encodeURIComponent(attemptId)}`,
+    agentToken
+  );
+  const verifyTx =
+    (built.co_signed_transaction as string | undefined) ??
+    (built.transaction as string | undefined);
+  if (!verifyTx) {
+    throw new Error(`build-verify missing co_signed_transaction: ${JSON.stringify(built)}`);
+  }
+  await buildSignConfirm(
+    conn,
+    agentToken,
+    h.agent,
+    { transaction: verifyTx },
+    taskId,
+    "verify",
+    taskPda
+  );
+
+  // Everything below is asserted from ON-CHAIN state. The payment_amount == oracle
+  // check below IS the score assertion: a mathlib PASS paying MAX is only reachable
+  // via policy v2 (v1 can't elaborate mathlib).
   const verified = await h.program.account.task.fetch(taskKey);
   chk.check(
     JSON.stringify(verified.state) === JSON.stringify({ verified: {} }),

@@ -21,13 +21,23 @@ export type { Action } from "./index.js";
 export interface PreparedTransactionResponse {
   message?: string;
   task_id?: string;
-  transaction: string;
+  transaction?: string;
   task_pda?: string;
   transaction_intent?: TransactionIntent;
   evm_call?: unknown;
   payout_to?: string;
   advance_backer?: string;
+  attempt_id?: string;
+  open_competition?: boolean;
+  status?: string;
+  onboarded_advance_tx?: string | null;
+  required_payout_to?: string | null;
+  co_signed_transaction?: string | null;
 }
+
+export type SubmitTaskResponse = PreparedTransactionResponse;
+
+export type BuildVerifyResponse = PreparedTransactionResponse;
 
 export interface VerificationDataResponse {
   task_id?: string;
@@ -36,17 +46,20 @@ export interface VerificationDataResponse {
   verification_hash: string;
   global_state?: string;
   switchboard_feed: string;
-  required_payout_to?: string;
-  advance_backer?: string;
+  required_payout_to?: string | null;
+  advance_backer?: string | null;
   verification_kind?: number;
-  co_signed_transaction?: string;
+  co_signed_transaction?: string | null;
   evm_verify_call?: unknown;
+  attempt_id?: string;
+  onboarded_advance_tx?: string | null;
 }
 
 export interface BuildVerifyOptions {
   payer?: string;
   mcpBaseUrl?: string;
   network?: "mainnet" | "devnet";
+  attemptId?: string;
 }
 
 export interface ConfirmTransactionRequest {
@@ -68,6 +81,20 @@ export interface LeanEnvironmentInfo {
   max_proof_lines?: number | null;
   max_proof_bytes?: number | null;
   max_line_width?: number | null;
+}
+
+export interface TaskAttemptSummary {
+  attempt_id: string;
+  task_id?: string;
+  agent?: string;
+  status: string;
+  score?: number | null;
+  check_detail?: string | null;
+  content_id?: string | null;
+  artifact_hash?: string | null;
+  submitted_at_unix?: number | null;
+  verified_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface TaskResponse {
@@ -94,6 +121,8 @@ export interface TaskResponse {
   lean_policy?: number | null;
   lean_environment?: LeanEnvironmentInfo | null;
   check_detail?: string | null;
+  competing_attempts_count?: number | null;
+  my_latest_attempt?: TaskAttemptSummary | null;
   brief?: unknown;
   [key: string]: unknown;
 }
@@ -324,7 +353,7 @@ export class ShillbotApiClient {
     return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/sponsor`, body);
   }
   submitTask(id: string, body: SubmitTaskRequest | Record<string, unknown>) {
-    return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/submit`, body);
+    return this.post<SubmitTaskResponse>(`/tasks/${encodeURIComponent(id)}/submit`, body);
   }
   preflightTask<TResponse = PreflightTaskResponse>(
     taskId: string,
@@ -358,30 +387,104 @@ export class ShillbotApiClient {
   approveTask(id: string) {
     return this.post<PreparedTransactionResponse>(`/tasks/${encodeURIComponent(id)}/approve`);
   }
-  getVerificationData(id: string, network?: "mainnet" | "devnet") {
-    const suffix =
-      network && network !== "mainnet" ? `?network=${encodeURIComponent(network)}` : "";
+  getVerificationData(id: string, network?: "mainnet" | "devnet", attemptId?: string) {
+    const params: string[] = [];
+    if (network && network !== "mainnet") {
+      params.push(`network=${encodeURIComponent(network)}`);
+    }
+    const trimmedAttempt = attemptId?.trim();
+    if (trimmedAttempt) {
+      params.push(`attempt_id=${encodeURIComponent(trimmedAttempt)}`);
+    }
+    const suffix = params.length > 0 ? `?${params.join("&")}` : "";
     return this.post<VerificationDataResponse>(
       `/tasks/${encodeURIComponent(id)}/build-verify${suffix}`,
     );
   }
-  async buildVerify(id: string, opts?: BuildVerifyOptions): Promise<PreparedTransactionResponse> {
+  async buildVerify(
+    id: string,
+    optsOrAttemptId?: BuildVerifyOptions | string,
+  ): Promise<BuildVerifyResponse> {
+    const opts: BuildVerifyOptions | undefined =
+      typeof optsOrAttemptId === "string"
+        ? { attemptId: optsOrAttemptId }
+        : optsOrAttemptId;
     const mcpBaseUrl = (opts?.mcpBaseUrl ?? "https://mcp.swarm.tips").replace(/\/$/, "");
     const resolvedNetwork: "mainnet" | "devnet" =
       opts?.network ?? (this.http.network === "devnet" ? "devnet" : "mainnet");
     const token = await this.http.getToken?.();
     const payer = opts?.payer ?? decodeJwtWallet(token);
+    const attemptId = opts?.attemptId?.trim() || undefined;
 
     const postMcpBuildVerify = async (
       payload: Record<string, unknown>,
-    ): Promise<PreparedTransactionResponse> => {
+    ): Promise<BuildVerifyResponse> => {
       const mcpHttp = new HttpClient({
         baseUrl: mcpBaseUrl,
         fetch: this.http.fetchImpl,
         getToken: this.http.getToken,
       });
-      return mcpHttp.post<PreparedTransactionResponse>("/internal/build-verify-tx", payload);
+      return mcpHttp.post<BuildVerifyResponse>("/internal/build-verify-tx", payload);
     };
+
+    const normalizePrepared = (
+      raw: BuildVerifyResponse,
+      fallbackTaskPda?: string,
+    ): BuildVerifyResponse => {
+      const resolvedTx = raw.transaction || raw.co_signed_transaction || "";
+      const resolvedPayoutTo = raw.payout_to ?? raw.required_payout_to ?? undefined;
+      return {
+        ...raw,
+        task_id: raw.task_id ?? id,
+        transaction: resolvedTx,
+        task_pda: raw.task_pda ?? fallbackTaskPda,
+        transaction_intent: raw.transaction_intent,
+        ...(resolvedPayoutTo ? { payout_to: resolvedPayoutTo } : {}),
+      };
+    };
+
+    const formatVerificationData = (vdata: VerificationDataResponse): BuildVerifyResponse => ({
+      task_id: vdata.task_id ?? id,
+      transaction: vdata.co_signed_transaction ?? "",
+      task_pda: vdata.task_pda,
+      ...(vdata.evm_verify_call !== undefined ? { evm_call: vdata.evm_verify_call } : {}),
+      ...(vdata.required_payout_to
+        ? {
+            payout_to: vdata.required_payout_to,
+            required_payout_to: vdata.required_payout_to,
+          }
+        : {}),
+      ...(vdata.advance_backer ? { advance_backer: vdata.advance_backer } : {}),
+      ...(vdata.co_signed_transaction
+        ? { co_signed_transaction: vdata.co_signed_transaction }
+        : {}),
+      ...(vdata.attempt_id ? { attempt_id: vdata.attempt_id } : {}),
+      ...(vdata.onboarded_advance_tx !== undefined
+        ? { onboarded_advance_tx: vdata.onboarded_advance_tx }
+        : {}),
+    });
+
+    // When targeting a specific M2 Open-Competition attemptId, call shillbot-api
+    // `POST /tasks/:id/build-verify?attempt_id=...` directly (returns `co_signed_transaction`
+    // + proof-gated `onboarded_advance_tx` + `required_payout_to` in 1 hop).
+    if (attemptId) {
+      const vdata = await this.getVerificationData(id, resolvedNetwork, attemptId);
+      if (vdata.evm_verify_call || vdata.co_signed_transaction) {
+        return formatVerificationData(vdata);
+      }
+      const fallback = await postMcpBuildVerify({
+        task_id: id,
+        ...(payer ? { payer } : {}),
+        network: resolvedNetwork,
+        attempt_id: attemptId,
+        task_pda: vdata.task_pda,
+        score: vdata.composite_score,
+        hash: vdata.verification_hash,
+        feed: vdata.switchboard_feed,
+        ...(vdata.global_state ? { global_state: vdata.global_state } : {}),
+      });
+      return normalizePrepared(fallback, vdata.task_pda);
+    }
 
     const oneHopBody: Record<string, unknown> = {
       task_id: id,
@@ -391,13 +494,7 @@ export class ShillbotApiClient {
 
     try {
       const direct = await postMcpBuildVerify(oneHopBody);
-      return {
-        ...direct,
-        task_id: direct.task_id ?? id,
-        transaction: direct.transaction,
-        task_pda: direct.task_pda,
-        transaction_intent: direct.transaction_intent,
-      };
+      return normalizePrepared(direct);
     } catch (err) {
       if (
         !(err instanceof SwarmClientError) ||
@@ -408,14 +505,7 @@ export class ShillbotApiClient {
       }
       const vdata = await this.getVerificationData(id, resolvedNetwork);
       if (vdata.evm_verify_call || vdata.co_signed_transaction) {
-        return {
-          task_id: vdata.task_id ?? id,
-          transaction: vdata.co_signed_transaction ?? "",
-          task_pda: vdata.task_pda,
-          ...(vdata.evm_verify_call !== undefined ? { evm_call: vdata.evm_verify_call } : {}),
-          ...(vdata.required_payout_to ? { payout_to: vdata.required_payout_to } : {}),
-          ...(vdata.advance_backer ? { advance_backer: vdata.advance_backer } : {}),
-        };
+        return formatVerificationData(vdata);
       }
       const fallback = await postMcpBuildVerify({
         task_id: id,
@@ -427,13 +517,7 @@ export class ShillbotApiClient {
         feed: vdata.switchboard_feed,
         ...(vdata.global_state ? { global_state: vdata.global_state } : {}),
       });
-      return {
-        ...fallback,
-        task_id: fallback.task_id ?? id,
-        transaction: fallback.transaction,
-        task_pda: fallback.task_pda ?? vdata.task_pda,
-        transaction_intent: fallback.transaction_intent,
-      };
+      return normalizePrepared(fallback, vdata.task_pda);
     }
   }
   buildFinalize(id: string) {

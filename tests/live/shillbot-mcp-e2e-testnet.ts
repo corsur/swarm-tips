@@ -166,6 +166,12 @@ async function main(): Promise<void> {
   // be created via the orchestrator to exercise the write lifecycle.
   let task: TaskListItem | null = null;
   for (const candidate of tasks) {
+    // Platforms 10 (LeanProof) and 11 (OnChainAction) use M2 Open Competition
+    // (submit off-chain directly, never /claim); this claim-first lifecycle test
+    // targets claim-first tasks (seeded platform 5/9/4).
+    if (candidate.platform === 10 || candidate.platform === 11) {
+      continue;
+    }
     try {
       await signSubmit(mcp, agent, "claim", "shillbot_claim_task", {
         task_id: candidate.task_id,
@@ -176,7 +182,9 @@ async function main(): Promise<void> {
     } catch (e) {
       const msg = String(e);
       if (
-        /3003|AccountDidNotDeserialize|ClaimBuffer|InvalidTaskState/.test(msg)
+        /3003|AccountDidNotDeserialize|ClaimBuffer|InvalidTaskState|Open Competition|open competition|submit work directly/i.test(
+          msg
+        )
       ) {
         console.log(`  · task ${candidate.task_id} not claimable (skipping)`);
         continue;

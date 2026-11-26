@@ -275,6 +275,7 @@ async function runLifecycle(
   );
   const taskId = fund.task_id as string;
   const taskPda = fund.task_pda as string;
+  const taskKey = new PublicKey(taskPda);
   console.log(`  task_id=${taskId} task_pda=${taskPda}`);
   await buildSignConfirm(
     conn,
@@ -286,13 +287,18 @@ async function runLifecycle(
     taskPda
   );
 
-  // Claim (agent) then submit the proof-artifact URL (agent).
-  const claim = await api(
-    "POST",
-    `/tasks/${taskId}/claim?network=devnet`,
-    agentToken
+  // M2 Open Competition: bare /claim MUST be rejected (HTTP 400); agents submit
+  // proofs off-chain at $0 gas and settle in 1 tx only after passing Lean check.
+  let bareClaimRejected = false;
+  try {
+    await api("POST", `/tasks/${taskId}/claim?network=devnet`, agentToken);
+  } catch (e) {
+    bareClaimRejected = /400/.test(String(e));
+  }
+  chk.check(
+    bareClaimRejected,
+    "M2 Open Competition rejects bare /claim on LeanProof (HTTP 400)"
   );
-  await buildSignConfirm(conn, agentToken, h.agent, claim, taskId, "claim");
 
   const uniqueProofUrl = `${proofUrl}#attester-e2e=${Date.now()}`;
   const submit = await api(
@@ -301,69 +307,95 @@ async function runLifecycle(
     agentToken,
     { content_id: uniqueProofUrl }
   );
-  await buildSignConfirm(conn, agentToken, h.agent, submit, taskId, "submit");
-  console.log(`  submitted content_id=${uniqueProofUrl}`);
+  const attemptId = String(submit.attempt_id ?? "");
+  chk.check(
+    submit.open_competition === true && attemptId.length > 0,
+    `off-chain M2 submit accepted (attempt_id=${attemptId || "MISSING"})`
+  );
+  console.log(
+    `  submitted off-chain content_id=${uniqueProofUrl} attempt_id=${attemptId}`
+  );
 
-  // The pod reads at finalized commitment — wait for the submitted Task to
-  // finalize before triggering, else run-attest sees it absent.
-  const taskKey = new PublicKey(taskPda);
-  console.log("  waiting for finalized Submitted state of the task...");
-  await awaitFinalizedSubmitted(conn, taskKey, "submitted task");
-
-  // The internal trigger is intentionally protected in production. Attempting
-  // it keeps local/dev deployments fast, while a 401/timeout falls back to the
-  // same scheduled workflow real submissions use.
-  try {
-    await api("POST", `/internal/run-attest/${taskId}`, clientToken, {
-      task_id: taskId,
-    });
-  } catch (e) {
-    console.log(
-      `  run-attest client returned (tolerated): ${String(e).slice(0, 90)}`
+  // Poll authenticated GET /tasks/{id} until my_latest_attempt reaches passed/failed.
+  console.log("  polling my_latest_attempt for Lean v1 attester verdict...");
+  let attemptStatus = String(submit.status ?? "verifying");
+  let attemptDetail = "";
+  const MAX_POLLS = 120; // ~6 min
+  for (let i = 0; i < MAX_POLLS; i++) {
+    if (attemptStatus === "passed" || attemptStatus === "failed") break;
+    await sleep(3000);
+    const details = await api(
+      "GET",
+      `/tasks/${taskId}?network=devnet`,
+      agentToken
     );
-  }
-  // Under Gas Policy Phase 1 (1a), shillbot-attester scores the proof and stores
-  // the Ed25519 attestation; the caller fetches the co-signed verify_task_attested
-  // tx via /build-verify and pays gas to land Verified on-chain.
-  console.log("  polling /build-verify + on-chain for Verified...");
-  const MAX_VERIFY_POLLS = 160;
-  let verifiedOnChain = false;
-  for (let i = 0; i < MAX_VERIFY_POLLS; i++) {
-    const acc = await conn.getAccountInfo(taskKey, "confirmed");
-    if (acc !== null && acc.data[TASK_STATE_OFFSET] === STATE_VERIFIED) {
-      verifiedOnChain = true;
-      break;
+    const att = details.my_latest_attempt as
+      | { attempt_id?: string; status?: string; check_detail?: string }
+      | undefined;
+    if (att && (!att.attempt_id || att.attempt_id === attemptId)) {
+      attemptStatus = String(att.status ?? "verifying");
+      attemptDetail = String(att.check_detail ?? "");
     }
+  }
+  console.log(
+    `  attempt verdict: status=${attemptStatus} detail=${attemptDetail.slice(0, 120)}`
+  );
+
+  if (expectedScore === 0) {
+    chk.check(
+      attemptStatus === "failed",
+      `rejected proof marked failed off-chain (got ${attemptStatus})`
+    );
+    const onChainOpen = await h.program.account.task.fetch(taskKey);
+    chk.check(
+      JSON.stringify(onChainOpen.state) === JSON.stringify({ open: {} }),
+      "rejected M2 proof leaves on-chain task Open (0 lamports spent, no squatting)"
+    );
+    let buildVerifyRejected = false;
     try {
-      const built = await api(
+      await api(
         "POST",
-        `/tasks/${taskId}/build-verify?network=devnet`,
+        `/tasks/${taskId}/build-verify?network=devnet&attempt_id=${encodeURIComponent(attemptId)}`,
         agentToken
       );
-      const verifyTx =
-        (built.co_signed_transaction as string | undefined) ??
-        (built.transaction as string | undefined);
-      if (typeof verifyTx === "string" && verifyTx.length > 0) {
-        await buildSignConfirm(
-          conn,
-          agentToken,
-          h.agent,
-          { transaction: verifyTx },
-          taskId,
-          "verify",
-          taskPda
-        );
-      }
     } catch {
-      // Attester still elaborating / waiting on attestation_delay; keep polling.
+      buildVerifyRejected = true;
     }
-    await sleep(3000);
-  }
-  if (!verifiedOnChain) {
-    await awaitVerified(conn, taskKey, "attested task");
+    chk.check(
+      buildVerifyRejected,
+      "failed M2 attempt cannot fetch /build-verify bundle"
+    );
+    return;
   }
 
-  // Assert the on-chain Task the pod just verified.
+  chk.check(
+    attemptStatus === "passed",
+    `valid proof marked passed off-chain (got ${attemptStatus}: ${attemptDetail.slice(0, 120)})`
+  );
+
+  // Fetch attester-co-signed 1-tx Open -> Verified bundle, sign & confirm.
+  const built = await api(
+    "POST",
+    `/tasks/${taskId}/build-verify?network=devnet&attempt_id=${encodeURIComponent(attemptId)}`,
+    agentToken
+  );
+  const verifyTx =
+    (built.co_signed_transaction as string | undefined) ??
+    (built.transaction as string | undefined);
+  if (!verifyTx) {
+    throw new Error(`build-verify missing co_signed_transaction: ${JSON.stringify(built)}`);
+  }
+  await buildSignConfirm(
+    conn,
+    agentToken,
+    h.agent,
+    { transaction: verifyTx },
+    taskId,
+    "verify",
+    taskPda
+  );
+
+  // Assert the on-chain Task the 1-tx M2 bundle just verified.
   const verified = await h.program.account.task.fetch(taskKey);
   chk.check(
     JSON.stringify(verified.state) === JSON.stringify({ verified: {} }),
