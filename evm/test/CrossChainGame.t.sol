@@ -610,8 +610,8 @@ contract CrossChainGameTest is Test {
         uint256 lockedBefore = game.poolLocked();
         assertEq(lockedBefore, STAKE);
 
-        // Too early: matchDeadline + claimWindow + 2*skew not yet reached.
-        vm.warp(block.timestamp + 2 days + CLAIM_WINDOW + SKEW);
+        // Too early: matchDeadline + 7*claimWindow + 2*skew not yet reached (SF1).
+        vm.warp(block.timestamp + 2 days + 7 * CLAIM_WINDOW + SKEW);
         vm.expectRevert(CrossChainGame.DeadlineNotReached.selector);
         game.refundTimeout(id);
 
@@ -869,7 +869,7 @@ contract CrossChainGameTest is Test {
         game.openClaim(cert, cp, _liveSigs(cert), _cpSigs(cp));
 
         // Warp past the backstop so refundTimeout is also callable.
-        vm.warp(block.timestamp + 2 days + CLAIM_WINDOW + 2 * SKEW + 1);
+        vm.warp(block.timestamp + 2 days + 7 * CLAIM_WINDOW + 2 * SKEW + 1);
 
         // A griefer (not the winner) calls refundTimeout instead of settleClaim.
         uint256 before = player.balance;
@@ -892,14 +892,14 @@ contract CrossChainGameTest is Test {
         _fund(id, true);
         _lock(id, STAKE);
         uint256 matchDeadline = block.timestamp + 2 days; // _fund used this
-        uint256 snapshotOpensAt = matchDeadline + CLAIM_WINDOW + 2 * SKEW;
+        uint256 snapshotOpensAt = matchDeadline + 7 * CLAIM_WINDOW + 2 * SKEW;
 
         // Owner shrinks window + skew to the floor (60) AFTER the lock.
         vm.prank(owner);
         game.setConfig(operatorSigner, treasury, SPLIT_BPS, STAKE, MAX_TRANCHE, DAILY_CAP, 60, 60);
 
-        // A non-snapshotted opensAt would be matchDeadline + 60 + 2*60 = +180; warp
-        // past that but before the snapshot (matchDeadline + 3600 + 1800) — the
+        // A non-snapshotted opensAt would be matchDeadline + 7*60 + 2*60 = +540; warp
+        // past that but before the snapshot (matchDeadline + 7*3600 + 1800) — the
         // snapshot still gates the refund.
         vm.warp(matchDeadline + 1000);
         vm.expectRevert(CrossChainGame.DeadlineNotReached.selector);
@@ -1285,6 +1285,69 @@ contract CrossChainGameTest is Test {
         CertLib.OutcomeCert memory ocEq = _outcome(idCounterEq, ldEq, CertLib.HETERO_P2_WINS);
         vm.expectRevert(CrossChainGame.InvalidStatus.selector);
         game.settle(certEq, ocEq, _liveSigs(certEq), _ocSigs(ocEq));
+    }
+
+    /// SF1: Even when Leg A exercises the maximal legal extension chain
+    /// (open(0) + supersede(1) + supersede(2) + supersede(3) + supersede(4) +
+    /// submitEquivocationProof = 7 * CLAIM_WINDOW past matchDeadline), an
+    /// untouched Locked Leg B cannot call refundTimeout until strictly after
+    /// Leg A's final claimWindowEnd + 2 * SKEW.
+    function test_SF1_crossLegTimeoutOpensAt_neverRacesWorstCaseClaimChain() public {
+        bytes32 idA = keccak256("sf1-leg-a-worst-case");
+        bytes32 idB = keccak256("sf1-leg-b-untouched");
+        _fund(idA, true);
+        _lock(idA, STAKE);
+        _fund(idB, false);
+        _lock(idB, STAKE);
+
+        CertLib.MatchLiveCert memory certA = _cert(idA, true, STAKE);
+        bytes32 ldA = CertLib.matchLiveDigest(certA);
+        (,,,,,,,,,, uint64 matchDeadline,, uint64 curEnd,,,,) = game.matches(idA);
+        (,,,,,,,,,,,,,,,, uint64 legBTimeoutOpens) = game.matches(idB);
+
+        // 1) openClaim(step 0) right at initial claimWindowEnd (D + 1*W -> D + 2*W)
+        vm.warp(curEnd);
+        CertLib.Checkpoint memory cp0 = _checkpoint(ldA, 0, 255, 255, 0);
+        game.openClaim(certA, cp0, _liveSigs(certA), _cpSigs(cp0));
+        (,,,,,,,,,,,, curEnd,,,,) = game.matches(idA);
+        assertEq(curEnd, matchDeadline + 2 * CLAIM_WINDOW);
+
+        // 2..5) supersedeClaim(steps 1..=4), each right at the boundary -> D + 6*W
+        uint8[4] memory p1Guesses = [uint8(255), uint8(255), uint8(1), uint8(1)];
+        uint8[4] memory p2Guesses = [uint8(255), uint8(255), uint8(255), uint8(0)];
+        for (uint8 step = 1; step <= 4; step++) {
+            vm.warp(curEnd);
+            CertLib.Checkpoint memory cp = _checkpoint(ldA, step, p1Guesses[step - 1], p2Guesses[step - 1], 1);
+            game.supersedeClaim(certA, cp, _cpSigs(cp));
+            (,,,,,,,,,,,, curEnd,,,,) = game.matches(idA);
+            assertEq(curEnd, matchDeadline + (uint64(step) + 2) * CLAIM_WINDOW);
+        }
+
+        // 6) submitEquivocationProof right at D + 6*W -> D + 7*W
+        vm.warp(curEnd);
+        CertLib.Checkpoint memory eqA = _checkpoint(ldA, 2, 255, 255, 1);
+        CertLib.Checkpoint memory eqB = _checkpoint(ldA, 2, 255, 255, 2);
+        game.submitEquivocationProof(
+            certA,
+            eqA,
+            eqB,
+            _sign(counterSessionPk, CertLib.checkpointDigest(eqA)),
+            _sign(counterSessionPk, CertLib.checkpointDigest(eqB))
+        );
+        (,,,,,,,,,,,, uint64 finalLegAEnd,,,,) = game.matches(idA);
+        assertEq(finalLegAEnd, matchDeadline + 7 * CLAIM_WINDOW, "worst-case leg A window is matchDeadline + 7*W");
+
+        // Untouched Locked Leg B's timeoutOpensAt is strictly >= finalLegAEnd + 2*SKEW,
+        // so Leg B CANNOT flat-refund anywhere inside Leg A's worst-case claim window + skew.
+        assertGe(legBTimeoutOpens, finalLegAEnd + 2 * uint64(SKEW), "Leg B never races Leg A worst-case claim");
+        vm.warp(finalLegAEnd + 2 * uint64(SKEW));
+        vm.expectRevert(CrossChainGame.DeadlineNotReached.selector);
+        game.refundTimeout(idB);
+
+        // 1 second after timeoutOpensAt, Leg B cleanly refunds.
+        vm.warp(legBTimeoutOpens + 1);
+        game.refundTimeout(idB);
+        assertEq(uint8(_status(idB)), uint8(CrossChainGame.Status.RefundedTimeout));
     }
 
     function test_storageLayout_preExistingSlotsPinned() public {

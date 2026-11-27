@@ -158,6 +158,7 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
 
     error InvalidStatus();
     error BadSignature();
+    error AttestationUsed();
     error BadConfig();
     error BadKind();
     error BadEscrow();
@@ -364,7 +365,7 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
             score
         );
         if (!_recoverAndCheck(digest, sig)) revert BadSignature();
-        if (usedAttestations[digest]) revert BadSignature();
+        if (usedAttestations[digest]) revert AttestationUsed();
         usedAttestations[digest] = true;
 
         // OnChainAction (11) VOW v1 policy (`reopen_on_zero_score: true`, CRIT-04):

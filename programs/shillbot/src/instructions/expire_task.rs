@@ -149,13 +149,45 @@ fn decrement_agent_claim_count(
         agent_state.agent == *expected_agent,
         ShillbotError::NotTaskAgent
     );
-    require!(agent_state.claimed_count > 0, ShillbotError::NoActiveClaim);
-
-    agent_state.claimed_count = agent_state
-        .claimed_count
-        .checked_sub(1)
-        .ok_or(ShillbotError::ArithmeticOverflow)?;
+    decrement_claimed_count_saturating(&mut agent_state);
 
     agent_state.try_serialize(&mut &mut data[..])?;
     Ok(())
+}
+
+/// Saturating decrement (matching `emergency_return`) so any historical
+/// `AgentState` whose `claimed_count` was previously undercounted before P1-02
+/// can never permanently strand a client's escrow on `expire_task` (SF3).
+pub(crate) fn decrement_claimed_count_saturating(agent_state: &mut AgentState) {
+    agent_state.claimed_count = agent_state.claimed_count.saturating_sub(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expire_task_decrement_saturates_at_zero_for_legacy_undercount() {
+        let mut state = AgentState {
+            agent: Pubkey::new_unique(),
+            claimed_count: 2,
+            total_completed: 0,
+            total_earned: 0,
+            total_score_sum: 0,
+            total_tasks_claimed: 2,
+            total_challenges_lost: 0,
+            last_strike_at: 0,
+            bump: 255,
+        };
+
+        decrement_claimed_count_saturating(&mut state);
+        assert_eq!(state.claimed_count, 1);
+
+        decrement_claimed_count_saturating(&mut state);
+        assert_eq!(state.claimed_count, 0);
+
+        // Pre-P1-02 undercounted account at 0 must saturate instead of stranding escrow.
+        decrement_claimed_count_saturating(&mut state);
+        assert_eq!(state.claimed_count, 0);
+    }
 }

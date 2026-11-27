@@ -439,8 +439,11 @@ export async function settleXclaim(
   assertLegalTransition(XCHAIN_GRAPH, "Claiming", "ClaimSettled");
 }
 
+/** Worst-case claim-window multiplier across open + 4 supersedes + equivocation (SF1). */
+export const MAX_CLAIM_WINDOW_MULTIPLIER = 7;
+
 /** Earliest unix time refund_xmatch_timeout accepts:
- *  match_deadline + max_claim_window + 2*skew (strictly after). */
+ *  match_deadline + 7*max_claim_window + 2*skew (strictly after). */
 export async function refundTimeoutOpensAt(
   ctx: XchainCtx,
   m: LockedMatch
@@ -449,7 +452,7 @@ export async function refundTimeoutOpensAt(
   const pool = await ctx.rt.program.account.xPayoutPool.fetch(ctx.poolPda);
   return (
     Number(xm.matchDeadline) +
-    Number(pool.maxClaimWindowSecs) +
+    MAX_CLAIM_WINDOW_MULTIPLIER * Number(pool.maxClaimWindowSecs) +
     2 * Number(pool.skewMarginSecs)
   );
 }

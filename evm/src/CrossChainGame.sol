@@ -137,6 +137,10 @@ contract CrossChainGame is
     uint32 private constant MIN_WINDOW_SECS = 60; // 1 minute
     uint32 private constant MAX_WINDOW_SECS = 30 days;
     uint128 private constant MAX_TRANCHE_MULTIPLE = 10; // maxTranche <= 10x stake
+    // Worst-case claim chain length in multiples of maxClaimWindowSecs (SF1):
+    // 1 initial window + 1 openClaim (step 0) + 4 supersedeClaim steps (1..=4)
+    // + 1 submitEquivocationProof = 7.
+    uint256 private constant MAX_CLAIM_WINDOW_MULTIPLIER = 7;
 
     event MatchCreated(bytes32 indexed matchId, address indexed player, uint128 stakeWei);
     event TrancheLocked(bytes32 indexed matchId, uint128 trancheWei);
@@ -374,9 +378,12 @@ contract CrossChainGame is
         m.lockedAt = uint64(block.timestamp);
         // Snapshot the refund backstop from the config in force at lock time, so a
         // later setConfig that lowers maxClaimWindowSecs/skew cannot pull opensAt
-        // ahead of an open claim's window (it is always >= matchDeadline +
-        // claimWindowSecs + 2*skew for any cert, preserving the no-race inequality).
-        uint256 timeoutOpensAt256 = uint256(m.matchDeadline) + uint256(maxClaimWindowSecs) + 2 * uint256(skewMarginSecs);
+        // ahead of an open claim's window. Multiplying by MAX_CLAIM_WINDOW_MULTIPLIER (7)
+        // covers the worst-case extension chain on the opposite leg (initial + open +
+        // 4 supersedes + 1 counter-equivocation = 7 windows, SF1), preserving the
+        // cross-leg no-race inequality even while this leg remains Locked.
+        uint256 timeoutOpensAt256 = uint256(m.matchDeadline) + MAX_CLAIM_WINDOW_MULTIPLIER * uint256(maxClaimWindowSecs)
+            + 2 * uint256(skewMarginSecs);
         if (timeoutOpensAt256 > type(uint64).max) revert BadConfig();
         m.timeoutOpensAt = uint64(timeoutOpensAt256);
         // Snapshot the claim window too (M2): validate cert.claimWindowSecs against
@@ -469,13 +476,12 @@ contract CrossChainGame is
         emit ClaimOpened(cert.matchId, m.bestOutcomeKind, m.claimWindowEnd);
     }
 
-    /// @dev The claim window closes at matchDeadline + claimWindowSecs —
-    ///      anchored to the match deadline (shared by both legs via the
-    ///      cert), NOT to file time, so both legs compute the identical
-    ///      window and a claim on one leg can never race a refund on the
-    ///      other. claimWindowSecs is bounded by maxClaimWindowSecs so the
-    ///      refundTimeout backstop (matchDeadline + maxClaimWindowSecs +
-    ///      2·skew) always strictly follows it.
+    /// @dev The initial claim window closes at matchDeadline + claimWindowSecs —
+    ///      anchored to the match deadline (shared by both legs via the cert).
+    ///      claimWindowSecs is bounded by maxClaimWindowSecs so the
+    ///      refundTimeout backstop (matchDeadline + MAX_CLAIM_WINDOW_MULTIPLIER *
+    ///      maxClaimWindowSecs + 2·skew) always strictly follows even a
+    ///      worst-case extended claim chain on the opposite leg (SF1).
     function _claimWindowEnd(uint64 matchDeadline, uint32 claimWindowSecs) private view returns (uint64) {
         if (claimWindowSecs > maxClaimWindowSecs) revert BadConfig();
         uint256 end256 = uint256(matchDeadline) + uint256(claimWindowSecs);

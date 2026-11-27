@@ -4023,16 +4023,28 @@ export type Shillbot = {
             "type": "u8"
           },
           {
+            "name": "payoutRouteKind",
+            "docs": [
+              "Kind of `payout_to` route recorded at `set_payout_to` time (P2-01,",
+              "carved from `_reserved` — bytewise-compatible with existing on-chain",
+              "tasks because legacy `_reserved` bytes are zero):",
+              "- `0` (`PAYOUT_ROUTE_UNSET_OR_LEGACY`): unset or legacy pre-upgrade task",
+              "- `1` (`PAYOUT_ROUTE_EXTENSION_CREDIT`): `extension-credit` Advance PDA",
+              "- `2` (`PAYOUT_ROUTE_SYSTEM_WALLET`): explicit System-owned EOA wallet"
+            ],
+            "type": "u8"
+          },
+          {
             "name": "reserved",
             "docs": [
               "Reserved space for future fields without reallocation.",
-              "Reduced from 20 → 19 by D1 (`requires_approval`) → 18 by the",
-              "2026-07-07 `verification_kind` carve."
+              "Reduced from 20 → 19 by D1 (`requires_approval`) → 18 by",
+              "`verification_kind` → 17 by `payout_route_kind`."
             ],
             "type": {
               "array": [
                 "u8",
-                18
+                17
               ]
             }
           },

@@ -1107,14 +1107,14 @@ contract ShillbotEscrowTest is BoundaryBattery {
         assertTrue(esc.usedAttestations(failDigest), "consumed attestation digest recorded");
 
         // Re-claim and submit the exact same artifact after reopen; replaying the
-        // old attestation signature MUST revert BadSignature (P2-06).
+        // old attestation signature MUST revert AttestationUsed (P2-06 / SF5).
         address worker2 = makeAddr("replayWorker");
         vm.prank(worker2);
         esc.claimTask(id);
         vm.prank(worker2);
         esc.submitWork(id, CONTENT, ARTIFACT);
 
-        vm.expectRevert(ShillbotEscrow.BadSignature.selector);
+        vm.expectRevert(ShillbotEscrow.AttestationUsed.selector);
         esc.verifyTaskAttested(id, 0, failSig);
     }
 

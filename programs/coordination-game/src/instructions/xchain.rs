@@ -757,6 +757,39 @@ pub fn refund_xmatch_nocert(ctx: Context<RefundXMatch>) -> Result<()> {
     Ok(())
 }
 
+/// Worst-case number of `claim_window_secs` intervals a contested leg can span:
+/// 1 initial window (`match_deadline + W`) + 1 `open_xclaim` (step 0)
+/// + 4 `supersede_xclaim` steps (`1..=TERMINAL_STEP_COUNT`)
+/// + 1 `submit_equivocation_proof` = 7.
+pub(crate) const MAX_CLAIM_WINDOW_MULTIPLIER: u32 = 7;
+
+/// Computes the earliest unix timestamp (exclusive) when `refund_xmatch_timeout`
+/// may execute on a `Locked` match. Anchoring the pool backstop to
+/// `match_deadline + MAX_CLAIM_WINDOW_MULTIPLIER * max_claim_window_secs + 2 * skew`
+/// guarantees that an untouched `Locked` leg can NEVER flat-refund while the
+/// opposite leg is still within a valid extended claim chain (SF1).
+pub(crate) fn compute_refund_timeout_opens_at(
+    match_deadline: i64,
+    max_claim_window_secs: u32,
+    skew_margin_secs: u32,
+    claim_window_end: i64,
+) -> Result<i128> {
+    let skew_margin = 2i128
+        .checked_mul(i128::from(skew_margin_secs))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let worst_case_claim_span = i128::from(MAX_CLAIM_WINDOW_MULTIPLIER)
+        .checked_mul(i128::from(max_claim_window_secs))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let pool_opens_at = i128::from(match_deadline)
+        .checked_add(worst_case_claim_span)
+        .and_then(|v| v.checked_add(skew_margin))
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    let snapshotted_opens_at = i128::from(claim_window_end)
+        .checked_add(skew_margin)
+        .ok_or(CoordinationError::ArithmeticOverflow)?;
+    Ok(pool_opens_at.max(snapshotted_opens_at))
+}
+
 pub fn refund_xmatch_timeout(ctx: Context<RefundXMatchTimeout>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let pool = &ctx.accounts.pool;
@@ -768,20 +801,13 @@ pub fn refund_xmatch_timeout(ctx: Context<RefundXMatchTimeout>) -> Result<()> {
         m.status == XChainStatus::Locked,
         CoordinationError::XInvalidStatus
     );
-    // Opens at match_deadline + max_claim_window + 2*skew — strictly after
-    // any leg's settle window (claim_window_secs <= max_claim_window), and
-    // never before the snapshotted claim_window_end + 2*skew.
-    let skew_margin = 2i128
-        .checked_mul(i128::from(pool.skew_margin_secs))
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    let pool_opens_at = i128::from(m.match_deadline)
-        .checked_add(i128::from(pool.max_claim_window_secs))
-        .and_then(|v| v.checked_add(skew_margin))
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    let snapshotted_opens_at = i128::from(m.claim_window_end)
-        .checked_add(skew_margin)
-        .ok_or(CoordinationError::ArithmeticOverflow)?;
-    let opens_at = pool_opens_at.max(snapshotted_opens_at);
+    // Opens strictly after worst-case extended claim window on either leg + 2*skew.
+    let opens_at = compute_refund_timeout_opens_at(
+        m.match_deadline,
+        pool.max_claim_window_secs,
+        pool.skew_margin_secs,
+        m.claim_window_end,
+    )?;
     require!(
         i128::from(now) > opens_at,
         CoordinationError::XDeadlineNotReached
@@ -1310,9 +1336,10 @@ pub struct CloseXMatch<'info> {
 #[cfg(test)]
 mod chain_tag_tests {
     use super::{
-        can_settle_xmatch_in_status, can_submit_counter_equivocation, equivocation_outcome,
-        maybe_extend_claim_window, route_xleg_prize_for_tournament, solana_chain_tag,
-        validate_open_claim_step, validate_supersede_step, XKIND_TIMEOUT_BOTH_FORFEIT,
+        can_settle_xmatch_in_status, can_submit_counter_equivocation,
+        compute_refund_timeout_opens_at, equivocation_outcome, maybe_extend_claim_window,
+        route_xleg_prize_for_tournament, solana_chain_tag, validate_open_claim_step,
+        validate_supersede_step, MAX_CLAIM_WINDOW_MULTIPLIER, XKIND_TIMEOUT_BOTH_FORFEIT,
         XKIND_TIMEOUT_P1_WINS, XKIND_TIMEOUT_P2_WINS,
     };
     use crate::cert::{keccak256, TERMINAL_STEP_COUNT};
@@ -1479,5 +1506,67 @@ mod chain_tag_tests {
         m.local_equivocated = false;
         m.counter_equivocated = true;
         assert!(!can_settle_xmatch_in_status(&m));
+    }
+
+    #[test]
+    fn worst_case_extended_claim_chain_never_races_locked_leg_refund_timeout() {
+        // Leg A starts at match_deadline = 2_000, claim_window_secs = max_claim_window_secs = 3_600,
+        // initial claim_window_end = 2_000 + 3_600 = 5_600.
+        let mut leg_a = dummy_xmatch();
+        leg_a.status = XChainStatus::Locked;
+        leg_a.best_step_count = 0;
+        let max_claim_window_secs = leg_a.claim_window_secs;
+        let skew_margin_secs: u32 = 900;
+
+        // Worst-case legal extension sequence on Leg A:
+        // 1) open_xclaim(step 0) at t == claim_window_end (2_000 + 1*W -> 2_000 + 2*W)
+        validate_open_claim_step(0).unwrap();
+        let t_open = leg_a.claim_window_end;
+        maybe_extend_claim_window(&mut leg_a, t_open).unwrap();
+        leg_a.status = XChainStatus::Claiming;
+        leg_a.best_step_count = 0;
+
+        // 2..5) supersede_xclaim(step 1..=4), each right at the boundary -> 2_000 + 6*W
+        for step in 1..=TERMINAL_STEP_COUNT {
+            validate_supersede_step(&leg_a, step).unwrap();
+            let t_sup = leg_a.claim_window_end;
+            maybe_extend_claim_window(&mut leg_a, t_sup).unwrap();
+            leg_a.best_step_count = step;
+        }
+
+        // 6) submit_equivocation_proof right at the boundary -> 2_000 + 7*W
+        assert!(can_submit_counter_equivocation(&leg_a));
+        let t_eq = leg_a.claim_window_end;
+        maybe_extend_claim_window(&mut leg_a, t_eq).unwrap();
+        leg_a.counter_equivocated = true;
+        leg_a.best_step_count = u8::MAX;
+
+        // No further supersedes or counter-equivocation proofs are possible.
+        assert!(validate_supersede_step(&leg_a, TERMINAL_STEP_COUNT).is_err());
+        assert!(!can_submit_counter_equivocation(&leg_a));
+
+        let expected_worst_case_end = i128::from(leg_a.match_deadline)
+            + i128::from(MAX_CLAIM_WINDOW_MULTIPLIER) * i128::from(max_claim_window_secs);
+        assert_eq!(i128::from(leg_a.claim_window_end), expected_worst_case_end);
+
+        // Untouched Locked Leg B has initial claim_window_end = match_deadline + W,
+        // yet its refund_xmatch_timeout backstop opens strictly AFTER Leg A's worst-case
+        // claim_window_end + 2 * skew (SF1).
+        let leg_b_initial_end = leg_a.match_deadline + i64::from(max_claim_window_secs);
+        let leg_b_timeout_opens_at = compute_refund_timeout_opens_at(
+            leg_a.match_deadline,
+            max_claim_window_secs,
+            skew_margin_secs,
+            leg_b_initial_end,
+        )
+        .unwrap();
+        assert_eq!(
+            leg_b_timeout_opens_at,
+            expected_worst_case_end + 2 * i128::from(skew_margin_secs)
+        );
+        assert!(
+            leg_b_timeout_opens_at
+                >= i128::from(leg_a.claim_window_end) + 2 * i128::from(skew_margin_secs)
+        );
     }
 }

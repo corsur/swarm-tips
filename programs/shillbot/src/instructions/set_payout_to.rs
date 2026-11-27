@@ -59,7 +59,7 @@ pub fn set_payout_to(ctx: Context<SetPayoutTo>, payout_to: Pubkey) -> Result<()>
             payout_info,
             &task.agent,
         )?;
-        classify_payout_route_kind(payout_info.owner)
+        classify_payout_route_kind(&payout_to, payout_info.owner)
     } else {
         classify_payout_route_kind_without_account(&payout_to)
     };
@@ -80,12 +80,17 @@ pub fn set_payout_to(ctx: Context<SetPayoutTo>, payout_to: Pubkey) -> Result<()>
 }
 
 /// Classify a validated destination account into `Task.payout_route_kind`:
-/// `1` for an `extension-credit` Advance PDA, `2` for a System-owned EOA.
-pub(crate) fn classify_payout_route_kind(owner: &Pubkey) -> u8 {
+/// - `1` (`PAYOUT_ROUTE_EXTENSION_CREDIT`) when owned by `extension-credit`
+/// - `2` (`PAYOUT_ROUTE_SYSTEM_WALLET`) ONLY for on-curve System-owned EOAs
+/// - `0` (`PAYOUT_ROUTE_UNSET_OR_LEGACY`) for off-curve System-owned PDAs
+///   (e.g. a closed Advance PDA that reverted to System Program ownership, SF2).
+pub(crate) fn classify_payout_route_kind(payout_to: &Pubkey, owner: &Pubkey) -> u8 {
     if *owner == crate::constants::EXTENSION_CREDIT_PROGRAM_ID {
         crate::state::PAYOUT_ROUTE_EXTENSION_CREDIT
-    } else {
+    } else if payout_to.is_on_curve() {
         crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
+    } else {
+        crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY
     }
 }
 
@@ -197,30 +202,41 @@ mod tests {
     }
 
     #[test]
-    fn classify_payout_route_kind_distinguishes_advance_pda_and_system_wallet() {
-        assert_eq!(
-            classify_payout_route_kind(&crate::constants::EXTENSION_CREDIT_PROGRAM_ID),
-            crate::state::PAYOUT_ROUTE_EXTENSION_CREDIT
-        );
-        assert_eq!(
-            classify_payout_route_kind(&anchor_lang::system_program::ID),
-            crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
-        );
-
+    fn classify_payout_route_kind_distinguishes_advance_pda_closed_pda_and_system_wallet() {
         let (pda, _) = Pubkey::find_program_address(
             &[b"advance", &[1u8; 32], &[2u8; 32]],
             &crate::constants::EXTENSION_CREDIT_PROGRAM_ID,
         );
-        assert_eq!(
-            classify_payout_route_kind_without_account(&pda),
-            crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY
-        );
-        // An on-curve pubkey (e.g. a System wallet EOA) classifies as explicit system wallet.
+        assert!(!pda.is_on_curve());
+
+        // An on-curve pubkey (e.g. a System wallet EOA).
         let on_curve = (1u8..=u8::MAX)
             .map(|b| Pubkey::new_from_array([b; 32]))
             .find(Pubkey::is_on_curve)
             .expect("deterministic on-curve pubkey");
         assert!(on_curve.is_on_curve());
+
+        // Active Advance PDA owned by extension-credit -> 1.
+        assert_eq!(
+            classify_payout_route_kind(&pda, &crate::constants::EXTENSION_CREDIT_PROGRAM_ID),
+            crate::state::PAYOUT_ROUTE_EXTENSION_CREDIT
+        );
+        // On-curve System-owned wallet -> 2.
+        assert_eq!(
+            classify_payout_route_kind(&on_curve, &anchor_lang::system_program::ID),
+            crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
+        );
+        // Off-curve closed Advance PDA reverted to System Program ownership -> 0 (SF2),
+        // preserving the closed-vault fallback in finalize_task.
+        assert_eq!(
+            classify_payout_route_kind(&pda, &anchor_lang::system_program::ID),
+            crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY
+        );
+
+        assert_eq!(
+            classify_payout_route_kind_without_account(&pda),
+            crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY
+        );
         assert_eq!(
             classify_payout_route_kind_without_account(&on_curve),
             crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
