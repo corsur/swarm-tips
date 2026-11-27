@@ -17,7 +17,11 @@ pub const APACHE_2_0: &str = "Apache-2.0";
 pub const GENERATED_MODULE_PREFIX: &str = "SwarmProofs.Generated.H";
 pub const ALLOWED_SWARM_LIBRARY_IMPORTS: &[&str] = &[
     "SwarmProofs.Chains.BSD.Defs.V1",
+    "SwarmProofs.Chains.BoolFourier.Defs.V1",
     "SwarmProofs.Chains.Circuits.Defs.V1",
+    "SwarmProofs.Chains.NavierStokes.Defs.V1",
+    "SwarmProofs.Chains.ProtocolMath.Defs.V1",
+    "SwarmProofs.Chains.QuantumInfo.Defs.V1",
     "SwarmProofs.Chains.RHAnalytic.Defs.V1",
     "SwarmProofs.Chains.RHLagarias.Defs.V1",
 ];
@@ -296,9 +300,29 @@ pub const FROZEN_V1_DEFS_GOLDEN_HASHES: &[(&str, &str, &str)] = &[
         "sha256:c2c3edf31528a5287c992f26b010140c99dd10536ec1cd7527041545222e704d",
     ),
     (
+        "SwarmProofs.Chains.BoolFourier.Defs.V1",
+        "SwarmProofs/Chains/BoolFourier/Defs/V1.lean",
+        "sha256:c2dc1cb8e6f53729d1a47bb6bac2156d1c411c0b2ddb19526347e685bf467c09",
+    ),
+    (
         "SwarmProofs.Chains.Circuits.Defs.V1",
         "SwarmProofs/Chains/Circuits/Defs/V1.lean",
         "sha256:00cd43b77425913085d1a1d8ab6d2664c5857ee7495a5c1b5b89e798ceef667d",
+    ),
+    (
+        "SwarmProofs.Chains.NavierStokes.Defs.V1",
+        "SwarmProofs/Chains/NavierStokes/Defs/V1.lean",
+        "sha256:74ee21968d313a9d67b8900f478a0da591c0ad38565eab01915637e8d17489ed",
+    ),
+    (
+        "SwarmProofs.Chains.ProtocolMath.Defs.V1",
+        "SwarmProofs/Chains/ProtocolMath/Defs/V1.lean",
+        "sha256:b262371196d872e244cd60b44dabfd3654f10a247ad75226e85bc9d55bb40e5c",
+    ),
+    (
+        "SwarmProofs.Chains.QuantumInfo.Defs.V1",
+        "SwarmProofs/Chains/QuantumInfo/Defs/V1.lean",
+        "sha256:9b0d768bdd78bdc3e84efa900022b1c94e6e0a8aef3f84b57e7d19dc471ee8b4",
     ),
     (
         "SwarmProofs.Chains.RHAnalytic.Defs.V1",
@@ -1720,7 +1744,11 @@ mod tests {
         for rel in [
             "SwarmProofs/Registry.lean",
             "SwarmProofs/Chains/BSD/Defs/V1.lean",
+            "SwarmProofs/Chains/BoolFourier/Defs/V1.lean",
             "SwarmProofs/Chains/Circuits/Defs/V1.lean",
+            "SwarmProofs/Chains/NavierStokes/Defs/V1.lean",
+            "SwarmProofs/Chains/ProtocolMath/Defs/V1.lean",
+            "SwarmProofs/Chains/QuantumInfo/Defs/V1.lean",
             "SwarmProofs/Chains/RHAnalytic/Defs/V1.lean",
             "SwarmProofs/Chains/RHLagarias/Defs/V1.lean",
             "environment-lock.json",
@@ -1784,7 +1812,7 @@ mod tests {
             .find(|e| e.lock.policy_version == 4)
             .unwrap();
         assert_eq!(registry_v4.environment_id, expected_env_sha);
-        assert_eq!(registry_v4.frozen_library_modules.len(), 4);
+        assert_eq!(registry_v4.frozen_library_modules.len(), 8);
 
         // Verify weil-correlation.challenge.json matches restored environment_id and empty bundle_id
         let weil: ChallengeManifest = serde_json::from_slice(
@@ -1945,17 +1973,37 @@ mod tests {
             .find(|env| env.lock.policy_version == 4)
             .expect("missing policy_version=4 environment in registry.json");
 
-        // Exact hard-coded golden SHA-256 hashes for all 4 V1 Defs modules:
-        let expected_v1: [(&str, &str, &str); 4] = [
+        // Exact hard-coded golden SHA-256 hashes for all 8 V1 Defs modules:
+        let expected_v1: [(&str, &str, &str); 8] = [
             (
                 "SwarmProofs.Chains.BSD.Defs.V1",
                 "SwarmProofs/Chains/BSD/Defs/V1.lean",
                 "sha256:c2c3edf31528a5287c992f26b010140c99dd10536ec1cd7527041545222e704d",
             ),
             (
+                "SwarmProofs.Chains.BoolFourier.Defs.V1",
+                "SwarmProofs/Chains/BoolFourier/Defs/V1.lean",
+                "sha256:c2dc1cb8e6f53729d1a47bb6bac2156d1c411c0b2ddb19526347e685bf467c09",
+            ),
+            (
                 "SwarmProofs.Chains.Circuits.Defs.V1",
                 "SwarmProofs/Chains/Circuits/Defs/V1.lean",
                 "sha256:00cd43b77425913085d1a1d8ab6d2664c5857ee7495a5c1b5b89e798ceef667d",
+            ),
+            (
+                "SwarmProofs.Chains.NavierStokes.Defs.V1",
+                "SwarmProofs/Chains/NavierStokes/Defs/V1.lean",
+                "sha256:74ee21968d313a9d67b8900f478a0da591c0ad38565eab01915637e8d17489ed",
+            ),
+            (
+                "SwarmProofs.Chains.ProtocolMath.Defs.V1",
+                "SwarmProofs/Chains/ProtocolMath/Defs/V1.lean",
+                "sha256:b262371196d872e244cd60b44dabfd3654f10a247ad75226e85bc9d55bb40e5c",
+            ),
+            (
+                "SwarmProofs.Chains.QuantumInfo.Defs.V1",
+                "SwarmProofs/Chains/QuantumInfo/Defs/V1.lean",
+                "sha256:9b0d768bdd78bdc3e84efa900022b1c94e6e0a8aef3f84b57e7d19dc471ee8b4",
             ),
             (
                 "SwarmProofs.Chains.RHAnalytic.Defs.V1",

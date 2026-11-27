@@ -2072,13 +2072,15 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("xtask-frozen-defs-{}", uuid::Uuid::new_v4()));
         for rel in [
             "SwarmProofs/Registry.lean",
-            "SwarmProofs/Chains/BSD/Defs/V1.lean",
-            "SwarmProofs/Chains/Circuits/Defs/V1.lean",
-            "SwarmProofs/Chains/RHAnalytic/Defs/V1.lean",
-            "SwarmProofs/Chains/RHLagarias/Defs/V1.lean",
             "environment-lock.json",
             "registry.json",
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            proof_registry::FROZEN_V1_DEFS_GOLDEN_HASHES
+                .iter()
+                .map(|(_, rel_file, _)| *rel_file),
+        ) {
             let dst = tmp.join(rel);
             std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
             std::fs::copy(pkg_root.join(rel), &dst).unwrap();
@@ -2106,13 +2108,15 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("xtask-append-only-{}", uuid::Uuid::new_v4()));
         for rel in [
             "SwarmProofs/Registry.lean",
-            "SwarmProofs/Chains/BSD/Defs/V1.lean",
-            "SwarmProofs/Chains/Circuits/Defs/V1.lean",
-            "SwarmProofs/Chains/RHAnalytic/Defs/V1.lean",
-            "SwarmProofs/Chains/RHLagarias/Defs/V1.lean",
             "environment-lock.json",
             "registry.json",
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            proof_registry::FROZEN_V1_DEFS_GOLDEN_HASHES
+                .iter()
+                .map(|(_, rel_file, _)| *rel_file),
+        ) {
             let dst = tmp.join(rel);
             std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
             std::fs::copy(pkg_root.join(rel), &dst).unwrap();

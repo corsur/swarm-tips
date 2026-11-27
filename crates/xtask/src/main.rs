@@ -3,6 +3,7 @@
 #![deny(clippy::all)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+mod extract_protocol_math;
 mod fetch_promotion_candidates;
 mod firestore_ops;
 mod http;
@@ -23,6 +24,7 @@ const USAGE: &str = "\
 usage: cargo xtask <subcommand> [args...]
 
 Subcommands:
+  extract-protocol-math-lean [--check]
   prepare-proof-promotion-audit [--package <dir>]
   check-proof-sources [--package <dir>]
   check-frozen-defs-append-only [--base-registry <path>] [--package <dir>]
@@ -75,6 +77,15 @@ fn dispatch(args: &[String]) -> Result<()> {
         "--help" | "-h" | "help" => {
             println!("{USAGE}");
             Ok(())
+        }
+        "extract-protocol-math-lean" => {
+            let root = workspace_root()?;
+            let check_only = match rest {
+                [] => false,
+                [flag] if flag == "--check" => true,
+                _ => bail!("{USAGE}"),
+            };
+            extract_protocol_math::run_extract_protocol_math_lean(&root, check_only)
         }
         "prepare-proof-promotion-audit" => {
             let pkg = parse_optional_package(rest)?;

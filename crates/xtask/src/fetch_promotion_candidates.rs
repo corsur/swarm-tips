@@ -1638,7 +1638,10 @@ mod tests {
             );
             count += 1;
         }
-        assert_eq!(count, 18, "expected all 18 open chain-*.lean statements");
+        assert_eq!(
+            count, 33,
+            "expected all 33 open chain-*.lean statements (18 existing + 15 CS/Physics/ProtocolMath)"
+        );
     }
 
     #[test]
@@ -2493,14 +2496,14 @@ mod tests {
         };
         let (dir, pkg_dir, out_dir) = setup_temp_workspace("sa-isolation");
         let real_pkg = repo_root().join("proofs/SwarmProofs");
-        for rel in [
-            "environment-lock.json",
-            "SwarmProofs/Registry.lean",
-            "SwarmProofs/Chains/BSD/Defs/V1.lean",
-            "SwarmProofs/Chains/Circuits/Defs/V1.lean",
-            "SwarmProofs/Chains/RHAnalytic/Defs/V1.lean",
-            "SwarmProofs/Chains/RHLagarias/Defs/V1.lean",
-        ] {
+        for rel in ["environment-lock.json", "SwarmProofs/Registry.lean"]
+            .into_iter()
+            .chain(
+                proof_registry::FROZEN_V1_DEFS_GOLDEN_HASHES
+                    .iter()
+                    .map(|(_, rel_file, _)| *rel_file),
+            )
+        {
             let dst = pkg_dir.join(rel);
             std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
             std::fs::copy(real_pkg.join(rel), dst).unwrap();

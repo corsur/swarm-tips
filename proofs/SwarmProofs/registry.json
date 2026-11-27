@@ -27,7 +27,11 @@
       },
       "frozen_library_modules": {
         "SwarmProofs.Chains.BSD.Defs.V1": "sha256:c2c3edf31528a5287c992f26b010140c99dd10536ec1cd7527041545222e704d",
+        "SwarmProofs.Chains.BoolFourier.Defs.V1": "sha256:c2dc1cb8e6f53729d1a47bb6bac2156d1c411c0b2ddb19526347e685bf467c09",
         "SwarmProofs.Chains.Circuits.Defs.V1": "sha256:00cd43b77425913085d1a1d8ab6d2664c5857ee7495a5c1b5b89e798ceef667d",
+        "SwarmProofs.Chains.NavierStokes.Defs.V1": "sha256:74ee21968d313a9d67b8900f478a0da591c0ad38565eab01915637e8d17489ed",
+        "SwarmProofs.Chains.ProtocolMath.Defs.V1": "sha256:b262371196d872e244cd60b44dabfd3654f10a247ad75226e85bc9d55bb40e5c",
+        "SwarmProofs.Chains.QuantumInfo.Defs.V1": "sha256:9b0d768bdd78bdc3e84efa900022b1c94e6e0a8aef3f84b57e7d19dc471ee8b4",
         "SwarmProofs.Chains.RHAnalytic.Defs.V1": "sha256:5777771ee0a643240cb1f6d84994658c0008dd04ea32ae665c560a48329dfbe6",
         "SwarmProofs.Chains.RHLagarias.Defs.V1": "sha256:c590bd97d7b40f604c9a258c6f2c9197ab64d24036cea0ecee34b91efa873300"
       }

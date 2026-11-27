@@ -1,0 +1,13 @@
+[package]
+name = "protocol-math"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Pure no_std checked settlement and accounting core mechanically extracted to Lean 4 (SwarmProofs.Chains.ProtocolMath.Defs.V1)"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+arithmetic_side_effects = "deny"

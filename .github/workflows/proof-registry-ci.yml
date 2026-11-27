@@ -14,6 +14,7 @@ on:
       - "proofs/SwarmProofs/**"
       - "proofs/fixtures/**"
       - "crates/proof-registry/**"
+      - "crates/protocol-math/**"
       - "crates/xtask/**"
       - "scripts/*proof*"
       - ".github/workflows/proof-registry-*.yml"
@@ -26,6 +27,7 @@ on:
       - "proofs/SwarmProofs/**"
       - "proofs/fixtures/**"
       - "crates/proof-registry/**"
+      - "crates/protocol-math/**"
       - "crates/xtask/**"
       - "scripts/*proof*"
       - ".github/workflows/proof-registry-*.yml"
@@ -47,6 +49,10 @@ jobs:
           shared-key: proof-registry
       - name: Validate canonical registry and frozen library hashes
         run: cargo run --locked -p proof-registry --bin proof-registry -- validate proofs/SwarmProofs/registry.json
+      - name: Verify mechanical Rust-to-Lean extraction parity for protocol-math
+        run: |
+          cargo test --locked -p protocol-math
+          cargo run --locked -p xtask -- extract-protocol-math-lean --check
       - name: Enforce append-only immutability on frozen Defs against origin/main
         run: |
           set -euo pipefail

@@ -24,6 +24,7 @@ import {
   CHAIN_TASK_CONFIG,
   CatalogEntry,
   classifyMathlibProbeSlice,
+  findUnbakedSwarmDefsImports,
   hasExistentialUniversalStructure,
   inlineSwarmProofsImportsForCompat,
   loadCatalog,
@@ -37,6 +38,7 @@ import {
   REPO_ROOT,
   resolveBridgeLemmasForStatement,
   runFullMathlibSearchProbes,
+  stripLeanComments,
   verifyStatementElaborates,
 } from "./seed-lean-catalog";
 
@@ -50,7 +52,7 @@ function mockJsonResponse(status: number, body: unknown): Response {
 async function runUnitTests(): Promise<void> {
   console.log("=== Running Lean catalog gate offline unit tests ===");
 
-  // 0. S1 + N1: Verify PROBE_MATHLIB_UMBRELLAS and swarm_fold_primorial are gone and ALLOWED_SWARM_LIBRARY_IMPORTS has ONLY the 4 Defs.V1 modules
+  // 0. S1 + N1: Verify PROBE_MATHLIB_UMBRELLAS and swarm_fold_primorial are gone and ALLOWED_SWARM_LIBRARY_IMPORTS has ONLY the 8 frozen Defs.V1 modules
   assert.equal(
     "PROBE_MATHLIB_UMBRELLAS" in catalogModule,
     false,
@@ -67,7 +69,11 @@ async function runUnitTests(): Promise<void> {
   );
   assert.deepEqual([...ALLOWED_SWARM_LIBRARY_IMPORTS].sort(), [
     "SwarmProofs.Chains.BSD.Defs.V1",
+    "SwarmProofs.Chains.BoolFourier.Defs.V1",
     "SwarmProofs.Chains.Circuits.Defs.V1",
+    "SwarmProofs.Chains.NavierStokes.Defs.V1",
+    "SwarmProofs.Chains.ProtocolMath.Defs.V1",
+    "SwarmProofs.Chains.QuantumInfo.Defs.V1",
     "SwarmProofs.Chains.RHAnalytic.Defs.V1",
     "SwarmProofs.Chains.RHLagarias.Defs.V1",
   ]);
@@ -119,6 +125,22 @@ async function runUnitTests(): Promise<void> {
     UNFOLD_DEFS_BY_MODULE["SwarmProofs.Chains.Circuits.Defs.V1"],
     ["evalCircuitFin", "evalCircuit", "isDeMorganOp"]
   );
+  for (const modName of [
+    "SwarmProofs.Chains.BoolFourier.Defs.V1",
+    "SwarmProofs.Chains.QuantumInfo.Defs.V1",
+    "SwarmProofs.Chains.NavierStokes.Defs.V1",
+    "SwarmProofs.Chains.ProtocolMath.Defs.V1",
+  ]) {
+    assert.ok(
+      (UNFOLD_DEFS_BY_MODULE[modName]?.length ?? 0) > 0,
+      `expected non-empty UNFOLD_DEFS_BY_MODULE for ${modName}`
+    );
+    assert.ok(
+      (WRAPPER_DEFS_BY_MODULE[modName]?.length ?? 0) > 0,
+      `expected non-empty WRAPPER_DEFS_BY_MODULE for ${modName}`
+    );
+    assert.deepEqual(BRIDGE_LEMMAS_BY_DEFS_MODULE[modName], []);
+  }
   assert.ok(
     WRAPPER_DEFS_BY_MODULE["SwarmProofs.Chains.RHLagarias.Defs.V1"].includes(
       "lagariasBound"
@@ -179,8 +201,8 @@ async function runUnitTests(): Promise<void> {
   const chainEntries = openEntries.filter((e) => e.name.startsWith("chain-"));
   assert.equal(
     chainEntries.length,
-    18,
-    "expected all 18 open chain-*.lean entries"
+    33,
+    "expected all 33 open chain-*.lean entries (18 existing + 15 CS/Physics/ProtocolMath)"
   );
 
   for (const entry of chainEntries) {
@@ -210,7 +232,7 @@ async function runUnitTests(): Promise<void> {
       `${entry.name} inline compat must expand SwarmProofs imports`
     );
     assert.ok(
-      !inlined.includes("#guard"),
+      !stripLeanComments(inlined).includes("#guard"),
       `${entry.name} inline compat must strip #guard commands`
     );
     const cta = CHAIN_TASK_CONFIG[entry.name]?.cta ?? "";
@@ -223,7 +245,7 @@ async function runUnitTests(): Promise<void> {
     );
   }
   console.log(
-    "  [PASS] 18 chain-*.lean headers, byte-for-byte parity, composability, CTA notes & inline compat"
+    "  [PASS] 33 chain-*.lean headers, byte-for-byte parity, composability, CTA notes & inline compat"
   );
 
   // 2. Negative composability checks (including N1 umbrella rejection, S2 instance/class rejection & SF3 string/char literal comment spoofing)
@@ -837,6 +859,111 @@ async function runUnitTests(): Promise<void> {
     });
   }
   console.log("  [PASS] Rung N+1 dependency guard & policy-4 composable guard");
+
+  // 8. Unbaked Defs.V1 runner revision guard: fail closed on real seeding, inline on composable v4.33.0-rc2 for --check-only
+  {
+    const baseRevRes = spawnSync("git", ["rev-parse", "origin/main"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    const baseRev = baseRevRes.status === 0 ? baseRevRes.stdout.trim() : "";
+    const f1 = chainEntries.find(
+      (e) => e.name === "chain-bool-fourier-1-parseval-poincare-bonami"
+    )!;
+    const pm1 = chainEntries.find(
+      (e) => e.name === "chain-protocol-math-1-advance-recoupment-safety"
+    )!;
+    assert.ok(
+      f1 && pm1,
+      "expected new BoolFourier & ProtocolMath Rung 1 entries"
+    );
+    // Multi-line #guard stripping check on ProtocolMath & QuantumInfo inlined payloads
+    const pm1Inlined = inlineSwarmProofsImportsForCompat(pm1.statement);
+    assert.ok(
+      !pm1Inlined.includes("some { to_backer := 2600000"),
+      "multi-line #guard continuation must be stripped from ProtocolMath inline compat payload"
+    );
+
+    if (baseRev && /^[0-9a-f]{40}$/i.test(baseRev)) {
+      const f1UnbakedOnBase = findUnbakedSwarmDefsImports(
+        f1.statement,
+        baseRev
+      );
+      const bsd1Entry = chainEntries.find(
+        (e) => e.name === "chain-bsd-1-weierstrass-bijection"
+      )!;
+      assert.deepEqual(
+        findUnbakedSwarmDefsImports(bsd1Entry.statement, baseRev),
+        [],
+        "BSD Defs.V1 already exists on origin/main"
+      );
+      // Only assert unbaked if origin/main does not yet contain BoolFourier (pre-merge)
+      if (f1UnbakedOnBase.length > 0) {
+        assert.deepEqual(f1UnbakedOnBase, [
+          "SwarmProofs.Chains.BoolFourier.Defs.V1",
+        ]);
+        const capturedPayloads: Array<Record<string, unknown>> = [];
+        const mockOldRevFetch: typeof fetch = async (input, init) => {
+          const url = String(input);
+          if (url.endsWith("/health")) {
+            return mockJsonResponse(200, {
+              status: "ok",
+              composable: true,
+              swarm_proofs_rev: baseRev,
+            });
+          }
+          const payload = JSON.parse(String(init?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >;
+          capturedPayloads.push(payload);
+          return mockJsonResponse(200, {
+            verdict: "fail",
+            detail: "unsolved goals",
+          });
+        };
+        // Real seeding (!checkOnly) MUST fail closed!
+        await assert.rejects(
+          () =>
+            verifyStatementElaborates(f1, {
+              fetchImpl: mockOldRevFetch,
+              runnerUrl: "https://runner.mock",
+              runnerToken: "tok",
+              checkOnly: false,
+              leanPolicy: 4,
+              skipSanityScript: true,
+              retryDelayBaseMs: 0,
+            }),
+          /does not yet include SwarmProofs\.Chains\.BoolFourier\.Defs\.V1/
+        );
+        // Pre-rollout --check-only inlines locally while STAYING on mode="composable" (v4.33.0-rc2)!
+        await verifyStatementElaborates(f1, {
+          fetchImpl: mockOldRevFetch,
+          runnerUrl: "https://runner.mock",
+          runnerToken: "tok",
+          checkOnly: true,
+          leanPolicy: 4,
+          skipSanityScript: true,
+          retryDelayBaseMs: 0,
+        });
+        assert.ok(capturedPayloads.length > 0);
+        for (const p of capturedPayloads) {
+          assert.equal(
+            p.mode,
+            "composable",
+            "pre-rollout inline check must stay on composable v4.33.0-rc2 toolchain"
+          );
+          assert.ok(
+            !/\bimport\s+SwarmProofs\b/.test(String(p.statement ?? "")),
+            "pre-rollout inline check must expand unbaked SwarmProofs import"
+          );
+        }
+      }
+    }
+  }
+  console.log(
+    "  [PASS] Multi-line #guard stripping & unbaked Defs.V1 fail-closed seeding / composable check-only guard"
+  );
   console.log("=== All offline unit tests PASSED ===\n");
 }
 

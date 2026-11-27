@@ -60,7 +60,11 @@ export const DEFAULT_REGISTRY_PATH = path.join(
 
 export const ALLOWED_SWARM_LIBRARY_IMPORTS = new Set([
   "SwarmProofs.Chains.BSD.Defs.V1",
+  "SwarmProofs.Chains.BoolFourier.Defs.V1",
   "SwarmProofs.Chains.Circuits.Defs.V1",
+  "SwarmProofs.Chains.NavierStokes.Defs.V1",
+  "SwarmProofs.Chains.ProtocolMath.Defs.V1",
+  "SwarmProofs.Chains.QuantumInfo.Defs.V1",
   "SwarmProofs.Chains.RHAnalytic.Defs.V1",
   "SwarmProofs.Chains.RHLagarias.Defs.V1",
 ]);
@@ -94,6 +98,81 @@ export const UNFOLD_DEFS_BY_MODULE: Record<string, readonly string[]> = {
     "evalCircuit",
     "isDeMorganOp",
   ],
+  "SwarmProofs.Chains.BoolFourier.Defs.V1": [
+    "boolSign",
+    "chi",
+    "boolExpect",
+    "walshFourierCoeff",
+    "flipBit",
+    "coordInfluence",
+    "totalInfluence",
+    "boolVariance",
+    "noiseOp",
+    "noiseStability",
+    "parityFin",
+    "evalAC0",
+    "ac0Depth",
+    "ac0Size",
+  ],
+  "SwarmProofs.Chains.QuantumInfo.Defs.V1": [
+    "matQuadForm",
+    "IsHermitianPSD",
+    "IsDensityMatrix",
+    "IsQuantumObservable",
+    "CommutingCHSHObservables",
+    "chshOperator",
+    "chshExpectation",
+    "IsKrausChannel",
+    "applyKraus",
+    "xLogX",
+    "vonNeumannEntropy",
+    "OpNormSqLe",
+    "IsProjectorFamily",
+    "localProjectorHam",
+    "IsFrustrationFree",
+    "detectabilityProd",
+    "SatisfiesKnillLaflamme",
+    "HasSpectralGapGe",
+  ],
+  "SwarmProofs.Chains.NavierStokes.Defs.V1": [
+    "DyadicNSParams.Valid",
+    "dyadicRhs",
+    "IsDyadicNSSolution",
+    "dyadicEnergy",
+    "dyadicDissipation",
+    "dyadicSobolevSq",
+    "boxModes",
+    "IsRealField3D",
+    "IsDivFree3D",
+    "SupportedInBox",
+    "vecDotConj",
+    "advectScalar",
+    "nsTrilinear3D",
+    "modeNormSq",
+    "galerkinEnergy3D",
+    "galerkinEnstrophy3D",
+  ],
+  "SwarmProofs.Chains.ProtocolMath.Defs.V1": [
+    "U64_MOD",
+    "U128_MOD",
+    "BPS_DENOMINATOR",
+    "MAX_PROTOCOL_FEE_BPS",
+    "u64CheckedAdd",
+    "u64CheckedSub",
+    "u64CheckedMul",
+    "u64CheckedDiv",
+    "u64SaturatingAdd",
+    "u64SaturatingSub",
+    "u64Min",
+    "u128CheckedMul",
+    "u128CheckedDiv",
+    "u128ToU64",
+    "mul_div_u64",
+    "compute_route_and_recoup",
+    "compute_mark_default",
+    "compute_task_payout",
+    "compute_xleg_split",
+  ],
 };
 
 /**
@@ -118,6 +197,29 @@ export const WRAPPER_DEFS_BY_MODULE: Record<string, readonly string[]> = {
     "evalCircuit",
     "isDeMorganOp",
   ],
+  "SwarmProofs.Chains.BoolFourier.Defs.V1": [
+    "boolVariance",
+    "totalInfluence",
+    "noiseStability",
+  ],
+  "SwarmProofs.Chains.QuantumInfo.Defs.V1": [
+    "IsDensityMatrix",
+    "CommutingCHSHObservables",
+    "chshExpectation",
+    "IsFrustrationFree",
+    "HasSpectralGapGe",
+  ],
+  "SwarmProofs.Chains.NavierStokes.Defs.V1": [
+    "DyadicNSParams.Valid",
+    "IsDyadicNSSolution",
+    "dyadicEnergy",
+    "dyadicDissipation",
+    "dyadicSobolevSq",
+  ],
+  "SwarmProofs.Chains.ProtocolMath.Defs.V1": [
+    "BPS_DENOMINATOR",
+    "MAX_PROTOCOL_FEE_BPS",
+  ],
 };
 
 export const BRIDGE_LEMMAS_BY_DEFS_MODULE: Record<string, readonly string[]> = {
@@ -137,6 +239,10 @@ export const BRIDGE_LEMMAS_BY_DEFS_MODULE: Record<string, readonly string[]> = {
   ],
   "SwarmProofs.Chains.BSD.Defs.V1": [],
   "SwarmProofs.Chains.Circuits.Defs.V1": [],
+  "SwarmProofs.Chains.BoolFourier.Defs.V1": [],
+  "SwarmProofs.Chains.QuantumInfo.Defs.V1": [],
+  "SwarmProofs.Chains.NavierStokes.Defs.V1": [],
+  "SwarmProofs.Chains.ProtocolMath.Defs.V1": [],
 };
 
 export const FORBIDDEN_SHARED_WORD_TOKENS = [
@@ -710,6 +816,77 @@ export const CHAIN_TASK_CONFIG: Record<string, ChainTaskMeta> = {
     dependsOn: "chain-rh-meta-3-godel-kleene-pi1-unprovability",
     cta: `Track E [Rung 4/4 -> Pi1 RH Metamathematics]: Prove Zermelo-Grothendieck equivalence IsInaccessible κ <-> V_{κ.ord} ZFC Replacement universe (provable landmark) ${SPDX_CTA_NOTE}`,
   },
+  "chain-bool-fourier-1-parseval-poincare-bonami": {
+    escrowLamports: 15_000_000,
+    cta: `Chain F [Rung 1/4 -> Boolean Fourier & Complexity]: Prove Parseval, discrete Poincare & sharp Bonami (2,4) hypercontractivity ${SPDX_CTA_NOTE}`,
+  },
+  "chain-bool-fourier-2-kkl-influential-variable": {
+    escrowLamports: 30_000_000,
+    dependsOn: "chain-bool-fourier-1-parseval-poincare-bonami",
+    cta: `Chain F [Rung 2/4 -> Boolean Fourier & Complexity]: Prove Kahn-Kalai-Linial (KKL 1988) influential variable theorem ${SPDX_CTA_NOTE}`,
+  },
+  "chain-bool-fourier-3-hastad-ac0-parity": {
+    escrowLamports: 50_000_000,
+    dependsOn: "chain-bool-fourier-2-kkl-influential-variable",
+    cta: `Chain F [Rung 3/4 -> Boolean Fourier & Complexity]: Prove Hastad (1986) exponential AC0 lower bound for PARITY ${SPDX_CTA_NOTE}`,
+  },
+  "chain-bool-fourier-4-aaronson-ambainis-conjecture": {
+    escrowLamports: 75_000_000,
+    dependsOn: "chain-bool-fourier-3-hastad-ac0-parity",
+    cta: `Chain F [Rung 4/4 -> Open Frontier]: Aaronson-Ambainis Conjecture for bounded degree-d real polynomials ${SPDX_CTA_NOTE}`,
+  },
+  "chain-quantum-info-1-chsh-tsirelson-bound": {
+    escrowLamports: 20_000_000,
+    cta: `Chain G [Rung 1/4 -> Quantum Info & Hamiltonian Complexity]: Prove Tsirelson 2*sqrt(2) CHSH ceiling and d=4 Bell saturation ${SPDX_CTA_NOTE}`,
+  },
+  "chain-quantum-info-2-kraus-cptp-data-processing": {
+    escrowLamports: 35_000_000,
+    dependsOn: "chain-quantum-info-1-chsh-tsirelson-bound",
+    cta: `Chain G [Rung 2/4 -> Quantum Info & Hamiltonian Complexity]: Prove Kraus CPTP preservation, von Neumann entropy bounds & unital monotonicity ${SPDX_CTA_NOTE}`,
+  },
+  "chain-quantum-info-3-detectability-lemma-knill-laflamme": {
+    escrowLamports: 50_000_000,
+    dependsOn: "chain-quantum-info-2-kraus-cptp-data-processing",
+    cta: `Chain G [Rung 3/4 -> Quantum Info & Hamiltonian Complexity]: Prove Detectability Lemma & Knill-Laflamme QEC recovery sufficiency ${SPDX_CTA_NOTE}`,
+  },
+  "chain-quantum-info-4-nlts-quantum-pcp-gap": {
+    escrowLamports: 75_000_000,
+    dependsOn: "chain-quantum-info-3-detectability-lemma-knill-laflamme",
+    cta: `Chain G [Rung 4/4 -> Frontier]: Prove NLTS Theorem (Anshu-Breuckmann-Nirkhe log-depth Quantum PCP prerequisite) ${SPDX_CTA_NOTE}`,
+  },
+  "chain-navier-stokes-1-dyadic-energy-subcritical": {
+    escrowLamports: 20_000_000,
+    cta: `Chain P1 [Rung 1/4 -> Navier-Stokes Regularity]: Prove arbitrary-N dyadic energy dissipation & subcritical (beta > alpha/2) global regularity ${SPDX_CTA_NOTE}`,
+  },
+  "chain-navier-stokes-2-katz-pavlovic-supercritical-blowup": {
+    escrowLamports: 40_000_000,
+    dependsOn: "chain-navier-stokes-1-dyadic-energy-subcritical",
+    cta: `Chain P1 [Rung 2/4 -> Navier-Stokes Regularity]: Prove Katz-Pavlovic / Cheskidov supercritical (3*beta < alpha) finite-time blow-up ${SPDX_CTA_NOTE}`,
+  },
+  "chain-navier-stokes-3-galerkin-3d-leray-energy": {
+    escrowLamports: 50_000_000,
+    dependsOn: "chain-navier-stokes-2-katz-pavlovic-supercritical-blowup",
+    cta: `Chain P1 [Rung 3/4 -> Navier-Stokes Regularity]: Prove 3D periodic Fourier-Galerkin skew-symmetry, energy orthogonality & 2D enstrophy conservation ${SPDX_CTA_NOTE}`,
+  },
+  "chain-navier-stokes-4-leray-3d-uniform-enstrophy-millennium": {
+    escrowLamports: 75_000_000,
+    dependsOn: "chain-navier-stokes-3-galerkin-3d-leray-energy",
+    cta: `Chain P1 [Rung 4/4 -> Millennium Frontier]: Uniform-in-M global enstrophy regularity for 3D periodic Fourier-Galerkin Navier-Stokes ${SPDX_CTA_NOTE}`,
+  },
+  "chain-protocol-math-1-advance-recoupment-safety": {
+    escrowLamports: 15_000_000,
+    cta: `Track II [Rung 1/3 -> Verified Rust Settlement Core]: Prove u64 panic-freedom, conservation & split-invariance of extracted compute_route_and_recoup ${SPDX_CTA_NOTE}`,
+  },
+  "chain-protocol-math-2-task-payout-solvency": {
+    escrowLamports: 25_000_000,
+    dependsOn: "chain-protocol-math-1-advance-recoupment-safety",
+    cta: `Track II [Rung 2/3 -> Verified Rust Settlement Core]: Prove u128 non-overflow, escrow conservation & score monotonicity of extracted compute_task_payout ${SPDX_CTA_NOTE}`,
+  },
+  "chain-protocol-math-3-xleg-multistep-conservation": {
+    escrowLamports: 35_000_000,
+    dependsOn: "chain-protocol-math-2-task-payout-solvency",
+    cta: `Track II [Rung 3/3 -> Verified Rust Settlement Core]: Prove overflow boundary & multi-game cross-chain pool solvency of extracted compute_xleg_split ${SPDX_CTA_NOTE}`,
+  },
 };
 
 export const REDUCTION_CHAIN_FILES = [
@@ -718,6 +895,10 @@ export const REDUCTION_CHAIN_FILES = [
   "rh_analytic_chain.lean",
   "pnp_circuit_foundations_chain.lean",
   "rh_pi1_metamathematics_chain.lean",
+  "bool_fourier_chain.lean",
+  "quantum_info_chain.lean",
+  "navier_stokes_chain.lean",
+  "protocol_math_chain.lean",
 ];
 
 export interface CatalogEntry {
@@ -760,6 +941,8 @@ export interface ResolvedRungDependency {
 export interface RunnerHealthInfo {
   status?: string;
   composable?: boolean;
+  swarm_proofs_rev?: string;
+  environment_id?: string;
 }
 
 export function parseStatementHeaderMeta(statement: string): {
@@ -1033,15 +1216,29 @@ function stripDefsFileForInlineCompat(raw: string): {
     bridgeCutIdx >= 0 ? withoutLicense.slice(0, bridgeCutIdx) : withoutLicense;
   const imports: string[] = [];
   const keptLines: string[] = [];
+  let inGuard = false;
   for (const line of defsPart.split("\n")) {
     const trimmed = line.trim();
+    if (trimmed.startsWith("#guard ") || trimmed.startsWith("#guard\t")) {
+      inGuard = true;
+      continue;
+    }
+    if (inGuard) {
+      if (
+        trimmed === "" ||
+        /^(?:def|noncomputable|abbrev|structure|inductive|mutual|theorem|lemma|end|namespace|\/-|--|#)/.test(
+          trimmed
+        )
+      ) {
+        inGuard = false;
+      } else {
+        continue;
+      }
+    }
     if (trimmed.startsWith("import ") || trimmed.startsWith("import\t")) {
       if (!BRIDGE_ONLY_DEF_IMPORTS.has(trimmed)) {
         imports.push(trimmed);
       }
-      continue;
-    }
-    if (trimmed.startsWith("#guard ") || trimmed.startsWith("#guard\t")) {
       continue;
     }
     if (trimmed === "namespace SwarmProofs" || trimmed === "end SwarmProofs") {
@@ -1053,9 +1250,71 @@ function stripDefsFileForInlineCompat(raw: string): {
 }
 
 /**
- * Compatibility bridge for `--check-only` runner probes while Step 3 runner upgrade is deploying:
+ * Returns any `SwarmProofs.Chains.*.Defs.V*` modules imported by `statement` that are
+ * not yet present at the runner's baked `swarm_proofs_rev` commit in git history.
+ * Used to fail closed during real seeding and to inline unbaked Defs on composable v4.33.0-rc2
+ * during pre-rollout `--check-only` PR/CI verification.
+ */
+export function findUnbakedSwarmDefsImports(
+  statement: string,
+  runnerSwarmProofsRev?: string,
+  repoRoot: string = REPO_ROOT
+): string[] {
+  if (
+    !runnerSwarmProofsRev ||
+    !/^[0-9a-f]{7,40}$/i.test(runnerSwarmProofsRev)
+  ) {
+    return [];
+  }
+  const mods: string[] = [];
+  for (const line of statement.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("import ") && !trimmed.startsWith("import\t")) {
+      continue;
+    }
+    const withoutComment = trimmed.split("--")[0];
+    for (const modName of withoutComment
+      .replace(/^import\s+/, "")
+      .split(/\s+/)
+      .filter(Boolean)) {
+      if (
+        ALLOWED_SWARM_LIBRARY_IMPORTS.has(modName) &&
+        !mods.includes(modName)
+      ) {
+        mods.push(modName);
+      }
+    }
+  }
+  if (mods.length === 0) return [];
+
+  const revCheck = spawnSync(
+    "git",
+    ["cat-file", "-e", `${runnerSwarmProofsRev}^{commit}`],
+    { cwd: repoRoot, encoding: "utf8" }
+  );
+  if (revCheck.status !== 0) {
+    return [];
+  }
+
+  const unbaked: string[] = [];
+  for (const modName of mods) {
+    const relPath = `proofs/SwarmProofs/${modName.replace(/\./g, "/")}.lean`;
+    const fileCheck = spawnSync(
+      "git",
+      ["cat-file", "-e", `${runnerSwarmProofsRev}:${relPath}`],
+      { cwd: repoRoot, encoding: "utf8" }
+    );
+    if (fileCheck.status !== 0) {
+      unbaked.push(modName);
+    }
+  }
+  return unbaked;
+}
+
+/**
+ * Compatibility bridge for `--check-only` runner probes while runner image rollout is pending:
  * inlines `SwarmProofs.Chains.*.Defs.V1` into the runner check payload when
- * runner `/health` does not yet report `composable: true`.
+ * runner `/health` does not yet report `composable: true` or lacks newly added Defs modules.
  */
 export function inlineSwarmProofsImportsForCompat(
   statement: string,
@@ -2051,9 +2310,37 @@ export async function verifyStatementElaborates(
     );
   }
 
-  const effectiveStatement = useComposableMode
-    ? entry.statement
-    : inlineSwarmProofsImportsForCompat(entry.statement);
+  const unbakedDefs = useComposableMode
+    ? findUnbakedSwarmDefsImports(
+        parentRaw ? `${parentRaw}\n${entry.statement}` : entry.statement,
+        health.swarm_proofs_rev
+      )
+    : [];
+  if (unbakedDefs.length > 0 && !checkOnly) {
+    throw new Error(
+      `[PRE-SEED GATE FAILED] Refusing to seed ${
+        entry.name
+      }: runner swarm_proofs_rev=${
+        health.swarm_proofs_rev
+      } does not yet include ${unbakedDefs.join(
+        ", "
+      )}. Bump SWARM_PROOFS_REV and redeploy shillbot-lean-runner first.`
+    );
+  }
+  const shouldInlineDefs = !useComposableMode || unbakedDefs.length > 0;
+  if (useComposableMode && unbakedDefs.length > 0) {
+    console.log(
+      `  [pre-rollout inline] ${entry.name}: runner rev ${String(
+        health.swarm_proofs_rev
+      ).slice(0, 8)} lacks ${unbakedDefs.join(
+        ", "
+      )}; inlining locally on composable v4.33.0-rc2 for --check-only`
+    );
+  }
+
+  const effectiveStatement = shouldInlineDefs
+    ? inlineSwarmProofsImportsForCompat(entry.statement)
+    : entry.statement;
   const mode = useComposableMode ? "composable" : "mathlib";
   const promotedDepMod =
     useComposableMode && resolvedDep?.status === "active"
@@ -2129,7 +2416,7 @@ export async function verifyStatementElaborates(
     ? buildParentImplicationStatement(
         parentRaw,
         entry.statement,
-        !useComposableMode
+        shouldInlineDefs
       )
     : undefined;
 
