@@ -5116,6 +5116,7 @@ dependencies = [
  "anchor-lang",
  "serde_json",
  "shared",
+ "solana-define-syscall",
  "solana-sha256-hasher",
 ]
 

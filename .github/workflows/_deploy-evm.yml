@@ -77,7 +77,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: testnet
     concurrency:
-      group: evm-deploy-${{ inputs.network }}-${{ inputs.contract }}
+      group: evm-deploy-${{ inputs.network }}
       cancel-in-progress: false
     defaults:
       run:
@@ -242,7 +242,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: mainnet
     concurrency:
-      group: evm-deploy-${{ inputs.network }}-${{ inputs.contract }}
+      group: evm-deploy-${{ inputs.network }}
       cancel-in-progress: false
     defaults:
       run:

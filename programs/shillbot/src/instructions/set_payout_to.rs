@@ -79,6 +79,33 @@ pub fn set_payout_to(ctx: Context<SetPayoutTo>, payout_to: Pubkey) -> Result<()>
     Ok(())
 }
 
+/// Returns `true` iff `pk` is a valid compressed Edwards25519 curve point
+/// (i.e. can be an Ed25519 EOA keypair, never a valid PDA).
+///
+/// `Pubkey::is_on_curve()` is `unimplemented!()` on `target_os = "solana"`, so
+/// on SBF we invoke Solana's native `sol_curve_validate_point` syscall
+/// (`CURVE25519_EDWARDS = 0`, matching `solana_curve25519::edwards::validate_edwards`).
+pub(crate) fn is_ed25519_on_curve(pk: &Pubkey) -> bool {
+    #[cfg(target_os = "solana")]
+    {
+        const CURVE25519_EDWARDS: u64 = 0;
+        let bytes = pk.to_bytes();
+        let mut validate_result = 0u8;
+        let rc = unsafe {
+            solana_define_syscall::definitions::sol_curve_validate_point(
+                CURVE25519_EDWARDS,
+                bytes.as_ptr(),
+                &mut validate_result,
+            )
+        };
+        rc == 0
+    }
+    #[cfg(not(target_os = "solana"))]
+    {
+        pk.is_on_curve()
+    }
+}
+
 /// Classify a validated destination account into `Task.payout_route_kind`:
 /// - `1` (`PAYOUT_ROUTE_EXTENSION_CREDIT`) when owned by `extension-credit`
 /// - `2` (`PAYOUT_ROUTE_SYSTEM_WALLET`) ONLY for on-curve System-owned EOAs
@@ -87,7 +114,7 @@ pub fn set_payout_to(ctx: Context<SetPayoutTo>, payout_to: Pubkey) -> Result<()>
 pub(crate) fn classify_payout_route_kind(payout_to: &Pubkey, owner: &Pubkey) -> u8 {
     if *owner == crate::constants::EXTENSION_CREDIT_PROGRAM_ID {
         crate::state::PAYOUT_ROUTE_EXTENSION_CREDIT
-    } else if payout_to.is_on_curve() {
+    } else if is_ed25519_on_curve(payout_to) {
         crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
     } else {
         crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY
@@ -99,7 +126,7 @@ pub(crate) fn classify_payout_route_kind(payout_to: &Pubkey, owner: &Pubkey) -> 
 /// pubkey can never be a PDA (`Advance`), so record it as an explicit System
 /// wallet (`2`), while off-curve PDAs remain `0` (legacy/PDA fallback allowed).
 pub(crate) fn classify_payout_route_kind_without_account(payout_to: &Pubkey) -> u8 {
-    if payout_to.is_on_curve() {
+    if is_ed25519_on_curve(payout_to) {
         crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
     } else {
         crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY

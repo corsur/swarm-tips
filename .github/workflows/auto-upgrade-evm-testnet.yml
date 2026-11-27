@@ -225,7 +225,7 @@ jobs:
       contents: read
       id-token: write
     concurrency:
-      group: evm-xchain-mainnet-upgrade-${{ matrix.network }}
+      group: evm-mainnet-upgrade-${{ matrix.network }}
       cancel-in-progress: false
     strategy:
       max-parallel: 1

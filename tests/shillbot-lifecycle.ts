@@ -2193,5 +2193,121 @@ describe("shillbot-lifecycle (bankrun)", () => {
         "agent wallet must receive nothing — routed to the vault"
       );
     });
+
+    it("SBF classifies on-curve EOA (route kind 2, blocks 0-lamport fallback) vs off-curve PDA (route kind 0, allows fallback)", async () => {
+      // 1. On-curve 0-lamport System EOA -> payout_route_kind = 2; fallback to agent rejected.
+      const {
+        setup: eoaSetup,
+        cKp: eoaClient,
+        aKp: eoaAgent,
+      } = await freshClaimed();
+      const emptyEoa = Keypair.generate().publicKey;
+      await setPayoutTo(eoaAgent, eoaSetup.taskPda, emptyEoa);
+      const eoaTaskAfterSet = await program.account.task.fetch(
+        eoaSetup.taskPda
+      );
+      assert.equal(
+        eoaTaskAfterSet.payoutRouteKind,
+        2,
+        "on-curve EOA must record PAYOUT_ROUTE_SYSTEM_WALLET (2) on SBF"
+      );
+
+      await driveToVerified(eoaSetup, eoaClient, eoaAgent, 800_000, "sbf-eoa");
+      const eoaVerified = await program.account.task.fetch(eoaSetup.taskPda);
+      await warpToTimestamp(
+        context,
+        eoaVerified.challengeDeadline.toNumber() + 1
+      );
+
+      try {
+        await program.methods
+          .finalizeTask()
+          .accountsPartial({
+            task: eoaSetup.taskPda,
+            globalState: globalPda,
+            agent: eoaAgent.publicKey,
+            client: eoaClient.publicKey,
+            treasury: treasury.publicKey,
+          })
+          .remainingAccounts([
+            { pubkey: emptyEoa, isSigner: false, isWritable: false },
+          ])
+          .rpc();
+        assert.fail(
+          "expected NotTaskAgent for 0-lamport explicit EOA fallback"
+        );
+      } catch (e: any) {
+        assert.match(String(e), /NotTaskAgent/, `got: ${e}`);
+      }
+
+      // Direct payout to the 0-lamport EOA succeeds when payment >= rent(0).
+      await program.methods
+        .finalizeTask()
+        .accountsPartial({
+          task: eoaSetup.taskPda,
+          globalState: globalPda,
+          agent: emptyEoa,
+          client: eoaClient.publicKey,
+          treasury: treasury.publicKey,
+        })
+        .rpc();
+      assert.isAbove(
+        Number(await getBalance(context, emptyEoa)),
+        0,
+        "empty EOA must receive the finalized payment directly"
+      );
+
+      // 2. Off-curve 0-lamport closed Advance PDA -> payout_route_kind = 0; fallback to agent allowed.
+      const {
+        setup: pdaSetup,
+        cKp: pdaClient,
+        aKp: pdaAgent,
+      } = await freshClaimed();
+      const [closedAdvancePda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("advance"),
+          Keypair.generate().publicKey.toBuffer(),
+          pdaAgent.publicKey.toBuffer(),
+        ],
+        new PublicKey("Ec628D7GH3hwgnVf1gqrUh83qcZprYjmTzvtdHHEr7oh")
+      );
+      await setPayoutTo(pdaAgent, pdaSetup.taskPda, closedAdvancePda);
+      const pdaTaskAfterSet = await program.account.task.fetch(
+        pdaSetup.taskPda
+      );
+      assert.equal(
+        pdaTaskAfterSet.payoutRouteKind,
+        0,
+        "off-curve PDA must record PAYOUT_ROUTE_UNSET_OR_LEGACY (0) on SBF"
+      );
+
+      await driveToVerified(pdaSetup, pdaClient, pdaAgent, 800_000, "sbf-pda");
+      const pdaVerified = await program.account.task.fetch(pdaSetup.taskPda);
+      await warpToTimestamp(
+        context,
+        pdaVerified.challengeDeadline.toNumber() + 1
+      );
+
+      const agentBefore = await getBalance(context, pdaAgent.publicKey);
+      await program.methods
+        .finalizeTask()
+        .accountsPartial({
+          task: pdaSetup.taskPda,
+          globalState: globalPda,
+          agent: pdaAgent.publicKey,
+          client: pdaClient.publicKey,
+          treasury: treasury.publicKey,
+        })
+        .remainingAccounts([
+          { pubkey: closedAdvancePda, isSigner: false, isWritable: false },
+        ])
+        .rpc();
+      assert.isAbove(
+        Number(await getBalance(context, pdaAgent.publicKey)) -
+          Number(agentBefore),
+        0,
+        "closed off-curve PDA must fall back cleanly to task.agent"
+      );
+    });
   });
 });
