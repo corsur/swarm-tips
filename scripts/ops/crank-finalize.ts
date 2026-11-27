@@ -9,16 +9,22 @@ const EXECUTE = process.argv.includes("--execute");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 (async () => {
   if (!EXECUTE) {
-    console.log("[DRY-RUN] Planned mainnet crank-finalize (no keypair read, no tx sent):");
+    console.log(
+      "[DRY-RUN] Planned mainnet crank-finalize (no keypair read, no tx sent):"
+    );
     console.log(`  RPC:      ${RPC}`);
     console.log(`  TASK_PDA: ${PDA.toBase58()}`);
-    console.log("Pass --execute to sign and broadcast finalize_task on Solana mainnet.");
+    console.log(
+      "Pass --execute to sign and broadcast finalize_task on Solana mainnet."
+    );
     return;
   }
 
   const kp = Keypair.fromSecretKey(
     Uint8Array.from(
-      JSON.parse(readFileSync(join(homedir(), ".config/solana/id.json"), "utf8"))
+      JSON.parse(
+        readFileSync(join(homedir(), ".config/solana/id.json"), "utf8")
+      )
     )
   );
   const conn = new Connection(RPC, "confirmed");

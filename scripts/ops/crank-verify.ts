@@ -22,18 +22,24 @@ const EXECUTE = process.argv.includes("--execute");
 
 (async () => {
   if (!EXECUTE) {
-    console.log("[DRY-RUN] Planned mainnet crank-verify (no keypair read, no tx sent):");
+    console.log(
+      "[DRY-RUN] Planned mainnet crank-verify (no keypair read, no tx sent):"
+    );
     console.log(`  RPC:      ${RPC}`);
     console.log(`  MCP:      ${MCP}`);
     console.log(`  TASK:     ${TASK}`);
     console.log(`  TASK_PDA: ${PDA}`);
-    console.log("Pass --execute to sign and broadcast verify_task on Solana mainnet.");
+    console.log(
+      "Pass --execute to sign and broadcast verify_task on Solana mainnet."
+    );
     return;
   }
 
   const kp = Keypair.fromSecretKey(
     Uint8Array.from(
-      JSON.parse(readFileSync(join(homedir(), ".config/solana/id.json"), "utf8"))
+      JSON.parse(
+        readFileSync(join(homedir(), ".config/solana/id.json"), "utf8")
+      )
     )
   );
   const conn = new Connection(RPC, "confirmed");

@@ -46,10 +46,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: evm-deploy-${{ inputs.network }}-${{ inputs.contract }}
-  cancel-in-progress: false
-
 jobs:
   validate-dispatch:
     runs-on: ubuntu-latest
@@ -80,6 +76,9 @@ jobs:
     if: inputs.network == 'base_sepolia'
     runs-on: ubuntu-latest
     environment: testnet
+    concurrency:
+      group: evm-deploy-${{ inputs.network }}-${{ inputs.contract }}
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: evm
@@ -242,6 +241,9 @@ jobs:
     if: (inputs.network == 'base' || inputs.network == 'ethereum') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: mainnet
+    concurrency:
+      group: evm-deploy-${{ inputs.network }}-${{ inputs.contract }}
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: evm

@@ -1074,6 +1074,7 @@ pub(crate) fn internal_admin_authorized(
 }
 
 const FIRST_PARTY_MCP_DOMAINS: &[&str] = &["swarm.tips", "shillbot.org", "coordination.game"];
+const TRUSTED_WEB_MCP_CLIENT_DOMAINS: &[&str] = &["claude.ai", "chatgpt.com"];
 
 fn is_valid_loopback_port(port_str: &str) -> bool {
     !port_str.is_empty()
@@ -1127,6 +1128,7 @@ fn is_allowed_first_party_https_origin(origin: &str) -> bool {
     let host_lower = host.to_ascii_lowercase();
     FIRST_PARTY_MCP_DOMAINS
         .iter()
+        .chain(TRUSTED_WEB_MCP_CLIENT_DOMAINS.iter())
         .any(|d| matches_domain_or_subdomain(&host_lower, d))
 }
 
@@ -3550,19 +3552,38 @@ mod readiness_tests {
             assert_eq!(body["error"], "forbidden_host");
         }
 
-        // 3. Valid subdomain HTTPS Origins are accepted; non-HTTPS or spoofed Origins are rejected.
-        let sub_ok = client
+        // 3. Valid first-party and web MCP client HTTPS Origins are accepted;
+        //    non-HTTPS or spoofed Origins are rejected (and claude.ai is NOT an allowed Host).
+        for ok_origin in [
+            "https://app.swarm.tips",
+            "https://claude.ai",
+            "https://chatgpt.com",
+        ] {
+            let sub_ok = client
+                .post(&url)
+                .header(reqwest::header::ORIGIN, ok_origin)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                sub_ok.status(),
+                reqwest::StatusCode::OK,
+                "allowed Origin {ok_origin} must pass /mcp"
+            );
+        }
+        let claude_host = client
             .post(&url)
-            .header(reqwest::header::ORIGIN, "https://app.swarm.tips")
+            .header(reqwest::header::HOST, "claude.ai")
             .send()
             .await
             .unwrap();
-        assert_eq!(sub_ok.status(), reqwest::StatusCode::OK);
+        assert_eq!(claude_host.status(), reqwest::StatusCode::FORBIDDEN);
 
         for bad_origin in [
             "http://mcp.swarm.tips",
             "https://evil.example",
             "https://swarm.tips.evil.example",
+            "https://claude.ai.evil.example",
             "https://swarm.tips:8443",
             "https://swarm.tips/path",
         ] {

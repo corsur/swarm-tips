@@ -24,7 +24,7 @@ export const DEFAULT_ZETA23_REV_V4 = "3635e74826a4c1fcece7d1cd2b6fa75e43a00510";
 const LEAN_TOOLCHAIN_RE = /^leanprover\/lean4:v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$/;
 const GIT_COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 const TASK_ID_RE = /^[A-Za-z0-9:._-]{1,128}$/;
-const MODE_RE = /^[a-z0-9-]{1,32}$/;
+const MODE_RE = /^[a-z0-9_-]{1,32}$/;
 const IMPORT_IDENT_RE = /^[A-Za-z0-9_.]+$/;
 
 export interface LeanWorkspaceSpec {
@@ -130,7 +130,7 @@ export function extractLeanWorkspaceSpec(
       env?.mode,
       MODE_RE,
       "mode",
-      "1-32 characters matching [a-z0-9-]",
+      "1-32 characters matching [a-z0-9_-]",
     ) ?? defaultMode;
 
   const defaultImports =

@@ -24,6 +24,38 @@ function run(command, args, options = {}) {
   return result;
 }
 
+// 1. Verify CLI + Solana/root imports work with ZERO optional EVM peerDependencies (`viem`/`wagmi`).
+const noViemFixture = mkdtempSync(resolve(tmpdir(), "swarm-client-noviem-"));
+run("npm", ["init", "--yes"], { cwd: noViemFixture });
+run("npm", ["install", "--ignore-scripts", resolve(tarball)], {
+  cwd: noViemFixture,
+});
+run(
+  "node",
+  [
+    "--input-type=module",
+    "--eval",
+    `for (const specifier of ["@swarm-tips/client", "@swarm-tips/client/shillbot", "@swarm-tips/client/shillbot/api"]) {
+  await import(specifier);
+}`,
+  ],
+  { cwd: noViemFixture },
+);
+const noViemBinPath = `${resolve(noViemFixture, "node_modules", ".bin")}${delimiter}${
+  process.env.PATH ?? ""
+}`;
+const noViemSwarmHelp = spawnSync("swarm", ["--help"], {
+  cwd: noViemFixture,
+  encoding: "utf8",
+  env: { ...process.env, PATH: noViemBinPath },
+});
+if (noViemSwarmHelp.status !== 0) {
+  throw new Error(
+    `swarm --help failed without optional viem peerDependency: ${noViemSwarmHelp.stderr}`
+  );
+}
+
+// 2. Verify full ESM + CJS + browser bundles with optional EVM peerDependencies installed.
 run("npm", ["init", "--yes"]);
 run("npm", [
   "install",

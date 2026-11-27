@@ -851,19 +851,16 @@ impl GameSessionManager {
         ws_sink: Arc<Mutex<WsSink>>,
         cancel_token: CancellationToken,
     ) {
-        let prev_token = self
-            .ws_cancel_tokens
-            .write()
-            .await
-            .insert(wallet.to_string(), cancel_token);
+        let (prev_sink, prev_token) = {
+            let mut sinks = self.ws_sinks.write().await;
+            let mut tokens = self.ws_cancel_tokens.write().await;
+            let prev_sink = sinks.insert(wallet.to_string(), ws_sink);
+            let prev_token = tokens.insert(wallet.to_string(), cancel_token);
+            (prev_sink, prev_token)
+        };
         if let Some(tok) = prev_token {
             tok.cancel();
         }
-        let prev_sink = self
-            .ws_sinks
-            .write()
-            .await
-            .insert(wallet.to_string(), ws_sink);
         if let Some(sink) = prev_sink {
             close_ws_sink(&sink).await;
         }
@@ -873,10 +870,17 @@ impl GameSessionManager {
     /// so in-process realtime connections (`combined-api` `GameConnector`) are
     /// torn down immediately when a game resolves or is cleaned up.
     pub(crate) async fn close_ws(&self, wallet: &str) {
-        if let Some(tok) = self.ws_cancel_tokens.write().await.remove(wallet) {
+        let (prev_sink, prev_token) = {
+            let mut sinks = self.ws_sinks.write().await;
+            let mut tokens = self.ws_cancel_tokens.write().await;
+            let prev_sink = sinks.remove(wallet);
+            let prev_token = tokens.remove(wallet);
+            (prev_sink, prev_token)
+        };
+        if let Some(tok) = prev_token {
             tok.cancel();
         }
-        if let Some(sink) = self.ws_sinks.write().await.remove(wallet) {
+        if let Some(sink) = prev_sink {
             close_ws_sink(&sink).await;
         }
     }
@@ -1150,16 +1154,13 @@ impl GameSessionManager {
             .context("failed to check wallet balance")?;
 
         // Never allow a re-registration to clobber an active in-memory session
-        // (e.g. an unverified caller registering a victim's pubkey mid-game).
+        // (e.g. an unverified caller registering a victim's pubkey mid-game),
+        // while allowing Resolved / unauthenticated Connected sessions to start
+        // a fresh game cleanly.
         let has_active_in_memory =
             if let Some(existing) = self.sessions.read().await.get(&wallet).cloned() {
                 let s = existing.lock().await;
-                !s.jwt.is_empty()
-                    || s.commit_preimage.is_some()
-                    || !matches!(
-                        s.state,
-                        GameSessionState::Connected | GameSessionState::Resolved
-                    )
+                !is_evictable_session(&s)
             } else {
                 false
             };
@@ -1499,14 +1500,8 @@ impl GameSessionManager {
 
         if !caller_verified {
             let s = session_arc.lock().await;
-            let has_active = !s.jwt.is_empty()
-                || s.commit_preimage.is_some()
-                || !matches!(
-                    s.state,
-                    GameSessionState::Connected | GameSessionState::Resolved
-                );
             anyhow::ensure!(
-                !has_active,
+                is_evictable_session(&s),
                 "an active game session already exists for this wallet; verify wallet ownership via agent_verify_wallet or Authorization: Bearer before calling game_find_match"
             );
         }
@@ -1551,14 +1546,8 @@ impl GameSessionManager {
         {
             let mut s = session_arc.lock().await;
             if !caller_verified {
-                let has_active = !s.jwt.is_empty()
-                    || s.commit_preimage.is_some()
-                    || !matches!(
-                        s.state,
-                        GameSessionState::Connected | GameSessionState::Resolved
-                    );
                 anyhow::ensure!(
-                    !has_active,
+                    is_evictable_session(&s),
                     "an active game session already exists for this wallet; verify wallet ownership via agent_verify_wallet or Authorization: Bearer before calling game_find_match"
                 );
             }
@@ -1701,6 +1690,24 @@ impl GameSessionManager {
         let api_client = self.api_client()?.with_network(network.map(str::to_string));
         let auth_resp = api_client.session_auth(wallet, sig_str, nonce).await?;
         let jwt = auth_resp.token.clone();
+        // Transition out of `Resolved` BEFORE spawning the fresh WS listener so
+        // the listener's terminal-state check does not immediately tear down
+        // Game 2's connection before `join_queue_after_stake` sets `Queued`.
+        {
+            let mut s = session.lock().await;
+            if s.state == GameSessionState::Resolved {
+                s.state = GameSessionState::Connected;
+                s.game_id = None;
+                s.session_id = None;
+                s.role = None;
+                s.chat_buffer.clear();
+                s.match_found = None;
+                s.matchup_commitment = None;
+                s.commit_preimage = None;
+                s.game_ready = None;
+                s.reveal_data = None;
+            }
+        }
         self.spawn_ws_listener(wallet, &jwt, session, network)
             .await?;
         {

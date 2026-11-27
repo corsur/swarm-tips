@@ -5,7 +5,6 @@ import {
   Secp256k1Program,
   type BlockhashWithExpiryBlockHeight,
 } from "@solana/web3.js";
-import { decodeFunctionData, encodeFunctionData, type Hex } from "viem";
 import { HttpClient, type HttpClientOptions } from "../http.js";
 import { SwarmClientError } from "../errors.js";
 import {
@@ -859,48 +858,48 @@ export function validatePreparedEvmCall(
     });
   }
 
-  // Decode calldata via the canonical ShillbotEscrow ABI and verify canonical encoding + arguments.
-  let decoded: ReturnType<typeof decodeFunctionData<typeof SHILLBOT_ESCROW_ABI>>;
-  try {
-    decoded = decodeFunctionData({
-      abi: SHILLBOT_ESCROW_ABI,
-      data: raw.data as Hex,
-    });
-  } catch (err) {
+  // Decode calldata via a zero-dependency pure-TS canonical ABI decoder (so CLI and
+  // Solana-only consumers never require optional peerDependency `viem` at runtime)
+  // and verify exact canonical encoding + arguments (P2-27).
+  const argHex = raw.data.slice(10).toLowerCase();
+  const decodeFailure = (detail: string): never => {
     throw new SwarmClientError({
       code: "TRANSACTION_MISMATCH",
       operation: "shillbot.validatePreparedEvmCall",
-      message: `Prepared EVM call data failed ABI decoding for ${expectedFnName}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      message: `Prepared EVM call data failed ABI decoding for ${expectedFnName}: ${detail}`,
     });
-  }
-  if (decoded.functionName !== expectedFnName) {
-    throw new SwarmClientError({
-      code: "TRANSACTION_MISMATCH",
-      operation: "shillbot.validatePreparedEvmCall",
-      message: `Decoded function ${decoded.functionName} does not match expected ${expectedFnName}`,
-    });
-  }
-  const canonicalData = encodeFunctionData({
-    abi: SHILLBOT_ESCROW_ABI,
-    functionName: decoded.functionName,
-    args: decoded.args,
-  } as Parameters<typeof encodeFunctionData<typeof SHILLBOT_ESCROW_ABI>>[0]);
-  if (canonicalData.toLowerCase() !== raw.data.toLowerCase()) {
-    throw new SwarmClientError({
-      code: "TRANSACTION_MISMATCH",
-      operation: "shillbot.validatePreparedEvmCall",
-      message: `Prepared EVM call data for ${expectedFnName} is non-canonical or has trailing bytes`,
-    });
-  }
+  };
+  const readWordHex = (wordIdx: number): string => argHex.slice(wordIdx * 64, (wordIdx + 1) * 64);
+  const readCanonicalUint = (wordIdx: number, maxBits: 8 | 64, label: string): bigint => {
+    const word = readWordHex(wordIdx);
+    const zeroPrefixChars = (256 - maxBits) / 4;
+    if (!/^0+$/.test(word.slice(0, zeroPrefixChars))) {
+      decodeFailure(`has non-canonical high bits for ${label}`);
+    }
+    return BigInt(`0x${word.slice(zeroPrefixChars)}`);
+  };
+  const readCanonicalBool = (wordIdx: number, label: string): boolean => {
+    const word = readWordHex(wordIdx);
+    if (word === `${"0".repeat(63)}0`) return false;
+    if (word === `${"0".repeat(63)}1`) return true;
+    decodeFailure(`has non-canonical bool encoding for ${label}`);
+    return false;
+  };
+  const readBytes32 = (wordIdx: number): `0x${string}` => `0x${readWordHex(wordIdx)}`;
 
-  if (decoded.functionName === "createTask") {
-    const [statementCommitment, policyId, verificationKind, deadline, requiresApproval] =
-      decoded.args;
+  if (expectedFnName === "createTask") {
+    if (argHex.length !== 5 * 64) {
+      decodeFailure("has invalid calldata length or trailing bytes");
+    }
+    const statementCommitment = readBytes32(0);
+    const policyId = readBytes32(1);
+    const verificationKind = Number(readCanonicalUint(2, 8, "verificationKind"));
+    const deadline = readCanonicalUint(3, 64, "deadline");
+    const requiresApproval = readCanonicalBool(4, "requiresApproval");
+
     if (expected.statementCommitment !== undefined) {
       const want = normalizeExpectedBytes32(expected.statementCommitment, "statementCommitment");
-      if (statementCommitment.toLowerCase() !== want) {
+      if (statementCommitment !== want) {
         throw new SwarmClientError({
           code: "TRANSACTION_MISMATCH",
           operation: "shillbot.validatePreparedEvmCall",
@@ -910,7 +909,7 @@ export function validatePreparedEvmCall(
     }
     if (expected.policyId !== undefined) {
       const want = normalizeExpectedBytes32(expected.policyId, "policyId");
-      if (policyId.toLowerCase() !== want) {
+      if (policyId !== want) {
         throw new SwarmClientError({
           code: "TRANSACTION_MISMATCH",
           operation: "shillbot.validatePreparedEvmCall",
@@ -930,7 +929,7 @@ export function validatePreparedEvmCall(
           message: "Expected verificationKind must be an integer in [0, 255]",
         });
       }
-      if (Number(verificationKind) !== expected.verificationKind) {
+      if (verificationKind !== expected.verificationKind) {
         throw new SwarmClientError({
           code: "TRANSACTION_MISMATCH",
           operation: "shillbot.validatePreparedEvmCall",
@@ -956,24 +955,32 @@ export function validatePreparedEvmCall(
       });
     }
   } else if (
-    decoded.functionName === "claimTask" ||
-    decoded.functionName === "approveTask" ||
-    decoded.functionName === "finalizeTask" ||
-    decoded.functionName === "expireTask"
+    expectedFnName === "claimTask" ||
+    expectedFnName === "approveTask" ||
+    expectedFnName === "finalizeTask" ||
+    expectedFnName === "expireTask"
   ) {
-    const [taskId] = decoded.args;
+    if (argHex.length !== 64) {
+      decodeFailure("has invalid calldata length or trailing bytes");
+    }
+    const taskId = readCanonicalUint(0, 64, "taskId");
     if (expected.taskId !== undefined) {
       const want = parseExpectedUintArg(expected.taskId, "taskId");
       if (taskId !== want) {
         throw new SwarmClientError({
           code: "TRANSACTION_MISMATCH",
           operation: "shillbot.validatePreparedEvmCall",
-          message: `${decoded.functionName} taskId ${taskId} differs from expected ${want}`,
+          message: `${expectedFnName} taskId ${taskId} differs from expected ${want}`,
         });
       }
     }
-  } else if (decoded.functionName === "submitWork") {
-    const [taskId, contentIdHash, artifactHash] = decoded.args;
+  } else if (expectedFnName === "submitWork") {
+    if (argHex.length !== 3 * 64) {
+      decodeFailure("has invalid calldata length or trailing bytes");
+    }
+    const taskId = readCanonicalUint(0, 64, "taskId");
+    const contentIdHash = readBytes32(1);
+    const artifactHash = readBytes32(2);
     if (expected.taskId !== undefined) {
       const want = parseExpectedUintArg(expected.taskId, "taskId");
       if (taskId !== want) {
@@ -986,7 +993,7 @@ export function validatePreparedEvmCall(
     }
     if (expected.contentIdHash !== undefined) {
       const want = normalizeExpectedBytes32(expected.contentIdHash, "contentIdHash");
-      if (contentIdHash.toLowerCase() !== want) {
+      if (contentIdHash !== want) {
         throw new SwarmClientError({
           code: "TRANSACTION_MISMATCH",
           operation: "shillbot.validatePreparedEvmCall",
@@ -996,7 +1003,7 @@ export function validatePreparedEvmCall(
     }
     if (expected.artifactHash !== undefined) {
       const want = normalizeExpectedBytes32(expected.artifactHash, "artifactHash");
-      if (artifactHash.toLowerCase() !== want) {
+      if (artifactHash !== want) {
         throw new SwarmClientError({
           code: "TRANSACTION_MISMATCH",
           operation: "shillbot.validatePreparedEvmCall",
@@ -1004,8 +1011,32 @@ export function validatePreparedEvmCall(
         });
       }
     }
-  } else if (decoded.functionName === "verifyTaskAttested") {
-    const [taskId, score] = decoded.args;
+  } else if (expectedFnName === "verifyTaskAttested") {
+    // Head: taskId (uint64), score (uint64), sig offset (0x60 = 96 bytes); Tail: length + padded bytes.
+    if (argHex.length < 4 * 64 || argHex.length % 64 !== 0) {
+      decodeFailure("has truncated or unaligned dynamic bytes calldata");
+    }
+    const taskId = readCanonicalUint(0, 64, "taskId");
+    const score = readCanonicalUint(1, 64, "score");
+    const sigOffset = BigInt(`0x${readWordHex(2)}`);
+    if (sigOffset !== 96n) {
+      decodeFailure("has non-canonical dynamic bytes offset");
+    }
+    const sigLenBig = BigInt(`0x${readWordHex(3)}`);
+    if (sigLenBig > 65_536n) {
+      decodeFailure("has oversized sig byte length");
+    }
+    const sigLen = Number(sigLenBig);
+    const paddedBytes = Math.ceil(sigLen / 32) * 32;
+    const expectedHexLen = (4 * 32 + paddedBytes) * 2;
+    if (argHex.length !== expectedHexLen) {
+      decodeFailure("is non-canonical or has trailing bytes");
+    }
+    const sigHex = argHex.slice(4 * 64);
+    const paddingHex = sigHex.slice(sigLen * 2);
+    if (paddingHex.length > 0 && !/^0+$/.test(paddingHex)) {
+      decodeFailure("has non-zero trailing padding bytes in sig");
+    }
     if (expected.taskId !== undefined) {
       const want = parseExpectedUintArg(expected.taskId, "taskId");
       if (taskId !== want) {

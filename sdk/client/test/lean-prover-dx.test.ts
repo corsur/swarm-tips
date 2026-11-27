@@ -38,12 +38,19 @@ function makeJwt(wallet: string): string {
 }
 
 describe("Lean 4 Workspace Scaffolder (buildLeanWorkspaceFiles & scaffoldLeanWorkspace)", () => {
-  it("generates standalone Policy 1 files without external [[require]] deps", () => {
+  it("generates standalone Policy 1 files without external [[require]] deps (including self_contained mode)", () => {
     const task: TaskResponse = {
       task_id: "camp1:p1",
       state: "open",
       platform: 10,
       lean_policy: 1,
+      lean_environment: {
+        lean_policy: 1,
+        lean_toolchain: "leanprover/lean4:v4.31.0",
+        mode: "self_contained",
+        import_allowlist: [],
+        allows_disproof: false,
+      },
       statement_lean: "def statementProp : Prop := ∀ n : Nat, n + 0 = n\n",
     };
     const files = buildLeanWorkspaceFiles(task, "camp1:p1");
