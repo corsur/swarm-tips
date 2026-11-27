@@ -38,8 +38,14 @@ def main() -> int:
         help='Path to the attestation JSON, or "-" for stdin.',
     )
     parser.add_argument(
+        "--network",
+        choices=("mainnet", "devnet"),
+        default="mainnet",
+        help="Expected Solana cluster (default: mainnet). Fails closed on mismatch.",
+    )
+    parser.add_argument(
         "--rpc",
-        help="Override the default RPC endpoint for the attestation's network.",
+        help="Override the default RPC endpoint for the expected network.",
     )
     args = parser.parse_args()
 
@@ -59,10 +65,8 @@ def main() -> int:
         sys.stderr.write(f"invalid JSON in {args.path}: {e}\n")
         return 2
 
-    network = (
-        attestation.get("network") if isinstance(attestation, dict) else None
-    )
-    rpc_url = args.rpc or _DEFAULT_RPC.get(network or "", _DEFAULT_RPC["mainnet"])
+    expected_network = args.network
+    rpc_url = args.rpc or _DEFAULT_RPC[expected_network]
 
     # Infra failures (network down, RPC error, malformed response) are neither
     # "valid" nor "invalid" — exit 2 with a message, mirroring the TS CLI's
@@ -70,7 +74,13 @@ def main() -> int:
     # exit-1 "invalid" contract.
     try:
         rpc_fetcher = make_solana_rpc_fetcher(rpc_url)
-        verdict = verify_v1(attestation, SHILLBOT_PROTOCOL, rpc_fetcher, rpc_url)
+        verdict = verify_v1(
+            attestation,
+            SHILLBOT_PROTOCOL,
+            rpc_fetcher,
+            rpc_url,
+            expected_network=expected_network,
+        )
     except Exception as e:  # noqa: BLE001 — boundary: report, don't traceback
         sys.stderr.write(f"verification aborted: {e}\n")
         return 2
@@ -83,7 +93,8 @@ def make_solana_rpc_fetcher(rpc_url: str):
 
     Calls Solana's JSON-RPC ``getAccountInfo`` with base64 encoding,
     decodes the response, and returns ``(owner_b58, data_bytes)`` or
-    ``None`` when the account doesn't exist.
+    ``None`` when the account doesn't exist. Also exposes
+    ``get_genesis_hash()`` so ``verify_v1_on_chain`` can pin the cluster.
     """
 
     def fetch(account_b58: str) -> Optional[Tuple[str, bytes]]:
@@ -116,6 +127,22 @@ def make_solana_rpc_fetcher(rpc_url: str):
         data = base64.b64decode(data_field[0])
         return (owner, data)
 
+    def get_genesis_hash() -> str:
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getGenesisHash",
+        }
+        resp = requests.post(rpc_url, json=body, timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+        if "error" in payload or not isinstance(payload.get("result"), str):
+            raise RuntimeError(
+                f"RPC error from {rpc_url} (getGenesisHash): {payload.get('error')}"
+            )
+        return payload["result"]
+
+    fetch.get_genesis_hash = get_genesis_hash  # type: ignore[attr-defined]
     return fetch
 
 

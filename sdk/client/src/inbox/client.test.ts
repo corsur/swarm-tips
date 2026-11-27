@@ -41,10 +41,12 @@ function client(
   });
 }
 
+const VALID_NONCE = "ab".repeat(32);
+
 /** Queue the two-step session mint (challenge → verify). */
 function queueMint(sessionId = "sess-1", tier = "session") {
   mockFetch
-    .mockResolvedValueOnce(jsonResponse(200, { nonce: "nonce-abc" }))
+    .mockResolvedValueOnce(jsonResponse(200, { nonce: VALID_NONCE }))
     .mockResolvedValueOnce(jsonResponse(200, { session_id: sessionId, tier }));
 }
 
@@ -68,7 +70,7 @@ describe("createSession", () => {
       tier: "wallet_verified",
     });
     expect(signer).toHaveBeenCalledTimes(1);
-    expect(signer).toHaveBeenCalledWith("nonce-abc");
+    expect(signer).toHaveBeenCalledWith(VALID_NONCE);
 
     // Phase 1: {wallet} only. Phase 2: {wallet, nonce, signature}.
     const [url1, init1] = mockFetch.mock.calls[0];
@@ -78,8 +80,8 @@ describe("createSession", () => {
     expect(JSON.parse(String(init1?.body))).toEqual({ wallet: WALLET });
     expect(JSON.parse(String(init2?.body))).toEqual({
       wallet: WALLET,
-      nonce: "nonce-abc",
-      signature: "sig(nonce-abc)",
+      nonce: VALID_NONCE,
+      signature: `sig(${VALID_NONCE})`,
     });
 
     expect(JSON.parse(storage.dump()[CACHE_KEY] ?? "{}")).toEqual({
@@ -129,12 +131,26 @@ describe("createSession", () => {
   it("rejects a verify response missing session_id", async () => {
     const c = client();
     mockFetch
-      .mockResolvedValueOnce(jsonResponse(200, { nonce: "n" }))
+      .mockResolvedValueOnce(jsonResponse(200, { nonce: VALID_NONCE }))
       .mockResolvedValueOnce(jsonResponse(200, { ok: true }));
 
     await expect(c.createSession(WALLET, signer)).rejects.toThrow(
       /no session_id/
     );
+  });
+
+  it("P2-25: refuses to sign non-64-hex challenge payloads (e.g. swarm-attr-v1 referral hijack)", async () => {
+    const c = client();
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        nonce: "swarm-attr-v1:eip155:56:AttackerSolanaWallet1111111111111111111111",
+      })
+    );
+
+    await expect(c.createSession(WALLET, signer)).rejects.toThrow(
+      /64 lowercase hex/
+    );
+    expect(signer).not.toHaveBeenCalled();
   });
 });
 

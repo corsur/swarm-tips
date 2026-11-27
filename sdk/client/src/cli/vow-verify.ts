@@ -23,17 +23,28 @@ async function main(): Promise<number> {
   const args = process.argv.slice(2);
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     process.stderr.write(
-      "Usage: vow-verify <attestation.json> [--rpc <url>]\n" +
-        "       vow-verify - [--rpc <url>]   (read from stdin)\n"
+      "Usage: vow-verify <attestation.json> [--network mainnet|devnet] [--rpc <url>]\n" +
+        "       vow-verify - [--network mainnet|devnet] [--rpc <url>]   (read from stdin)\n"
     );
     return 2;
   }
 
   const path = args[0];
   let rpcUrlOverride: string | undefined;
+  let expectedNetwork: "mainnet" | "devnet" = "mainnet";
   for (let i = 1; i < args.length; i++) {
     if (args[i] === "--rpc" && i + 1 < args.length) {
       rpcUrlOverride = args[i + 1];
+      i++;
+    } else if (args[i] === "--network" && i + 1 < args.length) {
+      const candidate = args[i + 1];
+      if (candidate !== "mainnet" && candidate !== "devnet") {
+        process.stderr.write(
+          `invalid --network "${candidate}" (expected "mainnet" or "devnet")\n`
+        );
+        return 2;
+      }
+      expectedNetwork = candidate;
       i++;
     }
   }
@@ -54,16 +65,16 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const network =
-    typeof attestation === "object" &&
-    attestation !== null &&
-    typeof (attestation as { network?: unknown }).network === "string"
-      ? ((attestation as { network: string }).network as string)
-      : "mainnet";
-  const rpcUrl = rpcUrlOverride ?? DEFAULT_RPC[network] ?? DEFAULT_RPC.mainnet;
+  const rpcUrl = rpcUrlOverride ?? DEFAULT_RPC[expectedNetwork];
 
   const rpc = new Connection(rpcUrl, "confirmed");
-  const verdict = await verifyV1(attestation, shillbotProtocol, rpc);
+  const verdict = await verifyV1(
+    attestation,
+    shillbotProtocol,
+    rpc,
+    undefined,
+    expectedNetwork
+  );
 
   process.stdout.write(JSON.stringify(verdict, null, 2) + "\n");
   return verdict.valid ? 0 : 1;

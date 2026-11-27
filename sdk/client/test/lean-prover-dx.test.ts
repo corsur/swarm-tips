@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Keypair } from "@solana/web3.js";
@@ -122,7 +122,7 @@ describe("Lean 4 Workspace Scaffolder (buildLeanWorkspaceFiles & scaffoldLeanWor
         mode: "composable",
         mathlib_rev: DEFAULT_MATHLIB_REV_V4,
         zeta23_rev: DEFAULT_ZETA23_REV_V4,
-        swarm_proofs_rev: "d33da5f7",
+        swarm_proofs_rev: "d33da5f70123456789abcdef0123456789abcdef",
         environment_id: "env-v4-test",
         import_allowlist: ["Mathlib", "Zeta23", "SwarmProofs"],
         allows_disproof: true,
@@ -138,7 +138,7 @@ describe("Lean 4 Workspace Scaffolder (buildLeanWorkspaceFiles & scaffoldLeanWor
     expect(files["lakefile.toml"]).toContain('name = "Zeta23"');
     expect(files["lakefile.toml"]).toContain(DEFAULT_ZETA23_REV_V4);
     expect(files["lakefile.toml"]).toContain('name = "SwarmProofs"');
-    expect(files["lakefile.toml"]).toContain('"d33da5f7"');
+    expect(files["lakefile.toml"]).toContain('"d33da5f70123456789abcdef0123456789abcdef"');
     expect(files["Solution.lean"]).toContain("Mathlib, Zeta23, SwarmProofs");
     expect(files["Solution.lean"]).toContain("max_proof_lines=90, max_proof_bytes=8192, max_line_width=100");
     expect(files["Solution.lean"]).toContain("disproof");
@@ -176,6 +176,107 @@ describe("Lean 4 Workspace Scaffolder (buildLeanWorkspaceFiles & scaffoldLeanWor
       expect(readFileSync(join(dir, "Solution.lean"), "utf8")).toContain("theorem proof");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("P1-16: rejects untrusted toolchain/rev/metadata injection and refuses live or dangling symlinks even with --force", () => {
+    const baseTask = {
+      platform: 10,
+      lean_policy: 4,
+      statement_lean: "def statementProp : Prop := True\n",
+    };
+
+    // 1. Rogue toolchain / newline injection
+    expect(() =>
+      buildLeanWorkspaceFiles(
+        { ...baseTask, lean_environment: { lean_toolchain: "evil/lean4:v4.31.0" } },
+        "c:t1",
+      ),
+    ).toThrow(/lean_toolchain/);
+    expect(() =>
+      buildLeanWorkspaceFiles(
+        { ...baseTask, lean_environment: { lean_toolchain: "leanprover/lean4:v4.31.0\nmalicious" } },
+        "c:t1",
+      ),
+    ).toThrow(/lean_toolchain/);
+
+    // 2. Short SHA, explicit "main", or newline injection in git revs
+    expect(() =>
+      buildLeanWorkspaceFiles(
+        { ...baseTask, lean_environment: { swarm_proofs_rev: "d33da5f7" } },
+        "c:t1",
+      ),
+    ).toThrow(/swarm_proofs_rev/);
+    expect(() =>
+      buildLeanWorkspaceFiles(
+        { ...baseTask, lean_environment: { swarm_proofs_rev: "main" } },
+        "c:t1",
+      ),
+    ).toThrow(/swarm_proofs_rev/);
+    expect(() =>
+      buildLeanWorkspaceFiles(
+        { ...baseTask, lean_environment: { mathlib_rev: `${DEFAULT_MATHLIB_REV_V4}\n[[require]]` } },
+        "c:t1",
+      ),
+    ).toThrow(/mathlib_rev/);
+    expect(() =>
+      buildLeanWorkspaceFiles(
+        { ...baseTask, lean_environment: { zeta23_rev: "HEAD" } },
+        "c:t1",
+      ),
+    ).toThrow(/zeta23_rev/);
+
+    // 3. Newline / shell injection in task_id, mode, or import_allowlist
+    expect(() => buildLeanWorkspaceFiles(baseTask, "c:t1\n$(id)")).toThrow(/task_id/);
+    expect(() =>
+      buildLeanWorkspaceFiles(
+        { ...baseTask, lean_environment: { mode: "composable\n#injected" } },
+        "c:t1",
+      ),
+    ).toThrow(/mode/);
+    expect(() =>
+      buildLeanWorkspaceFiles(
+        { ...baseTask, lean_environment: { import_allowlist: ["Mathlib", "Evil\nimport Hack"] } },
+        "c:t1",
+      ),
+    ).toThrow(/import_allowlist/);
+
+    // 4. Live and dangling symlinks at file and directory targets MUST be refused even with force=true
+    const root = mkdtempSync(resolve(tmpdir(), "swarm-lean-symlink-"));
+    try {
+      const outsideSecret = join(root, "outside-secret.txt");
+      writeFileSync(outsideSecret, "DO_NOT_OVERWRITE", "utf8");
+
+      // 4a. Live file symlink
+      const liveDir = join(root, "ws-live");
+      rmSync(liveDir, { recursive: true, force: true });
+      scaffoldLeanWorkspace({ platform: 10, lean_policy: 1, statement_lean: "def statementProp : Prop := True\n" }, "c:s1", liveDir, false);
+      rmSync(join(liveDir, "Solution.lean"));
+      symlinkSync(outsideSecret, join(liveDir, "Solution.lean"));
+      expect(() =>
+        scaffoldLeanWorkspace({ platform: 10, lean_policy: 1, statement_lean: "def statementProp : Prop := True\n" }, "c:s1", liveDir, true),
+      ).toThrow(/symbolic link/);
+      expect(readFileSync(outsideSecret, "utf8")).toBe("DO_NOT_OVERWRITE");
+
+      // 4b. Dangling file symlink (existsSync returns false, lstatSync MUST catch it!)
+      const danglingDir = join(root, "ws-dangling");
+      scaffoldLeanWorkspace({ platform: 10, lean_policy: 1, statement_lean: "def statementProp : Prop := True\n" }, "c:s2", danglingDir, false);
+      rmSync(join(danglingDir, "README.md"));
+      const danglingTarget = join(root, "nonexistent-target.txt");
+      symlinkSync(danglingTarget, join(danglingDir, "README.md"));
+      expect(() =>
+        scaffoldLeanWorkspace({ platform: 10, lean_policy: 1, statement_lean: "def statementProp : Prop := True\n" }, "c:s2", danglingDir, true),
+      ).toThrow(/symbolic link/);
+
+      // 4c. Symlinked target directory
+      const realDir = join(root, "real-dir");
+      const linkedDir = join(root, "linked-dir");
+      symlinkSync(realDir, linkedDir);
+      expect(() =>
+        scaffoldLeanWorkspace({ platform: 10, lean_policy: 1, statement_lean: "def statementProp : Prop := True\n" }, "c:s3", linkedDir, true),
+      ).toThrow(/symbolic link/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

@@ -35,6 +35,34 @@ function parseJwtClaims(token: string): JwtClaims {
 
 const DEFAULT_OPAQUE_TTL_MS = 23 * 60 * 60 * 1_000;
 
+/** Canonical server-issued auth challenge nonce format (`hex::encode([u8; 32])`, P2-25). */
+export const AUTH_CHALLENGE_NONCE_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * Validate a server-supplied auth challenge nonce before signing it.
+ * Rejects arbitrary strings (such as `swarm-attr-v1:...` referral messages or
+ * crafted off-chain authorizations) so a compromised API cannot turn wallet
+ * login into a blind-signing oracle.
+ */
+export function validateAuthChallengeNonce(nonce: unknown, operation: string): string {
+  if (typeof nonce !== "string" || nonce.length === 0) {
+    throw new SwarmClientError({
+      code: "INVALID_RESPONSE",
+      operation,
+      message: "Auth challenge returned no nonce",
+    });
+  }
+  if (!AUTH_CHALLENGE_NONCE_RE.test(nonce)) {
+    throw new SwarmClientError({
+      code: "INVALID_RESPONSE",
+      operation,
+      message:
+        "Auth challenge nonce must be 64 lowercase hex characters; refusing to sign arbitrary payload",
+    });
+  }
+  return nonce;
+}
+
 /**
  * Non-custodial JWT manager backed by `game-api` wallet challenges:
  * - Solana: `POST /auth/challenge` + `POST /auth/verify` (Ed25519 detached bs58)
@@ -129,17 +157,11 @@ export class WalletTokenManager {
           const challenge = await this.http.post<{ nonce: string }>("/auth/challenge", {
             wallet: signer.address,
           });
-          if (!challenge?.nonce) {
-            throw new SwarmClientError({
-              code: "INVALID_RESPONSE",
-              operation: "auth.challenge",
-              message: "Auth challenge returned no nonce",
-            });
-          }
-          const sigBytes = await signer.signMessage(new TextEncoder().encode(challenge.nonce));
+          const nonce = validateAuthChallengeNonce(challenge?.nonce, "auth.challenge");
+          const sigBytes = await signer.signMessage(new TextEncoder().encode(nonce));
           const verified = await this.http.post<{ token: string }>("/auth/verify", {
             wallet: signer.address,
-            nonce: challenge.nonce,
+            nonce,
             signature: bs58.encode(sigBytes),
           });
           if (!verified?.token) {
@@ -154,17 +176,11 @@ export class WalletTokenManager {
           const challenge = await this.http.post<{ nonce: string }>("/auth/evm/challenge", {
             wallet: signer.address,
           });
-          if (!challenge?.nonce) {
-            throw new SwarmClientError({
-              code: "INVALID_RESPONSE",
-              operation: "auth.evmChallenge",
-              message: "EVM auth challenge returned no nonce",
-            });
-          }
-          const signature = await signer.signMessage(challenge.nonce);
+          const nonce = validateAuthChallengeNonce(challenge?.nonce, "auth.evmChallenge");
+          const signature = await signer.signMessage(nonce);
           const verified = await this.http.post<{ token: string }>("/auth/evm/verify", {
             wallet: signer.address,
-            nonce: challenge.nonce,
+            nonce,
             signature,
           });
           if (!verified?.token) {

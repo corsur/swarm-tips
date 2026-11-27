@@ -380,3 +380,63 @@ def test_schema_accepts_string_verifier_instructions():
     a = _happy_attestation()
     a["verifier_instructions"] = "re-read on-chain"
     assert check_schema(a) is None
+
+
+# ----- P2-26: network pinning + cluster genesis hash ----------------
+
+
+def test_p2_26_devnet_attestation_rejected_by_default_mainnet_pin():
+    from vow_verifier import verify_vow
+
+    calls = 0
+    base_rpc = _happy_rpc()
+
+    def tracking_rpc(acct: str):
+        nonlocal calls
+        calls += 1
+        return base_rpc(acct)
+
+    tracking_rpc.get_genesis_hash = (  # type: ignore[attr-defined]
+        lambda: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+    )
+
+    devnet_att = _happy_attestation(network="devnet")
+    verdict = verify_vow(devnet_att, SHILLBOT_PROTOCOL, tracking_rpc)
+    assert verdict["valid"] is False
+    assert verdict["failure_reason"] == "network_mismatch"
+    assert calls == 0
+
+    # Explicit opt-in to expected_network="devnet" succeeds on devnet cluster
+    ok = verify_vow(
+        devnet_att, SHILLBOT_PROTOCOL, tracking_rpc, expected_network="devnet"
+    )
+    assert ok["valid"] is True
+    assert calls == 1
+
+
+def test_p2_26_mainnet_attestation_rejects_devnet_rpc_genesis_hash():
+    calls = 0
+    base_rpc = _happy_rpc()
+
+    def devnet_rpc(acct: str):
+        nonlocal calls
+        calls += 1
+        return base_rpc(acct)
+
+    devnet_rpc.get_genesis_hash = (  # type: ignore[attr-defined]
+        lambda: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+    )
+
+    verdict = verify_v1(_happy_attestation(network="mainnet"), SHILLBOT_PROTOCOL, devnet_rpc)
+    assert verdict["valid"] is False
+    assert verdict["failure_reason"] == "network_mismatch"
+    assert calls == 0
+
+    # Matching mainnet genesis hash succeeds
+    devnet_rpc.get_genesis_hash = (  # type: ignore[attr-defined]
+        lambda: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+    )
+    ok = verify_v1(_happy_attestation(network="mainnet"), SHILLBOT_PROTOCOL, devnet_rpc)
+    assert ok["valid"] is True
+    assert calls == 1
+

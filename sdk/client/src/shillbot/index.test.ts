@@ -2,10 +2,12 @@ import {
   ComputeBudgetProgram,
   Keypair,
   PublicKey,
+  Secp256k1Program,
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
 import { readFileSync } from "node:fs";
+import { sha256 } from "js-sha256";
 import { describe, expect, it } from "vitest";
 import { BN } from "../contracts/index.js";
 import {
@@ -576,5 +578,186 @@ describe("transaction construction", () => {
         oracleAuthority: oracleKp.publicKey.toBase58(),
       })
     ).toThrow(/composite_score === 0/);
+  });
+
+  it("P1-15: enforces Switchboard/Secp256k1 companion guards across mainnet, verify_task_attested, and devnet verify_task", () => {
+    const agentKp = Keypair.generate();
+    const oracleKp = Keypair.generate();
+    const feedPk = Keypair.generate().publicKey;
+    const otherFeedPk = Keypair.generate().publicKey;
+    const devnetSwitchboard = new PublicKey("Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2");
+    const mainnetSwitchboard = new PublicKey("SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv");
+    const pullFeedDisc = Buffer.from(
+      sha256.arrayBuffer("global:pull_feed_submit_response_consensus")
+    ).subarray(0, 8);
+
+    const makeSecpIx = (sigCount = 1) =>
+      new TransactionInstruction({
+        programId: Secp256k1Program.programId,
+        keys: [],
+        data: Buffer.from([sigCount, 0, 0, 0]),
+      });
+    const makeSbIx = (programId: PublicKey, disc: Buffer, targetFeed: PublicKey) =>
+      new TransactionInstruction({
+        programId,
+        keys: [{ pubkey: targetFeed, isSigner: false, isWritable: true }],
+        data: Buffer.concat([disc, Buffer.alloc(16)]),
+      });
+
+    const verifyTaskIx = buildShillbotInstruction({
+      name: "verify_task",
+      accounts: {
+        task: task.toBase58(),
+        global_state: globalStatePda(),
+        switchboard_feed: feedPk,
+      },
+      args: {
+        composite_score: new BN("900000"),
+        verification_hash: Array.from(Buffer.alloc(32, 0x55)),
+      },
+    });
+    const verifyAttestedIx = buildShillbotInstruction({
+      name: "verify_task_attested",
+      accounts: {
+        task: task.toBase58(),
+        global_state: globalStatePda(),
+        attester: oracleKp.publicKey,
+      },
+      args: {
+        score: new BN("900000"),
+        verification_hash: Array.from(Buffer.alloc(32, 0x66)),
+      },
+    });
+    const serialize = (ixs: TransactionInstruction[]) =>
+      new Transaction({ feePayer: agentKp.publicKey, recentBlockhash })
+        .add(...ixs)
+        .serialize({ requireAllSignatures: false, verifySignatures: false })
+        .toString("base64");
+
+    // 1. Valid devnet verify_task crank [Secp256k1(1), Switchboard(pull_feed, feedPk), verify_task] PASSES both validators!
+    const validDevnet = buildTransaction({
+      action: "verify",
+      wallet: agentKp.publicKey.toBase58(),
+      network: "devnet",
+      recentBlockhash,
+      taskPda: task.toBase58(),
+      switchboardFeed: feedPk.toBase58(),
+      compositeScore: "900000",
+      verificationHash: "55".repeat(32),
+      crankInstructions: [makeSecpIx(1), makeSbIx(devnetSwitchboard, pullFeedDisc, feedPk)],
+    });
+    expect(
+      verifyBuiltTransaction(validDevnet.unsigned_tx, {
+        action: "verify",
+        network: "devnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        oracleAuthority: feedPk.toBase58(),
+      }).fee_payer
+    ).toBe(agentKp.publicKey.toBase58());
+    expect(verifyIntent(validDevnet.unsigned_tx, validDevnet.transaction_intent).fee_payer).toBe(
+      agentKp.publicKey.toBase58()
+    );
+
+    // 2. Mainnet Switchboard injection on verify_task MUST reject in both verifyBuiltTransaction and verifyIntent!
+    const mainnetInjected = buildTransaction({
+      action: "verify",
+      wallet: agentKp.publicKey.toBase58(),
+      network: "mainnet",
+      recentBlockhash,
+      taskPda: task.toBase58(),
+      switchboardFeed: feedPk.toBase58(),
+      compositeScore: "900000",
+      verificationHash: "55".repeat(32),
+      crankInstructions: [makeSecpIx(1), makeSbIx(mainnetSwitchboard, pullFeedDisc, feedPk)],
+    });
+    expect(() =>
+      verifyBuiltTransaction(mainnetInjected.unsigned_tx, {
+        action: "verify",
+        network: "mainnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+      })
+    ).toThrow(/Unexpected program|forbidden on mainnet/i);
+    expect(() =>
+      verifyIntent(mainnetInjected.unsigned_tx, mainnetInjected.transaction_intent)
+    ).toThrow(/unexpected companion program|only permitted on devnet/i);
+
+    // 3. Switchboard injection on verify_task_attested (even on devnet, standalone and with set_payout_to!) MUST reject!
+    const attestedWithSb = serialize([
+      makeSecpIx(1),
+      makeSbIx(devnetSwitchboard, pullFeedDisc, oracleKp.publicKey),
+      verifyAttestedIx,
+    ]);
+    expect(() =>
+      verifyBuiltTransaction(attestedWithSb, {
+        action: "verify",
+        network: "devnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        oracleAuthority: oracleKp.publicKey.toBase58(),
+      })
+    ).toThrow(/forbidden on verify_task_attested/);
+
+    // 4. Devnet verify_task with arbitrary Switchboard discriminator MUST reject!
+    const badDiscTx = serialize([
+      makeSecpIx(1),
+      makeSbIx(devnetSwitchboard, Buffer.alloc(8, 0xaa), feedPk),
+      verifyTaskIx,
+    ]);
+    expect(() =>
+      verifyBuiltTransaction(badDiscTx, {
+        action: "verify",
+        network: "devnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        oracleAuthority: feedPk.toBase58(),
+      })
+    ).toThrow(/pull_feed_submit_response_consensus/);
+
+    // 5. Devnet verify_task with wrong order (Switchboard before Secp256k1 or after verify_task) MUST reject!
+    const reversedOrderTx = serialize([
+      makeSbIx(devnetSwitchboard, pullFeedDisc, feedPk),
+      makeSecpIx(1),
+      verifyTaskIx,
+    ]);
+    expect(() =>
+      verifyBuiltTransaction(reversedOrderTx, {
+        action: "verify",
+        network: "devnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+      })
+    ).toThrow(/exact order/);
+
+    // 6. Devnet verify_task with 0-signature Secp256k1 or mismatched feed account MUST reject!
+    const zeroSigTx = serialize([
+      makeSecpIx(0),
+      makeSbIx(devnetSwitchboard, pullFeedDisc, feedPk),
+      verifyTaskIx,
+    ]);
+    expect(() =>
+      verifyBuiltTransaction(zeroSigTx, {
+        action: "verify",
+        network: "devnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+      })
+    ).toThrow(/at least 1 signature/);
+
+    const wrongFeedTx = serialize([
+      makeSecpIx(1),
+      makeSbIx(devnetSwitchboard, pullFeedDisc, otherFeedPk),
+      verifyTaskIx,
+    ]);
+    expect(() =>
+      verifyBuiltTransaction(wrongFeedTx, {
+        action: "verify",
+        network: "devnet",
+        wallet: agentKp.publicKey.toBase58(),
+        taskPda: task.toBase58(),
+        oracleAuthority: feedPk.toBase58(),
+      })
+    ).toThrow(/expected feed/);
   });
 });

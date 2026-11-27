@@ -80,3 +80,64 @@ def test_fetch_http_error_raises(monkeypatch):
     fetch = make_solana_rpc_fetcher("http://rpc.test")
     with pytest.raises(RuntimeError, match="HTTP 503"):
         fetch("acct")
+
+
+def test_p2_26_fetcher_exposes_get_genesis_hash_and_cli_pins_mainnet_by_default(
+    monkeypatch, tmp_path, capsys
+):
+    import json
+    from vow_verifier.cli import main
+
+    mainnet_hash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+    monkeypatch.setattr(
+        "vow_verifier.cli.requests.post",
+        _post_returning({"jsonrpc": "2.0", "id": 1, "result": mainnet_hash}),
+    )
+    fetch = make_solana_rpc_fetcher("http://rpc.test")
+    assert fetch.get_genesis_hash() == mainnet_hash
+
+    # CLI without --network MUST refuse a devnet attestation with network_mismatch
+    # and MUST NOT switch RPC to devnet!
+    seen_urls = []
+
+    def fail_if_called(url, json=None, timeout=None):  # noqa: A002
+        seen_urls.append(url)
+        raise AssertionError(f"should not call RPC on network mismatch: {url}")
+
+    monkeypatch.setattr("vow_verifier.cli.requests.post", fail_if_called)
+
+    att_file = tmp_path / "devnet.json"
+    att_file.write_text(
+        json.dumps(
+            {
+                "version": "vow/v1",
+                "network": "devnet",
+                "program_id": "2tR37nqMpwdV4DVUHjzUmL1rH2DtkA8zrRA4EAhT7KMi",
+                "account": "11111111111111111111111111111112",
+                "account_kind": "Task",
+                "task_id": "42",
+                "client": "11111111111111111111111111111113",
+                "agent": "11111111111111111111111111111114",
+                "state": "verified",
+                "platform": 0,
+                "composite_score": "850000",
+                "score_max": "1000000",
+                "verified_at": "2026-05-02T12:00:00Z",
+                "verification_hash": "a" * 64,
+                "content_hash": "b" * 64,
+                "content_id_hash": "c" * 64,
+                "oracle_feed": "11111111111111111111111111111115",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("sys.argv", ["vow-verify", str(att_file)])
+    exit_code = main()
+    assert exit_code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["valid"] is False
+    assert out["failure_reason"] == "network_mismatch"
+    assert "mainnet" in out["rpc_endpoint"]
+    assert seen_urls == []
+

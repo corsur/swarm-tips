@@ -34,6 +34,7 @@ export interface VowV1Attestation {
  */
 export type FailureReason =
   | `schema_invalid:${string}`
+  | "network_mismatch"
   | "account_closed"
   | "owner_mismatch"
   | "discriminator_mismatch"

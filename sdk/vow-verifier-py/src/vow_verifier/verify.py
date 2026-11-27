@@ -28,6 +28,18 @@ RpcFetcher = Callable[[str], Optional[Tuple[str, bytes]]]
 
 DEFAULT_SCORE_MAX = 1_000_000
 
+# Canonical Solana cluster genesis hashes (full 44-char base58 + 32-char CAIP-2 prefix, P2-26).
+SOLANA_GENESIS_HASHES = {
+    "mainnet": (
+        "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    ),
+    "devnet": (
+        "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+        "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    ),
+}
+
 
 def verify_v1(
     attestation: Any,
@@ -35,6 +47,7 @@ def verify_v1(
     rpc: RpcFetcher,
     rpc_endpoint: str = "<injected>",
     expected_score_max: Optional[int] = None,
+    expected_network: str = "mainnet",
 ) -> Verdict:
     checked_at = _now_rfc3339()
 
@@ -43,7 +56,11 @@ def verify_v1(
         return _failure(attestation, checked_at, rpc_endpoint, schema_fail)
 
     on_chain_fail = verify_v1_on_chain(
-        attestation, protocol, rpc, expected_score_max=expected_score_max
+        attestation,
+        protocol,
+        rpc,
+        expected_score_max=expected_score_max,
+        expected_network=expected_network,
     )
     if on_chain_fail is not None:
         return _failure(attestation, checked_at, rpc_endpoint, on_chain_fail)
@@ -54,6 +71,25 @@ def verify_v1(
         "checked_at": checked_at,
         "rpc_endpoint": rpc_endpoint,
     }
+
+
+def verify_vow(
+    attestation: Any,
+    protocol: ProtocolHandler,
+    rpc: RpcFetcher,
+    rpc_endpoint: str = "<injected>",
+    expected_score_max: Optional[int] = None,
+    expected_network: str = "mainnet",
+) -> Verdict:
+    """High-level alias for ``verify_v1`` pinning ``expected_network`` (default ``mainnet``)."""
+    return verify_v1(
+        attestation,
+        protocol,
+        rpc,
+        rpc_endpoint=rpc_endpoint,
+        expected_score_max=expected_score_max,
+        expected_network=expected_network,
+    )
 
 
 def verify_v1_schema(attestation: Any) -> Optional[str]:
@@ -74,7 +110,21 @@ def verify_v1_on_chain(
     protocol: ProtocolHandler,
     rpc: RpcFetcher,
     expected_score_max: Optional[int] = None,
+    expected_network: str = "mainnet",
 ) -> Optional[str]:
+    # P2-26 — network pin check BEFORE any RPC calls so a devnet attestation
+    # can never downgrade a mainnet verifier (fail closed with `network_mismatch`).
+    allowed_genesis = SOLANA_GENESIS_HASHES.get(expected_network)
+    if allowed_genesis is None or a["network"] != expected_network:
+        return "network_mismatch"
+
+    # Verify the RPC cluster's genesis hash when the fetcher exposes `get_genesis_hash`.
+    get_genesis_hash = getattr(rpc, "get_genesis_hash", None)
+    if callable(get_genesis_hash):
+        genesis_hash = get_genesis_hash()
+        if not isinstance(genesis_hash, str) or genesis_hash not in allowed_genesis:
+            return "network_mismatch"
+
     expected_max = (
         expected_score_max
         if expected_score_max is not None

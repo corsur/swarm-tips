@@ -553,6 +553,12 @@ export class InboxClient {
     if (!challenge.nonce) {
       throw new InboxApiError(0, "session challenge returned no nonce");
     }
+    if (typeof challenge.nonce !== "string" || !/^[0-9a-f]{64}$/.test(challenge.nonce)) {
+      throw new InboxApiError(
+        0,
+        "session challenge nonce must be 64 lowercase hex characters; refusing to sign arbitrary payload"
+      );
+    }
     const signature = await signNonce(challenge.nonce);
     const verified = await this.postUnauthed<{
       session_id?: string;

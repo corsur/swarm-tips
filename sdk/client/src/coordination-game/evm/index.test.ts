@@ -31,6 +31,7 @@ import {
   sweepEvmSession,
   sweepValueWei,
   timeoutClaimableAt,
+  unpadAddress,
   verifyEvmFundTarget,
   ZERO_BYTES32,
   type SessionStorageLike,
@@ -60,7 +61,7 @@ const match: XMatchPayload = {
   matchup_commitment: `0x${"99".repeat(32)}`,
   match_live_digest: `0x${"22".repeat(32)}`,
   operator_signature: relaySig0,
-  create_match_operator_sig: "0x1234",
+  create_match_operator_sig: relaySig0,
   quote_timestamp: 1_765_000_000,
   quote_max_age_secs: 600,
   fund_deadline: 10,
@@ -489,5 +490,63 @@ describe("coordination-game EVM", () => {
         pin,
       ),
     ).toThrow(/match_id/);
+  });
+
+  it("P1-17: pins sessionKey, caps deadlines, validates unpadAddress, and normalizes create_match_operator_sig", () => {
+    const pin = {
+      contract: `0x${"34".repeat(20)}` as const,
+      stakeWei: 3200n,
+      sessionKey: `0x${"78".repeat(20)}` as const,
+      nowSec: 1_000,
+    };
+
+    // Valid call normalizes relay v=00 -> 0x1b inside createMatch calldata!
+    const validCall = buildEvmFundCall(match, pin);
+    const decoded = decodeFunctionData({
+      abi: CROSS_CHAIN_GAME_ABI,
+      data: validCall.data,
+    });
+    expect(decoded.functionName).toBe("createMatch");
+    expect(decoded.args[1]).toBe(`0x${"78".repeat(20)}`);
+    expect(decoded.args[6]).toBe(`0x${"aa".repeat(64)}1b`);
+
+    // 1. Mismatched leg_b.session_key MUST reject when pin.sessionKey is provided
+    expect(() =>
+      buildEvmFundCall(
+        {
+          ...match,
+          leg_b: { ...match.leg_b, session_key: `0x${"00".repeat(12)}${"99".repeat(20)}` },
+        },
+        pin,
+      ),
+    ).toThrow(/session_key/);
+
+    // 2. Far-future (>7d) or inverted or zero deadlines MUST reject
+    expect(() =>
+      buildEvmFundCall(
+        { ...match, fund_deadline: 1_000 + 8 * 86_400, match_deadline: 1_000 + 9 * 86_400 },
+        pin,
+      ),
+    ).toThrow(/7-day horizon/);
+    expect(() =>
+      buildEvmFundCall({ ...match, fund_deadline: 200, match_deadline: 100 }, pin),
+    ).toThrow(/match_deadline.*fund_deadline/);
+    expect(() =>
+      buildEvmFundCall({ ...match, fund_deadline: 0, match_deadline: 20 }, pin),
+    ).toThrow(/must be > 0/);
+
+    // 3. Invalid / non-zero-padded / zero addresses in unpadAddress MUST reject
+    expect(() => unpadAddress("0x1234")).toThrow(/invalid EVM address/);
+    expect(() => unpadAddress(`0x${"00".repeat(32)}`)).toThrow(/zero address/);
+    expect(() => unpadAddress(`0x${"11".repeat(12)}${"34".repeat(20)}`)).toThrow(/non-zero high 12 bytes/);
+    expect(() => unpadAddress(`0x${"zz".repeat(20)}`)).toThrow(/invalid EVM address/);
+    expect(unpadAddress(`0x${"00".repeat(12)}${"Ab".repeat(20)}`)).toBe(`0x${"ab".repeat(20)}`);
+
+    // 4. Truncated or invalid-v create_match_operator_sig MUST reject
+    expect(() =>
+      buildEvmFundCall({ ...match, create_match_operator_sig: "0x1234" }, pin),
+    ).toThrow(/65-byte/);
+    expect(() => normalizeEvmSigV(`0x${"aa".repeat(64)}02`)).toThrow(/recovery id/);
+    expect(() => normalizeEvmSigV(`0x${"aa".repeat(64)}1d`)).toThrow(/recovery id/);
   });
 });

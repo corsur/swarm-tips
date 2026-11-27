@@ -5,6 +5,7 @@ import {
   Secp256k1Program,
   type BlockhashWithExpiryBlockHeight,
 } from "@solana/web3.js";
+import { decodeFunctionData, encodeFunctionData, type Hex } from "viem";
 import { HttpClient, type HttpClientOptions } from "../http.js";
 import { SwarmClientError } from "../errors.js";
 import {
@@ -599,10 +600,98 @@ export const SHILLBOT_EVM_SELECTORS: Readonly<Record<Action, `0x${string}`>> = {
   expire: "0x5e9f3d19", // expireTask(uint64)
 } as const;
 
+/** Canonical ABI for `ShillbotEscrow.sol` lifecycle functions (`P2-27`). */
+export const SHILLBOT_ESCROW_ABI = [
+  {
+    type: "function",
+    name: "createTask",
+    stateMutability: "payable",
+    inputs: [
+      { name: "statementCommitment", type: "bytes32" },
+      { name: "policyId", type: "bytes32" },
+      { name: "verificationKind", type: "uint8" },
+      { name: "deadline", type: "uint64" },
+      { name: "requiresApproval", type: "bool" },
+    ],
+    outputs: [{ name: "taskId", type: "uint64" }],
+  },
+  {
+    type: "function",
+    name: "claimTask",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "taskId", type: "uint64" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "submitWork",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "taskId", type: "uint64" },
+      { name: "contentIdHash", type: "bytes32" },
+      { name: "artifactHash", type: "bytes32" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "approveTask",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "taskId", type: "uint64" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "verifyTaskAttested",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "taskId", type: "uint64" },
+      { name: "score", type: "uint64" },
+      { name: "sig", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "finalizeTask",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "taskId", type: "uint64" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "expireTask",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "taskId", type: "uint64" }],
+    outputs: [],
+  },
+] as const;
+
+const SHILLBOT_EVM_FUNCTION_NAMES: Readonly<
+  Record<Action, (typeof SHILLBOT_ESCROW_ABI)[number]["name"]>
+> = {
+  create: "createTask",
+  claim: "claimTask",
+  submit: "submitWork",
+  approve: "approveTask",
+  verify: "verifyTaskAttested",
+  finalize: "finalizeTask",
+  expire: "expireTask",
+};
+
 export interface PreparedEvmCallExpectation {
   action: Action;
   chain?: string;
   maxValueWei?: bigint;
+  taskId?: bigint | number | string;
+  contentIdHash?: `0x${string}`;
+  artifactHash?: `0x${string}`;
+  statementCommitment?: `0x${string}`;
+  policyId?: `0x${string}`;
+  verificationKind?: number;
+  deadline?: bigint | number | string;
+  requiresApproval?: boolean;
+  score?: bigint | number | string;
 }
 
 export interface ValidatedEvmCall {
@@ -610,6 +699,50 @@ export interface ValidatedEvmCall {
   data: `0x${string}`;
   value: bigint;
   chain: string;
+}
+
+function parseExpectedUintArg(value: bigint | number | string, field: string): bigint {
+  let parsed: bigint;
+  if (typeof value === "bigint") {
+    parsed = value;
+  } else if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new SwarmClientError({
+        code: "INVALID_ARGUMENT",
+        operation: "shillbot.validatePreparedEvmCall",
+        message: `Expected ${field} must be a non-negative safe integer`,
+      });
+    }
+    parsed = BigInt(value);
+  } else if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    parsed = BigInt(value.trim());
+  } else {
+    throw new SwarmClientError({
+      code: "INVALID_ARGUMENT",
+      operation: "shillbot.validatePreparedEvmCall",
+      message: `Expected ${field} must be a non-negative integer`,
+    });
+  }
+  if (parsed < 0n || parsed > 0xffff_ffff_ffff_ffffn) {
+    throw new SwarmClientError({
+      code: "INVALID_ARGUMENT",
+      operation: "shillbot.validatePreparedEvmCall",
+      message: `Expected ${field} is out of uint64 range`,
+    });
+  }
+  return parsed;
+}
+
+function normalizeExpectedBytes32(value: string, field: string): `0x${string}` {
+  const trimmed = value.trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(trimmed)) {
+    throw new SwarmClientError({
+      code: "INVALID_ARGUMENT",
+      operation: "shillbot.validatePreparedEvmCall",
+      message: `Expected ${field} must be a 32-byte 0x-prefixed hex string`,
+    });
+  }
+  return trimmed.toLowerCase() as `0x${string}`;
 }
 
 export function normalizeEvmChainId(chain: string | number): string {
@@ -635,9 +768,9 @@ export function normalizeEvmChainId(chain: string | number): string {
 }
 
 /**
- * C10 fail-closed local validator for server-prepared EVM `ShillbotEscrow` calls.
- * Verifies canonical contract address for `chain`, 4-byte function selector for
- * `action`, and `value_wei <= maxValueWei` (strictly `0n` on non-create actions).
+ * C10 + P2-27 fail-closed local validator for server-prepared EVM `ShillbotEscrow` calls.
+ * Verifies canonical contract address for `chain`, 4-byte function selector and full ABI-decoded
+ * calldata arguments for `action`, and `value_wei <= maxValueWei` (strictly `0n` on non-create actions).
  */
 export function validatePreparedEvmCall(
   evmCall: unknown,
@@ -709,7 +842,8 @@ export function validatePreparedEvmCall(
   }
 
   const expectedSelector = SHILLBOT_EVM_SELECTORS[expected.action];
-  if (!expectedSelector) {
+  const expectedFnName = SHILLBOT_EVM_FUNCTION_NAMES[expected.action];
+  if (!expectedSelector || !expectedFnName) {
     throw new SwarmClientError({
       code: "INVALID_ARGUMENT",
       operation: "shillbot.validatePreparedEvmCall",
@@ -723,6 +857,175 @@ export function validatePreparedEvmCall(
       operation: "shillbot.validatePreparedEvmCall",
       message: `Function selector ${actualSelector} does not match expected ${expectedSelector} for ${expected.action}`,
     });
+  }
+
+  // Decode calldata via the canonical ShillbotEscrow ABI and verify canonical encoding + arguments.
+  let decoded: ReturnType<typeof decodeFunctionData<typeof SHILLBOT_ESCROW_ABI>>;
+  try {
+    decoded = decodeFunctionData({
+      abi: SHILLBOT_ESCROW_ABI,
+      data: raw.data as Hex,
+    });
+  } catch (err) {
+    throw new SwarmClientError({
+      code: "TRANSACTION_MISMATCH",
+      operation: "shillbot.validatePreparedEvmCall",
+      message: `Prepared EVM call data failed ABI decoding for ${expectedFnName}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    });
+  }
+  if (decoded.functionName !== expectedFnName) {
+    throw new SwarmClientError({
+      code: "TRANSACTION_MISMATCH",
+      operation: "shillbot.validatePreparedEvmCall",
+      message: `Decoded function ${decoded.functionName} does not match expected ${expectedFnName}`,
+    });
+  }
+  const canonicalData = encodeFunctionData({
+    abi: SHILLBOT_ESCROW_ABI,
+    functionName: decoded.functionName,
+    args: decoded.args,
+  } as Parameters<typeof encodeFunctionData<typeof SHILLBOT_ESCROW_ABI>>[0]);
+  if (canonicalData.toLowerCase() !== raw.data.toLowerCase()) {
+    throw new SwarmClientError({
+      code: "TRANSACTION_MISMATCH",
+      operation: "shillbot.validatePreparedEvmCall",
+      message: `Prepared EVM call data for ${expectedFnName} is non-canonical or has trailing bytes`,
+    });
+  }
+
+  if (decoded.functionName === "createTask") {
+    const [statementCommitment, policyId, verificationKind, deadline, requiresApproval] =
+      decoded.args;
+    if (expected.statementCommitment !== undefined) {
+      const want = normalizeExpectedBytes32(expected.statementCommitment, "statementCommitment");
+      if (statementCommitment.toLowerCase() !== want) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `createTask statementCommitment ${statementCommitment} differs from expected ${want}`,
+        });
+      }
+    }
+    if (expected.policyId !== undefined) {
+      const want = normalizeExpectedBytes32(expected.policyId, "policyId");
+      if (policyId.toLowerCase() !== want) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `createTask policyId ${policyId} differs from expected ${want}`,
+        });
+      }
+    }
+    if (expected.verificationKind !== undefined) {
+      if (
+        !Number.isInteger(expected.verificationKind) ||
+        expected.verificationKind < 0 ||
+        expected.verificationKind > 255
+      ) {
+        throw new SwarmClientError({
+          code: "INVALID_ARGUMENT",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: "Expected verificationKind must be an integer in [0, 255]",
+        });
+      }
+      if (Number(verificationKind) !== expected.verificationKind) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `createTask verificationKind ${verificationKind} differs from expected ${expected.verificationKind}`,
+        });
+      }
+    }
+    if (expected.deadline !== undefined) {
+      const want = parseExpectedUintArg(expected.deadline, "deadline");
+      if (deadline !== want) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `createTask deadline ${deadline} differs from expected ${want}`,
+        });
+      }
+    }
+    if (expected.requiresApproval !== undefined && requiresApproval !== expected.requiresApproval) {
+      throw new SwarmClientError({
+        code: "TRANSACTION_MISMATCH",
+        operation: "shillbot.validatePreparedEvmCall",
+        message: `createTask requiresApproval ${requiresApproval} differs from expected ${expected.requiresApproval}`,
+      });
+    }
+  } else if (
+    decoded.functionName === "claimTask" ||
+    decoded.functionName === "approveTask" ||
+    decoded.functionName === "finalizeTask" ||
+    decoded.functionName === "expireTask"
+  ) {
+    const [taskId] = decoded.args;
+    if (expected.taskId !== undefined) {
+      const want = parseExpectedUintArg(expected.taskId, "taskId");
+      if (taskId !== want) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `${decoded.functionName} taskId ${taskId} differs from expected ${want}`,
+        });
+      }
+    }
+  } else if (decoded.functionName === "submitWork") {
+    const [taskId, contentIdHash, artifactHash] = decoded.args;
+    if (expected.taskId !== undefined) {
+      const want = parseExpectedUintArg(expected.taskId, "taskId");
+      if (taskId !== want) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `submitWork taskId ${taskId} differs from expected ${want}`,
+        });
+      }
+    }
+    if (expected.contentIdHash !== undefined) {
+      const want = normalizeExpectedBytes32(expected.contentIdHash, "contentIdHash");
+      if (contentIdHash.toLowerCase() !== want) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `submitWork contentIdHash ${contentIdHash} differs from expected ${want}`,
+        });
+      }
+    }
+    if (expected.artifactHash !== undefined) {
+      const want = normalizeExpectedBytes32(expected.artifactHash, "artifactHash");
+      if (artifactHash.toLowerCase() !== want) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `submitWork artifactHash ${artifactHash} differs from expected ${want}`,
+        });
+      }
+    }
+  } else if (decoded.functionName === "verifyTaskAttested") {
+    const [taskId, score] = decoded.args;
+    if (expected.taskId !== undefined) {
+      const want = parseExpectedUintArg(expected.taskId, "taskId");
+      if (taskId !== want) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `verifyTaskAttested taskId ${taskId} differs from expected ${want}`,
+        });
+      }
+    }
+    if (expected.score !== undefined) {
+      const want = parseExpectedUintArg(expected.score, "score");
+      if (score !== want) {
+        throw new SwarmClientError({
+          code: "TRANSACTION_MISMATCH",
+          operation: "shillbot.validatePreparedEvmCall",
+          message: `verifyTaskAttested score ${score} differs from expected ${want}`,
+        });
+      }
+    }
   }
 
   let valueWei: bigint;
@@ -827,8 +1130,8 @@ export function permittedPreparedProgramIds(
   action: Action,
   network: "mainnet" | "devnet",
 ): string[] {
-  if (action === "verify") {
-    return [SWITCHBOARD_PROGRAM_IDS[network], Secp256k1Program.programId.toBase58()];
+  if (action === "verify" && network === "devnet") {
+    return [SWITCHBOARD_PROGRAM_IDS.devnet, Secp256k1Program.programId.toBase58()];
   }
   if (action === "finalize") {
     return [EXTENSION_CREDIT_PROGRAM_ID.toBase58()];

@@ -608,8 +608,8 @@ export function verifyIntent(
   const allowedPrograms = new Set<string>([
     shillbotProgramId,
     COMPUTE_BUDGET_PROGRAM_ID,
-    ...(intent.action === "verify"
-      ? [SWITCHBOARD_PROGRAM_IDS[intent.network], SECP256K1_PROGRAM_ID]
+    ...(intent.action === "verify" && intent.network === "devnet"
+      ? [SWITCHBOARD_PROGRAM_IDS.devnet, SECP256K1_PROGRAM_ID]
       : []),
     ...(intent.action === "finalize" ? [extensionCreditId] : []),
   ]);
@@ -637,6 +637,65 @@ export function verifyIntent(
   const payoutDiscriminator = shillbotInstructionDiscriminator("set_payout_to");
   const companions = shillbotInstructions.filter((ix) => ix !== lifecycle[0]);
   const lifecycleIndex = inspected.instructions.indexOf(lifecycle[0]);
+  const switchboardPullFeedDiscriminator = Buffer.from(
+    sha256.arrayBuffer("global:pull_feed_submit_response_consensus")
+  ).subarray(0, 8);
+  const secpEntries = inspected.instructions
+    .map((ix, txIndex) => ({ ix, txIndex }))
+    .filter((entry) => entry.ix.program_id === SECP256K1_PROGRAM_ID);
+  const switchboardEntries = inspected.instructions
+    .map((ix, txIndex) => ({ ix, txIndex }))
+    .filter(
+      (entry) =>
+        entry.ix.program_id === SWITCHBOARD_PROGRAM_IDS.mainnet ||
+        entry.ix.program_id === SWITCHBOARD_PROGRAM_IDS.devnet
+    );
+  if (secpEntries.length > 0 || switchboardEntries.length > 0) {
+    if (intent.network !== "devnet" || intent.action !== "verify") {
+      throw new Error(
+        "Switchboard/Secp256k1 crank instructions are only permitted on devnet verify_task"
+      );
+    }
+    if (secpEntries.length !== 1 || switchboardEntries.length !== 1) {
+      throw new Error(
+        "devnet verify_task Switchboard crank requires exactly 1 Secp256k1 and 1 Switchboard instruction"
+      );
+    }
+    const secpEntry = secpEntries[0];
+    const sbEntry = switchboardEntries[0];
+    if (sbEntry.ix.program_id !== SWITCHBOARD_PROGRAM_IDS.devnet) {
+      throw new Error(`unexpected Switchboard program ${sbEntry.ix.program_id}`);
+    }
+    const secpData = Buffer.from(secpEntry.ix.data_base64, "base64");
+    if (secpData.length === 0 || secpData[0] === 0) {
+      throw new Error(
+        "Secp256k1 companion instruction must carry at least 1 signature"
+      );
+    }
+    if (
+      secpEntry.txIndex + 1 !== sbEntry.txIndex ||
+      sbEntry.txIndex >= lifecycleIndex
+    ) {
+      throw new Error(
+        "Switchboard crank must follow exact order Secp256k1 -> Switchboard -> verify_task"
+      );
+    }
+    const sbData = Buffer.from(sbEntry.ix.data_base64, "base64");
+    if (
+      sbData.length < 8 ||
+      !sbData.subarray(0, 8).equals(switchboardPullFeedDiscriminator)
+    ) {
+      throw new Error(
+        "Switchboard companion instruction must be pull_feed_submit_response_consensus"
+      );
+    }
+    const expectedFeed = lifecycle[0].accounts[2];
+    if (!expectedFeed || !sbEntry.ix.accounts.includes(expectedFeed)) {
+      throw new Error(
+        "Switchboard companion instruction does not reference expected feed"
+      );
+    }
+  }
   if (
     intent.action === "claim" &&
     companions.some(

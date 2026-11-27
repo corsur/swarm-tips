@@ -18,6 +18,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
+import { encodeFunctionData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -53,6 +54,7 @@ import {
   type EvmSwarmSigner,
 } from "../src/index.js";
 import {
+  SHILLBOT_ESCROW_ABI,
   SHILLBOT_ESCROW_DEPLOYMENTS,
   SHILLBOT_EVM_SELECTORS,
   ShillbotApiClient,
@@ -110,12 +112,12 @@ function mockConnection(txSig = "5MockSig11111111111111111111111111111111111111"
 }
 
 describe("Version sync & multi-bin package contract", () => {
-  it("exports CLIENT_VERSION matching package.json 0.4.9 and registers both swarm and client bins", () => {
+  it("exports CLIENT_VERSION matching package.json 0.4.10 and registers both swarm and client bins", () => {
     const pkg = JSON.parse(readFileSync(resolve(clientRoot, "package.json"), "utf8")) as {
       version: string;
       bin: Record<string, string>;
     };
-    expect(pkg.version).toBe("0.4.9");
+    expect(pkg.version).toBe("0.4.10");
     expect(CLIENT_VERSION).toBe(pkg.version);
     expect(pkg.bin.swarm).toBe("./dist/cli/swarm.js");
     expect(pkg.bin.client).toBe("./dist/cli/swarm.js");
@@ -146,7 +148,7 @@ describe("Version sync & multi-bin package contract", () => {
       );
       expect(res.error).toBeUndefined();
       expect(res.status, res.stderr).toBe(0);
-      expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.9" });
+      expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.10" });
     } finally {
       rmSync(cliBundle, { force: true });
     }
@@ -294,7 +296,7 @@ describe("SwarmAgent auth caching, deduplication, 401 refresh & Inbox C1 Bearer 
       const url = String(input);
       const headers = (init?.headers ?? {}) as Record<string, string>;
       if (url === "https://api.coordination.game/auth/challenge") {
-        return jsonResponse({ nonce: `nonce-${authVerifyCount + 1}` });
+        return jsonResponse({ nonce: `${String(authVerifyCount + 1).padStart(2, "0")}${"ab".repeat(31)}` });
       }
       if (url === "https://api.coordination.game/auth/verify") {
         authVerifyCount += 1;
@@ -337,6 +339,45 @@ describe("SwarmAgent auth caching, deduplication, 401 refresh & Inbox C1 Bearer 
     expect(mine).toEqual([{ task_id: "t-1", state: "claimed" }]);
     expect(authVerifyCount).toBe(2);
     expect(agentTasksAttempt).toBe(2);
+  });
+
+  it("P2-25: refuses to blind-sign arbitrary non-64-hex challenge strings on Solana and EVM auth", async () => {
+    const solSign = vi.fn(async () => new Uint8Array(64));
+    const solSigner = {
+      chain: "solana" as const,
+      address: Keypair.generate().publicKey.toBase58(),
+      signMessage: solSign,
+      signTransaction: vi.fn(),
+    };
+    const evmSign = vi.fn(async () => `0x${"11".repeat(65)}` as const);
+    const evmSigner: EvmSwarmSigner = {
+      chain: "evm",
+      address: "0x1111111111111111111111111111111111111111",
+      signMessage: evmSign,
+      sendTransaction: vi.fn(),
+    };
+
+    for (const badNonce of [
+      "swarm-attr-v1:eip155:56:AttackerSolanaWallet1111111111111111111111",
+      "nonce-1",
+      "AB".repeat(32), // uppercase hex rejected
+      "ab".repeat(31), // wrong length
+    ]) {
+      const fetchMock = vi.fn(async () => jsonResponse({ nonce: badNonce }));
+      const solAgent = createSwarmAgent({
+        signer: solSigner,
+        fetch: fetchMock as unknown as typeof fetch,
+      });
+      await expect(solAgent.auth.authenticate()).rejects.toThrow(/64 lowercase hex/);
+
+      const evmAgent = createSwarmAgent({
+        signer: evmSigner,
+        fetch: fetchMock as unknown as typeof fetch,
+      });
+      await expect(evmAgent.auth.authenticate()).rejects.toThrow(/64 lowercase hex/);
+    }
+    expect(solSign).not.toHaveBeenCalled();
+    expect(evmSign).not.toHaveBeenCalled();
   });
 
   it("enforces C1 in InboxClient Bearer mode: sends Authorization Bearer, never X-Inbox-Session or /internal/inbox/session", async () => {
@@ -386,7 +427,7 @@ describe("SwarmAgent auth caching, deduplication, 401 refresh & Inbox C1 Bearer 
     // Also verify legacy InboxClient session mode remains intact when getToken is omitted
     const legacyFetch = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ nonce: "n-1" }))
+      .mockResolvedValueOnce(jsonResponse({ nonce: "cd".repeat(32) }))
       .mockResolvedValueOnce(jsonResponse({ session_id: "sess-legacy", tier: "session" }))
       .mockResolvedValueOnce(jsonResponse({ messages: [], next_cursor: null }));
     const legacy = new InboxClient({
@@ -744,6 +785,127 @@ describe("C9 Spend & Fee Caps + C10 Transaction & EVM Call Validation", () => {
         { action: "claim", chain: "eip155:84532", maxValueWei: 1_000n },
       ),
     ).toThrow(/value/i);
+  });
+
+  it("P2-27: ABI-decodes ShillbotEscrow calldata and rejects mismatched taskId/hashes/params, truncated data, and trailing garbage", () => {
+    const canonicalEscrow = SHILLBOT_ESCROW_DEPLOYMENTS["eip155:84532"];
+    const hashA = `0x${"aa".repeat(32)}` as const;
+    const hashB = `0x${"bb".repeat(32)}` as const;
+    const hashC = `0x${"cc".repeat(32)}` as const;
+
+    // 1. claimTask(42): accepts matching taskId, rejects swapped taskId, rejects truncated or trailing bytes
+    const claim42 = encodeFunctionData({
+      abi: SHILLBOT_ESCROW_ABI,
+      functionName: "claimTask",
+      args: [42n],
+    });
+    expect(
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: claim42, value_wei: "0" },
+        { action: "claim", chain: "eip155:84532", taskId: 42n },
+      ).data,
+    ).toBe(claim42);
+    expect(() =>
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: claim42, value_wei: "0" },
+        { action: "claim", chain: "eip155:84532", taskId: 99n },
+      ),
+    ).toThrow(/taskId 42 differs from expected 99/);
+    expect(() =>
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: SHILLBOT_EVM_SELECTORS.claim, value_wei: "0" },
+        { action: "claim", chain: "eip155:84532" },
+      ),
+    ).toThrow(/ABI decoding/);
+    expect(() =>
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: `${claim42}00`, value_wei: "0" },
+        { action: "claim", chain: "eip155:84532" },
+      ),
+    ).toThrow(/non-canonical|trailing/i);
+
+    // 2. submitWork(42, hashA, hashB): verifies taskId, contentIdHash, artifactHash
+    const submitData = encodeFunctionData({
+      abi: SHILLBOT_ESCROW_ABI,
+      functionName: "submitWork",
+      args: [42n, hashA, hashB],
+    });
+    expect(
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: submitData, value_wei: "0" },
+        {
+          action: "submit",
+          chain: "eip155:84532",
+          taskId: 42n,
+          contentIdHash: hashA,
+          artifactHash: hashB,
+        },
+      ).data,
+    ).toBe(submitData);
+    expect(() =>
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: submitData, value_wei: "0" },
+        { action: "submit", chain: "eip155:84532", taskId: 42n, contentIdHash: hashC },
+      ),
+    ).toThrow(/contentIdHash/);
+    expect(() =>
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: submitData, value_wei: "0" },
+        { action: "submit", chain: "eip155:84532", taskId: 42n, artifactHash: hashC },
+      ),
+    ).toThrow(/artifactHash/);
+
+    // 3. createTask(statementCommitment, policyId, verificationKind, deadline, requiresApproval)
+    const createData = encodeFunctionData({
+      abi: SHILLBOT_ESCROW_ABI,
+      functionName: "createTask",
+      args: [hashA, hashB, 1, 1_900_000_000n, false],
+    });
+    expect(
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: createData, value_wei: "5000000" },
+        {
+          action: "create",
+          chain: "eip155:84532",
+          maxValueWei: 10_000_000n,
+          statementCommitment: hashA,
+          policyId: hashB,
+          verificationKind: 1,
+          deadline: 1_900_000_000n,
+          requiresApproval: false,
+        },
+      ).value,
+    ).toBe(5_000_000n);
+    expect(() =>
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: createData, value_wei: "5000000" },
+        {
+          action: "create",
+          chain: "eip155:84532",
+          maxValueWei: 10_000_000n,
+          requiresApproval: true,
+        },
+      ),
+    ).toThrow(/requiresApproval/);
+
+    // 4. verifyTaskAttested(42, 1_000_000, sig)
+    const verifyData = encodeFunctionData({
+      abi: SHILLBOT_ESCROW_ABI,
+      functionName: "verifyTaskAttested",
+      args: [42n, 1_000_000n, `0x${"11".repeat(65)}`],
+    });
+    expect(
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: verifyData, value_wei: "0" },
+        { action: "verify", chain: "eip155:84532", taskId: 42n, score: 1_000_000n },
+      ).data,
+    ).toBe(verifyData);
+    expect(() =>
+      validatePreparedEvmCall(
+        { to: canonicalEscrow, data: verifyData, value_wei: "0" },
+        { action: "verify", chain: "eip155:84532", taskId: 42n, score: 0n },
+      ),
+    ).toThrow(/score/);
   });
 });
 

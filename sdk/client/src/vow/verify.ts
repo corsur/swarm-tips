@@ -478,23 +478,32 @@ export async function verifyVow(
     }
   }
 
-  const defaultNet = opts?.network ?? "mainnet";
-  const net: "mainnet" | "devnet" =
-    attestation &&
-    typeof attestation === "object" &&
-    (attestation as { network?: unknown }).network === "devnet"
-      ? "devnet"
-      : defaultNet;
+  const expectedNetwork: "mainnet" | "devnet" = opts?.network ?? "mainnet";
   const conn =
     opts?.connection ??
-    new Connection(opts?.rpcUrl ?? DEFAULT_VOW_SOLANA_RPC[net], "confirmed");
+    new Connection(opts?.rpcUrl ?? DEFAULT_VOW_SOLANA_RPC[expectedNetwork], "confirmed");
   return verifyV1(
     attestation,
     opts?.protocol ?? shillbotProtocol,
     conn,
     opts?.expectedScoreMax,
+    expectedNetwork,
   );
 }
+
+/** Canonical Solana cluster genesis hashes (full 44-char base58 + 32-char CAIP-2 prefix, P2-26). */
+export const SOLANA_GENESIS_HASHES: Readonly<
+  Record<"mainnet" | "devnet", readonly string[]>
+> = {
+  mainnet: [
+    "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+    "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  ],
+  devnet: [
+    "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+    "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+  ],
+};
 
 /**
  * Step-by-step verifier per `docs/specs/vow-v1.md` §4.
@@ -510,7 +519,8 @@ export async function verifyV1(
   attestation: unknown,
   protocol: ProtocolHandler,
   rpc: Connection,
-  expectedScoreMax?: bigint | number | string
+  expectedScoreMax?: bigint | number | string,
+  expectedNetwork: "mainnet" | "devnet" = "mainnet"
 ): Promise<Verdict> {
   const checkedAt = nowRfc3339();
   const rpcEndpoint = rpc.rpcEndpoint;
@@ -527,7 +537,13 @@ export async function verifyV1(
   }
 
   const a = asV1(attestation);
-  const onChainFail = await verifyV1OnChain(a, protocol, rpc, expectedScoreMax);
+  const onChainFail = await verifyV1OnChain(
+    a,
+    protocol,
+    rpc,
+    expectedScoreMax,
+    expectedNetwork
+  );
   if (onChainFail) {
     return {
       valid: false,
@@ -570,8 +586,30 @@ export async function verifyV1OnChain(
   a: AasV1Attestation,
   protocol: ProtocolHandler,
   rpc: Connection,
-  expectedScoreMax?: bigint | number | string
+  expectedScoreMax?: bigint | number | string,
+  expectedNetwork: "mainnet" | "devnet" = "mainnet"
 ): Promise<FailureReason | null> {
+  // P2-26 — network pin check BEFORE any RPC calls so a devnet attestation
+  // can never downgrade a mainnet verifier (fail closed with `network_mismatch`).
+  const allowedGenesisHashes = SOLANA_GENESIS_HASHES[expectedNetwork];
+  if (!allowedGenesisHashes || a.network !== expectedNetwork) {
+    return "network_mismatch";
+  }
+
+  // Verify the RPC cluster's genesis hash when the connection exposes `getGenesisHash`.
+  const maybeGetGenesisHash = (
+    rpc as unknown as { getGenesisHash?: () => Promise<string> }
+  ).getGenesisHash;
+  if (typeof maybeGetGenesisHash === "function") {
+    const genesisHash = await maybeGetGenesisHash.call(rpc);
+    if (
+      typeof genesisHash !== "string" ||
+      !allowedGenesisHashes.includes(genesisHash)
+    ) {
+      return "network_mismatch";
+    }
+  }
+
   const expectedMax = BigInt(
     expectedScoreMax ?? protocol.scoreMax ?? DEFAULT_SCORE_MAX
   );

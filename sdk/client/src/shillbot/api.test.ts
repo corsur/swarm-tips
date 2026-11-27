@@ -16,6 +16,7 @@ describe("ShillbotApiClient", () => {
   it("allows only the network-specific Switchboard verification programs", () => {
     expect(permittedPreparedProgramIds("verify", "devnet")).toContain("Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2");
     expect(permittedPreparedProgramIds("verify", "devnet")).not.toContain("SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv");
+    expect(permittedPreparedProgramIds("verify", "mainnet")).toEqual([]);
     expect(permittedPreparedProgramIds("claim", "devnet")).toEqual([]);
   });
 

@@ -1,4 +1,5 @@
 import { Buffer } from "buffer";
+import { sha256 } from "js-sha256";
 import {
   ComputeBudgetProgram,
   PublicKey,
@@ -36,6 +37,10 @@ const SWITCHBOARD_PROGRAM_IDS: Readonly<Record<Network, string>> = {
   mainnet: "SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv",
   devnet: "Aio4gaXjXzJNVLtzwtNVmSqGKpANtXhybbkhtAC94ji2",
 };
+
+const SWITCHBOARD_PULL_FEED_SUBMIT_DISCRIMINATOR = Buffer.from(
+  sha256.arrayBuffer("global:pull_feed_submit_response_consensus"),
+).subarray(0, 8);
 
 export type ShillbotInstructionName =
   | "initialize"
@@ -720,10 +725,9 @@ export function verifyBuiltTransaction(
     throw txMismatch(operation, "Fee payer differs from expectation");
   }
 
-  const isVerifyContext =
-    expected.action === "verify" ||
-    expected.instructionName === "verify_task" ||
-    expected.instructionName === "verify_task_attested";
+  const allowSwitchboardContext =
+    expected.network === "devnet" &&
+    (expected.action === "verify" || expected.instructionName === "verify_task");
   const isFinalizeContext =
     expected.action === "finalize" || expected.instructionName === "finalize_task";
   const shillbotId = SHILLBOT_PROGRAM_ID.toBase58();
@@ -731,8 +735,8 @@ export function verifyBuiltTransaction(
   const alwaysAllowed = new Set<string>([
     shillbotId,
     ComputeBudgetProgram.programId.toBase58(),
-    ...(isVerifyContext
-      ? [SWITCHBOARD_PROGRAM_IDS[expected.network], Secp256k1Program.programId.toBase58()]
+    ...(allowSwitchboardContext
+      ? [SWITCHBOARD_PROGRAM_IDS.devnet, Secp256k1Program.programId.toBase58()]
       : []),
     ...(isFinalizeContext ? [extensionCreditId] : []),
     ...(expected.allowedProgramIds ?? []),
@@ -836,6 +840,76 @@ export function verifyBuiltTransaction(
       throw txMismatch(
         operation,
         `route_and_recoup advance account (${advanceAcct}) does not match canonical Advance PDA (${derivedAdvance})`,
+      );
+    }
+  }
+
+  // Validate Switchboard / Secp256k1 companions strictly (mirrors Rust `shillbot-chain`, P1-15).
+  // Runs BEFORE any `companions.length === 0` or `set_payout_to` early returns so injected
+  // Switchboard / Secp256k1 instructions can never slip past `verify_task_attested` or mainnet.
+  const switchboardProgramIds = new Set<string>(Object.values(SWITCHBOARD_PROGRAM_IDS));
+  const secp256k1ProgramId = Secp256k1Program.programId.toBase58();
+  const secpIxs = inspected.instructions
+    .map((ix, txIndex) => ({ ix, txIndex }))
+    .filter((entry) => entry.ix.program_id === secp256k1ProgramId);
+  const switchboardIxs = inspected.instructions
+    .map((ix, txIndex) => ({ ix, txIndex }))
+    .filter((entry) => switchboardProgramIds.has(entry.ix.program_id));
+  if (secpIxs.length > 0 || switchboardIxs.length > 0) {
+    if (expected.network !== "devnet") {
+      throw txMismatch(
+        operation,
+        "Unexpected program: Switchboard/Secp256k1 crank instructions are forbidden on mainnet",
+      );
+    }
+    if (primary.spec.name !== "verify_task") {
+      throw txMismatch(
+        operation,
+        `Unexpected program: Switchboard/Secp256k1 crank instructions are forbidden on ${primary.spec.name}`,
+      );
+    }
+    if (secpIxs.length !== 1 || switchboardIxs.length !== 1) {
+      throw txMismatch(
+        operation,
+        `Devnet verify_task Switchboard crank requires exactly 1 Secp256k1 and 1 Switchboard instruction (got ${secpIxs.length} secp256k1, ${switchboardIxs.length} switchboard)`,
+      );
+    }
+    const secpEntry = secpIxs[0];
+    const sbEntry = switchboardIxs[0];
+    if (sbEntry.ix.program_id !== SWITCHBOARD_PROGRAM_IDS.devnet) {
+      throw txMismatch(
+        operation,
+        `Unexpected Switchboard program ${sbEntry.ix.program_id} on devnet`,
+      );
+    }
+    const secpData = Buffer.from(secpEntry.ix.data_base64, "base64");
+    if (secpData.length === 0 || secpData[0] === 0) {
+      throw txMismatch(
+        operation,
+        "Secp256k1 companion instruction must carry at least 1 signature",
+      );
+    }
+    if (secpEntry.txIndex + 1 !== sbEntry.txIndex || sbEntry.txIndex >= primary.txIndex) {
+      throw txMismatch(
+        operation,
+        "Switchboard crank must follow exact order Secp256k1 -> Switchboard -> verify_task",
+      );
+    }
+    const sbData = Buffer.from(sbEntry.ix.data_base64, "base64");
+    if (
+      sbData.length < 8 ||
+      !sbData.subarray(0, 8).equals(SWITCHBOARD_PULL_FEED_SUBMIT_DISCRIMINATOR)
+    ) {
+      throw txMismatch(
+        operation,
+        "Switchboard companion instruction must be pull_feed_submit_response_consensus",
+      );
+    }
+    const expectedFeed = expected.oracleAuthority ?? primary.ix.accounts[2];
+    if (!sbEntry.ix.accounts.includes(expectedFeed)) {
+      throw txMismatch(
+        operation,
+        `Switchboard companion instruction does not reference expected feed ${expectedFeed}`,
       );
     }
   }

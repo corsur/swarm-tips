@@ -14,6 +14,7 @@ import {
   verifyV1,
   verifyV1Schema,
   verifyV1OnChain,
+  verifyVow,
   shillbotProtocol,
 } from "./index.js";
 import type { AasV1Attestation, ProtocolHandler } from "./index.js";
@@ -587,5 +588,92 @@ describe("schema check — optional fields", () => {
       verifier_instructions: "re-read on-chain",
     };
     expect(checkSchema(a)).toBeNull();
+  });
+});
+
+describe("P2-26 network pinning and cluster genesis hash verification", () => {
+  const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+  const DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+
+  function makeRpcWithGenesis(genesisHash: string) {
+    let accountLookups = 0;
+    const rpc = {
+      rpcEndpoint: `mock://${genesisHash.slice(0, 8)}`,
+      async getGenesisHash() {
+        return genesisHash;
+      },
+      async getAccountInfo(_pubkey: PublicKey) {
+        accountLookups += 1;
+        return {
+          owner: new PublicKey(SHILLBOT_PROGRAM_ID),
+          data: Buffer.from(buildHappyAccountBytes()),
+          lamports: 1,
+          executable: false,
+          rentEpoch: 0,
+        };
+      },
+    } as unknown as Connection;
+    return { rpc, getLookups: () => accountLookups };
+  }
+
+  it("rejects a devnet attestation under default mainnet pin without querying the RPC", async () => {
+    const devnetAtt = happyAttestation({ network: "devnet" });
+    const { rpc, getLookups } = makeRpcWithGenesis(DEVNET_GENESIS);
+
+    // Default verifyVow pins mainnet — never auto-switches to devnet!
+    const verdict = await verifyVow(devnetAtt as unknown as Record<string, unknown>, {
+      connection: rpc,
+    });
+    expect(verdict.valid).toBe(false);
+    if (!verdict.valid) {
+      expect(verdict.failure_reason).toBe("network_mismatch");
+    }
+    expect(getLookups()).toBe(0);
+
+    // Even verifyVow without a custom connection refuses before touching network RPC
+    const verdictDefaultConn = await verifyVow(devnetAtt as unknown as Record<string, unknown>);
+    expect(verdictDefaultConn.valid).toBe(false);
+    if (!verdictDefaultConn.valid) {
+      expect(verdictDefaultConn.failure_reason).toBe("network_mismatch");
+    }
+    expect(verdictDefaultConn.rpc_endpoint).toContain("mainnet");
+  });
+
+  it("accepts a devnet attestation ONLY when caller opts into network: 'devnet' on a devnet cluster", async () => {
+    const devnetAtt = happyAttestation({ network: "devnet" });
+    const { rpc: devnetRpc } = makeRpcWithGenesis(DEVNET_GENESIS);
+    const { rpc: mainnetRpc } = makeRpcWithGenesis(MAINNET_GENESIS);
+
+    const ok = await verifyVow(devnetAtt as unknown as Record<string, unknown>, {
+      network: "devnet",
+      connection: devnetRpc,
+    });
+    expect(ok.valid).toBe(true);
+
+    // Devnet attestation + network: "devnet" pointed at a mainnet RPC -> genesis hash mismatch!
+    const badCluster = await verifyVow(devnetAtt as unknown as Record<string, unknown>, {
+      network: "devnet",
+      connection: mainnetRpc,
+    });
+    expect(badCluster.valid).toBe(false);
+    if (!badCluster.valid) {
+      expect(badCluster.failure_reason).toBe("network_mismatch");
+    }
+  });
+
+  it("rejects a mainnet attestation verified against a devnet RPC via getGenesisHash", async () => {
+    const mainnetAtt = happyAttestation({ network: "mainnet" });
+    const { rpc: devnetRpc, getLookups } = makeRpcWithGenesis(DEVNET_GENESIS);
+    const { rpc: mainnetRpc } = makeRpcWithGenesis(MAINNET_GENESIS);
+
+    const spoofed = await verifyV1(mainnetAtt, shillbotProtocol, devnetRpc);
+    expect(spoofed.valid).toBe(false);
+    if (!spoofed.valid) {
+      expect(spoofed.failure_reason).toBe("network_mismatch");
+    }
+    expect(getLookups()).toBe(0);
+
+    const legit = await verifyV1(mainnetAtt, shillbotProtocol, mainnetRpc);
+    expect(legit.valid).toBe(true);
   });
 });

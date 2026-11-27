@@ -15,9 +15,31 @@ import type {
 } from "../api.js";
 import { CROSS_CHAIN_GAME_ABI } from "./abi.js";
 
+const ZERO_ADDRESS_HEX = "0000000000000000000000000000000000000000";
+
+/** Maximum horizon (7 days) allowed for relay-supplied `fund_deadline` / `match_deadline`. */
+export const MAX_XCHAIN_DEADLINE_HORIZON_SECS = 7n * 86_400n;
+
 export function unpadAddress(word: string): Hex {
-  const hex = word.startsWith("0x") ? word.slice(2) : word;
-  return `0x${hex.slice(-40)}`;
+  if (typeof word !== "string") {
+    throw new Error("invalid EVM address: expected hex string");
+  }
+  const hex = word.startsWith("0x") || word.startsWith("0X") ? word.slice(2) : word;
+  let addr: string;
+  if (/^[0-9a-fA-F]{40}$/.test(hex)) {
+    addr = hex.toLowerCase();
+  } else if (/^[0-9a-fA-F]{64}$/.test(hex)) {
+    if (!hex.startsWith("000000000000000000000000")) {
+      throw new Error(`invalid 32-byte padded EVM address: non-zero high 12 bytes in ${word}`);
+    }
+    addr = hex.slice(24).toLowerCase();
+  } else {
+    throw new Error(`invalid EVM address: expected 20-byte or zero-padded 32-byte hex, got ${word}`);
+  }
+  if (addr === ZERO_ADDRESS_HEX) {
+    throw new Error("invalid EVM address: zero address is not allowed");
+  }
+  return `0x${addr}`;
 }
 
 /**
@@ -32,9 +54,12 @@ export function normalizeEvmSigV(sig: string): Hex {
   }
   const body = sig.slice(2).toLowerCase();
   const rs = body.slice(0, 128);
-  let v = parseInt(body.slice(128, 130), 16);
-  if (v < 27) v += 27;
-  return `0x${rs}${v.toString(16).padStart(2, "0")}`;
+  const v = parseInt(body.slice(128, 130), 16);
+  if (v !== 0 && v !== 1 && v !== 27 && v !== 28) {
+    throw new Error(`invalid secp256k1 signature recovery id v=${v}; expected 0, 1, 27, or 28`);
+  }
+  const normalizedV = v < 27 ? v + 27 : v;
+  return `0x${rs}${normalizedV.toString(16).padStart(2, "0")}`;
 }
 
 export interface CrossChainMatchResult {
@@ -140,18 +165,39 @@ export async function findEvmMatch(
 }
 
 export interface EvmFundCall { to: Hex; data: Hex; value: bigint }
-export interface EvmFundPin { contract: Hex; stakeWei: bigint }
+export interface EvmFundPin {
+  contract: Hex;
+  stakeWei: bigint;
+  /** Expected local EVM session key address (`leg_b.session_key`). Verified whenever provided. */
+  sessionKey?: Hex;
+  /** Optional Unix-seconds clock override for deadline horizon validation. */
+  nowSec?: number;
+}
 
-function verifyPin(match: XMatchPayload, pin: EvmFundPin): { to: Hex; stakeWei: bigint } {
+function verifyPin(
+  match: XMatchPayload,
+  pin: EvmFundPin,
+): { to: Hex; stakeWei: bigint; legBSessionKey: Hex; legASessionKey: Hex } {
+  const pinnedContract = unpadAddress(pin.contract);
   const to = unpadAddress(match.leg_b.contract);
-  if (to.toLowerCase() !== pin.contract.toLowerCase()) {
-    throw new Error(`relay leg_b.contract ${to} != pinned CrossChainGame ${pin.contract}`);
+  if (to !== pinnedContract) {
+    throw new Error(`relay leg_b.contract ${to} != pinned CrossChainGame ${pinnedContract}`);
   }
   const stakeWei = BigInt(match.leg_b.stake_base_units);
   if (stakeWei !== pin.stakeWei) {
     throw new Error(`relay leg_b.stake ${stakeWei} != pinned stake ${pin.stakeWei}`);
   }
-  return { to, stakeWei };
+  const legBSessionKey = unpadAddress(match.leg_b.session_key);
+  const legASessionKey = unpadAddress(match.leg_a.session_key);
+  if (pin.sessionKey !== undefined) {
+    const pinnedSessionKey = unpadAddress(pin.sessionKey);
+    if (legBSessionKey !== pinnedSessionKey) {
+      throw new Error(
+        `relay leg_b.session_key ${legBSessionKey} != pinned sessionKey ${pinnedSessionKey}`,
+      );
+    }
+  }
+  return { to, stakeWei, legBSessionKey, legASessionKey };
 }
 
 function legTupleFromPayload(leg: XLegPayload) {
@@ -187,18 +233,43 @@ export function certTupleFromMatchPayload(match: XMatchPayload) {
 }
 
 export function buildEvmFundCall(match: XMatchPayload, pin: EvmFundPin): EvmFundCall {
-  const { to, stakeWei } = verifyPin(match, pin);
+  const { to, stakeWei, legBSessionKey, legASessionKey } = verifyPin(match, pin);
+  if (match.a_is_p1 !== 0 && match.a_is_p1 !== 1) {
+    throw new Error(`invalid a_is_p1=${String(match.a_is_p1)}; expected 0 or 1`);
+  }
+  const fundDeadline = BigInt(match.fund_deadline);
+  const matchDeadline = BigInt(match.match_deadline);
+  const nowSec = BigInt(
+    pin.nowSec !== undefined ? Math.floor(pin.nowSec) : Math.floor(Date.now() / 1000),
+  );
+  const maxDeadline = nowSec + MAX_XCHAIN_DEADLINE_HORIZON_SECS;
+  if (fundDeadline <= 0n || matchDeadline <= 0n) {
+    throw new Error(
+      `invalid deadlines (fund_deadline=${fundDeadline}, match_deadline=${matchDeadline}): must be > 0`,
+    );
+  }
+  if (matchDeadline < fundDeadline) {
+    throw new Error(
+      `invalid deadlines: match_deadline (${matchDeadline}) < fund_deadline (${fundDeadline})`,
+    );
+  }
+  if (fundDeadline > maxDeadline || matchDeadline > maxDeadline) {
+    throw new Error(
+      `relay deadline exceeds 7-day horizon (fund_deadline=${fundDeadline}, match_deadline=${matchDeadline}, max=${maxDeadline})`,
+    );
+  }
+  const operatorSig = normalizeEvmSigV(match.create_match_operator_sig);
   const data = encodeFunctionData({
     abi: CROSS_CHAIN_GAME_ABI,
     functionName: "createMatch",
     args: [
       match.match_id as Hex,
-      unpadAddress(match.leg_b.session_key),
-      unpadAddress(match.leg_a.session_key),
+      legBSessionKey,
+      legASessionKey,
       match.a_is_p1 === 0,
-      BigInt(match.fund_deadline),
-      BigInt(match.match_deadline),
-      match.create_match_operator_sig as Hex,
+      fundDeadline,
+      matchDeadline,
+      operatorSig,
     ],
   });
   return { to, data, value: stakeWei };
