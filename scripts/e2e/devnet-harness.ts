@@ -128,7 +128,14 @@ export function connectDevnet(): DevnetHarness {
     { commitment: "confirmed" }
   );
   anchor.setProvider(provider);
-  const targetIdlPath = join(__dirname, "..", "..", "target", "idl", "shillbot.json");
+  const targetIdlPath = join(
+    __dirname,
+    "..",
+    "..",
+    "target",
+    "idl",
+    "shillbot.json"
+  );
   const sdkIdlPath = join(
     __dirname,
     "..",
@@ -138,7 +145,7 @@ export function connectDevnet(): DevnetHarness {
     "src",
     "contracts",
     "idl",
-    "shillbot.json",
+    "shillbot.json"
   );
   const idlPath = existsSync(targetIdlPath) ? targetIdlPath : sdkIdlPath;
   const program = new anchor.Program(
