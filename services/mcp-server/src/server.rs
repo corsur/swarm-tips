@@ -2727,12 +2727,25 @@ impl SwarmTipsMcp {
             )
             .await?;
 
-        // EVM (0x) wallets register for the cross-chain game leg. Intercept
-        // before the Solana path: validate, bind the CAIP-10 account to the
-        // session, and return — no Solana GameTxBuilder, no balance read.
-        if args.pubkey.starts_with("0x") {
-            let account_id = crate::xchain::evm_account_id(&args.pubkey)
-                .map_err(|e| invalid_input(&format!("invalid EVM address: {e}")))?;
+        // EVM wallets register for same-chain or cross-chain EVM play. Accept
+        // both bare `0x…` (defaulting to Base Mainnet) and explicit CAIP-10
+        // `eip155:<chain_id>:0x…` (e.g. `eip155:84532:0x…` for Base Sepolia or
+        // `eip155:1:0x…` for Ethereum Mainnet).
+        if args.pubkey.starts_with("0x") || args.pubkey.starts_with("eip155:") {
+            let account_id = if args.pubkey.starts_with("0x") {
+                crate::xchain::evm_account_id(&args.pubkey)
+            } else {
+                chain_core::AccountId::parse(&args.pubkey)
+                    .map_err(|e| e.to_string())
+                    .and_then(|acct| {
+                        crate::xchain::evm_account_id_for_chain(
+                            acct.address(),
+                            Some(acct.chain().as_str()),
+                            None,
+                        )
+                    })
+            }
+            .map_err(|e| invalid_input(&format!("invalid EVM address: {e}")))?;
             tracing::info!(
                 event = "register_wallet_evm",
                 account = %account_id,
@@ -5123,25 +5136,29 @@ impl SwarmTipsMcp {
             invalid_input("proof requires `nonce` (issue one via agent_verify_wallet phase 1)")
         })?;
 
+        let native_wallet = native_wallet_address(wallet);
         let verified = match (signature, tx_signature) {
-            (Some(sig), None) => if wallet.starts_with("0x") {
+            (Some(sig), None) => if native_wallet.starts_with("0x") {
                 self.state
                     .game_api
-                    .auth_evm_verify(wallet, nonce, sig)
+                    .auth_evm_verify(native_wallet, nonce, sig)
                     .await
             } else {
-                self.state.game_api.auth_verify(wallet, nonce, sig).await
+                self.state
+                    .game_api
+                    .auth_verify(native_wallet, nonce, sig)
+                    .await
             }
             .map(|response| ("signed_nonce", sig.to_string(), response.token)),
             (None, Some(tx)) => {
-                if wallet.starts_with("0x") {
+                if native_wallet.starts_with("0x") {
                     return Err(invalid_input(
                         "tx_signature proof is Solana-only; EVM wallets pass `signature` (EIP-191)",
                     ));
                 }
                 self.state
                     .game_api
-                    .auth_session(wallet, tx, nonce)
+                    .auth_session(native_wallet, tx, nonce)
                     .await
                     .map(|response| ("memo_tx", tx.to_string(), response.token))
             }
@@ -8712,6 +8729,91 @@ mod tests {
         let verify_json = verify_res.structured_content.expect("structured");
         assert_eq!(verify_json["status"], "verified");
         assert_eq!(verify_json["wallet"], pubkey_str);
+    }
+
+    #[tokio::test]
+    async fn register_wallet_accepts_caip10_evm_chain_and_verifies_native_address() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let orch = MockServer::start().await;
+        let game_api = MockServer::start().await;
+        let rpc = MockServer::start().await;
+        let evm_addr = "0x70d922d213235a78c7a5c66d7f56cb7226339433";
+        let caip10 = format!("eip155:84532:{evm_addr}");
+
+        Mock::given(method("POST"))
+            .and(path("/auth/evm/challenge"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "nonce": "evm-sepolia-nonce-1" })),
+            )
+            .expect(1)
+            .mount(&game_api)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/auth/evm/verify"))
+            .and(body_partial_json(serde_json::json!({
+                "wallet": evm_addr,
+                "nonce": "evm-sepolia-nonce-1",
+                "signature": "0xdeadbeef",
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "token": "jwt-sepolia-1" })),
+            )
+            .expect(1)
+            .mount(&game_api)
+            .await;
+
+        let mcp = build_test_mcp_instance(orch.uri(), game_api.uri(), rpc.uri());
+        let make_parts = || {
+            http::Request::builder()
+                .header(MCP_SESSION_ID_HEADER, "sess-evm-caip10")
+                .body(())
+                .unwrap()
+                .into_parts()
+                .0
+        };
+
+        let reg = mcp
+            .register_wallet(
+                Parameters(GameRegisterWalletArgs {
+                    pubkey: caip10.clone(),
+                    nonce: None,
+                    signature: None,
+                    tx_signature: None,
+                }),
+                Extension(make_parts()),
+            )
+            .await
+            .expect("register_wallet CAIP-10 EVM must succeed");
+        let reg_text = reg
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap_or_default();
+        let reg_json: serde_json::Value = serde_json::from_str(&reg_text).expect("json");
+        assert_eq!(reg_json["account"], caip10);
+        assert_eq!(reg_json["chain"], "eip155:84532");
+        assert_eq!(reg_json["verify_nonce"], "evm-sepolia-nonce-1");
+
+        let ver = mcp
+            .agent_verify_wallet(
+                Parameters(AgentVerifyWalletArgs {
+                    nonce: Some("evm-sepolia-nonce-1".into()),
+                    signature: Some("0xdeadbeef".into()),
+                    tx_signature: None,
+                }),
+                Extension(make_parts()),
+            )
+            .await
+            .expect("agent_verify_wallet for CAIP-10 EVM must succeed");
+        let ver_json = ver.structured_content.expect("structured");
+        assert_eq!(ver_json["status"], "verified");
+        assert_eq!(ver_json["wallet"], caip10);
     }
 
     #[tokio::test]
