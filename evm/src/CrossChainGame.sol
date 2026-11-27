@@ -217,6 +217,19 @@ contract CrossChainGame is
     ///      and every escrowed stake.
     function _authorizeUpgrade(address) internal override onlyOwner {}
 
+    /// @dev Renouncing ownership would permanently brick UUPS upgrades and
+    ///      float/config governance; forbid it explicitly (EVM-10).
+    function renounceOwnership() public pure override {
+        revert BadConfig();
+    }
+
+    /// @dev Preserve key separation across ownership transfers: the incoming
+    ///      owner must never coincide with the active operatorSigner (EVM-10).
+    function acceptOwnership() public override {
+        super.acceptOwnership();
+        if (owner() == operatorSigner()) revert BadConfig();
+    }
+
     /// @notice Dedicated secp256k1 certificate signer — NOT the owner EOA and
     ///         not the Solana upgrade authority (key-separation requirement).
     ///         Stored in the AttesterGated base.
@@ -237,7 +250,7 @@ contract CrossChainGame is
         uint32 maxClaimWindowSecs_,
         uint32 skewMarginSecs_
     ) private pure {
-        if (operatorSigner_ == address(0) || treasury_ == address(0)) revert BadConfig();
+        if (owner_ == address(0) || operatorSigner_ == address(0) || treasury_ == address(0)) revert BadConfig();
         // Key separation (decision.md trust model): the certificate signer must
         // be a dedicated key, never the owner/upgrade authority or the treasury,
         // so operator compromise can't also move governance or treasury funds.
@@ -363,7 +376,9 @@ contract CrossChainGame is
         // later setConfig that lowers maxClaimWindowSecs/skew cannot pull opensAt
         // ahead of an open claim's window (it is always >= matchDeadline +
         // claimWindowSecs + 2*skew for any cert, preserving the no-race inequality).
-        m.timeoutOpensAt = uint64(uint256(m.matchDeadline) + maxClaimWindowSecs + 2 * uint256(skewMarginSecs));
+        uint256 timeoutOpensAt256 = uint256(m.matchDeadline) + uint256(maxClaimWindowSecs) + 2 * uint256(skewMarginSecs);
+        if (timeoutOpensAt256 > type(uint64).max) revert BadConfig();
+        m.timeoutOpensAt = uint64(timeoutOpensAt256);
         // Snapshot the claim window too (M2): validate cert.claimWindowSecs against
         // the live maxClaimWindowSecs ONCE, here, so a later setConfig that lowers
         // the max can't DoS a valid openClaim/submitEquivocationProof by failing
@@ -442,14 +457,16 @@ contract CrossChainGame is
         bytes32 liveDigest = _verifyMatchLive(m, cert, liveSigs);
         if (liveDigest != m.matchLiveDigest) revert CertMismatch();
         if (cp.matchLiveDigest != liveDigest) revert CertMismatch();
+        if (cp.stepCount > CertLib.TERMINAL_STEP_COUNT) revert BadOutcome();
         _verifyCheckpoint(cert, cp, cpSigs);
         _verifyMatchupBinding(cp, cert.matchupCommitment);
 
+        _maybeExtendClaimWindow(cert.matchId, m, cert.claimWindowSecs);
         m.status = Status.Claiming;
         m.matchLiveDigest = liveDigest;
         m.bestStepCount = cp.stepCount;
         m.bestOutcomeKind = CertLib.deriveClaimOutcome(cp);
-        emit ClaimOpened(cert.matchId, m.bestOutcomeKind, windowEnd);
+        emit ClaimOpened(cert.matchId, m.bestOutcomeKind, m.claimWindowEnd);
     }
 
     /// @dev The claim window closes at matchDeadline + claimWindowSecs —
@@ -461,19 +478,28 @@ contract CrossChainGame is
     ///      2·skew) always strictly follows it.
     function _claimWindowEnd(uint64 matchDeadline, uint32 claimWindowSecs) private view returns (uint64) {
         if (claimWindowSecs > maxClaimWindowSecs) revert BadConfig();
-        return matchDeadline + claimWindowSecs;
+        uint256 end256 = uint256(matchDeadline) + uint256(claimWindowSecs);
+        if (end256 > type(uint64).max) revert BadConfig();
+        return uint64(end256);
     }
 
-    /// @dev Bound challenge/supersede response-window extension to at most ONE
-    ///      extension per match (`claimExtended[matchId]`), so repeated challenges
-    ///      cannot push `claimWindowEnd` out indefinitely. Also preserves the
-    ///      `timeoutOpensAt >= claimWindowEnd + 2 * skewMarginSecs` invariant.
+    /// @dev Guarantee a full `claimWindowSecs` response window from `block.timestamp`
+    ///      on every `openClaim`, `supersedeClaim`, and `submitEquivocationProof`
+    ///      (P0-01). Infinite extension griefing is structurally impossible because
+    ///      `stepCount` strictly increases in `0..=TERMINAL_STEP_COUNT` (at most 5
+    ///      distinct steps) and `submitEquivocationProof` executes at most once.
+    ///      Also preserves the `timeoutOpensAt >= claimWindowEnd + 2 * skewMarginSecs`
+    ///      invariant using checked `uint64` arithmetic.
     function _maybeExtendClaimWindow(bytes32 matchId, Match storage m, uint32 claimWindowSecs) private {
-        uint64 extendedEnd = uint64(block.timestamp) + claimWindowSecs;
-        if (!claimExtended[matchId] && extendedEnd > m.claimWindowEnd) {
+        uint256 extendedEnd256 = block.timestamp + uint256(claimWindowSecs);
+        if (extendedEnd256 > type(uint64).max) revert BadConfig();
+        uint64 extendedEnd = uint64(extendedEnd256);
+        if (extendedEnd > m.claimWindowEnd) {
             claimExtended[matchId] = true;
             m.claimWindowEnd = extendedEnd;
-            uint64 minTimeoutOpensAt = extendedEnd + 2 * uint64(skewMarginSecs);
+            uint256 minTimeoutOpensAt256 = extendedEnd256 + 2 * uint256(skewMarginSecs);
+            if (minTimeoutOpensAt256 > type(uint64).max) revert BadConfig();
+            uint64 minTimeoutOpensAt = uint64(minTimeoutOpensAt256);
             if (minTimeoutOpensAt > m.timeoutOpensAt) {
                 m.timeoutOpensAt = minTimeoutOpensAt;
             }
@@ -481,8 +507,8 @@ contract CrossChainGame is
     }
 
     /// @notice Replace the best claim with a strictly more complete
-    ///         checkpoint (reveals supersede commits). Grants at most a single
-    ///         bounded response-window extension per match (`claimExtended`).
+    ///         checkpoint (reveals supersede commits). Grants a full
+    ///         `claimWindowSecs` response window bounded by `0..=4` steps.
     function supersedeClaim(
         CertLib.MatchLiveCert calldata cert,
         CertLib.Checkpoint calldata cp,
@@ -498,7 +524,7 @@ contract CrossChainGame is
         if (localEquivocated[cert.matchId] || m.localEquivocated || m.bestStepCount == type(uint8).max) {
             revert BadOutcome();
         }
-        if (cp.stepCount <= m.bestStepCount) revert BadOutcome();
+        if (cp.stepCount <= m.bestStepCount || cp.stepCount > CertLib.TERMINAL_STEP_COUNT) revert BadOutcome();
         _verifyCheckpoint(cert, cp, cpSigs);
         _verifyMatchupBinding(cp, cert.matchupCommitment);
 
@@ -514,8 +540,8 @@ contract CrossChainGame is
     ///         equivocated is recorded as an explicit flag, so the verdict
     ///         is order-independent and never inferred from the current
     ///         claim outcome: local-only → local forfeits; counter-only →
-    ///         local wins; both → both forfeit. Grants at most one bounded
-    ///         response-window extension per match (`claimExtended`).
+    ///         local wins; both → both forfeit. Executable at most once per
+    ///         match (`!m.counterEquivocated`) and guarantees a full response window.
     function submitEquivocationProof(
         CertLib.MatchLiveCert calldata cert,
         CertLib.Checkpoint calldata cpA,
@@ -525,6 +551,7 @@ contract CrossChainGame is
     ) external {
         Match storage m = matches[cert.matchId];
         if (m.status != Status.Locked && m.status != Status.Claiming) revert InvalidStatus();
+        if (m.counterEquivocated) revert InvalidStatus();
 
         // Bind the cert to this match and bound its window the same way
         // openClaim does — the equivocation proof stands on the duplicate
@@ -837,10 +864,12 @@ contract CrossChainGame is
             toPlayer = stake + tranche;
             trancheReleased = 0;
         } else if (r == Result.LoseAll) {
-            // Full local forfeit: treasury cut funds the DAO flywheel, the
-            // remainder reimburses the operator pool (whose other-leg float
-            // paid the winner).
-            (toTreasury, toPoolReimburse) = _treasuryCut(stake);
+            // Full local forfeit: 100% of stake reimburses the operator pool
+            // (whose opposite-leg float paid the winner), keeping WinAll +
+            // LoseAll at 0-net float drift across both chains (matching
+            // same-chain gain = 0 on winner-takes-all, P1-01).
+            toTreasury = 0;
+            toPoolReimburse = stake;
         } else if (r == Result.KeepStake) {
             toPlayer = stake;
         } else if (r == Result.HalfBack) {
@@ -876,7 +905,7 @@ contract CrossChainGame is
 
     enum Result {
         WinAll, // own stake + opponent counter-value (from tranche)
-        LoseAll, // full forfeit: treasury + pool reimbursement
+        LoseAll, // full forfeit: 100% pool reimbursement
         KeepStake, // homogeneous both-correct
         HalfBack, // homogeneous, locally correct
         ForfeitToTreasury // both-wrong / both-forfeit: treasury + prize pool

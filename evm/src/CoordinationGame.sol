@@ -110,6 +110,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     uint128 private constant MAX_STAKE_WEI = 100 ether;
     uint32 private constant MIN_WINDOW_SECS = 60;
     uint32 private constant MAX_WINDOW_SECS = 30 days;
+    uint64 public constant MAX_SESSION_TTL = 30 days;
 
     event GameCreated(bytes32 indexed gameId, address indexed player1, uint128 stakeWei);
     event GameStarted(bytes32 indexed gameId, address indexed player1, address indexed player2);
@@ -130,6 +131,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     error AlreadyActed();
     error CertMismatch();
     error DeadlineNotReached();
+    error DeadlinePassed();
     error BadOutcome();
     error BadConfig();
     error BadSession();
@@ -160,6 +162,13 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         revealTimeoutSecs = revealTimeoutSecs_;
     }
 
+    /// @dev Preserve key separation across ownership transfers: the incoming
+    ///      owner must never coincide with the active operatorSigner (EVM-10).
+    function acceptOwnership() public override {
+        super.acceptOwnership();
+        if (owner() == operatorSigner()) revert BadConfig();
+    }
+
     /// @notice Dedicated secp256k1 matchmaker key — NOT the owner and not the
     ///         treasury (key separation: matchmaker compromise can't move
     ///         governance/treasury). Stored in the AttesterGated base.
@@ -177,7 +186,9 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
         uint32 commitTimeoutSecs_,
         uint32 revealTimeoutSecs_
     ) private pure {
-        if (operatorSigner_ == address(0) || treasury_ == address(0)) revert BadConfig();
+        if (owner_ == address(0) || operatorSigner_ == address(0) || treasury_ == address(0)) {
+            revert BadConfig();
+        }
         // Key separation: the matchmaker key is never the owner or the treasury.
         if (operatorSigner_ == owner_ || operatorSigner_ == treasury_) revert BadConfig();
         if (treasurySplitBps_ < MIN_SPLIT_BPS || treasurySplitBps_ > MAX_SPLIT_BPS) revert BadConfig();
@@ -274,6 +285,7 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     function joinGame(bytes32 gameId, address player) external payable whenNotPaused {
         Game storage g = games[gameId];
         if (g.status != Status.Pending) revert InvalidStatus();
+        if (block.timestamp >= uint256(g.createdAt) + g.commitWindowSecs) revert DeadlinePassed();
         if (!_actsFor(msg.sender, player)) revert BadSession();
         if (player == g.player1) revert NotParticipant();
         if (msg.value != g.stakeWei) revert BadStake();
@@ -306,7 +318,10 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     mapping(address => address) public sessionOwner;
 
     function _bindSessionKey(address player, address sessionKey, uint64 expiry) private {
-        if (sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp) revert BadSession();
+        if (
+            sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp
+                || expiry > block.timestamp + MAX_SESSION_TTL
+        ) revert BadSession();
         address currentOwner = sessionOwner[sessionKey];
         if (
             currentOwner != address(0) && currentOwner != player && sessions[currentOwner].sessionKey == sessionKey
@@ -330,7 +345,10 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
     ///         commit/reveal/timeout. The wallet signs `sessionAuthDigest`
     ///         off-chain; anyone (typically the session key) submits it.
     function authorizeSession(address player, address sessionKey, uint64 expiry, bytes calldata playerSig) external {
-        if (sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp) revert BadSession();
+        if (
+            sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp
+                || expiry > block.timestamp + MAX_SESSION_TTL
+        ) revert BadSession();
         bytes32 digest = MessageHashUtils.toEthSignedMessageHash(sessionAuthDigest(player, sessionKey, expiry));
         if (ECDSA.recover(digest, playerSig) != player) revert BadSignature();
         _bindSessionKey(player, sessionKey, expiry);
@@ -402,9 +420,11 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
 
         if (isP1) {
             if (g.p1Commit != bytes32(0)) revert AlreadyActed();
+            if (commitment == g.p2Commit) revert BadCommitment();
             g.p1Commit = commitment;
         } else {
             if (g.p2Commit != bytes32(0)) revert AlreadyActed();
+            if (commitment == g.p1Commit) revert BadCommitment();
             g.p2Commit = commitment;
         }
 
@@ -421,7 +441,8 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
 
     /// @notice Reveal a guess preimage. The first revealer also reveals the
     ///         matchup type by providing `rMatchup` (bound to the commitment);
-    ///         the second revealer passes bytes32(0). Resolves on both reveals.
+    ///         the second revealer may pass bytes32(0) or the valid `rMatchup`
+    ///         so concurrent reveals never spuriously revert (EVM-11).
     function revealGuess(bytes32 gameId, bytes32 r, bytes32 rMatchup) external nonReentrant {
         Game storage g = games[gameId];
         if (g.status != Status.Revealing) revert InvalidStatus();
@@ -445,8 +466,8 @@ contract CoordinationGame is Ownable2Step, PullPayment, Pausable, AttesterGated 
             // First revealer binds the matchup type to the matchmaker commitment.
             if (sha256(abi.encodePacked(rMatchup)) != g.matchupCommitment) revert CertMismatch();
             g.matchupType = uint8(rMatchup[31]) & 1;
-        } else if (rMatchup != bytes32(0)) {
-            revert CertMismatch(); // second revealer must pass the null sentinel
+        } else if (rMatchup != bytes32(0) && sha256(abi.encodePacked(rMatchup)) != g.matchupCommitment) {
+            revert CertMismatch(); // second revealer must pass bytes32(0) or the valid rMatchup
         }
         emit GuessRevealed(gameId, msg.sender);
 

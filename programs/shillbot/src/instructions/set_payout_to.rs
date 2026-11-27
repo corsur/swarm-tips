@@ -47,8 +47,9 @@ pub fn set_payout_to(ctx: Context<SetPayoutTo>, payout_to: Pubkey) -> Result<()>
 
     // When the caller also passes the `payout_to` AccountInfo as `remaining_accounts[0]`,
     // validate its owner and data layout immediately so invalid non-system targets
-    // fail at route-set time rather than settlement time.
-    if let Some(payout_info) = ctx.remaining_accounts.first() {
+    // fail at route-set time rather than settlement time, and pin the route kind
+    // (`1 = extension-credit Advance PDA`, `2 = explicit System wallet`, P2-01).
+    let route_kind = if let Some(payout_info) = ctx.remaining_accounts.first() {
         require_keys_eq!(
             payout_info.key(),
             payout_to,
@@ -58,13 +59,17 @@ pub fn set_payout_to(ctx: Context<SetPayoutTo>, payout_to: Pubkey) -> Result<()>
             payout_info,
             &task.agent,
         )?;
-    }
+        classify_payout_route_kind(payout_info.owner)
+    } else {
+        classify_payout_route_kind_without_account(&payout_to)
+    };
 
     // Effects
     let task_id = task.task_id;
     let agent = task.agent;
     let task = &mut ctx.accounts.task;
     task.payout_to = payout_to;
+    task.payout_route_kind = route_kind;
 
     emit!(PayoutRouteSet {
         task_id,
@@ -72,6 +77,28 @@ pub fn set_payout_to(ctx: Context<SetPayoutTo>, payout_to: Pubkey) -> Result<()>
         payout_to,
     });
     Ok(())
+}
+
+/// Classify a validated destination account into `Task.payout_route_kind`:
+/// `1` for an `extension-credit` Advance PDA, `2` for a System-owned EOA.
+pub(crate) fn classify_payout_route_kind(owner: &Pubkey) -> u8 {
+    if *owner == crate::constants::EXTENSION_CREDIT_PROGRAM_ID {
+        crate::state::PAYOUT_ROUTE_EXTENSION_CREDIT
+    } else {
+        crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
+    }
+}
+
+/// Fallback classification when `set_payout_to` is called without passing the
+/// destination AccountInfo in `remaining_accounts[0]`: an Ed25519 on-curve
+/// pubkey can never be a PDA (`Advance`), so record it as an explicit System
+/// wallet (`2`), while off-curve PDAs remain `0` (legacy/PDA fallback allowed).
+pub(crate) fn classify_payout_route_kind_without_account(payout_to: &Pubkey) -> u8 {
+    if payout_to.is_on_curve() {
+        crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
+    } else {
+        crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY
+    }
 }
 
 /// Rejects zero, task PDA, client, program IDs, native loaders, and sysvar pubkeys.
@@ -167,5 +194,36 @@ mod tests {
                 .is_err()
         );
         assert!(validate_payout_target_pubkey(&sysvar::rent::ID, &task_key, &client_key).is_err());
+    }
+
+    #[test]
+    fn classify_payout_route_kind_distinguishes_advance_pda_and_system_wallet() {
+        assert_eq!(
+            classify_payout_route_kind(&crate::constants::EXTENSION_CREDIT_PROGRAM_ID),
+            crate::state::PAYOUT_ROUTE_EXTENSION_CREDIT
+        );
+        assert_eq!(
+            classify_payout_route_kind(&anchor_lang::system_program::ID),
+            crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
+        );
+
+        let (pda, _) = Pubkey::find_program_address(
+            &[b"advance", &[1u8; 32], &[2u8; 32]],
+            &crate::constants::EXTENSION_CREDIT_PROGRAM_ID,
+        );
+        assert_eq!(
+            classify_payout_route_kind_without_account(&pda),
+            crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY
+        );
+        // An on-curve pubkey (e.g. a System wallet EOA) classifies as explicit system wallet.
+        let on_curve = (1u8..=u8::MAX)
+            .map(|b| Pubkey::new_from_array([b; 32]))
+            .find(Pubkey::is_on_curve)
+            .expect("deterministic on-curve pubkey");
+        assert!(on_curve.is_on_curve());
+        assert_eq!(
+            classify_payout_route_kind_without_account(&on_curve),
+            crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
+        );
     }
 }

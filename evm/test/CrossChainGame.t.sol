@@ -338,21 +338,41 @@ contract CrossChainGameTest is Test {
         vm.stopPrank();
     }
 
-    function test_loserForfeit_splitsTreasuryAndPool() public {
+    function test_loserForfeit_reimbursesFullStakeToPool() public {
         bytes32 id = keccak256("m2");
         uint128 tranche = STAKE;
         _fund(id, true);
         _lock(id, tranche);
 
         uint256 poolBefore = game.poolFree();
-        uint256 treBefore = treasury.balance;
-        // Local P1 loses → P2 wins.
+        uint256 treBefore = treasury.balance + game.withdrawable(treasury);
+        // Local P1 loses → P2 wins; 100% of local stake reimburses the operator pool (P1-01).
         _settle(id, true, tranche, CertLib.HETERO_P2_WINS);
 
-        assertEq(treasury.balance - treBefore + game.withdrawable(treasury), STAKE * SPLIT_BPS / 10000, "treasury cut");
-        // Tranche released back + pool reimbursed with the post-treasury remainder.
-        uint256 reimburse = STAKE - (STAKE * SPLIT_BPS / 10000);
-        assertEq(game.poolFree(), poolBefore + tranche + reimburse, "tranche + reimbursement");
+        assertEq(treasury.balance + game.withdrawable(treasury), treBefore, "no treasury skim on LoseAll");
+        assertEq(game.poolFree(), poolBefore + tranche + STAKE, "tranche released + 100% stake reimbursement");
+    }
+
+    function test_P1_01_winAllPlusLoseAll_zeroNetFloatDrift() public {
+        // Simulates both legs of an equal-value cross-chain winner-takes-all match:
+        // Leg A (winner) consumes `tranche == STAKE` from pool; Leg B (loser) reimburses
+        // 100% of `STAKE` back to pool -> 0-net float drift across both chains.
+        uint256 poolStart = game.poolFree();
+        uint128 tranche = STAKE;
+
+        bytes32 winLeg = keccak256("solvency-win-leg");
+        _fund(winLeg, true);
+        _lock(winLeg, tranche);
+        _settle(winLeg, true, tranche, CertLib.HETERO_P1_WINS);
+
+        bytes32 loseLeg = keccak256("solvency-lose-leg");
+        _fund(loseLeg, false);
+        _lock(loseLeg, tranche);
+        _settle(loseLeg, false, tranche, CertLib.HETERO_P1_WINS);
+
+        assertEq(game.poolFree(), poolStart, "WinAll + LoseAll produces 0-net float drift");
+        assertEq(game.poolLocked(), 0, "no locked tranches remain");
+        assertEq(game.withdrawable(treasury), 0, "no treasury skim on winner-takes-all");
     }
 
     // --- panel gap: double-claim is structurally impossible --------------
@@ -1015,10 +1035,9 @@ contract CrossChainGameTest is Test {
         assertEq(uint8(_status(id)), uint8(CrossChainGame.Status.ClaimSettled));
         assertEq(player.balance + game.withdrawable(player), playerBefore, "equivocating local receives 0");
 
-        uint256 expectedTreasury = (uint256(STAKE) * SPLIT_BPS) / 10_000;
-        uint256 expectedReimburse = STAKE - expectedTreasury;
-        assertEq(game.withdrawable(treasury), treasuryBefore + expectedTreasury, "treasury receives split");
-        assertEq(game.poolFree(), poolFreeBefore + tranche + expectedReimburse, "pool recovers tranche + reimburse");
+        // P1-01: LoseAll reimburses 100% of stake to operator pool, 0 to treasury.
+        assertEq(game.withdrawable(treasury), treasuryBefore, "no treasury skim on LoseAll");
+        assertEq(game.poolFree(), poolFreeBefore + tranche + STAKE, "pool recovers tranche + full stake");
         assertEq(game.poolLocked(), 0, "locked tranche cleared");
     }
 
@@ -1118,8 +1137,51 @@ contract CrossChainGameTest is Test {
         );
     }
 
-    function test_claimExtended_capsChallengeWindowExtensionToOnce() public {
-        bytes32 id = keccak256("single-extension-cap");
+    /// P0-01 attack trace 1: filing `openClaim` right at `t == claimWindowEnd`
+    /// MUST grant a full `CLAIM_WINDOW` challenge period (no 0-second window)
+    /// and emit the extended `claimWindowEnd`.
+    function test_P0_01_openClaimAtWindowEnd_grantsFullChallengeWindow() public {
+        bytes32 id = keccak256("zero-sec-window-attack");
+        _fund(id, true);
+        _lock(id, STAKE);
+        CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
+        bytes32 ld = CertLib.matchLiveDigest(cert);
+
+        (,,,,,,,,,,,, uint64 initialWindowEnd,,,,) = game.matches(id);
+        vm.warp(initialWindowEnd);
+
+        uint64 expectedEnd = initialWindowEnd + CLAIM_WINDOW;
+        CertLib.Checkpoint memory cp1 = _checkpoint(ld, 1, 255, 255, 1);
+        vm.expectEmit(true, false, false, true, address(game));
+        emit CrossChainGame.ClaimOpened(id, CertLib.TIMEOUT_P1_WINS, expectedEnd);
+        game.openClaim(cert, cp1, _liveSigs(cert), _cpSigs(cp1));
+
+        (,,,,,,,,,,,, uint64 afterOpen,,,, uint64 timeoutOpens) = game.matches(id);
+        assertEq(afterOpen, expectedEnd, "openClaim at deadline grants full CLAIM_WINDOW");
+        assertGe(timeoutOpens, expectedEnd + 2 * uint64(SKEW), "timeout backstop advances past extended window");
+
+        // Immediate settleClaim right after openClaim MUST revert.
+        vm.warp(initialWindowEnd + 1);
+        vm.expectRevert(CrossChainGame.DeadlineNotReached.selector);
+        game.settleClaim(id);
+    }
+
+    /// P0-01 attack trace 2: burning a +1s extension on `cp1` then calling
+    /// `supersedeClaim(cp3)` and `submitEquivocationProof` right at each window
+    /// boundary MUST STILL grant a full `CLAIM_WINDOW` response window, while
+    /// `stepCount > 4` and duplicate `submitEquivocationProof` are rejected.
+    function test_P0_01_burnedExtensionCannotStripResponseWindow_and_stepsAreBounded() public {
+        // openClaim rejects stepCount > TERMINAL_STEP_COUNT (4).
+        bytes32 idBad = keccak256("open-step-5");
+        _fund(idBad, true);
+        _lock(idBad, STAKE);
+        CertLib.MatchLiveCert memory certBad = _cert(idBad, true, STAKE);
+        bytes32 ldBad = CertLib.matchLiveDigest(certBad);
+        CertLib.Checkpoint memory badOpenCp = _checkpoint(ldBad, 5, 1, 0, 1);
+        vm.expectRevert(CrossChainGame.BadOutcome.selector);
+        game.openClaim(certBad, badOpenCp, _liveSigs(certBad), _cpSigs(badOpenCp));
+
+        bytes32 id = keccak256("burned-extension-attack");
         _fund(id, true);
         _lock(id, STAKE);
         CertLib.MatchLiveCert memory cert = _cert(id, true, STAKE);
@@ -1128,31 +1190,63 @@ contract CrossChainGameTest is Test {
         (,,,,,,,,,,,, uint64 initialWindowEnd,,,,) = game.matches(id);
         assertFalse(game.claimExtended(id));
 
-        // Warp inside the post-matchDeadline claim window so response extension triggers.
-        uint64 tFirst = initialWindowEnd - 300;
-        vm.warp(tFirst);
+        // Attacker opens cp1 at t = matchDeadline + 1 (burning a +1s extension).
+        uint64 tBurn = initialWindowEnd - CLAIM_WINDOW + 1;
+        vm.warp(tBurn);
         CertLib.Checkpoint memory cp1 = _checkpoint(ld, 1, 255, 255, 1);
         game.openClaim(cert, cp1, _liveSigs(cert), _cpSigs(cp1));
+        assertTrue(game.claimExtended(id), "claimExtended flipped on first extension");
+        (,,,,,,,,,,,, uint64 endAfterOpen,,,,) = game.matches(id);
+        assertEq(endAfterOpen, tBurn + CLAIM_WINDOW);
 
-        // First supersede extends claimWindowEnd once to tFirst + CLAIM_WINDOW.
+        // Step count > TERMINAL_STEP_COUNT (4) must revert BadOutcome.
+        CertLib.Checkpoint memory cp5 = _checkpoint(ld, 5, 1, 0, 1);
+        vm.expectRevert(CrossChainGame.BadOutcome.selector);
+        game.supersedeClaim(cert, cp5, _cpSigs(cp5));
+
+        // Attacker supersedes with cp3 right at t == endAfterOpen: MUST STILL extend by full CLAIM_WINDOW!
+        vm.warp(endAfterOpen);
         CertLib.Checkpoint memory cp3 = _checkpoint(ld, 3, 1, 255, 1);
         game.supersedeClaim(cert, cp3, _cpSigs(cp3));
+        (,,,,,,,,,,,, uint64 endAfterSupersede,,,, uint64 timeoutAfterSupersede) = game.matches(id);
+        assertEq(endAfterSupersede, endAfterOpen + CLAIM_WINDOW, "supersede still grants full response window");
+        assertGe(timeoutAfterSupersede, endAfterSupersede + 2 * uint64(SKEW));
 
-        uint64 expectedExtendedEnd = tFirst + CLAIM_WINDOW;
-        (,,,,,,,,,,,, uint64 afterFirstSupersede,,,, uint64 timeoutOpensAfterFirst) = game.matches(id);
-        assertTrue(game.claimExtended(id), "claimExtended flipped on first challenge");
-        assertEq(afterFirstSupersede, expectedExtendedEnd, "window extended once");
-        assertGe(timeoutOpensAfterFirst, expectedExtendedEnd + 2 * uint64(SKEW), "timeout backstop stays past window");
+        // Counterparty equivocation proof right at t == endAfterSupersede: MUST STILL grant full CLAIM_WINDOW!
+        vm.warp(endAfterSupersede);
+        CertLib.Checkpoint memory eqA = _checkpoint(ld, 2, 255, 255, 1);
+        CertLib.Checkpoint memory eqB = _checkpoint(ld, 2, 255, 255, 2);
+        bytes memory sigA = _sign(counterSessionPk, CertLib.checkpointDigest(eqA));
+        bytes memory sigB = _sign(counterSessionPk, CertLib.checkpointDigest(eqB));
+        game.submitEquivocationProof(cert, eqA, eqB, sigA, sigB);
 
-        // Advance time further and supersede again with terminal step 4:
-        // stepCount updates, but claimWindowEnd MUST NOT extend a second time!
-        vm.warp(tFirst + 1000);
-        CertLib.Checkpoint memory cp4 = _checkpoint(ld, 4, 0, 1, 1);
-        game.supersedeClaim(cert, cp4, _cpSigs(cp4));
+        (,,,,,,,,,,,, uint64 endAfterEq,,,, uint64 timeoutAfterEq) = game.matches(id);
+        assertEq(endAfterEq, endAfterSupersede + CLAIM_WINDOW, "equivocation proof grants full response window");
+        assertGe(timeoutAfterEq, endAfterEq + 2 * uint64(SKEW));
 
-        (,,,,,,,,,,,, uint64 afterSecondSupersede,, uint8 stepAfterSecond,,) = game.matches(id);
-        assertEq(stepAfterSecond, 4, "higher step still accepted");
-        assertEq(afterSecondSupersede, expectedExtendedEnd, "no second window extension");
+        // Calling submitEquivocationProof a second time MUST revert InvalidStatus (prevents repeated extension).
+        vm.expectRevert(CrossChainGame.InvalidStatus.selector);
+        game.submitEquivocationProof(cert, eqA, eqB, sigA, sigB);
+    }
+
+    function test_EVM10_governanceHardening_zeroOwnerRenounceAndAcceptSeparation() public {
+        // initialize rejects address(0) owner.
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        _proxy(address(0), operatorSigner, treasury);
+
+        // renounceOwnership reverts on UUPS proxy.
+        vm.prank(owner);
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        game.renounceOwnership();
+        assertEq(game.owner(), owner, "owner intact");
+
+        // acceptOwnership rejects operatorSigner to preserve key separation.
+        vm.prank(owner);
+        game.transferOwnership(operatorSigner);
+        vm.prank(operatorSigner);
+        vm.expectRevert(CrossChainGame.BadConfig.selector);
+        game.acceptOwnership();
+        assertEq(game.owner(), owner, "operator cannot become owner");
     }
 
     function test_settle_symmetricGuard_allowsClaimingWithoutEquivocation_blocksWithEquivocation() public {

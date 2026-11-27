@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {CoordinationGameV4} from "../src/CoordinationGameV4.sol";
 import {ERC1967Proxy} from "../lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
@@ -17,18 +18,20 @@ import {ERC1967Proxy} from "../lib/openzeppelin-contracts/contracts/proxy/ERC196
 ///      The implementation's own constructor calls `_disableInitializers()`, so
 ///      the implementation can never be initialized directly either.
 contract DeployCoordinationGameV4Script is Script {
+    using SafeCast for uint256;
+
     function run() external returns (address proxy, address implementation) {
         address owner = vm.envAddress("V4_OWNER");
         address operatorSigner = vm.envAddress("XCHAIN_OPERATOR_SIGNER");
         address treasury = vm.envAddress("XCHAIN_TREASURY");
-        uint16 treasuryBps = uint16(vm.envUint("XCHAIN_TREASURY_BPS"));
-        uint128 stakeWei = uint128(vm.envUint("XCHAIN_STAKE_WEI"));
-        uint32 commitTimeout = uint32(vm.envUint("COORD_COMMIT_TIMEOUT"));
-        uint32 revealTimeout = uint32(vm.envUint("COORD_REVEAL_TIMEOUT"));
+        uint16 treasuryBps = vm.envUint("XCHAIN_TREASURY_BPS").toUint16();
+        uint128 stakeWei = vm.envUint("XCHAIN_STAKE_WEI").toUint128();
+        uint32 commitTimeout = vm.envUint("COORD_COMMIT_TIMEOUT").toUint32();
+        uint32 revealTimeout = vm.envUint("COORD_REVEAL_TIMEOUT").toUint32();
         uint256 seasonId = vm.envUint("V4_SEASON_ID");
         // Short on testnet so expire -> finalize -> claim can actually be
         // exercised on a live chain; a year in production.
-        uint64 seasonSecs = uint64(vm.envUint("V4_SEASON_SECS"));
+        uint64 seasonSecs = vm.envUint("V4_SEASON_SECS").toUint64();
 
         bytes memory initCall = abi.encodeCall(
             CoordinationGameV4.initialize,

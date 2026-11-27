@@ -418,14 +418,48 @@ fn claim_window_end(
         .ok_or(error!(CoordinationError::ArithmeticOverflow))
 }
 
-/// Bounds challenge/supersede response-window extension to at most ONE extension
-/// per match (`XChainMatch::claim_extended`, HIGH-20), preventing repeated
-/// `supersede_xclaim` calls from pushing `claim_window_end` out indefinitely.
+/// Validates a checkpoint step count on `open_xclaim` (0..=TERMINAL_STEP_COUNT).
+pub(crate) fn validate_open_claim_step(step_count: u8) -> Result<()> {
+    require!(
+        step_count <= TERMINAL_STEP_COUNT,
+        CoordinationError::XBadOutcome
+    );
+    Ok(())
+}
+
+/// Validates a checkpoint step count on `supersede_xclaim`: equivocation
+/// verdicts are final, and step count must strictly increase within
+/// `0..=TERMINAL_STEP_COUNT` (so at most 4 supersedes can ever occur).
+pub(crate) fn validate_supersede_step(m: &XChainMatch, step_count: u8) -> Result<()> {
+    require!(
+        !m.local_equivocated && m.best_step_count != u8::MAX,
+        CoordinationError::XBadOutcome
+    );
+    require!(
+        step_count > m.best_step_count && step_count <= TERMINAL_STEP_COUNT,
+        CoordinationError::XBadOutcome
+    );
+    Ok(())
+}
+
+/// Returns `true` iff `submit_equivocation_proof` may execute for `m`.
+/// Rejecting repeated counter-equivocation proofs (`!m.counter_equivocated`)
+/// ensures equivocation can extend the claim window at most once per match.
+pub(crate) fn can_submit_counter_equivocation(m: &XChainMatch) -> bool {
+    (m.status == XChainStatus::Locked || m.status == XChainStatus::Claiming)
+        && !m.counter_equivocated
+}
+
+/// Guarantees a full `m.claim_window_secs` response window from `now` whenever
+/// a claim is opened, superseded, or updated by counterparty equivocation
+/// (P0-01). Infinite extension griefing is structurally impossible because
+/// `step_count` strictly increases in `0..=TERMINAL_STEP_COUNT` (at most 5
+/// distinct steps) and `submit_equivocation_proof` executes at most once.
 pub(crate) fn maybe_extend_claim_window(m: &mut XChainMatch, now: i64) -> Result<()> {
     let extended_end = now
         .checked_add(i64::from(m.claim_window_secs))
         .ok_or(CoordinationError::ArithmeticOverflow)?;
-    if !m.claim_extended() && extended_end > m.claim_window_end {
+    if extended_end > m.claim_window_end {
         m.set_claim_extended();
         m.claim_window_end = extended_end;
     }
@@ -459,12 +493,14 @@ pub fn open_xclaim(
         live_digest == ctx.accounts.xmatch.match_live_digest && cp.match_live_digest == live_digest,
         CoordinationError::XCertMismatch
     );
+    validate_open_claim_step(cp.step_count)?;
     verify_checkpoint(&cert, &cp, &cp_sigs)?;
     // Bind matchup_type to the cert's commitment so a colluding pair can't
     // settle a fabricated matchup on this operator-less path.
     cp.verify_matchup_binding(&cert.matchup_commitment)?;
 
     let m = &mut ctx.accounts.xmatch;
+    maybe_extend_claim_window(m, now)?;
     m.status = XChainStatus::Claiming;
     m.match_live_digest = live_digest;
     m.best_step_count = cp.step_count;
@@ -497,15 +533,9 @@ pub fn supersede_xclaim(
         cert.digest() == m.match_live_digest && cp.match_live_digest == m.match_live_digest,
         CoordinationError::XCertMismatch
     );
-    // An equivocation verdict (best_step_count == MAX or local_equivocated) is final.
-    require!(
-        !m.local_equivocated && m.best_step_count != u8::MAX,
-        CoordinationError::XBadOutcome
-    );
-    require!(
-        cp.step_count > m.best_step_count,
-        CoordinationError::XBadOutcome
-    );
+    // An equivocation verdict (best_step_count == MAX or local_equivocated) is final,
+    // and step_count must strictly advance within 0..=TERMINAL_STEP_COUNT.
+    validate_supersede_step(m, cp.step_count)?;
     verify_checkpoint(&cert, &cp, &cp_sigs)?;
     cp.verify_matchup_binding(&cert.matchup_commitment)?;
 
@@ -522,8 +552,9 @@ pub fn supersede_xclaim(
 }
 
 /// Two distinct checkpoints at the same step signed by the counterparty session
-/// key = counterparty equivocation. Grants at most one bounded response-window
-/// extension per match (`claim_extended`).
+/// key = counterparty equivocation. Executable at most once per match
+/// (`!m.counter_equivocated`) and guarantees a full `claim_window_secs`
+/// response window from `now`.
 pub fn submit_equivocation_proof(
     ctx: Context<SubmitEquivocation>,
     cert: MatchLiveCertArg,
@@ -535,7 +566,7 @@ pub fn submit_equivocation_proof(
     let now = Clock::get()?.unix_timestamp;
     let m = &ctx.accounts.xmatch;
     require!(
-        m.status == XChainStatus::Locked || m.status == XChainStatus::Claiming,
+        can_submit_counter_equivocation(m),
         CoordinationError::XInvalidStatus
     );
     let live_digest = cert.digest();
@@ -914,15 +945,17 @@ fn execute_xleg<'info>(
         .checked_add(back_to_free)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
 
+    let (eff_to_treasury, eff_to_prize) =
+        route_xleg_prize_for_tournament(r.to_treasury, r.to_prize, tournament.finalized)?;
+
     // Lamport moves. The tranche consumed by a win comes from the pool PDA;
     // everything else comes from the match PDA's stake.
     let tranche_consumed = tranche
         .checked_sub(r.tranche_released)
         .ok_or(CoordinationError::ArithmeticOverflow)?;
-    let from_match = r
-        .to_treasury
+    let from_match = eff_to_treasury
         .checked_add(r.to_pool_reimburse)
-        .and_then(|v| v.checked_add(r.to_prize))
+        .and_then(|v| v.checked_add(eff_to_prize))
         .and_then(|v| v.checked_add(r.to_player.checked_sub(tranche_consumed)?))
         .ok_or(CoordinationError::ArithmeticOverflow)?;
     // Postcondition: the match PDA pays out EXACTLY its stake (never its
@@ -950,36 +983,55 @@ fn execute_xleg<'info>(
     if from_match_to_player > 0 {
         transfer_lamports(&xmatch_ai, player, from_match_to_player)?;
     }
-    if r.to_treasury > 0 {
-        transfer_lamports(&xmatch_ai, treasury, r.to_treasury)?;
+    if eff_to_treasury > 0 {
+        transfer_lamports(&xmatch_ai, treasury, eff_to_treasury)?;
     }
     if r.to_pool_reimburse > 0 {
         transfer_lamports(&xmatch_ai, &pool_ai, r.to_pool_reimburse)?;
     }
-    if r.to_prize > 0 {
-        transfer_lamports(&xmatch_ai, &tournament.to_account_info(), r.to_prize)?;
+    if eff_to_prize > 0 {
+        transfer_lamports(&xmatch_ai, &tournament.to_account_info(), eff_to_prize)?;
         tournament.prize_lamports = tournament
             .prize_lamports
-            .checked_add(r.to_prize)
+            .checked_add(eff_to_prize)
             .ok_or(CoordinationError::ArithmeticOverflow)?;
     }
 
-    // Update the local player's profile (the counterparty's profile updates
-    // on the other leg from the identical cert). Delegate to shared
-    // `chain_core::game::outcome_to_wins` so homogeneous sole-correct outcomes
-    // (HalfBack) award a win identically across Solana, EVM, and cross-chain.
+    // Update the local player's profile only if the tournament has not already
+    // finalized (P2-03, matching same-chain utils.rs & resolve_timeout.rs so
+    // post-finalization settles cannot inflate eligibility or strand lamports).
     let (p1_won, p2_won) = chain_core::game::outcome_to_wins(outcome_kind)
         .map_err(|_| error!(CoordinationError::XBadOutcome))?;
-    let won = if local_is_p1 { p1_won } else { p2_won };
-    player_profile.update_after_game(won, xmatch.tournament_id)?;
+    if !tournament.finalized {
+        let won = if local_is_p1 { p1_won } else { p2_won };
+        player_profile.update_after_game(won, xmatch.tournament_id)?;
+    }
 
     emit!(XMatchSettled {
         match_id: xmatch.match_id,
         outcome_kind,
         to_player: r.to_player,
-        to_treasury: r.to_treasury,
+        to_treasury: eff_to_treasury,
     });
     Ok(())
+}
+
+/// If the match's tournament was already finalized before cross-chain settlement,
+/// redirect `to_prize` into `treasury` so no lamports are stranded above the
+/// finalized `prize_snapshot` (P2-03).
+pub(crate) fn route_xleg_prize_for_tournament(
+    to_treasury: u64,
+    to_prize: u64,
+    tournament_finalized: bool,
+) -> Result<(u64, u64)> {
+    if tournament_finalized {
+        let combined_treasury = to_treasury
+            .checked_add(to_prize)
+            .ok_or(CoordinationError::ArithmeticOverflow)?;
+        Ok((combined_treasury, 0))
+    } else {
+        Ok((to_treasury, to_prize))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,10 +1310,12 @@ pub struct CloseXMatch<'info> {
 #[cfg(test)]
 mod chain_tag_tests {
     use super::{
-        can_settle_xmatch_in_status, equivocation_outcome, maybe_extend_claim_window,
-        solana_chain_tag, XKIND_TIMEOUT_BOTH_FORFEIT, XKIND_TIMEOUT_P1_WINS, XKIND_TIMEOUT_P2_WINS,
+        can_settle_xmatch_in_status, can_submit_counter_equivocation, equivocation_outcome,
+        maybe_extend_claim_window, route_xleg_prize_for_tournament, solana_chain_tag,
+        validate_open_claim_step, validate_supersede_step, XKIND_TIMEOUT_BOTH_FORFEIT,
+        XKIND_TIMEOUT_P1_WINS, XKIND_TIMEOUT_P2_WINS,
     };
-    use crate::cert::keccak256;
+    use crate::cert::{keccak256, TERMINAL_STEP_COUNT};
     use crate::state::{XChainMatch, XChainStatus};
     use anchor_lang::prelude::Pubkey;
 
@@ -1310,19 +1364,79 @@ mod chain_tag_tests {
     }
 
     #[test]
-    fn claim_window_extension_is_bounded_to_at_most_once() {
+    fn claim_window_guarantees_full_response_window_on_late_open_and_after_burned_extension() {
         let mut m = dummy_xmatch();
         assert!(!m.claim_extended());
 
-        // First supersede at t=5000 extends claim_window_end to 5000 + 3600 = 8600.
-        maybe_extend_claim_window(&mut m, 5_000).unwrap();
-        assert_eq!(m.claim_window_end, 8_600);
+        // (a) Filing open_xclaim right at t == claim_window_end (5600) MUST extend
+        // claim_window_end by a full claim_window_secs (to 5600 + 3600 = 9200),
+        // eliminating the 0-second challenge window (P0-01).
+        maybe_extend_claim_window(&mut m, 5_600).unwrap();
+        assert_eq!(m.claim_window_end, 9_200);
         assert!(m.claim_extended());
         assert!(m.is_p1());
 
-        // Subsequent supersede at t=8500 does NOT extend claim_window_end further.
-        maybe_extend_claim_window(&mut m, 8_500).unwrap();
-        assert_eq!(m.claim_window_end, 8_600);
+        // (b) Burning a +1s extension on cp1 (at t=5601 -> 9201), then calling
+        // supersede_xclaim(cp3) or submit_equivocation_proof right at t == 9201
+        // MUST STILL grant a full claim_window_secs response window (9201 + 3600 = 12801).
+        maybe_extend_claim_window(&mut m, 5_601).unwrap();
+        assert_eq!(m.claim_window_end, 9_201);
+        maybe_extend_claim_window(&mut m, 9_201).unwrap();
+        assert_eq!(m.claim_window_end, 12_801);
+
+        // Earlier timestamp before match_deadline does not shrink claim_window_end.
+        let mut early = dummy_xmatch();
+        maybe_extend_claim_window(&mut early, 1_500).unwrap();
+        assert_eq!(early.claim_window_end, 5_600);
+        assert!(!early.claim_extended());
+    }
+
+    #[test]
+    fn step_count_bounds_and_single_counter_equivocation_prevent_unbounded_extensions() {
+        // open_xclaim accepts 0..=TERMINAL_STEP_COUNT and rejects > TERMINAL_STEP_COUNT.
+        for step in 0..=TERMINAL_STEP_COUNT {
+            assert!(validate_open_claim_step(step).is_ok());
+        }
+        assert!(validate_open_claim_step(5).is_err());
+        assert!(validate_open_claim_step(u8::MAX).is_err());
+
+        // supersede_xclaim requires strictly increasing step within 0..=4.
+        let mut m = dummy_xmatch();
+        m.best_step_count = 1;
+        assert!(validate_supersede_step(&m, 1).is_err());
+        assert!(validate_supersede_step(&m, 2).is_ok());
+        assert!(validate_supersede_step(&m, 4).is_ok());
+        assert!(validate_supersede_step(&m, 5).is_err());
+        m.best_step_count = 4;
+        assert!(validate_supersede_step(&m, 4).is_err());
+        assert!(validate_supersede_step(&m, 5).is_err());
+
+        // Equivocation verdict blocks further supersedes.
+        m.best_step_count = u8::MAX;
+        assert!(validate_supersede_step(&m, 4).is_err());
+
+        // submit_equivocation_proof may execute at most once per match.
+        let mut eq_m = dummy_xmatch();
+        eq_m.status = XChainStatus::Locked;
+        assert!(can_submit_counter_equivocation(&eq_m));
+        eq_m.status = XChainStatus::Claiming;
+        assert!(can_submit_counter_equivocation(&eq_m));
+        eq_m.counter_equivocated = true;
+        assert!(!can_submit_counter_equivocation(&eq_m));
+    }
+
+    #[test]
+    fn finalized_tournament_redirects_xleg_prize_to_treasury() {
+        // Active tournament keeps treasury/prize split intact.
+        let (tr, pr) = route_xleg_prize_for_tournament(25_000_000, 25_000_000, false).unwrap();
+        assert_eq!(tr, 25_000_000);
+        assert_eq!(pr, 25_000_000);
+
+        // Finalized tournament routes all prize lamports into treasury (P2-03).
+        let (tr_fin, pr_fin) =
+            route_xleg_prize_for_tournament(25_000_000, 25_000_000, true).unwrap();
+        assert_eq!(tr_fin, 50_000_000);
+        assert_eq!(pr_fin, 0);
     }
 
     #[test]

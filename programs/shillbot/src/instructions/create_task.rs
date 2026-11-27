@@ -414,7 +414,8 @@ fn init_task_account(
     task.verification_hash = [0u8; 32];
     task.requires_approval = u8::from(requires_approval);
     task.verification_kind = verification_kind;
-    task._reserved = [0u8; 18];
+    task.payout_route_kind = crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY;
+    task._reserved = [0u8; 17];
     task.bump = bump;
 }
 

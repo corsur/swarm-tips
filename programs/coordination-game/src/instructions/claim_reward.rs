@@ -85,9 +85,13 @@ pub fn claim_reward(ctx: Context<ClaimReward>, amount: u64, proof: Vec<[u8; 32]>
         CoordinationError::InvalidGameState,
     );
 
-    // Interactions: transfer entitlement from tournament PDA to player wallet
+    // Interactions: transfer entitlement from tournament PDA to player wallet,
+    // ensuring the Tournament PDA never drops below its rent-exempt floor (T1-08).
+    let tournament_ai = ctx.accounts.tournament.to_account_info();
+    let rent_floor = Rent::get()?.minimum_balance(Tournament::SPACE);
+    validate_tournament_claim_solvency(tournament_ai.lamports(), amount, rent_floor)?;
     transfer_lamports(
-        &ctx.accounts.tournament.to_account_info(),
+        &tournament_ai,
         &ctx.accounts.player.to_account_info(),
         amount,
     )?;
@@ -97,6 +101,20 @@ pub fn claim_reward(ctx: Context<ClaimReward>, amount: u64, proof: Vec<[u8; 32]>
         player: player_wallet,
         amount,
     });
+    Ok(())
+}
+
+/// Ensures claiming `claim_amount` leaves at least `rent_floor` on the
+/// Tournament PDA so a claim cannot violate rent-exemption (T1-08).
+pub(crate) fn validate_tournament_claim_solvency(
+    tournament_lamports: u64,
+    claim_amount: u64,
+    rent_floor: u64,
+) -> Result<()> {
+    require!(
+        tournament_lamports.saturating_sub(claim_amount) >= rent_floor,
+        CoordinationError::InsufficientLamports,
+    );
     Ok(())
 }
 
@@ -183,6 +201,18 @@ mod tests {
         assert_eq!(claim.saturating_sub(pool), 0);
         // And it must not be a no-op — the bug was that the value never moved.
         assert_ne!(pool.saturating_sub(claim), pool);
+    }
+
+    #[test]
+    fn tournament_claim_solvency_enforces_rent_floor() {
+        let rent_floor: u64 = 1_500_000;
+        let balance: u64 = 10_000_000;
+        // Claiming exact surplus above rent floor succeeds.
+        assert!(validate_tournament_claim_solvency(balance, 8_500_000, rent_floor).is_ok());
+        // Claiming 1 lamport into rent floor fails.
+        assert!(validate_tournament_claim_solvency(balance, 8_500_001, rent_floor).is_err());
+        // Claiming more than total balance fails (no underflow panic).
+        assert!(validate_tournament_claim_solvency(balance, 20_000_000, rent_floor).is_err());
     }
 
     #[test]

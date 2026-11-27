@@ -74,6 +74,11 @@ contract SeasonPotTest is Test {
         pot.startSeason(1);
     }
 
+    function test_startSeason_rejectsSeasonIdZero() public {
+        vm.expectRevert(SeasonPot.BadSeasonId.selector);
+        pot.startSeason(0);
+    }
+
     /// A season window is a PARAMETER, not a constant. Hardcoding a year made
     /// the contract untestable on a real chain: a live testnet cannot
     /// fast-forward, so expire -> finalize -> claim could only ever be

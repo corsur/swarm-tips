@@ -137,6 +137,7 @@ pub(crate) fn reopen_task_in_place(task: &mut Task) {
     task.state = TaskState::Open;
     task.agent = Pubkey::default();
     task.payout_to = Pubkey::default();
+    task.payout_route_kind = crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY;
     task.content_id_hash = [0u8; 32];
     task.submitted_at = 0;
     task.verified_at = 0;
@@ -346,7 +347,8 @@ mod tests {
             verification_hash: [0; 32],
             requires_approval: 0,
             verification_kind: 0,
-            _reserved: [0; 18],
+            payout_route_kind: 0,
+            _reserved: [0; 17],
             bump: 254,
             payout_to: Pubkey::default(),
         };
@@ -394,7 +396,8 @@ mod tests {
             verification_hash: [0; 32],
             requires_approval: 0,
             verification_kind: 0,
-            _reserved: [0; 18],
+            payout_route_kind: crate::state::PAYOUT_ROUTE_SYSTEM_WALLET,
+            _reserved: [0; 17],
             bump: 250,
             payout_to: Pubkey::new_unique(),
         };
@@ -412,6 +415,10 @@ mod tests {
         assert_eq!(task.state, TaskState::Open);
         assert_eq!(task.agent, Pubkey::default());
         assert_eq!(task.payout_to, Pubkey::default());
+        assert_eq!(
+            task.payout_route_kind,
+            crate::state::PAYOUT_ROUTE_UNSET_OR_LEGACY
+        );
         assert_eq!(task.content_id_hash, [0u8; 32]);
         assert_eq!(task.submitted_at, 0);
         assert_eq!(task.escrow_lamports, 5_000_000);

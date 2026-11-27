@@ -40,4 +40,7 @@ pub enum ExtensionCreditError {
 
     #[msg("Backing extension bond is below the minimum required bond")]
     InsufficientExtensionBond,
+
+    #[msg("Advance PDA is already initialized")]
+    AdvanceAlreadyActive,
 }

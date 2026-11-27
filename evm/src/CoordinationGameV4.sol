@@ -136,6 +136,7 @@ contract CoordinationGameV4 is
     uint128 private constant MAX_STAKE_WEI = 100 ether;
     uint32 private constant MIN_WINDOW_SECS = 60;
     uint32 private constant MAX_WINDOW_SECS = 30 days;
+    uint64 public constant MAX_SESSION_TTL = 30 days;
 
     event GameCreated(bytes32 indexed gameId, address indexed player1, uint128 stakeWei);
     event GameStarted(bytes32 indexed gameId, address indexed player1, address indexed player2);
@@ -157,6 +158,7 @@ contract CoordinationGameV4 is
     error AlreadyActed();
     error CertMismatch();
     error DeadlineNotReached();
+    error DeadlinePassed();
     error BadOutcome();
     error BadConfig();
     error BadSession();
@@ -208,6 +210,19 @@ contract CoordinationGameV4 is
     ///      the contract: it can replace all logic and so reach every staked wei.
     function _authorizeUpgrade(address) internal override onlyOwner {}
 
+    /// @dev Renouncing ownership would permanently brick UUPS upgrades and
+    ///      season finalization; forbid it explicitly on this proxy (EVM-10).
+    function renounceOwnership() public pure override {
+        revert BadConfig();
+    }
+
+    /// @dev Preserve key separation across ownership transfers: the incoming
+    ///      owner must never coincide with the active operatorSigner (EVM-10).
+    function acceptOwnership() public override {
+        super.acceptOwnership();
+        if (owner() == operatorSigner()) revert BadConfig();
+    }
+
     /// @notice Dedicated secp256k1 matchmaker key — NOT the owner and not the
     ///         treasury (key separation: matchmaker compromise can't move
     ///         governance/treasury). Stored in the AttesterGated base.
@@ -225,7 +240,9 @@ contract CoordinationGameV4 is
         uint32 commitTimeoutSecs_,
         uint32 revealTimeoutSecs_
     ) private pure {
-        if (operatorSigner_ == address(0) || treasury_ == address(0)) revert BadConfig();
+        if (owner_ == address(0) || operatorSigner_ == address(0) || treasury_ == address(0)) {
+            revert BadConfig();
+        }
         // Key separation: the matchmaker key is never the owner or the treasury.
         if (operatorSigner_ == owner_ || operatorSigner_ == treasury_) revert BadConfig();
         if (treasurySplitBps_ < MIN_SPLIT_BPS || treasurySplitBps_ > MAX_SPLIT_BPS) revert BadConfig();
@@ -326,6 +343,7 @@ contract CoordinationGameV4 is
     function joinGame(bytes32 gameId, address player, bytes calldata operatorSig) external payable whenNotPaused {
         Game storage g = games[gameId];
         if (g.status != Status.Pending) revert InvalidStatus();
+        if (block.timestamp >= uint256(g.createdAt) + g.commitWindowSecs) revert DeadlinePassed();
         if (!_actsFor(msg.sender, player)) revert BadSession();
         if (player == g.player1) revert NotParticipant();
         // Bind `player` (the joiner) into an operator-signed digest, mirroring
@@ -364,7 +382,10 @@ contract CoordinationGameV4 is
     ///         commit/reveal/timeout. The wallet signs `sessionAuthDigest`
     ///         off-chain; anyone (typically the session key) submits it.
     function authorizeSession(address player, address sessionKey, uint64 expiry, bytes calldata playerSig) external {
-        if (sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp) revert BadSession();
+        if (
+            sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp
+                || expiry > block.timestamp + MAX_SESSION_TTL
+        ) revert BadSession();
         bytes32 digest = MessageHashUtils.toEthSignedMessageHash(sessionAuthDigest(player, sessionKey, expiry));
         if (ECDSA.recover(digest, playerSig) != player) revert BadSignature();
         _registerSessionFor(player, sessionKey, expiry);
@@ -448,7 +469,10 @@ contract CoordinationGameV4 is
     }
 
     function _registerSessionFor(address player, address sessionKey, uint64 expiry) private {
-        if (sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp) revert BadSession();
+        if (
+            sessionKey == address(0) || sessionKey == player || expiry <= block.timestamp
+                || expiry > block.timestamp + MAX_SESSION_TTL
+        ) revert BadSession();
         address currentOwner = sessionOwner[sessionKey];
         if (
             currentOwner != address(0) && currentOwner != player && sessions[currentOwner].sessionKey == sessionKey
@@ -555,9 +579,11 @@ contract CoordinationGameV4 is
 
         if (isP1) {
             if (g.p1Commit != bytes32(0)) revert AlreadyActed();
+            if (commitment == g.p2Commit) revert BadCommitment();
             g.p1Commit = commitment;
         } else {
             if (g.p2Commit != bytes32(0)) revert AlreadyActed();
+            if (commitment == g.p1Commit) revert BadCommitment();
             g.p2Commit = commitment;
         }
 
@@ -574,7 +600,8 @@ contract CoordinationGameV4 is
 
     /// @notice Reveal a guess preimage. The first revealer also reveals the
     ///         matchup type by providing `rMatchup` (bound to the commitment);
-    ///         the second revealer passes bytes32(0). Resolves on both reveals.
+    ///         the second revealer may pass bytes32(0) or the valid `rMatchup`
+    ///         so concurrent reveals never spuriously revert (EVM-11).
     function revealGuess(bytes32 gameId, bytes32 r, bytes32 rMatchup) external nonReentrant {
         Game storage g = games[gameId];
         if (g.status != Status.Revealing) revert InvalidStatus();
@@ -598,8 +625,8 @@ contract CoordinationGameV4 is
             // First revealer binds the matchup type to the matchmaker commitment.
             if (sha256(abi.encodePacked(rMatchup)) != g.matchupCommitment) revert CertMismatch();
             g.matchupType = uint8(rMatchup[31]) & 1;
-        } else if (rMatchup != bytes32(0)) {
-            revert CertMismatch(); // second revealer must pass the null sentinel
+        } else if (rMatchup != bytes32(0) && sha256(abi.encodePacked(rMatchup)) != g.matchupCommitment) {
+            revert CertMismatch(); // second revealer must pass bytes32(0) or the valid rMatchup
         }
         emit GuessRevealed(gameId, msg.sender);
 
@@ -650,7 +677,9 @@ contract CoordinationGameV4 is
 
     /// @dev Map an outcome kind to the pot split (p1, p2, tournament gain) and
     ///      pay out. The pot is exactly 2× stake; conservation is asserted before
-    ///      any transfer (CEI: status + prize-pool effects, then interactions).
+    ///      any transfer (strict CEI: all status, season accrual, player records,
+    ///      treasury credit, and GameResolved event happen BEFORE any external
+    ///      ETH push via `_settle`, P2-08).
     function _resolve(bytes32 gameId, Game storage g, uint8 outcomeKind) private {
         uint256 stake = g.stakeWei;
         (uint256 toP1, uint256 toP2, uint256 gain) = _amounts(outcomeKind, stake);
@@ -668,18 +697,13 @@ contract CoordinationGameV4 is
         // started) fall back cleanly to `currentSeasonId`.
         uint256 snap = gameSeasonId[gameId];
         uint256 sid = seasons[snap].startTime != 0 ? snap : currentSeasonId;
+        // P2-07: if the snapshotted season was already finalized before this
+        // game resolved and a newer open season is live, route prize accrual
+        // and player records to `currentSeasonId`.
+        if (seasons[sid].finalized && currentSeasonId != sid && !seasons[currentSeasonId].finalized) {
+            sid = currentSeasonId;
+        }
         _accrueTo(sid, toPrize);
-
-        // Interactions. Players are PUSH-PREFERRED via {_settle}: an EOA
-        // wallet-as-player is paid inside this resolving tx (matching Solana's
-        // push-at-resolve), so a winner who has left the page still gets paid
-        // with no later {withdrawFor}; a reverting/gas-heavy recipient falls back
-        // to the ledger, so it can never block resolution (M1 preserved). The
-        // treasury stays on {_credit}: its share accrues deliberately and is
-        // swept by the DAO, not delivered per game.
-        if (toTreasury > 0) _credit(treasury, toTreasury);
-        if (toP1 > 0) _settle(g.player1, toP1);
-        if (toP2 > 0) _settle(g.player2, toP2);
         // Per-season record. p1Won/p2Won come from the SHARED core's
         // outcome_to_wins and are NOT derivable from the amounts above:
         // HOMOG_BOTH_CORRECT returns each player their own stake (zero net
@@ -687,8 +711,18 @@ contract CoordinationGameV4 is
         // read of the opponent rather than a profit.
         (bool p1Won, bool p2Won) = _winsFor(outcomeKind);
         _recordResultFor(sid, g.player1, g.player2, p1Won, p2Won);
-
+        // The treasury stays on {_credit}: its share accrues deliberately and
+        // is swept by the DAO, not delivered per game.
+        if (toTreasury > 0) _credit(treasury, toTreasury);
         emit GameResolved(gameId, outcomeKind, toP1, toP2, toTreasury);
+
+        // Interactions. Players are PUSH-PREFERRED via {_settle}: an EOA
+        // wallet-as-player is paid inside this resolving tx (matching Solana's
+        // push-at-resolve), so a winner who has left the page still gets paid
+        // with no later {withdrawFor}; a reverting/gas-heavy recipient falls back
+        // to the ledger, so it can never block resolution (M1 preserved).
+        if (toP1 > 0) _settle(g.player1, toP1);
+        if (toP2 > 0) _settle(g.player2, toP2);
     }
 
     /// @dev The canonical payoff matrix as pot amounts — the EVM mirror of
@@ -743,14 +777,17 @@ contract CoordinationGameV4 is
     ///      being created or joined; it must never be able to withhold money a
     ///      player has already earned. A pausable claim would make the pot the
     ///      owner's to release after all, which is the exact property v4 exists
-    ///      to remove.
+    ///      to remove. Uses push-preferred `_settle` (P2-05) so season prizes
+    ///      land straight in the claimant's wallet rather than sitting in
+    ///      `withdrawable` where an active hot session key can spend them.
     function claimPrize(uint256 seasonId, uint256 amount, bytes32[] calldata proof) external nonReentrant {
         uint256 owed = _claim(seasonId, msg.sender, amount, proof);
-        _credit(msg.sender, owed); // pull payment: a reverting claimant cannot brick anyone else
+        _settle(msg.sender, owed);
     }
 
     /// @notice Sweep what nobody claimed, after the grace window.
     function sweepUnclaimed(uint256 seasonId, address to) external onlyOwner nonReentrant {
+        if (to == address(0)) revert BadConfig();
         uint256 amount = _sweepUnclaimed(seasonId);
         _credit(to, amount);
         emit UnclaimedSwept(seasonId, to, amount);

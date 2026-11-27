@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ShillbotEscrow} from "../src/ShillbotEscrow.sol";
 
 /// @notice Deploys ShillbotEscrow to the configured network. Parameters come
@@ -31,6 +32,8 @@ import {ShillbotEscrow} from "../src/ShillbotEscrow.sol";
 ///   forge script script/DeployShillbotEscrow.s.sol --rpc-url base_sepolia \
 ///     --private-key "$DEPLOYER_PK" --broadcast
 contract DeployShillbotEscrowScript is Script {
+    using SafeCast for uint256;
+
     function run() external returns (ShillbotEscrow escrow) {
         bytes32 chainTag = vm.envOr("SHILLBOT_ESCROW_CHAIN_TAG", bytes32(0));
         if (chainTag == bytes32(0)) {
@@ -40,15 +43,15 @@ contract DeployShillbotEscrowScript is Script {
         ShillbotEscrow.Config memory cfg = ShillbotEscrow.Config({
             attesterSigner: vm.envAddress("SHILLBOT_ESCROW_ATTESTER_SIGNER"),
             treasury: vm.envAddress("SHILLBOT_ESCROW_TREASURY"),
-            protocolFeeBps: uint16(vm.envUint("SHILLBOT_ESCROW_FEE_BPS")),
-            qualityThreshold: uint64(vm.envUint("SHILLBOT_ESCROW_QUALITY_THRESHOLD")),
-            challengeWindowSecs: uint32(vm.envUint("SHILLBOT_ESCROW_CHALLENGE_WINDOW_SECS")),
-            disputeWindowSecs: uint32(vm.envUint("SHILLBOT_ESCROW_DISPUTE_WINDOW_SECS")),
-            verificationTimeoutSecs: uint32(vm.envUint("SHILLBOT_ESCROW_VERIFICATION_TIMEOUT_SECS")),
-            challengeBondMultiplier: uint8(vm.envUint("SHILLBOT_ESCROW_BOND_MULTIPLIER")),
-            bondSlashTreasuryBps: uint16(vm.envUint("SHILLBOT_ESCROW_BOND_SLASH_TREASURY_BPS")),
-            minEscrowWei: uint128(vm.envUint("SHILLBOT_ESCROW_MIN_ESCROW_WEI")),
-            maxEscrowWei: uint128(vm.envUint("SHILLBOT_ESCROW_MAX_ESCROW_WEI"))
+            protocolFeeBps: vm.envUint("SHILLBOT_ESCROW_FEE_BPS").toUint16(),
+            qualityThreshold: vm.envUint("SHILLBOT_ESCROW_QUALITY_THRESHOLD").toUint64(),
+            challengeWindowSecs: vm.envUint("SHILLBOT_ESCROW_CHALLENGE_WINDOW_SECS").toUint32(),
+            disputeWindowSecs: vm.envUint("SHILLBOT_ESCROW_DISPUTE_WINDOW_SECS").toUint32(),
+            verificationTimeoutSecs: vm.envUint("SHILLBOT_ESCROW_VERIFICATION_TIMEOUT_SECS").toUint32(),
+            challengeBondMultiplier: vm.envUint("SHILLBOT_ESCROW_BOND_MULTIPLIER").toUint8(),
+            bondSlashTreasuryBps: vm.envUint("SHILLBOT_ESCROW_BOND_SLASH_TREASURY_BPS").toUint16(),
+            minEscrowWei: vm.envUint("SHILLBOT_ESCROW_MIN_ESCROW_WEI").toUint128(),
+            maxEscrowWei: vm.envUint("SHILLBOT_ESCROW_MAX_ESCROW_WEI").toUint128()
         });
 
         vm.startBroadcast();

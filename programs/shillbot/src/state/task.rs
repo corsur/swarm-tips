@@ -112,10 +112,17 @@ pub struct Task {
     /// `verify_task_attested` only; score must be exactly 0 or MAX_SCORE.
     /// The two verify entries are mutually exclusive on this byte.
     pub verification_kind: u8,
+    /// Kind of `payout_to` route recorded at `set_payout_to` time (P2-01,
+    /// carved from `_reserved` — bytewise-compatible with existing on-chain
+    /// tasks because legacy `_reserved` bytes are zero):
+    /// - `0` (`PAYOUT_ROUTE_UNSET_OR_LEGACY`): unset or legacy pre-upgrade task
+    /// - `1` (`PAYOUT_ROUTE_EXTENSION_CREDIT`): `extension-credit` Advance PDA
+    /// - `2` (`PAYOUT_ROUTE_SYSTEM_WALLET`): explicit System-owned EOA wallet
+    pub payout_route_kind: u8,
     /// Reserved space for future fields without reallocation.
-    /// Reduced from 20 → 19 by D1 (`requires_approval`) → 18 by the
-    /// 2026-07-07 `verification_kind` carve.
-    pub _reserved: [u8; 18],
+    /// Reduced from 20 → 19 by D1 (`requires_approval`) → 18 by
+    /// `verification_kind` → 17 by `payout_route_kind`.
+    pub _reserved: [u8; 17],
     pub bump: u8,
     /// Payment-routing override (C2 — extension-credit). `Pubkey::default()`
     /// (zero) = pay the agent (`task.agent`); otherwise `finalize_task` pays
@@ -126,6 +133,10 @@ pub struct Task {
     /// `migrate_task` ix reallocs 315 → 347 and zero-fills the tail.
     pub payout_to: Pubkey,
 }
+
+pub const PAYOUT_ROUTE_UNSET_OR_LEGACY: u8 = 0;
+pub const PAYOUT_ROUTE_EXTENSION_CREDIT: u8 = 1;
+pub const PAYOUT_ROUTE_SYSTEM_WALLET: u8 = 2;
 
 impl Task {
     pub const SPACE: usize = 8   // discriminator
@@ -154,7 +165,8 @@ impl Task {
         + 32   // verification_hash
         + 1    // requires_approval         (D1 — was reserved)
         + 1    // verification_kind         (2026-07-07 — was reserved)
-        + 18   // _reserved (20 → 19 by D1 → 18 by verification_kind)
+        + 1    // payout_route_kind         (P2-01 — was reserved)
+        + 17   // _reserved (20 → 19 → 18 → 17)
         + 1    // bump
         + 32; // payout_to (C2 — appended after bump; realloc 315 → 347)
               // Total = 347. Existing accounts are bytewise-identical for
@@ -247,9 +259,10 @@ mod tests {
         assert_eq!(parsed.state, TaskState::Submitted);
         assert_eq!(parsed.escrow_lamports, 1_000_000);
         assert_eq!(parsed.requires_approval, 1);
-        // The carved byte reads as 0 = OracleMetrics — legacy behavior.
+        // The carved bytes read as 0 (OracleMetrics + legacy/unset payout route).
         assert_eq!(parsed.verification_kind, 0);
-        assert_eq!(parsed._reserved, [0u8; 18]);
+        assert_eq!(parsed.payout_route_kind, PAYOUT_ROUTE_UNSET_OR_LEGACY);
+        assert_eq!(parsed._reserved, [0u8; 17]);
         assert_eq!(parsed.bump, 254);
         assert_eq!(parsed.payout_to, payout_to);
     }

@@ -334,7 +334,8 @@ mod tests {
             verification_hash: [0u8; 32],
             requires_approval: 0,
             verification_kind: 1,
-            _reserved: [0u8; 18],
+            payout_route_kind: 0,
+            _reserved: [0u8; 17],
             bump: 0,
             payout_to: Pubkey::default(),
         }

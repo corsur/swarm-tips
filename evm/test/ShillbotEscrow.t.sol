@@ -1091,4 +1091,70 @@ contract ShillbotEscrowTest is BoundaryBattery {
         esc.withdraw();
         assertEq(address(esc).balance, 0, "fully drained, no stranded wei");
     }
+
+    function test_P2_06_verifyTaskAttested_rejectsReplayOfConsumedAttestation() public {
+        uint64 deadline = uint64(block.timestamp + 2 days);
+        vm.prank(client);
+        uint64 id = esc.createTask{value: ESCROW}(
+            STATEMENT, VerifyLib.ONCHAIN_ACTION_POLICY_V1_ID, VerifyLib.KIND_DETERMINISTIC_ATTESTED, deadline, false
+        );
+
+        _claim(id);
+        _submit(id);
+        bytes32 failDigest = _digestOn(esc, id, 0);
+        bytes memory failSig = _sign(attesterPk, failDigest);
+        esc.verifyTaskAttested(id, 0, failSig);
+        assertTrue(esc.usedAttestations(failDigest), "consumed attestation digest recorded");
+
+        // Re-claim and submit the exact same artifact after reopen; replaying the
+        // old attestation signature MUST revert BadSignature (P2-06).
+        address worker2 = makeAddr("replayWorker");
+        vm.prank(worker2);
+        esc.claimTask(id);
+        vm.prank(worker2);
+        esc.submitWork(id, CONTENT, ARTIFACT);
+
+        vm.expectRevert(ShillbotEscrow.BadSignature.selector);
+        esc.verifyTaskAttested(id, 0, failSig);
+    }
+
+    function test_P2_09_setConfig_cannotRepriceOrChangeSlashBpsOfLiveTasks() public {
+        // Create a kind-0 task under original FEE_BPS (1000), THRESHOLD (200_000), BOND_SLASH_BPS (5000).
+        uint64 id = _create(0, false);
+
+        // Owner changes ALL THREE parameters after task creation.
+        ShillbotEscrow.Config memory cfg = _cfg();
+        cfg.qualityThreshold = 800_000;
+        cfg.protocolFeeBps = 2500;
+        cfg.bondSlashTreasuryBps = 10_000;
+        vm.prank(owner);
+        esc.setConfig(cfg);
+
+        _claim(id);
+        _submit(id);
+        // Score 600_000 < new threshold (800_000), but > snapshotted threshold (200_000):
+        // gross = 1 ETH * (600k - 200k) / 800k = 0.5 ETH; fee = 10% = 0.05 ETH; payment = 0.45 ETH.
+        _verify(id, 600_000);
+        ShillbotEscrow.Task memory t = esc.getTask(id);
+        assertEq(t.paymentWei, 0.45 ether, "priced with snapshotted qualityThreshold & protocolFeeBps");
+        assertEq(t.feeWei, 0.05 ether, "fee computed with snapshotted protocolFeeBps");
+
+        // Challenge and resolve for worker: bond slash uses snapshotted 5000 bps, NOT live 10_000 bps.
+        vm.prank(challenger);
+        esc.challengeTask{value: BOND}(id);
+        vm.prank(owner);
+        esc.resolveChallenge(id, false);
+
+        assertEq(esc.withdrawable(worker), 0.45 ether + BOND / 2, "worker gets 50% of slashed bond from snapshot");
+        assertEq(esc.withdrawable(treasury), 0.05 ether + BOND / 2, "treasury gets 50% of slashed bond from snapshot");
+    }
+
+    function test_EVM10_acceptOwnership_rejectsAttesterSigner() public {
+        vm.prank(owner);
+        esc.transferOwnership(attester);
+        vm.prank(attester);
+        vm.expectRevert(ShillbotEscrow.BadConfig.selector);
+        esc.acceptOwnership();
+        assertEq(esc.owner(), owner, "attester cannot assume ownership");
+    }
 }

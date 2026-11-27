@@ -23,8 +23,9 @@ use crate::state::{AgentState, GlobalState, Task, TaskState};
 /// (`now + claim_buffer < deadline`), the task reopens in-place without
 /// changing the 3-account `VerifyTaskAttested` ABI: the caller MUST pass the
 /// writable `AgentState` PDA (`[b"agent_state", task.agent.as_ref()]`) as
-/// `ctx.remaining_accounts[0]`, decrementing `claimed_count` and recording
-/// `last_strike_at = now` for the 60s strike cooldown.
+/// `ctx.remaining_accounts[0]`, recording `last_strike_at = now` for the 60s
+/// strike cooldown (without re-decrementing `claimed_count`, which `submit_work`
+/// already decremented).
 pub fn verify_task_attested(
     ctx: Context<VerifyTaskAttested>,
     score: u64,
@@ -127,7 +128,9 @@ fn apply_reopen_agent_strike(
 }
 
 pub(crate) fn apply_strike_to_agent_state(agent_state: &mut AgentState, now: i64) {
-    agent_state.claimed_count = agent_state.claimed_count.saturating_sub(1);
+    // Do NOT decrement `claimed_count` here (P1-02): `submit_work` already
+    // decremented `claimed_count` when the task transitioned `Claimed -> Submitted`.
+    // Subtracting again would wipe the agent's active claim count for other tasks.
     agent_state.last_strike_at = now;
 }
 
@@ -282,7 +285,8 @@ mod tests {
             verification_hash: [0; 32],
             requires_approval: 0,
             verification_kind: 1,
-            _reserved: [0; 18],
+            payout_route_kind: 0,
+            _reserved: [0; 17],
             bump: 250,
             payout_to: Pubkey::default(),
         }
@@ -327,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn strike_decrements_claimed_count_without_underflow_and_records_timestamp() {
+    fn strike_preserves_claimed_count_and_records_timestamp() {
         let mut st = AgentState {
             agent: Pubkey::new_unique(),
             claimed_count: 0,
@@ -343,9 +347,11 @@ mod tests {
         assert_eq!(st.claimed_count, 0);
         assert_eq!(st.last_strike_at, 12_345);
 
+        // Agent holds 2 other active claims when a previously-submitted task
+        // reopens on score == 0: claimed_count MUST remain 2 (P1-02).
         st.claimed_count = 2;
         apply_strike_to_agent_state(&mut st, 12_400);
-        assert_eq!(st.claimed_count, 1);
+        assert_eq!(st.claimed_count, 2);
         assert_eq!(st.last_strike_at, 12_400);
     }
 }

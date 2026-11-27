@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {CoordinationGame} from "../src/CoordinationGame.sol";
 
 /// @notice Deploys CoordinationGame (the same-chain EVM-vs-EVM game) to the
@@ -26,14 +27,16 @@ import {CoordinationGame} from "../src/CoordinationGame.sol";
 ///   forge script script/DeployCoordinationGame.s.sol --rpc-url base_sepolia \
 ///     --private-key "$DEPLOYER_PK" --broadcast
 contract DeployCoordinationGameScript is Script {
+    using SafeCast for uint256;
+
     function run() external returns (CoordinationGame game) {
         address owner = vm.envAddress("XCHAIN_OWNER");
         address operatorSigner = vm.envAddress("XCHAIN_OPERATOR_SIGNER");
         address treasury = vm.envAddress("XCHAIN_TREASURY");
-        uint16 treasuryBps = uint16(vm.envUint("XCHAIN_TREASURY_BPS"));
-        uint128 stakeWei = uint128(vm.envUint("XCHAIN_STAKE_WEI"));
-        uint32 commitTimeout = uint32(vm.envUint("COORD_COMMIT_TIMEOUT"));
-        uint32 revealTimeout = uint32(vm.envUint("COORD_REVEAL_TIMEOUT"));
+        uint16 treasuryBps = vm.envUint("XCHAIN_TREASURY_BPS").toUint16();
+        uint128 stakeWei = vm.envUint("XCHAIN_STAKE_WEI").toUint128();
+        uint32 commitTimeout = vm.envUint("COORD_COMMIT_TIMEOUT").toUint32();
+        uint32 revealTimeout = vm.envUint("COORD_REVEAL_TIMEOUT").toUint32();
 
         vm.startBroadcast();
         game =

@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {CrossChainGame} from "../src/CrossChainGame.sol";
 import {ERC1967Proxy} from "../lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
@@ -27,17 +28,19 @@ import {ERC1967Proxy} from "../lib/openzeppelin-contracts/contracts/proxy/ERC196
 ///   forge script script/Deploy.s.sol --rpc-url base_sepolia \
 ///     --account xchain-testnet --broadcast
 contract DeployScript is Script {
+    using SafeCast for uint256;
+
     function run() external returns (CrossChainGame game) {
         bytes32 chainTag = vm.envBytes32("XCHAIN_CHAIN_TAG");
         address owner = vm.envAddress("XCHAIN_OWNER");
         address operatorSigner = vm.envAddress("XCHAIN_OPERATOR_SIGNER");
         address treasury = vm.envAddress("XCHAIN_TREASURY");
-        uint16 treasuryBps = uint16(vm.envUint("XCHAIN_TREASURY_BPS"));
-        uint128 stakeWei = uint128(vm.envUint("XCHAIN_STAKE_WEI"));
-        uint128 maxTrancheWei = uint128(vm.envUint("XCHAIN_MAX_TRANCHE_WEI"));
-        uint128 dailyTrancheCapWei = uint128(vm.envUint("XCHAIN_DAILY_TRANCHE_CAP_WEI"));
-        uint32 claimWindow = uint32(vm.envUint("XCHAIN_CLAIM_WINDOW"));
-        uint32 skewMargin = uint32(vm.envUint("XCHAIN_SKEW_MARGIN"));
+        uint16 treasuryBps = vm.envUint("XCHAIN_TREASURY_BPS").toUint16();
+        uint128 stakeWei = vm.envUint("XCHAIN_STAKE_WEI").toUint128();
+        uint128 maxTrancheWei = vm.envUint("XCHAIN_MAX_TRANCHE_WEI").toUint128();
+        uint128 dailyTrancheCapWei = vm.envUint("XCHAIN_DAILY_TRANCHE_CAP_WEI").toUint128();
+        uint32 claimWindow = vm.envUint("XCHAIN_CLAIM_WINDOW").toUint32();
+        uint32 skewMargin = vm.envUint("XCHAIN_SKEW_MARGIN").toUint32();
 
         vm.startBroadcast();
         // UUPS: deploy the implementation, then an ERC1967 proxy that delegatecalls

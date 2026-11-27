@@ -296,7 +296,7 @@ contract CoordinationGameTest is Test {
         game.revealGuess(gameId, r1, keccak256("wrong-matchup"));
     }
 
-    function test_revert_secondRevealerNonNullMatchup() public {
+    function test_secondRevealer_allowsValidRMatchup_andRejectsWrongNonNullMatchup() public {
         bytes32 gameId = keccak256("second-matchup");
         bytes32 rMatchup = _create(gameId, 1);
         (bytes32 r1, bytes32 c1) = _commit(1, keccak256(abi.encode(gameId, "1")));
@@ -307,10 +307,63 @@ contract CoordinationGameTest is Test {
         game.commitGuess(gameId, c2);
         vm.prank(p1);
         game.revealGuess(gameId, r1, rMatchup);
-        // Second revealer must pass the null sentinel.
+
+        // Wrong non-null rMatchup still reverts CertMismatch.
         vm.prank(p2);
         vm.expectRevert(CoordinationGame.CertMismatch.selector);
+        game.revealGuess(gameId, r2, keccak256("wrong-matchup"));
+
+        // Passing the valid rMatchup succeeds so concurrent reveals never spuriously revert (EVM-11).
+        vm.prank(p2);
         game.revealGuess(gameId, r2, rMatchup);
+        (CoordinationGame.Status st,,,,,,,,,,,,,,,,) = game.games(gameId);
+        assertEq(uint8(st), uint8(CoordinationGame.Status.Resolved), "game resolved cleanly");
+    }
+
+    function test_P1_04_joinGame_revertsAtOrAfterCommitWindow() public {
+        bytes32 gameId = keccak256("expired-join-v3");
+        (, bytes32 mc) = _commit(1, keccak256(abi.encode(gameId, "matchup")));
+        vm.prank(p1);
+        game.createGame{value: STAKE}(gameId, mc, _opSig(gameId, mc), p1);
+
+        vm.warp(block.timestamp + COMMIT_TIMEOUT);
+        vm.prank(p2);
+        vm.expectRevert(CoordinationGame.DeadlinePassed.selector);
+        game.joinGame{value: STAKE}(gameId, p2);
+    }
+
+    function test_EVM11_commitGuess_rejectsCopycatCommitment() public {
+        bytes32 gameId = keccak256("copycat-v3");
+        _create(gameId, 1);
+        (, bytes32 c1) = _commit(1, keccak256(abi.encode(gameId, "1")));
+        vm.prank(p1);
+        game.commitGuess(gameId, c1);
+        vm.prank(p2);
+        vm.expectRevert(CoordinationGame.BadCommitment.selector);
+        game.commitGuess(gameId, c1);
+    }
+
+    function test_P2_04_openSession_capsMaxTtl() public {
+        address sk = makeAddr("ttl-sk");
+        uint64 maxExpiry = uint64(block.timestamp) + game.MAX_SESSION_TTL();
+        vm.prank(p1);
+        vm.expectRevert(CoordinationGame.BadSession.selector);
+        game.openSession(sk, maxExpiry + 1);
+
+        vm.prank(p1);
+        game.openSession(sk, maxExpiry);
+        (address savedKey, uint64 savedExp) = game.sessions(p1);
+        assertEq(savedKey, sk);
+        assertEq(savedExp, maxExpiry);
+    }
+
+    function test_EVM10_acceptOwnership_rejectsOperatorSigner() public {
+        vm.prank(owner);
+        game.transferOwnership(operator);
+        vm.prank(operator);
+        vm.expectRevert(CoordinationGame.BadConfig.selector);
+        game.acceptOwnership();
+        assertEq(game.owner(), owner, "owner unchanged when operator tries to accept");
     }
 
     function test_pause_blocksCreate() public {

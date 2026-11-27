@@ -113,10 +113,38 @@ pub(crate) fn validate_payout_destination_account(
     Ok(())
 }
 
+/// Returns `true` iff a 0-lamport System-owned `payout_to` account may fall
+/// back to paying `task.agent` (P2-01):
+/// - Always allowed for `PAYOUT_ROUTE_EXTENSION_CREDIT` (`1`) and legacy/unset
+///   (`0`) routes (closed Advance PDA recovery).
+/// - Blocked for explicit System wallet EOAs (`2`) whenever `payment_amount`
+///   covers `zero_byte_rent_floor` (or is 0), preventing an agent from bypassing
+///   an immutable EOA payout route by leaving/draining the destination to 0.
+/// - Still allowed for `2` when `0 < payment_amount < zero_byte_rent_floor`,
+///   which would otherwise fail on Solana with `InsufficientFundsForRent`.
+pub(crate) fn can_fallback_on_closed_payout_vault(
+    payout_route_kind: u8,
+    payment_amount: u64,
+    zero_byte_rent_floor: u64,
+) -> bool {
+    payout_route_kind != crate::state::PAYOUT_ROUTE_SYSTEM_WALLET
+        || (payment_amount > 0 && payment_amount < zero_byte_rent_floor)
+}
+
 pub(crate) fn validate_payout_recipient(
     agent: &AccountInfo,
     task: &Task,
     remaining_accounts: &[AccountInfo],
+) -> Result<()> {
+    let zero_byte_rent_floor = Rent::get()?.minimum_balance(0);
+    validate_payout_recipient_with_rent_floor(agent, task, remaining_accounts, zero_byte_rent_floor)
+}
+
+pub(crate) fn validate_payout_recipient_with_rent_floor(
+    agent: &AccountInfo,
+    task: &Task,
+    remaining_accounts: &[AccountInfo],
+    zero_byte_rent_floor: u64,
 ) -> Result<()> {
     if task.payout_to == Pubkey::default() {
         require!(agent.key() == task.agent, ShillbotError::NotTaskAgent);
@@ -134,9 +162,15 @@ pub(crate) fn validate_payout_recipient(
         return Ok(());
     }
     if agent.key() == task.agent {
+        let allow_closed_vault_fallback = can_fallback_on_closed_payout_vault(
+            task.payout_route_kind,
+            task.payment_amount,
+            zero_byte_rent_floor,
+        );
         let payout_vault_closed_or_invalid = remaining_accounts.iter().any(|acc| {
             acc.key() == task.payout_to
-                && ((acc.lamports() == 0
+                && ((allow_closed_vault_fallback
+                    && acc.lamports() == 0
                     && acc.owner == &anchor_lang::system_program::ID
                     && acc.data_is_empty())
                     || !is_valid_payout_destination_info(acc, &task.agent))
@@ -282,4 +316,154 @@ pub struct FinalizeTask<'info> {
         constraint = treasury.key() == global_state.treasury @ ShillbotError::NotAuthority,
     )]
     pub treasury: AccountInfo<'info>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{
+        PAYOUT_ROUTE_EXTENSION_CREDIT, PAYOUT_ROUTE_SYSTEM_WALLET, PAYOUT_ROUTE_UNSET_OR_LEGACY,
+    };
+
+    fn sample_task_with_route(
+        agent: Pubkey,
+        payout_to: Pubkey,
+        payout_route_kind: u8,
+        payment_amount: u64,
+    ) -> Task {
+        Task {
+            task_id: 1,
+            client: Pubkey::new_unique(),
+            agent,
+            state: TaskState::Verified,
+            platform: 0,
+            escrow_lamports: 10_000_000,
+            content_hash: [1u8; 32],
+            content_id_hash: [2u8; 32],
+            task_nonce: [3u8; 16],
+            composite_score: 1_000_000,
+            payment_amount,
+            fee_amount: 0,
+            deadline: 100_000,
+            submit_margin: 600,
+            claim_buffer: 1_200,
+            created_at: 100,
+            submitted_at: 200,
+            verified_at: 300,
+            challenge_deadline: 400,
+            attestation_delay_override: 0,
+            challenge_window_override: 0,
+            verification_timeout_override: 0,
+            verification_hash: [4u8; 32],
+            requires_approval: 0,
+            verification_kind: 0,
+            payout_route_kind,
+            _reserved: [0u8; 17],
+            bump: 255,
+            payout_to,
+        }
+    }
+
+    #[test]
+    fn closed_vault_fallback_blocks_explicit_system_wallet_when_payment_covers_rent() {
+        let zero_byte_rent: u64 = 890_880;
+        let agent_key = Pubkey::new_unique();
+        let payout_to_key = Pubkey::new_unique();
+        let sys_owner = anchor_lang::system_program::ID;
+
+        let mut agent_lamports = 2_000_000u64;
+        let mut agent_data = vec![];
+        let agent_info = AccountInfo::new(
+            &agent_key,
+            false,
+            true,
+            &mut agent_lamports,
+            &mut agent_data,
+            &sys_owner,
+            false,
+            0,
+        );
+
+        let mut zero_dest_lamports = 0u64;
+        let mut zero_dest_data = vec![];
+        let zero_dest_info = AccountInfo::new(
+            &payout_to_key,
+            false,
+            false,
+            &mut zero_dest_lamports,
+            &mut zero_dest_data,
+            &sys_owner,
+            false,
+            0,
+        );
+
+        // Explicit System EOA route with payment >= zero-byte rent: fallback to task.agent MUST be rejected (P2-01).
+        let explicit_task = sample_task_with_route(
+            agent_key,
+            payout_to_key,
+            PAYOUT_ROUTE_SYSTEM_WALLET,
+            5_000_000,
+        );
+        assert!(validate_payout_recipient_with_rent_floor(
+            &agent_info,
+            &explicit_task,
+            std::slice::from_ref(&zero_dest_info),
+            zero_byte_rent,
+        )
+        .is_err());
+
+        // Paying the explicit 0-lamport System EOA directly succeeds.
+        assert!(validate_payout_recipient_with_rent_floor(
+            &zero_dest_info,
+            &explicit_task,
+            &[],
+            zero_byte_rent,
+        )
+        .is_ok());
+
+        // Explicit System EOA route with sub-rent payment (0 < payment < rent_floor): fallback allowed to avoid bricking.
+        let dust_task = sample_task_with_route(
+            agent_key,
+            payout_to_key,
+            PAYOUT_ROUTE_SYSTEM_WALLET,
+            zero_byte_rent.saturating_sub(1),
+        );
+        assert!(validate_payout_recipient_with_rent_floor(
+            &agent_info,
+            &dust_task,
+            std::slice::from_ref(&zero_dest_info),
+            zero_byte_rent,
+        )
+        .is_ok());
+
+        // Extension-credit Advance PDA route closed to 0 lamports: fallback to task.agent allowed.
+        let credit_task = sample_task_with_route(
+            agent_key,
+            payout_to_key,
+            PAYOUT_ROUTE_EXTENSION_CREDIT,
+            5_000_000,
+        );
+        assert!(validate_payout_recipient_with_rent_floor(
+            &agent_info,
+            &credit_task,
+            std::slice::from_ref(&zero_dest_info),
+            zero_byte_rent,
+        )
+        .is_ok());
+
+        // Legacy pre-upgrade task (payout_route_kind == 0) closed to 0 lamports: fallback preserved.
+        let legacy_task = sample_task_with_route(
+            agent_key,
+            payout_to_key,
+            PAYOUT_ROUTE_UNSET_OR_LEGACY,
+            5_000_000,
+        );
+        assert!(validate_payout_recipient_with_rent_floor(
+            &agent_info,
+            &legacy_task,
+            std::slice::from_ref(&zero_dest_info),
+            zero_byte_rent,
+        )
+        .is_ok());
+    }
 }

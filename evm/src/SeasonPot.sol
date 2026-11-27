@@ -106,6 +106,7 @@ abstract contract SeasonPot {
     error NothingToClaim();
     error GraceNotElapsed();
     error BadSeasonDuration();
+    error BadSeasonId();
 
     // -----------------------------------------------------------------------
     // Season lifecycle
@@ -116,6 +117,7 @@ abstract contract SeasonPot {
     ///      season ready when the current one ends, which is precisely what
     ///      broke mainnet on 2026-08-06.
     function _startSeason(uint256 seasonId, uint64 durationSecs) internal {
+        if (seasonId == 0) revert BadSeasonId();
         if (seasons[seasonId].startTime != 0) revert SeasonExists();
         if (durationSecs < MIN_SEASON_DURATION_SECS || durationSecs > MAX_SEASON_DURATION_SECS) {
             revert BadSeasonDuration();

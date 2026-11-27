@@ -260,4 +260,242 @@ contract CoordinationGameV4Test is Test {
         assertEq(s1Accrued, expectedPrize, "timeout forfeit credited to season 1");
         assertEq(s2Accrued, 0, "season 2 untouched");
     }
+
+    // ----- P1-04, EVM-11, P2-04, P2-05, P2-07, P2-08, EVM-10 ----------------
+
+    function test_P1_04_joinGame_revertsAtOrAfterCommitWindow() public {
+        bytes32 gameId = keccak256("v4-expired-join");
+        bytes32 mc = sha256(abi.encodePacked(bytes32(uint256(2))));
+        vm.prank(alice);
+        game.createGame{value: STAKE}(gameId, mc, _createSig(gameId, alice, mc), alice);
+
+        vm.warp(block.timestamp + 3600);
+        bytes memory joinSig = _joinSig(gameId, bob);
+        vm.prank(bob);
+        vm.expectRevert(CoordinationGameV4.DeadlinePassed.selector);
+        game.joinGame{value: STAKE}(gameId, bob, joinSig);
+    }
+
+    function test_EVM11_copycatCommitReverts_and_secondRevealerValidRMatchupSucceeds() public {
+        bytes32 gameId = keccak256("v4-evm11");
+        bytes32 rMatchup = bytes32(uint256(3)); // LSB = 1 (hetero)
+        bytes32 mc = sha256(abi.encodePacked(rMatchup));
+        vm.prank(alice);
+        game.createGame{value: STAKE}(gameId, mc, _createSig(gameId, alice, mc), alice);
+        vm.prank(bob);
+        game.joinGame{value: STAKE}(gameId, bob, _joinSig(gameId, bob));
+
+        bytes32 rAlice = bytes32(uint256(5));
+        bytes32 rBob = bytes32(uint256(7));
+        bytes32 cAlice = sha256(abi.encodePacked(rAlice));
+        bytes32 cBob = sha256(abi.encodePacked(rBob));
+
+        vm.prank(alice);
+        game.commitGuess(gameId, cAlice);
+
+        // Copycat commitment rejected.
+        vm.prank(bob);
+        vm.expectRevert(CoordinationGameV4.BadCommitment.selector);
+        game.commitGuess(gameId, cAlice);
+
+        vm.prank(bob);
+        game.commitGuess(gameId, cBob);
+
+        vm.prank(alice);
+        game.revealGuess(gameId, rAlice, rMatchup);
+
+        // Wrong non-null rMatchup still rejected.
+        vm.prank(bob);
+        vm.expectRevert(CoordinationGameV4.CertMismatch.selector);
+        game.revealGuess(gameId, rBob, keccak256("bad-matchup"));
+
+        // Valid rMatchup from second revealer accepted (concurrent reveal safe).
+        vm.prank(bob);
+        game.revealGuess(gameId, rBob, rMatchup);
+        (CoordinationGameV4.Status st,,,,,,,,,,,,,,,,) = game.games(gameId);
+        assertEq(uint8(st), uint8(CoordinationGameV4.Status.Resolved));
+    }
+
+    function test_P2_04_sessionTtlCappedAtMaxSessionTtl() public {
+        address sk = address(0x5E55);
+        uint64 maxExpiry = uint64(block.timestamp) + game.MAX_SESSION_TTL();
+
+        vm.prank(alice);
+        vm.expectRevert(CoordinationGameV4.BadSession.selector);
+        game.openSession(sk, maxExpiry + 1);
+
+        vm.prank(alice);
+        vm.expectRevert(CoordinationGameV4.BadSession.selector);
+        game.openSessionAndDeposit{value: STAKE}(sk, maxExpiry + 1, 0);
+
+        vm.prank(alice);
+        game.openSession(sk, maxExpiry);
+        (address savedKey, uint64 savedExp) = game.sessions(alice);
+        assertEq(savedKey, sk);
+        assertEq(savedExp, maxExpiry);
+    }
+
+    function test_P2_05_claimPrize_pushesDirectlyToWalletNotWithdrawable() public {
+        // Play 5 homogeneous both-wrong games in Season 1 so alice is eligible & pot has funds.
+        bytes32 rMatchup = bytes32(uint256(2)); // LSB = 0 (homog)
+        bytes32 mc = sha256(abi.encodePacked(rMatchup));
+        for (uint256 i = 0; i < 5; i++) {
+            bytes32 gid = keccak256(abi.encode("p2-05", i));
+            vm.prank(alice);
+            game.createGame{value: STAKE}(gid, mc, _createSig(gid, alice, mc), alice);
+            vm.prank(bob);
+            game.joinGame{value: STAKE}(gid, bob, _joinSig(gid, bob));
+            bytes32 rA = bytes32((i + 1) * 2 + 1); // LSB = 1 (wrong for homog)
+            bytes32 rB = bytes32((i + 100) * 2 + 1); // LSB = 1 (wrong for homog)
+            bytes32 cA = sha256(abi.encodePacked(rA));
+            bytes32 cB = sha256(abi.encodePacked(rB));
+            vm.prank(alice);
+            game.commitGuess(gid, cA);
+            vm.prank(bob);
+            game.commitGuess(gid, cB);
+            vm.prank(alice);
+            game.revealGuess(gid, rA, rMatchup);
+            vm.prank(bob);
+            game.revealGuess(gid, rB, bytes32(0));
+        }
+
+        (,,,, uint256 accrued,,) = game.seasons(1);
+        assertGt(accrued, 0);
+        bytes32 leaf = game.leafFor(alice, accrued);
+
+        vm.warp(block.timestamp + 366 days);
+        vm.prank(owner);
+        game.finalizeSeason(1, leaf, accrued);
+
+        uint256 walletBefore = alice.balance;
+        bytes32[] memory proof = new bytes32[](0);
+        vm.prank(alice);
+        game.claimPrize(1, accrued, proof);
+
+        assertEq(alice.balance, walletBefore + accrued, "season prize pushed directly to wallet");
+        assertEq(game.withdrawable(alice), 0, "prize not left in hot-session-spendable withdrawable ledger");
+    }
+
+    function test_P2_07_finalizedSeasonSpilloverRoutesToActiveCurrentSeason() public {
+        bytes32 gameId = keccak256("v4-finalized-spillover");
+        bytes32 mc = sha256(abi.encodePacked(bytes32(uint256(2))));
+        vm.prank(alice);
+        game.createGame{value: STAKE}(gameId, mc, _createSig(gameId, alice, mc), alice);
+        vm.prank(bob);
+        game.joinGame{value: STAKE}(gameId, bob, _joinSig(gameId, bob));
+
+        // Season 1 expires and finalizes while Season 2 is started and open.
+        vm.warp(block.timestamp + 366 days);
+        vm.prank(owner);
+        game.finalizeSeason(1, bytes32(uint256(1)), 0);
+        vm.prank(owner);
+        game.startSeason(2, 365 days);
+
+        // Resolving the Season-1 game after Season 1 is finalized routes prize + records to open Season 2.
+        game.resolveTimeout(gameId);
+
+        uint256 gain = uint256(STAKE) * 2;
+        uint256 expectedPrize = gain - (gain * 5000 / 10_000);
+        (,,,, uint256 s1Accrued,,) = game.seasons(1);
+        (,,,, uint256 s2Accrued,,) = game.seasons(2);
+        assertEq(s1Accrued, 0, "finalized season 1 untouched");
+        assertEq(s2Accrued, expectedPrize, "prize routed to active season 2");
+
+        (, uint64 s1AliceGames,) = game.records(1, alice);
+        (, uint64 s2AliceGames,) = game.records(2, alice);
+        assertEq(s1AliceGames, 0, "finalized season 1 record untouched");
+        assertEq(s2AliceGames, 1, "record attributed to active season 2");
+    }
+
+    function test_P2_08_resolveStrictCei_recordsUpdatedBeforeSettleExternalCall() public {
+        CeiObserverPlayer observer = new CeiObserverPlayer(game);
+        vm.deal(address(observer), 10 ether);
+
+        bytes32 gameId = keccak256("v4-cei-check");
+        bytes32 rMatchup = bytes32(uint256(3)); // LSB = 1 (hetero)
+        bytes32 mc = sha256(abi.encodePacked(rMatchup));
+
+        observer.create(gameId, mc, _createSig(gameId, address(observer), mc), STAKE);
+        vm.prank(bob);
+        game.joinGame{value: STAKE}(gameId, bob, _joinSig(gameId, bob));
+
+        bytes32 rObs = bytes32(uint256(5)); // LSB = 1 (correct)
+        bytes32 rBob = bytes32(uint256(4)); // LSB = 0 (wrong)
+        bytes32 cObs = sha256(abi.encodePacked(rObs));
+        bytes32 cBob = sha256(abi.encodePacked(rBob));
+        observer.commit(gameId, cObs);
+        vm.prank(bob);
+        game.commitGuess(gameId, cBob);
+
+        observer.reveal(gameId, rObs, rMatchup);
+        vm.prank(bob);
+        game.revealGuess(gameId, rBob, bytes32(0));
+
+        assertTrue(observer.receivedCallback(), "observer receive() executed during _settle");
+        assertEq(observer.observedWinsDuringReceive(), 1, "wins MUST already be updated before _settle external call");
+        assertEq(observer.observedGamesDuringReceive(), 1, "games MUST already be updated before _settle external call");
+    }
+
+    function test_EVM10_governanceHardening() public {
+        // initialize rejects address(0) owner.
+        CoordinationGameV4 impl2 = new CoordinationGameV4();
+        bytes memory badInit = abi.encodeCall(
+            CoordinationGameV4.initialize, (address(0), operator, treasury, 5000, STAKE, 3600, 7200, 1, 365 days)
+        );
+        vm.expectRevert(CoordinationGameV4.BadConfig.selector);
+        new ERC1967Proxy(address(impl2), badInit);
+
+        // renounceOwnership reverts on UUPS proxy.
+        vm.prank(owner);
+        vm.expectRevert(CoordinationGameV4.BadConfig.selector);
+        game.renounceOwnership();
+        assertEq(game.owner(), owner);
+
+        // acceptOwnership rejects operatorSigner (key separation).
+        vm.prank(owner);
+        game.transferOwnership(operator);
+        vm.prank(operator);
+        vm.expectRevert(CoordinationGameV4.BadConfig.selector);
+        game.acceptOwnership();
+        assertEq(game.owner(), owner);
+
+        // sweepUnclaimed rejects address(0) recipient.
+        vm.warp(block.timestamp + 366 days);
+        vm.prank(owner);
+        game.finalizeSeason(1, bytes32(uint256(1)), 0);
+        vm.warp(block.timestamp + 91 days);
+        vm.prank(owner);
+        vm.expectRevert(CoordinationGameV4.BadConfig.selector);
+        game.sweepUnclaimed(1, address(0));
+    }
+}
+
+/// Helper contract that observes `records` inside `receive()` during `_settle`
+/// to prove strict CEI ordering in `CoordinationGameV4._resolve` (P2-08).
+contract CeiObserverPlayer {
+    CoordinationGameV4 internal immutable game;
+    bool public receivedCallback;
+    uint64 public observedWinsDuringReceive;
+    uint64 public observedGamesDuringReceive;
+
+    constructor(CoordinationGameV4 game_) {
+        game = game_;
+    }
+
+    function create(bytes32 gameId, bytes32 mc, bytes calldata sig, uint256 stake) external {
+        game.createGame{value: stake}(gameId, mc, sig, address(this));
+    }
+
+    function commit(bytes32 gameId, bytes32 c) external {
+        game.commitGuess(gameId, c);
+    }
+
+    function reveal(bytes32 gameId, bytes32 r, bytes32 rMatchup) external {
+        game.revealGuess(gameId, r, rMatchup);
+    }
+
+    receive() external payable {
+        receivedCallback = true;
+        (observedWinsDuringReceive, observedGamesDuringReceive,) = game.records(1, address(this));
+    }
 }

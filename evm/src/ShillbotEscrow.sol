@@ -91,6 +91,9 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         uint128 feeWei; // pinned at verify
         address challenger;
         uint128 bondWei;
+        uint64 qualityThreshold; // snapshotted at create (P2-09)
+        uint16 protocolFeeBps; // snapshotted at create (P2-09)
+        uint16 bondSlashTreasuryBps; // snapshotted at create (P2-09)
     }
 
     /// Owner-tunable protocol parameters, validated as one unit by
@@ -112,6 +115,9 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
 
     mapping(uint64 => Task) private _tasks;
     uint64 public nextTaskId;
+
+    /// Replay guard over consumed VerifyLib attestation digests (P2-06).
+    mapping(bytes32 => bool) public usedAttestations;
 
     address public treasury;
     uint16 public protocolFeeBps;
@@ -167,6 +173,13 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         _applyConfig(cfg);
     }
 
+    /// @dev Preserve key separation across ownership transfers: the incoming
+    ///      owner must never coincide with the active attesterSigner (EVM-10).
+    function acceptOwnership() public override {
+        super.acceptOwnership();
+        if (owner() == attesterSigner()) revert BadConfig();
+    }
+
     /// @notice The allow-listed attester key (AttesterGated base storage) —
     ///         never the owner and never the treasury (key separation).
     function attesterSigner() public view returns (address) {
@@ -185,7 +198,7 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
 
     /// @dev Single config-bounds gate shared by the constructor and setConfig.
     function _validateConfig(address owner_, Config memory cfg) private pure {
-        if (cfg.attesterSigner == address(0) || cfg.treasury == address(0)) revert BadConfig();
+        if (owner_ == address(0) || cfg.attesterSigner == address(0) || cfg.treasury == address(0)) revert BadConfig();
         // Key separation: the attester key never doubles as governance or payee.
         if (cfg.attesterSigner == owner_ || cfg.attesterSigner == cfg.treasury) revert BadConfig();
         if (cfg.protocolFeeBps < MIN_FEE_BPS || cfg.protocolFeeBps > MAX_FEE_BPS) revert BadConfig();
@@ -257,11 +270,14 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
         t.statementCommitment = statementCommitment;
         t.policyId = policyId;
         t.deadline = deadline;
-        // Freeze this task's timing schedule at the config in force now, so a
-        // later setConfig can never move a live task's windows.
+        // Freeze this task's timing schedule and pricing/slash parameters at
+        // creation so a later setConfig can never reprice or move live tasks (P2-09).
         t.challengeWindowSecs = challengeWindowSecs;
         t.disputeWindowSecs = disputeWindowSecs;
         t.verificationTimeoutSecs = verificationTimeoutSecs;
+        t.qualityThreshold = qualityThreshold;
+        t.protocolFeeBps = protocolFeeBps;
+        t.bondSlashTreasuryBps = bondSlashTreasuryBps;
         emit TaskCreated(taskId, msg.sender, uint128(msg.value), deadline, verificationKind);
     }
 
@@ -348,6 +364,8 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
             score
         );
         if (!_recoverAndCheck(digest, sig)) revert BadSignature();
+        if (usedAttestations[digest]) revert BadSignature();
+        usedAttestations[digest] = true;
 
         // OnChainAction (11) VOW v1 policy (`reopen_on_zero_score: true`, CRIT-04):
         // when a submission fails verification (`score == 0`) strictly before
@@ -370,7 +388,7 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
             return;
         }
 
-        (uint128 payment, uint128 fee) = _computePayment(score, qualityThreshold, t.escrowWei, protocolFeeBps);
+        (uint128 payment, uint128 fee) = _computePayment(score, t.qualityThreshold, t.escrowWei, t.protocolFeeBps);
 
         // Effects
         t.paymentWei = payment;
@@ -410,8 +428,8 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
     ///         `<=`; strictly after it, adjudication passes to the
     ///         permissionless `defaultResolve`). Challenger won: escrow home
     ///         to the client, bond back. Worker won: pinned payout executes
-    ///         and the bond is slashed worker/treasury per
-    ///         `bondSlashTreasuryBps`. DELIBERATELY NOT `whenNotPaused`
+    ///         and the bond is slashed worker/treasury per the task's
+    ///         snapshotted `bondSlashTreasuryBps`. DELIBERATELY NOT `whenNotPaused`
     ///         (HIGH-18) so active disputes can be resolved during a pause.
     function resolveChallenge(uint64 taskId, bool challengerWon) external onlyOwner {
         Task storage t = _existing(taskId);
@@ -432,7 +450,7 @@ contract ShillbotEscrow is Ownable2Step, PullPayment, Pausable, AttesterGated, C
             uint256 payment = t.paymentWei;
             uint256 fee = t.feeWei;
             uint256 remainder = escrow - payment - fee; // checked: reverts on underflow
-            uint256 bondToTreasury = (bond * bondSlashTreasuryBps) / BPS_DENOM;
+            uint256 bondToTreasury = (bond * t.bondSlashTreasuryBps) / BPS_DENOM;
             uint256 bondToWorker = bond - bondToTreasury;
             // Conservation over both pots before crediting.
             assert(payment + fee + remainder == escrow);

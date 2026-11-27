@@ -108,7 +108,7 @@ pub use chain_core::game::{
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum XResult {
     WinAll,            // own stake + opponent counter-value (from tranche)
-    LoseAll,           // full forfeit: treasury cut + pool reimbursement
+    LoseAll,           // full forfeit: 100% pool reimbursement (0-net cross-leg float drift)
     KeepStake,         // homogeneous both-correct
     HalfBack,          // homogeneous, locally correct
     ForfeitToTreasury, // both-wrong / both-forfeit: treasury + prize pool
@@ -210,11 +210,12 @@ pub fn resolve_xleg(
             res.tranche_released = 0;
         }
         XResult::LoseAll => {
-            // Full local forfeit: treasury cut funds the flywheel, the
-            // remainder reimburses the operator pool.
-            let (cut, remainder) = treasury_cut(stake, treasury_split_bps)?;
-            res.to_treasury = cut;
-            res.to_pool_reimburse = remainder;
+            // Full local forfeit: 100% of stake reimburses the operator float
+            // pool (whose opposite-leg float paid the winner), keeping
+            // WinAll + LoseAll at 0-net float drift across both chains
+            // (matching same-chain gain = 0 on winner-takes-all).
+            res.to_treasury = 0;
+            res.to_pool_reimburse = stake;
         }
         XResult::KeepStake => res.to_player = stake,
         XResult::HalfBack => {
@@ -496,19 +497,53 @@ mod tests {
     }
 
     #[test]
-    fn xleg_loss_splits_treasury_and_reimburses_pool_releasing_tranche() {
+    fn xleg_loss_reimburses_full_stake_to_pool_and_releases_tranche() {
         let stake = 50_000_000;
         let tranche = 40_000_000;
-        // Local is P1, hetero P2 wins → local loses.
+        // Local is P1, hetero P2 wins → local loses (100% stake reimburses float pool).
         let r = resolve_xleg(XKIND_HETERO_P2_WINS, true, stake, tranche, 5000).unwrap();
         assert_eq!(r.to_player, 0);
-        assert_eq!(r.to_treasury, stake / 2); // 50% split
-        assert_eq!(r.to_pool_reimburse, stake - stake / 2);
+        assert_eq!(r.to_treasury, 0);
+        assert_eq!(r.to_prize, 0);
+        assert_eq!(r.to_pool_reimburse, stake);
         assert_eq!(
             r.tranche_released, tranche,
             "loss never consumes the tranche"
         );
         assert_xleg_conserved(&r, stake, tranche);
+    }
+
+    #[test]
+    fn xleg_win_plus_loss_zero_net_float_drift_across_all_splits() {
+        // Equal-value legs across two chains: winner consumes tranche == stake,
+        // loser reimburses full stake back to float pool -> 0-net drift regardless of bps.
+        let stake = 50_000_000;
+        let tranche = stake;
+        for kind in [
+            XKIND_HETERO_P1_WINS,
+            XKIND_HETERO_P2_WINS,
+            XKIND_TIMEOUT_P1_WINS,
+            XKIND_TIMEOUT_P2_WINS,
+        ] {
+            for bps in [2000u16, 5000, 8000] {
+                let p1 = resolve_xleg(kind, true, stake, tranche, bps).unwrap();
+                let p2 = resolve_xleg(kind, false, stake, tranche, bps).unwrap();
+                let total_tranche_consumed = tranche
+                    .checked_sub(p1.tranche_released)
+                    .unwrap()
+                    .checked_add(tranche.checked_sub(p2.tranche_released).unwrap())
+                    .unwrap();
+                let total_reimbursed = p1
+                    .to_pool_reimburse
+                    .checked_add(p2.to_pool_reimburse)
+                    .unwrap();
+                assert_eq!(
+                    total_reimbursed, total_tranche_consumed,
+                    "WinAll + LoseAll must have 0-net float drift"
+                );
+                assert_eq!(p1.to_treasury.checked_add(p2.to_treasury).unwrap(), 0);
+            }
+        }
     }
 
     #[test]
