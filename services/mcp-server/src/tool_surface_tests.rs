@@ -336,6 +336,11 @@ fn schema_title_collisions_do_not_grow() {
             .as_str()
             .unwrap_or_default()
             .to_string();
+        // `rmcp >= 1.8` strips top-level wrapper-type `title` from every tool
+        // `inputSchema`; only check collisions among explicit non-empty titles.
+        if title.is_empty() {
+            continue;
+        }
         by_title
             .entry(title)
             .or_default()

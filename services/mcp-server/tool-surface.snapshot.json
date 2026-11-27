@@ -22,7 +22,6 @@
       "required": [
         "message_ids"
       ],
-      "title": "AckMessageIdsArgs",
       "type": "object"
     },
     "name": "agent_ack_message_ids"
@@ -46,7 +45,6 @@
       "required": [
         "up_to_cursor"
       ],
-      "title": "AgentAckMessagesArgs",
       "type": "object"
     },
     "name": "agent_ack_messages"
@@ -109,7 +107,6 @@
           ]
         }
       },
-      "title": "AgentGetMessagesArgs",
       "type": "object"
     },
     "name": "agent_get_messages"
@@ -180,7 +177,6 @@
           ]
         }
       },
-      "title": "ListMessagesArgs",
       "type": "object"
     },
     "name": "agent_list_messages"
@@ -212,7 +208,6 @@
       "required": [
         "thread_id"
       ],
-      "title": "AgentMuteThreadArgs",
       "type": "object"
     },
     "name": "agent_mute_thread"
@@ -265,7 +260,6 @@
       "required": [
         "messages"
       ],
-      "title": "OpenMessagesArgs",
       "type": "object"
     },
     "name": "agent_open_messages"
@@ -298,7 +292,6 @@
           ]
         }
       },
-      "title": "AgentProfileArgs",
       "type": "object"
     },
     "name": "agent_profile"
@@ -325,7 +318,6 @@
           ]
         }
       },
-      "title": "AgentReputationLeaderboardArgs",
       "type": "object"
     },
     "name": "agent_reputation_leaderboard"
@@ -378,7 +370,6 @@
       "required": [
         "body"
       ],
-      "title": "AgentSendMessageArgs",
       "type": "object"
     },
     "name": "agent_send_message"
@@ -426,7 +417,6 @@
           ]
         }
       },
-      "title": "AgentTrustScoreArgs",
       "type": "object"
     },
     "name": "agent_trust_score"
@@ -467,7 +457,6 @@
           ]
         }
       },
-      "title": "AgentVerifyWalletArgs",
       "type": "object"
     },
     "name": "agent_verify_wallet"
@@ -491,7 +480,6 @@
       "required": [
         "session_id"
       ],
-      "title": "CheckVideoStatusArgs",
       "type": "object"
     },
     "name": "check_video_status"
@@ -553,7 +541,6 @@
           ]
         }
       },
-      "title": "DiscoverOpportunitiesArgs",
       "type": "object"
     },
     "name": "discover_opportunities"
@@ -591,7 +578,6 @@
       "required": [
         "guess"
       ],
-      "title": "GameCommitGuessArgs",
       "type": "object"
     },
     "name": "game_commit_guess"
@@ -620,7 +606,6 @@
         "guess",
         "game_id"
       ],
-      "title": "EvmCommitGuessArgs",
       "type": "object"
     },
     "name": "game_evm_commit_guess"
@@ -644,7 +629,6 @@
       "required": [
         "game_id"
       ],
-      "title": "EvmCommittedArgs",
       "type": "object"
     },
     "name": "game_evm_committed"
@@ -682,7 +666,6 @@
       "required": [
         "game_id"
       ],
-      "title": "EvmRevealGuessArgs",
       "type": "object"
     },
     "name": "game_evm_reveal_guess"
@@ -708,7 +691,6 @@
           ]
         }
       },
-      "title": "EvmFindMatchArgs",
       "type": "object"
     },
     "name": "game_find_evm_match"
@@ -742,7 +724,6 @@
           ]
         }
       },
-      "title": "GameFindMatchArgs",
       "type": "object"
     },
     "name": "game_find_match"
@@ -778,7 +759,6 @@
           ]
         }
       },
-      "title": "GameGetLeaderboardArgs",
       "type": "object"
     },
     "name": "game_get_leaderboard"
@@ -844,7 +824,6 @@
       "required": [
         "text"
       ],
-      "title": "GameSendMessageArgs",
       "type": "object"
     },
     "name": "game_send_message"
@@ -881,7 +860,6 @@
         "signed_transaction",
         "action"
       ],
-      "title": "GameSubmitTxArgs",
       "type": "object"
     },
     "name": "game_submit_tx"
@@ -919,7 +897,6 @@
       "required": [
         "prompt"
       ],
-      "title": "GenerateVideoArgs",
       "type": "object"
     },
     "name": "generate_video"
@@ -983,7 +960,6 @@
           ]
         }
       },
-      "title": "ListEarningOpportunitiesArgs",
       "type": "object"
     },
     "name": "list_earning_opportunities"
@@ -1014,7 +990,6 @@
           ]
         }
       },
-      "title": "ListExtensionsArgs",
       "type": "object"
     },
     "name": "list_extensions"
@@ -1052,7 +1027,6 @@
           ]
         }
       },
-      "title": "CreditWebScoreArgs",
       "type": "object"
     },
     "name": "query_agent_credit_web_score"
@@ -1100,7 +1074,6 @@
       "required": [
         "pubkey"
       ],
-      "title": "GameRegisterWalletArgs",
       "type": "object"
     },
     "name": "register_wallet"
@@ -1124,7 +1097,6 @@
       "required": [
         "url"
       ],
-      "title": "RegisterWebhookArgs",
       "type": "object"
     },
     "name": "register_webhook"
@@ -1179,7 +1151,6 @@
           ]
         }
       },
-      "title": "SearchMcpServersArgs",
       "type": "object"
     },
     "name": "search_mcp_servers"
@@ -1210,7 +1181,6 @@
       "required": [
         "task_id"
       ],
-      "title": "ApproveTaskArgs",
       "type": "object"
     },
     "name": "shillbot_approve_task"
@@ -1234,7 +1204,6 @@
           ]
         }
       },
-      "title": "CheckEarningsArgs",
       "type": "object"
     },
     "name": "shillbot_check_earnings"
@@ -1265,7 +1234,6 @@
       "required": [
         "task_id"
       ],
-      "title": "ClaimTaskArgs",
       "type": "object"
     },
     "name": "shillbot_claim_task"
@@ -1296,7 +1264,6 @@
       "required": [
         "task_id"
       ],
-      "title": "CompleteTaskArgs",
       "type": "object"
     },
     "name": "shillbot_complete_task"
@@ -1344,7 +1311,6 @@
         "action",
         "tx_signature"
       ],
-      "title": "ShillbotConfirmTxArgs",
       "type": "object"
     },
     "name": "shillbot_confirm_tx"
@@ -1438,7 +1404,6 @@
         "utm_link",
         "amount_lamports"
       ],
-      "title": "CreateCampaignArgs",
       "type": "object"
     },
     "name": "shillbot_create_campaign"
@@ -1476,7 +1441,6 @@
       "required": [
         "task_id"
       ],
-      "title": "FinalizeTaskArgs",
       "type": "object"
     },
     "name": "shillbot_finalize_task"
@@ -1517,7 +1481,6 @@
           ]
         }
       },
-      "title": "GetAttestationArgs",
       "type": "object"
     },
     "name": "shillbot_get_attestation"
@@ -1548,7 +1511,6 @@
       "required": [
         "task_id"
       ],
-      "title": "GetTaskDetailsArgs",
       "type": "object"
     },
     "name": "shillbot_get_task_details"
@@ -1591,7 +1553,6 @@
           ]
         }
       },
-      "title": "ListAvailableTasksArgs",
       "type": "object"
     },
     "name": "shillbot_list_available_tasks"
@@ -1615,7 +1576,6 @@
           ]
         }
       },
-      "title": "PendingApprovalArgs",
       "type": "object"
     },
     "name": "shillbot_list_pending_approval"
@@ -1639,7 +1599,6 @@
           ]
         }
       },
-      "title": "OnboardArgs",
       "type": "object"
     },
     "name": "shillbot_onboard"
@@ -1689,7 +1648,6 @@
         "task_id",
         "action"
       ],
-      "title": "ShillbotSponsorTxArgs",
       "type": "object"
     },
     "name": "shillbot_sponsor_tx"
@@ -1737,7 +1695,6 @@
         "action",
         "signed_transaction"
       ],
-      "title": "ShillbotSubmitTxArgs",
       "type": "object"
     },
     "name": "shillbot_submit_tx"
@@ -1794,7 +1751,6 @@
       "required": [
         "task_id"
       ],
-      "title": "SubmitWorkArgs",
       "type": "object"
     },
     "name": "shillbot_submit_work"
@@ -1832,7 +1788,6 @@
       "required": [
         "task_id"
       ],
-      "title": "VerifyTaskArgs",
       "type": "object"
     },
     "name": "shillbot_verify_task"
@@ -1885,7 +1840,6 @@
         "topic_id",
         "body"
       ],
-      "title": "TopicPublishArgs",
       "type": "object"
     },
     "name": "topic_publish"
@@ -1939,7 +1893,6 @@
       "required": [
         "topic_id"
       ],
-      "title": "TopicReadArgs",
       "type": "object"
     },
     "name": "topic_read"
@@ -1968,7 +1921,6 @@
         "topic_id",
         "post_id"
       ],
-      "title": "TopicReportArgs",
       "type": "object"
     },
     "name": "topic_report"
@@ -1991,7 +1943,6 @@
       "required": [
         "match"
       ],
-      "title": "XchainBuildCreateMatchArgs",
       "type": "object"
     },
     "name": "xchain_build_create_match"
@@ -2016,7 +1967,6 @@
           ]
         }
       },
-      "title": "XchainBuildCreateXmatchArgs",
       "type": "object"
     },
     "name": "xchain_build_create_xmatch"
@@ -2039,7 +1989,6 @@
       "required": [
         "match"
       ],
-      "title": "XchainBuildLockArgs",
       "type": "object"
     },
     "name": "xchain_build_lock"
@@ -2064,7 +2013,6 @@
           ]
         }
       },
-      "title": "XchainBuildLockXmatchArgs",
       "type": "object"
     },
     "name": "xchain_build_lock_xmatch"
@@ -2094,7 +2042,6 @@
       "required": [
         "match"
       ],
-      "title": "XchainBuildRefundArgs",
       "type": "object"
     },
     "name": "xchain_build_refund"
@@ -2124,7 +2071,6 @@
       "required": [
         "match"
       ],
-      "title": "XchainBuildRefundXmatchArgs",
       "type": "object"
     },
     "name": "xchain_build_refund_xmatch"
@@ -2169,7 +2115,6 @@
           ]
         }
       },
-      "title": "XchainBuildSettleArgs",
       "type": "object"
     },
     "name": "xchain_build_settle"
@@ -2201,7 +2146,6 @@
       "required": [
         "commit"
       ],
-      "title": "XchainCommitArgs",
       "type": "object"
     },
     "name": "xchain_commit_guess"
@@ -2234,7 +2178,6 @@
       "required": [
         "session_key"
       ],
-      "title": "XchainFindMatchArgs",
       "type": "object"
     },
     "name": "xchain_find_match"
@@ -2259,7 +2202,6 @@
           ]
         }
       },
-      "title": "XchainGameplayArgs",
       "type": "object"
     },
     "name": "xchain_gameplay_status"
@@ -2284,7 +2226,6 @@
           ]
         }
       },
-      "title": "XchainMatchStatusArgs",
       "type": "object"
     },
     "name": "xchain_match_status"
@@ -2316,7 +2257,6 @@
       "required": [
         "preimage"
       ],
-      "title": "XchainRevealArgs",
       "type": "object"
     },
     "name": "xchain_reveal_guess"
@@ -2356,7 +2296,6 @@
         "step",
         "signature"
       ],
-      "title": "XchainSignArgs",
       "type": "object"
     },
     "name": "xchain_sign_checkpoint"

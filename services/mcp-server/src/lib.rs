@@ -827,6 +827,21 @@ fn build_router(
 
 type McpTransport = StreamableHttpService<SwarmTipsMcp, LocalSessionManager>;
 
+fn streamable_http_server_config(
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> StreamableHttpServerConfig {
+    StreamableHttpServerConfig::default()
+        .with_stateful_mode(false)
+        .with_json_response(true)
+        // Outer `ensure_mcp_session_id` middleware enforces strict first-party
+        // `Host` + `Origin` DNS-rebinding validation (`swarm.tips`, `shillbot.org`,
+        // `coordination.game`, `*.run.app`, loopback). `rmcp >= 1.8` defaults
+        // `allowed_hosts` to loopback-only, which rejects all production domains
+        // with `403 Forbidden: Host header is not allowed`.
+        .disable_allowed_hosts()
+        .with_cancellation_token(cancellation.child_token())
+}
+
 fn streamable_service(
     shared: Arc<SharedState>,
     surface: surfaces::Surface,
@@ -835,10 +850,7 @@ fn streamable_service(
     StreamableHttpService::new(
         move || Ok(SwarmTipsMcp::new(Arc::clone(&shared), surface)),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default()
-            .with_stateful_mode(false)
-            .with_json_response(true)
-            .with_cancellation_token(cancellation.child_token()),
+        streamable_http_server_config(cancellation),
     )
 }
 
@@ -3600,6 +3612,117 @@ mod readiness_tests {
             );
             let body: serde_json::Value = resp.json().await.unwrap();
             assert_eq!(body["error"], "forbidden_origin");
+        }
+    }
+
+    #[tokio::test]
+    async fn streamable_http_service_accepts_production_hosts_and_rejects_rebinding() {
+        #[derive(Clone, Default)]
+        struct TestHandler;
+        impl rmcp::ServerHandler for TestHandler {}
+
+        let ct = tokio_util::sync::CancellationToken::new();
+        let mcp_service = rmcp::transport::streamable_http_server::StreamableHttpService::new(
+            || Ok(TestHandler),
+            rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default()
+                .into(),
+            super::streamable_http_server_config(&ct),
+        );
+        let state = std::sync::Arc::new(super::McpSessionMiddlewareState {
+            key: super::derive_mcp_session_key(Some(TEST_JWT_SECRET)),
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            session_binding: None,
+        });
+        let app = axum::Router::new()
+            .route(
+                "/mcp",
+                axum::routing::any(move |req: axum::extract::Request| {
+                    let svc = mcp_service.clone();
+                    async move {
+                        use axum::response::IntoResponse;
+                        svc.handle(req).await.into_response()
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                super::ensure_mcp_session_id,
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let url = format!("http://{addr}/mcp");
+        let client = reqwest::Client::new();
+        let init_payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "host-regression-test", "version": "1.0.0" }
+            }
+        });
+
+        // Production MCP domains + Cloud Run host MUST succeed with 200 OK and
+        // valid JSON-RPC initialize result (rmcp >= 1.8 default allowed_hosts
+        // would reject these with 403 "Forbidden: Host header is not allowed").
+        for host in [
+            "mcp.swarm.tips",
+            "mcp.shillbot.org",
+            "mcp.coordination.game",
+            "combined-api-wjucctfqta-uc.a.run.app",
+        ] {
+            let resp = client
+                .post(&url)
+                .header(reqwest::header::HOST, host)
+                .header(
+                    reqwest::header::ACCEPT,
+                    "application/json, text/event-stream",
+                )
+                .json(&init_payload)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status();
+            let text = resp.text().await.unwrap();
+            assert_eq!(
+                status,
+                reqwest::StatusCode::OK,
+                "real StreamableHttpService must accept production Host {host}, got {status}: {text}"
+            );
+            let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
+                panic!("expected JSON-RPC initialize response for {host}: {e}; body={text}")
+            });
+            assert!(
+                parsed
+                    .get("result")
+                    .and_then(|r| r.get("protocolVersion"))
+                    .is_some(),
+                "expected protocolVersion in initialize result for {host}, got {parsed}"
+            );
+        }
+
+        // Untrusted Host is still rejected by outer ensure_mcp_session_id middleware.
+        for bad_host in ["evil.example", "claude.ai"] {
+            let resp = client
+                .post(&url)
+                .header(reqwest::header::HOST, bad_host)
+                .header(
+                    reqwest::header::ACCEPT,
+                    "application/json, text/event-stream",
+                )
+                .json(&init_payload)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+            let body: serde_json::Value = resp.json().await.unwrap();
+            assert_eq!(body["error"], "forbidden_host");
         }
     }
 }
