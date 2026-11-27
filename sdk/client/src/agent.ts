@@ -488,7 +488,11 @@ export class SwarmAgent {
 
     this.tasks = {
       listAvailable: (limit = 50) => self.shillbotClient.listTasks(limit),
-      get: (id, net) => self.shillbotClient.getTask(id, net),
+      get: (id, net) =>
+        self.shillbotClient.getTask(id, {
+          network: net,
+          token: self.tokenManager.getCachedToken() ?? null,
+        }),
       async mine<TTask = unknown>(): Promise<TTask[]> {
         const res = await self.shillbotClient.listAgentTasks<TTask>();
         return Array.isArray(res) ? res : (res.tasks ?? []);

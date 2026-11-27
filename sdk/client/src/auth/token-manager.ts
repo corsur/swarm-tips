@@ -108,6 +108,18 @@ export class WalletTokenManager {
     this.expiresAtMs = 0;
   }
 
+  /** Return an already-available bearer token (static or unexpired cached JWT)
+   *  without triggering an `/auth/challenge` handshake. */
+  getCachedToken(): string | undefined {
+    if (this.staticToken !== undefined) {
+      return this.staticToken;
+    }
+    if (this.cachedToken && this.now() < this.expiresAtMs) {
+      return this.cachedToken;
+    }
+    return undefined;
+  }
+
   async getToken(): Promise<string | undefined> {
     if (this.staticToken !== undefined) {
       return this.staticToken;

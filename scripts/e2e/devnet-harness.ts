@@ -23,7 +23,7 @@ import {
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { Shillbot } from "../../target/types/shillbot";
@@ -128,13 +128,21 @@ export function connectDevnet(): DevnetHarness {
     { commitment: "confirmed" }
   );
   anchor.setProvider(provider);
+  const targetIdlPath = join(__dirname, "..", "..", "target", "idl", "shillbot.json");
+  const sdkIdlPath = join(
+    __dirname,
+    "..",
+    "..",
+    "sdk",
+    "client",
+    "src",
+    "contracts",
+    "idl",
+    "shillbot.json",
+  );
+  const idlPath = existsSync(targetIdlPath) ? targetIdlPath : sdkIdlPath;
   const program = new anchor.Program(
-    JSON.parse(
-      readFileSync(
-        join(__dirname, "..", "..", "target", "idl", "shillbot.json"),
-        "utf8"
-      )
-    ) as anchor.Idl,
+    JSON.parse(readFileSync(idlPath, "utf8")) as anchor.Idl,
     provider
   ) as unknown as anchor.Program<Shillbot>;
   const globalPda = globalStatePda(program.programId);

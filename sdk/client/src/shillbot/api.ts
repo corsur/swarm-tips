@@ -287,7 +287,13 @@ export class ShillbotApiClient {
       null,
     );
   }
-  async getTask<TTask = unknown>(id: string, network?: "mainnet" | "devnet"): Promise<TTask> {
+  async getTask<TTask = unknown>(
+    id: string,
+    networkOrOpts?:
+      | "mainnet"
+      | "devnet"
+      | { network?: "mainnet" | "devnet"; token?: string | null },
+  ): Promise<TTask> {
     const trimmed = id.trim();
     if (!trimmed) {
       throw new SwarmClientError({
@@ -296,8 +302,14 @@ export class ShillbotApiClient {
         message: "Task id is required",
       });
     }
+    const network =
+      typeof networkOrOpts === "string" ? networkOrOpts : networkOrOpts?.network;
+    const token =
+      typeof networkOrOpts === "object" && networkOrOpts !== null && "token" in networkOrOpts
+        ? networkOrOpts.token
+        : null;
     const suffix = network ? `?network=${encodeURIComponent(network)}` : "";
-    return this.http.get<TTask>(`/tasks/${encodeURIComponent(trimmed)}${suffix}`, null);
+    return this.http.get<TTask>(`/tasks/${encodeURIComponent(trimmed)}${suffix}`, token);
   }
   listAgentTasks<TTask = unknown>() {
     return this.get<TaskListResponse<TTask> | TTask[]>("/agent/tasks");

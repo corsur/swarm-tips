@@ -112,12 +112,12 @@ function mockConnection(txSig = "5MockSig11111111111111111111111111111111111111"
 }
 
 describe("Version sync & multi-bin package contract", () => {
-  it("exports CLIENT_VERSION matching package.json 0.4.10 and registers both swarm and client bins", () => {
+  it("exports CLIENT_VERSION matching package.json 0.4.11 and registers both swarm and client bins", () => {
     const pkg = JSON.parse(readFileSync(resolve(clientRoot, "package.json"), "utf8")) as {
       version: string;
       bin: Record<string, string>;
     };
-    expect(pkg.version).toBe("0.4.10");
+    expect(pkg.version).toBe("0.4.11");
     expect(CLIENT_VERSION).toBe(pkg.version);
     expect(pkg.bin.swarm).toBe("./dist/cli/swarm.js");
     expect(pkg.bin.client).toBe("./dist/cli/swarm.js");
@@ -148,7 +148,7 @@ describe("Version sync & multi-bin package contract", () => {
       );
       expect(res.error).toBeUndefined();
       expect(res.status, res.stderr).toBe(0);
-      expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.10" });
+      expect(JSON.parse(res.stdout)).toEqual({ version: "0.4.11" });
     } finally {
       rmSync(cliBundle, { force: true });
     }
@@ -3576,5 +3576,71 @@ describe("Phase 0A: M2 Open-Competition 1-tx verify bundles, $0 off-chain submit
       attempt_id: "att_cli_77",
       onboarded_advance_tx: "5AdvCliSig11111111111111111111111111111111",
     });
+  });
+
+  it("forwards cached bearer token on agent.tasks.get post-auth and authenticates CLI `tasks next <id>` for M2 my_latest_attempt", async () => {
+    const kp = Keypair.generate();
+    const wallet = kp.publicKey.toBase58();
+    const jwt = makeJwt(wallet, Math.floor(Date.now() / 1000) + 3600);
+    const authHeadersSeen: Array<string | null> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth/challenge")) {
+        return jsonResponse({ nonce: "ab".repeat(32) });
+      }
+      if (url.endsWith("/auth/verify")) {
+        return jsonResponse({ token: jwt });
+      }
+      if (url.includes("/tasks/camp%3Am2-next")) {
+        const auth = new Headers(init?.headers).get("Authorization");
+        authHeadersSeen.push(auth);
+        return jsonResponse({
+          task_id: "camp:m2-next",
+          platform: 10,
+          state: "open",
+          ...(auth === `Bearer ${jwt}`
+            ? { my_latest_attempt: { attempt_id: "att_passed_1", status: "passed" } }
+            : { my_latest_attempt: null }),
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const agent = createSwarmAgent({
+      signer: fromSolanaKeypair(kp.secretKey),
+      network: "devnet",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await agent.auth.authenticate();
+    const taskAfterAuth = await agent.tasks.get<{ my_latest_attempt?: { status?: string } | null }>(
+      "camp:m2-next",
+    );
+    expect(authHeadersSeen[0]).toBe(`Bearer ${jwt}`);
+    expect(taskAfterAuth.my_latest_attempt?.status).toBe("passed");
+    expect(agent.tasks.nextAction(taskAfterAuth as Record<string, unknown>)).toMatchObject({
+      step: "verify",
+    });
+
+    // CLI `tasks next <id>` with SWARM_KEYPAIR (fresh process, no cached token) authenticates via
+    // agent.auth.authenticate() and forwards Bearer on GET /tasks/:id so my_latest_attempt routes to "verify".
+    const keyfile = resolve(clientRoot, `.tmp-m2-next-kp-${process.pid}.json`);
+    writeFileSync(keyfile, JSON.stringify(Array.from(kp.secretKey)), { mode: 0o600 });
+    try {
+      let nextOut = "";
+      const nextCode = await runSwarmCli(
+        ["tasks", "next", "camp:m2-next", "--network", "devnet", "--keypair-file", keyfile, "--json"],
+        {
+          stdout: { write: (s) => ((nextOut += s), true), isTTY: false },
+          stderr: { write: () => true },
+          env: {},
+          fetch: fetchMock as unknown as typeof fetch,
+        },
+      );
+      expect(nextCode).toBe(0);
+      expect(authHeadersSeen[1]).toBe(`Bearer ${jwt}`);
+      expect(JSON.parse(nextOut)).toMatchObject({ step: "verify" });
+    } finally {
+      rmSync(keyfile, { force: true });
+    }
   });
 });

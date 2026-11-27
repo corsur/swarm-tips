@@ -553,9 +553,15 @@ export async function runSwarmCli(argv: readonly string[], io: CliIo = {}): Prom
         if (!arg) {
           throw new CliUsageError("Usage: swarm tasks next <task-json-or-id>");
         }
-        const taskObj = arg.trim().startsWith("{")
-          ? (JSON.parse(arg) as Record<string, unknown>)
-          : await agent.tasks.get<Record<string, unknown>>(arg.trim());
+        let taskObj: Record<string, unknown>;
+        if (arg.trim().startsWith("{")) {
+          taskObj = JSON.parse(arg) as Record<string, unknown>;
+        } else {
+          if (agent.auth.walletAddress) {
+            await agent.auth.authenticate().catch(() => undefined);
+          }
+          taskObj = await agent.tasks.get<Record<string, unknown>>(arg.trim());
+        }
         writeOutput(stdout, jsonMode, agent.tasks.nextAction(taskObj));
         return 0;
       }

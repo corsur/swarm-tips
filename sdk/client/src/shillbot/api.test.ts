@@ -99,4 +99,41 @@ describe("ShillbotApiClient", () => {
       auth: "Bearer override-jwt",
     });
   });
+
+  it("attaches caller Authorization on getTask when token option is provided (for M2 my_latest_attempt) and omits by default", async () => {
+    const seen: Array<{ url: string; auth: string | null }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({
+        url: String(input),
+        auth: new Headers(init?.headers).get("Authorization"),
+      });
+      return new Response(
+        JSON.stringify({
+          task_id: "camp:0",
+          state: "open",
+          platform: 10,
+          my_latest_attempt: { attempt_id: "att-1", status: "passed" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const authedApi = new ShillbotApiClient({
+      baseUrl: "https://shill.test",
+      fetch: fetchImpl as typeof fetch,
+      network: "devnet",
+      getToken: () => "agent-jwt",
+    });
+    await authedApi.getTask("camp:0", { token: "agent-jwt" });
+    expect(seen[0]).toEqual({
+      url: "https://shill.test/tasks/camp%3A0?network=devnet",
+      auth: "Bearer agent-jwt",
+    });
+
+    await authedApi.getTask("camp:0");
+    expect(seen[1]).toEqual({
+      url: "https://shill.test/tasks/camp%3A0?network=devnet",
+      auth: null,
+    });
+  });
 });
