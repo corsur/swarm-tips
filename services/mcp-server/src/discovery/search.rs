@@ -28,18 +28,15 @@ use crate::discovery::models::EnrichedServer;
 use bm25::{Document, Language, SearchEngine, SearchEngineBuilder};
 use serde::Serialize;
 
-/// Domains that make a server first-party. A fact about where the
-/// endpoint/repo lives — not a curation judgment.
-const FIRST_PARTY_MARKERS: [&str; 5] = [
-    "swarm.tips",
-    "coordination.game",
-    "shillbot.org",
-    "github.com/corsur",
-    // The MCP registry's reverse-DNS server-name form. It used to be ORed in
-    // separately at the is_first_party call site, outside the constant this doc
-    // says is the list — so adding a marker here silently missed it.
-    "io.github.corsur",
-];
+/// First-party apex domains that make an HTTPS endpoint first-party.
+/// A fact about where the endpoint lives — not a curation judgment.
+const FIRST_PARTY_HOSTS: [&str; 3] = ["swarm.tips", "coordination.game", "shillbot.org"];
+
+/// First-party GitHub org/owner (exact first path segment on `https://github.com`).
+const FIRST_PARTY_GITHUB_OWNER: &str = "corsur";
+
+/// First-party MCP registry reverse-DNS prefix.
+const FIRST_PARTY_REGISTRY_PREFIX: &str = "io.github.corsur/";
 
 /// Candidate multiplier: how many BM25 hits to pull before filtering and
 /// prior-reranking. Bounded so a huge `limit` cannot make the engine scan
@@ -255,17 +252,60 @@ fn diversity_factor(s: &EnrichedServer) -> f64 {
     }
 }
 
+fn is_first_party_endpoint(raw: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(raw.trim()) else {
+        return false;
+    };
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    FIRST_PARTY_HOSTS
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+}
+
+fn is_first_party_github_repo(raw: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(raw.trim()) else {
+        return false;
+    };
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return false;
+    }
+    if !parsed
+        .host_str()
+        .is_some_and(|h| h.eq_ignore_ascii_case("github.com"))
+    {
+        return false;
+    }
+    let Some(mut segments) = parsed.path_segments() else {
+        return false;
+    };
+    let Some(owner) = segments.next() else {
+        return false;
+    };
+    let Some(repo) = segments.next() else {
+        return false;
+    };
+    owner.eq_ignore_ascii_case(FIRST_PARTY_GITHUB_OWNER) && !repo.is_empty()
+}
+
+fn is_first_party_name(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    lower.starts_with(FIRST_PARTY_REGISTRY_PREFIX)
+        && lower.len() > FIRST_PARTY_REGISTRY_PREFIX.len()
+}
+
 /// First-party is a fact about where the server lives, not a judgment.
 fn is_first_party(s: &EnrichedServer) -> bool {
-    let fields = [
-        s.endpoint.as_deref().unwrap_or(""),
-        s.github_repo.as_deref().unwrap_or(""),
-        s.name.as_str(),
-    ];
-    fields.iter().any(|f| {
-        let f = f.to_lowercase();
-        FIRST_PARTY_MARKERS.iter().any(|m| f.contains(m))
-    })
+    s.endpoint.as_deref().is_some_and(is_first_party_endpoint)
+        || s.github_repo
+            .as_deref()
+            .is_some_and(is_first_party_github_repo)
+        || is_first_party_name(&s.name)
 }
 
 /// Category with Layer-2 fallback (Layer 1 stays authoritative when set).
@@ -546,5 +586,85 @@ mod tests {
             "stuffed text must be penalized, got {}",
             quality_prior(&stuffed)
         );
+    }
+
+    #[test]
+    fn is_first_party_rejects_url_host_repo_and_name_spoofing() {
+        // Legitimate first-party endpoints, GitHub repos, and registry names pass.
+        for valid_endpoint in [
+            "https://swarm.tips/mcp",
+            "https://mcp.swarm.tips/mcp",
+            "https://coordination.game/mcp",
+            "https://mcp.coordination.game/mcp",
+            "https://shillbot.org/mcp",
+            "https://api.shillbot.org/mcp",
+        ] {
+            let mut s = make_server("external/tool", "desc");
+            s.endpoint = Some(valid_endpoint.to_string());
+            assert!(
+                is_first_party(&s),
+                "expected {valid_endpoint} to be first-party"
+            );
+        }
+
+        let mut valid_repo = make_server("external/tool", "desc");
+        valid_repo.github_repo = Some("https://github.com/corsur/swarm-tips".to_string());
+        assert!(is_first_party(&valid_repo));
+
+        let valid_name = make_server("io.github.corsur/swarm-tips", "desc");
+        assert!(is_first_party(&valid_name));
+
+        // Spoofed endpoints MUST NOT match first-party.
+        for spoof_endpoint in [
+            "https://evil.example/swarm.tips",
+            "https://swarm.tips.evil.example/mcp",
+            "https://not-swarm.tips/mcp",
+            "https://evilcoordination.game/mcp",
+            "https://evil.example/?ref=shillbot.org",
+            "https://swarm.tips@evil.example/mcp",
+            "http://mcp.swarm.tips/mcp",
+            "javascript:swarm.tips",
+        ] {
+            let mut s = make_server("evil/tool", "desc");
+            s.endpoint = Some(spoof_endpoint.to_string());
+            assert!(
+                !is_first_party(&s),
+                "spoofed endpoint {spoof_endpoint} must NOT be first-party"
+            );
+        }
+
+        // Spoofed GitHub repos MUST NOT match first-party.
+        for spoof_repo in [
+            "https://github.com/corsur-evil/swarm-tips",
+            "https://github.com/other/corsur",
+            "https://evil.example/github.com/corsur/swarm-tips",
+            "http://github.com/corsur/swarm-tips",
+            "https://github.com.evil.example/corsur/swarm-tips",
+            "https://github.com/corsur",
+            "https://github.com/corsur/",
+        ] {
+            let mut s = make_server("evil/tool", "desc");
+            s.github_repo = Some(spoof_repo.to_string());
+            assert!(
+                !is_first_party(&s),
+                "spoofed github_repo {spoof_repo} must NOT be first-party"
+            );
+        }
+
+        // Spoofed registry names MUST NOT match first-party.
+        for spoof_name in [
+            "io.github.corsur-evil/swarm-tips",
+            "evil/io.github.corsur/swarm-tips",
+            "io.github.corsur",
+            "io.github.corsur/",
+            "swarm.tips/evil",
+            "github.com/corsur/evil",
+        ] {
+            let s = make_server(spoof_name, "desc");
+            assert!(
+                !is_first_party(&s),
+                "spoofed name {spoof_name} must NOT be first-party"
+            );
+        }
     }
 }

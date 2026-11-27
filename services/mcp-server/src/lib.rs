@@ -1073,17 +1073,7 @@ pub(crate) fn internal_admin_authorized(
     bearer_authorized(headers, expected_key)
 }
 
-const ALLOWED_FIRST_PARTY_ORIGINS: &[&str] = &[
-    "https://swarm.tips",
-    "https://www.swarm.tips",
-    "https://mcp.swarm.tips",
-    "https://shillbot.org",
-    "https://www.shillbot.org",
-    "https://mcp.shillbot.org",
-    "https://coordination.game",
-    "https://www.coordination.game",
-    "https://mcp.coordination.game",
-];
+const FIRST_PARTY_MCP_DOMAINS: &[&str] = &["swarm.tips", "shillbot.org", "coordination.game"];
 
 fn is_valid_loopback_port(port_str: &str) -> bool {
     !port_str.is_empty()
@@ -1092,8 +1082,63 @@ fn is_valid_loopback_port(port_str: &str) -> bool {
         && port_str.parse::<u16>().is_ok_and(|p| p > 0)
 }
 
+fn is_valid_dns_hostname(host: &str) -> bool {
+    !host.is_empty()
+        && !host.starts_with('.')
+        && !host.ends_with('.')
+        && !host.contains("..")
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+}
+
+fn matches_domain_or_subdomain(host_lower: &str, domain: &str) -> bool {
+    if !is_valid_dns_hostname(host_lower) {
+        return false;
+    }
+    if host_lower == domain {
+        return true;
+    }
+    host_lower
+        .strip_suffix(domain)
+        .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1)
+}
+
+fn is_allowed_first_party_https_origin(origin: &str) -> bool {
+    if origin.ends_with('/') {
+        return false;
+    }
+    let Ok(parsed) = url::Url::parse(origin) else {
+        return false;
+    };
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.path() != "/"
+        || !matches!(parsed.port(), None | Some(443))
+    {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host_lower = host.to_ascii_lowercase();
+    FIRST_PARTY_MCP_DOMAINS
+        .iter()
+        .any(|d| matches_domain_or_subdomain(&host_lower, d))
+}
+
 fn is_allowed_loopback_origin(origin: &str) -> bool {
-    for host in ["http://localhost", "http://127.0.0.1", "http://[::1]"] {
+    for host in [
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://[::1]",
+        "https://localhost",
+        "https://127.0.0.1",
+        "https://[::1]",
+    ] {
         if origin == host {
             return true;
         }
@@ -1108,8 +1153,63 @@ fn is_allowed_loopback_origin(origin: &str) -> bool {
     false
 }
 
+/// Validate a `/mcp` `Host` header against DNS-rebinding attacks (`RUSTSEC-2026-0189`).
+/// Accepts first-party domains (`*.swarm.tips`, `*.shillbot.org`, `*.coordination.game`),
+/// loopback (`localhost`, `127.0.0.1`, `[::1]`), and Cloud Run / in-cluster hosts.
+pub(crate) fn is_allowed_mcp_host(raw_host: &str) -> bool {
+    let trimmed = raw_host.trim();
+    if trimmed.is_empty()
+        || trimmed
+            .bytes()
+            .any(|b| b.is_ascii_control() || b.is_ascii_whitespace() || b == b'@' || b == b'/')
+    {
+        return false;
+    }
+    let host_only = if let Some(rest) = trimmed.strip_prefix('[') {
+        let Some((ipv6, tail)) = rest.split_once(']') else {
+            return false;
+        };
+        if !tail.is_empty() {
+            let Some(port) = tail.strip_prefix(':') else {
+                return false;
+            };
+            if !is_valid_loopback_port(port) {
+                return false;
+            }
+        }
+        if ipv6 != "::1" {
+            return false;
+        }
+        "[::1]"
+    } else if let Some((h, port)) = trimmed.rsplit_once(':') {
+        if !is_valid_loopback_port(port) {
+            return false;
+        }
+        h
+    } else {
+        trimmed
+    };
+
+    let lower = host_only.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "localhost" | "127.0.0.1" | "[::1]" | "mcp-server" | "combined-api"
+    ) {
+        return true;
+    }
+    if FIRST_PARTY_MCP_DOMAINS
+        .iter()
+        .any(|d| matches_domain_or_subdomain(&lower, d))
+    {
+        return true;
+    }
+    matches_domain_or_subdomain(&lower, "run.app")
+        || matches_domain_or_subdomain(&lower, "svc.cluster.local")
+        || matches_domain_or_subdomain(&lower, "internal")
+}
+
 /// Validate a browser `Origin` header against the strict first-party + loopback
-/// allowlist (`P1-6`). Never returns `*` or reflects untrusted origins.
+/// allowlist (`P1-6`, `RUSTSEC-2026-0189`). Never returns `*` or reflects untrusted origins.
 pub(crate) fn allowed_browser_origin(
     headers: &axum::http::HeaderMap,
 ) -> Option<axum::http::HeaderValue> {
@@ -1118,7 +1218,7 @@ pub(crate) fn allowed_browser_origin(
         .to_str()
         .ok()?
         .trim();
-    if ALLOWED_FIRST_PARTY_ORIGINS.contains(&raw) || is_allowed_loopback_origin(raw) {
+    if is_allowed_first_party_https_origin(raw) || is_allowed_loopback_origin(raw) {
         axum::http::HeaderValue::from_str(raw).ok()
     } else {
         None
@@ -1229,6 +1329,40 @@ async fn ensure_mcp_session_id(
         attach_mcp_cors_headers(&req_headers, resp.headers_mut());
         resp
     };
+
+    // RUSTSEC-2026-0189 (rmcp 1.3.0) DNS-rebinding defense-in-depth on /mcp:
+    // - Absent `Origin` is allowed (non-browser CLI/agent clients).
+    // - Any present `Origin` MUST match the strict first-party HTTPS / loopback allowlist.
+    // - Any present `Host` MUST match an allowlisted first-party, loopback, or deployment host.
+    if req_headers.contains_key(axum::http::header::ORIGIN)
+        && allowed_browser_origin(&req_headers).is_none()
+    {
+        return with_cors(
+            (
+                axum::http::StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": "forbidden_origin",
+                    "message": "Untrusted Origin header rejected on /mcp.",
+                })),
+            )
+                .into_response(),
+        );
+    }
+    if let Some(host_val) = req_headers.get(axum::http::header::HOST) {
+        let host_ok = host_val.to_str().ok().is_some_and(is_allowed_mcp_host);
+        if !host_ok {
+            return with_cors(
+                (
+                    axum::http::StatusCode::FORBIDDEN,
+                    axum::Json(serde_json::json!({
+                        "error": "forbidden_host",
+                        "message": "Untrusted Host header rejected on /mcp.",
+                    })),
+                )
+                    .into_response(),
+            );
+        }
+    }
 
     let bearer_auth = if req
         .headers()
@@ -3331,6 +3465,11 @@ mod readiness_tests {
                 .send()
                 .await
                 .unwrap();
+            assert_eq!(
+                bad_post.status(),
+                reqwest::StatusCode::FORBIDDEN,
+                "POST from untrusted origin {bad_origin} must be rejected with 403"
+            );
             assert!(
                 bad_post
                     .headers()
@@ -3338,6 +3477,108 @@ mod readiness_tests {
                     .is_none(),
                 "POST from untrusted origin {bad_origin} must not receive Access-Control-Allow-Origin"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_rejects_dns_rebinding_host_and_origin_while_allowing_non_browser_clients() {
+        let state = std::sync::Arc::new(super::McpSessionMiddlewareState {
+            key: super::derive_mcp_session_key(Some(TEST_JWT_SECRET)),
+            jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+            session_binding: None,
+        });
+        let app = axum::Router::new()
+            .route(
+                "/mcp",
+                axum::routing::any(|| async { (axum::http::StatusCode::OK, "ok") }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                super::ensure_mcp_session_id,
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let url = format!("http://{addr}/mcp");
+        let client = reqwest::Client::new();
+
+        // 1. Non-browser CLI/agent client (absent Origin) with valid Host succeeds.
+        for valid_host in [
+            "mcp.swarm.tips",
+            "mcp.shillbot.org:443",
+            "mcp.coordination.game",
+            "localhost:8080",
+            "mcp-server-abc.a.run.app",
+        ] {
+            let resp = client
+                .post(&url)
+                .header(reqwest::header::HOST, valid_host)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::OK,
+                "absent Origin + valid Host {valid_host} must succeed"
+            );
+        }
+
+        // 2. DNS-rebinding Host headers are rejected with 403 Forbidden.
+        for bad_host in [
+            "evil.example",
+            "rebind.attacker.com:8080",
+            "swarm.tips.evil.example",
+            "localhost.evil.example",
+            "not-swarm.tips",
+        ] {
+            let resp = client
+                .post(&url)
+                .header(reqwest::header::HOST, bad_host)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::FORBIDDEN,
+                "DNS-rebinding Host {bad_host} must be rejected with 403"
+            );
+            let body: serde_json::Value = resp.json().await.unwrap();
+            assert_eq!(body["error"], "forbidden_host");
+        }
+
+        // 3. Valid subdomain HTTPS Origins are accepted; non-HTTPS or spoofed Origins are rejected.
+        let sub_ok = client
+            .post(&url)
+            .header(reqwest::header::ORIGIN, "https://app.swarm.tips")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(sub_ok.status(), reqwest::StatusCode::OK);
+
+        for bad_origin in [
+            "http://mcp.swarm.tips",
+            "https://evil.example",
+            "https://swarm.tips.evil.example",
+            "https://swarm.tips:8443",
+            "https://swarm.tips/path",
+        ] {
+            let resp = client
+                .post(&url)
+                .header(reqwest::header::ORIGIN, bad_origin)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::FORBIDDEN,
+                "bad Origin {bad_origin} must be rejected with 403"
+            );
+            let body: serde_json::Value = resp.json().await.unwrap();
+            assert_eq!(body["error"], "forbidden_origin");
         }
     }
 }

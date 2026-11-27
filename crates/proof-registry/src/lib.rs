@@ -944,14 +944,14 @@ pub fn compose_generated_module(
     source.push_str(&format!(
         "\nnamespace {namespace}\n\n{stripped_statement}\n\n{stripped_proof}\n\nend {namespace}\n"
     ));
-    let declares_disproof = candidate.proof_source.lines().any(|line| {
+    let declares_disproof = stripped_proof_code.lines().any(|line| {
         let t = line.trim_start();
         t.starts_with("theorem disproof")
             || t.starts_with("lemma disproof")
             || t.starts_with("def disproof")
     });
     let is_negated_proof = declares_disproof
-        || candidate.proof_source.lines().any(|line| {
+        || stripped_proof_code.lines().any(|line| {
             let t = line.trim_start();
             (t.starts_with("theorem proof")
                 || t.starts_with("lemma proof")
@@ -1894,6 +1894,35 @@ mod tests {
                 "SF3 expected compose_generated_module to accept valid proof:\n{ok_proof}"
             );
         }
+
+        // P3-3 regression: block comments or line comments mentioning `theorem disproof`
+        // or negated `theorem proof` MUST NOT classify a normal proof as a disproof!
+        for commented_proof in [
+            "/-\ntheorem disproof : ¬ statementProp := by\n  exact False.elim\n-/\ntheorem proof : statementProp := trivial",
+            "theorem proof : statementProp := by\n  -- theorem proof : ¬ statementProp\n  exact trivial",
+        ] {
+            let generated = compose_generated_module(&make_cand(base_stmt, commented_proof))
+                .expect("commented disproof mention in valid proof must compose");
+            assert!(
+                generated.theorem_name.ends_with(".proof"),
+                "commented disproof must keep .proof entry_name, got {}",
+                generated.theorem_name
+            );
+            assert!(
+                !generated.theorem_signature.contains("¬"),
+                "commented disproof must not negate theorem_signature, got {}",
+                generated.theorem_signature
+            );
+        }
+
+        // Real uncommented `theorem disproof` is still detected as disproof.
+        let real_disproof = compose_generated_module(&make_cand(
+            "def statementProp : Prop := False",
+            "theorem disproof : ¬ statementProp := fun h => h",
+        ))
+        .expect("real disproof must compose");
+        assert!(real_disproof.theorem_name.ends_with(".disproof"));
+        assert!(real_disproof.theorem_signature.contains("¬"));
     }
 
     #[test]

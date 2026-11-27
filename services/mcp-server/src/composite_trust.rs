@@ -179,12 +179,12 @@ pub struct TrustContribution {
 pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
     let mut signals: Vec<TrustContribution> = Vec::new();
 
-    // Shillbot — only contributes if `average_score` is present AND
+    // Shillbot — only contributes if `average_score` is present, finite, AND
     // `total_completed` ≥ 1 (a single completed task is enough
     // signal; below 5 the confidence is naturally low because the
     // weight-sum is small).
     if let Some(s) = &inputs.shillbot {
-        if let Some(avg) = s.average_score {
+        if let Some(avg) = s.average_score.filter(|v| v.is_finite()) {
             if s.total_completed >= 1 && s.score_max > 0 {
                 let normalized_score = (avg / s.score_max as f64).clamp(0.0, 1.0);
                 // If completion_rate is present, combine it with the
@@ -198,7 +198,7 @@ pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
                 // by the 2026-05-04 E2E test session — the founder's
                 // wallet showed trust_score=0.4708 instead of the ~0.875
                 // its 5 perfect-score completions warranted.
-                let combined = match s.completion_rate {
+                let combined = match s.completion_rate.filter(|r| r.is_finite()) {
                     Some(rate) => (normalized_score + rate.clamp(0.0, 1.0)) / 2.0,
                     None => normalized_score,
                 };
@@ -213,7 +213,7 @@ pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
 
     // EigenTrust — relational graph position (6th signal). Already
     // rank-normalized to 0..1 by the reputation indexer.
-    if let Some(e) = inputs.eigentrust {
+    if let Some(e) = inputs.eigentrust.filter(|v| v.is_finite()) {
         signals.push(TrustContribution {
             signal: "eigentrust".to_string(),
             value: e.clamp(0.0, 1.0),
@@ -223,7 +223,7 @@ pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
 
     // Game — requires ≥ 5 games for the signal to be meaningful.
     if let Some(g) = &inputs.game {
-        if let Some(wr) = g.win_rate {
+        if let Some(wr) = g.win_rate.filter(|v| v.is_finite()) {
             if g.total_games >= 5 {
                 signals.push(TrustContribution {
                     signal: "coordination_game".to_string(),
@@ -244,7 +244,7 @@ pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
     }
 
     // AgentRank — already 0..1 normalized by Hyperspace.
-    if let Some(rank) = inputs.agent_rank {
+    if let Some(rank) = inputs.agent_rank.filter(|v| v.is_finite()) {
         signals.push(TrustContribution {
             signal: "agent_rank".to_string(),
             value: rank.clamp(0.0, 1.0),
@@ -256,7 +256,7 @@ pub fn compute_trust(inputs: &TrustInputs) -> TrustScore {
     // the agent has ≥ 1 recorded extension (confidence gate), so a
     // never-extended agent doesn't get a spurious signal.
     if let Some(cw) = &inputs.credit_web {
-        if let Some(pos) = cw.position {
+        if let Some(pos) = cw.position.filter(|v| v.is_finite()) {
             if cw.extensions_count >= 1 {
                 signals.push(TrustContribution {
                     signal: "credit_web".to_string(),
@@ -621,5 +621,49 @@ mod tests {
             ..Default::default()
         });
         assert!(anchored.score > 0.85);
+    }
+
+    #[test]
+    fn non_finite_and_nan_signals_are_ignored_without_poisoning_score() {
+        let all_bad = compute_trust(&TrustInputs {
+            shillbot: Some(ShillbotInput {
+                average_score: Some(f64::NAN),
+                score_max: 1_000_000,
+                completion_rate: Some(f64::INFINITY),
+                total_completed: 5,
+            }),
+            eigentrust: Some(f64::NAN),
+            game: Some(GameInput {
+                win_rate: Some(f64::INFINITY),
+                total_games: 10,
+            }),
+            curator: None,
+            agent_rank: Some(f64::NEG_INFINITY),
+            credit_web: Some(CreditWebInput {
+                position: Some(f64::NAN),
+                extensions_count: 3,
+            }),
+            unanchored_settlement_only: false,
+        });
+        assert!(all_bad.score.is_finite());
+        assert_eq!(all_bad.score, 0.0);
+        assert_eq!(all_bad.confidence, 0);
+        assert!(all_bad.breakdown.is_empty());
+
+        // One finite signal alongside NaN/Inf siblings must still yield a valid finite score.
+        let mixed = compute_trust(&TrustInputs {
+            shillbot: Some(ShillbotInput {
+                average_score: Some(800_000.0),
+                score_max: 1_000_000,
+                completion_rate: Some(f64::NAN),
+                total_completed: 5,
+            }),
+            eigentrust: Some(f64::NAN),
+            agent_rank: Some(f64::INFINITY),
+            ..Default::default()
+        });
+        assert!(mixed.score.is_finite());
+        assert!(approx_eq(mixed.score, 0.8));
+        assert_eq!(mixed.confidence, 1);
     }
 }

@@ -1014,7 +1014,7 @@ pub fn search_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter
                     return (
                         axum::http::StatusCode::SERVICE_UNAVAILABLE,
                         [("Access-Control-Allow-Origin", "*")],
-                        "{\"error\": \"server catalog is empty\"}".to_string(),
+                        axum::Json(serde_json::json!({ "error": "server catalog is empty" })),
                     )
                         .into_response();
                 };
@@ -1028,9 +1028,11 @@ pub fn search_handler(state: Arc<DiscoveryState>) -> axum::routing::MethodRouter
                     return (
                         axum::http::StatusCode::BAD_REQUEST,
                         [("Access-Control-Allow-Origin", "*")],
-                        format!(
-                            "{{\"error\": \"unknown parameter '{bad}' — accepted: query, category, currency, provenance, limit\"}}"
-                        ),
+                        axum::Json(serde_json::json!({
+                            "error": format!(
+                                "unknown parameter '{bad}' — accepted: query, category, currency, provenance, limit"
+                            ),
+                        })),
                     )
                         .into_response();
                 }
@@ -1551,5 +1553,61 @@ mod tests {
                 "verified in-process callback must pass auth on {route}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn search_handler_serializes_unknown_parameter_errors_as_valid_json() {
+        let mut srv = EnrichedServer {
+            name: "demo-server".to_string(),
+            title: Some("Demo".to_string()),
+            description: Some("Demo MCP server".to_string()),
+            endpoint: Some("https://example.com/mcp".to_string()),
+            transport: Some("streamable-http".to_string()),
+            npm_package: None,
+            github_repo: None,
+            sources: vec!["official".to_string()],
+            source_count: 1,
+            upstream_quality_score: None,
+            upstream_visitors_estimate: None,
+            classification: Layer1Classification {
+                category: None,
+                cash_flow_direction: None,
+                currencies: vec![],
+                value_to_swarm: None,
+                confident: false,
+                matched_signals: vec![],
+            },
+            layer2_classification: None,
+            layer3_analysis: None,
+            first_seen_at: chrono::Utc::now(),
+            last_seen_at: chrono::Utc::now(),
+        };
+        srv.title = Some("Demo".to_string());
+        let state = Arc::new(DiscoveryState::new_for_test(vec![srv]));
+        let app = axum::Router::new().route("/internal/mcp/search", search_handler(state));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://{addr}/internal/mcp/search?bad%22%5Ckey%22=1"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            resp.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+        let body: serde_json::Value = resp.json().await.expect("error body must be valid JSON");
+        let err_msg = body["error"].as_str().expect("error string present");
+        assert!(err_msg.contains("bad\"\\key\""));
     }
 }

@@ -5,16 +5,131 @@
 //! ever touches this code. Callers sign transactions locally and submit
 //! via `submit_signed`.
 
-use anchor_lang::AccountDeserialize;
+use anchor_lang::{AccountDeserialize, Discriminator};
 use anyhow::{Context, Result};
 use coordination::state::{Game, GameCounter, GameState, GlobalConfig};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig, message::Message, pubkey::Pubkey, signature::Signature,
-    transaction::Transaction,
+    commitment_config::CommitmentConfig, message::Message, pubkey, pubkey::Pubkey,
+    signature::Signature, transaction::Transaction,
 };
 
 use crate::{instructions, pda};
+
+/// Legacy SPL Memo v1 program ID (permitted alongside Memo v2 in game txs).
+const MEMO_PROGRAM_ID_V1: Pubkey = pubkey!("Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo");
+
+/// Solana Compute Budget program ID (permitted companion for priority fees / CU limits).
+const COMPUTE_BUDGET_PROGRAM_ID: Pubkey = pubkey!("ComputeBudget111111111111111111111111111111");
+
+/// Map a `game_submit_tx` action string to the exact 8-byte Anchor discriminator
+/// of the Coordination Game program instruction.
+pub fn expected_action_discriminator(action: &str) -> Result<[u8; 8]> {
+    let disc: &[u8] = match action {
+        "deposit_stake" => coordination::instruction::DepositStake::DISCRIMINATOR,
+        "create_game" => coordination::instruction::CreateGame::DISCRIMINATOR,
+        "join_game" => coordination::instruction::JoinGame::DISCRIMINATOR,
+        "commit_guess" => coordination::instruction::CommitGuess::DISCRIMINATOR,
+        "reveal_guess" => coordination::instruction::RevealGuess::DISCRIMINATOR,
+        "create_xmatch" => coordination::instruction::CreateXmatch::DISCRIMINATOR,
+        "lock_xtranche" => coordination::instruction::LockXtranche::DISCRIMINATOR,
+        "settle_xmatch" => coordination::instruction::SettleXmatch::DISCRIMINATOR,
+        "refund_xmatch_timeout" => coordination::instruction::RefundXmatchTimeout::DISCRIMINATOR,
+        "refund_xmatch_nocert" => coordination::instruction::RefundXmatchNocert::DISCRIMINATOR,
+        other => anyhow::bail!("unsupported game transaction action '{other}'"),
+    };
+    disc.try_into()
+        .map_err(|_| anyhow::anyhow!("invalid Anchor discriminator length for action '{action}'"))
+}
+
+/// Validate a deserialized signed transaction BEFORE broadcasting it via RPC (`P0-07`):
+/// 1. All required Ed25519 signatures must cryptographically verify (`tx.verify()`).
+/// 2. `expected_player` must be one of the transaction's required signers.
+/// 3. Every instruction must target either the Coordination Game program (`coordination::ID`)
+///    or an allowlisted companion (`SPL Memo` v1/v2 or `ComputeBudget`), rejecting arbitrary
+///    `SystemProgram` self-transfers or piggybacked drains.
+/// 4. At least one instruction must target `coordination::ID` with an 8-byte Anchor discriminator;
+///    when `expected_action` is provided, that discriminator must match the exact expected action
+///    (and for `deposit_stake`, the payer slot `[2]` must equal `expected_player`).
+pub fn validate_signed_tx(
+    tx: &Transaction,
+    expected_player: &Pubkey,
+    expected_action: Option<&str>,
+) -> Result<()> {
+    tx.verify()
+        .map_err(|e| anyhow::anyhow!("transaction signature verification failed: {e}"))?;
+
+    let num_required = usize::from(tx.message.header.num_required_signatures);
+    anyhow::ensure!(
+        num_required > 0 && num_required <= tx.message.account_keys.len(),
+        "transaction has invalid required signer header"
+    );
+    anyhow::ensure!(
+        tx.message.account_keys[..num_required].contains(expected_player),
+        "expected player {expected_player} is not a required signer on transaction"
+    );
+
+    let expected_disc = match expected_action {
+        Some(action) => Some(expected_action_discriminator(action)?),
+        None => None,
+    };
+
+    let mut has_coordination_ix = false;
+    let mut matched_expected_action = false;
+
+    for ix in &tx.message.instructions {
+        let program_id = tx
+            .message
+            .account_keys
+            .get(usize::from(ix.program_id_index))
+            .ok_or_else(|| anyhow::anyhow!("instruction program_id_index out of bounds"))?;
+
+        if *program_id == coordination::ID {
+            anyhow::ensure!(
+                ix.data.len() >= 8,
+                "coordination instruction missing 8-byte Anchor discriminator"
+            );
+            has_coordination_ix = true;
+            if let Some(disc) = expected_disc {
+                if ix.data[..8] == disc {
+                    if expected_action == Some("deposit_stake") {
+                        let payer_key = ix
+                            .accounts
+                            .get(2)
+                            .and_then(|idx| tx.message.account_keys.get(usize::from(*idx)));
+                        anyhow::ensure!(
+                            payer_key == Some(expected_player),
+                            "deposit_stake payer account slot does not match expected player {expected_player}"
+                        );
+                    }
+                    matched_expected_action = true;
+                }
+            }
+        } else if *program_id != instructions::MEMO_PROGRAM_ID
+            && *program_id != MEMO_PROGRAM_ID_V1
+            && *program_id != COMPUTE_BUDGET_PROGRAM_ID
+        {
+            anyhow::bail!(
+                "transaction contains disallowed program {program_id}; only Coordination Game ({}) and Memo/ComputeBudget companions are permitted",
+                coordination::ID
+            );
+        }
+    }
+
+    anyhow::ensure!(
+        has_coordination_ix,
+        "transaction must include at least one Coordination Game ({}) instruction",
+        coordination::ID
+    );
+    if let Some(action) = expected_action {
+        anyhow::ensure!(
+            matched_expected_action,
+            "transaction does not contain a Coordination Game instruction matching action '{action}'"
+        );
+    }
+
+    Ok(())
+}
 
 /// Default poll interval when waiting for a game state transition.
 const POLL_INTERVAL_SECS: u64 = 6;
@@ -409,11 +524,35 @@ impl GameTxBuilder {
 
     /// Submit a pre-signed transaction to the network.
     ///
-    /// The transaction must be fully signed (all required signers) and
-    /// serialized as bincode bytes.
+    /// The transaction must be fully signed (all required signers), include
+    /// `self.player` as a required signer, target the Coordination Game program
+    /// (with only allowlisted Memo/ComputeBudget companions), and be serialized
+    /// as bincode bytes.
     pub async fn submit_signed(&self, signed_tx_bytes: &[u8]) -> Result<Signature> {
+        self.submit_signed_validated(signed_tx_bytes, None).await
+    }
+
+    /// Submit a pre-signed transaction after also verifying that a Coordination
+    /// Game instruction matches the exact 8-byte Anchor discriminator for
+    /// `expected_action`.
+    pub async fn submit_signed_for_action(
+        &self,
+        signed_tx_bytes: &[u8],
+        expected_action: &str,
+    ) -> Result<Signature> {
+        self.submit_signed_validated(signed_tx_bytes, Some(expected_action))
+            .await
+    }
+
+    async fn submit_signed_validated(
+        &self,
+        signed_tx_bytes: &[u8],
+        expected_action: Option<&str>,
+    ) -> Result<Signature> {
         let tx: Transaction = bincode::deserialize(signed_tx_bytes)
             .context("failed to deserialize signed transaction")?;
+
+        validate_signed_tx(&tx, &self.player, expected_action)?;
 
         let wallet = self.player;
         let balance_before = self.balance_for_log(&wallet).await;
@@ -839,5 +978,146 @@ mod tests {
             ))
             .expect_err("zero tournament_id must fail");
         assert!(err.to_string().contains("tournament_id must be non-zero"));
+    }
+
+    #[test]
+    fn validate_signed_tx_accepts_valid_deposit_stake_with_memo_and_all_known_discriminators() {
+        let player = Keypair::new();
+        let ix = instructions::build_deposit_stake(3, &player.pubkey());
+        let memo = instructions::build_memo("0123456789abcdef");
+        let blockhash = Hash::new_unique();
+        let msg = Message::new_with_blockhash(&[ix, memo], Some(&player.pubkey()), &blockhash);
+        let mut tx = Transaction::new_unsigned(msg);
+        tx.sign(&[&player], blockhash);
+
+        validate_signed_tx(&tx, &player.pubkey(), None)
+            .expect("valid signed deposit_stake + memo must pass generic check");
+        validate_signed_tx(&tx, &player.pubkey(), Some("deposit_stake"))
+            .expect("valid signed deposit_stake + memo must pass deposit_stake check");
+
+        for action in [
+            "deposit_stake",
+            "create_game",
+            "join_game",
+            "commit_guess",
+            "reveal_guess",
+            "create_xmatch",
+            "lock_xtranche",
+            "settle_xmatch",
+            "refund_xmatch_timeout",
+            "refund_xmatch_nocert",
+        ] {
+            expected_action_discriminator(action)
+                .unwrap_or_else(|e| panic!("known action '{action}' must resolve: {e}"));
+        }
+        assert!(expected_action_discriminator("unknown_action").is_err());
+    }
+
+    #[test]
+    fn submit_signed_rejects_unsigned_or_forged_signature_before_rpc() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let player = Keypair::new();
+        let ix = instructions::build_deposit_stake(3, &player.pubkey());
+        let blockhash = Hash::new_unique();
+        let msg = Message::new_with_blockhash(&[ix], Some(&player.pubkey()), &blockhash);
+        let unsigned_tx = Transaction::new_unsigned(msg);
+        let raw = bincode::serialize(&unsigned_tx).unwrap();
+
+        let builder = GameTxBuilder::new("http://127.0.0.1:1", player.pubkey());
+        let err = rt
+            .block_on(builder.submit_signed_for_action(&raw, "deposit_stake"))
+            .expect_err("unsigned tx must be rejected before RPC");
+        assert!(
+            err.to_string().contains("signature verification failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn submit_signed_rejects_wrong_signer_and_arbitrary_system_transfer_before_rpc() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let victim = Keypair::new();
+        let attacker = Keypair::new();
+        let blockhash = Hash::new_unique();
+
+        // 1. Attacker signs a real deposit_stake for attacker, submits under victim's builder.
+        let attacker_ix = instructions::build_deposit_stake(3, &attacker.pubkey());
+        let attacker_msg =
+            Message::new_with_blockhash(&[attacker_ix], Some(&attacker.pubkey()), &blockhash);
+        let mut attacker_tx = Transaction::new_unsigned(attacker_msg);
+        attacker_tx.sign(&[&attacker], blockhash);
+        let attacker_bytes = bincode::serialize(&attacker_tx).unwrap();
+
+        let victim_builder = GameTxBuilder::new("http://127.0.0.1:1", victim.pubkey());
+        let err = rt
+            .block_on(victim_builder.submit_signed_for_action(&attacker_bytes, "deposit_stake"))
+            .expect_err("attacker-signed tx must be rejected for victim wallet");
+        assert!(
+            err.to_string().contains("not a required signer"),
+            "unexpected error: {err}"
+        );
+
+        // 2. Arbitrary SystemProgram self-transfer validly signed by victim MUST be rejected!
+        let transfer_ix = Instruction {
+            program_id: SYSTEM_PROGRAM,
+            accounts: vec![
+                AccountMeta::new(victim.pubkey(), true),
+                AccountMeta::new(victim.pubkey(), false),
+            ],
+            data: vec![2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        };
+        let transfer_msg = Message::new_with_blockhash(
+            std::slice::from_ref(&transfer_ix),
+            Some(&victim.pubkey()),
+            &blockhash,
+        );
+        let mut transfer_tx = Transaction::new_unsigned(transfer_msg);
+        transfer_tx.sign(&[&victim], blockhash);
+        let transfer_bytes = bincode::serialize(&transfer_tx).unwrap();
+
+        let err = rt
+            .block_on(victim_builder.submit_signed(&transfer_bytes))
+            .expect_err("SystemProgram self-transfer must be rejected");
+        assert!(
+            err.to_string().contains("disallowed program"),
+            "unexpected error: {err}"
+        );
+
+        // 3. Piggybacked SystemProgram drain alongside a real deposit_stake MUST be rejected!
+        let piggyback_msg = Message::new_with_blockhash(
+            &[
+                instructions::build_deposit_stake(3, &victim.pubkey()),
+                transfer_ix,
+            ],
+            Some(&victim.pubkey()),
+            &blockhash,
+        );
+        let mut piggyback_tx = Transaction::new_unsigned(piggyback_msg);
+        piggyback_tx.sign(&[&victim], blockhash);
+        let piggyback_bytes = bincode::serialize(&piggyback_tx).unwrap();
+        let err = rt
+            .block_on(victim_builder.submit_signed_for_action(&piggyback_bytes, "deposit_stake"))
+            .expect_err("piggybacked SystemProgram transfer must be rejected");
+        assert!(
+            err.to_string().contains("disallowed program"),
+            "unexpected error: {err}"
+        );
+
+        // 4. Action discriminator mismatch (deposit_stake submitted as reveal_guess) MUST fail!
+        let stake_msg = Message::new_with_blockhash(
+            &[instructions::build_deposit_stake(3, &victim.pubkey())],
+            Some(&victim.pubkey()),
+            &blockhash,
+        );
+        let mut stake_tx = Transaction::new_unsigned(stake_msg);
+        stake_tx.sign(&[&victim], blockhash);
+        let stake_bytes = bincode::serialize(&stake_tx).unwrap();
+        let err = rt
+            .block_on(victim_builder.submit_signed_for_action(&stake_bytes, "reveal_guess"))
+            .expect_err("action discriminator mismatch must be rejected");
+        assert!(
+            err.to_string().contains("matching action 'reveal_guess'"),
+            "unexpected error: {err}"
+        );
     }
 }

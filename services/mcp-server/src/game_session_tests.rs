@@ -1138,6 +1138,111 @@ async fn join_queue_after_stake_preserves_ws_match_found_delivered_during_join_h
 }
 
 #[tokio::test]
+async fn p0_07_unverified_find_match_and_dummy_reveal_cannot_hijack_victim_session() {
+    use base64::Engine as _;
+    use solana_sdk::{
+        hash::Hash,
+        instruction::{AccountMeta, Instruction},
+        message::Message,
+        pubkey,
+        signature::Keypair,
+        signer::Signer,
+        transaction::Transaction,
+    };
+
+    let victim = Keypair::new();
+    let victim_wallet = victim.pubkey().to_string();
+    let attacker = Keypair::new();
+    let secret_preimage = [0x99u8; 32];
+
+    let session = Arc::new(Mutex::new(GameSession {
+        wallet: victim_wallet.clone(),
+        jwt: "victim-live-jwt".to_string(),
+        state: GameSessionState::Committed,
+        game_id: Some(777),
+        tournament_id: Some(3),
+        session_id: Some("victim-sess-id".to_string()),
+        role: Some(0),
+        chat_buffer: vec!["hi".to_string()],
+        match_found: None,
+        matchup_commitment: Some("ab".repeat(32)),
+        commit_preimage: Some(secret_preimage),
+        game_ready: Some(777),
+        reveal_data: None,
+        network: Some("mainnet".to_string()),
+    }));
+
+    let manager = GameSessionManager::new_for_test(
+        "http://127.0.0.1:1".to_string(),
+        "http://127.0.0.1:1".to_string(),
+    );
+    manager
+        .sessions
+        .write()
+        .await
+        .insert(victim_wallet.clone(), Arc::clone(&session));
+    manager.tx_builders.write().await.insert(
+        victim_wallet.clone(),
+        game_chain::client::GameTxBuilder::new("http://127.0.0.1:1", victim.pubkey()),
+    );
+
+    // 1. Unverified caller calling `build_find_match_tx(..., caller_verified = false)`
+    //    MUST fail closed without mutating `session.network`, `tournament_id`, or `commit_preimage`!
+    let err = manager
+        .build_find_match_tx(&victim_wallet, 1003, Some("devnet"), false)
+        .await
+        .expect_err("unverified caller must not overwrite active victim session");
+    assert!(
+        err.to_string().contains("active game session"),
+        "unexpected error: {err}"
+    );
+    {
+        let s = session.lock().await;
+        assert_eq!(s.network.as_deref(), Some("mainnet"));
+        assert_eq!(s.tournament_id, Some(3));
+        assert_eq!(s.commit_preimage, Some(secret_preimage));
+        assert_eq!(s.state, GameSessionState::Committed);
+    }
+
+    // 2. Submitting an attacker-signed arbitrary SystemProgram self-transfer under
+    //    `action = "reveal_guess"` MUST fail validation BEFORE RPC or `after_reveal_guess`,
+    //    preserving `commit_preimage` and `GameSessionState::Committed`!
+    let sys_prog = pubkey!("11111111111111111111111111111111");
+    let dummy_ix = Instruction {
+        program_id: sys_prog,
+        accounts: vec![
+            AccountMeta::new(attacker.pubkey(), true),
+            AccountMeta::new(attacker.pubkey(), false),
+        ],
+        data: vec![2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    };
+    let bh = Hash::new_unique();
+    let msg = Message::new_with_blockhash(&[dummy_ix], Some(&attacker.pubkey()), &bh);
+    let mut dummy_tx = Transaction::new_unsigned(msg);
+    dummy_tx.sign(&[&attacker], bh);
+    let dummy_b64 =
+        base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&dummy_tx).unwrap());
+
+    let submit_err = manager
+        .submit_signed_game_tx(&victim_wallet, &dummy_b64, "reveal_guess", Some("mainnet"))
+        .await
+        .expect_err("dummy SystemProgram tx must be rejected before after_reveal_guess");
+    assert!(
+        submit_err.to_string().contains("not a required signer"),
+        "unexpected error: {submit_err}"
+    );
+    {
+        let s = session.lock().await;
+        assert_eq!(
+            s.commit_preimage,
+            Some(secret_preimage),
+            "commit_preimage MUST survive rejected reveal_guess attempt"
+        );
+        assert_eq!(s.state, GameSessionState::Committed);
+    }
+}
+
+#[tokio::test]
 async fn ws_listener_closes_sink_and_clears_maps_on_game_resolved() {
     use game_api_client::ws::{ConnectFuture, ConnectRequest, RealtimeConnector, WsMessage};
     use std::sync::atomic::{AtomicUsize, Ordering};

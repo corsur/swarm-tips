@@ -273,7 +273,7 @@ pub fn build_reputation(
 /// whose capacity is bounded strictly by its external incoming trust from
 /// `pre_trusted` anchors and strictly upstream SCCs, preventing random-walk
 /// mass trapping from amplifying `entry_sybil` above its direct anchor allocation.
-fn cap_at_entry_points(
+pub fn cap_at_entry_points(
     scores: &mut HashMap<String, f64>,
     edges: &[eigentrust::TrustEdge],
     pre_trusted: &HashSet<String>,
@@ -328,69 +328,74 @@ fn cap_at_entry_points(
         list.sort_unstable();
     }
 
-    // Iterative Tarjan SCC over `0..n`. Tarjan emits SCCs in reverse topological
-    // order (sinks first, sources last), so `.reverse()` gives exact source-to-sink order.
-    struct TarjanState {
-        index_counter: usize,
-        indices: Vec<usize>,
-        lowlink: Vec<usize>,
-        on_stack: Vec<bool>,
-        stack: Vec<usize>,
-        sccs: Vec<Vec<usize>>,
-    }
-    fn strongconnect(v: usize, adj: &[Vec<usize>], st: &mut TarjanState) {
-        st.indices[v] = st.index_counter;
-        st.lowlink[v] = st.index_counter;
-        st.index_counter = st.index_counter.saturating_add(1);
-        st.stack.push(v);
-        st.on_stack[v] = true;
+    // True iterative heap-stack Tarjan SCC over `0..n` (P3-10: no call-stack
+    // recursion, preventing stack overflow on deep chains). Tarjan emits SCCs
+    // in reverse topological order (sinks first, sources last), so `.reverse()`
+    // yields exact source-to-sink order.
+    let mut index_counter: usize = 0;
+    let mut indices = vec![usize::MAX; n];
+    let mut lowlink = vec![usize::MAX; n];
+    let mut on_stack = vec![false; n];
+    let mut tarjan_stack: Vec<usize> = Vec::with_capacity(n);
+    let mut sccs: Vec<Vec<usize>> = Vec::new();
+    let mut call_stack: Vec<(usize, usize)> = Vec::new();
 
-        for &w in &adj[v] {
-            if st.indices[w] == usize::MAX {
-                strongconnect(w, adj, st);
-                st.lowlink[v] = st.lowlink[v].min(st.lowlink[w]);
-            } else if st.on_stack[w] {
-                st.lowlink[v] = st.lowlink[v].min(st.indices[w]);
-            }
+    for start in 0..n {
+        if indices[start] != usize::MAX {
+            continue;
         }
+        indices[start] = index_counter;
+        lowlink[start] = index_counter;
+        index_counter = index_counter.saturating_add(1);
+        tarjan_stack.push(start);
+        on_stack[start] = true;
+        call_stack.push((start, 0));
 
-        if st.lowlink[v] == st.indices[v] {
-            let mut comp = Vec::new();
-            while let Some(w) = st.stack.pop() {
-                st.on_stack[w] = false;
-                comp.push(w);
-                if w == v {
-                    break;
+        while let Some((v, next_i)) = call_stack.last_mut() {
+            let v = *v;
+            if *next_i < adj[v].len() {
+                let w = adj[v][*next_i];
+                *next_i = next_i.saturating_add(1);
+                if indices[w] == usize::MAX {
+                    indices[w] = index_counter;
+                    lowlink[w] = index_counter;
+                    index_counter = index_counter.saturating_add(1);
+                    tarjan_stack.push(w);
+                    on_stack[w] = true;
+                    call_stack.push((w, 0));
+                } else if on_stack[w] {
+                    lowlink[v] = lowlink[v].min(indices[w]);
+                }
+            } else {
+                call_stack.pop();
+                if lowlink[v] == indices[v] {
+                    let mut comp = Vec::new();
+                    while let Some(w) = tarjan_stack.pop() {
+                        on_stack[w] = false;
+                        comp.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    sccs.push(comp);
+                }
+                if let Some(&(parent, _)) = call_stack.last() {
+                    lowlink[parent] = lowlink[parent].min(lowlink[v]);
                 }
             }
-            st.sccs.push(comp);
         }
     }
-
-    let mut tarjan = TarjanState {
-        index_counter: 0,
-        indices: vec![usize::MAX; n],
-        lowlink: vec![usize::MAX; n],
-        on_stack: vec![false; n],
-        stack: Vec::with_capacity(n),
-        sccs: Vec::new(),
-    };
-    for v in 0..n {
-        if tarjan.indices[v] == usize::MAX {
-            strongconnect(v, &adj, &mut tarjan);
-        }
-    }
-    tarjan.sccs.reverse();
+    sccs.reverse();
 
     let mut comp_of = vec![0usize; n];
-    for (cid, comp) in tarjan.sccs.iter().enumerate() {
+    for (cid, comp) in sccs.iter().enumerate() {
         for &v in comp {
             comp_of[v] = cid;
         }
     }
 
     let mut caps = vec![0.0f64; n];
-    for (cid, comp) in tarjan.sccs.iter().enumerate() {
+    for (cid, comp) in sccs.iter().enumerate() {
         let mut external_inflow = 0.0f64;
         for &v in comp {
             for &(anchor, w) in &incoming_anchors[v] {
@@ -950,5 +955,38 @@ mod tests {
         );
         assert!(score_of("sybil_2") <= entry_cap + 1e-12);
         assert!(honest_score > score_of("entry_sybil") * 8.5);
+    }
+
+    #[test]
+    fn iterative_tarjan_scc_handles_deep_chain_without_stack_overflow() {
+        // P3-10 regression: a 25,000-node directed chain overflows the default
+        // Rust thread stack under recursive Tarjan DFS; the iterative heap-stack
+        // implementation must complete cleanly and propagate exact decay caps.
+        const DEPTH: usize = 25_000;
+        let mut edges = Vec::with_capacity(DEPTH);
+        let mut scores = HashMap::with_capacity(DEPTH + 1);
+        scores.insert("anchor".to_string(), 1.0);
+        edges.push(eigentrust::TrustEdge {
+            from: "anchor".to_string(),
+            to: "n0".to_string(),
+            weight: 1.0,
+        });
+        scores.insert("n0".to_string(), 1.0);
+        for i in 1..DEPTH {
+            let from = format!("n{}", i - 1);
+            let to = format!("n{i}");
+            edges.push(eigentrust::TrustEdge {
+                from,
+                to: to.clone(),
+                weight: 1.0,
+            });
+            scores.insert(to, 1.0);
+        }
+
+        cap_at_entry_points(&mut scores, &edges, &pre(&["anchor"]), 0.15);
+
+        assert!((scores["n0"] - 0.85).abs() < 1e-12);
+        assert!((scores["n1"] - 0.85 * 0.85).abs() < 1e-12);
+        assert!(scores[&format!("n{}", DEPTH - 1)] < 1e-12);
     }
 }

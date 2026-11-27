@@ -3215,8 +3215,8 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<XchainBuildCreateXmatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         if !chain.starts_with("solana:") {
             return Err(invalid_input(
@@ -3259,15 +3259,9 @@ impl SwarmTipsMcp {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let submitting_sigs = args.live_signature.is_some() || args.outcome_signature.is_some();
-        let (chain, address) = if submitting_sigs {
-            let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
-            crate::xchain::resolve_xchain_wallet(bound.as_str())
-                .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?
-        } else {
-            let bound = self.require_bound_wallet(Some(&parts)).await?;
-            crate::xchain::resolve_xchain_wallet(&bound)
-                .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?
-        };
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
+            .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         let body = execute_xchain_build_settle(
             &self.state.game_api,
             &chain,
@@ -3318,8 +3312,8 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<XchainGameplayArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
-        let (_chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
+        let (_chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         let resp = self
             .state
@@ -3394,8 +3388,8 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<XchainBuildRefundXmatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         if !chain.starts_with("solana:") {
             return Err(invalid_input(
@@ -3461,8 +3455,8 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<XchainBuildLockXmatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let bound = self.require_bound_wallet(Some(&parts)).await?;
-        let (chain, address) = crate::xchain::resolve_xchain_wallet(&bound)
+        let bound = self.require_verified_bound_wallet(Some(&parts)).await?;
+        let (chain, address) = crate::xchain::resolve_xchain_wallet(bound.as_str())
             .ok_or_else(|| invalid_input("registered wallet is not a cross-chain wallet"))?;
         if !chain.starts_with("solana:") {
             return Err(invalid_input(
@@ -3517,14 +3511,14 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<GameFindMatchArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let (wallet, is_verified) = self.require_game_wallet_with_status(Some(&parts)).await?;
         let response = execute_game_find_match(&args, |tournament_id, network| {
             let game_sessions = Arc::clone(&self.state.game_sessions);
             let wallet = wallet.clone();
             let network = network.map(str::to_owned);
             async move {
                 game_sessions
-                    .build_find_match_tx(&wallet, tournament_id, network.as_deref())
+                    .build_find_match_tx(&wallet, tournament_id, network.as_deref(), is_verified)
                     .await
             }
         })
@@ -3542,7 +3536,15 @@ impl SwarmTipsMcp {
         Parameters(args): Parameters<GameSubmitTxArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        // P0-07: require verified wallet ownership for ALL actions except
+        // initial `deposit_stake` (where `submit_signed_for_action` validates
+        // the Ed25519 signature by `wallet`, `DepositStake` discriminator, and
+        // payer slot before `after_deposit_stake` & `piggyback_stake_verification`).
+        let wallet = if game_submit_requires_verified_wallet(&args.action) {
+            self.require_verified_game_wallet(Some(&parts)).await?
+        } else {
+            self.require_game_wallet(Some(&parts)).await?
+        };
 
         tracing::info!(wallet = %wallet, action = %args.action, "game_submit_tx: received");
 
@@ -3584,7 +3586,7 @@ impl SwarmTipsMcp {
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let wallet = self.require_verified_game_wallet(Some(&parts)).await?;
 
         let status = self
             .state
@@ -3729,7 +3731,7 @@ impl SwarmTipsMcp {
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let wallet = self.require_game_wallet(Some(&parts)).await?;
+        let wallet = self.require_verified_game_wallet(Some(&parts)).await?;
 
         let result = self
             .state
@@ -4617,12 +4619,19 @@ fn extract_bearer_verified(
 }
 
 /// Shared wallet-resolution seam for Solana game tools:
-/// - `require_verified == false` (`game_find_match`, `game_submit_tx`, `game_check_match`, `game_get_result`):
+/// - `require_verified == false` (`game_find_match` for initial idle onboarding,
+///   `game_submit_tx` for `action == "deposit_stake"` only):
 ///   accepts an unverified registered session (`register_wallet {pubkey}`) OR a verified session OR
 ///   a stateless `Authorization: Bearer <user_jwt>`.
-/// - `require_verified == true` (`game_send_message`, `game_get_messages`, `game_commit_guess`, `game_reveal_guess`):
+/// - `require_verified == true` (`game_submit_tx` for all non-`deposit_stake` actions,
+///   `game_check_match`, `game_get_result`, `game_send_message`, `game_get_messages`,
+///   `game_commit_guess`, `game_reveal_guess`):
 ///   requires proven wallet ownership (`deposit_stake` piggyback, `register_wallet` with proof,
 ///   `agent_verify_wallet`, or `Authorization: Bearer <user_jwt>`).
+fn game_submit_requires_verified_wallet(action: &str) -> bool {
+    action != "deposit_stake"
+}
+
 async fn resolve_session_or_bearer_game_wallet(
     session_binding: &McpSessionBinding,
     jwt_secret: Option<&str>,
@@ -4743,12 +4752,11 @@ impl SwarmTipsMcp {
         }
     }
 
-    /// Require a registered game wallet, returning an MCP error if none
-    /// exists. Same resolution order as `resolve_wallet`.
-    async fn require_game_wallet(
+    /// Require a registered game wallet, returning `(wallet, is_verified)`.
+    async fn require_game_wallet_with_status(
         &self,
         parts: Option<&http::request::Parts>,
-    ) -> Result<String, McpError> {
+    ) -> Result<(String, bool), McpError> {
         let (wallet, is_verified, session_label) = resolve_session_or_bearer_game_wallet(
             &self.state.session_binding,
             self.state.jwt_secret.as_deref(),
@@ -4758,6 +4766,16 @@ impl SwarmTipsMcp {
         .await?;
         self.hydrate_solana_game_session_if_needed(&wallet, is_verified, &session_label)
             .await;
+        Ok((wallet, is_verified))
+    }
+
+    /// Require a registered game wallet, returning an MCP error if none
+    /// exists. Same resolution order as `resolve_wallet`.
+    async fn require_game_wallet(
+        &self,
+        parts: Option<&http::request::Parts>,
+    ) -> Result<String, McpError> {
+        let (wallet, _) = self.require_game_wallet_with_status(parts).await?;
         Ok(wallet)
     }
 
@@ -8842,5 +8860,195 @@ mod tests {
             );
             assert_eq!(json["competing_attempts_count"], 2);
         }
+    }
+
+    #[tokio::test]
+    async fn p0_07_unverified_bound_wallet_is_rejected_on_game_submit_poll_and_xchain_tools() {
+        use solana_sdk::signer::Signer;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let orch = MockServer::start().await;
+        let game_api = MockServer::start().await;
+        let rpc = MockServer::start().await;
+
+        let victim = solana_sdk::signature::Keypair::new();
+        let victim_str = victim.pubkey().to_string();
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":0}}),
+            ))
+            .mount(&rpc)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/auth/challenge"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "nonce": "00".repeat(32) })),
+            )
+            .mount(&game_api)
+            .await;
+
+        let mcp = build_test_mcp_instance(orch.uri(), game_api.uri(), rpc.uri());
+        let attacker_parts = || {
+            http::Request::builder()
+                .header(MCP_SESSION_ID_HEADER, "sess-attacker-p0-07")
+                .body(())
+                .unwrap()
+                .into_parts()
+                .0
+        };
+
+        // Attacker registers victim's public key WITHOUT signature proof.
+        mcp.register_wallet(
+            Parameters(GameRegisterWalletArgs {
+                pubkey: victim_str.clone(),
+                nonce: None,
+                signature: None,
+                tx_signature: None,
+            }),
+            Extension(attacker_parts()),
+        )
+        .await
+        .expect("unverified register_wallet succeeds");
+
+        // All non-deposit game_submit_tx actions MUST reject unverified caller.
+        for action in [
+            "reveal_guess",
+            "commit_guess",
+            "create_xmatch",
+            "settle_xmatch",
+        ] {
+            let err = mcp
+                .game_submit_tx(
+                    Parameters(GameSubmitTxArgs {
+                        signed_transaction: "AQID".into(),
+                        action: action.into(),
+                        network: None,
+                    }),
+                    Extension(attacker_parts()),
+                )
+                .await
+                .expect_err(&format!("unverified game_submit_tx({action}) must fail"));
+            assert!(
+                err.message.contains("proven wallet ownership"),
+                "action={action}, got: {}",
+                err.message
+            );
+        }
+
+        // game_check_match and game_get_result MUST reject unverified caller.
+        let check_err = mcp
+            .game_check_match(Extension(attacker_parts()))
+            .await
+            .expect_err("unverified game_check_match must fail");
+        assert!(
+            check_err.message.contains("proven wallet ownership"),
+            "got: {}",
+            check_err.message
+        );
+
+        let result_err = mcp
+            .game_get_result(Extension(attacker_parts()))
+            .await
+            .expect_err("unverified game_get_result must fail");
+        assert!(
+            result_err.message.contains("proven wallet ownership"),
+            "got: {}",
+            result_err.message
+        );
+
+        // xchain_build_* and xchain_gameplay_status (including read-only settle) MUST reject unverified caller.
+        let create_err = mcp
+            .xchain_build_create_xmatch(
+                Parameters(XchainBuildCreateXmatchArgs { poll_handle: None }),
+                Extension(attacker_parts()),
+            )
+            .await
+            .expect_err("unverified xchain_build_create_xmatch must fail");
+        assert!(
+            create_err.message.contains("verify wallet ownership first"),
+            "got: {}",
+            create_err.message
+        );
+
+        let lock_err = mcp
+            .xchain_build_lock_xmatch(
+                Parameters(XchainBuildLockXmatchArgs { poll_handle: None }),
+                Extension(attacker_parts()),
+            )
+            .await
+            .expect_err("unverified xchain_build_lock_xmatch must fail");
+        assert!(
+            lock_err.message.contains("verify wallet ownership first"),
+            "got: {}",
+            lock_err.message
+        );
+
+        let settle_read_err = mcp
+            .xchain_build_settle(
+                Parameters(XchainBuildSettleArgs::default()),
+                Extension(attacker_parts()),
+            )
+            .await
+            .expect_err("unverified read-only xchain_build_settle must fail");
+        assert!(
+            settle_read_err
+                .message
+                .contains("verify wallet ownership first"),
+            "got: {}",
+            settle_read_err.message
+        );
+
+        let settle_write_err = mcp
+            .xchain_build_settle(
+                Parameters(XchainBuildSettleArgs {
+                    poll_handle: None,
+                    live_signature: Some(format!("0x{}", "11".repeat(65))),
+                    outcome_signature: None,
+                    match_payload: None,
+                }),
+                Extension(attacker_parts()),
+            )
+            .await
+            .expect_err("unverified write xchain_build_settle must fail");
+        assert!(
+            settle_write_err
+                .message
+                .contains("verify wallet ownership first"),
+            "got: {}",
+            settle_write_err.message
+        );
+
+        let status_err = mcp
+            .xchain_gameplay_status(
+                Parameters(XchainGameplayArgs::default()),
+                Extension(attacker_parts()),
+            )
+            .await
+            .expect_err("unverified xchain_gameplay_status must fail");
+        assert!(
+            status_err.message.contains("verify wallet ownership first"),
+            "got: {}",
+            status_err.message
+        );
+
+        let refund_err = mcp
+            .xchain_build_refund_xmatch(
+                Parameters(XchainBuildRefundXmatchArgs {
+                    match_payload: serde_json::json!({}),
+                    kind: None,
+                }),
+                Extension(attacker_parts()),
+            )
+            .await
+            .expect_err("unverified xchain_build_refund_xmatch must fail");
+        assert!(
+            refund_err.message.contains("verify wallet ownership first"),
+            "got: {}",
+            refund_err.message
+        );
     }
 }

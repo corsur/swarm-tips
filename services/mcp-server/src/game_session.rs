@@ -1473,30 +1473,46 @@ impl GameSessionManager {
     /// signs locally then submits via `submit_signed_game_tx` (which must
     /// be passed the same `network` so the broadcast lands on the same
     /// cluster).
+    ///
+    /// When `caller_verified` is `false` (zero-auth first-time `deposit_stake`
+    /// onboarding), refuses if an active session already exists for `wallet`
+    /// and never mutates an active session's `network` or `tournament_id` (`P0-07`).
     pub async fn build_find_match_tx(
         &self,
         wallet: &str,
         tournament_id: u64,
         network: Option<&str>,
+        caller_verified: bool,
     ) -> Result<game_chain::client::UnsignedTx> {
         // Existence in the cache is the proxy for "wallet is registered".
         anyhow::ensure!(
             self.tx_builders.read().await.contains_key(wallet),
             "no session for wallet"
         );
+        let session_arc = self
+            .sessions
+            .read()
+            .await
+            .get(wallet)
+            .cloned()
+            .context("no session for wallet")?;
+
+        if !caller_verified {
+            let s = session_arc.lock().await;
+            let has_active = !s.jwt.is_empty()
+                || s.commit_preimage.is_some()
+                || !matches!(
+                    s.state,
+                    GameSessionState::Connected | GameSessionState::Resolved
+                );
+            anyhow::ensure!(
+                !has_active,
+                "an active game session already exists for this wallet; verify wallet ownership via agent_verify_wallet or Authorization: Bearer before calling game_find_match"
+            );
+        }
+
         let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
         let tx_builder = self.tx_builder_for_network(pubkey, network);
-
-        // Pin the network on the session so subsequent game-api calls
-        // (auth, queue join, cosign, game-state notifications) all route
-        // to the same cluster the deposit_stake message we're about to
-        // build will land on. Without this, after_deposit_stake would
-        // try to authenticate by tx-signature lookup on the cluster
-        // default RPC — fine on mainnet, but a devnet broadcast can't
-        // be found from a mainnet RPC.
-        if let Some(session) = self.sessions.read().await.get(wallet) {
-            session.lock().await.network = network.map(str::to_string);
-        }
 
         // Check balance before building the stake tx.
         let balance = tx_builder
@@ -1529,9 +1545,25 @@ impl GameSessionManager {
             .build_deposit_stake_with_memo(tournament_id, &nonce)
             .await?;
 
-        // Store tournament_id in session for later queue join.
-        if let Some(session) = self.sessions.read().await.get(wallet) {
-            session.lock().await.tournament_id = Some(tournament_id);
+        // Pin network & tournament_id only AFTER the unsigned deposit_stake tx
+        // succeeded, and re-verify an unverified caller cannot mutate an active
+        // session that may have started concurrently.
+        {
+            let mut s = session_arc.lock().await;
+            if !caller_verified {
+                let has_active = !s.jwt.is_empty()
+                    || s.commit_preimage.is_some()
+                    || !matches!(
+                        s.state,
+                        GameSessionState::Connected | GameSessionState::Resolved
+                    );
+                anyhow::ensure!(
+                    !has_active,
+                    "an active game session already exists for this wallet; verify wallet ownership via agent_verify_wallet or Authorization: Bearer before calling game_find_match"
+                );
+            }
+            s.network = network.map(str::to_string);
+            s.tournament_id = Some(tournament_id);
         }
 
         Ok(unsigned)
@@ -1586,7 +1618,7 @@ impl GameSessionManager {
                 return Ok(xchain_submit_result(action, &sig_str));
             }
             other => {
-                tracing::warn!(wallet = %wallet, action = other, "unknown action for game_submit_tx");
+                anyhow::bail!("unsupported action '{other}' for game_submit_tx");
             }
         }
 
@@ -1618,7 +1650,10 @@ impl GameSessionManager {
             network = ?network,
             "submitting signed transaction"
         );
-        let sig = match tx_builder.submit_signed(signed_bytes).await {
+        let sig = match tx_builder
+            .submit_signed_for_action(signed_bytes, action)
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(
@@ -1659,10 +1694,7 @@ impl GameSessionManager {
         nonce: &str,
     ) -> Result<()> {
         if !session.lock().await.jwt.is_empty() {
-            if let Some(token) = self.ws_cancel_tokens.write().await.remove(wallet) {
-                token.cancel();
-            }
-            self.ws_sinks.write().await.remove(wallet);
+            self.close_ws(wallet).await;
             session.lock().await.jwt.clear();
         }
 
@@ -1671,9 +1703,10 @@ impl GameSessionManager {
         let jwt = auth_resp.token.clone();
         self.spawn_ws_listener(wallet, &jwt, session, network)
             .await?;
-        session.lock().await.jwt = jwt;
         {
-            let s = session.lock().await;
+            let mut s = session.lock().await;
+            s.jwt = jwt;
+            s.network = network.map(str::to_string);
             self.persist_session(&s).await?;
         }
         tracing::info!(wallet = %wallet, "authenticated via deposit_stake tx");

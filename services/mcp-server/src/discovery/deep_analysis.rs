@@ -277,6 +277,38 @@ async fn fetch_github_stars(
     }
 }
 
+/// Maximum GitHub README body size read into memory (512 KiB, matching P3-10).
+const MAX_README_BYTES: usize = 512 * 1024;
+
+/// Read at most `max_bytes` from a streaming HTTP response body without
+/// buffering unbounded payloads into memory.
+async fn read_bounded_utf8(mut resp: reqwest::Response, max_bytes: usize) -> Option<String> {
+    let cap = resp
+        .content_length()
+        .and_then(|n| usize::try_from(n).ok())
+        .map(|n| n.min(max_bytes))
+        .unwrap_or_else(|| max_bytes.min(64 * 1024));
+    let mut buf = Vec::with_capacity(cap);
+    while let Some(chunk) = match resp.chunk().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "layer3 readme stream chunk read failed");
+            return None;
+        }
+    } {
+        let remaining = max_bytes.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        let take = chunk.len().min(remaining);
+        buf.extend_from_slice(&chunk[..take]);
+        if buf.len() >= max_bytes {
+            break;
+        }
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Fetch the raw README text. Tries `main` then `master`. Returns None on any
 /// failure (private repo, missing README, network error, etc.).
 async fn fetch_github_readme(
@@ -304,7 +336,7 @@ async fn fetch_github_readme(
                 }
             };
             if resp.status().is_success() {
-                return resp.text().await.ok();
+                return read_bounded_utf8(resp, MAX_README_BYTES).await;
             }
         }
     }
@@ -828,6 +860,26 @@ mod tests {
                 analyze_one_from(&reqwest::Client::new(), &srv, None, &bases(&mock.uri())).await;
 
             assert_eq!(a.readme_excerpt.as_deref(), Some("from master"));
+        }
+
+        #[tokio::test]
+        async fn fetch_github_readme_caps_oversized_response_at_512_kib() {
+            let mock = MockServer::start().await;
+            let oversized = "A".repeat(MAX_README_BYTES.saturating_add(64 * 1024));
+            Mock::given(method("GET"))
+                .and(path("/o/huge/main/README.md"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(oversized))
+                .mount(&mock)
+                .await;
+
+            let text = fetch_github_readme(&reqwest::Client::new(), "o", "huge", &mock.uri())
+                .await
+                .expect("bounded read should return prefix");
+            assert_eq!(
+                text.len(),
+                MAX_README_BYTES,
+                "README read must stop at 512 KiB cap"
+            );
         }
     }
 }

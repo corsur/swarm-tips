@@ -39,17 +39,22 @@ pub fn compute_web_positions(extensions: &[ExtensionEdge], root: &str) -> HashMa
     }
     let edges: Vec<TrustEdge> = extensions
         .iter()
+        .filter(|e| e.extender != e.recipient)
         .map(|e| TrustEdge {
             from: e.extender.clone(),
             to: e.recipient.clone(),
             weight: 1.0 + (e.bond_lamports as f64) / 1_000_000_000.0,
         })
         .collect();
+    if edges.is_empty() {
+        return HashMap::new();
+    }
 
     let mut pre_trusted: HashSet<String> = HashSet::new();
     pre_trusted.insert(root.to_string());
 
-    let result = match compute_eigentrust(&edges, &pre_trusted, &EigenTrustConfig::default()) {
+    let config = EigenTrustConfig::default();
+    let result = match compute_eigentrust(&edges, &pre_trusted, &config) {
         Ok(r) => r,
         Err(e) => {
             // An empty map is also the legitimate "no edges" answer, so a
@@ -60,70 +65,33 @@ pub fn compute_web_positions(extensions: &[ExtensionEdge], root: &str) -> HashMa
         }
     };
 
-    let mut scores: HashMap<String, f64> = result
-        .scores
-        .into_iter()
-        .filter(|(id, _)| id != root)
-        .collect();
-    cap_at_entry_points(&mut scores, extensions, root);
+    // Keep `root` present during SCC condensation capping so direct-anchor
+    // external inflow is computed from `scores[root]` with exact `(1 - alpha)`
+    // row-normalized decay, preventing root-vouched `A <-> Sybil` mutual-vouch
+    // rings from inflating above `A`'s direct root allocation (P2-28).
+    let mut scores: HashMap<String, f64> = result.scores;
+    reputation_indexer::cap_at_entry_points(&mut scores, &edges, &pre_trusted, config.alpha);
+    scores.remove(root);
 
-    let max_non_root = scores.values().copied().fold(0.0_f64, f64::max);
-    if max_non_root <= 0.0 {
+    let max_non_root = scores
+        .values()
+        .copied()
+        .filter(|s| s.is_finite())
+        .fold(0.0_f64, f64::max);
+    if !max_non_root.is_finite() || max_non_root <= 0.0 {
         return HashMap::new();
     }
     scores
         .into_iter()
-        .map(|(id, s)| (id, (s / max_non_root).clamp(0.0, 1.0)))
-        .collect()
-}
-
-/// Path-monotonicity cap: trust flows outward from the root, so no agent may
-/// outrank the vouch chain that connects it to the root. Without this, a
-/// mutual-vouch ring behind a single vouch traps random-walk mass and
-/// outranks its own entry point — found by the topology matrix, and nearly
-/// free to exploit because `withdraw_extension` refunds bonds.
-///
-/// `cap(v) = max over incoming edges (u -> v) of min(cap(u), score(u))`,
-/// with the root uncapped — a widest-path relaxation. Each agent's score is
-/// then clamped to its cap; unreachable agents (detached rings, self-vouch
-/// islands) cap at 0.
-fn cap_at_entry_points(
-    scores: &mut HashMap<String, f64>,
-    extensions: &[ExtensionEdge],
-    root: &str,
-) {
-    let mut caps: HashMap<String, f64> = scores.keys().map(|k| (k.clone(), 0.0)).collect();
-    // Bounded fixpoint (Rule 2): caps only increase and the longest simple
-    // path has |agents| hops, so |agents| passes suffice.
-    for _ in 0..=scores.len() {
-        let mut changed = false;
-        for e in extensions {
-            if e.recipient == root || e.extender == e.recipient {
-                continue;
-            }
-            let inflow = if e.extender == root {
-                f64::INFINITY
+        .map(|(id, s)| {
+            let norm = if s.is_finite() {
+                (s / max_non_root).clamp(0.0, 1.0)
             } else {
-                let from_cap = caps.get(&e.extender).copied().unwrap_or(0.0);
-                let from_score = scores.get(&e.extender).copied().unwrap_or(0.0);
-                from_cap.min(from_score)
+                0.0
             };
-            let entry = caps.entry(e.recipient.clone()).or_insert(0.0);
-            if inflow > *entry {
-                *entry = inflow;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    for (agent, score) in scores.iter_mut() {
-        let cap = caps.get(agent).copied().unwrap_or(0.0);
-        if *score > cap {
-            *score = cap;
-        }
-    }
+            (id, norm)
+        })
+        .collect()
 }
 
 /// Root of trust for web-position (B6 — the deploy / treasury wallet). All
@@ -217,5 +185,53 @@ mod tests {
         for s in ["s_a", "s_b"] {
             assert!(pos.get(s).copied().unwrap_or(0.0) < 0.01, "{s} near zero");
         }
+    }
+
+    #[test]
+    fn root_vouched_sybil_mutual_vouch_ring_cannot_inflate_or_crush_honest_agent() {
+        // P2-28 regression: root vouches equally for `honest` and `a`, and `a`
+        // spins up a high-bond mutual-vouch ring `a <-> sybil` plus a self-loop
+        // `a -> a`. Under the legacy widest-path `f64::INFINITY` cap, `a` and
+        // `sybil` trapped random-walk mass and crushed `honest` below 0.5.
+        // With Tarjan SCC condensation capping, `{a, sybil}` is capped strictly
+        // to `a`'s direct root allocation, so `honest` retains top standing (~1.0)
+        // and neither `a` nor `sybil` can outrank `honest`.
+        let exts = vec![
+            ext(ROOT, "honest"),
+            ext(ROOT, "a"),
+            ExtensionEdge {
+                extender: "a".into(),
+                recipient: "sybil".into(),
+                bond_lamports: 100_000_000_000,
+            },
+            ExtensionEdge {
+                extender: "sybil".into(),
+                recipient: "a".into(),
+                bond_lamports: 100_000_000_000,
+            },
+            ExtensionEdge {
+                extender: "a".into(),
+                recipient: "a".into(),
+                bond_lamports: 100_000_000_000,
+            },
+        ];
+        let pos = compute_web_positions(&exts, ROOT);
+        assert!(
+            (pos["honest"] - 1.0).abs() < 1e-9,
+            "honest agent must not be crushed by a root-vouched Sybil ring, got {}",
+            pos["honest"]
+        );
+        assert!(
+            pos["a"] <= pos["honest"] + 1e-9,
+            "ring entry `a` ({}) must not outrank equally vouched `honest` ({})",
+            pos["a"],
+            pos["honest"]
+        );
+        assert!(
+            pos["sybil"] <= pos["honest"] + 1e-9,
+            "sybil ({}) must not outrank `honest` ({})",
+            pos["sybil"],
+            pos["honest"]
+        );
     }
 }
