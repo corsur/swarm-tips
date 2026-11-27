@@ -167,8 +167,7 @@ jobs:
 
       - name: Pre-flight (proxy, owner, snapshot)
         env:
-          # Prefer dedicated EVM_MAINNET_DEPLOYER once audited & migrated; fall back
-          # to current on-chain mainnet proxy owner (EVM_TESTNET_DEPLOYER) until then.
+          # Shared deployer key (`EVM_MAINNET_DEPLOYER` if set, otherwise `EVM_TESTNET_DEPLOYER`).
           DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
         run: |
           set -euo pipefail
@@ -278,8 +277,7 @@ jobs:
 
       - name: Pre-flight (proxy, owner, snapshot)
         env:
-          # Prefer dedicated EVM_MAINNET_DEPLOYER once audited & migrated; fall back
-          # to current on-chain mainnet proxy owner (EVM_TESTNET_DEPLOYER) until then.
+          # Shared deployer key (`EVM_MAINNET_DEPLOYER` if set, otherwise `EVM_TESTNET_DEPLOYER`).
           DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
         run: |
           set -euo pipefail
