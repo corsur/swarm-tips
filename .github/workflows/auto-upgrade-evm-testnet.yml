@@ -29,6 +29,9 @@ on:
   # (e.g. after rotating the proxy variable, or to recover a failed broadcast).
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   guard:
     runs-on: ubuntu-latest
@@ -104,7 +107,7 @@ jobs:
     # Base Sepolia succeeded on the same commit -> upgrade the mainnet proxies,
     # Base first, then Ethereum (max-parallel 1, fail-fast).
     needs: [guard, upgrade]
-    if: needs.guard.outputs.changed == 'true' && needs.upgrade.result == 'success'
+    if: github.ref == 'refs/heads/main' && needs.guard.outputs.changed == 'true' && needs.upgrade.result == 'success'
     runs-on: ubuntu-latest
     environment: mainnet
     permissions:
@@ -131,7 +134,6 @@ jobs:
         working-directory: evm
     env:
       V4_PROXY: ${{ vars[matrix.proxy_var] }}
-      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
       IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
     steps:
       - uses: actions/checkout@v7
@@ -164,8 +166,13 @@ jobs:
           test "$got" = "${{ matrix.chain_id }}" || { echo "::error::chain id $got != ${{ matrix.chain_id }}"; exit 1; }
 
       - name: Pre-flight (proxy, owner, snapshot)
+        env:
+          # Prefer dedicated EVM_MAINNET_DEPLOYER once audited & migrated; fall back
+          # to current on-chain mainnet proxy owner (EVM_TESTNET_DEPLOYER) until then.
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
         run: |
           set -euo pipefail
+          test -n "$DEPLOYER_PK" || { echo "::error::EVM_MAINNET_DEPLOYER (or EVM_TESTNET_DEPLOYER) secret is required for mainnet upgrade"; exit 1; }
           test -n "$V4_PROXY" || { echo "::error::${{ matrix.proxy_var }} repo variable is unset"; exit 1; }
           test "$(cast codesize "$V4_PROXY" --rpc-url "$RPC")" -gt 0 || { echo "::error::no code at $V4_PROXY"; exit 1; }
           DEPLOYER="$(cast wallet address --private-key "$DEPLOYER_PK")"
@@ -177,9 +184,13 @@ jobs:
           echo "deployer balance: $(cast balance "$DEPLOYER" --ether --rpc-url "$RPC") ETH"
 
       - name: Simulate upgrade against live state (no broadcast)
+        env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
         run: forge script script/UpgradeCoordinationGameV4.s.sol --rpc-url "$RPC" --private-key "$DEPLOYER_PK"
 
       - name: Broadcast upgrade
+        env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
         run: forge script script/UpgradeCoordinationGameV4.s.sol --rpc-url "$RPC" --private-key "$DEPLOYER_PK" --broadcast --slow
 
       - name: Verify implementation moved and state is intact
@@ -207,7 +218,7 @@ jobs:
 
   upgrade-xchain-mainnet:
     needs: [guard, upgrade-xchain]
-    if: needs.guard.outputs.xchain_changed == 'true' && needs.upgrade-xchain.result == 'success'
+    if: github.ref == 'refs/heads/main' && needs.guard.outputs.xchain_changed == 'true' && needs.upgrade-xchain.result == 'success'
     runs-on: ubuntu-latest
     environment: mainnet
     permissions:
@@ -234,7 +245,6 @@ jobs:
         working-directory: evm
     env:
       XCHAIN_PROXY: ${{ vars[matrix.proxy_var] }}
-      DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
       IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
     steps:
       - uses: actions/checkout@v7
@@ -267,8 +277,13 @@ jobs:
           test "$got" = "${{ matrix.chain_id }}" || { echo "::error::chain id $got != ${{ matrix.chain_id }}"; exit 1; }
 
       - name: Pre-flight (proxy, owner, snapshot)
+        env:
+          # Prefer dedicated EVM_MAINNET_DEPLOYER once audited & migrated; fall back
+          # to current on-chain mainnet proxy owner (EVM_TESTNET_DEPLOYER) until then.
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
         run: |
           set -euo pipefail
+          test -n "$DEPLOYER_PK" || { echo "::error::EVM_MAINNET_DEPLOYER (or EVM_TESTNET_DEPLOYER) secret is required for mainnet upgrade"; exit 1; }
           test -n "$XCHAIN_PROXY" || { echo "::error::${{ matrix.proxy_var }} repo variable is unset"; exit 1; }
           test "$(cast codesize "$XCHAIN_PROXY" --rpc-url "$RPC")" -gt 0 || { echo "::error::no code at $XCHAIN_PROXY"; exit 1; }
           DEPLOYER="$(cast wallet address --private-key "$DEPLOYER_PK")"
@@ -280,9 +295,13 @@ jobs:
           echo "deployer balance: $(cast balance "$DEPLOYER" --ether --rpc-url "$RPC") ETH"
 
       - name: Simulate upgrade against live state (no broadcast)
+        env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
         run: forge script script/UpgradeCrossChainGame.s.sol --rpc-url "$RPC" --private-key "$DEPLOYER_PK"
 
       - name: Broadcast upgrade
+        env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
         run: forge script script/UpgradeCrossChainGame.s.sol --rpc-url "$RPC" --private-key "$DEPLOYER_PK" --broadcast --slow
 
       - name: Verify implementation moved and state is intact

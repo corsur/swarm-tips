@@ -17,7 +17,6 @@ on:
       - 'crates/chain-registry/**'
       - 'crates/chain-core/**'
       - 'crates/evm-chain/**'
-      - 'infra/k8s/mcp-server/**'
   pull_request:
     paths:
       - 'services/mcp-server/**'

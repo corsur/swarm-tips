@@ -5,13 +5,22 @@ import { homedir } from "os";
 import { join } from "path";
 const RPC = "https://api.mainnet-beta.solana.com";
 const PDA = new PublicKey("6SLwu3pKvpnWMFrciN6nwZ9anie1C7LtUynaDNyP9utS");
-const kp = Keypair.fromSecretKey(
-  Uint8Array.from(
-    JSON.parse(readFileSync(join(homedir(), ".config/solana/id.json"), "utf8"))
-  )
-);
+const EXECUTE = process.argv.includes("--execute");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 (async () => {
+  if (!EXECUTE) {
+    console.log("[DRY-RUN] Planned mainnet crank-finalize (no keypair read, no tx sent):");
+    console.log(`  RPC:      ${RPC}`);
+    console.log(`  TASK_PDA: ${PDA.toBase58()}`);
+    console.log("Pass --execute to sign and broadcast finalize_task on Solana mainnet.");
+    return;
+  }
+
+  const kp = Keypair.fromSecretKey(
+    Uint8Array.from(
+      JSON.parse(readFileSync(join(homedir(), ".config/solana/id.json"), "utf8"))
+    )
+  );
   const conn = new Connection(RPC, "confirmed");
   const provider = new anchor.AnchorProvider(conn, new anchor.Wallet(kp), {
     commitment: "confirmed",

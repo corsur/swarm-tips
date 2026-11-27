@@ -18,12 +18,24 @@ const TASK =
 const FEED = "En9CNFh7p1VDJ5CAvRiKZbTFL8dH5u9s2shC5TS4T6qQ",
   GS = "FV6v93WcTB1G8xS8Z1kATR12oRKyapQ74uuRwmfTqQud",
   PDA = "6SLwu3pKvpnWMFrciN6nwZ9anie1C7LtUynaDNyP9utS";
-const kp = Keypair.fromSecretKey(
-  Uint8Array.from(
-    JSON.parse(readFileSync(join(homedir(), ".config/solana/id.json"), "utf8"))
-  )
-);
+const EXECUTE = process.argv.includes("--execute");
+
 (async () => {
+  if (!EXECUTE) {
+    console.log("[DRY-RUN] Planned mainnet crank-verify (no keypair read, no tx sent):");
+    console.log(`  RPC:      ${RPC}`);
+    console.log(`  MCP:      ${MCP}`);
+    console.log(`  TASK:     ${TASK}`);
+    console.log(`  TASK_PDA: ${PDA}`);
+    console.log("Pass --execute to sign and broadcast verify_task on Solana mainnet.");
+    return;
+  }
+
+  const kp = Keypair.fromSecretKey(
+    Uint8Array.from(
+      JSON.parse(readFileSync(join(homedir(), ".config/solana/id.json"), "utf8"))
+    )
+  );
   const conn = new Connection(RPC, "confirmed");
   const agent = createSwarmAgent({
     signer: fromSolanaKeypair(kp),

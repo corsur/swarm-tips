@@ -4,8 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Which manifest(s) to publish (all | swarm-tips | shillbot | coordination-game)"
+        description: "Which manifest(s) to publish"
         required: false
+        type: choice
+        options:
+          - all
+          - swarm-tips
+          - shillbot
+          - coordination-game
         default: "all"
 
 permissions:
@@ -14,25 +20,34 @@ permissions:
 
 jobs:
   publish-mcp-registry:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - name: Install mcp-publisher
         run: |
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" -o /tmp/mcp-publisher.tar.gz
+          set -euo pipefail
+          MCP_PUBLISHER_VERSION="v1.8.16"
+          MCP_PUBLISHER_SHA256="6e2f799550cf843c6fd3350498d56cc49be3dc0af1e6237eb0e6435c7a9d5c05"
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" -o /tmp/mcp-publisher.tar.gz
+          echo "${MCP_PUBLISHER_SHA256}  /tmp/mcp-publisher.tar.gz" | sha256sum -c -
           tar -xzf /tmp/mcp-publisher.tar.gz -C /usr/local/bin mcp-publisher
           chmod +x /usr/local/bin/mcp-publisher
+          rm -f /tmp/mcp-publisher.tar.gz
 
       - name: Validate manifests
         run: |
+          set -euo pipefail
           (cd services/mcp-server && mcp-publisher validate)
           (cd services/mcp-server/registry/shillbot && mcp-publisher validate)
           (cd services/mcp-server/registry/coordination-game && mcp-publisher validate)
 
       - name: Authenticate via GitHub OIDC and publish
+        env:
+          TARGET: ${{ inputs.target || 'all' }}
         run: |
-          TARGET="${{ inputs.target || 'all' }}"
+          set -euo pipefail
           mcp-publisher login github-oidc
           publish_dir() {
             local dir="$1"

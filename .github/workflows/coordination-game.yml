@@ -52,6 +52,9 @@ on:
           - devnet
           - mainnet
 
+permissions:
+  contents: read
+
 jobs:
   changes:
     runs-on: ubuntu-latest
@@ -211,14 +214,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Write deploy keypair
+        env:
+          SOLANA_DEPLOY_KEYPAIR: ${{ secrets.SOLANA_DEPLOY_KEYPAIR }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.config/solana
-          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
+          printf '%s' "$SOLANA_DEPLOY_KEYPAIR" > ~/.config/solana/id.json
+          chmod 600 ~/.config/solana/id.json
 
       - name: Write program keypairs
+        env:
+          ANCHOR_PROGRAM_KEYPAIR: ${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}
         run: |
+          set -euo pipefail
           mkdir -p target/deploy
-          echo '${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}' > target/deploy/coordination_game-keypair.json
+          printf '%s' "$ANCHOR_PROGRAM_KEYPAIR" > target/deploy/coordination_game-keypair.json
+          chmod 600 target/deploy/coordination_game-keypair.json
 
       # Shillbot is deployed only by shillbot-program.yml. Deploying it here too
       # raced that pipeline and could put a stale shillbot back on devnet.
@@ -293,8 +304,12 @@ jobs:
         env:
           EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
 
+      - name: Clean up Solana keypairs
+        if: always()
+        run: rm -rf ~/.config/solana target/deploy/coordination_game-keypair.json
+
   deploy-mainnet:
-    # Auto-upgrades mainnet on every merge to main, plus manual dispatch.
+    # Auto-upgrades mainnet on every merge to main, plus manual dispatch on main.
     # Safe to automate specifically BECAUSE Solana programs are upgradeable:
     # `solana program deploy` against an existing program ID replaces the
     # bytecode in place, preserving the program address and every PDA's state.
@@ -305,8 +320,9 @@ jobs:
     # dispatch target=mainnet path).
     if: >-
       always() &&
+      github.ref == 'refs/heads/main' &&
       needs.test.result == 'success' &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' &&
         needs.changes.outputs.program == 'true' &&
         needs.deploy-devnet.result == 'success') ||
        (github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'))
@@ -345,14 +361,22 @@ jobs:
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
 
       - name: Write deploy keypair
+        env:
+          SOLANA_DEPLOY_KEYPAIR: ${{ secrets.SOLANA_DEPLOY_KEYPAIR }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.config/solana
-          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
+          printf '%s' "$SOLANA_DEPLOY_KEYPAIR" > ~/.config/solana/id.json
+          chmod 600 ~/.config/solana/id.json
 
       - name: Write program keypairs
+        env:
+          ANCHOR_PROGRAM_KEYPAIR: ${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}
         run: |
+          set -euo pipefail
           mkdir -p target/deploy
-          echo '${{ secrets.ANCHOR_PROGRAM_KEYPAIR }}' > target/deploy/coordination_game-keypair.json
+          printf '%s' "$ANCHOR_PROGRAM_KEYPAIR" > target/deploy/coordination_game-keypair.json
+          chmod 600 target/deploy/coordination_game-keypair.json
 
       - name: Build coordination game only
         # `--features mainnet` selects the mainnet Solana chain tag in
@@ -468,3 +492,7 @@ jobs:
             --program-id 2qqVk7kUqffnahiJpcQJCsSd8ErbEUgKTgCn1zYsw64P
         env:
           EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
+
+      - name: Clean up Solana keypairs
+        if: always()
+        run: rm -rf ~/.config/solana target/deploy/coordination_game-keypair.json

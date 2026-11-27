@@ -46,6 +46,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: evm-deploy-${{ inputs.network }}-${{ inputs.contract }}
+  cancel-in-progress: false
+
 jobs:
   validate-dispatch:
     runs-on: ubuntu-latest
@@ -90,8 +94,6 @@ jobs:
       XCHAIN_TREASURY: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
       XCHAIN_TREASURY_BPS: '5000'
       INPUT_NETWORK: ${{ inputs.network }}
-      # Testnet job never receives mainnet deployer or mainnet RPC secrets.
-      EVM_TESTNET_DEPLOYER: ${{ secrets.EVM_TESTNET_DEPLOYER }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -121,14 +123,17 @@ jobs:
               ;;
           esac
 
-      - name: Select testnet deployer key and RPC target
+      - name: Validate testnet deployer key and select RPC target
+        # Testnet job never receives mainnet deployer or mainnet RPC secrets.
+        # Keep DEPLOYER_PK step-scoped (never persist private keys to GITHUB_ENV).
+        env:
+          EVM_TESTNET_DEPLOYER: ${{ secrets.EVM_TESTNET_DEPLOYER }}
         run: |
           set -euo pipefail
           if [ -z "$EVM_TESTNET_DEPLOYER" ]; then
             echo "::error::EVM_TESTNET_DEPLOYER secret is required for a testnet deploy"
             exit 1
           fi
-          echo "DEPLOYER_PK=$EVM_TESTNET_DEPLOYER" >> "$GITHUB_ENV"
           echo "RPC_TARGET=$INPUT_NETWORK" >> "$GITHUB_ENV"
 
       - name: Derive chain tag
@@ -137,6 +142,7 @@ jobs:
       - name: Deploy CrossChainGame
         if: inputs.contract == 'crosschain'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
           XCHAIN_CLAIM_WINDOW: '3600'
           XCHAIN_SKEW_MARGIN: '900'
         run: |
@@ -148,6 +154,7 @@ jobs:
       - name: Deploy CoordinationGame
         if: inputs.contract == 'coordination'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
           COORD_COMMIT_TIMEOUT: '3600' # Active + Committing
           COORD_REVEAL_TIMEOUT: '7200' # Revealing
         run: |
@@ -159,6 +166,7 @@ jobs:
       - name: Deploy CoordinationGameV4 (proxy)
         if: inputs.contract == 'coordinationv4'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
           COORD_COMMIT_TIMEOUT: '3600'
           COORD_REVEAL_TIMEOUT: '7200'
           V4_OWNER: ${{ env.XCHAIN_OWNER }}
@@ -173,6 +181,7 @@ jobs:
       - name: Upgrade CoordinationGameV4 (implementation only)
         if: inputs.contract == 'coordinationv4-upgrade'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
           V4_PROXY_BASE_SEPOLIA: ${{ vars.V4_PROXY_BASE_SEPOLIA }}
         run: |
           case "$INPUT_NETWORK" in
@@ -190,6 +199,7 @@ jobs:
       - name: Upgrade CrossChainGame (implementation only)
         if: inputs.contract == 'crosschain-upgrade'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
           XCHAIN_PROXY_BASE_SEPOLIA: ${{ vars.XCHAIN_PROXY_BASE_SEPOLIA }}
         run: |
           case "$INPUT_NETWORK" in
@@ -207,6 +217,7 @@ jobs:
       - name: Deploy ShillbotEscrow
         if: inputs.contract == 'shillbot'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
           SHILLBOT_ESCROW_CHAIN_TAG: ${{ env.XCHAIN_CHAIN_TAG }}
           SHILLBOT_ESCROW_OWNER: ${{ env.XCHAIN_OWNER }}
           SHILLBOT_ESCROW_ATTESTER_SIGNER: ${{ env.XCHAIN_OPERATOR_SIGNER }}
@@ -240,9 +251,6 @@ jobs:
       XCHAIN_TREASURY: '0x996213ed4099707059b8b5d7489ffF23dAC9770d'
       XCHAIN_TREASURY_BPS: '5000'
       INPUT_NETWORK: ${{ inputs.network }}
-      # Mainnet job strictly uses EVM_MAINNET_DEPLOYER and never touches EVM_TESTNET_DEPLOYER.
-      EVM_MAINNET_DEPLOYER: ${{ secrets.EVM_MAINNET_DEPLOYER }}
-      EVM_MAINNET_RPC_URL: ${{ secrets.EVM_MAINNET_RPC_URL }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -279,15 +287,21 @@ jobs:
               ;;
           esac
 
-      - name: Select mainnet deployer key and RPC target
-        # Fail loudly if EVM_MAINNET_DEPLOYER is unset — never fall back to testnet keys.
+      - name: Validate mainnet deployer key and select RPC target
+        # Mainnet job strictly uses EVM_MAINNET_DEPLOYER and never touches EVM_TESTNET_DEPLOYER.
+        # Fail loudly if EVM_MAINNET_DEPLOYER is unset; keep DEPLOYER_PK step-scoped (never GITHUB_ENV).
+        env:
+          EVM_MAINNET_DEPLOYER: ${{ secrets.EVM_MAINNET_DEPLOYER }}
+          EVM_MAINNET_RPC_URL: ${{ secrets.EVM_MAINNET_RPC_URL }}
         run: |
           set -euo pipefail
           if [ -z "$EVM_MAINNET_DEPLOYER" ]; then
             echo "::error::EVM_MAINNET_DEPLOYER secret is required for a mainnet deploy"
             exit 1
           fi
-          echo "DEPLOYER_PK=$EVM_MAINNET_DEPLOYER" >> "$GITHUB_ENV"
+          if [ -n "$EVM_MAINNET_RPC_URL" ]; then
+            echo "::add-mask::$EVM_MAINNET_RPC_URL"
+          fi
           echo "RPC_TARGET=${EVM_MAINNET_RPC_URL:-$INPUT_NETWORK}" >> "$GITHUB_ENV"
 
       - name: Derive chain tag
@@ -298,6 +312,7 @@ jobs:
       - name: Deploy CrossChainGame
         if: inputs.contract == 'crosschain'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
           XCHAIN_CLAIM_WINDOW: '3600'
           XCHAIN_SKEW_MARGIN: '900'
         run: |
@@ -309,6 +324,7 @@ jobs:
       - name: Deploy CoordinationGame
         if: inputs.contract == 'coordination'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
           COORD_COMMIT_TIMEOUT: '3600' # Active + Committing
           COORD_REVEAL_TIMEOUT: '7200' # Revealing
         run: |
@@ -320,6 +336,7 @@ jobs:
       - name: Deploy CoordinationGameV4 (proxy)
         if: inputs.contract == 'coordinationv4'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
           COORD_COMMIT_TIMEOUT: '3600'
           COORD_REVEAL_TIMEOUT: '7200'
           V4_OWNER: ${{ env.XCHAIN_OWNER }}
@@ -338,6 +355,7 @@ jobs:
       - name: Upgrade CoordinationGameV4 (implementation only)
         if: inputs.contract == 'coordinationv4-upgrade'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
           V4_PROXY_BASE: ${{ vars.V4_PROXY_BASE }}
           V4_PROXY_ETHEREUM: ${{ vars.V4_PROXY_ETHEREUM }}
         run: |
@@ -357,6 +375,7 @@ jobs:
       - name: Upgrade CrossChainGame (implementation only)
         if: inputs.contract == 'crosschain-upgrade'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
           XCHAIN_PROXY_BASE: ${{ vars.XCHAIN_PROXY_BASE }}
           XCHAIN_PROXY_ETHEREUM: ${{ vars.XCHAIN_PROXY_ETHEREUM }}
         run: |
@@ -376,6 +395,7 @@ jobs:
       - name: Deploy ShillbotEscrow
         if: inputs.contract == 'shillbot'
         env:
+          DEPLOYER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER }}
           SHILLBOT_ESCROW_CHAIN_TAG: ${{ env.XCHAIN_CHAIN_TAG }}
           SHILLBOT_ESCROW_OWNER: ${{ env.XCHAIN_OWNER }}
           # Bootstrap attester = the shared xchain operator key (satisfies the

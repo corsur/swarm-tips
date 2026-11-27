@@ -56,6 +56,7 @@ concurrency:
 
 jobs:
   reconcile:
+    if: github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -229,9 +230,18 @@ jobs:
         env:
           COORDINATION_GAME: ${{ steps.want.outputs.game }}
           NEW_STAKE_WEI: ${{ steps.want.outputs.stake }}
-          OWNER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+          MATRIX_ENV: ${{ matrix.environment }}
+          MAINNET_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+          TESTNET_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
         run: |
           set -euo pipefail
+          if [ "$MATRIX_ENV" = "mainnet" ]; then
+            OWNER_PK="$MAINNET_PK"
+            [ -n "$OWNER_PK" ] || { echo "::error::EVM_MAINNET_DEPLOYER (or EVM_TESTNET_DEPLOYER) secret is required for mainnet reconciliation"; exit 1; }
+          else
+            OWNER_PK="$TESTNET_PK"
+            [ -n "$OWNER_PK" ] || { echo "::error::EVM_TESTNET_DEPLOYER secret is required for testnet reconciliation"; exit 1; }
+          fi
           forge script script/SetStake.s.sol \
             --rpc-url "${{ steps.diff.outputs.rpc }}" --private-key "$OWNER_PK" --broadcast -vvv
 
@@ -275,9 +285,18 @@ jobs:
           XCHAIN_GAME: ${{ steps.want.outputs.xgame }}
           NEW_STAKE_WEI: ${{ steps.want.outputs.stake }}
           NEW_MAX_TRANCHE_WEI: ${{ steps.want.outputs.tranche }}
-          OWNER_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+          MATRIX_ENV: ${{ matrix.environment }}
+          MAINNET_PK: ${{ secrets.EVM_MAINNET_DEPLOYER || secrets.EVM_TESTNET_DEPLOYER }}
+          TESTNET_PK: ${{ secrets.EVM_TESTNET_DEPLOYER }}
         run: |
           set -euo pipefail
+          if [ "$MATRIX_ENV" = "mainnet" ]; then
+            OWNER_PK="$MAINNET_PK"
+            [ -n "$OWNER_PK" ] || { echo "::error::EVM_MAINNET_DEPLOYER (or EVM_TESTNET_DEPLOYER) secret is required for mainnet reconciliation"; exit 1; }
+          else
+            OWNER_PK="$TESTNET_PK"
+            [ -n "$OWNER_PK" ] || { echo "::error::EVM_TESTNET_DEPLOYER secret is required for testnet reconciliation"; exit 1; }
+          fi
           # Daily cap follows the existing 10x-tranche convention in _deploy-evm.yml.
           export NEW_DAILY_TRANCHE_CAP_WEI=$(( NEW_MAX_TRANCHE_WEI * 10 ))
           forge script script/SetXChainStake.s.sol \

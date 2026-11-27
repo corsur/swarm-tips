@@ -29,6 +29,7 @@ concurrency:
 
 jobs:
   onboarding-e2e:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -68,9 +69,13 @@ jobs:
         run: pnpm --filter @swarm-tips/client build
 
       - name: Write root keypair (web-position root + fee payer)
+        env:
+          SOLANA_DEPLOY_KEYPAIR: ${{ secrets.SOLANA_DEPLOY_KEYPAIR }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.config/solana
-          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
+          printf '%s' "$SOLANA_DEPLOY_KEYPAIR" > ~/.config/solana/id.json
+          chmod 600 ~/.config/solana/id.json
 
       - name: Build IDLs + TS types (extension-registry, extension-credit, shillbot)
         # anchor build accepts only one -p at a time; build each in turn.
@@ -81,11 +86,17 @@ jobs:
 
       - name: Run the zero-funds onboarding e2e against devnet
         run: |
+          set -euo pipefail
           DEVNET_RPC="$(gcloud secrets versions access latest --secret=solana-rpc-url-devnet)"
           if [ -z "$DEVNET_RPC" ]; then
             echo "::error::could not read solana-rpc-url-devnet from Secret Manager" >&2
             exit 1
           fi
+          echo "::add-mask::$DEVNET_RPC"
           DEVNET_RPC="$DEVNET_RPC" npx tsx scripts/e2e/zero-funds-onboarding-devnet.ts
         env:
           GCP_PROJECT_ID: coordination-game-prod
+
+      - name: Clean up Solana keypair
+        if: always()
+        run: rm -rf ~/.config/solana

@@ -49,8 +49,8 @@ jobs:
     # and does nothing. workflow_run is no longer a trigger (the deploy job
     # reconciles inline), so only push and dispatch remain.
     if: >
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch'
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     # A registry edit is a statement about EVERY cluster it declares, so a push
     # must converge all of them. It used to reconcile only devnet: `push` leaves
@@ -138,6 +138,10 @@ jobs:
             export SOLANA_RPC_URL="${DEVNET_RPC:-https://api.devnet.solana.com}"
           fi
           pnpm dlx tsx scripts/reconcile-solana-stake.ts --cluster "$CLUSTER" --apply
+
+      - name: Clean up authority keypair
+        if: always()
+        run: rm -rf ~/.config/solana
 
       - name: Report
         if: always()

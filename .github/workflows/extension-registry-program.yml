@@ -32,6 +32,9 @@ on:
           - devnet
           - mainnet
 
+permissions:
+  contents: read
+
 jobs:
   changes:
     runs-on: ubuntu-latest
@@ -145,10 +148,15 @@ jobs:
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
 
       - name: Write deploy + program keypairs
+        env:
+          SOLANA_DEPLOY_KEYPAIR: ${{ secrets.SOLANA_DEPLOY_KEYPAIR }}
+          EXTENSION_REGISTRY_PROGRAM_KEYPAIR: ${{ secrets.EXTENSION_REGISTRY_PROGRAM_KEYPAIR }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.config/solana target/deploy
-          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
-          echo '${{ secrets.EXTENSION_REGISTRY_PROGRAM_KEYPAIR }}' > target/deploy/extension_registry-keypair.json
+          printf '%s' "$SOLANA_DEPLOY_KEYPAIR" > ~/.config/solana/id.json
+          printf '%s' "$EXTENSION_REGISTRY_PROGRAM_KEYPAIR" > target/deploy/extension_registry-keypair.json
+          chmod 600 ~/.config/solana/id.json target/deploy/extension_registry-keypair.json
 
       - name: Build program
         run: anchor build -p extension-registry
@@ -179,13 +187,18 @@ jobs:
         env:
           EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
 
+      - name: Clean up Solana keypairs
+        if: always()
+        run: rm -rf ~/.config/solana target/deploy/extension_registry-keypair.json
+
   deploy-mainnet:
-    # Automatic on push after devnet succeeds (allowlisted), plus dispatch.
+    # Automatic on push after devnet succeeds (allowlisted), plus dispatch on main.
     # Premium RPC from GCP Secret Manager; fails loud, never the public RPC.
     if: >-
       always() &&
+      github.ref == 'refs/heads/main' &&
       needs.test.result == 'success' &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' &&
         needs.changes.outputs.program == 'true' &&
         needs.deploy-devnet.result == 'success') ||
        (github.event_name == 'workflow_dispatch' && inputs.target == 'mainnet'))
@@ -231,10 +244,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Write deploy + program keypairs
+        env:
+          SOLANA_DEPLOY_KEYPAIR: ${{ secrets.SOLANA_DEPLOY_KEYPAIR }}
+          EXTENSION_REGISTRY_PROGRAM_KEYPAIR: ${{ secrets.EXTENSION_REGISTRY_PROGRAM_KEYPAIR }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.config/solana target/deploy
-          echo '${{ secrets.SOLANA_DEPLOY_KEYPAIR }}' > ~/.config/solana/id.json
-          echo '${{ secrets.EXTENSION_REGISTRY_PROGRAM_KEYPAIR }}' > target/deploy/extension_registry-keypair.json
+          printf '%s' "$SOLANA_DEPLOY_KEYPAIR" > ~/.config/solana/id.json
+          printf '%s' "$EXTENSION_REGISTRY_PROGRAM_KEYPAIR" > target/deploy/extension_registry-keypair.json
+          chmod 600 ~/.config/solana/id.json target/deploy/extension_registry-keypair.json
 
       - name: Build program
         run: anchor build -p extension-registry
@@ -279,3 +297,7 @@ jobs:
             --program-id H7whziapWzGDH1b3QQzxno69TD4braekyBZhfjNGof4j
         env:
           EXPECTED_AUTHORITY_PUBKEY: CKsZ7ZMLLUzbHUeu2Vm5mjuB8QQi3vfvqvXFdFxT7xmY
+
+      - name: Clean up Solana keypairs
+        if: always()
+        run: rm -rf ~/.config/solana target/deploy/extension_registry-keypair.json
