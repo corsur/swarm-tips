@@ -262,11 +262,11 @@ pub struct GameResult {
 /// devnet-only Tournament PDA.
 pub struct GameSessionManager {
     sessions: RwLock<HashMap<String, Arc<Mutex<GameSession>>>>,
-    ws_sinks: RwLock<HashMap<String, Arc<Mutex<WsSink>>>>,
+    ws_sinks: Arc<RwLock<HashMap<String, Arc<Mutex<WsSink>>>>>,
     tx_builders: RwLock<HashMap<String, GameTxBuilder>>,
     /// Cancellation tokens for background WS listener tasks.
-    /// Cancelled in `cleanup()` to stop dangling reconnect loops.
-    ws_cancel_tokens: RwLock<HashMap<String, CancellationToken>>,
+    /// Cancelled in `close_ws()` / `cleanup()` to stop dangling reconnect loops.
+    ws_cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     game_api_url: String,
     request_transport: Option<Arc<dyn api_transport::RequestTransport>>,
     realtime: Arc<dyn game_api_client::ws::RealtimeConnector>,
@@ -808,9 +808,9 @@ impl GameSessionManager {
         );
         Self {
             sessions: RwLock::new(HashMap::new()),
-            ws_sinks: RwLock::new(HashMap::new()),
+            ws_sinks: Arc::new(RwLock::new(HashMap::new())),
             tx_builders: RwLock::new(HashMap::new()),
-            ws_cancel_tokens: RwLock::new(HashMap::new()),
+            ws_cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
             game_api_url,
             request_transport: None,
             realtime: Arc::new(game_api_client::ws::WebSocketConnector),
@@ -827,9 +827,9 @@ impl GameSessionManager {
     pub fn new_for_test(game_api_url: String, solana_rpc_url: String) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
-            ws_sinks: RwLock::new(HashMap::new()),
+            ws_sinks: Arc::new(RwLock::new(HashMap::new())),
             tx_builders: RwLock::new(HashMap::new()),
-            ws_cancel_tokens: RwLock::new(HashMap::new()),
+            ws_cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
             game_api_url,
             request_transport: None,
             realtime: Arc::new(game_api_client::ws::WebSocketConnector),
@@ -839,6 +839,45 @@ impl GameSessionManager {
             solana_rpc_url_devnet: solana_rpc_url,
             internal_jwt_secret: None,
             db: None,
+        }
+    }
+
+    /// Install a new WS listener sink + cancellation token for `wallet`,
+    /// cancelling and closing any previous listener so repeated spawns never
+    /// leak orphan in-process connections.
+    async fn install_ws_listener(
+        &self,
+        wallet: &str,
+        ws_sink: Arc<Mutex<WsSink>>,
+        cancel_token: CancellationToken,
+    ) {
+        let prev_token = self
+            .ws_cancel_tokens
+            .write()
+            .await
+            .insert(wallet.to_string(), cancel_token);
+        if let Some(tok) = prev_token {
+            tok.cancel();
+        }
+        let prev_sink = self
+            .ws_sinks
+            .write()
+            .await
+            .insert(wallet.to_string(), ws_sink);
+        if let Some(sink) = prev_sink {
+            close_ws_sink(&sink).await;
+        }
+    }
+
+    /// Cancel the background WS listener and close/drop the sink for `wallet`
+    /// so in-process realtime connections (`combined-api` `GameConnector`) are
+    /// torn down immediately when a game resolves or is cleaned up.
+    pub(crate) async fn close_ws(&self, wallet: &str) {
+        if let Some(tok) = self.ws_cancel_tokens.write().await.remove(wallet) {
+            tok.cancel();
+        }
+        if let Some(sink) = self.ws_sinks.write().await.remove(wallet) {
+            close_ws_sink(&sink).await;
         }
     }
 
@@ -1186,17 +1225,25 @@ impl GameSessionManager {
         }
 
         if !evict_keys.is_empty() {
-            let mut sessions = self.sessions.write().await;
-            let mut builders = self.tx_builders.write().await;
-            let mut sinks = self.ws_sinks.write().await;
-            let mut tokens = self.ws_cancel_tokens.write().await;
-            for key in &evict_keys {
-                sessions.remove(key);
-                builders.remove(key);
-                sinks.remove(key);
-                if let Some(tok) = tokens.remove(key) {
-                    tok.cancel();
+            let mut evicted_sinks = Vec::new();
+            {
+                let mut sessions = self.sessions.write().await;
+                let mut builders = self.tx_builders.write().await;
+                let mut sinks = self.ws_sinks.write().await;
+                let mut tokens = self.ws_cancel_tokens.write().await;
+                for key in &evict_keys {
+                    sessions.remove(key);
+                    builders.remove(key);
+                    if let Some(sink) = sinks.remove(key) {
+                        evicted_sinks.push(sink);
+                    }
+                    if let Some(tok) = tokens.remove(key) {
+                        tok.cancel();
+                    }
                 }
+            }
+            for sink in evicted_sinks {
+                close_ws_sink(&sink).await;
             }
         }
 
@@ -1353,6 +1400,10 @@ impl GameSessionManager {
                 let cancel_token = self.shutdown.child_token();
                 let token_clone = cancel_token.clone();
                 let db_clone = self.db.clone();
+                let sinks_clone = Arc::clone(&self.ws_sinks);
+                let tokens_clone = Arc::clone(&self.ws_cancel_tokens);
+                self.install_ws_listener(wallet, ws_sink, cancel_token)
+                    .await;
                 tokio::spawn(async move {
                     ws_listener_with_reconnect(
                         session_clone,
@@ -1362,17 +1413,10 @@ impl GameSessionManager {
                         realtime,
                         token_clone,
                         db_clone,
+                        Some((sinks_clone, tokens_clone)),
                     )
                     .await;
                 });
-                self.ws_sinks
-                    .write()
-                    .await
-                    .insert(wallet.to_string(), ws_sink);
-                self.ws_cancel_tokens
-                    .write()
-                    .await
-                    .insert(wallet.to_string(), cancel_token);
                 tracing::info!(wallet = %wallet, "WS re-established for restored session");
             }
         }
@@ -1672,6 +1716,10 @@ impl GameSessionManager {
         let cancel_token = self.shutdown.child_token();
         let token_clone = cancel_token.clone();
         let db_clone = self.db.clone();
+        let sinks_clone = Arc::clone(&self.ws_sinks);
+        let tokens_clone = Arc::clone(&self.ws_cancel_tokens);
+        self.install_ws_listener(wallet, ws_sink, cancel_token)
+            .await;
         tokio::spawn(async move {
             ws_listener_with_reconnect(
                 session_clone,
@@ -1681,18 +1729,10 @@ impl GameSessionManager {
                 realtime,
                 token_clone,
                 db_clone,
+                Some((sinks_clone, tokens_clone)),
             )
             .await;
         });
-
-        self.ws_sinks
-            .write()
-            .await
-            .insert(wallet.to_string(), ws_sink);
-        self.ws_cancel_tokens
-            .write()
-            .await
-            .insert(wallet.to_string(), cancel_token);
         Ok(())
     }
 
@@ -1778,10 +1818,7 @@ impl GameSessionManager {
         }
 
         // Release per-game WS resources now that the game has resolved.
-        if let Some(tok) = self.ws_cancel_tokens.write().await.remove(wallet) {
-            tok.cancel();
-        }
-        self.ws_sinks.write().await.remove(wallet);
+        self.close_ws(wallet).await;
     }
 
     /// Read the on-chain Game state and, if Resolved, POST /games/resolved
@@ -2472,12 +2509,22 @@ impl GameSessionManager {
             .await?
             .context("game account not found")?;
 
+        let state = format!("{:?}", game.state);
+        if matches!(state.as_str(), "Resolved" | "Cancelled") {
+            {
+                let mut s = session.lock().await;
+                s.state = GameSessionState::Resolved;
+                s.commit_preimage = None;
+            }
+            self.close_ws(wallet).await;
+        }
+
         Ok(GameResult {
             status: "ok".to_string(),
             game_id,
             p1_guess: game.p1_guess,
             p2_guess: game.p2_guess,
-            state: format!("{:?}", game.state),
+            state,
         })
     }
 
@@ -2587,6 +2634,41 @@ const WS_MAX_RECONNECT_ATTEMPTS: u32 = 3;
 /// Initial backoff delay for reconnect (doubles each attempt).
 const WS_RECONNECT_BASE_DELAY_SECS: u64 = 2;
 
+/// Maximum silence before an idle MCP game WS listener closes itself so
+/// abandoned/timed-out sessions never pin `active_connections` indefinitely.
+const WS_IDLE_TIMEOUT_SECS: u64 = 1_800;
+
+type WsRegistryMaps = (
+    Arc<RwLock<HashMap<String, Arc<Mutex<WsSink>>>>>,
+    Arc<RwLock<HashMap<String, CancellationToken>>>,
+);
+
+/// Send a WebSocket Close frame (best-effort) so in-process `GameConnector`
+/// tasks in `combined-api` exit immediately and drop `active_connections`.
+async fn close_ws_sink(sink: &Arc<Mutex<WsSink>>) {
+    let mut guard = sink.lock().await;
+    let _ = guard
+        .send(game_api_client::ws::WsMessage::Close(None))
+        .await;
+    let _ = guard.close().await;
+}
+
+/// Returns `true` when the raw WS text frame carries a terminal `game_resolved`
+/// event emitted by `game-api`.
+fn is_game_resolved_event(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_owned))
+        .is_some_and(|t| t == "game_resolved")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WsReadExit {
+    Terminal,
+    IdleTimeout,
+    Disconnected,
+}
+
 async fn connect_realtime(
     connector: &Arc<dyn game_api_client::ws::RealtimeConnector>,
     base_url: &str,
@@ -2610,8 +2692,11 @@ async fn connect_realtime(
 ///
 /// On disconnect, attempts up to 3 reconnects with exponential backoff
 /// (2s, 4s, 8s). Must reconnect within game-api's 60s grace window or
-/// the session is abandoned. Exits immediately when `cancel` is triggered
-/// (game resolved or session cleaned up).
+/// the session is abandoned. Exits immediately (closing the sink and
+/// unregistering from `ws_sinks` / `ws_cancel_tokens`) when `cancel` is
+/// triggered, the game transitions to `Resolved`, a `game_resolved` frame
+/// arrives, or the connection sits idle past `WS_IDLE_TIMEOUT_SECS`.
+#[allow(clippy::too_many_arguments)]
 async fn ws_listener_with_reconnect(
     session: Arc<Mutex<GameSession>>,
     initial_stream: game_api_client::ws::WsStream,
@@ -2620,6 +2705,33 @@ async fn ws_listener_with_reconnect(
     realtime: Arc<dyn game_api_client::ws::RealtimeConnector>,
     cancel: CancellationToken,
     db: Option<Arc<FirestoreDb>>,
+    registries: Option<WsRegistryMaps>,
+) {
+    ws_listener_with_reconnect_timeout(
+        session,
+        initial_stream,
+        sink,
+        game_api_url,
+        realtime,
+        cancel,
+        db,
+        registries,
+        tokio::time::Duration::from_secs(WS_IDLE_TIMEOUT_SECS),
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn ws_listener_with_reconnect_timeout(
+    session: Arc<Mutex<GameSession>>,
+    initial_stream: game_api_client::ws::WsStream,
+    sink: Arc<Mutex<WsSink>>,
+    game_api_url: String,
+    realtime: Arc<dyn game_api_client::ws::RealtimeConnector>,
+    cancel: CancellationToken,
+    db: Option<Arc<FirestoreDb>>,
+    registries: Option<WsRegistryMaps>,
+    idle_timeout: tokio::time::Duration,
 ) {
     let wallet = session.lock().await.wallet.clone();
     tracing::info!(wallet = %wallet, "ws_listener started");
@@ -2627,20 +2739,35 @@ async fn ws_listener_with_reconnect(
     let mut stream = initial_stream;
 
     loop {
-        if cancel.is_cancelled() {
-            tracing::info!(wallet = %wallet, "ws_listener cancelled");
-            return;
+        if cancel.is_cancelled() || session.lock().await.state == GameSessionState::Resolved {
+            tracing::info!(wallet = %wallet, "ws_listener stopping (cancelled or resolved)");
+            break;
         }
 
-        // Run the read loop until disconnect.
-        tokio::select! {
-            _ = cancel.cancelled() => return,
-            _ = run_ws_read_loop(&session, &mut stream, &sink, &wallet, db.as_deref()) => {}
+        // Run the read loop until disconnect, terminal game_resolved, idle timeout, or cancel.
+        let exit = tokio::select! {
+            _ = cancel.cancelled() => {
+                tracing::info!(wallet = %wallet, "ws_listener cancelled");
+                break;
+            }
+            reason = run_ws_read_loop(&session, &mut stream, &sink, &wallet, db.as_deref(), idle_timeout) => reason,
+        };
+
+        match exit {
+            WsReadExit::Terminal => {
+                tracing::info!(wallet = %wallet, "ws_listener stopping after terminal game_resolved");
+                break;
+            }
+            WsReadExit::IdleTimeout => {
+                tracing::info!(wallet = %wallet, "ws_listener stopping after idle timeout");
+                break;
+            }
+            WsReadExit::Disconnected => {}
         }
 
-        if cancel.is_cancelled() {
-            tracing::info!(wallet = %wallet, "ws_listener cancelled after disconnect");
-            return;
+        if cancel.is_cancelled() || session.lock().await.state == GameSessionState::Resolved {
+            tracing::info!(wallet = %wallet, "ws_listener stopped after disconnect");
+            break;
         }
 
         // Attempt reconnect with exponential backoff.
@@ -2651,20 +2778,23 @@ async fn ws_listener_with_reconnect(
         let mut reconnected = false;
 
         for attempt in 0..WS_MAX_RECONNECT_ATTEMPTS {
-            if cancel.is_cancelled() {
-                tracing::info!(wallet = %wallet, "ws_listener cancelled during reconnect");
-                return;
+            if cancel.is_cancelled() || session.lock().await.state == GameSessionState::Resolved {
+                tracing::info!(wallet = %wallet, "ws_listener stopped during reconnect");
+                break;
             }
             let delay = WS_RECONNECT_BASE_DELAY_SECS
                 .checked_shl(attempt)
                 .unwrap_or(WS_RECONNECT_BASE_DELAY_SECS);
             tracing::info!(wallet = %wallet, attempt, delay_secs = delay, "ws reconnecting");
             tokio::select! {
-                _ = cancel.cancelled() => return,
+                _ = cancel.cancelled() => break,
                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(delay)) => {}
             }
+            if cancel.is_cancelled() || session.lock().await.state == GameSessionState::Resolved {
+                break;
+            }
             let connection = tokio::select! {
-                _ = cancel.cancelled() => return,
+                _ = cancel.cancelled() => break,
                 result = connect_realtime(&realtime, &game_api_url, &jwt, network.as_deref()) => result,
             };
             match connection {
@@ -2684,39 +2814,64 @@ async fn ws_listener_with_reconnect(
         }
 
         if !reconnected {
-            tracing::error!(
-                wallet = %wallet,
-                max_attempts = WS_MAX_RECONNECT_ATTEMPTS,
-                "ws reconnect exhausted, session lost"
-            );
+            if !cancel.is_cancelled() && session.lock().await.state != GameSessionState::Resolved {
+                tracing::error!(
+                    wallet = %wallet,
+                    max_attempts = WS_MAX_RECONNECT_ATTEMPTS,
+                    "ws reconnect exhausted, session lost"
+                );
+            }
             break;
+        }
+    }
+
+    // Tear down the sink and remove our registry entries (only if still pointing
+    // to this listener) so in-process realtime connections close immediately.
+    close_ws_sink(&sink).await;
+    if let Some((sinks_map, tokens_map)) = registries {
+        let mut sinks = sinks_map.write().await;
+        if sinks
+            .get(&wallet)
+            .is_some_and(|cur| Arc::ptr_eq(cur, &sink))
+        {
+            sinks.remove(&wallet);
+            tokens_map.write().await.remove(&wallet);
         }
     }
 
     tracing::info!(wallet = %wallet, "ws_listener ended");
 }
 
-/// Inner read loop — processes frames until the stream errors or closes.
+/// Inner read loop — processes frames until the stream errors, closes, times
+/// out idle, or receives a terminal `game_resolved` event.
 async fn run_ws_read_loop(
     session: &Arc<Mutex<GameSession>>,
     stream: &mut game_api_client::ws::WsStream,
     sink: &Arc<Mutex<WsSink>>,
     wallet: &str,
     db: Option<&FirestoreDb>,
-) {
+    idle_timeout: tokio::time::Duration,
+) -> WsReadExit {
     use futures_util::StreamExt;
     use game_api_client::ws::WsMessage;
 
     loop {
-        let frame = match stream.next().await {
+        let next_frame = match tokio::time::timeout(idle_timeout, stream.next()).await {
+            Ok(frame) => frame,
+            Err(_) => {
+                tracing::info!(wallet = %wallet, "game WS idle timeout elapsed");
+                return WsReadExit::IdleTimeout;
+            }
+        };
+        let frame = match next_frame {
             Some(Ok(frame)) => frame,
             Some(Err(e)) => {
                 tracing::warn!(wallet = %wallet, error = %e, "game WS read error");
-                return;
+                return WsReadExit::Disconnected;
             }
             None => {
                 tracing::info!(wallet = %wallet, "game WS stream ended");
-                return;
+                return WsReadExit::Disconnected;
             }
         };
 
@@ -2776,6 +2931,15 @@ async fn run_ws_read_loop(
                         push_bounded_chat(&mut s.chat_buffer, text, MAX_CHAT_BUFFER_MESSAGES);
                     }
                     ServerMessage::Unknown => {
+                        if is_game_resolved_event(&text) {
+                            tracing::info!(wallet = %wallet, "ws: game_resolved — closing listener");
+                            s.state = GameSessionState::Resolved;
+                            s.commit_preimage = None;
+                            if let Some(db) = db {
+                                persist_ws_transition(db, &s, "game_resolved").await;
+                            }
+                            return WsReadExit::Terminal;
+                        }
                         tracing::debug!(wallet = %wallet, "ws: unknown message type");
                     }
                 }
@@ -2783,13 +2947,13 @@ async fn run_ws_read_loop(
             WsMessage::Ping(data) => {
                 if let Err(e) = sink.lock().await.send(WsMessage::Pong(data)).await {
                     tracing::warn!(wallet = %wallet, error = %e, "pong send failed");
-                    return;
+                    return WsReadExit::Disconnected;
                 }
             }
             WsMessage::Pong(_) | WsMessage::Binary(_) | WsMessage::Frame(_) => {}
             WsMessage::Close(_) => {
                 tracing::info!(wallet = %wallet, "game WS closed by server");
-                return;
+                return WsReadExit::Disconnected;
             }
         }
     }

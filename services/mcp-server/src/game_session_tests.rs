@@ -1136,3 +1136,173 @@ async fn join_queue_after_stake_preserves_ws_match_found_delivered_during_join_h
     assert!(final_s.chat_buffer.is_empty());
     assert!(final_s.game_ready.is_none());
 }
+
+#[tokio::test]
+async fn ws_listener_closes_sink_and_clears_maps_on_game_resolved() {
+    use game_api_client::ws::{ConnectFuture, ConnectRequest, RealtimeConnector, WsMessage};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingConnector(Arc<AtomicUsize>);
+    impl RealtimeConnector for CountingConnector {
+        fn connect(&self, _req: ConnectRequest) -> ConnectFuture {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(anyhow::anyhow!("should not reconnect after game_resolved")) })
+        }
+    }
+
+    let wallet = "ResolvedWallet11111111111111111111111111111".to_string();
+    let session = Arc::new(Mutex::new(GameSession {
+        wallet: wallet.clone(),
+        jwt: "jwt".to_string(),
+        state: GameSessionState::Committed,
+        game_id: Some(42),
+        tournament_id: Some(1),
+        session_id: Some("sess-42".to_string()),
+        role: Some(0),
+        chat_buffer: Vec::new(),
+        match_found: None,
+        matchup_commitment: None,
+        commit_preimage: Some([0x77u8; 32]),
+        game_ready: Some(42),
+        reveal_data: None,
+        network: Some("devnet".to_string()),
+    }));
+
+    let (to_game_tx, mut to_game_rx) = tokio::sync::mpsc::channel::<WsMessage>(8);
+    let (from_game_tx, from_game_rx) = tokio::sync::mpsc::channel(8);
+    let (sink, stream) = WsConnection::from_channels(to_game_tx, from_game_rx).into_split();
+    let ws_sink = Arc::new(Mutex::new(sink));
+
+    let manager = GameSessionManager::new_for_test(
+        "http://127.0.0.1:1".to_string(),
+        "http://127.0.0.1:1".to_string(),
+    );
+    let cancel = manager.shutdown.child_token();
+    manager
+        .install_ws_listener(&wallet, Arc::clone(&ws_sink), cancel.clone())
+        .await;
+
+    let reconnects = Arc::new(AtomicUsize::new(0));
+    let connector: Arc<dyn RealtimeConnector> =
+        Arc::new(CountingConnector(Arc::clone(&reconnects)));
+
+    from_game_tx
+        .send(Ok(WsMessage::Text(
+            r#"{"type":"game_resolved","p1_guess":0,"p2_guess":0,"matchup_type":0,"first_committer":1}"#
+                .to_string(),
+        )))
+        .await
+        .unwrap();
+
+    ws_listener_with_reconnect_timeout(
+        Arc::clone(&session),
+        stream,
+        ws_sink,
+        "http://127.0.0.1:1".to_string(),
+        connector,
+        cancel,
+        None,
+        Some((
+            Arc::clone(&manager.ws_sinks),
+            Arc::clone(&manager.ws_cancel_tokens),
+        )),
+        tokio::time::Duration::from_secs(5),
+    )
+    .await;
+
+    assert_eq!(reconnects.load(Ordering::SeqCst), 0);
+    {
+        let s = session.lock().await;
+        assert_eq!(s.state, GameSessionState::Resolved);
+        assert_eq!(s.commit_preimage, None);
+    }
+    assert!(
+        matches!(to_game_rx.recv().await, Some(WsMessage::Close(_))),
+        "expected WsMessage::Close frame on game_resolved teardown"
+    );
+    assert!(!manager.ws_sinks.read().await.contains_key(&wallet));
+    assert!(!manager.ws_cancel_tokens.read().await.contains_key(&wallet));
+}
+
+#[tokio::test]
+async fn ws_listener_closes_on_idle_timeout_and_replace_cancels_prior() {
+    use game_api_client::ws::{ConnectFuture, ConnectRequest, RealtimeConnector, WsMessage};
+
+    struct NeverConnector;
+    impl RealtimeConnector for NeverConnector {
+        fn connect(&self, _req: ConnectRequest) -> ConnectFuture {
+            Box::pin(async { Err(anyhow::anyhow!("unexpected reconnect")) })
+        }
+    }
+
+    let wallet = "IdleWallet111111111111111111111111111111111".to_string();
+    let manager = GameSessionManager::new_for_test(
+        "http://127.0.0.1:1".to_string(),
+        "http://127.0.0.1:1".to_string(),
+    );
+
+    // Installing a second listener for the same wallet must cancel + close the prior one.
+    let (tx1, mut rx1) = tokio::sync::mpsc::channel::<WsMessage>(4);
+    let (_in1, out1) = tokio::sync::mpsc::channel(4);
+    let (sink1, _stream1) = WsConnection::from_channels(tx1, out1).into_split();
+    let tok1 = manager.shutdown.child_token();
+    manager
+        .install_ws_listener(&wallet, Arc::new(Mutex::new(sink1)), tok1.clone())
+        .await;
+
+    let (tx2, mut rx2) = tokio::sync::mpsc::channel::<WsMessage>(4);
+    let (_in2, out2) = tokio::sync::mpsc::channel(4);
+    let (sink2, stream2) = WsConnection::from_channels(tx2, out2).into_split();
+    let ws_sink2 = Arc::new(Mutex::new(sink2));
+    let tok2 = manager.shutdown.child_token();
+    manager
+        .install_ws_listener(&wallet, Arc::clone(&ws_sink2), tok2.clone())
+        .await;
+
+    assert!(tok1.is_cancelled(), "replaced token must be cancelled");
+    assert!(
+        matches!(rx1.recv().await, Some(WsMessage::Close(_))),
+        "replaced sink must receive Close"
+    );
+
+    // Listener 2 times out cleanly on idle without reconnecting.
+    let session = Arc::new(Mutex::new(GameSession {
+        wallet: wallet.clone(),
+        jwt: "jwt".to_string(),
+        state: GameSessionState::InGame,
+        game_id: Some(99),
+        tournament_id: Some(1),
+        session_id: Some("sess-99".to_string()),
+        role: Some(0),
+        chat_buffer: Vec::new(),
+        match_found: None,
+        matchup_commitment: None,
+        commit_preimage: None,
+        game_ready: Some(99),
+        reveal_data: None,
+        network: Some("devnet".to_string()),
+    }));
+
+    ws_listener_with_reconnect_timeout(
+        session,
+        stream2,
+        ws_sink2,
+        "http://127.0.0.1:1".to_string(),
+        Arc::new(NeverConnector),
+        tok2,
+        None,
+        Some((
+            Arc::clone(&manager.ws_sinks),
+            Arc::clone(&manager.ws_cancel_tokens),
+        )),
+        tokio::time::Duration::from_millis(25),
+    )
+    .await;
+
+    assert!(
+        matches!(rx2.recv().await, Some(WsMessage::Close(_))),
+        "idle listener must send Close on teardown"
+    );
+    assert!(!manager.ws_sinks.read().await.contains_key(&wallet));
+    assert!(!manager.ws_cancel_tokens.read().await.contains_key(&wallet));
+}
