@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  EVM_REVEAL_GUESS_MIN_GAS,
   gameStatusExists,
   sendConfirmedTx,
   sendCreateGameConfirmingEffect,
@@ -45,6 +46,15 @@ describe("sendConfirmedTx — confirm-or-replace (Base Sepolia drop/nonce resili
     });
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0]).toMatchObject({ nonce: 5 }); // pinned nonce
+  });
+
+  it("forwards explicit gas limit floor (preventing concurrent revealGuess OutOfGas)", async () => {
+    const { wallet, send } = sender(["0xh1"]);
+    const r = reader();
+    await expect(
+      sendConfirmedTx(wallet, r, CHAIN, { ...call, gas: EVM_REVEAL_GUESS_MIN_GAS }, "revealGuess", FAST),
+    ).resolves.toMatchObject({ status: "success" });
+    expect(send.mock.calls[0][0]).toMatchObject({ gas: 350_000n });
   });
 
   it("throws on a reverted receipt (never a false success)", async () => {

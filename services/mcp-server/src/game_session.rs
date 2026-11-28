@@ -94,6 +94,9 @@ pub const MAX_IN_MEMORY_SESSIONS: usize = 10_000;
 /// Per-session chat buffer bound so an abusive peer cannot grow memory unboundedly (C8).
 pub const MAX_CHAT_BUFFER_MESSAGES: usize = 256;
 
+/// Hard upper bound on pending nonce -> tournament_id mappings from `game_find_match`.
+const MAX_PENDING_FIND_MATCHES: usize = 4_096;
+
 /// Whether an in-memory session is safe to evict under memory pressure:
 /// resolved games and unauthenticated idle registrations carry no unpersisted
 /// preimage or active match state.
@@ -109,6 +112,31 @@ fn is_evictable_session(s: &GameSession) -> bool {
         | GameSessionState::InGame
         | GameSessionState::Committed => false,
     }
+}
+
+/// Whether `build_find_match_tx` may mutate `s.network` and `s.tournament_id`.
+/// An unverified caller (`caller_verified == false`) must NEVER mutate an active
+/// session (`P0-07`) — building the unsigned `deposit_stake` tx remains stateless
+/// and read-only, while ownership proof happens on `submit_signed_game_tx("deposit_stake")`.
+fn should_mutate_session_on_find_match(caller_verified: bool, s: &GameSession) -> bool {
+    caller_verified || is_evictable_session(s)
+}
+
+/// Reset prior game fields once a newly signed `deposit_stake` transaction has
+/// been cryptographically verified and authenticated via `/auth/session`.
+/// Clears ANY prior state (including timed-out/abandoned `Queued`/`Matched`/`InGame`/`Committed`
+/// sessions, not only `Resolved`) so an orphaned game never permanently bricks a wallet.
+fn reset_session_for_new_stake(s: &mut GameSession) {
+    s.state = GameSessionState::Connected;
+    s.game_id = None;
+    s.session_id = None;
+    s.role = None;
+    s.chat_buffer.clear();
+    s.match_found = None;
+    s.matchup_commitment = None;
+    s.commit_preimage = None;
+    s.game_ready = None;
+    s.reveal_data = None;
 }
 
 /// Append a chat line while keeping `buf.len() <= cap` (FIFO drop of oldest).
@@ -267,6 +295,10 @@ pub struct GameSessionManager {
     /// Cancellation tokens for background WS listener tasks.
     /// Cancelled in `close_ws()` / `cleanup()` to stop dangling reconnect loops.
     ws_cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    /// Ephemeral `nonce -> tournament_id` cache populated by `build_find_match_tx`
+    /// so `after_deposit_stake` does not rely on mutating an active `GameSession`
+    /// before wallet ownership is proved by the signed `deposit_stake` tx.
+    pending_find_matches: RwLock<HashMap<String, u64>>,
     game_api_url: String,
     request_transport: Option<Arc<dyn api_transport::RequestTransport>>,
     realtime: Arc<dyn game_api_client::ws::RealtimeConnector>,
@@ -811,6 +843,7 @@ impl GameSessionManager {
             ws_sinks: Arc::new(RwLock::new(HashMap::new())),
             tx_builders: RwLock::new(HashMap::new()),
             ws_cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
+            pending_find_matches: RwLock::new(HashMap::new()),
             game_api_url,
             request_transport: None,
             realtime: Arc::new(game_api_client::ws::WebSocketConnector),
@@ -830,6 +863,7 @@ impl GameSessionManager {
             ws_sinks: Arc::new(RwLock::new(HashMap::new())),
             tx_builders: RwLock::new(HashMap::new()),
             ws_cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
+            pending_find_matches: RwLock::new(HashMap::new()),
             game_api_url,
             request_transport: None,
             realtime: Arc::new(game_api_client::ws::WebSocketConnector),
@@ -1475,9 +1509,12 @@ impl GameSessionManager {
     /// be passed the same `network` so the broadcast lands on the same
     /// cluster).
     ///
-    /// When `caller_verified` is `false` (zero-auth first-time `deposit_stake`
-    /// onboarding), refuses if an active session already exists for `wallet`
-    /// and never mutates an active session's `network` or `tournament_id` (`P0-07`).
+    /// When `caller_verified` is `false` (zero-auth `deposit_stake` stake-as-auth
+    /// flow), building the unsigned transaction NEVER mutates an active session's
+    /// `network` or `tournament_id` (`P0-07`). Instead, `nonce -> tournament_id` is
+    /// recorded out-of-band (with on-chain `Tournament` PDA fallback across Cloud
+    /// Run instances), and the active session is only replaced after the wallet
+    /// owner proves ownership by signing and broadcasting `deposit_stake`.
     pub async fn build_find_match_tx(
         &self,
         wallet: &str,
@@ -1497,14 +1534,6 @@ impl GameSessionManager {
             .get(wallet)
             .cloned()
             .context("no session for wallet")?;
-
-        if !caller_verified {
-            let s = session_arc.lock().await;
-            anyhow::ensure!(
-                is_evictable_session(&s),
-                "an active game session already exists for this wallet; verify wallet ownership via agent_verify_wallet or Authorization: Bearer before calling game_find_match"
-            );
-        }
 
         let pubkey = solana_sdk::pubkey::Pubkey::from_str(wallet).context("invalid wallet")?;
         let tx_builder = self.tx_builder_for_network(pubkey, network);
@@ -1540,19 +1569,24 @@ impl GameSessionManager {
             .build_deposit_stake_with_memo(tournament_id, &nonce)
             .await?;
 
-        // Pin network & tournament_id only AFTER the unsigned deposit_stake tx
-        // succeeded, and re-verify an unverified caller cannot mutate an active
-        // session that may have started concurrently.
+        // Record `nonce -> tournament_id` out-of-band so `after_deposit_stake`
+        // can resolve the tournament without mutating an active victim session.
+        {
+            let mut pending = self.pending_find_matches.write().await;
+            if pending.len() >= MAX_PENDING_FIND_MATCHES {
+                pending.clear();
+            }
+            pending.insert(nonce, tournament_id);
+        }
+
+        // Only pin network & tournament_id directly on `session_arc` when the
+        // caller is already verified OR no active game session exists (`P0-07`).
         {
             let mut s = session_arc.lock().await;
-            if !caller_verified {
-                anyhow::ensure!(
-                    is_evictable_session(&s),
-                    "an active game session already exists for this wallet; verify wallet ownership via agent_verify_wallet or Authorization: Bearer before calling game_find_match"
-                );
+            if should_mutate_session_on_find_match(caller_verified, &s) {
+                s.network = network.map(str::to_string);
+                s.tournament_id = Some(tournament_id);
             }
-            s.network = network.map(str::to_string);
-            s.tournament_id = Some(tournament_id);
         }
 
         Ok(unsigned)
@@ -1590,8 +1624,24 @@ impl GameSessionManager {
                 let nonce = memo_nonce_from_signed_tx(&signed_bytes).context(
                     "deposit_stake tx carries no SPL-Memo nonce — build it via build_find_match_tx",
                 )?;
-                self.after_deposit_stake(wallet, &sig_str, &session, network, &nonce)
-                    .await?
+                let resolved_tournament_id = self
+                    .resolve_deposit_stake_tournament_id(
+                        wallet,
+                        &nonce,
+                        &signed_bytes,
+                        network,
+                        &session,
+                    )
+                    .await;
+                self.after_deposit_stake(
+                    wallet,
+                    &sig_str,
+                    &session,
+                    network,
+                    &nonce,
+                    resolved_tournament_id,
+                )
+                .await?
             }
             "join_game" => self.after_join_game(wallet, &session).await?,
             "commit_guess" => self.after_commit_guess(wallet, &session).await?,
@@ -1615,6 +1665,43 @@ impl GameSessionManager {
             "tx_signature": sig_str,
             "status": "submitted",
         }))
+    }
+
+    /// Resolve `tournament_id` for a confirmed `deposit_stake` tx:
+    /// 1. Ephemeral `nonce -> tournament_id` cache populated by `build_find_match_tx`
+    ///    (zero RPC call on same instance, zero mutation of an active victim session).
+    /// 2. On-chain `Tournament` PDA (`accounts[1]`) from the signed tx itself
+    ///    (stateless cross-instance Cloud Run fallback).
+    /// 3. Existing `session.tournament_id` fallback (e.g. unit tests without RPC).
+    async fn resolve_deposit_stake_tournament_id(
+        &self,
+        wallet: &str,
+        nonce: &str,
+        signed_bytes: &[u8],
+        network: Option<&str>,
+        session: &Arc<Mutex<GameSession>>,
+    ) -> Option<u64> {
+        if let Some(tid) = self.pending_find_matches.write().await.remove(nonce) {
+            return Some(tid);
+        }
+        if let (Ok(pubkey), Some(tournament_pda)) = (
+            solana_sdk::pubkey::Pubkey::from_str(wallet),
+            game_chain::client::deposit_stake_tournament_pda(signed_bytes),
+        ) {
+            let tx_builder = self.tx_builder_for_network(pubkey, network);
+            match tx_builder.read_tournament_id(&tournament_pda).await {
+                Ok(tid) => return Some(tid),
+                Err(e) => {
+                    tracing::warn!(
+                        wallet = %wallet,
+                        tournament_pda = %tournament_pda,
+                        error = %e,
+                        "failed to read tournament_id from deposit_stake Tournament PDA; falling back to session"
+                    );
+                }
+            }
+        }
+        session.lock().await.tournament_id
     }
 
     /// Submit the signed bytes through a `GameTxBuilder` for the requested
@@ -1681,32 +1768,29 @@ impl GameSessionManager {
         session: &Arc<Mutex<GameSession>>,
         network: Option<&str>,
         nonce: &str,
+        tournament_id: Option<u64>,
     ) -> Result<()> {
+        let api_client = self.api_client()?.with_network(network.map(str::to_string));
+        let auth_resp = api_client.session_auth(wallet, sig_str, nonce).await?;
+        let jwt = auth_resp.token.clone();
+
         if !session.lock().await.jwt.is_empty() {
             self.close_ws(wallet).await;
             session.lock().await.jwt.clear();
         }
 
-        let api_client = self.api_client()?.with_network(network.map(str::to_string));
-        let auth_resp = api_client.session_auth(wallet, sig_str, nonce).await?;
-        let jwt = auth_resp.token.clone();
-        // Transition out of `Resolved` BEFORE spawning the fresh WS listener so
-        // the listener's terminal-state check does not immediately tear down
-        // Game 2's connection before `join_queue_after_stake` sets `Queued`.
+        // The wallet owner just proved ownership via an on-chain signed
+        // `deposit_stake` + `/auth/session`. Reset ANY prior game state
+        // (including stale/abandoned `Queued`/`Matched`/`InGame`/`Committed`
+        // sessions from prior timed-out games, as well as `Resolved`) BEFORE
+        // spawning the fresh WS listener.
         {
             let mut s = session.lock().await;
-            if s.state == GameSessionState::Resolved {
-                s.state = GameSessionState::Connected;
-                s.game_id = None;
-                s.session_id = None;
-                s.role = None;
-                s.chat_buffer.clear();
-                s.match_found = None;
-                s.matchup_commitment = None;
-                s.commit_preimage = None;
-                s.game_ready = None;
-                s.reveal_data = None;
+            reset_session_for_new_stake(&mut s);
+            if let Some(tid) = tournament_id {
+                s.tournament_id = Some(tid);
             }
+            s.network = network.map(str::to_string);
         }
         self.spawn_ws_listener(wallet, &jwt, session, network)
             .await?;

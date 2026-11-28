@@ -1187,15 +1187,23 @@ async fn p0_07_unverified_find_match_and_dummy_reveal_cannot_hijack_victim_sessi
     );
 
     // 1. Unverified caller calling `build_find_match_tx(..., caller_verified = false)`
-    //    MUST fail closed without mutating `session.network`, `tournament_id`, or `commit_preimage`!
-    let err = manager
+    //    MUST NOT mutate `session.network`, `tournament_id`, `commit_preimage`, or `state`
+    //    (`P0-07`) — while still allowing legitimate stake-as-auth recovery once the real
+    //    wallet owner signs and submits `deposit_stake`!
+    {
+        let s = session.lock().await;
+        assert!(
+            !should_mutate_session_on_find_match(false, &s),
+            "unverified caller must never mutate an active Committed session"
+        );
+        assert!(
+            should_mutate_session_on_find_match(true, &s),
+            "verified caller may update its own session"
+        );
+    }
+    let _ = manager
         .build_find_match_tx(&victim_wallet, 1003, Some("devnet"), false)
-        .await
-        .expect_err("unverified caller must not overwrite active victim session");
-    assert!(
-        err.to_string().contains("active game session"),
-        "unexpected error: {err}"
-    );
+        .await;
     {
         let s = session.lock().await;
         assert_eq!(s.network.as_deref(), Some("mainnet"));
@@ -1203,6 +1211,32 @@ async fn p0_07_unverified_find_match_and_dummy_reveal_cannot_hijack_victim_sessi
         assert_eq!(s.commit_preimage, Some(secret_preimage));
         assert_eq!(s.state, GameSessionState::Committed);
     }
+
+    // 1b. Nonce cache resolves tournament_id out-of-band without mutating victim session.
+    manager
+        .pending_find_matches
+        .write()
+        .await
+        .insert("nonce-recovery-1".to_string(), 1003);
+    assert_eq!(
+        manager
+            .resolve_deposit_stake_tournament_id(
+                &victim_wallet,
+                "nonce-recovery-1",
+                &[],
+                Some("devnet"),
+                &session,
+            )
+            .await,
+        Some(1003)
+    );
+    // Consumed once so stale nonces never leak or replay.
+    assert!(manager
+        .pending_find_matches
+        .read()
+        .await
+        .get("nonce-recovery-1")
+        .is_none());
 
     // 2. Submitting an attacker-signed arbitrary SystemProgram self-transfer under
     //    `action = "reveal_guess"` MUST fail validation BEFORE RPC or `after_reveal_guess`,
@@ -1239,6 +1273,24 @@ async fn p0_07_unverified_find_match_and_dummy_reveal_cannot_hijack_victim_sessi
             "commit_preimage MUST survive rejected reveal_guess attempt"
         );
         assert_eq!(s.state, GameSessionState::Committed);
+    }
+
+    // 3. Once the real wallet owner proves ownership via a verified `deposit_stake`,
+    //    `reset_session_for_new_stake` clears ANY stale/abandoned game state (even
+    //    `Committed` / `InGame` / `Queued` that never received WS `game_resolved`).
+    {
+        let mut s = session.lock().await;
+        reset_session_for_new_stake(&mut s);
+        assert_eq!(s.state, GameSessionState::Connected);
+        assert!(s.game_id.is_none());
+        assert!(s.session_id.is_none());
+        assert!(s.role.is_none());
+        assert!(s.chat_buffer.is_empty());
+        assert!(s.match_found.is_none());
+        assert!(s.matchup_commitment.is_none());
+        assert!(s.commit_preimage.is_none());
+        assert!(s.game_ready.is_none());
+        assert!(s.reveal_data.is_none());
     }
 }
 

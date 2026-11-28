@@ -100,7 +100,7 @@ export async function sendConfirmedTx(
   wallet: TxSender,
   pinned: PinnedReader,
   chain: Chain,
-  call: { to: Hex; data: Hex; value: bigint },
+  call: { to: Hex; data: Hex; value: bigint; gas?: bigint },
   label: string,
   {
     attempts = 4,
@@ -171,7 +171,7 @@ export function sendConfirmedGameTx(
   sessionKey: Hex,
   chain: Chain,
   rpcUrls: string[],
-  call: { to: Hex; data: Hex; value: bigint },
+  call: { to: Hex; data: Hex; value: bigint; gas?: bigint },
   label: string,
 ): Promise<TransactionReceipt> {
   return sendConfirmedTx(
@@ -283,6 +283,18 @@ export async function sendCreateGameConfirmingEffect(
 }
 
 /**
+ * Gas limit floor for `revealGuess`.
+ *
+ * When both players reveal concurrently, `eth_estimateGas` simulates the cheap
+ * 1st-revealer path (~53k gas, storing one guess). Whichever transaction mines
+ * 2nd enters `_resolve()` (payouts, season accounting, and two ETH transfers,
+ * ~180k–250k gas) and reverts `OutOfGas` if capped at ~53k. EVM only bills
+ * `gasUsed`, so a 350k floor costs nothing extra for the 1st revealer while
+ * preventing concurrent 2nd-revealer `OutOfGas` reverts.
+ */
+export const EVM_REVEAL_GUESS_MIN_GAS = 350_000n;
+
+/**
  * Send a game CONTRACT call (session-key signed) and CONFIRM it. Encodes the call
  * and routes through sendConfirmedTx, so every game tx — createGame, joinGame,
  * commitGuess, revealGuess, resolveTimeout — gets the same confirm-or-replace
@@ -292,7 +304,7 @@ export async function sendAndConfirm(
   sessionKey: Hex,
   chain: Chain,
   rpcUrls: string[],
-  call: { abi: Abi; functionName: string; args: readonly unknown[]; to: Hex },
+  call: { abi: Abi; functionName: string; args: readonly unknown[]; to: Hex; gas?: bigint },
   label: string,
 ): Promise<void> {
   const data = encodeFunctionData({
@@ -300,5 +312,13 @@ export async function sendAndConfirm(
     functionName: call.functionName,
     args: call.args,
   });
-  await sendConfirmedGameTx(sessionKey, chain, rpcUrls, { to: call.to, data, value: 0n }, label);
+  const gas =
+    call.gas ?? (call.functionName === "revealGuess" ? EVM_REVEAL_GUESS_MIN_GAS : undefined);
+  await sendConfirmedGameTx(
+    sessionKey,
+    chain,
+    rpcUrls,
+    { to: call.to, data, value: 0n, ...(gas !== undefined ? { gas } : {}) },
+    label,
+  );
 }

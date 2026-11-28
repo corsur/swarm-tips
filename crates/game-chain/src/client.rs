@@ -7,7 +7,7 @@
 
 use anchor_lang::{AccountDeserialize, Discriminator};
 use anyhow::{Context, Result};
-use coordination::state::{Game, GameCounter, GameState, GlobalConfig};
+use coordination::state::{Game, GameCounter, GameState, GlobalConfig, Tournament};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig, message::Message, pubkey, pubkey::Pubkey,
@@ -129,6 +129,25 @@ pub fn validate_signed_tx(
     }
 
     Ok(())
+}
+
+/// Extract the `tournament_pda` (`accounts[1]`) from a signed `deposit_stake`
+/// transaction so `mcp-server` can resolve the exact `tournament_id` statelessly
+/// across instances without mutating an active `GameSession` before ownership proof.
+pub fn deposit_stake_tournament_pda(signed_tx_bytes: &[u8]) -> Option<Pubkey> {
+    let tx: Transaction = bincode::deserialize(signed_tx_bytes).ok()?;
+    let disc = coordination::instruction::DepositStake::DISCRIMINATOR;
+    for ix in &tx.message.instructions {
+        let program_id = tx
+            .message
+            .account_keys
+            .get(usize::from(ix.program_id_index))?;
+        if *program_id == coordination::ID && ix.data.len() >= 8 && &ix.data[..8] == disc {
+            let pda_idx = *ix.accounts.get(1)?;
+            return tx.message.account_keys.get(usize::from(pda_idx)).copied();
+        }
+    }
+    None
 }
 
 /// Default poll interval when waiting for a game state transition.
@@ -508,6 +527,18 @@ impl GameTxBuilder {
     }
 
     // -- Submit ----------------------------------------------------------------
+
+    /// Read `Tournament.tournament_id` from an on-chain `Tournament` PDA.
+    pub async fn read_tournament_id(&self, tournament_pda: &Pubkey) -> Result<u64> {
+        let acct = self
+            .rpc
+            .get_account(tournament_pda)
+            .await
+            .with_context(|| format!("failed to fetch Tournament account {tournament_pda}"))?;
+        let tournament = Tournament::try_deserialize(&mut acct.data.as_ref())
+            .context("failed to deserialize Tournament account")?;
+        Ok(tournament.tournament_id)
+    }
 
     /// Wallet balance for TELEMETRY fields only. A failed read logs the error
     /// and yields None (rendered as absent), never a fake 0 — a zero balance
@@ -1119,5 +1150,13 @@ mod tests {
             err.to_string().contains("matching action 'reveal_guess'"),
             "unexpected error: {err}"
         );
+
+        // 5. deposit_stake_tournament_pda extracts exact tournament PDA from signed tx.
+        let (expected_pda, _) = pda::tournament_pda(3);
+        assert_eq!(
+            deposit_stake_tournament_pda(&stake_bytes),
+            Some(expected_pda)
+        );
+        assert_eq!(deposit_stake_tournament_pda(&transfer_bytes), None);
     }
 }
