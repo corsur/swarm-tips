@@ -8,6 +8,7 @@ on:
       - "proofs/SwarmProofs/SwarmProofs/Chains/**"
       - "scripts/e2e/seed-lean-catalog.ts"
       - "scripts/e2e/test-lean-catalog-gate.ts"
+      - "scripts/e2e/redteam-lean-statement.ts"
       - ".github/workflows/lean-catalog-gate.yml"
   push:
     branches: [main]
@@ -17,6 +18,7 @@ on:
       - "proofs/SwarmProofs/SwarmProofs/Chains/**"
       - "scripts/e2e/seed-lean-catalog.ts"
       - "scripts/e2e/test-lean-catalog-gate.ts"
+      - "scripts/e2e/redteam-lean-statement.ts"
       - ".github/workflows/lean-catalog-gate.yml"
   workflow_dispatch: {}
 
@@ -88,6 +90,8 @@ jobs:
       - name: Fetch Mathlib cache and build SwarmProofs
         working-directory: proofs/SwarmProofs
         run: lake exe cache get && lake build SwarmProofs
+      - name: Verify machine-checked non-vacuity witnesses for all Mainnet open/novel entries
+        run: npx tsx scripts/e2e/test-lean-catalog-gate.ts --nonvacuous-only
       - name: Verify per-probe positive controls and bridge lemma catches
         run: npx tsx scripts/e2e/test-lean-catalog-gate.ts --mathlib-controls
       - name: Gate changed catalog statements and Defs-dependent rungs with full Mathlib

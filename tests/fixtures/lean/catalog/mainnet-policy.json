@@ -1,0 +1,303 @@
+{
+  "schema": "swarm.mainnet-bounty-policy/v1",
+  "max_literature_age_days": 30,
+  "max_redteam_age_days": 90,
+  "entries": {
+    "bidir-brocard-factorial-squares": {
+      "status": "open-problem",
+      "statement_sha256": "6a5665b430e08fb24efc055aa471ee337a5b2928dcdc330d92111eda5dff7000",
+      "open_problem_ref": "https://en.wikipedia.org/wiki/Brocard%27s_problem",
+      "world_record": "Verified no fourth solution for n <= 10^9 (Berndt-Galway 2000); finiteness conditional on ABC (Overholt 1993); unconditionally open.",
+      "literature_checked": "2026-11-28",
+      "nonvacuous_witness": "nonvacuous/bidir-brocard-factorial-squares.nonvacuous.lean"
+    },
+    "chain-bool-fourier-1-parseval-poincare-bonami": {
+      "status": "published-theorem",
+      "statement_sha256": "ef86fc9fafe7d262cd034fbe22581ae22936eadb81945e8f9fcffe8460bb5251",
+      "reason": "Published textbook theorem (Parseval, Poincare, Bonami 1970 hypercontractivity); Rung-1 prerequisite blocked on Mainnet."
+    },
+    "chain-bool-fourier-2-kkl-influential-variable": {
+      "status": "published-theorem",
+      "statement_sha256": "fd74aac9b483bac37a50efff60c27b7b3ab325fbdd19805c8d906ca8350bb746",
+      "reason": "Published theorem (Kahn-Kalai-Linial 1988); blocked on Mainnet."
+    },
+    "chain-bool-fourier-3-hastad-ac0-parity": {
+      "status": "published-theorem",
+      "statement_sha256": "c1e814196f58ec6bfdd4b79164f97fd7620684c9f27419bf6486241a880e7231",
+      "reason": "Published theorem (Hastad 1986 switching lemma / AC0 Parity lower bound); blocked on Mainnet."
+    },
+    "chain-bool-fourier-4-aaronson-ambainis-conjecture": {
+      "status": "published-theorem",
+      "statement_sha256": "a9e7552ea22c7ccd2b4d0667e7af5a4447f9e74ec1ca565a953cbc85299e2fbe",
+      "reason": "PROVED Nov 6, 2026 by David Turturean (arXiv:2611.09773, Lean 4.33.0 formalization) & Nov 9, 2026 by Huffstutler-Miloschewsky-Podder (arXiv:2611.12795); caught and breached in Lean 4 by Antigravity lean-redteam subagent before Mainnet funding."
+    },
+    "chain-bsd-1-weierstrass-bijection": {
+      "status": "published-theorem",
+      "statement_sha256": "d7828543bbe8f1a4c5674565f348a1b1c35d36b7d6c02c4f8e6fd209ab778a68",
+      "reason": "Published textbook theorem (classical congruent-number Weierstrass bijection); already settled on Mainnet."
+    },
+    "chain-bsd-2-fermat-noncongruent-1": {
+      "status": "published-theorem",
+      "statement_sha256": "2d09e221a6e2c2fe983808bb6a6afae463f0226b431fc3906ce8aeeab63ab932",
+      "reason": "Published theorem (Fermat infinite descent for n=1); blocked on Mainnet."
+    },
+    "chain-bsd-3-heegner-monsky-primes": {
+      "status": "published-theorem",
+      "statement_sha256": "6c0be328e49feebc4847b99cc373011bf2551cfd4fd7a2c755371abb1a27d6a6",
+      "reason": "Published theorem (Heegner 1952 / Monsky 1990); blocked on Mainnet."
+    },
+    "chain-bsd-4-congruent-semiprimes-567": {
+      "status": "published-theorem",
+      "statement_sha256": "54d2794df816641921310b7bc5dd6dcabc8beba70a8ba4ba0d3725dee66df3a9",
+      "reason": "Published theorem (Monsky / Tian congruent semiprime families); blocked on Mainnet."
+    },
+    "chain-navier-stokes-1-dyadic-energy-subcritical": {
+      "status": "published-theorem",
+      "statement_sha256": "6dffd712ce28a5c9bb281e0ec7102a8fa7995d3dff49f59128690613b9615cc5",
+      "reason": "Published theorem (dyadic energy identity & subcritical beta > alpha/2 global regularity); blocked on Mainnet."
+    },
+    "chain-navier-stokes-2-katz-pavlovic-supercritical-blowup": {
+      "status": "published-theorem",
+      "statement_sha256": "51dd9f2fba12755abc417a9e5c85e104b4f876686f7065d8c73e42e02b236e69",
+      "reason": "Published theorem (Katz-Pavlovic 2005 / Cheskidov 2008 dyadic blow-up); blocked on Mainnet."
+    },
+    "chain-navier-stokes-3-galerkin-3d-leray-energy": {
+      "status": "published-theorem",
+      "statement_sha256": "e80253503804ce8e0a45e9659edf9d2484b73e1631da671bfe7eaa2214ac93a0",
+      "reason": "Published theorem (classical Fourier-Galerkin skew-symmetry & 2D enstrophy conservation); blocked on Mainnet."
+    },
+    "chain-navier-stokes-4-leray-3d-uniform-enstrophy-millennium": {
+      "status": "open-problem",
+      "statement_sha256": "09e0a46414d96dd3b9b7391897cd9346c81b14b38859f0e92aafe0854b4f62ac",
+      "open_problem_ref": "https://www.claymath.org/millennium/navier-stokes-equation/",
+      "world_record": "Global regularity proved for 3D hyperviscous (-Delta)^gamma at gamma >= 5/4 (Lions 1969; logarithmic improvement Tao 2009); gamma = 1 uniform enstrophy bound is the Clay Millennium Prize Problem.",
+      "literature_checked": "2026-11-28",
+      "nonvacuous_witness": "nonvacuous/chain-navier-stokes-4-leray-3d-uniform-enstrophy-millennium.nonvacuous.lean",
+      "redteam": [
+        {
+          "passed": true,
+          "statement_sha256": "09e0a46414d96dd3b9b7391897cd9346c81b14b38859f0e92aafe0854b4f62ac",
+          "provider": "xai",
+          "model": "grok-4",
+          "iterations": 6,
+          "duration_secs": 176,
+          "tested_at": "2026-11-28T10:01:11.883Z",
+          "attacks": ["cheat", "disprove", "prove"]
+        },
+        {
+          "passed": true,
+          "statement_sha256": "09e0a46414d96dd3b9b7391897cd9346c81b14b38859f0e92aafe0854b4f62ac",
+          "provider": "antigravity",
+          "model": "antigravity-lean-redteam",
+          "iterations": 22,
+          "duration_secs": 822,
+          "tested_at": "2026-11-28T10:10:11.870Z",
+          "attacks": ["cheat", "disprove", "prove"],
+          "web_literature_checked": true,
+          "notes": "22 Lean 4.33 compiler runs across 5 suites: formally proved non-vacuous shear-wave solution with two-sided HasDerivAt, exact energy dissipation dE/dt=-2*nu*Omega, non-trivial Leray projection, positive 3D vortex stretching dOmega/dt=2-12*nu>0, and inter-shell cascade from boxModes 1 to boxModes 2. Verified unforced 3D periodic Navier-Stokes remains open (Nov 28, 2026). 0 breaches."
+        }
+      ]
+    },
+    "chain-pnp-circuit-1-de-morgan-parity-lower-bound": {
+      "status": "published-theorem",
+      "statement_sha256": "10106a922927853fceac2e182b24700cbf3893a3185351073039b332a3756f79",
+      "reason": "Published theorem (Schnorr 1974 / classical De Morgan parity circuit bound); already settled on Mainnet."
+    },
+    "chain-pnp-circuit-2-shannon-counting-bound": {
+      "status": "published-theorem",
+      "statement_sha256": "5f5a7e3c435d68afea5a97965a7721d8ce8947cb941fd9c78804bf3919a96f9d",
+      "reason": "Published theorem (Shannon 1949 / Lupanov counting lower bound); already settled on Mainnet."
+    },
+    "chain-protocol-math-1-advance-recoupment-safety": {
+      "status": "published-theorem",
+      "statement_sha256": "ef24d10fd39e1c6d28d5b7e84a847f0c03e6f3c1ac217958a95d936271f6db77",
+      "reason": "Single-function u64 invariant (Rung-1 warmup); blocked on Mainnet."
+    },
+    "chain-protocol-math-2-task-payout-solvency": {
+      "status": "published-theorem",
+      "statement_sha256": "84cdb950ac34b533e0c7eef2afffa5c877f625cff121e2a771955cf69a0ca182",
+      "reason": "Single-function u128 invariant; blocked on Mainnet."
+    },
+    "chain-protocol-math-3-xleg-multistep-conservation": {
+      "status": "published-theorem",
+      "statement_sha256": "8d4a68fd99f9050cb643e624934cfc65ddad92da457676f49bd43b27d48c718a",
+      "reason": "Single-function cross-chain split invariant; blocked on Mainnet."
+    },
+    "chain-quantum-info-1-chsh-tsirelson-bound": {
+      "status": "published-theorem",
+      "statement_sha256": "fb40204e85b5972e5dbb5da5d3e5c341b92de4026577917dcfa446e858f4f1bc",
+      "reason": "Published theorem (Tsirelson 1980 CHSH bound); blocked on Mainnet."
+    },
+    "chain-quantum-info-2-kraus-cptp-data-processing": {
+      "status": "published-theorem",
+      "statement_sha256": "b1edd2be23e1455c9f183c7791f36acf049e0f75299fee76435d9bbc8f636913",
+      "reason": "Published theorem (Kraus 1971 / Uhlmann unital monotonicity); blocked on Mainnet."
+    },
+    "chain-quantum-info-3-detectability-lemma-knill-laflamme": {
+      "status": "published-theorem",
+      "statement_sha256": "d4670f5a39d6b391e94277ad8b7aace28d931bdd63afbcaeed10209dc9e760cd",
+      "reason": "Published theorem (Aharonov-Arad-Landau-Vazirani 2009 / Knill-Laflamme 1997); blocked on Mainnet."
+    },
+    "chain-quantum-info-4-nlts-quantum-pcp-gap": {
+      "status": "published-theorem",
+      "statement_sha256": "ef73ade14cb5540bcbfddfab7292692380fa60df481df117f0857d9046b904c3",
+      "reason": "Published theorem (Anshu-Breuckmann-Nirkhe 2022 NLTS Theorem); blocked on Mainnet."
+    },
+    "chain-rh-analytic-1-mertens-first-prime-log-bound": {
+      "status": "published-theorem",
+      "statement_sha256": "d09426e1f9922b208c9a07b3c68e1e4062aaebae89122c59807f3bdd95319139",
+      "reason": "Published textbook theorem (Mertens 1874); already settled on Mainnet."
+    },
+    "chain-rh-analytic-2-mobius-harmonic-bound": {
+      "status": "published-theorem",
+      "statement_sha256": "c8faa3081528926a85047636b2b0c226a6a677117d8a6a9ecbfb86e5a76bcaf3",
+      "reason": "Published textbook inequality; already settled on Mainnet."
+    },
+    "chain-rh-analytic-3-pnt-mertens-little-o": {
+      "status": "published-theorem",
+      "statement_sha256": "7265e22f516b06cc31bdde5b2c97677d85ebd32d531cce690384811fe1e15172",
+      "reason": "Published theorem (Prime Number Theorem / Landau equivalence); blocked on Mainnet."
+    },
+    "chain-rh-analytic-4-zero-free-strip-99-100": {
+      "status": "published-theorem",
+      "statement_sha256": "75182d1ac3e6206aad7b5cf844a3a7329dbaef077e07f83f6d9266d33eb11c19",
+      "reason": "Post-Alpoge (Nov 2026) resolved RH ladder; blocked on Mainnet."
+    },
+    "chain-rh-lagarias-1-superabundant-even": {
+      "status": "published-theorem",
+      "statement_sha256": "6eab20f09029b18c3f3aeadd8045d7eb0a3f0a01dc358f168cb22625ec413417",
+      "reason": "Published theorem (Alaoglu-Erdos 1944); already settled on Mainnet."
+    },
+    "chain-rh-lagarias-2-normalized-monotonicity": {
+      "status": "published-theorem",
+      "statement_sha256": "32a24089627167db88f5680370d14a40e0a5a6ca4b830ff982b1fccc44d8a7b9",
+      "reason": "Published theorem (Lagarias 2002); already settled on Mainnet."
+    },
+    "chain-rh-lagarias-3-odd-and-squarefree": {
+      "status": "published-theorem",
+      "statement_sha256": "b4c3f7994a3483693eda6d37d4eb695a36b880316a044cf316b84fea1db9a3e7",
+      "reason": "Published theorem (Lagarias 2002 / Robin 1984); blocked on Mainnet."
+    },
+    "chain-rh-lagarias-4-even-superabundant-core": {
+      "status": "published-theorem",
+      "statement_sha256": "fdac86e2adfa285a3d804040fa29b3a8ff777a3f406015f963f6a1094ea76f7e",
+      "reason": "Post-Alpoge (Nov 2026) resolved RH ladder; blocked on Mainnet."
+    },
+    "chain-rh-meta-1-lagarias-pi1-rational-envelope": {
+      "status": "published-theorem",
+      "statement_sha256": "9fe71cf52b33edab0a951e39db896885d196affbc4fa668bc834487f351f9194",
+      "reason": "Published textbook approximation (rational envelope for Lagarias bound); already settled on Mainnet."
+    },
+    "chain-rh-meta-2-nonstandard-ultrapower-pi1": {
+      "status": "published-theorem",
+      "statement_sha256": "3e53b36d8f264cf7e82b0a954f4a3b48efa9d2485337e863f3cb36e77747f3a8",
+      "reason": "Published logic theorem (Los / ultrapower Pi1 absoluteness); already settled on Mainnet."
+    },
+    "chain-rh-meta-3-godel-kleene-pi1-unprovability": {
+      "status": "published-theorem",
+      "statement_sha256": "d2c0b9e7e6365f60b65e6d4bc70a01f3b382c36c52584b14a327348172fca300",
+      "reason": "Published logic theorem (Godel/Kleene Pi1 conservativity); already settled on Mainnet."
+    },
+    "chain-rh-meta-4-zfc-inaccessible-universe-reflection": {
+      "status": "published-theorem",
+      "statement_sha256": "9064285ac17d21e4bdeaa24d49ceb2a57c68a70259c024c034c0af29b8ec98f8",
+      "reason": "Published set-theory theorem (ZFC inaccessible reflection); blocked on Mainnet."
+    },
+    "collatz": {
+      "status": "open-problem",
+      "statement_sha256": "073cb382851c7084824adb15633f4f7ed948a490c9d716f42d513c51ef3c6658",
+      "open_problem_ref": "https://en.wikipedia.org/wiki/Collatz_conjecture",
+      "world_record": "Verified for n < 2^68 and almost all orbits attain almost bounded values (Tao 2019); universal termination remains open.",
+      "literature_checked": "2026-11-28",
+      "nonvacuous_witness": "nonvacuous/collatz.nonvacuous.lean"
+    },
+    "erdos-moser-power-sum": {
+      "status": "open-problem",
+      "statement_sha256": "119a018b39349aa03a9da37f195b0df4d8e321de4188a5e34c203d0a7f758f39",
+      "open_problem_ref": "https://en.wikipedia.org/wiki/Erd%C5%91s%E2%80%93Moser_equation",
+      "world_record": "Any non-trivial solution requires m > 10^{10^9} (Gallot-Moree-Zudilin 2011); non-existence remains open.",
+      "literature_checked": "2026-11-28",
+      "nonvacuous_witness": "nonvacuous/erdos-moser-power-sum.nonvacuous.lean"
+    },
+    "erdos-straus": {
+      "status": "open-problem",
+      "statement_sha256": "d57907a45edbdd5fbf57c1b0858a19aac7c2cec17df395b7b18db5fca16be923",
+      "open_problem_ref": "https://en.wikipedia.org/wiki/Erd%C5%91s%E2%80%93Straus_conjecture",
+      "world_record": "Verified for all n <= 10^17 (Salez 2014) and for all residue classes except 6 quadratic residue classes mod 840; general case remains open.",
+      "literature_checked": "2026-11-28",
+      "nonvacuous_witness": "nonvacuous/erdos-straus.nonvacuous.lean"
+    },
+    "goldbach": {
+      "status": "open-problem",
+      "statement_sha256": "0783a5104356ee5c6faf74ea39ba4481c7a882eeaf33fe3c640c98ddec4c46e5",
+      "open_problem_ref": "https://en.wikipedia.org/wiki/Goldbach%27s_conjecture",
+      "world_record": "Verified up to 4*10^18 (Oliveira e Silva et al. 2014); ternary Goldbach proved (Helfgott 2013); binary strong Goldbach remains open.",
+      "literature_checked": "2026-11-28",
+      "nonvacuous_witness": "nonvacuous/goldbach.nonvacuous.lean"
+    },
+    "golf-erdos-szekeres-monotone-subseq": {
+      "status": "published-theorem",
+      "statement_sha256": "babf966d3e5d7db6964e0d7d480fe890732a8582da93174fbdc7efe6ae4011cb",
+      "reason": "Published theorem (Erdos-Szekeres 1935) proof-golf; already settled on Mainnet."
+    },
+    "golf-sylvester-schur-prime-factor": {
+      "status": "published-theorem",
+      "statement_sha256": "565d30cbfb3d2ed872ed54196c37a6445e7fa38080afcff4e6c6503043b8c133",
+      "reason": "Published theorem (Sylvester-Schur 1892/1929) proof-golf; already settled on Mainnet."
+    },
+    "invariant-shillbot-recoupment-conservation": {
+      "status": "published-theorem",
+      "statement_sha256": "2e1d0033edc290df6e3837f528ae4624ddc849f88fb4d1a509be374f758348ea",
+      "reason": "Elementary Nat induction invariant; already settled on Mainnet."
+    },
+    "invariant-xchain-settlement-solvency": {
+      "status": "published-theorem",
+      "statement_sha256": "57411c8f4dea0337a4879d8bf6df9dda7a5f71a1f569a8ceaea75cda9d418459",
+      "reason": "Elementary Nat induction invariant; already settled on Mainnet."
+    },
+    "legendre": {
+      "status": "open-problem",
+      "statement_sha256": "61425ef742bfc5ac8eecafc9725a8ca888279971494cd4e759bcb600a070d377",
+      "open_problem_ref": "https://en.wikipedia.org/wiki/Legendre%27s_conjecture",
+      "world_record": "Best unconditional short-interval prime existence is x + x^{0.525} (Baker-Harman-Pintz 2001); exponent 0.5 (Legendre) remains open.",
+      "literature_checked": "2026-11-28",
+      "nonvacuous_witness": "nonvacuous/legendre.nonvacuous.lean"
+    },
+    "millennium-bsd-congruent-squarefree": {
+      "status": "open-problem",
+      "statement_sha256": "be0a8c326100ed7f5e6342e0d61c15464e7ac673d59b83f463843f78ecbb1865",
+      "open_problem_ref": "https://www.claymath.org/millennium/birch-and-swinnerton-dyer-conjecture/",
+      "world_record": "Known for specific prime/semiprime families (Heegner-Birch-Monsky-Tian-Yuan-Zhang); universal congruent-number rank >= 1 for all squarefree n = 5,6,7 mod 8 remains open (BSD rank-1 case).",
+      "literature_checked": "2026-11-28",
+      "nonvacuous_witness": "nonvacuous/millennium-bsd-congruent-squarefree.nonvacuous.lean"
+    },
+    "millennium-rh-lagarias-divisor": {
+      "status": "published-theorem",
+      "statement_sha256": "f9fffab4002a9f326b151ea95bc7919043a180a99d2fd90fe595f8751578a3ff",
+      "reason": "Post-Alpoge (Nov 2026) resolved RH / Lagarias 2002 equivalence; blocked on Mainnet."
+    },
+    "millennium-sub-bsd-split-prime-frobenius": {
+      "status": "published-theorem",
+      "statement_sha256": "b92f147ec1f22afd5735cb8449843ebf666e2a1c794738886d87185f981fe8be",
+      "reason": "Published classical number theory lemma; blocked on Mainnet."
+    },
+    "post-rh-chebyshev-psi-envelope": {
+      "status": "published-theorem",
+      "statement_sha256": "7b8a94e13d5c168f145bbe93d1f3021cce36177d0bf12f924b79250ffd5546c8",
+      "reason": "Published conditional consequence (von Koch 1901 / Schoenfeld 1976); already settled on Mainnet."
+    },
+    "post-rh-robin-criterion-equiv": {
+      "status": "published-theorem",
+      "statement_sha256": "08a10219b5510c3162f8ee258f5073e006a91dbedadd23bb45ff0f9520141697",
+      "reason": "Published theorem (Robin 1984 RH equivalence); blocked on Mainnet."
+    },
+    "twin-primes": {
+      "status": "open-problem",
+      "statement_sha256": "59cf2ed0c1c7fc32610edd5da7d5080467708babc35247b64c51fab2750f51f8",
+      "open_problem_ref": "https://en.wikipedia.org/wiki/Twin_prime",
+      "world_record": "Bounded prime gaps <= 246 proved unconditionally (Zhang 2013 / Maynard 2013 / Polymath8b 2014); gap = 2 remains open.",
+      "literature_checked": "2026-11-28",
+      "nonvacuous_witness": "nonvacuous/twin-primes.nonvacuous.lean"
+    }
+  }
+}

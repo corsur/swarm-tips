@@ -1,5 +1,4 @@
 -- @lean-policy: 4
--- @depends-on: chain-bool-fourier-3-hastad-ac0-parity
 import Mathlib.Data.Fin.Basic
 import Mathlib.Data.Finset.Basic
 import Mathlib.Data.Fintype.BigOperators

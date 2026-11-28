@@ -1,5 +1,4 @@
 -- @lean-policy: 4
--- @depends-on: chain-navier-stokes-3-galerkin-3d-leray-energy
 import Mathlib.Data.Fin.Basic
 import Mathlib.Data.Int.Basic
 import Mathlib.Data.Real.Basic

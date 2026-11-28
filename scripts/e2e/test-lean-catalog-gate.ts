@@ -14,6 +14,9 @@ import { spawnSync } from "node:child_process";
 import * as catalogModule from "./seed-lean-catalog";
 import {
   ALLOWED_SWARM_LIBRARY_IMPORTS,
+  assertMainnetEntryAllowed,
+  assertMainnetPolicyCoverage,
+  assertNotPreviouslySettled,
   assertRegistryComposableStatement,
   assertSeedingAllowedForEntry,
   assertValidProbeResponse,
@@ -24,23 +27,34 @@ import {
   CHAIN_TASK_CONFIG,
   CatalogEntry,
   classifyMathlibProbeSlice,
+  fetchSettledMainnetIndex,
   findUnbakedSwarmDefsImports,
   hasExistentialUniversalStructure,
   inlineSwarmProofsImportsForCompat,
   loadCatalog,
+  loadMainnetPolicy,
   loadProofRegistry,
+  MainnetPolicyManifest,
   negateStatementProp,
+  normalizedStatementSha256,
   parseLeanPolicyArg,
   parseNetworkArg,
   ProofRegistryManifest,
+  sha256Hex,
   UNFOLD_DEFS_BY_MODULE,
   WRAPPER_DEFS_BY_MODULE,
   REPO_ROOT,
   resolveBridgeLemmasForStatement,
   runFullMathlibSearchProbes,
   stripLeanComments,
+  verifyNonVacuousWitness,
   verifyStatementElaborates,
 } from "./seed-lean-catalog";
+import {
+  checkAxiomOutputIsStandard,
+  compileRedTeamCandidate,
+  extractLeanCodeBlock,
+} from "./redteam-lean-statement";
 
 function mockJsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -964,6 +978,317 @@ async function runUnitTests(): Promise<void> {
   console.log(
     "  [PASS] Multi-line #guard stripping & unbaked Defs.V1 fail-closed seeding / composable check-only guard"
   );
+
+  // 9. Mainnet Open-Only & Novel-Unpublished Guardrails (Guardrails 1-4)
+  {
+    const mainnetPolicy = loadMainnetPolicy();
+    assertMainnetPolicyCoverage(openEntries, mainnetPolicy);
+
+    const openByName = new Map(openEntries.map((e) => [e.name, e]));
+    const fixedNow = new Date("2026-11-28T12:00:00Z");
+
+    // 9a. Published theorems, warmups, Rung 1-3, Aaronson-Ambainis (proved Nov 6, 2026), NLTS (2022), proof-golf, and toy invariants MUST be blocked on mainnet
+    for (const blockedSlug of [
+      "chain-bool-fourier-1-parseval-poincare-bonami",
+      "chain-bool-fourier-2-kkl-influential-variable",
+      "chain-bool-fourier-3-hastad-ac0-parity",
+      "chain-bool-fourier-4-aaronson-ambainis-conjecture",
+      "chain-quantum-info-4-nlts-quantum-pcp-gap",
+      "chain-navier-stokes-1-dyadic-energy-subcritical",
+      "chain-protocol-math-1-advance-recoupment-safety",
+      "golf-erdos-szekeres-monotone-subseq",
+      "invariant-shillbot-recoupment-conservation",
+      "post-rh-robin-criterion-equiv",
+    ]) {
+      const entry = openByName.get(blockedSlug);
+      assert.ok(entry, `missing expected catalog file ${blockedSlug}`);
+      assert.throws(
+        () =>
+          assertMainnetEntryAllowed(entry, mainnetPolicy, {
+            now: fixedNow,
+            requireRedteam: false,
+          }),
+        /\[MAINNET POLICY GUARD\].*published-theorem/,
+        `${blockedSlug} must be hard-blocked on mainnet`
+      );
+    }
+
+    // 9b. Unclassified slugs fail closed on mainnet
+    const unclassifiedEntry: CatalogEntry = {
+      name: "unclassified-frontier-test",
+      kind: "open",
+      program: "general",
+      statement: "def statementProp : Prop := True\n",
+    };
+    assert.throws(
+      () =>
+        assertMainnetEntryAllowed(unclassifiedEntry, mainnetPolicy, {
+          now: fixedNow,
+        }),
+      /not classified in mainnet-policy\.json/
+    );
+
+    // 9c. Open problems without red-team attestation fail closed when requireRedteam=true
+    const ns4Entry = openByName.get(
+      "chain-navier-stokes-4-leray-3d-uniform-enstrophy-millennium"
+    )!;
+    assert.equal(
+      ns4Entry.dependsOn,
+      undefined,
+      "3D Navier-Stokes Millennium frontier must be decoupled from paid Rung 1-3 prerequisites"
+    );
+
+    const syntheticPolicy: MainnetPolicyManifest = JSON.parse(
+      JSON.stringify(mainnetPolicy)
+    );
+    delete syntheticPolicy.entries[ns4Entry.name].redteam;
+    assert.throws(
+      () =>
+        assertMainnetEntryAllowed(ns4Entry, syntheticPolicy, {
+          now: fixedNow,
+          requireRedteam: true,
+        }),
+      /\[RED-TEAM GUARD\]/
+    );
+
+    // 9d. Offline LLM attestation with web_literature_checked=false MUST fail closed (prevents missing newly published proofs like Nov 6, 2026 Aaronson-Ambainis)
+    const ns4Sha = sha256Hex(ns4Entry.statement);
+    syntheticPolicy.entries[ns4Entry.name].redteam = {
+      passed: true,
+      statement_sha256: ns4Sha,
+      provider: "xai",
+      model: "grok-4",
+      iterations: 6,
+      duration_secs: 180,
+      tested_at: "2026-11-28T09:00:00Z",
+      attacks: ["cheat", "disprove", "prove"],
+      web_literature_checked: false,
+    };
+    assert.throws(
+      () =>
+        assertMainnetEntryAllowed(ns4Entry, syntheticPolicy, {
+          now: fixedNow,
+          requireRedteam: true,
+        }),
+      /\[RED-TEAM GUARD\]/
+    );
+
+    // Valid web-literature-checked Antigravity red-team attestation bound to statement_sha256 passes
+    syntheticPolicy.entries[ns4Entry.name].redteam = {
+      passed: true,
+      statement_sha256: ns4Sha,
+      provider: "antigravity",
+      model: "antigravity-subagent",
+      iterations: 6,
+      duration_secs: 180,
+      tested_at: "2026-11-28T09:00:00Z",
+      attacks: ["cheat", "disprove", "prove"],
+      web_literature_checked: true,
+    };
+    assertMainnetEntryAllowed(ns4Entry, syntheticPolicy, {
+      now: fixedNow,
+      requireRedteam: true,
+    });
+
+    // Missing 'disprove' attack fails
+    syntheticPolicy.entries[ns4Entry.name].redteam = {
+      passed: true,
+      statement_sha256: ns4Sha,
+      provider: "xai",
+      model: "grok-4",
+      iterations: 6,
+      duration_secs: 180,
+      tested_at: "2026-11-28T09:00:00Z",
+      attacks: ["cheat", "prove"],
+      web_literature_checked: true,
+    };
+    assert.throws(
+      () =>
+        assertMainnetEntryAllowed(ns4Entry, syntheticPolicy, {
+          now: fixedNow,
+          requireRedteam: true,
+        }),
+      /\[RED-TEAM GUARD\]/
+    );
+
+    // Stale literature_checked (>30d) fails
+    syntheticPolicy.entries[ns4Entry.name].redteam = {
+      passed: true,
+      statement_sha256: ns4Sha,
+      provider: "antigravity",
+      model: "antigravity-subagent",
+      iterations: 6,
+      duration_secs: 180,
+      tested_at: "2026-11-28T09:00:00Z",
+      attacks: ["cheat", "disprove", "prove"],
+      web_literature_checked: true,
+    };
+    syntheticPolicy.entries[ns4Entry.name].literature_checked = "2026-10-01";
+    assert.throws(
+      () =>
+        assertMainnetEntryAllowed(ns4Entry, syntheticPolicy, {
+          now: fixedNow,
+          requireRedteam: true,
+        }),
+      /literature_checked .* is stale/
+    );
+    syntheticPolicy.entries[ns4Entry.name].literature_checked = "2026-11-28";
+
+    // Statement SHA-256 drift fails closed
+    const modifiedNs4: CatalogEntry = {
+      ...ns4Entry,
+      statement: `${ns4Entry.statement}\n-- edited\n`,
+    };
+    assert.throws(
+      () =>
+        assertMainnetEntryAllowed(modifiedNs4, syntheticPolicy, {
+          now: fixedNow,
+          requireRedteam: true,
+        }),
+      /statement_sha256 drift/
+    );
+
+    // 9e. novel-unpublished requires target_frontier, novelty_rationale, witness, web_literature_checked, and >= 10 redteam iterations
+    const novelEntry: CatalogEntry = {
+      name: "novel-hyperviscous-ns-6-5",
+      kind: "open",
+      program: "general",
+      statement: "def statementProp : Prop := ∀ n : Nat, n = n\n",
+    };
+    const novelSha = sha256Hex(novelEntry.statement);
+    syntheticPolicy.entries[novelEntry.name] = {
+      status: "novel-unpublished",
+      statement_sha256: novelSha,
+      target_frontier: "3D Navier-Stokes regularity",
+      novelty_rationale:
+        "Unpublished intermediate regularity threshold gamma=6/5 strictly below Lions 5/4.",
+      literature_checked: "2026-11-28",
+      nonvacuous_witness: "nonvacuous/goldbach.nonvacuous.lean",
+      redteam: {
+        passed: true,
+        statement_sha256: novelSha,
+        provider: "antigravity",
+        model: "antigravity-subagent",
+        iterations: 5, // too low for novel-unpublished (requires >= 10)
+        duration_secs: 90,
+        tested_at: "2026-11-28T09:00:00Z",
+        attacks: ["cheat", "disprove", "prove"],
+        web_literature_checked: true,
+      },
+    };
+    assert.throws(
+      () =>
+        assertMainnetEntryAllowed(novelEntry, syntheticPolicy, {
+          now: fixedNow,
+          requireRedteam: true,
+        }),
+      /\[RED-TEAM GUARD\].*min_iterations=10/
+    );
+    (
+      syntheticPolicy.entries[novelEntry.name].redteam as { iterations: number }
+    ).iterations = 12;
+    assertMainnetEntryAllowed(novelEntry, syntheticPolicy, {
+      now: fixedNow,
+      requireRedteam: true,
+    });
+
+    // 9f. Guardrail 4: Settled-duplicate lock (slug, exact sha, normalized sha, and active registry alias)
+    const mockSettledFetch: typeof fetch = async () =>
+      mockJsonResponse(200, {
+        network: "mainnet",
+        total_verified: 1,
+        proofs: [
+          {
+            task_id: "task-settled-1",
+            slug: "chain-pnp-circuit-1-de-morgan-parity-lower-bound",
+            state: "finalized",
+            statement_sha256: sha256Hex(
+              openByName.get(
+                "chain-pnp-circuit-1-de-morgan-parity-lower-bound"
+              )!.statement
+            ),
+            reward_lamports: 18_000_000,
+          },
+          {
+            task_id: "task-settled-norm",
+            slug: "old-alias-name",
+            state: "verified",
+            statement_sha256: normalizedStatementSha256(novelEntry.statement),
+            reward_lamports: 10_000_000,
+          },
+        ],
+      });
+    const settledIndex = await fetchSettledMainnetIndex(
+      "mainnet",
+      mockSettledFetch,
+      "https://api.example.test"
+    );
+    const emptyRegistry: ProofRegistryManifest = {
+      schema: "swarm.proof-registry/v1",
+      modules: [],
+      aliases: {},
+    };
+    assert.throws(
+      () =>
+        assertNotPreviouslySettled(
+          openByName.get("chain-pnp-circuit-1-de-morgan-parity-lower-bound")!,
+          settledIndex,
+          emptyRegistry
+        ),
+      /\[SETTLED-DUPLICATE GUARD\].*ALREADY proved and settled/
+    );
+    // Re-formatted statement with extra comment still matches normalizedStatementSha256
+    assert.throws(
+      () =>
+        assertNotPreviouslySettled(
+          {
+            ...novelEntry,
+            name: "renamed-duplicate-slug",
+            statement: `-- sneak comment\n${novelEntry.statement}   \n`,
+          },
+          settledIndex,
+          emptyRegistry
+        ),
+      /\[SETTLED-DUPLICATE GUARD\].*normalized statement_sha256/
+    );
+    // Failing /proofs endpoint fails closed
+    await assert.rejects(
+      () =>
+        fetchSettledMainnetIndex(
+          "mainnet",
+          async () => mockJsonResponse(503, { error: "down" }),
+          "https://api.example.test"
+        ),
+      /\[SETTLED-DUPLICATE GUARD\].*HTTP 503/
+    );
+
+    // 9g. Red-team helper checks (code extraction & axiom audit)
+    assert.equal(
+      extractLeanCodeBlock(
+        "Here:\n```lean\ntheorem proof : statementProp := rfl\n```"
+      ),
+      "theorem proof : statementProp := rfl"
+    );
+    assert.equal(
+      checkAxiomOutputIsStandard(
+        "'proof' depends on axioms: [propext, Classical.choice, Quot.sound]"
+      ),
+      true
+    );
+    assert.equal(
+      checkAxiomOutputIsStandard("'proof' does not depend on any axioms"),
+      true
+    );
+    assert.equal(
+      checkAxiomOutputIsStandard(
+        "'proof' depends on axioms: [propext, sorryAx]"
+      ),
+      false
+    );
+  }
+  console.log(
+    "  [PASS] Mainnet Guardrails 1-4 (open-only/novel-unpublished lock, red-team attestation, non-vacuity check, settled-duplicate lock)"
+  );
   console.log("=== All offline unit tests PASSED ===\n");
 }
 
@@ -1309,19 +1634,96 @@ async function runLiveRunnerTests(runnerOnly: boolean): Promise<void> {
   console.log("=== All live runner gate assertions PASSED ===");
 }
 
+async function runNonVacuousWitnessGate(): Promise<void> {
+  console.log(
+    "=== Compiling machine-checked non-vacuity witnesses & red-team compiler positive controls ==="
+  );
+  const policy = loadMainnetPolicy();
+  const openEntries = loadCatalog(false);
+  const byName = new Map(openEntries.map((e) => [e.name, e]));
+
+  let checked = 0;
+  for (const [slug, pol] of Object.entries(policy.entries)) {
+    if (pol.status !== "open-problem" && pol.status !== "novel-unpublished") {
+      continue;
+    }
+    const entry = byName.get(slug);
+    assert.ok(entry, `missing catalog entry for '${slug}'`);
+    verifyNonVacuousWitness(entry, pol);
+    checked++;
+  }
+  assert.ok(
+    checked >= 9,
+    `expected at least 9 non-vacuity witnesses compiled, got ${checked}`
+  );
+
+  // Positive control 1: red-team compiler catches a loophole proof of a trivial statement
+  const trivialStmt =
+    "import Mathlib.Data.Nat.Basic\ndef statementProp : Prop := ∀ (n : ℕ), n + 0 = n\n";
+  const loopholeRes = compileRedTeamCandidate(
+    trivialStmt,
+    "theorem proof : statementProp := fun _ => rfl",
+    "cheat"
+  );
+  assert.equal(
+    loopholeRes.passed,
+    true,
+    `red-team compiler must detect valid cheat proof: ${loopholeRes.stderr}`
+  );
+
+  // Positive control 2: red-team compiler catches a disproof of a missing-precondition bug
+  const buggyStmt =
+    "import Mathlib.Data.Nat.Basic\ndef statementProp : Prop := ∀ (n : ℕ), 0 < n\n";
+  const disproveRes = compileRedTeamCandidate(
+    buggyStmt,
+    "theorem disproof : ¬ statementProp := fun h => Nat.not_lt_zero 0 (h 0)",
+    "disprove"
+  );
+  assert.equal(
+    disproveRes.passed,
+    true,
+    `red-team compiler must detect valid counterexample disproof: ${disproveRes.stderr}`
+  );
+
+  // Negative control: sorry proof is rejected even if it typechecks
+  const sorryRes = compileRedTeamCandidate(
+    trivialStmt,
+    "theorem proof : statementProp := by sorry",
+    "prove"
+  );
+  assert.equal(
+    sorryRes.passed,
+    false,
+    "red-team compiler must reject sorry proofs"
+  );
+
+  console.log(
+    `=== All ${checked} non-vacuity witnesses + red-team compiler positive controls PASSED ===\n`
+  );
+}
+
 async function main(): Promise<void> {
   const unitOnly = process.argv.includes("--unit-only");
+  const nonvacuousOnly = process.argv.includes("--nonvacuous-only");
   const mathlibControls = process.argv.includes("--mathlib-controls");
   const live = process.argv.includes("--live");
   const runnerOnly = process.argv.includes("--runner-only");
 
-  if (!unitOnly && !mathlibControls && !live) {
+  if (!unitOnly && !nonvacuousOnly && !mathlibControls && !live) {
     throw new Error(
-      "Specify --unit-only, --mathlib-controls, or --live when running test-lean-catalog-gate.ts"
+      "Specify --unit-only, --nonvacuous-only, --mathlib-controls, or --live when running test-lean-catalog-gate.ts"
     );
   }
 
+  if (nonvacuousOnly && !unitOnly && !mathlibControls && !live) {
+    await runNonVacuousWitnessGate();
+    return;
+  }
+
   await runUnitTests();
+  if (nonvacuousOnly || mathlibControls || (live && !runnerOnly)) {
+    await runNonVacuousWitnessGate();
+  }
   if (mathlibControls || (live && !runnerOnly)) {
     await runMathlibControlTests();
   }

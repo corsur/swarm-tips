@@ -57,6 +57,10 @@ export const DEFAULT_REGISTRY_PATH = path.join(
   SWARM_PROOFS_ROOT,
   "registry.json"
 );
+export const DEFAULT_MAINNET_POLICY_PATH = path.join(
+  CATALOG_DIR,
+  "mainnet-policy.json"
+);
 
 export const ALLOWED_SWARM_LIBRARY_IMPORTS = new Set([
   "SwarmProofs.Chains.BSD.Defs.V1",
@@ -832,8 +836,7 @@ export const CHAIN_TASK_CONFIG: Record<string, ChainTaskMeta> = {
   },
   "chain-bool-fourier-4-aaronson-ambainis-conjecture": {
     escrowLamports: 75_000_000,
-    dependsOn: "chain-bool-fourier-3-hastad-ac0-parity",
-    cta: `Chain F [Rung 4/4 -> Open Frontier]: Aaronson-Ambainis Conjecture for bounded degree-d real polynomials ${SPDX_CTA_NOTE}`,
+    cta: `Chain F [Open Frontier]: Aaronson-Ambainis Conjecture for bounded degree-d real polynomials ${SPDX_CTA_NOTE}`,
   },
   "chain-quantum-info-1-chsh-tsirelson-bound": {
     escrowLamports: 20_000_000,
@@ -870,8 +873,7 @@ export const CHAIN_TASK_CONFIG: Record<string, ChainTaskMeta> = {
   },
   "chain-navier-stokes-4-leray-3d-uniform-enstrophy-millennium": {
     escrowLamports: 75_000_000,
-    dependsOn: "chain-navier-stokes-3-galerkin-3d-leray-energy",
-    cta: `Chain P1 [Rung 4/4 -> Millennium Frontier]: Uniform-in-M global enstrophy regularity for 3D periodic Fourier-Galerkin Navier-Stokes ${SPDX_CTA_NOTE}`,
+    cta: `Chain P1 [Millennium Frontier]: Uniform-in-M global enstrophy regularity for 3D periodic Fourier-Galerkin Navier-Stokes ${SPDX_CTA_NOTE}`,
   },
   "chain-protocol-math-1-advance-recoupment-safety": {
     escrowLamports: 15_000_000,
@@ -1034,6 +1036,487 @@ export function assertSeedingAllowedForEntry(
   return resolved;
 }
 
+export type MainnetPolicyStatus =
+  | "open-problem"
+  | "novel-unpublished"
+  | "published-theorem";
+
+export type RedTeamProvider = "xai" | "antigravity" | "gemini" | "openai";
+
+export type RedTeamAttackKind = "cheat" | "disprove" | "prove";
+
+export const REQUIRED_REDTEAM_ATTACKS: readonly RedTeamAttackKind[] = [
+  "cheat",
+  "disprove",
+  "prove",
+];
+
+export interface RedTeamAttestation {
+  passed: boolean;
+  statement_sha256: string;
+  provider: RedTeamProvider;
+  model: string;
+  iterations: number;
+  duration_secs: number;
+  tested_at: string;
+  attacks: string[];
+  web_literature_checked?: boolean;
+  notes?: string;
+}
+
+export interface MainnetPolicyEntry {
+  status: MainnetPolicyStatus;
+  statement_sha256: string;
+  open_problem_ref?: string;
+  world_record?: string;
+  target_frontier?: string;
+  novelty_rationale?: string;
+  literature_checked?: string;
+  nonvacuous_witness?: string;
+  redteam?: RedTeamAttestation | RedTeamAttestation[];
+  reason?: string;
+}
+
+export interface MainnetPolicyManifest {
+  schema: "swarm.mainnet-bounty-policy/v1";
+  max_literature_age_days: number;
+  max_redteam_age_days: number;
+  entries: Record<string, MainnetPolicyEntry>;
+}
+
+export interface SettledMainnetIndex {
+  slugs: Set<string>;
+  statementSha256s: Set<string>;
+  taskIdBySlug: Map<string, string>;
+  taskIdBySha: Map<string, string>;
+}
+
+export function sha256Hex(content: string): string {
+  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+export function normalizedStatementSha256(statement: string): string {
+  const normalized = stripLeanComments(statement).replace(/\s+/g, " ").trim();
+  return sha256Hex(normalized);
+}
+
+export function loadMainnetPolicy(
+  policyPath: string = DEFAULT_MAINNET_POLICY_PATH
+): MainnetPolicyManifest {
+  if (!fs.existsSync(policyPath)) {
+    throw new Error(
+      `[MAINNET POLICY GUARD] Missing mainnet-policy.json at ${policyPath}`
+    );
+  }
+  const parsed = JSON.parse(
+    fs.readFileSync(policyPath, "utf8")
+  ) as MainnetPolicyManifest;
+  if (parsed.schema !== "swarm.mainnet-bounty-policy/v1" || !parsed.entries) {
+    throw new Error(
+      `[MAINNET POLICY GUARD] Invalid schema in ${policyPath}: expected 'swarm.mainnet-bounty-policy/v1'`
+    );
+  }
+  return parsed;
+}
+
+export function assertMainnetPolicyCoverage(
+  openEntries: CatalogEntry[],
+  policy: MainnetPolicyManifest,
+  catalogDir: string = CATALOG_DIR
+): void {
+  for (const entry of openEntries) {
+    if (entry.kind !== "open") continue;
+    const pol = policy.entries[entry.name];
+    if (!pol) {
+      throw new Error(
+        `[MAINNET POLICY GUARD] Catalog file open/${entry.name}.lean is missing from mainnet-policy.json`
+      );
+    }
+    const actualSha = sha256Hex(entry.statement);
+    if (pol.statement_sha256 !== actualSha) {
+      throw new Error(
+        `[MAINNET POLICY GUARD] statement_sha256 mismatch for ${entry.name}: mainnet-policy.json has ${pol.statement_sha256}, disk file has ${actualSha}`
+      );
+    }
+    if (pol.status === "open-problem") {
+      if (!pol.open_problem_ref?.trim() || !pol.world_record?.trim()) {
+        throw new Error(
+          `[MAINNET POLICY GUARD] open-problem '${entry.name}' must specify both open_problem_ref and world_record`
+        );
+      }
+      if (!pol.literature_checked?.trim()) {
+        throw new Error(
+          `[MAINNET POLICY GUARD] open-problem '${entry.name}' must specify literature_checked (YYYY-MM-DD)`
+        );
+      }
+      if (!pol.nonvacuous_witness?.trim()) {
+        throw new Error(
+          `[MAINNET POLICY GUARD] open-problem '${entry.name}' must specify nonvacuous_witness`
+        );
+      }
+      const witnessAbs = path.join(catalogDir, pol.nonvacuous_witness);
+      if (!fs.existsSync(witnessAbs)) {
+        throw new Error(
+          `[MAINNET POLICY GUARD] open-problem '${entry.name}' nonvacuous_witness missing on disk: ${witnessAbs}`
+        );
+      }
+    } else if (pol.status === "novel-unpublished") {
+      if (!pol.target_frontier?.trim() || !pol.novelty_rationale?.trim()) {
+        throw new Error(
+          `[MAINNET POLICY GUARD] novel-unpublished '${entry.name}' must specify both target_frontier and novelty_rationale`
+        );
+      }
+      if (!pol.literature_checked?.trim() || !pol.nonvacuous_witness?.trim()) {
+        throw new Error(
+          `[MAINNET POLICY GUARD] novel-unpublished '${entry.name}' must specify literature_checked and nonvacuous_witness`
+        );
+      }
+      const witnessAbs = path.join(catalogDir, pol.nonvacuous_witness);
+      if (!fs.existsSync(witnessAbs)) {
+        throw new Error(
+          `[MAINNET POLICY GUARD] novel-unpublished '${entry.name}' nonvacuous_witness missing on disk: ${witnessAbs}`
+        );
+      }
+    } else if (pol.status === "published-theorem") {
+      if (!pol.reason?.trim()) {
+        throw new Error(
+          `[MAINNET POLICY GUARD] published-theorem '${entry.name}' must specify reason`
+        );
+      }
+    } else {
+      throw new Error(
+        `[MAINNET POLICY GUARD] Unknown status '${String(pol.status)}' for ${
+          entry.name
+        }`
+      );
+    }
+  }
+  const openNames = new Set(
+    openEntries.filter((e) => e.kind === "open").map((e) => e.name)
+  );
+  for (const slug of Object.keys(policy.entries)) {
+    if (!openNames.has(slug)) {
+      throw new Error(
+        `[MAINNET POLICY GUARD] Stale entry '${slug}' in mainnet-policy.json has no matching catalog/open/${slug}.lean file`
+      );
+    }
+  }
+}
+
+function parseIsoDayAgeDays(isoDate: string, now: Date): number {
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(isoDate)
+    ? `${isoDate}T00:00:00Z`
+    : isoDate;
+  const ms = Date.parse(normalized);
+  if (!Number.isFinite(ms)) {
+    throw new Error(`Invalid ISO date '${isoDate}'`);
+  }
+  return (now.getTime() - ms) / (24 * 60 * 60 * 1000);
+}
+
+export function assertMainnetEntryAllowed(
+  entry: CatalogEntry,
+  policy: MainnetPolicyManifest,
+  opts: {
+    now?: Date;
+    requireRedteam?: boolean;
+    catalogDir?: string;
+  } = {}
+): MainnetPolicyEntry {
+  const now = opts.now ?? new Date();
+  const requireRedteam = opts.requireRedteam ?? true;
+  const catalogDir = opts.catalogDir ?? CATALOG_DIR;
+
+  const pol = policy.entries[entry.name];
+  if (!pol) {
+    throw new Error(
+      `[MAINNET POLICY GUARD] Refusing to seed '${entry.name}' on mainnet: slug is not classified in mainnet-policy.json (only 'open-problem' and 'novel-unpublished' are permitted on mainnet).`
+    );
+  }
+  if (pol.status === "published-theorem") {
+    throw new Error(
+      `[MAINNET POLICY GUARD] Refusing to seed '${
+        entry.name
+      }' on mainnet: status is 'published-theorem' (${
+        pol.reason ?? "published/textbook/warmup"
+      }). Mainnet only funds 'open-problem' or 'novel-unpublished' statements.`
+    );
+  }
+  if (pol.status !== "open-problem" && pol.status !== "novel-unpublished") {
+    throw new Error(
+      `[MAINNET POLICY GUARD] Refusing to seed '${
+        entry.name
+      }' on mainnet: unsupported status '${String(pol.status)}'.`
+    );
+  }
+
+  const actualSha = sha256Hex(entry.statement);
+  if (pol.statement_sha256 !== actualSha) {
+    throw new Error(
+      `[MAINNET POLICY GUARD] Refusing to seed '${entry.name}' on mainnet: statement_sha256 drift (manifest=${pol.statement_sha256}, disk=${actualSha}). Re-run literature check and adversarial red-team before seeding.`
+    );
+  }
+
+  if (entry.dependsOn) {
+    const depPolicy = policy.entries[entry.dependsOn];
+    if (!depPolicy || depPolicy.status === "published-theorem") {
+      throw new Error(
+        `[MAINNET POLICY GUARD] Refusing to seed '${entry.name}' on mainnet: @depends-on '${entry.dependsOn}' points to a published/unclassified prerequisite. Decouple open problems from paid published rungs before mainnet seeding.`
+      );
+    }
+  }
+
+  if (pol.status === "open-problem") {
+    if (!pol.open_problem_ref?.trim() || !pol.world_record?.trim()) {
+      throw new Error(
+        `[MAINNET POLICY GUARD] Refusing to seed open-problem '${entry.name}' on mainnet: missing open_problem_ref or world_record.`
+      );
+    }
+  } else {
+    if (!pol.target_frontier?.trim() || !pol.novelty_rationale?.trim()) {
+      throw new Error(
+        `[MAINNET POLICY GUARD] Refusing to seed novel-unpublished '${entry.name}' on mainnet: missing target_frontier or novelty_rationale.`
+      );
+    }
+  }
+
+  const maxLitDays = policy.max_literature_age_days || 30;
+  if (!pol.literature_checked?.trim()) {
+    throw new Error(
+      `[MAINNET POLICY GUARD] Refusing to seed '${entry.name}' on mainnet: missing literature_checked date.`
+    );
+  }
+  const litAge = parseIsoDayAgeDays(pol.literature_checked, now);
+  if (litAge < -1 || litAge > maxLitDays) {
+    throw new Error(
+      `[MAINNET POLICY GUARD] Refusing to seed '${
+        entry.name
+      }' on mainnet: literature_checked '${
+        pol.literature_checked
+      }' is stale (${litAge.toFixed(
+        1
+      )}d > ${maxLitDays}d limit). Re-verify no proof has been published and refresh literature_checked.`
+    );
+  }
+
+  if (!pol.nonvacuous_witness?.trim()) {
+    throw new Error(
+      `[NON-VACUITY GUARD] Refusing to seed '${entry.name}' on mainnet: missing nonvacuous_witness path in mainnet-policy.json.`
+    );
+  }
+  const witnessAbs = path.join(catalogDir, pol.nonvacuous_witness);
+  if (!fs.existsSync(witnessAbs)) {
+    throw new Error(
+      `[NON-VACUITY GUARD] Refusing to seed '${entry.name}' on mainnet: witness file not found at ${witnessAbs}.`
+    );
+  }
+  const witnessStripped = stripLeanComments(
+    fs.readFileSync(witnessAbs, "utf8")
+  );
+  if (/\b(sorry|admit|axiom|unsafe|native_decide)\b/.test(witnessStripped)) {
+    throw new Error(
+      `[NON-VACUITY GUARD] Refusing to seed '${entry.name}' on mainnet: witness ${pol.nonvacuous_witness} contains forbidden token (sorry/admit/axiom/unsafe/native_decide).`
+    );
+  }
+
+  if (requireRedteam) {
+    const attestations = Array.isArray(pol.redteam)
+      ? pol.redteam
+      : pol.redteam
+      ? [pol.redteam]
+      : [];
+    const maxRedteamDays = policy.max_redteam_age_days || 90;
+    const minIters = pol.status === "novel-unpublished" ? 10 : 3;
+    const validAttestation = attestations.find((att) => {
+      if (!att || att.passed !== true) return false;
+      if (att.web_literature_checked !== true) return false;
+      if (att.statement_sha256 !== actualSha) return false;
+      if (!["xai", "antigravity", "gemini", "openai"].includes(att.provider)) {
+        return false;
+      }
+      if (!Number.isInteger(att.iterations) || att.iterations < minIters) {
+        return false;
+      }
+      const attackSet = new Set(att.attacks ?? []);
+      if (!REQUIRED_REDTEAM_ATTACKS.every((a) => attackSet.has(a))) {
+        return false;
+      }
+      const age = parseIsoDayAgeDays(att.tested_at, now);
+      return age >= -1 && age <= maxRedteamDays;
+    });
+    if (!validAttestation) {
+      throw new Error(
+        `[RED-TEAM GUARD] Refusing to seed '${
+          entry.name
+        }' on mainnet: missing valid, non-stale web-literature-checked redteam attestation (bound to sha256=${actualSha.slice(
+          0,
+          16
+        )}..., web_literature_checked=true, attacks=[cheat,disprove,prove], min_iterations=${minIters}, max_age=${maxRedteamDays}d). Run Antigravity lean-redteam / scripts/e2e/redteam-lean-statement.ts first.`
+      );
+    }
+  }
+
+  return pol;
+}
+
+export function verifyNonVacuousWitness(
+  entry: CatalogEntry,
+  policyEntry: MainnetPolicyEntry,
+  opts: {
+    catalogDir?: string;
+    swarmProofsRoot?: string;
+    timeoutMs?: number;
+  } = {}
+): void {
+  const catalogDir = opts.catalogDir ?? CATALOG_DIR;
+  const swarmProofsRoot = opts.swarmProofsRoot ?? SWARM_PROOFS_ROOT;
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+  if (!policyEntry.nonvacuous_witness?.trim()) {
+    throw new Error(
+      `[NON-VACUITY GUARD] ${entry.name}: missing nonvacuous_witness path`
+    );
+  }
+  const witnessAbs = path.join(catalogDir, policyEntry.nonvacuous_witness);
+  if (!fs.existsSync(witnessAbs)) {
+    throw new Error(
+      `[NON-VACUITY GUARD] ${entry.name}: witness file missing at ${witnessAbs}`
+    );
+  }
+  const src = fs.readFileSync(witnessAbs, "utf8");
+  const stripped = stripLeanComments(src);
+  if (/\b(sorry|admit|axiom|unsafe|native_decide)\b/.test(stripped)) {
+    throw new Error(
+      `[NON-VACUITY GUARD] ${entry.name}: witness ${policyEntry.nonvacuous_witness} contains forbidden token`
+    );
+  }
+  const t0 = Date.now();
+  const res = spawnSync("lake", ["env", "lean", witnessAbs], {
+    cwd: swarmProofsRoot,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const combined = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
+  if (
+    res.status !== 0 ||
+    combined.includes("declaration uses 'sorry'") ||
+    combined.includes("sorryAx")
+  ) {
+    throw new Error(
+      `[NON-VACUITY GUARD FAILED] ${entry.name}: witness ${
+        policyEntry.nonvacuous_witness
+      } failed Lean 4 compilation (exit=${res.status}):\n${combined.slice(
+        0,
+        1200
+      )}`
+    );
+  }
+  console.log(
+    `  [nonvacuous PASS] ${entry.name}: ${
+      policyEntry.nonvacuous_witness
+    } verified cleanly (${Date.now() - t0}ms)`
+  );
+}
+
+export async function fetchSettledMainnetIndex(
+  network: string,
+  fetchImpl: typeof fetch = fetch,
+  apiBase: string = API_BASE
+): Promise<SettledMainnetIndex> {
+  const slugs = new Set<string>();
+  const statementSha256s = new Set<string>();
+  const taskIdBySlug = new Map<string, string>();
+  const taskIdBySha = new Map<string, string>();
+
+  const res = await fetchImpl(
+    `${apiBase}/proofs?network=${encodeURIComponent(network)}&limit=500`
+  );
+  if (!res.ok) {
+    throw new Error(
+      `[SETTLED-DUPLICATE GUARD] Failed to query ${apiBase}/proofs?network=${network} (HTTP ${res.status}): refusing to seed mainnet without duplicate-settlement check.`
+    );
+  }
+  const data = (await res.json()) as {
+    proofs?: Array<{
+      slug?: string;
+      task_id?: string;
+      state?: string;
+      statement_sha256?: string;
+      reward_lamports?: number;
+    }>;
+  };
+  for (const p of data.proofs ?? []) {
+    const st = String(p.state ?? "").toLowerCase();
+    if (st !== "finalized" && st !== "verified") continue;
+    const tid = String(p.task_id ?? "unknown");
+    if (p.slug) {
+      const cleanSlug = p.slug.replace(/^catalog:/, "");
+      slugs.add(cleanSlug);
+      taskIdBySlug.set(cleanSlug, tid);
+    }
+    if (p.statement_sha256) {
+      const sha = p.statement_sha256.replace(/^sha256:/, "").toLowerCase();
+      statementSha256s.add(sha);
+      taskIdBySha.set(sha, tid);
+    }
+  }
+  return { slugs, statementSha256s, taskIdBySlug, taskIdBySha };
+}
+
+export function assertNotPreviouslySettled(
+  entry: CatalogEntry,
+  settledIndex: SettledMainnetIndex,
+  registry: ProofRegistryManifest
+): void {
+  const rawSha = sha256Hex(entry.statement).toLowerCase();
+  const normSha = normalizedStatementSha256(entry.statement).toLowerCase();
+
+  if (settledIndex.slugs.has(entry.name)) {
+    throw new Error(
+      `[SETTLED-DUPLICATE GUARD] Refusing to seed '${
+        entry.name
+      }' on mainnet: slug was ALREADY proved and settled on mainnet (task ${
+        settledIndex.taskIdBySlug.get(entry.name) ?? "unknown"
+      }).`
+    );
+  }
+  if (settledIndex.statementSha256s.has(rawSha)) {
+    throw new Error(
+      `[SETTLED-DUPLICATE GUARD] Refusing to seed '${
+        entry.name
+      }' on mainnet: exact statement_sha256 ${rawSha.slice(
+        0,
+        16
+      )}... was ALREADY proved and settled on mainnet (task ${
+        settledIndex.taskIdBySha.get(rawSha) ?? "unknown"
+      }).`
+    );
+  }
+  if (settledIndex.statementSha256s.has(normSha)) {
+    throw new Error(
+      `[SETTLED-DUPLICATE GUARD] Refusing to seed '${
+        entry.name
+      }' on mainnet: normalized statement_sha256 ${normSha.slice(
+        0,
+        16
+      )}... was ALREADY proved and settled on mainnet (task ${
+        settledIndex.taskIdBySha.get(normSha) ?? "unknown"
+      }).`
+    );
+  }
+  const aliasKey = `catalog:${entry.name}`;
+  const promotedId =
+    registry.aliases?.[aliasKey] ?? registry.aliases?.[entry.name];
+  if (promotedId) {
+    const mod = registry.modules.find((m) => m.module_id === promotedId);
+    if (mod && (mod.status ?? "active").toLowerCase() === "active") {
+      throw new Error(
+        `[SETTLED-DUPLICATE GUARD] Refusing to seed '${entry.name}' on mainnet: already promoted as active module '${mod.module_name}' in proofs/SwarmProofs/registry.json.`
+      );
+    }
+  }
+}
+
 export function loadCatalog(includeSolvable = false): CatalogEntry[] {
   const entries: CatalogEntry[] = [];
   const kinds: Array<"open" | "solvable"> = includeSolvable
@@ -1042,7 +1525,13 @@ export function loadCatalog(includeSolvable = false): CatalogEntry[] {
   for (const kind of kinds) {
     const dir = path.join(CATALOG_DIR, kind);
     for (const f of fs.readdirSync(dir).sort()) {
-      if (!f.endsWith(".lean") || f.endsWith(".proof.lean")) continue;
+      if (
+        !f.endsWith(".lean") ||
+        f.endsWith(".proof.lean") ||
+        f.endsWith(".nonvacuous.lean")
+      ) {
+        continue;
+      }
       const name = f.replace(/\.lean$/, "");
       const proofPath = path.join(dir, `${name}.proof.lean`);
       const sanityPath = path.join(dir, `${name}.sanity.ts`);
@@ -2695,9 +3184,14 @@ async function main(): Promise<void> {
   );
 
   const registry = loadProofRegistry();
+  const mainnetPolicy = loadMainnetPolicy();
 
   if (checkOnly && mathlibOnly) {
     for (const entry of catalog) {
+      const policyEntry = mainnetPolicy.entries[entry.name];
+      if (policyEntry?.nonvacuous_witness) {
+        verifyNonVacuousWitness(entry, policyEntry);
+      }
       await verifyStatementElaborates(entry, {
         checkOnly: true,
         leanPolicy,
@@ -2711,6 +3205,19 @@ async function main(): Promise<void> {
       `\n[mathlib-only check PASS] All ${catalog.length} statements passed full-Mathlib search gate.`
     );
     return;
+  }
+
+  if (isMainnet) {
+    const settledIndex = await fetchSettledMainnetIndex(network);
+    for (const entry of catalog) {
+      const policyEntry = assertMainnetEntryAllowed(entry, mainnetPolicy, {
+        requireRedteam: true,
+      });
+      assertNotPreviouslySettled(entry, settledIndex, registry);
+      if (!runnerOnly) {
+        verifyNonVacuousWitness(entry, policyEntry);
+      }
+    }
   }
 
   const runnerToken = getRunnerIdToken(DEFAULT_RUNNER_URL);
@@ -2728,6 +3235,12 @@ async function main(): Promise<void> {
       await verifyReductionChainFiles();
     }
     for (const entry of catalog) {
+      if (!runnerOnly && !isMainnet) {
+        const policyEntry = mainnetPolicy.entries[entry.name];
+        if (policyEntry?.nonvacuous_witness) {
+          verifyNonVacuousWitness(entry, policyEntry);
+        }
+      }
       await verifyStatementElaborates(entry, {
         checkOnly: true,
         leanPolicy,
